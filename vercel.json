@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/ping-evolution",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/daily-reports",
+      "schedule": "0 21 * * *"
+    }
+  ]
+}
