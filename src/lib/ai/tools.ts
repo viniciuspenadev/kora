@@ -10,6 +10,43 @@ import type OpenAI from "openai"
 import type { AIRouteRequiredField } from "@/types/ai"
 
 export const ROUTE_TOOL_NAME = "route_to_department"
+export const SEND_MESSAGE_TOOL_NAME = "send_message"
+
+/**
+ * Tool de fala. Quando o trigger encaminha, o modelo responde SEMPRE via tool
+ * (tool_choice=required): usa `send_message` pra conversar/coletar e
+ * `route_to_department` pra encaminhar de fato. Isso impede o clássico
+ * "narrou que ia encaminhar mas não chamou a tool" — falar e encaminhar
+ * viram ações estruturadas distintas.
+ */
+export function buildSendMessageTool(): OpenAI.Chat.Completions.ChatCompletionTool {
+  return {
+    type: "function",
+    function: {
+      name:        SEND_MESSAGE_TOOL_NAME,
+      description:
+        "Envie uma mensagem ao cliente — pra acolher, responder ou perguntar algo que ainda falta. " +
+        "Use enquanto ainda NÃO é hora de encaminhar. Não diga que vai encaminhar aqui; pra encaminhar, use route_to_department.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "A mensagem pro cliente, no tom e estilo da persona." },
+        },
+        required: ["text"],
+        additionalProperties: false,
+      },
+    },
+  }
+}
+
+export function parseSendMessage(rawArgs: string): { text: string } {
+  try {
+    const p = JSON.parse(rawArgs || "{}")
+    return { text: typeof p.text === "string" ? p.text : "" }
+  } catch {
+    return { text: "" }
+  }
+}
 
 export interface RouteToolSpec {
   departmentName: string
@@ -50,8 +87,9 @@ export function buildRouteTool(spec: RouteToolSpec): OpenAI.Chat.Completions.Cha
     function: {
       name:        ROUTE_TOOL_NAME,
       description:
-        `Encaminhe a conversa para o departamento "${spec.departmentName}" quando tiver coletado os dados necessários. ` +
-        `Chame esta função SOMENTE quando estiver pronto pra passar pro humano — não antes de ter o que foi pedido.`,
+        `Encaminhe a conversa para o departamento "${spec.departmentName}". ` +
+        `Chame ASSIM QUE tiver os dados necessários (não fique só prometendo encaminhar via mensagem). ` +
+        `Se ainda faltar algum dado, use send_message pra perguntar antes.`,
       parameters: {
         type:       "object",
         properties,

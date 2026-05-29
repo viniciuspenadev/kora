@@ -14,7 +14,10 @@ import { getProvider } from "@/lib/providers"
 import { runChat, type ChatToolCall } from "@/lib/ai/openai"
 import { evaluateTriggers } from "@/lib/ai/evaluate-triggers"
 import { compilePrompt, type CompileInput } from "@/lib/ai/compile-prompt"
-import { buildRouteTool, parseRouteCall, ROUTE_TOOL_NAME } from "@/lib/ai/tools"
+import {
+  buildRouteTool, parseRouteCall, ROUTE_TOOL_NAME,
+  buildSendMessageTool, parseSendMessage, SEND_MESSAGE_TOOL_NAME,
+} from "@/lib/ai/tools"
 import {
   gatherTriggerState, gatherPromptContext, displayName,
   type ConvRow, type ContactRow,
@@ -196,9 +199,13 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     messages.push({ role: "user", content: incomingText })
   }
 
+  // Em modo de rota, oferece 2 tools e FORÇA o modelo a agir via uma delas
+  // (tool_choice=required): send_message pra falar/coletar, route_to_department
+  // pra encaminhar de fato. Mata o "narrou o encaminhamento mas não roteou".
   const tools = routeForPrompt
-    ? [buildRouteTool({ departmentName: targetDeptName, requiredFields: routeFields })]
+    ? [buildSendMessageTool(), buildRouteTool({ departmentName: targetDeptName, requiredFields: routeFields })]
     : undefined
+  const toolChoice = routeForPrompt ? ("required" as const) : undefined
 
   let chatErr: string | null = null
   let llmText: string | null = null
@@ -206,7 +213,7 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   let usage = { inputTokens: 0, outputTokens: 0 }
 
   try {
-    const res = await runChat({ model: config.ai_model, messages, tools })
+    const res = await runChat({ model: config.ai_model, messages, tools, toolChoice })
     llmText   = res.text
     toolCalls = res.toolCalls
     usage     = res.usage
@@ -216,8 +223,10 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
 
   // ── 7) Ação ────────────────────────────────────────────────
   let result: RunAITurnResult = { status: "no_action" }
-  const provider = getProvider(instance)
+  let outboundText: string | null = null   // texto efetivamente enviado (pra ai_runs)
+  const provider  = getProvider(instance)
   const routeCall = toolCalls.find((t) => t.name === ROUTE_TOOL_NAME)
+  const sendCall  = toolCalls.find((t) => t.name === SEND_MESSAGE_TOOL_NAME)
 
   if (!chatErr) {
     if (routeCall && targetDeptId) {
@@ -229,9 +238,18 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
         handoffMessage,
         currentMetadata: (convData.metadata as Record<string, unknown> | null) ?? {},
       })
+      outboundText = handoffMessage ?? null
+    } else if (sendCall) {
+      const { text } = parseSendMessage(sendCall.arguments)
+      if (text.trim()) {
+        await sendBotText(tenantId, conversationId, contact, provider, text.trim(), matched.id)
+        result       = { status: "responded" }
+        outboundText = text.trim()
+      }
     } else if (llmText?.trim()) {
       await sendBotText(tenantId, conversationId, contact, provider, llmText.trim(), matched.id)
-      result = { status: "responded" }
+      result       = { status: "responded" }
+      outboundText = llmText.trim()
     }
   } else {
     result = { status: "error", error: chatErr }
@@ -243,7 +261,7 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     conversation_id: conversationId,
     trigger_id:      matched.id,
     compiled_prompt: systemPrompt,
-    llm_response:    llmText,
+    llm_response:    llmText ?? outboundText,
     tools_called:    toolCalls.map((t) => ({ name: t.name, arguments: t.arguments })),
     model:           config.ai_model,
     input_tokens:    usage.inputTokens,

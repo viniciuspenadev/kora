@@ -124,14 +124,18 @@ describe("compilePrompt", () => {
       Acolha o retorno pelo nome, sem se reapresentar.
 
       # ENCAMINHAMENTO
-      Seu papel aqui é qualificar e encaminhar pro departamento "Vendas" — não resolver tudo sozinho.
+      Seu papel aqui é qualificar e encaminhar pro departamento "Vendas", não resolver tudo sozinho.
+
+      Você responde SEMPRE chamando uma ferramenta:
+      - send_message: pra falar com o cliente, acolher ou perguntar o que ainda falta.
+      - route_to_department: pra encaminhar de fato.
 
       Antes de encaminhar, colete (de forma natural, sem parecer formulário):
       - Qual o produto?
       - Quantidade?
 
-      Assim que tiver o necessário, chame a ferramenta route_to_department. NÃO prometa prazos nem ações que dependem do humano.
-      Ao encaminhar, despeça-se algo como: "Já passei pro time de vendas, eles te respondem rapidinho!""
+      Assim que tiver esses dados, chame route_to_department na hora. Nunca diga que vai encaminhar (via send_message) sem chamar route_to_department. Não prometa prazos nem ações que dependem do humano.
+      A mensagem de despedida ao encaminhar pode ser algo como: "Já passei pro time de vendas, eles te respondem rapidinho!""
     `)
   })
 })

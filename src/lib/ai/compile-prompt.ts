@@ -141,7 +141,11 @@ export function compilePrompt(input: CompileInput): string {
   // ── Encaminhamento ────────────────────────────────────────
   if (route) {
     const routeLines: string[] = [
-      `Seu papel aqui é qualificar e encaminhar pro departamento "${route.departmentName}" — não resolver tudo sozinho.`,
+      `Seu papel aqui é qualificar e encaminhar pro departamento "${route.departmentName}", não resolver tudo sozinho.`,
+      "",
+      "Você responde SEMPRE chamando uma ferramenta:",
+      "- send_message: pra falar com o cliente, acolher ou perguntar o que ainda falta.",
+      "- route_to_department: pra encaminhar de fato.",
     ]
     if (route.requiredFields.length > 0) {
       routeLines.push("")
@@ -149,9 +153,9 @@ export function compilePrompt(input: CompileInput): string {
       for (const f of route.requiredFields) routeLines.push(`- ${f.label}`)
     }
     routeLines.push("")
-    routeLines.push(`Assim que tiver o necessário, chame a ferramenta route_to_department. NÃO prometa prazos nem ações que dependem do humano.`)
+    routeLines.push("Assim que tiver esses dados, chame route_to_department na hora. Nunca diga que vai encaminhar (via send_message) sem chamar route_to_department. Não prometa prazos nem ações que dependem do humano.")
     if (route.handoffMessage?.trim()) {
-      routeLines.push(`Ao encaminhar, despeça-se algo como: "${route.handoffMessage.trim()}"`)
+      routeLines.push(`A mensagem de despedida ao encaminhar pode ser algo como: "${route.handoffMessage.trim()}"`)
     }
     blocks.push(section("ENCAMINHAMENTO", routeLines.join("\n")))
   }

@@ -35,6 +35,8 @@ export interface RunChatParams {
   model:       string
   messages:    OpenAI.Chat.Completions.ChatCompletionMessageParam[]
   tools?:      OpenAI.Chat.Completions.ChatCompletionTool[]
+  /** Força/restringe a escolha de tool. Ex: "required" obriga a chamar alguma. */
+  toolChoice?: OpenAI.Chat.Completions.ChatCompletionToolChoiceOption
   temperature?: number
   /** Timeout por chamada (ms). Default 30s — evita pendurar o webhook. */
   timeoutMs?:  number
@@ -50,6 +52,7 @@ export async function runChat(params: RunChatParams): Promise<ChatResult> {
       model:       params.model,
       messages:    params.messages,
       tools:       params.tools,
+      tool_choice: params.toolChoice,
       temperature: params.temperature ?? 0.4,
     },
     { timeout: params.timeoutMs ?? 30_000 },
