@@ -9,6 +9,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { logAudit } from "@/lib/audit"
 import { revalidatePath } from "next/cache"
+import { seedAIDefaults } from "@/lib/actions/ai/seed"
 
 async function requirePlatformAdmin() {
   const session = await auth()
@@ -72,6 +73,19 @@ export async function setTenantModule(
 
   if (error) return { error: error.message }
 
+  // Seed default por módulo (idempotente). Roda só em transição off→on.
+  // Falha aqui não rola back o módulo — log no audit metadata.
+  let seedError: string | null = null
+  if (input.enabled && !before?.enabled) {
+    if (input.slug === "ai_atendente") {
+      try {
+        await seedAIDefaults(input.tenantId)
+      } catch (e) {
+        seedError = e instanceof Error ? e.message : String(e)
+      }
+    }
+  }
+
   // Audit log — prova histórica de quem habilitou o quê
   await logAudit({
     tenantId:   input.tenantId,
@@ -85,6 +99,7 @@ export async function setTenantModule(
     metadata:   {
       module_name: catalog.name,
       tenant_name: tenant.name,
+      ...(seedError ? { seed_error: seedError } : {}),
     },
   })
 

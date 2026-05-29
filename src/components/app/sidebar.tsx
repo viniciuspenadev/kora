@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown,
   Bot, Bell, Filter, MessageSquare, Layers, Server,
-  Tag as TagIcon, Users, CreditCard, Wand2, Globe, Gauge, BarChart3, Mail,
+  Tag as TagIcon, Users, CreditCard, Wand2, Globe, Gauge, BarChart3, Mail, Sparkles,
 } from "lucide-react"
 import { getUnreadTotal } from "@/lib/actions/chat"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
@@ -49,6 +49,7 @@ const NAV: NavItem[] = [
     label: "Automação",
     icon:  <Bot className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
     children: [
+      { href: "/automacao/ia",             label: "Atendente IA",          icon: <Sparkles  className={subIcon} strokeWidth={1.75} />, module: "ai_atendente"     },
       { href: "/automacao/mensagens",      label: "Mensagens automáticas", icon: <Bell      className={subIcon} strokeWidth={1.75} />, module: "welcome_message"  },
       { href: "/automacao/palavras-chave", label: "Palavras-chave",        icon: <Wand2     className={subIcon} strokeWidth={1.75} />, module: "keyword_triggers" },
       { href: "/automacao/distribuicao",   label: "Distribuição",          icon: <Filter    className={subIcon} strokeWidth={1.75} />, module: "auto_assign" },

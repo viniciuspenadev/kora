@@ -4,9 +4,16 @@ import { jidToPhone } from "@/lib/phone-utils"
 import { getProvider } from "@/lib/providers"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
+import { runAITurn } from "@/lib/ai/run"
+import { latestInboundAt } from "@/lib/ai/context"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import type { EvolutionMessageData } from "@/types/chat"
+
+// Janela de debounce do Atendente IA: agrupa rajada de mensagens do contato.
+// Se chegar msg mais nova durante a janela, o turno atual aborta e o da
+// mensagem nova assume (vendo o histórico completo).
+const AI_DEBOUNCE_MS = 2500
 
 const CHAT_BUCKET = "chat-attachments"
 
@@ -595,15 +602,36 @@ async function handleMessageUpsert(
       }
     }
 
-    // Cadeia de automação (fire-and-forget via after()):
-    //   1. Keyword triggers — já rodou acima. Se matchou, bypass do resto.
-    //   2. Automações fixas (welcome / horário comercial) — fallback.
+    // Cadeia de atendimento automático (fire-and-forget via after()):
+    //   1. Keyword triggers — já rodou acima (sync). Se matchou, bypass do resto.
+    //   2. Atendente IA — se habilitada e algum trigger casar (com debounce de rajada).
+    //   3. Automações fixas (welcome / horário comercial) — fallback se a IA não atuou.
+    // Guardas de takeover/grupo/disabled ficam dentro de runAITurn.
     if (!kwMatched) {
+      const convId = conversation.id
       after(async () => {
         try {
-          await dispatchAutomations({ tenantId, conversationId: conversation.id, instance })
+          // IA só processa texto. Mídia pura → pula direto pras automações fixas.
+          if (content) {
+            // Debounce: aguarda janela curta; se chegou msg mais nova do contato,
+            // aborta — o turno disparado por ela verá o histórico completo.
+            const baseline = await latestInboundAt(convId)
+            await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
+            if ((await latestInboundAt(convId)) !== baseline) return
+
+            const ai = await runAITurn({
+              tenantId,
+              conversationId: convId,
+              incomingText:   content,
+              instance,
+            })
+            // IA atuou (respondeu ou roteou) → não dispara automações fixas.
+            if (ai.status === "responded" || ai.status === "routed") return
+          }
+
+          await dispatchAutomations({ tenantId, conversationId: convId, instance })
         } catch (err) {
-          console.error("[automation chain] failed:", err)
+          console.error("[ai+automation chain] failed:", err)
         }
       })
     }
