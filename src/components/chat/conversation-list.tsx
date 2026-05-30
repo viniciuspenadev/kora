@@ -341,6 +341,9 @@ export function ConversationList({
             const mediaIcon   = inferMediaIcon(conv.last_message_preview)
             const isSiteLead  = conv.channel === "site"
             const awaitingFirst = isSiteLead && /^(voltou|novo lead|lead via)/i.test(conv.last_message_preview ?? "")
+            // Lead encaminhado pela IA e ainda sem atendente → aguardando na fila.
+            const aiRouted   = (conv.metadata as { ai_routed?: { department_name?: string } } | null | undefined)?.ai_routed
+            const isWaiting  = !!aiRouted && !assignedTo
 
             const showSource = !!contact?.source && !isGroup
             const hasFooter = (stage && !stage.name?.toLowerCase().includes("triagem")) || contactTags.length > 0
@@ -420,6 +423,18 @@ export function ConversationList({
                       {conv.last_message_preview ?? "Nova conversa"}
                     </p>
                   </div>
+
+                  {isWaiting && (
+                    <div className="mt-1">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                        <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
+                        Aguardando atendimento
+                        {aiRouted?.department_name && (
+                          <span className="text-amber-600 font-medium">· {aiRouted.department_name}</span>
+                        )}
+                      </span>
+                    </div>
+                  )}
 
                   {hasFooter && (
                     <div className="flex items-center gap-1.5 mt-1 text-[10px] text-slate-400 truncate">

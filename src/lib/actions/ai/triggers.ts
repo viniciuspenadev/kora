@@ -27,6 +27,14 @@ function sanitizeCondition(c: Condition): Condition {
 }
 
 function sanitize(input: AITriggerInput): AITriggerInput {
+  // Qualificação só faz sentido ao encaminhar. Mantém só regras com nível.
+  const qualification =
+    input.action_type === "route_to_department"
+      ? (input.qualification ?? [])
+          .map((q) => ({ level: q.level.trim(), tag_id: q.tag_id || null, stage_id: q.stage_id || null }))
+          .filter((q) => q.level && (q.tag_id || q.stage_id))
+      : []
+
   return {
     name:             input.name.trim(),
     priority:         Math.max(0, Math.min(9999, Math.floor(input.priority || 100))),
@@ -36,6 +44,7 @@ function sanitize(input: AITriggerInput): AITriggerInput {
     instruction:      input.instruction?.trim() || null,
     action_type:      input.action_type,
     action_target_id: input.action_target_id,
+    qualification,
   }
 }
 
@@ -104,6 +113,7 @@ export async function createTrigger(input: AITriggerInput): Promise<{ error?: st
       instruction:      data.instruction,
       action_type:      data.action_type,
       action_target_id: data.action_target_id,
+      qualification:    data.qualification,
     })
     .select("id")
     .single()
@@ -144,6 +154,7 @@ export async function updateTrigger(
       instruction:      data.instruction,
       action_type:      data.action_type,
       action_target_id: data.action_target_id,
+      qualification:    data.qualification,
       updated_at:       new Date().toISOString(),
     })
     .eq("id", id)

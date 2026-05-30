@@ -114,6 +114,14 @@ export type ContextPayloadKey =
 
 export type TriggerActionType = "respond_only" | "route_to_department"
 
+// Qualificação: a IA classifica o lead num `level` (definido pelo tenant) e o
+// engine aplica a tag + move o stage. Resolvido por id (bound, sem fuzzy match).
+export interface QualificationRule {
+  level:    string          // rótulo que a IA escolhe (ex: "quente")
+  tag_id:   string | null   // tag a aplicar no contato (opcional)
+  stage_id: string | null   // stage pra mover a conversa (opcional)
+}
+
 export interface AITrigger {
   id:               string
   tenant_id:        string
@@ -125,6 +133,7 @@ export interface AITrigger {
   instruction:      string | null
   action_type:      TriggerActionType
   action_target_id: string | null
+  qualification:    QualificationRule[]
   created_at:       string
   updated_at:       string
 }
@@ -138,4 +147,5 @@ export interface AITriggerInput {
   instruction:      string | null
   action_type:      TriggerActionType
   action_target_id: string | null
+  qualification:    QualificationRule[]
 }

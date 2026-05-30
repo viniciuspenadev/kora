@@ -625,8 +625,10 @@ async function handleMessageUpsert(
               incomingText:   content,
               instance,
             })
-            // IA atuou (respondeu ou roteou) → não dispara automações fixas.
+            // IA atuou (respondeu/roteou) OU a conversa já foi encaminhada pro
+            // time humano → não dispara automações fixas por cima do handoff.
             if (ai.status === "responded" || ai.status === "routed") return
+            if (ai.status === "skipped" && ai.reason === "already_routed") return
           }
 
           await dispatchAutomations({ tenantId, conversationId: convId, instance })

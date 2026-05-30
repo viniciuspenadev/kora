@@ -14,13 +14,21 @@ import { compilePrompt, type CompileInput } from "./compile-prompt"
 import type { AITrigger, AITriggerInput } from "@/types/ai"
 
 let seq = 0
-function mkTrigger(t: AITriggerInput): AITrigger {
+function mkTrigger(t: Partial<AITriggerInput> & { name: string }): AITrigger {
   seq += 1
   return {
-    id:         `trg-${seq}`,
-    tenant_id:  "t",
-    created_at: `2026-01-${String(seq).padStart(2, "0")}T00:00:00Z`,
-    updated_at: "2026-01-01T00:00:00Z",
+    id:               `trg-${seq}`,
+    tenant_id:        "t",
+    priority:         100,
+    active:           true,
+    conditions:       [],
+    context_payload:  [],
+    instruction:      null,
+    action_type:      "respond_only",
+    action_target_id: null,
+    qualification:    [],
+    created_at:       `2026-01-${String(seq).padStart(2, "0")}T00:00:00Z`,
+    updated_at:       "2026-01-01T00:00:00Z",
     ...t,
   }
 }

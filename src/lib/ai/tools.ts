@@ -51,6 +51,8 @@ export function parseSendMessage(rawArgs: string): { text: string } {
 export interface RouteToolSpec {
   departmentName: string
   requiredFields: AIRouteRequiredField[]
+  /** Níveis de qualificação configurados (ex: ["quente","morno","frio"]). Vazio = sem qualificação. */
+  levels?:        string[]
 }
 
 const JSON_TYPE: Record<AIRouteRequiredField["type"], string> = {
@@ -66,7 +68,7 @@ const JSON_TYPE: Record<AIRouteRequiredField["type"], string> = {
  * entram como propriedades obrigatórias e tipadas.
  */
 export function buildRouteTool(spec: RouteToolSpec): OpenAI.Chat.Completions.ChatCompletionTool {
-  const properties: Record<string, { type: string; description: string }> = {
+  const properties: Record<string, { type: string; description: string; enum?: string[] }> = {
     summary: {
       type:        "string",
       description: "Resumo objetivo pro atendente humano: o que o cliente quer, em 1-2 frases. Factual, sem floreio.",
@@ -80,6 +82,16 @@ export function buildRouteTool(spec: RouteToolSpec): OpenAI.Chat.Completions.Cha
       description: f.label,
     }
     required.push(f.key)
+  }
+
+  // Qualificação (opcional): a IA classifica o nível do lead. Enum vem da config.
+  if (spec.levels && spec.levels.length > 0) {
+    properties.lead_level = {
+      type:        "string",
+      enum:        spec.levels,
+      description: "Classifique o nível de interesse/qualificação do lead com base na conversa.",
+    }
+    required.push("lead_level")
   }
 
   return {
@@ -103,6 +115,7 @@ export function buildRouteTool(spec: RouteToolSpec): OpenAI.Chat.Completions.Cha
 export interface ParsedRouteCall {
   summary:   string
   collected: Record<string, string>
+  leadLevel: string | null
 }
 
 /** Extrai os args da chamada da tool de forma tolerante (nunca lança). */
@@ -123,5 +136,6 @@ export function parseRouteCall(rawArgs: string, requiredFields: AIRouteRequiredF
   return {
     summary:   typeof parsed.summary === "string" ? parsed.summary : "",
     collected,
+    leadLevel: typeof parsed.lead_level === "string" && parsed.lead_level ? parsed.lead_level : null,
   }
 }

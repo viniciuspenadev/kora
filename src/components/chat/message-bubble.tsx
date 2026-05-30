@@ -5,7 +5,7 @@ import {
   Check, CheckCheck, Clock, AlertCircle, Lock, FileText, MapPin, Mic, Video,
   Image as ImageIcon, Download, X, ImageOff, Reply, Smartphone,
   Megaphone, ExternalLink, Eye, EyeOff, Trash2, Pencil, MessageSquareWarning,
-  User as UserIcon, ListChecks, Square,
+  User as UserIcon, ListChecks, Square, Sparkles, ArrowRight,
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { AudioPlayer } from "./audio-player"
@@ -78,6 +78,64 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
     hour: "2-digit",
     minute: "2-digit",
   })
+
+  // Dossiê da IA (encaminhamento) — card estruturado, antes do system pill.
+  const routedMeta = (message.metadata ?? {}) as {
+    ai_routed?:       boolean
+    department_name?: string
+    summary?:         string
+    collected?:       { label: string; value: string }[]
+    lead_level?:      string | null
+  }
+  if (routedMeta.ai_routed) {
+    const collected = Array.isArray(routedMeta.collected) ? routedMeta.collected : []
+    return (
+      <div className="flex justify-center px-4 py-1.5">
+        <div className="w-full max-w-md rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50 to-blue-50 shadow-sm overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-violet-100">
+            <div className="size-5 rounded bg-gradient-to-br from-violet-500 to-blue-600 inline-flex items-center justify-center shrink-0">
+              <Sparkles className="size-3 text-white" />
+            </div>
+            <span className="text-[11px] font-bold text-violet-700 uppercase tracking-wide">Dossiê da IA</span>
+            <span className="text-[10px] text-violet-400">· privada</span>
+            <span className="ml-auto text-[10px] text-violet-400">{time}</span>
+          </div>
+          <div className="px-3 py-2.5 space-y-2.5">
+            <div className="flex items-center gap-1.5 flex-wrap text-xs">
+              <span className="text-slate-500">Encaminhado para</span>
+              <span className="inline-flex items-center gap-1 font-semibold text-primary-700 bg-white border border-primary-100 px-1.5 py-0.5 rounded">
+                <ArrowRight className="size-3" /> {routedMeta.department_name ?? "departamento"}
+              </span>
+              {routedMeta.lead_level && (
+                <span className="inline-flex items-center font-semibold text-violet-700 bg-violet-100 border border-violet-200 px-1.5 py-0.5 rounded capitalize">
+                  lead {routedMeta.lead_level}
+                </span>
+              )}
+            </div>
+            {routedMeta.summary && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase text-slate-400 tracking-wide mb-0.5">Resumo</p>
+                <p className="text-xs text-slate-700 leading-relaxed">{routedMeta.summary}</p>
+              </div>
+            )}
+            {collected.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase text-slate-400 tracking-wide mb-1">Coletado</p>
+                <div className="space-y-1">
+                  {collected.map((c, i) => (
+                    <div key={i} className="flex gap-2 text-xs">
+                      <span className="text-slate-400 shrink-0 min-w-[88px]">{c.label}</span>
+                      <span className="text-slate-800 font-medium">{c.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   if (isSystem) {
     return (

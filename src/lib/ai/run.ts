@@ -22,7 +22,7 @@ import {
   gatherTriggerState, gatherPromptContext, displayName,
   type ConvRow, type ContactRow,
 } from "@/lib/ai/context"
-import type { AITrigger, AITone, AIRouteRequiredField } from "@/types/ai"
+import type { AITrigger, AITone, AIRouteRequiredField, QualificationRule } from "@/types/ai"
 import type OpenAI from "openai"
 
 interface InstanceForProvider {
@@ -110,6 +110,10 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   }
   // Takeover humano: alguém assumiu → IA não atropela.
   if (convData.assigned_to) return { status: "skipped", reason: "human_assigned" }
+  // Já encaminhada pra um departamento → o time humano é dono agora.
+  // A IA não reengaja por cima do handoff (espera o humano assumir).
+  const convMeta = (convData.metadata as Record<string, unknown> | null) ?? {}
+  if (convMeta.ai_routed) return { status: "skipped", reason: "already_routed" }
 
   const contact = convData.chat_contacts as unknown as ContactRow | null
   if (!contact) return { status: "skipped", reason: "no_contact" }
@@ -202,8 +206,9 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   // Em modo de rota, oferece 2 tools e FORÇA o modelo a agir via uma delas
   // (tool_choice=required): send_message pra falar/coletar, route_to_department
   // pra encaminhar de fato. Mata o "narrou o encaminhamento mas não roteou".
+  const levels = matched.qualification.map((q) => q.level).filter(Boolean)
   const tools = routeForPrompt
-    ? [buildSendMessageTool(), buildRouteTool({ departmentName: targetDeptName, requiredFields: routeFields })]
+    ? [buildSendMessageTool(), buildRouteTool({ departmentName: targetDeptName, requiredFields: routeFields, levels })]
     : undefined
   const toolChoice = routeForPrompt ? ("required" as const) : undefined
 
@@ -231,14 +236,23 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   if (!chatErr) {
     if (routeCall && targetDeptId) {
       const parsed = parseRouteCall(routeCall.arguments, routeFields)
+      // Casa os valores coletados com o label configurado (pro dossiê legível).
+      const collected = routeFields
+        .map((f) => ({ label: f.label, value: parsed.collected[f.key] }))
+        .filter((c): c is { label: string; value: string } => !!c.value)
       result = await executeRoute({
         tenantId, conversationId, contact, provider,
         departmentId: targetDeptId, departmentName: targetDeptName,
-        summary: parsed.summary, collected: parsed.collected,
+        summary: parsed.summary, collected, leadLevel: parsed.leadLevel,
         handoffMessage,
         currentMetadata: (convData.metadata as Record<string, unknown> | null) ?? {},
       })
       outboundText = handoffMessage ?? null
+      // Qualificação: aplica tag + move stage conforme o nível que a IA escolheu.
+      if (parsed.leadLevel) {
+        const rule = matched.qualification.find((q) => q.level === parsed.leadLevel)
+        if (rule) await executeQualification(tenantId, conversationId, contact.id, rule)
+      }
     } else if (sendCall) {
       const { text } = parseSendMessage(sendCall.arguments)
       if (text.trim()) {
@@ -307,6 +321,34 @@ async function sendBotText(
     .eq("id", conversationId)
 }
 
+// ── Aplica a qualificação (tag + stage) por id, bound ───────────
+async function executeQualification(
+  tenantId:       string,
+  conversationId: string,
+  contactId:      string,
+  rule:           QualificationRule,
+): Promise<void> {
+  if (rule.tag_id) {
+    const { error } = await supabaseAdmin.from("taggings").insert({
+      tag_id:        rule.tag_id,
+      tenant_id:     tenantId,
+      taggable_type: "contact",
+      taggable_id:   contactId,
+      tagged_by:     null,
+    })
+    if (error && !error.message.includes("duplicate")) {
+      console.error("[ai/run] falha ao aplicar tag de qualificação:", error.message)
+    }
+  }
+  if (rule.stage_id) {
+    await supabaseAdmin
+      .from("chat_conversations")
+      .update({ stage_id: rule.stage_id, updated_at: new Date().toISOString() })
+      .eq("id", conversationId)
+      .eq("tenant_id", tenantId)
+  }
+}
+
 // ── Executa o encaminhamento (modelo A mínimo) ──────────────────
 async function executeRoute(args: {
   tenantId:       string
@@ -316,21 +358,24 @@ async function executeRoute(args: {
   departmentId:   string
   departmentName: string
   summary:         string
-  collected:       Record<string, string>
+  collected:       { label: string; value: string }[]
+  leadLevel:       string | null
   handoffMessage:  string | null
   currentMetadata: Record<string, unknown>
 }): Promise<RunAITurnResult> {
   const {
     tenantId, conversationId, contact, provider,
-    departmentId, departmentName, summary, collected, handoffMessage, currentMetadata,
+    departmentId, departmentName, summary, collected, leadLevel, handoffMessage, currentMetadata,
   } = args
 
   // 1) Dossiê factual como NOTA INTERNA (a equipe vê, o cliente não).
+  //    content = texto de fallback; metadata = estrutura pro bubble renderizar bonito.
   const dossier = [
     `🤖 Encaminhado pela IA → ${departmentName}`,
+    leadLevel ? ` (lead ${leadLevel})` : "",
     summary ? `\nResumo: ${summary}` : "",
-    Object.keys(collected).length > 0
-      ? `\nColetado:\n${Object.entries(collected).map(([k, v]) => `• ${k}: ${v}`).join("\n")}`
+    collected.length > 0
+      ? `\nColetado:\n${collected.map((c) => `• ${c.label}: ${c.value}`).join("\n")}`
       : "",
   ].join("")
 
@@ -342,7 +387,14 @@ async function executeRoute(args: {
     content:         dossier,
     status:          "sent",
     is_private_note: true,
-    metadata:        { ai_routed: true, department_id: departmentId },
+    metadata: {
+      ai_routed:       true,
+      department_id:   departmentId,
+      department_name: departmentName,
+      summary,
+      collected,
+      lead_level:      leadLevel,
+    },
   })
 
   // 2) Mensagem de transferência pro cliente (se configurada).

@@ -15,7 +15,7 @@ import {
 } from "@/lib/ai/describe"
 import type {
   AITrigger, Condition, ConditionAttribute, ConditionOperator,
-  ContextPayloadKey, TriggerActionType,
+  ContextPayloadKey, TriggerActionType, QualificationRule,
 } from "@/types/ai"
 
 const INPUT_CLASS =
@@ -65,6 +65,7 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
   const [instruction, setInstruction] = useState(trigger?.instruction ?? "")
   const [actionType, setActionType]   = useState<TriggerActionType>(trigger?.action_type ?? "respond_only")
   const [targetId, setTargetId]       = useState(trigger?.action_target_id ?? "")
+  const [qualification, setQualification] = useState<QualificationRule[]>(trigger?.qualification ?? [])
 
   const [error, setError]   = useState<string | null>(null)
   const [pending, startT]   = useTransition()
@@ -105,6 +106,17 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
     setContext((c) => (c.includes(key) ? c.filter((k) => k !== key) : [...c, key]))
   }
 
+  // ── Qualificação ───────────────────────────────────────────
+  function addRule() {
+    setQualification((q) => [...q, { level: "", tag_id: null, stage_id: null }])
+  }
+  function updateRule(idx: number, patch: Partial<QualificationRule>) {
+    setQualification((q) => q.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+  }
+  function removeRule(idx: number) {
+    setQualification((q) => q.filter((_, i) => i !== idx))
+  }
+
   function handleSave() {
     setError(null)
     startT(async () => {
@@ -117,6 +129,7 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
         instruction:      instruction || null,
         action_type:      actionType,
         action_target_id: actionType === "route_to_department" ? (targetId || null) : null,
+        qualification:    actionType === "route_to_department" ? qualification : [],
       }
       const result = trigger
         ? await updateTrigger(trigger.id, input)
@@ -292,6 +305,79 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
           </ActionRadio>
         </div>
       </SectionCard>
+
+      {/* ── Card 6: Qualificação (só ao rotear) ────────────── */}
+      {actionType === "route_to_department" && (
+        <SectionCard
+          title="Qualificação do lead"
+          description="A IA classifica o lead num nível e o sistema aplica a tag + move no funil. Opcional."
+        >
+          <div className="space-y-2">
+            {qualification.length === 0 ? (
+              <p className="text-xs text-slate-400 italic px-3 py-3 border border-dashed border-slate-200 rounded-lg text-center">
+                Sem qualificação — a IA só encaminha, sem etiquetar nem mover no funil.
+              </p>
+            ) : (
+              <>
+                <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_auto] gap-2 px-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  <span>Nível (a IA escolhe)</span>
+                  <span>Aplica a tag</span>
+                  <span>Move pra etapa</span>
+                  <span />
+                </div>
+                {qualification.map((r, idx) => (
+                  <div key={idx} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto] gap-2">
+                    <input
+                      className={INPUT_CLASS}
+                      value={r.level}
+                      onChange={(e) => updateRule(idx, { level: e.target.value })}
+                      placeholder="ex: quente"
+                    />
+                    <select
+                      className={INPUT_CLASS}
+                      value={r.tag_id ?? ""}
+                      onChange={(e) => updateRule(idx, { tag_id: e.target.value || null })}
+                    >
+                      <option value="">Sem tag</option>
+                      {tags.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                    <select
+                      className={INPUT_CLASS}
+                      value={r.stage_id ?? ""}
+                      onChange={(e) => updateRule(idx, { stage_id: e.target.value || null })}
+                    >
+                      <option value="">Não mover</option>
+                      {stages.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => removeRule(idx)}
+                      className="size-9 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-danger hover:bg-danger-bg transition-colors shrink-0"
+                      aria-label="Remover nível"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </>
+            )}
+            <button
+              type="button"
+              onClick={addRule}
+              className="w-full inline-flex items-center justify-center gap-1.5 h-9 text-xs font-semibold text-primary-600 hover:text-primary-700 border border-dashed border-slate-300 hover:border-primary-200 hover:bg-primary-50/50 rounded-lg transition-colors"
+            >
+              <Plus className="size-3.5" /> Adicionar nível
+            </button>
+            <p className="text-[11px] text-slate-400">
+              A IA escolhe um desses níveis com base na conversa. Você define o que cada nível faz.
+            </p>
+          </div>
+        </SectionCard>
+      )}
 
       {/* ── Save bar ───────────────────────────────────────── */}
       <div className="flex items-center justify-end gap-2 pt-1">
