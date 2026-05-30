@@ -135,8 +135,16 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   const triggers = (triggersData ?? []) as AITrigger[]
   if (triggers.length === 0) return { status: "skipped", reason: "no_triggers" }
 
-  const state   = await gatherTriggerState(tenantId, conv, contact, incomingText)
-  const matched = evaluateTriggers(triggers, state)
+  // Sticky: se a conversa já entrou num trigger de ROTA (em qualificação), mantém
+  // ele — assim a ferramenta de encaminhar não some quando uma msg de follow-up
+  // não casa keyword (era o que jogava o handoff pro catch-all "Geral").
+  let matched: AITrigger | null = null
+  const stickyId = typeof convMeta.ai_active_trigger === "string" ? convMeta.ai_active_trigger : null
+  if (stickyId) matched = triggers.find((t) => t.id === stickyId) ?? null
+  if (!matched) {
+    const state = await gatherTriggerState(tenantId, conv, contact, incomingText)
+    matched = evaluateTriggers(triggers, state)
+  }
   if (!matched) return { status: "skipped", reason: "no_match" }
 
   // ── 4) Rota (se o trigger encaminha) ───────────────────────
@@ -267,6 +275,17 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     }
   } else {
     result = { status: "error", error: chatErr }
+  }
+
+  // Sticky: trigger de rota que respondeu (mas ainda não roteou) → marca a
+  // conversa pra manter o modo na próxima mensagem. Some sozinho ao rotear
+  // (já_roteada) ou no takeover humano (assigned_to).
+  if (matched.action_type === "route_to_department" && result.status === "responded") {
+    await supabaseAdmin
+      .from("chat_conversations")
+      .update({ metadata: { ...convMeta, ai_active_trigger: matched.id } })
+      .eq("id", conversationId)
+      .eq("tenant_id", tenantId)
   }
 
   // ── 8) ai_runs (observabilidade) ───────────────────────────
