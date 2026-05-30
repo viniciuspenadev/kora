@@ -160,13 +160,15 @@ export async function POST(req: NextRequest) {
       const { data: newContact, error: cErr } = await supabaseAdmin
         .from("chat_contacts")
         .insert({
-          tenant_id:    tenant.id,
-          whatsapp_id:  jid,
-          phone_number: phone,
-          push_name:    answers.name?.trim() ?? null,
-          custom_name:  answers.name?.trim() ?? null,
-          email:        answers.email?.trim().toLowerCase() ?? null,
-          source:       "webform",
+          tenant_id:           tenant.id,
+          whatsapp_id:         jid,
+          phone_number:        phone,
+          push_name:           answers.name?.trim() ?? null,
+          custom_name:         answers.name?.trim() ?? null,
+          email:               answers.email?.trim().toLowerCase() ?? null,
+          source:              "webform",        // aquisição (de onde veio)
+          primary_channel:     "whatsapp",       // identidade (deu o número → phone)
+          primary_external_id: jid,
           metadata: {
             first_site_lead: {
               page_url:  body.url ?? null,

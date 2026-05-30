@@ -57,12 +57,6 @@ function lifecycleLabel(stage: string): string {
   return LIFECYCLE_OPTIONS.find((o) => o.value === stage)?.label ?? stage
 }
 
-function deriveOrigin(conv: ConvRow, contact: ContactRow): "ad" | "site" | "direct" {
-  if (conv.from_ad_meta) return "ad"
-  if (contact.source === "webform") return "site"
-  return "direct"
-}
-
 /** Tag ids aplicadas no contato. */
 async function getContactTagIds(tenantId: string, contactId: string): Promise<string[]> {
   const { data } = await supabaseAdmin
@@ -112,7 +106,8 @@ export async function gatherTriggerState(
     lifecycle,
     tagIds,
     stageId:                 conv.stage_id,
-    origin:                  deriveOrigin(conv, contact),
+    source:                  contact.source,        // canônico (chat_contacts.source)
+    fromAd:                  !!conv.from_ad_meta,    // veio de anúncio (CTWA)
     isFirstMessageOfSession,
     inactive24h,
     incomingTextLower:       incomingText.toLowerCase(),

@@ -17,7 +17,8 @@ export interface TriggerEvalState {
   lifecycle:               string          // contact | lead | won | lost | unfit
   tagIds:                  string[]
   stageId:                 string | null
-  origin:                  "ad" | "site" | "direct"
+  source:                  string          // chat_contacts.source (canônico)
+  fromAd:                  boolean         // veio de anúncio (from_ad_meta)
   isFirstMessageOfSession: boolean
   inactive24h:             boolean
   /** Texto da mensagem recebida, já em lowercase, pra match de keyword. */
@@ -76,8 +77,10 @@ export function matchCondition(cond: Condition, state: TriggerEvalState): boolea
       return matchBoolean(state.inactive24h, cond.operator)
     case "lifecycle":
       return matchScalar(state.lifecycle, cond.operator, cond.value)
-    case "origin":
-      return matchScalar(state.origin, cond.operator, cond.value)
+    case "source":
+      return matchScalar(state.source, cond.operator, cond.value)
+    case "from_ad":
+      return matchBoolean(state.fromAd, cond.operator)
     case "pipeline_stage":
       return matchScalar(state.stageId ?? "", cond.operator, cond.value)
     case "tags":

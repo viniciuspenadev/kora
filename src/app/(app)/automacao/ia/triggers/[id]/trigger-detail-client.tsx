@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch"
 import { createTrigger, updateTrigger } from "@/lib/actions/ai/triggers"
 import {
   ATTRIBUTE_SPECS, OPERATOR_LABELS, CONTEXT_PAYLOAD_LABELS,
-  LIFECYCLE_OPTIONS, ORIGIN_OPTIONS, describeConditions,
+  LIFECYCLE_OPTIONS, SOURCE_OPTIONS, describeConditions,
 } from "@/lib/ai/describe"
 import type {
   AITrigger, Condition, ConditionAttribute, ConditionOperator,
@@ -139,10 +139,12 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
     })
   }
 
-  const summary = describeConditions(conditions, { tagNameById, stageNameById })
+  const summary        = describeConditions(conditions, { tagNameById, stageNameById })
+  const ctxLabels      = context.map((k) => CONTEXT_PAYLOAD_LABELS[k]?.label).filter(Boolean)
+  const targetDeptName = departments.find((d) => d.id === targetId)?.name ?? null
 
   return (
-    <div className="space-y-6 max-w-3xl pb-4">
+    <div className="space-y-6 pb-4">
       {error && (
         <div className="flex items-center gap-2 rounded-lg bg-danger-bg border border-red-100 px-4 py-3">
           <AlertCircle className="size-4 text-danger shrink-0" />
@@ -150,6 +152,8 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
         </div>
       )}
 
+      <div className="flex flex-col xl:flex-row gap-6 items-start">
+      <div className="flex-1 min-w-0 w-full space-y-6">
       {/* ── Card 1: Identificação ──────────────────────────── */}
       <SectionCard
         title="Identificação"
@@ -378,6 +382,42 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
           </div>
         </SectionCard>
       )}
+      </div>
+
+      {/* ── Rail: resumo ao vivo + ajuda ───────────────────── */}
+      <aside className="w-full xl:w-80 shrink-0 space-y-4 xl:sticky xl:top-4">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/60">
+            <p className="text-xs font-semibold text-slate-900">Resumo deste trigger</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Em português, o que você está montando</p>
+          </div>
+          <div className="px-4 py-3 space-y-3">
+            <SummaryRow label="Quando" value={summary} />
+            <SummaryRow label="A IA vê" value={ctxLabels.length ? ctxLabels.join(", ") : "—"} />
+            <SummaryRow label="Roteiro" value={instruction.trim() ? "Personalizado" : "Padrão"} />
+            <SummaryRow
+              label="Ação"
+              value={actionType === "route_to_department"
+                ? `Encaminha para ${targetDeptName ?? "— escolha um departamento"}`
+                : "Conversa e responde"}
+            />
+            {actionType === "route_to_department" && qualification.some((q) => q.level) && (
+              <SummaryRow
+                label="Qualifica o lead"
+                value={qualification.filter((q) => q.level).map((q) => q.level).join(" · ")}
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-violet-100 bg-violet-50/50 px-4 py-3">
+          <p className="text-[11px] font-semibold text-violet-700 mb-1">Como funciona</p>
+          <p className="text-[11px] text-violet-900/70 leading-relaxed">
+            Os triggers são avaliados em ordem de prioridade. O primeiro cujas condições baterem decide como a IA age nessa conversa.
+          </p>
+        </div>
+      </aside>
+      </div>
 
       {/* ── Save bar ───────────────────────────────────────── */}
       <div className="flex items-center justify-end gap-2 pt-1">
@@ -398,6 +438,17 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
           {isNew ? "Criar trigger" : "Salvar trigger"}
         </button>
       </div>
+    </div>
+  )
+}
+
+// ── SummaryRow (rail) ───────────────────────────────────────
+
+function SummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="text-xs text-slate-700 mt-0.5 leading-snug">{value}</p>
     </div>
   )
 }
@@ -485,7 +536,7 @@ function ValueControl({
     spec.valueKind === "tags"      ? tags.map((t) => ({ value: t.id, label: t.name, color: t.color }))
   : spec.valueKind === "stage"     ? stages.map((s) => ({ value: s.id, label: s.name, color: s.color }))
   : spec.valueKind === "lifecycle" ? LIFECYCLE_OPTIONS
-  : spec.valueKind === "origin"    ? ORIGIN_OPTIONS
+  : spec.valueKind === "source"    ? SOURCE_OPTIONS
   : []
 
   if (options.length === 0) {

@@ -29,7 +29,7 @@ const ROLE_CAPABILITIES: Record<string, string[]> = {
     "Responder conversas atribuídas a você",
     "Mover cards no kanban",
     "Aplicar tags em contatos",
-    "Usar respostas rápidas e Atendente IA",
+    "Usar respostas rápidas e Kora IA",
   ],
 }
 

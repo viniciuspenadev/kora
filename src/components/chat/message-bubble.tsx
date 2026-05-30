@@ -90,7 +90,7 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
   if (routedMeta.ai_routed) {
     const collected = Array.isArray(routedMeta.collected) ? routedMeta.collected : []
     return (
-      <div className="flex justify-center px-4 py-1.5">
+      <div className="flex justify-end px-4 py-1.5">
         <div className="w-full max-w-md rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50 to-blue-50 shadow-sm overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-violet-100">
             <div className="size-5 rounded bg-gradient-to-br from-violet-500 to-blue-600 inline-flex items-center justify-center shrink-0">
@@ -120,12 +120,12 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
             )}
             {collected.length > 0 && (
               <div>
-                <p className="text-[10px] font-semibold uppercase text-slate-400 tracking-wide mb-1">Coletado</p>
-                <div className="space-y-1">
+                <p className="text-[10px] font-semibold uppercase text-slate-400 tracking-wide mb-1.5">Coletado</p>
+                <div className="space-y-2">
                   {collected.map((c, i) => (
-                    <div key={i} className="flex gap-2 text-xs">
-                      <span className="text-slate-400 shrink-0 min-w-[88px]">{c.label}</span>
-                      <span className="text-slate-800 font-medium">{c.value}</span>
+                    <div key={i} className="text-xs leading-snug">
+                      <p className="text-[11px] text-slate-400">{c.label}</p>
+                      <p className="text-slate-800 font-medium">{c.value}</p>
                     </div>
                   ))}
                 </div>
@@ -208,6 +208,7 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
   const quoted        = meta.quoted ?? null
   const adReply       = meta.external_ad_reply
   const sentFromPhone = !isIncoming && !!meta.via_celular
+  const isAiMessage   = message.sender_type === "bot" && (message.metadata as { ai?: boolean })?.ai === true
 
   // ── Mensagem apagada pelo remetente ────────────────────────
   if (message.content_type === "deleted" || message.deleted_at) {
@@ -535,6 +536,14 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
           {meta.ephemeral && (
             <span className="text-[10px] italic" title="Mensagem efêmera">
               ⏱
+            </span>
+          )}
+          {isAiMessage && (
+            <span
+              className="size-3.5 rounded bg-gradient-to-br from-violet-500 to-blue-600 inline-flex items-center justify-center shrink-0"
+              title="Respondido pela IA"
+            >
+              <Sparkles className="size-2.5 text-white" />
             </span>
           )}
           <span className="text-[10px]">{time}</span>

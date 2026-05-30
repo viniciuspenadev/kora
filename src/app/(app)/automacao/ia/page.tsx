@@ -52,8 +52,8 @@ export default async function IAOverviewPage() {
 
   return (
     <PageShell
-      title="Atendente IA"
-      description="Quem atende quando você não está. Configure como ela age."
+      title="Kora IA"
+      description="Sua atendente inteligente. Configure quem ela é, o que sabe e quando entra em ação."
       icon={Sparkles}
       iconWrapClass="size-10 rounded-xl bg-gradient-to-br from-violet-500 to-blue-600 flex items-center justify-center shrink-0"
       iconClass="size-5 text-white"

@@ -36,7 +36,7 @@ function mkTrigger(t: Partial<AITriggerInput> & { name: string }): AITrigger {
 function state(o: Partial<TriggerEvalState> = {}): TriggerEvalState {
   return {
     isKnownContact: false, lifecycle: "contact", tagIds: [], stageId: null,
-    origin: "direct", isFirstMessageOfSession: true, inactive24h: false,
+    source: "whatsapp_inbound", fromAd: false, isFirstMessageOfSession: true, inactive24h: false,
     incomingTextLower: "", ...o,
   }
 }
@@ -46,7 +46,7 @@ function tenantTriggers(): AITrigger[] {
   return [
     mkTrigger({
       name: "Captura de anúncio", priority: 10, active: true,
-      conditions: [{ attribute: "origin", operator: "equals", value: "ad" }],
+      conditions: [{ attribute: "from_ad", operator: "is_true", value: null }],
       context_payload: ["contact_fields", "conversation_history"],
       instruction: "Cliente veio de anúncio. Descubra o que ele viu e qualifique.",
       action_type: "route_to_department", action_target_id: "dept-vendas",
@@ -96,7 +96,7 @@ describe("eval set — seleção de trigger por cenário", () => {
 
   it("lead de anúncio → Captura de anúncio (maior prioridade vence)", () => {
     // mesmo com keyword de orçamento, anúncio tem prioridade menor (10 < 40)
-    const m = evaluateTriggers(triggers, state({ origin: "ad", incomingTextLower: "quero saber preço" }))
+    const m = evaluateTriggers(triggers, state({ fromAd: true, incomingTextLower: "quero saber preço" }))
     expect(m?.name).toBe("Captura de anúncio")
     expect(m?.action_target_id).toBe("dept-vendas")
   })

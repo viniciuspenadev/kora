@@ -6,7 +6,6 @@ import {
   User, BookOpen, Share2, ChevronRight, Plus, Sparkles,
   Pencil, Trash2, ArrowUp, ArrowDown, CheckCircle2, AlertCircle, ArrowRight,
 } from "lucide-react"
-import { SectionCard } from "@/components/ui/section-card"
 import { EmptyState } from "@/components/ui/empty-state"
 import { StatusDot } from "@/components/ui/status-dot"
 import { Switch } from "@/components/ui/switch"
@@ -76,26 +75,29 @@ export function OverviewClient({
     : `${routeCount} ${routeCount === 1 ? "rota" : "rotas"} · ${routeDeptNames.slice(0, 3).join(", ")}${routeDeptNames.length > 3 ? "…" : ""}`
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      {/* ── Master switch ───────────────────────────────────── */}
-      <SectionCard>
+    <div className="space-y-6">
+      {/* ── Master switch (hero) ────────────────────────────── */}
+      <div className="rounded-xl border border-slate-200 bg-white shadow-card p-5">
         <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <StatusDot tone={enabled ? "success" : "neutral"} pulse={enabled} />
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="size-11 rounded-xl bg-gradient-to-br from-violet-500 to-blue-600 flex items-center justify-center shrink-0 shadow-sm">
+              <Sparkles className="size-5 text-white" />
+            </div>
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-slate-900">
-                {enabled ? "IA ativa" : "IA pausada"}
-              </p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-slate-900">{enabled ? "Kora IA ativa" : "Kora IA pausada"}</p>
+                <StatusDot tone={enabled ? "success" : "neutral"} pulse={enabled} />
+              </div>
               <p className="text-xs text-slate-500 mt-0.5">
                 {enabled
                   ? "Atende automaticamente as conversas que casam com algum trigger."
-                  : "Nenhuma conversa é atendida pela IA enquanto estiver pausada."}
+                  : "Nenhuma conversa é atendida enquanto estiver pausada."}
               </p>
             </div>
           </div>
           <Switch checked={enabled} onChange={handleToggleMaster} disabled={pending} size="lg" />
         </div>
-      </SectionCard>
+      </div>
 
       {feedback && (
         <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
@@ -110,39 +112,23 @@ export function OverviewClient({
 
       {/* Tudo abaixo esmaece quando pausada */}
       <div className={enabled ? "" : "opacity-50 transition-opacity"}>
-        {/* ── Configuração geral ─────────────────────────────── */}
-        <SectionCard title="Configuração geral" description="Vale pra todos os triggers" flush>
-          <ConfigRow
-            href="/automacao/ia/persona"
-            icon={User}
-            title="Persona"
-            summary={personaSummary}
-            hint="Como ela se apresenta e o que sabe sobre o negócio"
-          />
-          <ConfigRow
-            href="/automacao/ia/conhecimento"
-            icon={BookOpen}
-            title="Base de conhecimento"
-            summary={knowledgeSummary}
-            hint="O que ela responde com base nos seus fatos"
-          />
-          <ConfigRow
-            href="/automacao/ia/rotas"
-            icon={Share2}
-            title="Rotas (departamentos)"
-            summary={routeSummary}
-            hint="Pra quem ela pode encaminhar a conversa"
-            last
-          />
-        </SectionCard>
+        {/* ── Configuração geral (cards) ─────────────────────── */}
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">Configuração geral</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <ConfigCard href="/automacao/ia/persona" icon={User} title="Persona" summary={personaSummary} hint="Como ela se apresenta e o que sabe sobre o negócio" />
+            <ConfigCard href="/automacao/ia/conhecimento" icon={BookOpen} title="Base de conhecimento" summary={knowledgeSummary} hint="O que ela responde com base nos seus fatos" />
+            <ConfigCard href="/automacao/ia/rotas" icon={Share2} title="Rotas" summary={routeSummary} hint="Pra quem ela pode encaminhar a conversa" />
+          </div>
+        </div>
 
         {/* ── Triggers ───────────────────────────────────────── */}
-        <div className="mt-6">
+        <div className="mt-8">
           <div className="flex items-start justify-between gap-3 mb-3">
             <div className="min-w-0">
-              <h2 className="text-sm font-semibold text-slate-900">Triggers</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Regras que decidem quando a IA entra em ação. Avaliadas em ordem — a primeira que casar ganha.
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Triggers</h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Regras que decidem quando a Kora IA entra em ação. Avaliadas em ordem — a primeira que casar ganha.
               </p>
             </div>
             <Link
@@ -193,30 +179,29 @@ export function OverviewClient({
 
 // ── Sub-components ──────────────────────────────────────────
 
-function ConfigRow({
-  href, icon: Icon, title, summary, hint, last,
+function ConfigCard({
+  href, icon: Icon, title, summary, hint,
 }: {
   href: string
   icon: typeof User
   title: string
   summary: string
   hint: string
-  last?: boolean
 }) {
   return (
     <Link
       href={href}
-      className={`flex items-center gap-3 px-5 py-4 hover:bg-slate-50 transition-colors ${last ? "" : "border-b border-slate-100"}`}
+      className="group block rounded-xl border border-slate-200 bg-white shadow-card p-5 hover:shadow-soft hover:border-slate-300 transition-all"
     >
-      <div className="size-9 rounded-lg bg-primary-50 flex items-center justify-center shrink-0">
-        <Icon className="size-4 text-primary-600" strokeWidth={1.75} />
+      <div className="flex items-center justify-between">
+        <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center">
+          <Icon className="size-5 text-primary-600" strokeWidth={1.75} />
+        </div>
+        <ChevronRight className="size-4 text-slate-300 group-hover:text-primary-400 transition-colors" />
       </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-slate-900">{title}</p>
-        <p className="text-xs text-slate-600 mt-0.5 truncate">{summary}</p>
-        <p className="text-[11px] text-slate-400 mt-0.5">{hint}</p>
-      </div>
-      <ChevronRight className="size-4 text-slate-300 shrink-0" />
+      <p className="text-sm font-semibold text-slate-900 mt-3">{title}</p>
+      <p className="text-xs text-primary-700 font-medium mt-1 truncate">{summary}</p>
+      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">{hint}</p>
     </Link>
   )
 }

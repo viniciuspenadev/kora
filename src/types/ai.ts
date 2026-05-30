@@ -81,7 +81,8 @@ export type ConditionAttribute =
   | "lifecycle"                 // estágio: contact | lead | won | lost | unfit
   | "tags"                      // contato tem tag(s)
   | "pipeline_stage"            // conversa está em stage X
-  | "origin"                    // ad | site | direct
+  | "source"                    // origem canônica = chat_contacts.source
+  | "from_ad"                   // veio de anúncio (CTWA / from_ad_meta)
   | "first_message_of_session"  // 1ª msg após inatividade
   | "inactivity_24h"            // sem msg do contato há 24h+
   | "message_contains_keyword"  // body da msg contém palavra-chave

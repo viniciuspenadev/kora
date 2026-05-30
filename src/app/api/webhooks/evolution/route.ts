@@ -1060,11 +1060,13 @@ async function findOrCreateContact(
     .from("chat_contacts")
     .upsert(
       {
-        tenant_id:    tenantId,
-        whatsapp_id:  jid,
-        phone_number: phone,
-        push_name:    pushName,
-        updated_at:   new Date().toISOString(),
+        tenant_id:           tenantId,
+        whatsapp_id:         jid,
+        phone_number:        phone,
+        push_name:           pushName,
+        primary_channel:     "whatsapp",   // identidade multicanal (Fase 1)
+        primary_external_id: jid,
+        updated_at:          new Date().toISOString(),
       },
       { onConflict: "tenant_id,whatsapp_id", ignoreDuplicates: false },
     )

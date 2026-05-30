@@ -11,9 +11,10 @@ import type {
   ConditionOperator,
   ContextPayloadKey,
 } from "@/types/ai"
+import { SOURCE_META } from "@/lib/lifecycle"
 
 // ── Spec de cada atributo: rótulo + operadores válidos + tipo de valor ──
-export type ValueKind = "none" | "text" | "tags" | "lifecycle" | "origin" | "stage"
+export type ValueKind = "none" | "text" | "tags" | "lifecycle" | "source" | "stage"
 
 export interface AttributeSpec {
   label:     string
@@ -44,10 +45,17 @@ export const ATTRIBUTE_SPECS: Record<ConditionAttribute, AttributeSpec> = {
     operators: ["equals", "not_equals", "in", "not_in"],
     valueKind: "stage",
   },
-  origin: {
+  source: {
     label:     "Origem do contato",
-    operators: ["equals", "not_equals", "in"],
-    valueKind: "origin",
+    hint:      "Por onde o contato chegou (mesma origem dos relatórios)",
+    operators: ["equals", "not_equals", "in", "not_in"],
+    valueKind: "source",
+  },
+  from_ad: {
+    label:     "Veio de anúncio",
+    hint:      "Clicou num anúncio (Click-to-WhatsApp) pra falar com você",
+    operators: ["is_true", "is_false"],
+    valueKind: "none",
   },
   first_message_of_session: {
     label:     "Primeira mensagem da conversa",
@@ -95,11 +103,19 @@ export const LIFECYCLE_OPTIONS: { value: string; label: string }[] = [
   { value: "unfit",   label: "Sem fit" },
 ]
 
-export const ORIGIN_OPTIONS: { value: string; label: string }[] = [
-  { value: "ad",     label: "Anúncio" },
-  { value: "site",   label: "Site" },
-  { value: "direct", label: "WhatsApp direto" },
-]
+// Origens SELECIONÁVEIS no trigger = canais de aquisição que a IA realmente
+// atende hoje. Valores canônicos de chat_contacts.source (mesmos labels/cores
+// dos relatórios, via SOURCE_META) — NÃO inventar vocabulário paralelo.
+// Instagram/Messenger entram quando o canal existir (ver multichannel-design.md);
+// manual/import/whatsapp_outbound não são canais de aquisição de lead.
+// `describeCondition` continua resolvendo QUALQUER source via SOURCE_META.
+const SELECTABLE_SOURCES = ["whatsapp_inbound", "webform"] as const
+export const SOURCE_OPTIONS: { value: string; label: string; color: string }[] =
+  SELECTABLE_SOURCES.map((value) => ({
+    value,
+    label: SOURCE_META[value].label,
+    color: SOURCE_META[value].color,
+  }))
 
 // ── Resolução de valores pra prosa ──────────────────────────────
 export interface DescribeContext {
@@ -128,8 +144,8 @@ function resolveValue(c: Condition, ctx: DescribeContext): string {
       return arr.map((id) => ctx.stageNameById?.[id] ?? id).join(", ")
     case "lifecycle":
       return arr.map((v) => labelFor(LIFECYCLE_OPTIONS, v)).join(", ")
-    case "origin":
-      return arr.map((v) => labelFor(ORIGIN_OPTIONS, v)).join(", ")
+    case "source":
+      return arr.map((v) => SOURCE_META[v as keyof typeof SOURCE_META]?.label ?? v).join(", ")
     case "text":
       return `"${arr.join('", "')}"`
     default:

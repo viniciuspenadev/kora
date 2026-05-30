@@ -52,7 +52,9 @@ export function PersonaClient({ config }: Props) {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6">
+      <div className="flex flex-col xl:flex-row gap-6 items-start">
+      <div className="flex-1 min-w-0 w-full space-y-6">
       <SectionCard title="Identidade" description="Como ela se apresenta nas conversas">
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -108,6 +110,29 @@ export function PersonaClient({ config }: Props) {
           </FormRow>
         </div>
       </SectionCard>
+      </div>
+
+      <aside className="w-full xl:w-80 shrink-0 space-y-4 xl:sticky xl:top-4">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-card overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/60">
+            <p className="text-xs font-semibold text-slate-900">Resumo da persona</p>
+          </div>
+          <div className="px-4 py-3 space-y-3">
+            <Row label="Nome"         value={name.trim() || "—"} />
+            <Row label="Tom"          value={TONES.find((t) => t.value === tone)?.label ?? tone} />
+            <Row label="Identidade"   value={identity.trim() ? "Definida" : "—"} />
+            <Row label="Estilo"       value={style.trim() ? "Definido" : "—"} />
+            <Row label="Anti-padrões" value={anti.trim() ? "Definidos" : "—"} />
+          </div>
+        </div>
+        <div className="rounded-xl border border-violet-100 bg-violet-50/50 px-4 py-3">
+          <p className="text-[11px] font-semibold text-violet-700 mb-1">Dica</p>
+          <p className="text-[11px] text-violet-900/70 leading-relaxed">
+            Descreva a persona como você descreveria um bom atendente da sua equipe: o jeito de falar, o que valoriza e o que nunca faz.
+          </p>
+        </div>
+      </aside>
+      </div>
 
       <div className="flex items-center gap-3 pt-1">
         <button
@@ -126,6 +151,15 @@ export function PersonaClient({ config }: Props) {
           </span>
         )}
       </div>
+    </div>
+  )
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="text-xs text-slate-700 mt-0.5 leading-snug">{value}</p>
     </div>
   )
 }

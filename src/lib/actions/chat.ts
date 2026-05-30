@@ -622,11 +622,13 @@ export async function createManualConversation(input: {
       const { data: created, error } = await supabaseAdmin
         .from("chat_contacts")
         .insert({
-          tenant_id:    tenantId,
-          whatsapp_id:  norm.jid,
-          phone_number: norm.phone,
-          push_name:    input.pushName ?? null,
-          source:       "whatsapp_outbound",
+          tenant_id:           tenantId,
+          whatsapp_id:         norm.jid,
+          phone_number:        norm.phone,
+          push_name:           input.pushName ?? null,
+          source:              "whatsapp_outbound",
+          primary_channel:     "whatsapp",   // identidade multicanal (Fase 1)
+          primary_external_id: norm.jid,
         })
         .select("id")
         .single()

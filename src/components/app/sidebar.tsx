@@ -7,8 +7,8 @@ import { signOut } from "next-auth/react"
 import { useState, useEffect, useMemo } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown,
-  Bot, Bell, Filter, MessageSquare, Layers, Server,
-  Tag as TagIcon, Users, CreditCard, Wand2, Globe, Gauge, BarChart3, Mail, Sparkles,
+  Bot, Bell, Filter, MessageSquare, Layers,
+  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks,
 } from "lucide-react"
 import { getUnreadTotal } from "@/lib/actions/chat"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
@@ -44,26 +44,25 @@ const NAV: NavItem[] = [
   { href: "/kanban",     label: "Kanban",     icon: <Workflow  className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "kanban"   },
   { href: "/contatos",   label: "Contatos",   icon: <Contact   className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts" },
   { href: "/relatorios", label: "Relatórios", icon: <BarChart3 className="w-5 h-5 shrink-0" strokeWidth={1.75} /> },
+  { href: "/automacao/ia", label: "Kora IA", icon: <Sparkles className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "ai_atendente" },
   {
     key:   "automacao",
     label: "Automação",
     icon:  <Bot className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
     children: [
-      { href: "/automacao/ia",             label: "Atendente IA",          icon: <Sparkles  className={subIcon} strokeWidth={1.75} />, module: "ai_atendente"     },
       { href: "/automacao/mensagens",      label: "Mensagens automáticas", icon: <Bell      className={subIcon} strokeWidth={1.75} />, module: "welcome_message"  },
       { href: "/automacao/palavras-chave", label: "Palavras-chave",        icon: <Wand2     className={subIcon} strokeWidth={1.75} />, module: "keyword_triggers" },
       { href: "/automacao/distribuicao",   label: "Distribuição",          icon: <Filter    className={subIcon} strokeWidth={1.75} />, module: "auto_assign" },
       { href: "/automacao/funil",          label: "Fluxos de funil",       icon: <Layers    className={subIcon} strokeWidth={1.75} />, soon: true, module: "sequences" },
     ],
   },
+  { href: "/integracoes", label: "Integrações", icon: <Blocks className="w-5 h-5 shrink-0" strokeWidth={1.75} />, adminOnly: true },
   {
     key:       "config",
     label:     "Configurações",
     icon:      <Settings className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
     adminOnly: true,
     children: [
-      { href: "/configuracoes/whatsapp",       label: "WhatsApp",          icon: <Server       className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/site",           label: "Widget do site",    icon: <Globe        className={subIcon} strokeWidth={1.75} />, module: "widget_site" },
       { href: "/configuracoes/tags",           label: "Tags",              icon: <TagIcon      className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/respostas",      label: "Respostas rápidas", icon: <MessageSquare className={subIcon} strokeWidth={1.75} />, module: "quick_replies" },
       { href: "/configuracoes/equipe",         label: "Equipe",            icon: <Users        className={subIcon} strokeWidth={1.75} /> },

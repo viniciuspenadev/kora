@@ -49,6 +49,11 @@ export type ContactSource =
 export interface ChatContact {
   id:                   string
   tenant_id:            string
+  // Identidade multicanal (Fase 1): canal + id externo nesse canal.
+  // whatsapp_id segue como `string` por ora (todo contato atual tem número);
+  // vira nullable quando criarmos contatos não-WhatsApp (IG/widget-chat).
+  primary_channel:      string | null
+  primary_external_id:  string | null
   whatsapp_id:          string
   phone_number:         string
   push_name:            string | null

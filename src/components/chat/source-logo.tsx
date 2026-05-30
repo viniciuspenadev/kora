@@ -18,6 +18,7 @@ const BRAND_COLOR: Record<string, string> = {
   whatsapp_inbound:  "#25D366",
   whatsapp_outbound: "#25D366",
   instagram:         "#E1306C",
+  messenger:         "#0084FF",
   webform:           "#0EA5E9",
   manual:            "#64748B",
   import:            "#D97706",
@@ -39,6 +40,16 @@ function InstagramSvg({ size, fill }: { size: number; fill: string }) {
       <rect x="2" y="2" width="20" height="20" rx="5.5" fill={fill} />
       <circle cx="12" cy="12" r="4" fill="none" stroke="#fff" strokeWidth="2" />
       <circle cx="17.4" cy="6.6" r="1.35" fill="#fff" />
+    </svg>
+  )
+}
+
+function MessengerSvg({ size, fill }: { size: number; fill: string }) {
+  // Bolha do Messenger (cor da marca) + raio recortado em branco.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-label="Messenger" className="shrink-0">
+      <path fill={fill} d="M12 0C5.373 0 0 4.974 0 11.111c0 3.498 1.744 6.614 4.469 8.654V24l4.088-2.242c1.092.301 2.246.464 3.443.464 6.627 0 12-4.975 12-11.111S18.627 0 12 0z" />
+      <path fill="#fff" d="M13.191 14.963l-3.055-3.26-5.963 3.26L10.732 8.1l3.131 3.259L19.752 8.1l-6.561 6.863z" />
     </svg>
   )
 }
@@ -80,6 +91,9 @@ export function SourceLogo({ source, size = 14, monochrome = false, className = 
       break
     case "instagram":
       inner = <InstagramSvg size={size} fill={fill} />
+      break
+    case "messenger":
+      inner = <MessengerSvg size={size} fill={fill} />
       break
     case "webform":
       inner = <WebformSvg size={size} fill={fill} />
