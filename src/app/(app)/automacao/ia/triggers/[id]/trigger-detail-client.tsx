@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation"
 import { useState, useTransition } from "react"
 import {
-  Loader2, AlertCircle, Plus, X, Lock,
+  Loader2, AlertCircle, Plus, X, Lock, Check,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { FormRow } from "@/components/ui/form-row"
@@ -36,7 +36,9 @@ interface Props {
   stages:      TriggerOption[]
 }
 
-const ATTRIBUTE_KEYS = Object.keys(ATTRIBUTE_SPECS) as ConditionAttribute[]
+// `channel` sai do dropdown de condições — vira o seletor de Canais dedicado
+// (é escopo/entrada do trigger, não uma condição de matching qualquer).
+const ATTRIBUTE_KEYS = (Object.keys(ATTRIBUTE_SPECS) as ConditionAttribute[]).filter((k) => k !== "channel")
 const CONTEXT_KEYS    = Object.keys(CONTEXT_PAYLOAD_LABELS) as ContextPayloadKey[]
 const MULTI_OPS: ConditionOperator[] = ["in", "not_in", "contains", "not_contains"]
 
@@ -102,6 +104,30 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
     setConditions((c) => c.filter((_, i) => i !== idx))
   }
 
+  // ── Canais (escopo) ────────────────────────────────────────
+  // Persistido como condição `channel in [...]` (reusa o motor), mas
+  // apresentado como seletor dedicado, fora da lista de condições.
+  // Nenhum selecionado = sem restrição = atende todos os canais.
+  const channelCond = conditions.find((c) => c.attribute === "channel")
+  const selectedChannels: string[] = channelCond
+    ? (Array.isArray(channelCond.value)
+        ? channelCond.value.map(String)
+        : channelCond.value != null ? [String(channelCond.value)] : [])
+    : []
+  function setChannels(next: string[]) {
+    setConditions((c) => {
+      const others = c.filter((x) => x.attribute !== "channel")
+      return next.length === 0
+        ? others
+        : [...others, { attribute: "channel" as ConditionAttribute, operator: "in" as ConditionOperator, value: next }]
+    })
+  }
+  function toggleChannel(v: string) {
+    setChannels(selectedChannels.includes(v) ? selectedChannels.filter((x) => x !== v) : [...selectedChannels, v])
+  }
+  const channelLabels = (vals: string[]) =>
+    vals.map((v) => CHANNEL_OPTIONS.find((o) => o.value === v)?.label ?? v).join(", ")
+
   function toggleContext(key: ContextPayloadKey) {
     setContext((c) => (c.includes(key) ? c.filter((k) => k !== key) : [...c, key]))
   }
@@ -139,7 +165,9 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
     })
   }
 
-  const summary        = describeConditions(conditions, { tagNameById, stageNameById })
+  // Canal aparece no card de Canais — fora do resumo de condições.
+  const condForSummary = conditions.filter((c) => c.attribute !== "channel")
+  const summary        = describeConditions(condForSummary, { tagNameById, stageNameById })
   const ctxLabels      = context.map((k) => CONTEXT_PAYLOAD_LABELS[k]?.label).filter(Boolean)
   const targetDeptName = departments.find((d) => d.id === targetId)?.name ?? null
 
@@ -182,19 +210,62 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
         </div>
       </SectionCard>
 
+      {/* ── Card 1.5: Canais ───────────────────────────────── */}
+      <SectionCard
+        title="Canais"
+        description="Em quais canais este trigger atende. Nenhum selecionado = todos."
+      >
+        <div className="flex flex-wrap gap-2">
+          {CHANNEL_OPTIONS.map((o) => {
+            const sel = selectedChannels.includes(o.value)
+            return (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => toggleChannel(o.value)}
+                className={`inline-flex items-center gap-2 px-3 h-9 rounded-lg text-xs font-semibold border transition-colors ${
+                  sel
+                    ? "bg-primary-50 border-primary-200 text-primary-700"
+                    : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
+                }`}
+              >
+                <span className="size-2 rounded-full" style={{ backgroundColor: o.color }} />
+                {o.label}
+                {sel && <Check className="size-3.5" />}
+              </button>
+            )
+          })}
+          {["Instagram", "Messenger"].map((label) => (
+            <span
+              key={label}
+              className="inline-flex items-center gap-1.5 px-3 h-9 rounded-lg text-xs font-medium border border-dashed border-slate-200 text-slate-300 cursor-not-allowed"
+              title="Em breve"
+            >
+              {label}
+              <span className="text-[10px] uppercase tracking-wide">em breve</span>
+            </span>
+          ))}
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2.5">
+          {selectedChannels.length === 0
+            ? "Atende todos os canais (WhatsApp, site…)."
+            : `Só em: ${channelLabels(selectedChannels)}.`}
+        </p>
+      </SectionCard>
+
       {/* ── Card 2: Quando aplicar ─────────────────────────── */}
       <SectionCard
         title="Quando aplicar"
         description="Todas as condições precisam ser verdadeiras (E). Sem condições = sempre casa."
       >
         <div className="space-y-3">
-          {conditions.length === 0 ? (
+          {condForSummary.length === 0 ? (
             <p className="text-xs text-slate-400 italic px-3 py-3 border border-dashed border-slate-200 rounded-lg text-center">
               Sem condições — esse trigger funciona como catch-all (rede de segurança)
             </p>
           ) : (
             <div className="space-y-2">
-              {conditions.map((c, idx) => (
+              {conditions.map((c, idx) => c.attribute === "channel" ? null : (
                 <ConditionRow
                   key={idx}
                   condition={c}
@@ -392,6 +463,7 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
             <p className="text-[11px] text-slate-400 mt-0.5">Em português, o que você está montando</p>
           </div>
           <div className="px-4 py-3 space-y-3">
+            <SummaryRow label="Canais" value={selectedChannels.length ? channelLabels(selectedChannels) : "Todos"} />
             <SummaryRow label="Quando" value={summary} />
             <SummaryRow label="A IA vê" value={ctxLabels.length ? ctxLabels.join(", ") : "—"} />
             <SummaryRow label="Roteiro" value={instruction.trim() ? "Personalizado" : "Padrão"} />

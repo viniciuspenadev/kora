@@ -27,6 +27,7 @@ describe("parseUpdateContact", () => {
 describe("buildUpdateContactTool", () => {
   it("expõe os 3 campos, todos opcionais", () => {
     const t = buildUpdateContactTool()
+    if (t.type !== "function") throw new Error("esperava tool do tipo function")
     expect(t.function.name).toBe(UPDATE_CONTACT_TOOL_NAME)
     const params = t.function.parameters as { properties: Record<string, unknown>; required: string[] }
     expect(Object.keys(params.properties).sort()).toEqual(["email", "name", "phone"])
