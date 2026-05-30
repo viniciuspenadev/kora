@@ -11,6 +11,7 @@ import type { AIRouteRequiredField } from "@/types/ai"
 
 export const ROUTE_TOOL_NAME = "route_to_department"
 export const SEND_MESSAGE_TOOL_NAME = "send_message"
+export const UPDATE_CONTACT_TOOL_NAME = "update_contact"
 
 /**
  * Tool de fala. Quando o trigger encaminha, o modelo responde SEMPRE via tool
@@ -46,6 +47,50 @@ export function parseSendMessage(rawArgs: string): { text: string } {
   } catch {
     return { text: "" }
   }
+}
+
+/**
+ * Tool de captura de identidade. Disponível em todo turno (tool_choice=auto):
+ * sempre que o cliente informa nome / WhatsApp / e-mail, o modelo grava no
+ * cadastro. Crucial pro chat do site, onde o visitante chega anônimo — vira
+ * lead real e rastreável. Todos os campos são opcionais: o modelo manda só o
+ * que tem. Persistir NÃO substitui responder (ver compile-prompt).
+ */
+export function buildUpdateContactTool(): OpenAI.Chat.Completions.ChatCompletionTool {
+  return {
+    type: "function",
+    function: {
+      name:        UPDATE_CONTACT_TOOL_NAME,
+      description:
+        "Salve no cadastro os dados de identificação que o cliente informar (nome, WhatsApp/telefone, e-mail). " +
+        "Chame ASSIM QUE souber qualquer um deles — especialmente quando o cliente chega sem identificação (ex: pelo site). " +
+        "Inclua só os campos que você realmente tem. Não invente nem pergunte de novo o que já está salvo.",
+      parameters: {
+        type: "object",
+        properties: {
+          name:  { type: "string", description: "Nome do contato, como ele se apresentou." },
+          phone: { type: "string", description: "WhatsApp/telefone com DDD (números ou formatado)." },
+          email: { type: "string", description: "E-mail do contato, se informado." },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  }
+}
+
+export interface ParsedUpdateContact {
+  name:  string | null
+  phone: string | null
+  email: string | null
+}
+
+/** Extrai os args de update_contact de forma tolerante (nunca lança). */
+export function parseUpdateContact(rawArgs: string): ParsedUpdateContact {
+  let p: Record<string, unknown> = {}
+  try { p = JSON.parse(rawArgs || "{}") } catch { p = {} }
+  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
+  return { name: str(p.name), phone: str(p.phone), email: str(p.email) }
 }
 
 export interface RouteToolSpec {

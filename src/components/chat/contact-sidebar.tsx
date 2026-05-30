@@ -223,9 +223,13 @@ function HeaderCard({
       <p className="text-sm font-semibold text-slate-900 text-center truncate max-w-full">
         {displayName}
       </p>
-      <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-        {formatPhoneDisplay(contact.phone_number)}
-      </p>
+      {contact.phone_number ? (
+        <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+          {formatPhoneDisplay(contact.phone_number)}
+        </p>
+      ) : (
+        <p className="text-[11px] text-slate-400 mt-0.5">Visitante do site</p>
+      )}
 
       {/* Tags em chips compactos abaixo do telefone */}
       {appliedTags.length > 0 && (

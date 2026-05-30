@@ -15,6 +15,7 @@ export interface ConvRow {
   id:           string
   contact_id:   string | null
   stage_id:     string | null
+  channel:      string | null
   from_ad_meta: unknown | null
 }
 
@@ -109,6 +110,7 @@ export async function gatherTriggerState(
     stageId:                 conv.stage_id,
     source:                  contact.source,        // canônico (chat_contacts.source)
     fromAd:                  !!conv.from_ad_meta,    // veio de anúncio (CTWA)
+    channel:                 conv.channel ?? "whatsapp",  // legado sem channel = whatsapp
     isFirstMessageOfSession,
     inactive24h,
     incomingTextLower:       incomingText.toLowerCase(),

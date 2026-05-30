@@ -14,7 +14,7 @@ import type {
 import { SOURCE_META } from "@/lib/lifecycle"
 
 // ── Spec de cada atributo: rótulo + operadores válidos + tipo de valor ──
-export type ValueKind = "none" | "text" | "tags" | "lifecycle" | "source" | "stage"
+export type ValueKind = "none" | "text" | "tags" | "lifecycle" | "source" | "channel" | "stage"
 
 export interface AttributeSpec {
   label:     string
@@ -56,6 +56,12 @@ export const ATTRIBUTE_SPECS: Record<ConditionAttribute, AttributeSpec> = {
     hint:      "Clicou num anúncio (Click-to-WhatsApp) pra falar com você",
     operators: ["is_true", "is_false"],
     valueKind: "none",
+  },
+  channel: {
+    label:     "Canal da conversa",
+    hint:      "Onde a conversa está acontecendo (WhatsApp, site…)",
+    operators: ["equals", "not_equals", "in", "not_in"],
+    valueKind: "channel",
   },
   first_message_of_session: {
     label:     "Primeira mensagem da conversa",
@@ -117,6 +123,15 @@ export const SOURCE_OPTIONS: { value: string; label: string; color: string }[] =
     color: SOURCE_META[value].color,
   }))
 
+// Canais SELECIONÁVEIS no trigger = canais que a conversa pode ter HOJE
+// (chat_conversations.channel). Instagram/Messenger entram quando o canal
+// for implementado (ver multichannel-design.md). `channel` é o canal ATUAL
+// da conversa — distinto de `source` (origem de aquisição do contato).
+export const CHANNEL_OPTIONS: { value: string; label: string; color: string }[] = [
+  { value: "whatsapp", label: "WhatsApp",      color: "#25D366" },
+  { value: "site",     label: "Site (widget)", color: "#004add" },
+]
+
 // ── Resolução de valores pra prosa ──────────────────────────────
 export interface DescribeContext {
   tagNameById?:   Record<string, string>
@@ -146,6 +161,8 @@ function resolveValue(c: Condition, ctx: DescribeContext): string {
       return arr.map((v) => labelFor(LIFECYCLE_OPTIONS, v)).join(", ")
     case "source":
       return arr.map((v) => SOURCE_META[v as keyof typeof SOURCE_META]?.label ?? v).join(", ")
+    case "channel":
+      return arr.map((v) => CHANNEL_OPTIONS.find((o) => o.value === v)?.label ?? v).join(", ")
     case "text":
       return `"${arr.join('", "')}"`
     default:

@@ -189,6 +189,30 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     + '.kw-dpo a{color:#64748b}'
     // Powered by
     + '.kw-powered{padding:6px 14px;text-align:center;font-size:10px;color:#94a3b8;background:#f8fafc;flex-shrink:0}'
+    // ─── Chat ao vivo (premium/clean, estilo Intercom) ───
+    + '.kw-body.kw-chat{padding:20px 16px;gap:12px;background:#fff}'
+    + '.kw-chat .kw-msg{max-width:82%;padding:11px 15px;border-radius:18px;border-bottom-left-radius:6px;box-shadow:0 1px 2px rgba(15,23,42,.04);font-size:14px;line-height:1.5}'
+    + '.kw-chat .kw-msg::before{display:none}'   // sem shimmer no chat
+    + '.kw-chat .kw-me .kw-msg{border-radius:18px;border-bottom-right-radius:6px;box-shadow:0 2px 8px var(--kw-primary-alpha)}'
+    + '.kw-chat .kw-msg-row{align-items:flex-end}'
+    // 3 pontinhos discretos (Intercom-like) no lugar da pill
+    + '.kw-dots{display:inline-flex;gap:4px;padding:13px 16px;background:#fff;border:1px solid #e2e8f0;border-radius:18px;border-bottom-left-radius:6px}'
+    + '.kw-dots i{width:7px;height:7px;border-radius:50%;background:#cbd5e1;animation:kw-dot 1.3s infinite ease-in-out}'
+    + '.kw-dots i:nth-child(2){animation-delay:.16s}.kw-dots i:nth-child(3){animation-delay:.32s}'
+    + '@keyframes kw-dot{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-5px);opacity:1}}'
+    // Chips de sugestão
+    + '.kw-sugg{display:flex;flex-wrap:wrap;gap:8px;padding:6px 0 2px;animation:kw-msg-in .3s cubic-bezier(.4,0,.2,1)}'
+    + '.kw-sugg-chip{background:#fff;border:1.5px solid #e2e8f0;color:var(--kw-primary);padding:9px 15px;font-size:13px;font-weight:600;border-radius:999px;cursor:pointer;font-family:inherit;transition:all .15s;animation:kw-chip-in .28s cubic-bezier(.4,0,.2,1) both}'
+    + '.kw-sugg-chip:hover{border-color:var(--kw-primary);background:var(--kw-primary);color:#fff;transform:translateY(-1px);box-shadow:0 5px 14px var(--kw-primary-alpha)}'
+    + '.kw-sugg-chip:active{transform:translateY(0) scale(.97)}'
+    // Composer inline (input + botão redondo)
+    + '.kw-fm.kw-chat{padding:12px 14px;display:flex;gap:9px;align-items:flex-end}'
+    + '.kw-fm.kw-chat .kw-in{flex:1;border-radius:22px;min-height:44px;max-height:120px;padding:11px 16px;line-height:1.4}'
+    + '.kw-send{width:44px;height:44px;border-radius:50%;border:0;background:var(--kw-primary);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:transform .12s,opacity .15s;box-shadow:0 4px 12px var(--kw-primary-alpha)}'
+    + '.kw-send:hover{opacity:.93}'
+    + '.kw-send:active{transform:scale(.9)}'
+    // Linha de status (ex: "recebido" quando não há IA na linha de frente)
+    + '.kw-chat .kw-sys{align-self:center;max-width:90%;text-align:center;font-size:11px;color:#94a3b8;background:#f8fafc;border:1px solid #e2e8f0;border-radius:999px;padding:5px 12px;margin:2px auto}'
     ;
   var s = document.createElement('style'); s.textContent = CSS; document.head.appendChild(s);
 
@@ -618,29 +642,54 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     var fm   = win.querySelector('#kw-fm');
     var pg   = win.querySelector('#kw-pg');
     if (pg) pg.style.display = 'none';
+    body.classList.add('kw-chat');
+    fm.classList.add('kw-chat');
     var initial = (cfg.brand_name || 'K').charAt(0).toUpperCase();
     var conversationId = null;
     // Folga de 10s absorve diferença de relógio browser↔servidor (não perde a 1ª resposta).
     var since = new Date(Date.now() - 10000).toISOString();
-    var pollTimer = null, sending = false, typingRow = null, typingTimer = null;
+    var pollTimer = null, sending = false, typingRow = null, typingTimer = null, suggRow = null;
+    // IA na linha de frente? Sem ela, o atendimento é manual (humano responde
+    // pelo inbox) → não fingimos "digitando", mostramos "recebido".
+    var aiActive = cfg.ai_active === true, ackShown = false;
 
     function avatarMiniHtml(){ return '<div class="kw-avatar-mini"><div class="kw-avatar-mini-inner">' + escape(initial) + '</div></div>'; }
     function fillLogo(row){ if (!cfg.logo_url) return; var h = row.querySelector('.kw-avatar-mini-inner'); if (h) injectLogoImg(h, cfg.logo_url, initial); }
     function addBot(text){ var r = document.createElement('div'); r.className = 'kw-msg-row'; r.innerHTML = avatarMiniHtml() + '<div class="kw-msg">' + escape(text) + '</div>'; body.appendChild(r); fillLogo(r); body.scrollTop = body.scrollHeight; }
     function addUser(text){ var r = document.createElement('div'); r.className = 'kw-msg-row kw-me'; r.innerHTML = '<div class="kw-msg">' + escape(text) + '</div>'; body.appendChild(r); body.scrollTop = body.scrollHeight; }
-    function showTyping(){ if (typingRow) return; typingRow = document.createElement('div'); typingRow.className = 'kw-msg-row'; typingRow.innerHTML = avatarMiniHtml() + '<div class="kw-typing"><div class="kw-typing-pill"></div></div>'; body.appendChild(typingRow); fillLogo(typingRow); body.scrollTop = body.scrollHeight; clearTimeout(typingTimer); typingTimer = setTimeout(hideTyping, 30000); }
+    function showTyping(){ if (typingRow) return; typingRow = document.createElement('div'); typingRow.className = 'kw-msg-row'; typingRow.innerHTML = avatarMiniHtml() + '<div class="kw-dots"><i></i><i></i><i></i></div>'; body.appendChild(typingRow); fillLogo(typingRow); body.scrollTop = body.scrollHeight; clearTimeout(typingTimer); typingTimer = setTimeout(hideTyping, 30000); }
     function hideTyping(){ clearTimeout(typingTimer); if (typingRow){ typingRow.remove(); typingRow = null; } }
+    function showReceived(){ if (ackShown) return; ackShown = true; var r = document.createElement('div'); r.className = 'kw-sys'; r.textContent = '✓ Mensagem recebida — nossa equipe responde por aqui.'; body.appendChild(r); body.scrollTop = body.scrollHeight; }
+
+    function clearSuggestions(){ if (suggRow){ suggRow.remove(); suggRow = null; } }
+    function renderSuggestions(list){
+      clearSuggestions();
+      if (!list || !list.length) return;
+      suggRow = document.createElement('div');
+      suggRow.className = 'kw-sugg';
+      list.slice(0, 5).forEach(function(s){
+        if (!s) return;
+        var b = document.createElement('button');
+        b.className = 'kw-sugg-chip'; b.type = 'button'; b.textContent = String(s);
+        b.addEventListener('click', function(){ clearSuggestions(); send(String(s)); });
+        suggRow.appendChild(b);
+      });
+      body.appendChild(suggRow);
+      body.scrollTop = body.scrollHeight;
+    }
 
     function renderComposer(){
       fm.innerHTML = '';
       var input = document.createElement('textarea');
       input.className = 'kw-in kw-ta';
       input.placeholder = 'Escreva sua mensagem...';
-      input.style.minHeight = '44px';
+      input.rows = 1;
+      input.addEventListener('input', function(){ input.style.height = 'auto'; input.style.height = Math.min(120, input.scrollHeight) + 'px'; });
       var btn = document.createElement('button');
-      btn.className = 'kw-btn';
-      btn.innerHTML = 'Enviar <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
-      function submit(){ var v = (input.value || '').trim(); if (!v || sending) return; input.value = ''; send(v); }
+      btn.className = 'kw-send';
+      btn.setAttribute('aria-label', 'Enviar');
+      btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+      function submit(){ var v = (input.value || '').trim(); if (!v || sending) return; input.value = ''; input.style.height = 'auto'; send(v); }
       input.addEventListener('keydown', function(e){ if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); submit(); } });
       btn.addEventListener('click', submit);
       fm.appendChild(input); fm.appendChild(btn);
@@ -648,7 +697,8 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     }
 
     function send(text){
-      sending = true; addUser(text); showTyping();
+      clearSuggestions(); sending = true; addUser(text);
+      if (aiActive) showTyping(); else showReceived();
       try { if (navigator.vibrate) navigator.vibrate(12); } catch(e){}
       api('/api/site/message', { slug: SLUG, visitor_id: getVisitorId(), text: text }).then(function(r){
         sending = false;
@@ -669,9 +719,28 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
       }).catch(function(){});
     }
 
-    // Início: saudação + caixa de texto livre (sem perguntas scriptadas)
+    // Início: caixa de texto já disponível; tenta carregar o histórico (visitante
+    // que voltou e não pode perder a resposta do atendente) — senão, saudação.
+    renderComposer();
     showTyping();
-    setTimeout(function(){ hideTyping(); addBot(cfg.greeting || 'Oi! Como posso te ajudar?'); renderComposer(); }, 700);
+    function startFresh(){
+      hideTyping();
+      addBot(cfg.greeting || 'Oi! Como posso te ajudar?');
+      renderSuggestions(cfg.chat_suggestions);
+    }
+    api('/api/site/history', { slug: SLUG, visitor_id: getVisitorId() }).then(function(r){
+      if (r && r.conversation_id && r.messages && r.messages.length){
+        hideTyping();
+        conversationId = r.conversation_id;
+        r.messages.forEach(function(m){
+          if (m.sender === 'me') addUser(m.text); else addBot(m.text);
+          since = m.at;
+        });
+        startPolling();
+      } else {
+        startFresh();
+      }
+    }).catch(startFresh);
   }
 
   function escape(s){

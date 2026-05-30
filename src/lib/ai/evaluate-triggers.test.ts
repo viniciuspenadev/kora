@@ -10,6 +10,7 @@ function state(overrides: Partial<TriggerEvalState> = {}): TriggerEvalState {
     stageId:                 null,
     source:                  "whatsapp_inbound",
     fromAd:                  false,
+    channel:                 "whatsapp",
     isFirstMessageOfSession: true,
     inactive24h:             false,
     incomingTextLower:       "",
@@ -59,6 +60,13 @@ describe("matchCondition", () => {
     expect(matchCondition({ attribute: "tags", operator: "contains", value: ["vip"] }, s)).toBe(true)
     expect(matchCondition({ attribute: "tags", operator: "not_contains", value: ["xyz"] }, s)).toBe(true)
     expect(matchCondition({ attribute: "tags", operator: "contains", value: ["xyz"] }, s)).toBe(false)
+  })
+
+  it("channel equals / in / not_equals (trigger só pro site)", () => {
+    expect(matchCondition({ attribute: "channel", operator: "equals", value: "site" }, state({ channel: "site" }))).toBe(true)
+    expect(matchCondition({ attribute: "channel", operator: "equals", value: "site" }, state({ channel: "whatsapp" }))).toBe(false)
+    expect(matchCondition({ attribute: "channel", operator: "in", value: ["site", "instagram"] }, state({ channel: "site" }))).toBe(true)
+    expect(matchCondition({ attribute: "channel", operator: "not_equals", value: "site" }, state({ channel: "whatsapp" }))).toBe(true)
   })
 
   it("message_contains_keyword", () => {

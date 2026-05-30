@@ -17,6 +17,8 @@ import { compilePrompt, type CompileInput } from "@/lib/ai/compile-prompt"
 import {
   buildRouteTool, parseRouteCall, ROUTE_TOOL_NAME,
   buildSendMessageTool, parseSendMessage, SEND_MESSAGE_TOOL_NAME,
+  buildUpdateContactTool, parseUpdateContact, UPDATE_CONTACT_TOOL_NAME,
+  type ParsedUpdateContact,
 } from "@/lib/ai/tools"
 import {
   gatherTriggerState, gatherPromptContext, displayName,
@@ -98,7 +100,7 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   const { data: convData } = await supabaseAdmin
     .from("chat_conversations")
     .select(`
-      id, contact_id, stage_id, from_ad_meta, is_group, assigned_to, ai_handling, metadata,
+      id, contact_id, stage_id, channel, from_ad_meta, is_group, assigned_to, ai_handling, metadata,
       chat_contacts ( id, custom_name, push_name, phone_number, email, company, lifecycle_stage, notes, source, primary_channel )
     `)
     .eq("id", conversationId)
@@ -122,6 +124,7 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     id:           convData.id,
     contact_id:   convData.contact_id,
     stage_id:     convData.stage_id,
+    channel:      convData.channel,
     from_ad_meta: convData.from_ad_meta,
   }
 
@@ -193,6 +196,8 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
       contactLifecycle: matched.context_payload.includes("contact_lifecycle"),
       pipelineStage:    matched.context_payload.includes("pipeline_stage"),
       lastNote:         matched.context_payload.includes("last_internal_note"),
+      // Contato sem telefone (visitante de site) ou de canal não-WhatsApp → coletar identidade.
+      collectContact:   contact.primary_channel === "site" || !contact.phone_number?.trim(),
     },
     instruction: matched.instruction,
     route:       routeForPrompt,
@@ -214,11 +219,14 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   // Em modo de rota, oferece 2 tools e FORÇA o modelo a agir via uma delas
   // (tool_choice=required): send_message pra falar/coletar, route_to_department
   // pra encaminhar de fato. Mata o "narrou o encaminhamento mas não roteou".
+  // update_contact é auxiliar e está SEMPRE disponível (captura identidade em
+  // qualquer turno). Em modo rota, força ação (required) entre send/route;
+  // em respond_only, auto — o modelo responde em texto e grava se tiver dados.
   const levels = matched.qualification.map((q) => q.level).filter(Boolean)
   const tools = routeForPrompt
-    ? [buildSendMessageTool(), buildRouteTool({ departmentName: targetDeptName, requiredFields: routeFields, levels })]
-    : undefined
-  const toolChoice = routeForPrompt ? ("required" as const) : undefined
+    ? [buildSendMessageTool(), buildRouteTool({ departmentName: targetDeptName, requiredFields: routeFields, levels }), buildUpdateContactTool()]
+    : [buildUpdateContactTool()]
+  const toolChoice = routeForPrompt ? ("required" as const) : ("auto" as const)
 
   let chatErr: string | null = null
   let llmText: string | null = null
@@ -237,10 +245,16 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   // ── 7) Ação ────────────────────────────────────────────────
   let result: RunAITurnResult = { status: "no_action" }
   let outboundText: string | null = null   // texto efetivamente enviado (pra ai_runs)
-  const routeCall = toolCalls.find((t) => t.name === ROUTE_TOOL_NAME)
-  const sendCall  = toolCalls.find((t) => t.name === SEND_MESSAGE_TOOL_NAME)
+  const routeCall  = toolCalls.find((t) => t.name === ROUTE_TOOL_NAME)
+  const sendCall   = toolCalls.find((t) => t.name === SEND_MESSAGE_TOOL_NAME)
+  const updateCall = toolCalls.find((t) => t.name === UPDATE_CONTACT_TOOL_NAME)
 
   if (!chatErr) {
+    // Side-effect primeiro: grava identidade capturada (independe do caminho de
+    // resposta — pode vir junto com send_message/route via parallel tool calls).
+    if (updateCall) {
+      await executeUpdateContact(tenantId, conversationId, contact, parseUpdateContact(updateCall.arguments))
+    }
     if (routeCall && targetDeptId) {
       const parsed = parseRouteCall(routeCall.arguments, routeFields)
       // Casa os valores coletados com o label configurado (pro dossiê legível).
@@ -369,6 +383,56 @@ async function executeQualification(
       .eq("id", conversationId)
       .eq("tenant_id", tenantId)
   }
+}
+
+// ── Grava identidade capturada pela IA no contato ───────────────
+// Enriquece o cadastro com o que o cliente informou. phone_number só é
+// PREENCHIDO quando está vazio (não sobrescreve o WhatsApp real de um contato
+// já identificado). Identidade/merge multicanal fica pra Fase 2 — aqui não
+// tocamos whatsapp_id/primary_external_id.
+async function executeUpdateContact(
+  tenantId:       string,
+  conversationId: string,
+  contact:        ContactRow,
+  parsed:         ParsedUpdateContact,
+): Promise<void> {
+  const updates: Record<string, string> = {}
+  if (parsed.name) updates.custom_name = parsed.name.slice(0, 120)
+  if (parsed.phone && !contact.phone_number?.trim()) {
+    const digits = parsed.phone.replace(/\D/g, "").slice(0, 15)
+    if (digits.length >= 8) updates.phone_number = digits
+  }
+  if (parsed.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email)) {
+    updates.email = parsed.email.slice(0, 254)
+  }
+  if (Object.keys(updates).length === 0) return
+
+  const { error } = await supabaseAdmin
+    .from("chat_contacts")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", contact.id)
+    .eq("tenant_id", tenantId)
+  if (error) {
+    console.error("[ai/run] update_contact falhou:", error.message)
+    return
+  }
+
+  // Nota interna: o time vê que a IA capturou os dados (timeline + auditoria leve).
+  const parts = [
+    updates.custom_name  ? `Nome: ${updates.custom_name}`     : "",
+    updates.phone_number ? `WhatsApp: ${updates.phone_number}` : "",
+    updates.email        ? `E-mail: ${updates.email}`         : "",
+  ].filter(Boolean)
+  await supabaseAdmin.from("chat_messages").insert({
+    conversation_id: conversationId,
+    tenant_id:       tenantId,
+    sender_type:     "system",
+    content_type:    "text",
+    content:         `📇 Dados capturados pela IA — ${parts.join(" · ")}`,
+    status:          "sent",
+    is_private_note: true,
+    metadata:        { ai_contact_update: true, fields: updates },
+  })
 }
 
 // ── Executa o encaminhamento (modelo A mínimo) ──────────────────

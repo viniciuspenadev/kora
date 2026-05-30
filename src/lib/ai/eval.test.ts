@@ -36,7 +36,7 @@ function mkTrigger(t: Partial<AITriggerInput> & { name: string }): AITrigger {
 function state(o: Partial<TriggerEvalState> = {}): TriggerEvalState {
   return {
     isKnownContact: false, lifecycle: "contact", tagIds: [], stageId: null,
-    source: "whatsapp_inbound", fromAd: false, isFirstMessageOfSession: true, inactive24h: false,
+    source: "whatsapp_inbound", fromAd: false, channel: "whatsapp", isFirstMessageOfSession: true, inactive24h: false,
     incomingTextLower: "", ...o,
   }
 }

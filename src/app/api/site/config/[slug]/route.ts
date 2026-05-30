@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
+import { hasModule } from "@/lib/modules"
 
 /**
  * GET /api/site/config/[slug]
@@ -29,7 +30,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
   const { data: cfg } = await supabaseAdmin
     .from("site_widget_config")
     .select(`
-      enabled, mode, button_color, button_position, button_label,
+      enabled, mode, chat_suggestions, button_color, button_position, button_label,
       greeting, questions, success_message,
       show_after_seconds, hide_url_patterns,
       off_hours_enabled, off_hours_message,
@@ -54,9 +55,21 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     brandName = tenantInfo?.name ?? null
   }
 
+  // IA na linha de frente? (módulo comprado + switch ligado). O widget usa pra
+  // decidir o estado pós-envio: "digitando" (IA responde já) vs "recebido"
+  // (atendimento manual — humano responde pelo inbox).
+  let aiActive = false
+  if (cfg.mode === "chat") {
+    const { data: aiCfg } = await supabaseAdmin
+      .from("ai_config").select("ai_enabled").eq("tenant_id", tenant.id).maybeSingle()
+    if (aiCfg?.ai_enabled) aiActive = await hasModule(tenant.id, "ai_atendente")
+  }
+
   return cors(NextResponse.json({
     enabled:            true,
     mode:               cfg.mode ?? "form",
+    ai_active:          aiActive,
+    chat_suggestions:   cfg.chat_suggestions ?? [],
     button_color:       cfg.button_color,
     button_position:    cfg.button_position,
     button_label:       cfg.button_label,

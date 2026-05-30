@@ -13,8 +13,9 @@ export function phoneToJid(phone: string): string {
   return `${clean}@s.whatsapp.net`
 }
 
-/** Formata número para exibição: +55 (11) 99999-9999 */
-export function formatPhoneDisplay(phone: string): string {
+/** Formata número para exibição: +55 (11) 99999-9999. Vazio/null → "" (contato sem telefone, ex: site-chat). */
+export function formatPhoneDisplay(phone: string | null | undefined): string {
+  if (!phone) return ""
   const digits = phone.replace(/\D/g, "")
   if (digits.length === 13) {
     return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`

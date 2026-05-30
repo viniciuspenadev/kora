@@ -68,6 +68,16 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
     setCfg((c) => ({ ...c, questions: c.questions.filter((_, i) => i !== idx) }))
   }
 
+  function addSuggestion() {
+    setCfg((c) => (c.chat_suggestions ?? []).length >= 5 ? c : { ...c, chat_suggestions: [...(c.chat_suggestions ?? []), ""] })
+  }
+  function updateSuggestion(idx: number, val: string) {
+    setCfg((c) => ({ ...c, chat_suggestions: (c.chat_suggestions ?? []).map((s, i) => i === idx ? val : s) }))
+  }
+  function removeSuggestion(idx: number) {
+    setCfg((c) => ({ ...c, chat_suggestions: (c.chat_suggestions ?? []).filter((_, i) => i !== idx) }))
+  }
+
   function moveQuestion(idx: number, dir: -1 | 1) {
     const next = idx + dir
     if (next < 0 || next >= cfg.questions.length) return
@@ -143,6 +153,43 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
                 </p>
               </button>
             </div>
+
+            {cfg.mode === "chat" && (
+              <div className="mt-4 pt-4 border-t border-slate-100">
+                <p className="text-xs font-semibold text-slate-700">Sugestões de início</p>
+                <p className="text-[11px] text-slate-400 mb-2.5">Chips clicáveis na abertura do chat. Até 5.</p>
+                <div className="space-y-2">
+                  {(cfg.chat_suggestions ?? []).map((s, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input
+                        className={inputCls}
+                        value={s}
+                        onChange={(e) => updateSuggestion(i, e.target.value)}
+                        placeholder="Ex: Quero saber preços"
+                        maxLength={48}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeSuggestion(i)}
+                        className="size-9 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors shrink-0"
+                        aria-label="Remover sugestão"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                  {(cfg.chat_suggestions ?? []).length < 5 && (
+                    <button
+                      type="button"
+                      onClick={addSuggestion}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary-600 hover:text-primary-700"
+                    >
+                      <Plus className="size-3.5" /> Adicionar sugestão
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </SectionCard>
 
           {/* Branding */}

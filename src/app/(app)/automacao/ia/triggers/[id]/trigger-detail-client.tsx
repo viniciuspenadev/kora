@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch"
 import { createTrigger, updateTrigger } from "@/lib/actions/ai/triggers"
 import {
   ATTRIBUTE_SPECS, OPERATOR_LABELS, CONTEXT_PAYLOAD_LABELS,
-  LIFECYCLE_OPTIONS, SOURCE_OPTIONS, describeConditions,
+  LIFECYCLE_OPTIONS, SOURCE_OPTIONS, CHANNEL_OPTIONS, describeConditions,
 } from "@/lib/ai/describe"
 import type {
   AITrigger, Condition, ConditionAttribute, ConditionOperator,
@@ -537,6 +537,7 @@ function ValueControl({
   : spec.valueKind === "stage"     ? stages.map((s) => ({ value: s.id, label: s.name, color: s.color }))
   : spec.valueKind === "lifecycle" ? LIFECYCLE_OPTIONS
   : spec.valueKind === "source"    ? SOURCE_OPTIONS
+  : spec.valueKind === "channel"   ? CHANNEL_OPTIONS
   : []
 
   if (options.length === 0) {

@@ -17,6 +17,7 @@ export interface WidgetQuestion {
 export interface WidgetConfig {
   enabled:             boolean
   mode:                "form" | "chat"   // form = captura (atual) · chat = conversa ao vivo com a IA
+  chat_suggestions:    string[]          // chips de início do chat (modo chat)
   button_color:        string
   button_position:     "bottom-right" | "bottom-left"
   button_label:        string
@@ -55,7 +56,7 @@ export async function getWidgetConfig(): Promise<WidgetConfig | null> {
   const { data } = await supabaseAdmin
     .from("site_widget_config")
     .select(`
-      enabled, mode, button_color, button_position, button_label,
+      enabled, mode, chat_suggestions, button_color, button_position, button_label,
       greeting, questions, success_message,
       default_department_id, default_tag_id,
       show_after_seconds, hide_url_patterns,
@@ -185,6 +186,14 @@ export async function updateWidgetConfig(input: Partial<WidgetConfig>): Promise<
     input.hide_url_patterns = input.hide_url_patterns
       .filter((p) => typeof p === "string" && p.trim() && p.length <= 200)
       .slice(0, 20)
+  }
+
+  // 6b. chat_suggestions: max 5 chips, até 48 chars cada
+  if (Array.isArray(input.chat_suggestions)) {
+    input.chat_suggestions = input.chat_suggestions
+      .filter((s) => typeof s === "string" && s.trim())
+      .map((s) => s.trim().slice(0, 48))
+      .slice(0, 5)
   }
 
   // 7. Tenant ownership de default_department_id

@@ -83,6 +83,7 @@ export type ConditionAttribute =
   | "pipeline_stage"            // conversa está em stage X
   | "source"                    // origem canônica = chat_contacts.source
   | "from_ad"                   // veio de anúncio (CTWA / from_ad_meta)
+  | "channel"                   // canal da conversa (whatsapp | site | …)
   | "first_message_of_session"  // 1ª msg após inatividade
   | "inactivity_24h"            // sem msg do contato há 24h+
   | "message_contains_keyword"  // body da msg contém palavra-chave

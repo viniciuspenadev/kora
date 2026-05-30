@@ -48,6 +48,8 @@ export interface CompileInput {
     contactLifecycle: boolean
     pipelineStage:    boolean
     lastNote:         boolean
+    /** Contato anônimo/incompleto (ex: visitante do site) → nudge pra coletar identidade. */
+    collectContact?:  boolean
   }
   /** Instrução específica do trigger (roteiro), se houver. */
   instruction: string | null
@@ -131,6 +133,18 @@ export function compilePrompt(input: CompileInput): string {
     contactLines.push("")
     contactLines.push("Use esses dados naturalmente. NÃO pergunte o que já sabe acima.")
     blocks.push(section("CONTATO ATUAL", contactLines.join("\n")))
+  }
+
+  // ── Captura de identidade (contato anônimo / incompleto) ──
+  if (show.collectContact) {
+    blocks.push(section("DADOS DO CONTATO",
+      [
+        "Você ainda não tem o cadastro completo deste cliente (ex: ele chegou pelo site, sem identificação).",
+        "Ao longo da conversa, peça de forma natural o nome e o WhatsApp dele — sem parecer formulário.",
+        "Assim que ele informar nome, WhatsApp/telefone ou e-mail, registre na hora com a ferramenta update_contact.",
+        "Salvar os dados NÃO substitui responder: siga a conversa normalmente.",
+      ].join("\n"),
+    ))
   }
 
   // ── Tarefa / roteiro ──────────────────────────────────────

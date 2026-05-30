@@ -103,7 +103,7 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
         c.push_name?.toLowerCase().includes(q) ||
         c.email?.toLowerCase().includes(q) ||
         c.company?.toLowerCase().includes(q) ||
-        c.phone_number.includes(q)
+        (c.phone_number ?? "").includes(q)
       )
     })
   }, [contacts, search, filter, selectedTags])
