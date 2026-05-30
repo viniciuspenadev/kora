@@ -29,7 +29,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
   const { data: cfg } = await supabaseAdmin
     .from("site_widget_config")
     .select(`
-      enabled, button_color, button_position, button_label,
+      enabled, mode, button_color, button_position, button_label,
       greeting, questions, success_message,
       show_after_seconds, hide_url_patterns,
       off_hours_enabled, off_hours_message,
@@ -56,6 +56,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
 
   return cors(NextResponse.json({
     enabled:            true,
+    mode:               cfg.mode ?? "form",
     button_color:       cfg.button_color,
     button_position:    cfg.button_position,
     button_label:       cfg.button_label,

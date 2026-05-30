@@ -16,6 +16,7 @@ export interface WidgetQuestion {
 
 export interface WidgetConfig {
   enabled:             boolean
+  mode:                "form" | "chat"   // form = captura (atual) · chat = conversa ao vivo com a IA
   button_color:        string
   button_position:     "bottom-right" | "bottom-left"
   button_label:        string
@@ -54,7 +55,7 @@ export async function getWidgetConfig(): Promise<WidgetConfig | null> {
   const { data } = await supabaseAdmin
     .from("site_widget_config")
     .select(`
-      enabled, button_color, button_position, button_label,
+      enabled, mode, button_color, button_position, button_label,
       greeting, questions, success_message,
       default_department_id, default_tag_id,
       show_after_seconds, hide_url_patterns,
@@ -152,6 +153,11 @@ export async function updateWidgetConfig(input: Partial<WidgetConfig>): Promise<
   // 3. Position enum
   if (input.button_position !== undefined && !["bottom-right", "bottom-left"].includes(input.button_position)) {
     return { error: "Posição inválida." }
+  }
+
+  // 3b. Mode enum (form | chat)
+  if (input.mode !== undefined && !["form", "chat"].includes(input.mode)) {
+    return { error: "Modo inválido." }
   }
 
   // 4. Text length caps (impede storage abuse)

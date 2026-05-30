@@ -339,7 +339,9 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
       }, 250);
     });
 
-    runConversation(cfg, win);
+    // Dois modos: 'chat' = conversa ao vivo com a IA; senão = formulário (atual).
+    if (cfg.mode === 'chat') runLiveChat(cfg, win);
+    else runConversation(cfg, win);
   }
 
   function runConversation(cfg, win){
@@ -608,6 +610,68 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
       }
       setTimeout(function(){ ask(questions[0]); }, 420);
     }, typingDelay(greet));
+  }
+
+  // ─── Modo CHAT AO VIVO (conversa real com a Kora IA) ───────
+  function runLiveChat(cfg, win){
+    var body = win.querySelector('#kw-body');
+    var fm   = win.querySelector('#kw-fm');
+    var pg   = win.querySelector('#kw-pg');
+    if (pg) pg.style.display = 'none';
+    var initial = (cfg.brand_name || 'K').charAt(0).toUpperCase();
+    var conversationId = null;
+    // Folga de 10s absorve diferença de relógio browser↔servidor (não perde a 1ª resposta).
+    var since = new Date(Date.now() - 10000).toISOString();
+    var pollTimer = null, sending = false, typingRow = null, typingTimer = null;
+
+    function avatarMiniHtml(){ return '<div class="kw-avatar-mini"><div class="kw-avatar-mini-inner">' + escape(initial) + '</div></div>'; }
+    function fillLogo(row){ if (!cfg.logo_url) return; var h = row.querySelector('.kw-avatar-mini-inner'); if (h) injectLogoImg(h, cfg.logo_url, initial); }
+    function addBot(text){ var r = document.createElement('div'); r.className = 'kw-msg-row'; r.innerHTML = avatarMiniHtml() + '<div class="kw-msg">' + escape(text) + '</div>'; body.appendChild(r); fillLogo(r); body.scrollTop = body.scrollHeight; }
+    function addUser(text){ var r = document.createElement('div'); r.className = 'kw-msg-row kw-me'; r.innerHTML = '<div class="kw-msg">' + escape(text) + '</div>'; body.appendChild(r); body.scrollTop = body.scrollHeight; }
+    function showTyping(){ if (typingRow) return; typingRow = document.createElement('div'); typingRow.className = 'kw-msg-row'; typingRow.innerHTML = avatarMiniHtml() + '<div class="kw-typing"><div class="kw-typing-pill"></div></div>'; body.appendChild(typingRow); fillLogo(typingRow); body.scrollTop = body.scrollHeight; clearTimeout(typingTimer); typingTimer = setTimeout(hideTyping, 30000); }
+    function hideTyping(){ clearTimeout(typingTimer); if (typingRow){ typingRow.remove(); typingRow = null; } }
+
+    function renderComposer(){
+      fm.innerHTML = '';
+      var input = document.createElement('textarea');
+      input.className = 'kw-in kw-ta';
+      input.placeholder = 'Escreva sua mensagem...';
+      input.style.minHeight = '44px';
+      var btn = document.createElement('button');
+      btn.className = 'kw-btn';
+      btn.innerHTML = 'Enviar <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+      function submit(){ var v = (input.value || '').trim(); if (!v || sending) return; input.value = ''; send(v); }
+      input.addEventListener('keydown', function(e){ if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); submit(); } });
+      btn.addEventListener('click', submit);
+      fm.appendChild(input); fm.appendChild(btn);
+      setTimeout(function(){ input.focus(); }, 60);
+    }
+
+    function send(text){
+      sending = true; addUser(text); showTyping();
+      try { if (navigator.vibrate) navigator.vibrate(12); } catch(e){}
+      api('/api/site/message', { slug: SLUG, visitor_id: getVisitorId(), text: text }).then(function(r){
+        sending = false;
+        if (r && r.conversation_id){ conversationId = r.conversation_id; if (!pollTimer) startPolling(); }
+        else { hideTyping(); }
+      }).catch(function(){ sending = false; hideTyping(); });
+    }
+
+    function startPolling(){ poll(); pollTimer = setInterval(poll, 2500); }
+    function poll(){
+      if (!document.body.contains(win)){ clearInterval(pollTimer); return; }
+      if (!conversationId) return;
+      api('/api/site/messages', { slug: SLUG, visitor_id: getVisitorId(), conversation_id: conversationId, since: since }).then(function(r){
+        if (r && r.messages && r.messages.length){
+          hideTyping();
+          r.messages.forEach(function(m){ addBot(m.text); since = m.at; });
+        }
+      }).catch(function(){});
+    }
+
+    // Início: saudação + caixa de texto livre (sem perguntas scriptadas)
+    showTyping();
+    setTimeout(function(){ hideTyping(); addBot(cfg.greeting || 'Oi! Como posso te ajudar?'); renderComposer(); }, 700);
   }
 
   function escape(s){

@@ -230,7 +230,7 @@ export async function sendMessage(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, chat_contacts(whatsapp_id, phone_number)")
+    .select("id, contact_id, instance_id, assigned_to, participants, chat_contacts(whatsapp_id, phone_number, primary_channel)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -256,7 +256,9 @@ export async function sendMessage(
       .eq("id", conversationId)
   }
 
-  const contact = conv.chat_contacts as unknown as { whatsapp_id: string; phone_number: string }
+  const contact = conv.chat_contacts as unknown as {
+    whatsapp_id: string | null; phone_number: string | null; primary_channel: string | null
+  }
 
   const { data: msg, error } = await supabaseAdmin
     .from("chat_messages")
@@ -276,26 +278,42 @@ export async function sendMessage(
   if (error || !msg) throw new Error(error?.message ?? "Erro ao salvar mensagem")
 
   if (!isPrivateNote) {
-    try {
-      const provider = await getInstanceProvider(tenantId)
-      const result   = await provider.sendText(contact.phone_number, content)
+    const channel = contact.primary_channel ?? "whatsapp"
+    if (channel === "whatsapp") {
+      try {
+        const provider = await getInstanceProvider(tenantId)
+        const result   = await provider.sendText(contact.phone_number ?? "", content)
 
+        await supabaseAdmin
+          .from("chat_messages")
+          .update({ whatsapp_msg_id: result.messageId || null, status: "sent" })
+          .eq("id", msg.id)
+
+        // Sinal de "envio ativo" — atualiza health da instance
+        await supabaseAdmin
+          .from("whatsapp_instances")
+          .update({ last_outbound_message_at: new Date().toISOString() })
+          .eq("tenant_id", tenantId)
+      } catch (err) {
+        await supabaseAdmin
+          .from("chat_messages")
+          .update({ status: "failed" })
+          .eq("id", msg.id)
+        throw new Error(`Erro ao enviar: ${(err as Error).message}`)
+      }
+    } else if (channel === "site") {
+      // Site-chat: nada a enviar externamente. A msg 'agent' já está persistida;
+      // o visitante recebe via polling do widget. Só marca como enviada.
       await supabaseAdmin
         .from("chat_messages")
-        .update({ whatsapp_msg_id: result.messageId || null, status: "sent" })
+        .update({ status: "sent" })
         .eq("id", msg.id)
-
-      // Sinal de "envio ativo" — atualiza health da instance
-      await supabaseAdmin
-        .from("whatsapp_instances")
-        .update({ last_outbound_message_at: new Date().toISOString() })
-        .eq("tenant_id", tenantId)
-    } catch (err) {
+    } else {
       await supabaseAdmin
         .from("chat_messages")
         .update({ status: "failed" })
         .eq("id", msg.id)
-      throw new Error(`Erro ao enviar: ${(err as Error).message}`)
+      throw new Error(`Resposta no canal '${channel}' ainda não suportada`)
     }
   }
 
@@ -342,12 +360,19 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, assigned_to, participants, chat_contacts(phone_number)")
+    .select("id, contact_id, assigned_to, participants, chat_contacts(phone_number, primary_channel)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
 
   if (!conv) throw new Error("Conversa não encontrada")
+
+  // Mídia hoje só sai no WhatsApp. Em canais sem envio de mídia (site-chat),
+  // bloqueia com mensagem clara em vez de tentar enviar pra um destino vazio.
+  const mediaChannel = (conv.chat_contacts as unknown as { primary_channel: string | null } | null)?.primary_channel ?? "whatsapp"
+  if (mediaChannel !== "whatsapp") {
+    throw new Error("Envio de mídia ainda não disponível nesse canal. Use texto.")
+  }
 
   const assignedTo    = (conv as { assigned_to: string | null }).assigned_to
   const isAdmin       = ["owner", "admin"].includes(session.user.role)

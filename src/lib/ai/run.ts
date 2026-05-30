@@ -10,7 +10,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
-import { getProvider } from "@/lib/providers"
+import { sendChannelText } from "@/lib/channels/reply"
 import { runChat, type ChatToolCall } from "@/lib/ai/openai"
 import { evaluateTriggers } from "@/lib/ai/evaluate-triggers"
 import { compilePrompt, type CompileInput } from "@/lib/ai/compile-prompt"
@@ -99,7 +99,7 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     .from("chat_conversations")
     .select(`
       id, contact_id, stage_id, from_ad_meta, is_group, assigned_to, ai_handling, metadata,
-      chat_contacts ( id, custom_name, push_name, phone_number, email, company, lifecycle_stage, notes, source )
+      chat_contacts ( id, custom_name, push_name, phone_number, email, company, lifecycle_stage, notes, source, primary_channel )
     `)
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
@@ -237,7 +237,6 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   // ── 7) Ação ────────────────────────────────────────────────
   let result: RunAITurnResult = { status: "no_action" }
   let outboundText: string | null = null   // texto efetivamente enviado (pra ai_runs)
-  const provider  = getProvider(instance)
   const routeCall = toolCalls.find((t) => t.name === ROUTE_TOOL_NAME)
   const sendCall  = toolCalls.find((t) => t.name === SEND_MESSAGE_TOOL_NAME)
 
@@ -249,7 +248,7 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
         .map((f) => ({ label: f.label, value: parsed.collected[f.key] }))
         .filter((c): c is { label: string; value: string } => !!c.value)
       result = await executeRoute({
-        tenantId, conversationId, contact, provider,
+        tenantId, conversationId, contact, instance,
         departmentId: targetDeptId, departmentName: targetDeptName,
         summary: parsed.summary, collected, leadLevel: parsed.leadLevel,
         handoffMessage,
@@ -264,12 +263,12 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     } else if (sendCall) {
       const { text } = parseSendMessage(sendCall.arguments)
       if (text.trim()) {
-        await sendBotText(tenantId, conversationId, contact, provider, text.trim(), matched.id)
+        await sendBotText(tenantId, conversationId, contact, instance, text.trim(), matched.id)
         result       = { status: "responded" }
         outboundText = text.trim()
       }
     } else if (llmText?.trim()) {
-      await sendBotText(tenantId, conversationId, contact, provider, llmText.trim(), matched.id)
+      await sendBotText(tenantId, conversationId, contact, instance, llmText.trim(), matched.id)
       result       = { status: "responded" }
       outboundText = llmText.trim()
     }
@@ -313,11 +312,15 @@ async function sendBotText(
   tenantId: string,
   conversationId: string,
   contact: ContactRow,
-  provider: ReturnType<typeof getProvider>,
+  instance: RunAITurnInput["instance"],
   text: string,
   triggerId: string,
 ): Promise<void> {
-  const sent = await provider.sendText(contact.phone_number, text)
+  const sent = await sendChannelText(
+    { channel: contact.primary_channel, phoneNumber: contact.phone_number },
+    text,
+    instance,
+  )
   await supabaseAdmin.from("chat_messages").insert({
     conversation_id: conversationId,
     tenant_id:       tenantId,
@@ -373,7 +376,7 @@ async function executeRoute(args: {
   tenantId:       string
   conversationId: string
   contact:        ContactRow
-  provider:       ReturnType<typeof getProvider>
+  instance:       RunAITurnInput["instance"]
   departmentId:   string
   departmentName: string
   summary:         string
@@ -383,7 +386,7 @@ async function executeRoute(args: {
   currentMetadata: Record<string, unknown>
 }): Promise<RunAITurnResult> {
   const {
-    tenantId, conversationId, contact, provider,
+    tenantId, conversationId, contact, instance,
     departmentId, departmentName, summary, collected, leadLevel, handoffMessage, currentMetadata,
   } = args
 
@@ -420,7 +423,11 @@ async function executeRoute(args: {
   const farewell = handoffMessage?.trim()
   if (farewell) {
     try {
-      const sent = await provider.sendText(contact.phone_number, farewell)
+      const sent = await sendChannelText(
+        { channel: contact.primary_channel, phoneNumber: contact.phone_number },
+        farewell,
+        instance,
+      )
       await supabaseAdmin.from("chat_messages").insert({
         conversation_id: conversationId,
         tenant_id:       tenantId,

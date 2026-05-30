@@ -28,6 +28,7 @@ export interface ContactRow {
   lifecycle_stage: string
   notes:           string | null
   source:          string
+  primary_channel: string | null
 }
 
 const HISTORY_LIMIT = 20

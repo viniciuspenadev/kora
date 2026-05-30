@@ -108,6 +108,43 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
 
         <div className={cfg.enabled ? "" : "opacity-50 pointer-events-none"}>
 
+          {/* Modo do widget */}
+          <SectionCard icon={Sparkles} title="Modo do widget" description="Como o visitante interage" className="mb-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => patch({ mode: "form" })}
+                className={`text-left rounded-xl border p-4 transition-colors ${
+                  cfg.mode !== "chat"
+                    ? "border-primary-300 bg-primary-50/50 ring-1 ring-primary-200"
+                    : "border-slate-200 hover:border-slate-300"
+                }`}
+              >
+                <p className="text-sm font-semibold text-slate-900">Formulário (captura)</p>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  Faz as perguntas configuradas e vira um lead no inbox. O time continua no WhatsApp.
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={() => patch({ mode: "chat" })}
+                className={`text-left rounded-xl border p-4 transition-colors ${
+                  cfg.mode === "chat"
+                    ? "border-primary-300 bg-primary-50/50 ring-1 ring-primary-200"
+                    : "border-slate-200 hover:border-slate-300"
+                }`}
+              >
+                <p className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+                  Chat ao vivo
+                  <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded uppercase tracking-wide">IA</span>
+                </p>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  Conversa em tempo real com a Kora IA ali no widget. As perguntas abaixo não se aplicam.
+                </p>
+              </button>
+            </div>
+          </SectionCard>
+
           {/* Branding */}
           <SectionCard icon={Palette} title="Marca e identidade">
             <div className="space-y-4">

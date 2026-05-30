@@ -36,6 +36,7 @@ export default async function ConfigSitePage() {
 
   const initialConfig: WidgetConfig = cfg ?? {
     enabled:               true,
+    mode:                  "form",
     button_color:          "#004add",
     button_position:       "bottom-right",
     button_label:          "Falar conosco",
