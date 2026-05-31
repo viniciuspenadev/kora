@@ -6,17 +6,22 @@ import { TenantsListClient, type TenantRow } from "./client"
 export default async function TenantsPage() {
   const { data: tenants } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, slug, plan, active, created_at")
+    .select("id, name, slug, plan, active, created_at, plans ( name )")
     .order("created_at", { ascending: false })
 
-  const rows: TenantRow[] = (tenants ?? []).map((t) => ({
-    id:         t.id,
-    name:       t.name,
-    slug:       t.slug,
-    plan:       t.plan,
-    active:     t.active,
-    created_at: t.created_at,
-  }))
+  const rows: TenantRow[] = (tenants ?? []).map((t) => {
+    const pl = (t as { plans?: { name: string } | { name: string }[] | null }).plans
+    const planName = Array.isArray(pl) ? pl[0]?.name ?? null : pl?.name ?? null
+    return {
+      id:         t.id,
+      name:       t.name,
+      slug:       t.slug,
+      plan:       t.plan,
+      plan_name:  planName,
+      active:     t.active,
+      created_at: t.created_at,
+    }
+  })
 
   return (
     <div className="min-h-full">

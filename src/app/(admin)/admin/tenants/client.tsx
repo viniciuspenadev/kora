@@ -13,6 +13,7 @@ export interface TenantRow {
   name:       string
   slug:       string
   plan:       string
+  plan_name:  string | null   // plano novo atribuído (plan_id → plans.name)
   active:     boolean
   created_at: string
 }
@@ -68,11 +69,17 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
     {
       id: "plan",
       header: "Plano",
-      width: "120px",
+      width: "140px",
       cell: (r) => (
-        <span className={`inline-flex h-5 items-center text-[10px] font-semibold px-2 rounded-md border ${PLAN_BADGE[r.plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
-          {PLAN_LABELS[r.plan] ?? r.plan}
-        </span>
+        r.plan_name ? (
+          <span className="inline-flex h-5 items-center text-[10px] font-semibold px-2 rounded-md border bg-primary-50 text-primary-700 border-primary-200">
+            {r.plan_name}
+          </span>
+        ) : (
+          <span className={`inline-flex h-5 items-center text-[10px] font-semibold px-2 rounded-md border ${PLAN_BADGE[r.plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
+            {PLAN_LABELS[r.plan] ?? r.plan}
+          </span>
+        )
       ),
     },
     {

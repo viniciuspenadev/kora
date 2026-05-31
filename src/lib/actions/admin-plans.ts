@@ -122,16 +122,38 @@ export async function deletePlan(id: string): Promise<{ error?: string }> {
   return {}
 }
 
-/** Atribui (ou remove, com null) um plano a um tenant. */
+/**
+ * Atribui (ou remove, com null) um plano a um tenant.
+ * Ao atribuir, **habilita os módulos inclusos no plano** (upsert em tenant_modules).
+ * Aditivo: não desabilita módulos que o tenant já tinha fora do plano — ajuste
+ * fino fica na aba Módulos.
+ */
 export async function assignPlanToTenant(tenantId: string, planId: string | null): Promise<{ error?: string }> {
   await requirePlatformAdmin()
+
   const { error } = await supabaseAdmin
     .from("tenants")
     .update({ plan_id: planId })
     .eq("id", tenantId)
-
   if (error) return { error: error.message }
+
+  if (planId) {
+    const { data: plan } = await supabaseAdmin
+      .from("plans").select("name, included_modules").eq("id", planId).maybeSingle()
+    const mods = (plan?.included_modules ?? []) as string[]
+    if (mods.length > 0) {
+      const rows = mods.map((slug) => ({
+        tenant_id:   tenantId,
+        module_slug: slug,
+        enabled:     true,
+        reason:      `Plano ${plan?.name ?? ""}`.trim(),
+      }))
+      await supabaseAdmin.from("tenant_modules").upsert(rows, { onConflict: "tenant_id,module_slug" })
+    }
+  }
+
   revalidatePath(`/admin/tenants/${tenantId}`)
+  revalidatePath(`/admin/tenants/${tenantId}/modulos`)
   revalidatePath("/admin/planos")
   return {}
 }

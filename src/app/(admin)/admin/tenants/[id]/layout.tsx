@@ -25,11 +25,14 @@ export default async function TenantLayout({
 
   const { data: tenant } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, slug, plan, active")
+    .select("id, name, slug, plan, active, plans ( name )")
     .eq("id", id)
     .maybeSingle()
 
   if (!tenant) notFound()
+
+  const pl = (tenant as { plans?: { name: string } | { name: string }[] | null }).plans
+  const planName = Array.isArray(pl) ? pl[0]?.name ?? null : pl?.name ?? null
 
   return (
     <div className="min-h-full">
@@ -50,9 +53,15 @@ export default async function TenantLayout({
             <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">{tenant.name}</h1>
             <p className="text-xs text-slate-400 font-mono truncate">{tenant.slug}</p>
           </div>
-          <span className={`inline-flex h-6 items-center text-[10px] font-semibold px-2 rounded-md border ${PLAN_BADGE[tenant.plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
-            {PLAN_LABELS[tenant.plan] ?? tenant.plan}
-          </span>
+          {planName ? (
+            <span className="inline-flex h-6 items-center text-[10px] font-semibold px-2 rounded-md border bg-primary-50 text-primary-700 border-primary-200">
+              {planName}
+            </span>
+          ) : (
+            <span className={`inline-flex h-6 items-center text-[10px] font-semibold px-2 rounded-md border ${PLAN_BADGE[tenant.plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
+              {PLAN_LABELS[tenant.plan] ?? tenant.plan}
+            </span>
+          )}
           <span className={`inline-flex h-6 items-center gap-1.5 text-[10px] font-semibold px-2 rounded-md border ${
             tenant.active ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-red-50 text-red-700 border-red-200"
           }`}>
