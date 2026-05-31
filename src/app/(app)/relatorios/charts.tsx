@@ -1,7 +1,7 @@
 "use client"
 
 import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   PieChart, Pie, Cell,
 } from "recharts"
 import { sourceMeta } from "@/lib/lifecycle"
@@ -27,30 +27,30 @@ export function OverviewCharts({ daily, channels }: Props) {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      {/* Volume diário (linha) */}
+      {/* Volume diário (barras agrupadas) */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-soft lg:col-span-2">
         <h3 className="text-sm font-semibold text-slate-900 mb-1">Volume por dia</h3>
-        <p className="text-xs text-slate-500 mb-4">Conversas novas vs resolvidas, e total de mensagens</p>
+        <p className="text-xs text-slate-500 mb-4">Conversas e contatos novos por dia</p>
         <div style={{ width: "100%", height: 280 }}>
           <ResponsiveContainer>
-            <LineChart data={daily} margin={{ top: 5, right: 10, bottom: 0, left: -20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+            <BarChart data={daily} margin={{ top: 5, right: 10, bottom: 0, left: -20 }} barGap={2} maxBarSize={28}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
               <XAxis
                 dataKey="date"
                 tickFormatter={formatShortDate}
                 tick={{ fontSize: 11, fill: "#64748b" }}
                 stroke="#cbd5e1"
               />
-              <YAxis tick={{ fontSize: 11, fill: "#64748b" }} stroke="#cbd5e1" />
+              <YAxis tick={{ fontSize: 11, fill: "#64748b" }} stroke="#cbd5e1" allowDecimals={false} />
               <Tooltip
                 contentStyle={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 8, fontSize: 12 }}
                 labelFormatter={formatShortDate}
+                cursor={{ fill: "#f1f5f9" }}
               />
               <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} iconType="circle" />
-              <Line type="monotone" dataKey="novas"      name="Novas"      stroke="#004add" strokeWidth={2} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="resolvidas" name="Resolvidas" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="mensagens"  name="Mensagens"  stroke="#94a3b8" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
-            </LineChart>
+              <Bar dataKey="conversas" name="Conversas"      fill="#004add" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="contatos"  name="Contatos novos" fill="#10b981" radius={[4, 4, 0, 0]} />
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </div>

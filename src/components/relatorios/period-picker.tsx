@@ -28,6 +28,12 @@ function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+function addDays(iso: string, n: number): string {
+  const d = new Date(iso + "T00:00:00.000Z")
+  d.setUTCDate(d.getUTCDate() + n)
+  return isoDate(d)
+}
+
 function rangeFromPreset(days: number): { from: string; to: string } {
   const to   = new Date()
   to.setUTCHours(23, 59, 59, 999)
@@ -47,11 +53,13 @@ export function PeriodPicker() {
 
   const [customOpen, setCustomOpen] = useState(false)
   const [from, setFrom] = useState(currentFrom ?? "")
-  const [to,   setTo]   = useState(currentTo ?? "")
+  // `to` na URL é o boundary EXCLUSIVO (dia seguinte); no input mostramos o
+  // último dia INCLUSIVO (−1) — o que o usuário de fato escolheu.
+  const [to,   setTo]   = useState(currentTo ? addDays(currentTo, -1) : "")
 
   useEffect(() => {
     setFrom(currentFrom ?? "")
-    setTo(currentTo ?? "")
+    setTo(currentTo ? addDays(currentTo, -1) : "")
   }, [currentFrom, currentTo])
 
   // Detecta qual preset bate com o range atual
@@ -77,7 +85,9 @@ export function PeriodPicker() {
     if (!from || !to) return
     const params = new URLSearchParams(searchParams.toString())
     params.set("from", from)
-    params.set("to",   to)
+    // input é o último dia (inclusivo) → converte pro boundary exclusivo (+1),
+    // igual aos presets. Senão lt(to) exclui o dia final inteiro (ex: 31→31 = 0).
+    params.set("to",   addDays(to, 1))
     router.push(`${pathname}?${params.toString()}`)
     setCustomOpen(false)
   }

@@ -414,6 +414,7 @@ async function handleMessageUpsert(
           .update({
             last_message_at:      new Date().toISOString(),
             last_message_preview: previewFromMe,
+            last_message_dir:     "out_phone",
             updated_at:           new Date().toISOString(),
           })
           .eq("id", convFromMe.id)
@@ -524,6 +525,7 @@ async function handleMessageUpsert(
       .update({
         last_message_at:      new Date().toISOString(),
         last_message_preview: preview,
+        last_message_dir:     "in",
         unread_count:         (conversation.unread_count ?? 0) + 1,
         status:               wasResolved ? "open" : conversation.status,
         updated_at:           new Date().toISOString(),

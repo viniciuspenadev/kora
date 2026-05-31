@@ -16,6 +16,19 @@ async function requireAdmin() {
   return session
 }
 
+// ── Aparência do kanban (preferência do tenant) ─────────────────
+export async function setKanbanTintedColumns(value: boolean): Promise<{ error?: string }> {
+  const session = await requireAdmin()
+  const { error } = await supabaseAdmin
+    .from("tenant_config")
+    .update({ kanban_tinted_columns: !!value })
+    .eq("tenant_id", session.user.tenantId)
+  if (error) return { error: error.message }
+  revalidatePath("/kanban")
+  revalidatePath("/kanban/configuracao")
+  return {}
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Bootstrap — cria pipeline padrão caso tenant ainda não tenha
 // ═══════════════════════════════════════════════════════════════

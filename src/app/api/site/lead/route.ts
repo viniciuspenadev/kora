@@ -214,6 +214,7 @@ export async function POST(req: NextRequest) {
         .update({
           last_message_preview: newPreview,
           last_message_at:      new Date().toISOString(),
+          last_message_dir:     "in",
           unread_count:         ((dedup.conversation as { unread_count?: number }).unread_count ?? 0) + 1,
           updated_at:           new Date().toISOString(),
           metadata: {

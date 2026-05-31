@@ -64,13 +64,14 @@ export async function computeDailyKpis(tenantId: string, brDate: string): Promis
     contactsRes,
     adsRes,
   ] = await Promise.all([
-    // Novas conversas criadas no dia
+    // Conversas ATIVAS no dia (última msg no dia). Conta o cliente que voltou — a
+    // conversa reabre, não é "nova". Alinhado ao card "Conversas" do dashboard.
     supabaseAdmin
       .from("chat_conversations")
       .select("id", { count: "exact", head: true })
       .eq("tenant_id", tenantId)
-      .gte("created_at", startUtc)
-      .lte("created_at", endUtc),
+      .gte("last_message_at", startUtc)
+      .lte("last_message_at", endUtc),
 
     // Mensagens recebidas (contact)
     supabaseAdmin

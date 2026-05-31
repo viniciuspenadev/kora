@@ -47,10 +47,10 @@ export default async function RelatoriosPage({
 
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
           <KpiCard
-            label="Conversas novas"
-            value={formatNumber(data.newConversations.current)}
-            current={data.newConversations.current}
-            previous={data.newConversations.previous}
+            label="Conversas"
+            value={formatNumber(data.conversations.current)}
+            current={data.conversations.current}
+            previous={data.conversations.previous}
             icon={<Inbox className="size-4" />}
           />
           <KpiCard

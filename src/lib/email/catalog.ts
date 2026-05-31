@@ -56,7 +56,7 @@ export const EMAIL_CATALOG: EmailTemplateMeta[] = [
     variables: [
       { key: "tenantName",       description: "Nome do tenant",                                       example: "Bernardo Concept" },
       { key: "reportDate",       description: "Dia coberto pelo relatório (ISO YYYY-MM-DD)",          example: "2026-05-26" },
-      { key: "newConversations", description: "Conversas criadas no dia",                            example: "12" },
+      { key: "newConversations", description: "Conversas ativas no dia (com atividade)",             example: "12" },
       { key: "messagesIn",       description: "Mensagens recebidas (sender_type=contact)",           example: "184" },
       { key: "messagesOut",      description: "Mensagens enviadas (sender_type=agent)",              example: "97" },
       { key: "newContacts",      description: "Contatos novos criados",                              example: "8" },

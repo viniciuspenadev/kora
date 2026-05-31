@@ -23,7 +23,7 @@ export interface ReportFilters {
   channel?:  string | null  // source em chat_contacts
 }
 
-export type DailyPoint = { date: string; novas: number; resolvidas: number; mensagens: number }
+export type DailyPoint = { date: string; conversas: number; contatos: number }
 export type ChannelSlice = { source: string; count: number }
 export type AgentLoad   = { agent_id: string; name: string; assigned: number; messages: number }
 
@@ -34,7 +34,7 @@ export interface DeltaNumber {
 
 export interface OverviewMetrics {
   range: { from: string; to: string }
-  newConversations:    DeltaNumber
+  conversations:       DeltaNumber
   totalMessages:       DeltaNumber
   newContacts:         DeltaNumber
   resolutionRatePct:   DeltaNumber
@@ -159,6 +159,20 @@ async function countConversations(t: string, r: RangeOpts, f: HelperFilters): Pr
   return count ?? 0
 }
 
+// "Conversas" (volume): conversas com ATIVIDADE no período (última msg no range).
+// Diferente de countConversations (que conta criadas) — como a conversa reabre
+// quando o cliente volta, este conta o retorno; aquele só a 1ª vez.
+async function countActiveConversations(t: string, r: RangeOpts, f: HelperFilters): Promise<number> {
+  let q = supabaseAdmin.from("chat_conversations")
+    .select("*", { count: "exact", head: true })
+    .eq("tenant_id", t)
+    .gte("last_message_at", r.from.toISOString()).lt("last_message_at", r.to.toISOString())
+  if (f.agentId)              q = q.eq("assigned_to", f.agentId)
+  if (f.contactIds !== null && f.contactIds !== undefined) q = q.in("contact_id", f.contactIds)
+  const { count } = await q
+  return count ?? 0
+}
+
 async function countResolvedConversations(t: string, r: RangeOpts, f: HelperFilters): Promise<number> {
   let q = supabaseAdmin.from("chat_conversations")
     .select("*", { count: "exact", head: true })
@@ -239,36 +253,31 @@ async function avgFirstResponseSec(t: string, r: RangeOpts, f: HelperFilters): P
 }
 
 async function dailySeries(t: string, r: RangeOpts, f: HelperFilters): Promise<DailyPoint[]> {
+  // "conversas" do gráfico = ativas por dia (bucket por last_message_at) → soma bate com o card.
   let qConv = supabaseAdmin.from("chat_conversations")
-    .select("created_at").eq("tenant_id", t)
-    .gte("created_at", r.from.toISOString()).lt("created_at", r.to.toISOString())
+    .select("last_message_at").eq("tenant_id", t)
+    .gte("last_message_at", r.from.toISOString()).lt("last_message_at", r.to.toISOString())
   if (f.agentId)              qConv = qConv.eq("assigned_to", f.agentId)
   if (f.contactIds !== null && f.contactIds !== undefined) qConv = qConv.in("contact_id", f.contactIds)
 
-  let qRes = supabaseAdmin.from("chat_conversations")
-    .select("resolved_at").eq("tenant_id", t).eq("status", "resolved")
-    .gte("resolved_at", r.from.toISOString()).lt("resolved_at", r.to.toISOString())
-  if (f.agentId)              qRes = qRes.eq("assigned_to", f.agentId)
-  if (f.contactIds !== null && f.contactIds !== undefined) qRes = qRes.in("contact_id", f.contactIds)
-
-  let qMsg = supabaseAdmin.from("chat_messages")
-    .select("created_at").eq("tenant_id", t).eq("is_private_note", false)
+  // "contatos" do gráfico = contatos novos por dia (created_at). Sem filtro de
+  // atendente (atendente não cria contato); canal entra via contactIds.
+  let qContacts = supabaseAdmin.from("chat_contacts")
+    .select("created_at").eq("tenant_id", t)
     .gte("created_at", r.from.toISOString()).lt("created_at", r.to.toISOString())
-  if (f.conversationIds !== null && f.conversationIds !== undefined) qMsg = qMsg.in("conversation_id", f.conversationIds)
-  if (f.agentId)              qMsg = qMsg.eq("sender_id", f.agentId)
+  if (f.contactIds !== null && f.contactIds !== undefined) qContacts = qContacts.in("id", f.contactIds)
 
-  const [{ data: convsCreated }, { data: convsResolved }, { data: msgsCreated }] = await Promise.all([qConv, qRes, qMsg])
+  const [{ data: convsActive }, { data: contactsCreated }] = await Promise.all([qConv, qContacts])
 
   const buckets = new Map<string, DailyPoint>()
   const cur = new Date(r.from)
   while (cur < r.to) {
     const k = isoDate(cur)
-    buckets.set(k, { date: k, novas: 0, resolvidas: 0, mensagens: 0 })
+    buckets.set(k, { date: k, conversas: 0, contatos: 0 })
     cur.setUTCDate(cur.getUTCDate() + 1)
   }
-  for (const row of (convsCreated ?? []) as { created_at: string }[])  { const b = buckets.get(isoDate(new Date(row.created_at))); if (b) b.novas++ }
-  for (const row of (convsResolved ?? []) as { resolved_at: string }[]) { const b = buckets.get(isoDate(new Date(row.resolved_at))); if (b) b.resolvidas++ }
-  for (const row of (msgsCreated ?? []) as { created_at: string }[])   { const b = buckets.get(isoDate(new Date(row.created_at))); if (b) b.mensagens++ }
+  for (const row of (convsActive ?? []) as { last_message_at: string | null }[]) { if (!row.last_message_at) continue; const b = buckets.get(isoDate(new Date(row.last_message_at))); if (b) b.conversas++ }
+  for (const row of (contactsCreated ?? []) as { created_at: string }[]) { const b = buckets.get(isoDate(new Date(row.created_at))); if (b) b.contatos++ }
   return Array.from(buckets.values())
 }
 
@@ -304,7 +313,7 @@ export async function getOverviewMetrics(filters: ReportFilters): Promise<Overvi
     daily,
     channels,
   ] = await Promise.all([
-    countConversations(t, range, hf),       countConversations(t, prev, hf),
+    countActiveConversations(t, range, hf), countActiveConversations(t, prev, hf),
     countMessages(t, range, hf),            countMessages(t, prev, hf),
     countContacts(t, range, hf),            countContacts(t, prev, hf),
     countResolvedConversations(t, range, hf), countResolvedConversations(t, prev, hf),
@@ -319,7 +328,7 @@ export async function getOverviewMetrics(filters: ReportFilters): Promise<Overvi
 
   return {
     range:               { from: filters.from, to: filters.to },
-    newConversations:    { current: nConvCur, previous: nConvPrev },
+    conversations:       { current: nConvCur, previous: nConvPrev },
     totalMessages:       { current: nMsgCur,  previous: nMsgPrev },
     newContacts:         { current: nCtCur,   previous: nCtPrev },
     resolvedCount:       { current: resCur,   previous: resPrev },

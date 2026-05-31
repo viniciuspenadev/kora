@@ -120,6 +120,10 @@
   /* Raio base */
   --radius: 0.75rem;
 
+  /* Scrollbar — bem sutil, neutra (slate) */
+  --scrollbar-thumb:       #e2e8f0;  /* slate-200 */
+  --scrollbar-thumb-hover: #cbd5e1;  /* slate-300 */
+
   /* Sidebar */
   --sidebar: oklch(1 0 0);
   --sidebar-foreground: oklch(0.44 0.014 264);
@@ -150,6 +154,8 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: #004add;
+  --scrollbar-thumb:       oklch(1 0 0 / 12%);
+  --scrollbar-thumb-hover: oklch(1 0 0 / 22%);
   --chart-1: #004add;
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -175,6 +181,23 @@
   html {
     @apply font-sans;
   }
+
+  /* Scrollbar custom — fina e neutra, alinhada ao design system.
+     Firefox (scrollbar-width/color) + WebKit/Chromium/Edge (pseudo-elementos). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 9999px;
+    border: 2px solid transparent;   /* padding via borda transparente → thumb ~6px, look moderno */
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+  ::-webkit-scrollbar-corner { background: transparent; }
 }
 
 @layer utilities {

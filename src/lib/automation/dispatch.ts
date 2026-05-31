@@ -223,6 +223,7 @@ async function sendAutomationReply(args: {
       .update({
         last_message_at:      new Date().toISOString(),
         last_message_preview: text.slice(0, 100),
+        last_message_dir:     "out",
         updated_at:           new Date().toISOString(),
       })
       .eq("id", args.conversationId)

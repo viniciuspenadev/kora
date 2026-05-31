@@ -394,6 +394,7 @@ async function sendBotText(
     .update({
       last_message_at:      new Date().toISOString(),
       last_message_preview: text.substring(0, 100),
+      last_message_dir:     "out",
       ai_handling:          true,          // IA segue dona da conversa
       updated_at:           new Date().toISOString(),
     })
@@ -587,6 +588,7 @@ async function executeRoute(args: {
       ai_handling:          false,
       last_message_at:      new Date().toISOString(),
       last_message_preview: farewell ? farewell.substring(0, 100) : `Encaminhado para ${departmentName}`,
+      last_message_dir:     "out",
       metadata:             { ...currentMetadata, ai_routed: { department_id: departmentId, department_name: departmentName, at: new Date().toISOString() } },
       updated_at:           new Date().toISOString(),
     })

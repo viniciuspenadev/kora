@@ -58,8 +58,6 @@ interface Conversation {
 interface Props {
   stages:        Stage[]
   conversations: Conversation[]
-  /** Pinta o fundo das colunas com a cor da etapa (preferência do tenant). */
-  tintColumns:   boolean
 }
 
 const BRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -83,7 +81,7 @@ function relativeTime(date: string): { label: string; hot: boolean } {
   return { label: `${days}d`, hot: true }
 }
 
-export function ConversationKanban({ stages, conversations: initial, tintColumns }: Props) {
+export function ConversationKanban({ stages, conversations: initial }: Props) {
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
   const [draggingId, setDraggingId]   = useState<string | null>(null)
@@ -171,32 +169,27 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
         return (
           <div
             key={stage.id}
-            style={{
-              borderTop: `3px solid ${stage.color}`,
-              backgroundColor: isOver || !tintColumns ? undefined : `color-mix(in srgb, ${stage.color} 12%, transparent)`,
-            }}
-            className={`shrink-0 w-80 flex flex-col rounded-xl overflow-hidden transition-colors ${
-              isOver ? "bg-primary-50 ring-2 ring-primary-200" : tintColumns ? "" : "bg-slate-100/60"
+            className={`shrink-0 w-80 flex flex-col rounded-xl transition-colors ${
+              isOver ? "bg-primary-50 ring-2 ring-primary-200" : "bg-slate-100/60"
             }`}
             onDragOver={(e) => handleDragOver(e, stage.id)}
             onDrop={(e) => handleDrop(e, stage.id)}
             onDragLeave={() => setDragOver(null)}
           >
-            <div className="px-3 py-2.5 border-b border-slate-200/70">
+            <div className="px-3 py-3 border-b border-slate-200">
               <div className="flex items-center gap-2 mb-1.5">
+                <span className="size-2 rounded-full" style={{ backgroundColor: stage.color }} />
                 <span className="text-sm font-semibold text-slate-900 flex-1 truncate">{stage.name}</span>
-                {StageIcon && <StageIcon className={`size-3.5 ${stage.is_won ? "text-emerald-600" : "text-red-500"}`} />}
-                <span className="text-[10px] font-bold text-slate-500 tabular-nums bg-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center shadow-sm">
+                {StageIcon && <StageIcon className="size-3.5 text-slate-400" />}
+                <span className="text-[10px] font-bold text-slate-500 tabular-nums bg-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center">
                   {list.length}
                 </span>
               </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-sm font-bold text-slate-800 tabular-nums truncate">
-                  {stageTotal(stage.id) > 0
-                    ? BRL(stageTotal(stage.id))
-                    : <span className="text-xs font-normal text-slate-300">—</span>}
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-slate-400 font-mono">
+                  {stageTotal(stage.id) > 0 ? BRL(stageTotal(stage.id)) : "—"}
                 </span>
-                <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{stage.probability_pct}% prob.</span>
+                <span className="text-slate-400">{stage.probability_pct}%</span>
               </div>
             </div>
 

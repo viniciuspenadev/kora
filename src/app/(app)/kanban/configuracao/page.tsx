@@ -3,6 +3,7 @@ import Link from "next/link"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { PipelineConfigClient } from "@/components/kanban/pipeline-config-client"
+import { KanbanAppearance } from "@/components/kanban/kanban-appearance"
 import { Settings, ChevronLeft, ChevronRight } from "lucide-react"
 
 export default async function KanbanConfigPage() {
@@ -12,7 +13,7 @@ export default async function KanbanConfigPage() {
 
   const tenantId = session.user.tenantId
 
-  const [{ data: pipelines }, { data: stages }, { data: stageStats }] = await Promise.all([
+  const [{ data: pipelines }, { data: stages }, { data: stageStats }, { data: cfg }] = await Promise.all([
     supabaseAdmin
       .from("pipelines")
       .select("*")
@@ -28,6 +29,11 @@ export default async function KanbanConfigPage() {
       .select("stage_id")
       .eq("tenant_id", tenantId)
       .not("stage_id", "is", null),
+    supabaseAdmin
+      .from("tenant_config")
+      .select("kanban_tinted_columns")
+      .eq("tenant_id", tenantId)
+      .maybeSingle(),
   ])
 
   const stageCount: Record<string, number> = {}
@@ -68,6 +74,7 @@ export default async function KanbanConfigPage() {
       </div>
 
       <div className="px-6 py-6">
+        <KanbanAppearance initialTinted={cfg?.kanban_tinted_columns ?? false} />
         <PipelineConfigClient
           pipelines={pipelines ?? []}
           stages={stages ?? []}

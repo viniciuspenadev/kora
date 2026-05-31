@@ -280,8 +280,8 @@ function generateInsight(ctx: DailyReportContext): string | null {
   if (ctx.messagesIn > 0 && ctx.messagesOut < ctx.messagesIn * 0.3) {
     return `💡 <strong>Atenção ao backlog:</strong> ${ctx.messagesIn} mensagens chegaram mas só ${ctx.messagesOut} foram respondidas. Talvez tenha conversas esperando resposta.`
   }
-  if (ctx.newContacts > 0 && ctx.newConversations === ctx.newContacts) {
-    return `👋 <strong>${ctx.newContacts} contato${ctx.newContacts > 1 ? "s" : ""} novo${ctx.newContacts > 1 ? "s" : ""}</strong> chegaram hoje — todos via primeira conversa.`
+  if (ctx.newContacts > 0) {
+    return `👋 <strong>${ctx.newContacts} contato${ctx.newContacts > 1 ? "s" : ""} novo${ctx.newContacts > 1 ? "s" : ""}</strong> chegaram hoje.`
   }
   if (totalMsgs === 0) {
     return `🌙 Dia tranquilo, sem mensagens trocadas.`
@@ -307,7 +307,7 @@ ${dateFull}
 
 INTERAÇÕES TOTAIS: ${totalInteractions} (ontem: ${totalPrev})
 
-Novas conversas:        ${ctx.newConversations} (ontem: ${ctx.previous.newConversations})
+Conversas:              ${ctx.newConversations} (ontem: ${ctx.previous.newConversations})
 Novos contatos:         ${ctx.newContacts} (ontem: ${ctx.previous.newContacts})
 Mensagens recebidas:    ${ctx.messagesIn} (ontem: ${ctx.previous.messagesIn})
 Mensagens enviadas:     ${ctx.messagesOut} (ontem: ${ctx.previous.messagesOut})
@@ -352,7 +352,7 @@ Kora · ${ctx.appUrl}
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#0f172a;">
   <span style="display:none;font-size:1px;color:#f1f5f9;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">
-    ${totalInteractions} interações hoje · ${ctx.newConversations} novas conversas · ${ctx.newContacts} contatos novos
+    ${totalInteractions} interações hoje · ${ctx.newConversations} conversas · ${ctx.newContacts} contatos novos
   </span>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 16px;">
     <tr>
@@ -424,7 +424,7 @@ Kora · ${ctx.appUrl}
             <td style="padding:0 32px;">
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 <tr>
-                  ${kpiCard("Novas conversas", ctx.newConversations, ctx.previous.newConversations, "💬", true)}
+                  ${kpiCard("Conversas", ctx.newConversations, ctx.previous.newConversations, "💬", true)}
                   <td style="width:10px;"></td>
                   ${kpiCard("Novos contatos", ctx.newContacts, ctx.previous.newContacts, "👤")}
                 </tr>

@@ -526,7 +526,7 @@ export function InboxClient({
     setConversations((prev) => {
       const next = prev.map((c) =>
         c.id === convId
-          ? { ...c, last_message_at: temp.created_at, last_message_preview: content.slice(0, 100) }
+          ? { ...c, last_message_at: temp.created_at, last_message_preview: content.slice(0, 100), last_message_dir: "out" as const }
           : c
       )
       return next.sort((a, b) => {
@@ -575,7 +575,7 @@ export function InboxClient({
       const preview = caption || ({ image: "📷 Imagem", audio: isVoiceNote ? "🎤 Mensagem de voz" : "🎤 Áudio", video: "📹 Vídeo", document: "📎 Documento" } as Record<string, string>)[ctype]
       const next = prev.map((c) =>
         c.id === convId
-          ? { ...c, last_message_at: temp.created_at, last_message_preview: preview }
+          ? { ...c, last_message_at: temp.created_at, last_message_preview: preview, last_message_dir: "out" as const }
           : c
       )
       return next.sort((a, b) => {

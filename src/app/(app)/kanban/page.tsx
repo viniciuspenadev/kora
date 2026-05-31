@@ -19,7 +19,7 @@ export default async function KanbanPage({
 
   await ensurePipelineBootstrap(tenantId, session.user.id)
 
-  const [{ data: pipelines }, { data: tu }] = await Promise.all([
+  const [{ data: pipelines }, { data: tu }, { data: cfg }] = await Promise.all([
     supabaseAdmin
       .from("pipelines")
       .select("*")
@@ -32,7 +32,13 @@ export default async function KanbanPage({
       .eq("tenant_id", tenantId)
       .eq("user_id", session.user.id)
       .maybeSingle(),
+    supabaseAdmin
+      .from("tenant_config")
+      .select("kanban_tinted_columns")
+      .eq("tenant_id", tenantId)
+      .maybeSingle(),
   ])
+  const tintColumns = cfg?.kanban_tinted_columns ?? false
 
   if (!pipelines || pipelines.length === 0) {
     return <div className="p-6">Erro inicializando pipeline.</div>
@@ -161,6 +167,7 @@ export default async function KanbanPage({
         <ConversationKanban
           stages={(stages ?? []).filter((s) => s.show_in_kanban)}
           conversations={(conversations ?? []) as unknown as Parameters<typeof ConversationKanban>[0]["conversations"]}
+          tintColumns={tintColumns}
         />
       </div>
     </div>

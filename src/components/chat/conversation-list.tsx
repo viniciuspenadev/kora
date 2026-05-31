@@ -4,6 +4,7 @@ import { useState, useMemo, useRef, useEffect } from "react"
 import {
   Search, MessageCircle, AlertCircle, Loader2, Filter,
   Image as ImageIcon, Mic, Video, FileText, X, Plus, Users, ChevronDown,
+  ArrowUpRight, ArrowDownLeft, Smartphone,
 } from "lucide-react"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { NewConversationModal } from "./new-conversation-modal"
@@ -336,9 +337,20 @@ export function ConversationList({
             const contactTags = (!isGroup && conv.contact_id ? tagsByContact[conv.contact_id] ?? [] : [])
               .map((tid) => tagById[tid])
               .filter(Boolean)
-            const isStale     = conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD && conv.status !== "resolved"
+            // SLA: "a bola está com você" = última msg é do contato e a conversa não foi resolvida.
+            // Responder pelo app OU pelo celular vira last_message_dir 'out'/'out_phone' e zera o pendente,
+            // igual o relatório de SLA (que credita msg de agente — inclusive via celular — como resposta).
+            const awaitingReply = conv.last_message_dir === "in" && conv.status !== "resolved"
+            const isStale     = awaitingReply && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD
             const timeLabel   = conv.last_message_at ? formatTimeAgo(conv.last_message_at) : ""
             const mediaIcon   = inferMediaIcon(conv.last_message_preview)
+            const dirArrow    = !conv.last_message_preview
+              ? null
+              : conv.last_message_dir === "out_phone"
+                ? <Smartphone     className="size-3.5 text-emerald-500 shrink-0" />
+                : conv.last_message_dir === "out"
+                  ? <ArrowUpRight  className="size-3.5 text-emerald-500 shrink-0" />
+                  : <ArrowDownLeft className="size-3.5 text-sky-400 shrink-0" />
             const isSiteLead  = conv.channel === "site"
             const awaitingFirst = isSiteLead && /^(voltou|novo lead|lead via)/i.test(conv.last_message_preview ?? "")
             // Lead encaminhado pela IA e ainda sem atendente → aguardando na fila.
@@ -353,17 +365,17 @@ export function ConversationList({
                 key={conv.id}
                 type="button"
                 onClick={() => onSelect(conv.id)}
-                className={`relative w-full flex items-start gap-3 px-3 py-2.5 text-left transition-colors border-b border-slate-100 ${
+                className={`relative w-full flex items-start gap-3.5 px-4 py-3.5 text-left transition-colors border-b border-slate-100 ${
                   isActive
                     ? "bg-primary-50/60"
                     : "hover:bg-slate-50"
                 }`}
               >
                 {isActive && (
-                  <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full bg-primary" />
+                  <span className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full bg-primary" />
                 )}
                 <div className="relative shrink-0">
-                  <div className={`size-10 rounded-full flex items-center justify-center overflow-hidden ${
+                  <div className={`size-11 rounded-full flex items-center justify-center overflow-hidden ${
                     isGroup
                       ? "bg-amber-100 text-amber-700"
                       : isActive
@@ -373,26 +385,26 @@ export function ConversationList({
                     {isGroup ? (
                       conv.group_picture ? (
                         /* eslint-disable-next-line @next/next/no-img-element */
-                        <img src={conv.group_picture} alt="" className="size-10 object-cover" />
+                        <img src={conv.group_picture} alt="" className="size-11 object-cover" />
                       ) : (
                         <Users className="size-5" />
                       )
                     ) : contact?.profile_pic_url ? (
                       /* eslint-disable-next-line @next/next/no-img-element */
-                      <img src={contact.profile_pic_url} alt="" className="size-10 object-cover" />
+                      <img src={contact.profile_pic_url} alt="" className="size-11 object-cover" />
                     ) : (
-                      <span className="text-sm font-bold">{initial}</span>
+                      <span className="text-base font-bold">{initial}</span>
                     )}
                   </div>
                   {showSource && contact?.source && (
-                    <span className="absolute -bottom-0.5 -right-0.5 size-3.5 rounded-full bg-white ring-[1.5px] ring-white inline-flex items-center justify-center shadow-sm">
-                      <SourceLogo source={contact.source} size={11} />
+                    <span className="absolute -bottom-0.5 -right-0.5 size-4 rounded-full bg-white ring-[1.5px] ring-white inline-flex items-center justify-center shadow-sm">
+                      <SourceLogo source={contact.source} size={12} />
                     </span>
                   )}
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
+                  <div className="flex items-center gap-2 mb-1">
                     <span className="inline-flex items-center gap-1.5 min-w-0 flex-1">
                       <span className={`text-sm truncate ${hasUnread ? "font-bold text-slate-900" : "font-medium text-slate-700"}`}>
                         {name}
@@ -405,19 +417,20 @@ export function ConversationList({
                       )}
                     </span>
                     <span className="inline-flex items-center gap-1.5 shrink-0">
-                      {hasUnread && (
-                        <span className="size-2 rounded-full bg-primary-600 shrink-0 animate-pulse" title={`${conv.unread_count} não lida${conv.unread_count > 1 ? "s" : ""}`} />
-                      )}
                       {isStale && (
                         <AlertCircle className="size-3 text-red-500" />
                       )}
-                      <span className={`text-[10px] ${isStale ? "text-red-500 font-semibold" : "text-slate-400"}`}>
+                      <span className={`text-[11px] ${isStale ? "text-red-500 font-semibold" : "text-slate-400"}`}>
                         {timeLabel}
                       </span>
+                      {awaitingReply && (
+                        <span className="size-2 rounded-full bg-primary-600 shrink-0 animate-pulse" title="Aguardando sua resposta" />
+                      )}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-1.5">
+                    {dirArrow}
                     {mediaIcon}
                     <p className={`text-xs truncate flex-1 ${hasUnread ? "font-medium text-slate-700" : "text-slate-500"}`}>
                       {conv.last_message_preview ?? "Nova conversa"}
@@ -425,7 +438,7 @@ export function ConversationList({
                   </div>
 
                   {isWaiting && (
-                    <div className="mt-1">
+                    <div className="mt-1.5">
                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
                         <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
                         Aguardando atendimento
@@ -437,7 +450,7 @@ export function ConversationList({
                   )}
 
                   {hasFooter && (
-                    <div className="flex items-center gap-1.5 mt-1 text-[10px] text-slate-400 truncate">
+                    <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-slate-400 truncate">
                       {stage && !stage.name?.toLowerCase().includes("triagem") && (
                         <span
                           className="inline-flex items-center gap-1 shrink-0"
@@ -472,7 +485,7 @@ export function ConversationList({
 
                 {assignedTo && (
                   <span
-                    className="absolute bottom-1.5 right-2 size-5 rounded-full bg-primary-100 inline-flex items-center justify-center ring-2 ring-white shadow-sm"
+                    className="absolute bottom-3 right-3 size-5 rounded-full bg-primary-100 inline-flex items-center justify-center ring-2 ring-white shadow-sm"
                     title={`Atribuído a ${assignedTo}`}
                   >
                     <span className="text-[9px] font-bold text-primary-700">

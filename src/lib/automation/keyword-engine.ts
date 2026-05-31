@@ -177,6 +177,7 @@ export async function evaluateKeywordTriggers(input: EvaluateInput): Promise<boo
           .update({
             last_message_at:      new Date().toISOString(),
             last_message_preview: rendered.substring(0, 100),
+            last_message_dir:     "out",
             updated_at:           new Date().toISOString(),
           })
           .eq("id", conversationId)

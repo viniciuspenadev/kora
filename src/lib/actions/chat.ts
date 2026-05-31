@@ -322,6 +322,7 @@ export async function sendMessage(
     .update({
       last_message_at:     new Date().toISOString(),
       last_message_preview: content.substring(0, 100),
+      last_message_dir:     "out",
       updated_at:          new Date().toISOString(),
     })
     .eq("id", conversationId)
@@ -474,6 +475,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     .update({
       last_message_at:      new Date().toISOString(),
       last_message_preview: caption || previewLabels[mediaType] || "Mídia",
+      last_message_dir:     "out",
       updated_at:           new Date().toISOString(),
     })
     .eq("id", conversationId)

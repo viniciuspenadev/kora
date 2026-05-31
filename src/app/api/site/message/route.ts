@@ -73,6 +73,7 @@ export async function POST(req: NextRequest) {
     await supabaseAdmin.from("chat_conversations").update({
       last_message_at:      new Date().toISOString(),
       last_message_preview: text.substring(0, 100),
+      last_message_dir:     "in",
       updated_at:           new Date().toISOString(),
     }).eq("id", convId)
 
