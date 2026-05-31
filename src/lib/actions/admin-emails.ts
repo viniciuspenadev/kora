@@ -3,6 +3,8 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { runDailyReportForTenant } from "@/lib/reports/daily"
+import { getEmailTemplate } from "@/lib/email/catalog"
+import { sendEmail } from "@/lib/email/send"
 
 /**
  * Actions de teste de email no god mode (platform admin).
@@ -80,4 +82,35 @@ export async function adminSendDailyReportTest(opts: {
     reason:     result.reason,
     tenantName: result.tenantName,
   }
+}
+
+/**
+ * Envio de TESTE de qualquer template do catálogo (preview real via Resend)
+ * pra um único email. Não é broadcast — é só pra validar render/entrega.
+ */
+export async function adminSendTemplateTest(opts: {
+  slug:    string
+  toEmail: string
+}): Promise<{ ok: boolean; error?: string; configured?: boolean }> {
+  await requirePlatformAdmin()
+
+  const email = opts.toEmail.trim().toLowerCase()
+  if (!EMAIL_RE.test(email)) return { ok: false, error: "Email inválido" }
+
+  const tpl = getEmailTemplate(opts.slug)
+  if (!tpl) return { ok: false, error: "Template não encontrado" }
+
+  const built = tpl.build()
+  const res = await sendEmail({
+    to:           email,
+    subject:      built.subject,
+    html:         built.html,
+    text:         built.text,
+    templateSlug: opts.slug,
+    metadata:     { test: true },
+  })
+
+  if (res.ok) return { ok: true }
+  if (!res.configured) return { ok: false, configured: false, error: "Resend não configurado (RESEND_API_KEY / EMAIL_FROM)" }
+  return { ok: false, error: res.error }
 }

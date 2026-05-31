@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import { Mail, Eye, Zap, Code2, Sparkles, ExternalLink, Inbox, Send, X, CheckCircle2, AlertCircle, Loader2 } from "lucide-react"
-import { adminSendDailyReportTest, type TenantOption } from "@/lib/actions/admin-emails"
+import { adminSendDailyReportTest, adminSendTemplateTest, type TenantOption } from "@/lib/actions/admin-emails"
 
 export interface TemplateMeta {
   slug:        string
@@ -15,11 +15,12 @@ export interface TemplateMeta {
 }
 
 interface Props {
-  templates: TemplateMeta[]
-  tenants:   TenantOption[]
+  templates:       TemplateMeta[]
+  tenants:         TenantOption[]
+  defaultTestEmail: string
 }
 
-export function EmailsClient({ templates, tenants }: Props) {
+export function EmailsClient({ templates, tenants, defaultTestEmail }: Props) {
   const [activeSlug, setActiveSlug] = useState<string>(templates[0]?.slug ?? "")
   const active = templates.find((t) => t.slug === activeSlug) ?? templates[0]
   const [testOpen, setTestOpen] = useState(false)
@@ -99,7 +100,7 @@ export function EmailsClient({ templates, tenants }: Props) {
                     <h2 className="text-base font-bold text-slate-900">{active.name}</h2>
                     <p className="text-xs text-slate-500 mt-0.5">{active.description}</p>
                   </div>
-                  {active.slug === "daily_report" && (
+                  {(active.slug === "daily_report" || active.slug === "novidades") && (
                     <button
                       type="button"
                       onClick={() => setTestOpen(true)}
@@ -175,6 +176,82 @@ export function EmailsClient({ templates, tenants }: Props) {
           onClose={() => setTestOpen(false)}
         />
       )}
+
+      {testOpen && active?.slug === "novidades" && (
+        <SendMarketingTestModal
+          slug={active.slug}
+          defaultEmail={defaultTestEmail}
+          onClose={() => setTestOpen(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+function SendMarketingTestModal({ slug, defaultEmail, onClose }: { slug: string; defaultEmail: string; onClose: () => void }) {
+  const [email, setEmail] = useState(defaultEmail)
+  const [feedback, setFeedback] = useState<{ kind: "ok" | "err"; msg: string } | null>(null)
+  const [pending, startTransition] = useTransition()
+
+  function handleSend() {
+    setFeedback(null)
+    startTransition(async () => {
+      const r = await adminSendTemplateTest({ slug, toEmail: email })
+      if (r.ok) setFeedback({ kind: "ok", msg: `Enviado pra ${email}. Confira a caixa (e o spam).` })
+      else if (r.configured === false) setFeedback({ kind: "err", msg: "Resend não configurado (RESEND_API_KEY / EMAIL_FROM)." })
+      else setFeedback({ kind: "err", msg: r.error ?? "Falha ao enviar" })
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 inline-flex items-center gap-2">
+              <Send className="size-4 text-primary" />
+              Enviar teste — Novidades
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">Envia pra UM email só. Não é disparo em massa.</p>
+          </div>
+          <button onClick={onClose} className="size-8 rounded-lg hover:bg-slate-100 flex items-center justify-center">
+            <X className="size-4 text-slate-500" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Email destinatário</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="seuemail@exemplo.com"
+              className="w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white"
+            />
+            <p className="text-[11px] text-slate-500 mt-1">Renderiza com dados de exemplo (nome "Bernardo").</p>
+          </div>
+
+          {feedback && (
+            <div className={`flex items-start gap-2 p-2.5 rounded-lg text-xs ${
+              feedback.kind === "ok"
+                ? "bg-green-50 border border-green-200 text-green-800"
+                : "bg-red-50 border border-red-200 text-red-800"
+            }`}>
+              {feedback.kind === "ok" ? <CheckCircle2 className="size-4 shrink-0 mt-0.5" /> : <AlertCircle className="size-4 shrink-0 mt-0.5" />}
+              <span>{feedback.msg}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+          <button type="button" onClick={onClose} disabled={pending} className="h-9 px-4 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50">Cancelar</button>
+          <button type="button" onClick={handleSend} disabled={pending || !email} className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary text-white hover:bg-primary-700 inline-flex items-center gap-1.5 disabled:opacity-50">
+            {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+            Enviar teste
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

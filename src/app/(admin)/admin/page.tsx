@@ -3,7 +3,7 @@ import Link from "next/link"
 import {
   Building2, MessageCircle, Mail, Activity, Brain, AlertTriangle, ShieldAlert,
   TrendingUp, TrendingDown, Minus, Boxes, Gauge, Clock, FileText,
-  ChevronRight, Server, CheckCircle2, Zap, Inbox,
+  ChevronRight, Server, CheckCircle2,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -19,13 +19,6 @@ const PLAN_LABELS: Record<string, string> = {
 }
 const PLAN_BAR: Record<string, string> = {
   trial: "bg-amber-400", starter: "bg-sky-400", pro: "bg-emerald-400", enterprise: "bg-violet-400",
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  open: "Em aberto", pending: "Pendentes", resolved: "Resolvidas", snoozed: "Pausadas",
-}
-const STATUS_COLOR: Record<string, string> = {
-  open: "#0ea5e9", pending: "#f59e0b", resolved: "#22c55e", snoozed: "#a78bfa",
 }
 
 const ACTION_LABEL: Record<string, string> = {
@@ -55,14 +48,6 @@ function formatRelative(iso: string): string {
   if (days < 30)   return `${days}d`
   return `${Math.floor(days / 30)}m`
 }
-function formatDuration(seconds: number): string {
-  if (seconds < 60)   return `${Math.round(seconds)}s`
-  const min = seconds / 60
-  if (min < 60)       return `${min.toFixed(1)}min`
-  const hr = min / 60
-  if (hr < 24)        return `${hr.toFixed(1)}h`
-  return `${(hr / 24).toFixed(1)}d`
-}
 function deltaSymbol(curr: number, prev: number) {
   if (prev === 0 && curr === 0) return { sym: Minus, tone: "text-slate-400", pct: 0 }
   if (prev === 0)                return { sym: TrendingUp, tone: "text-emerald-600", pct: 100 }
@@ -90,22 +75,20 @@ export default async function AdminDashboardPage() {
     { count: instanceNoSecret },
     { count: msgs24h },
     { count: msgsPrev24h },
-    { count: openConversations },
     { count: pendingInvites },
     { count: contactCount },
     { count: messageCount },
     { count: userCount },
     msgsPerDayRaw,
     msgs7dRaw,
-    convByStatusRaw,
-    firstResponseRaw,
+    aiRuns30dRaw,
     activeTenants24hRaw,
+    activeTenants30dRaw,
     instanceStatusGroups,
     planGroups,
     topTenants,
     setupIncomplete,
     recentAudit,
-    limitedTenants,
     tenantsRecent,
   ] = await Promise.all([
     supabaseAdmin.from("tenants").select("id", { count: "exact", head: true }),
@@ -115,7 +98,6 @@ export default async function AdminDashboardPage() {
     supabaseAdmin.from("whatsapp_instances").select("id", { count: "exact", head: true }).is("webhook_secret", null),
     supabaseAdmin.from("chat_messages").select("id", { count: "exact", head: true }).gte("created_at", day24),
     supabaseAdmin.from("chat_messages").select("id", { count: "exact", head: true }).gte("created_at", day48).lt("created_at", day24),
-    supabaseAdmin.from("chat_conversations").select("id", { count: "exact", head: true }).in("status", ["open", "pending"]),
     supabaseAdmin.from("invites").select("id", { count: "exact", head: true }).is("accepted_at", null).gte("expires_at", now.toISOString()),
     supabaseAdmin.from("chat_contacts").select("id", { count: "exact", head: true }),
     supabaseAdmin.from("chat_messages").select("id", { count: "exact", head: true }),
@@ -134,26 +116,23 @@ export default async function AdminDashboardPage() {
       .select("created_at")
       .gte("created_at", day7),
 
-    // Conversas por status (donut)
+    // IA: tokens + custo (últimos 30 dias) — agregado client-side
     supabaseAdmin
-      .from("chat_conversations")
-      .select("status"),
-
-    // Tempo médio 1ª resposta (últimos 7 dias)
-    // Pra cada conversa: min(msg agent) - min(msg contact). Calcula client-side.
-    supabaseAdmin
-      .from("chat_messages")
-      .select("conversation_id, sender_type, created_at")
-      .in("sender_type", ["contact", "agent"])
-      .gte("created_at", day7)
-      .order("created_at", { ascending: true })
-      .limit(5000),
+      .from("ai_runs")
+      .select("input_tokens, output_tokens, cost_usd")
+      .gte("created_at", day30),
 
     // Tenants ativos nas últimas 24h (distintos com mensagem)
     supabaseAdmin
       .from("chat_messages")
       .select("tenant_id")
       .gte("created_at", day24),
+
+    // Tenants ativos nos últimos 30 dias (pra calcular inativos)
+    supabaseAdmin
+      .from("chat_messages")
+      .select("tenant_id")
+      .gte("created_at", day30),
 
     supabaseAdmin.from("whatsapp_instances").select("status"),
     supabaseAdmin.from("tenants").select("plan"),
@@ -175,12 +154,6 @@ export default async function AdminDashboardPage() {
       .from("audit_log")
       .select("id, action, target_type, target_id, actor_email, created_at, tenant_id, tenants(name, slug)")
       .order("created_at", { ascending: false })
-      .limit(12),
-
-    supabaseAdmin
-      .from("tenant_limits")
-      .select("tenant_id, resource, max_value, expires_at, tenants(name, slug)")
-      .order("set_at", { ascending: false })
       .limit(12),
 
     supabaseAdmin
@@ -217,35 +190,18 @@ export default async function AdminDashboardPage() {
   }
   const spark7d = Array.from(sparkBucket.values())
 
-  // Conversas por status
-  const convByStatus: Record<string, number> = { open: 0, pending: 0, resolved: 0, snoozed: 0 }
-  for (const r of convByStatusRaw.data ?? []) {
-    if (r.status in convByStatus) convByStatus[r.status]++
-    else                          convByStatus[r.status] = (convByStatus[r.status] ?? 0) + 1
+  // IA: tokens + custo (30d) — custo direto da Kora (margem)
+  let aiTokens = 0
+  let aiCostUsd = 0
+  for (const r of aiRuns30dRaw.data ?? []) {
+    aiTokens  += (r.input_tokens ?? 0) + (r.output_tokens ?? 0)
+    aiCostUsd += Number(r.cost_usd ?? 0)
   }
-  const convTotal = Object.values(convByStatus).reduce((a, b) => a + b, 0)
 
-  // Tempo médio de 1ª resposta (7d)
-  const convMessages = new Map<string, { firstContact?: number; firstAgent?: number }>()
-  for (const m of firstResponseRaw.data ?? []) {
-    const ts = new Date(m.created_at).getTime()
-    const entry = convMessages.get(m.conversation_id) ?? {}
-    if (m.sender_type === "contact" && (!entry.firstContact || ts < entry.firstContact)) entry.firstContact = ts
-    if (m.sender_type === "agent"   && (!entry.firstAgent   || ts < entry.firstAgent))   entry.firstAgent   = ts
-    convMessages.set(m.conversation_id, entry)
-  }
-  const responseTimes: number[] = []
-  for (const { firstContact, firstAgent } of convMessages.values()) {
-    if (firstContact && firstAgent && firstAgent > firstContact) {
-      responseTimes.push((firstAgent - firstContact) / 1000)
-    }
-  }
-  const avgResponseSec = responseTimes.length > 0
-    ? responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length
-    : null
-
-  // Tenants ativos nas últimas 24h
+  // Tenants ativos nas últimas 24h / 30 dias + inativos (radar de churn)
   const activeTenantsToday = new Set((activeTenants24hRaw.data ?? []).map((r) => r.tenant_id)).size
+  const activeTenants30d   = new Set((activeTenants30dRaw.data ?? []).map((r) => r.tenant_id)).size
+  const inativos30d        = Math.max(0, (activeTenantCount ?? 0) - activeTenants30d)
 
   // Top tenants por volume mês
   const topMap = new Map<string, { name: string; slug: string; plan: string; count: number; id: string }>()
@@ -324,61 +280,37 @@ export default async function AdminDashboardPage() {
             }
           />
           <Kpi
-            label="Conversas em andamento"
-            value={openConversations ?? 0}
-            subtitle="open + pending na plataforma"
-            icon={Inbox}
-            tone={(openConversations ?? 0) > 50 ? "warning" : "primary"}
+            label="Tokens IA · 30d"
+            value={formatNum(aiTokens)}
+            subtitle={aiTokens === 0 ? "Sem uso de IA no período" : `≈ US$ ${aiCostUsd.toFixed(2)} em custo`}
+            icon={Brain}
+            tone="primary"
           />
           <Kpi
-            label="1ª resposta média 7d"
-            value={avgResponseSec === null ? "—" : formatDuration(avgResponseSec)}
-            subtitle={
-              avgResponseSec === null
-                ? "Sem dados suficientes"
-                : `${responseTimes.length} ${responseTimes.length === 1 ? "conversa" : "conversas"} analisadas`
-            }
-            icon={Zap}
-            tone={avgResponseSec === null ? "neutral" : avgResponseSec < 60 ? "success" : avgResponseSec < 300 ? "primary" : "warning"}
+            label="Tenants inativos · 30d"
+            value={inativos30d}
+            subtitle={`${activeTenants30d} ativos no período · ${activeTenantCount ?? 0} no total`}
+            icon={Building2}
+            tone={inativos30d > 0 ? "warning" : "success"}
           />
         </div>
 
-        {/* ─── Charts: msgs/dia + conversas por status + dist WA ─── */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-
-          {/* Mensagens por dia (30d) — span 2 cols */}
-          <div className="xl:col-span-2">
-            <SectionCard
-              title={
-                <span className="flex items-center gap-2">
-                  <MessageCircle className="size-3.5 text-primary-600" />
-                  Mensagens por dia · últimos 30 dias
-                </span>
-              }
-              actions={
-                <span className="text-[10px] text-slate-400 tabular-nums">
-                  total: <strong className="text-slate-700">{formatNum(msgsPerDay.reduce((a, b) => a + b.value, 0))}</strong>
-                </span>
-              }
-            >
-              <DailyBarsChart data={msgsPerDay} />
-            </SectionCard>
-          </div>
-
-          {/* Conversas por status + dist WA */}
-          <div className="space-y-3 flex flex-col">
-            <SectionCard
-              title={
-                <span className="flex items-center gap-2">
-                  <Inbox className="size-3.5 text-primary-600" />
-                  Conversas por status
-                </span>
-              }
-            >
-              <ConvStatusDonut data={convByStatus} total={convTotal} />
-            </SectionCard>
-          </div>
-        </div>
+        {/* ─── Volume de mensagens (30d) ─── */}
+        <SectionCard
+          title={
+            <span className="flex items-center gap-2">
+              <MessageCircle className="size-3.5 text-primary-600" />
+              Mensagens por dia · últimos 30 dias
+            </span>
+          }
+          actions={
+            <span className="text-[10px] text-slate-400 tabular-nums">
+              total: <strong className="text-slate-700">{formatNum(msgsPerDay.reduce((a, b) => a + b.value, 0))}</strong>
+            </span>
+          }
+        >
+          <DailyBarsChart data={msgsPerDay} />
+        </SectionCard>
 
         {/* ─── Saúde + distribuições + pendências ─── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -480,11 +412,8 @@ export default async function AdminDashboardPage() {
           </SectionCard>
         </div>
 
-        {/* ─── Top tenants + Limites custom ─── */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-
-          <div className="xl:col-span-2">
-            <SectionCard
+        {/* ─── Top tenants este mês ─── */}
+        <SectionCard
               title={
                 <span className="flex items-center gap-2">
                   <TrendingUp className="size-3.5 text-primary-600" />
@@ -534,45 +463,7 @@ export default async function AdminDashboardPage() {
                   ))}
                 </div>
               )}
-            </SectionCard>
-          </div>
-
-          <SectionCard
-            title={
-              <span className="flex items-center gap-2">
-                <Gauge className="size-3.5 text-primary-600" />
-                Limites custom
-              </span>
-            }
-          >
-            {(limitedTenants.data?.length ?? 0) === 0 ? (
-              <p className="text-xs text-slate-500 italic py-2">Nenhum tenant com override.</p>
-            ) : (
-              <div className="space-y-1 max-h-[260px] overflow-y-auto">
-                {(limitedTenants.data ?? []).slice(0, 12).map((l, idx) => {
-                  const t = l.tenants as unknown as { name: string; slug: string } | null
-                  const exp = l.expires_at ? new Date(l.expires_at) : null
-                  const expired = exp && exp.getTime() < Date.now()
-                  return (
-                    <Link
-                      key={`${l.tenant_id}-${l.resource}-${idx}`}
-                      href={`/admin/tenants/${l.tenant_id}/limites`}
-                      className="block px-2 py-1.5 rounded hover:bg-slate-50"
-                    >
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="font-semibold text-slate-900 truncate flex-1 min-w-0">{t?.name ?? "—"}</span>
-                        <span className="text-[10px] text-slate-400 font-mono">{l.resource}</span>
-                        <span className={`text-[11px] font-bold tabular-nums ${expired ? "text-slate-400 line-through" : "text-primary-700"}`}>
-                          {l.max_value === null ? "∞" : formatNum(l.max_value)}
-                        </span>
-                      </div>
-                    </Link>
-                  )
-                })}
-              </div>
-            )}
-          </SectionCard>
-        </div>
+        </SectionCard>
 
         {/* ─── Audit log + Tenants recentes ─── */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
@@ -698,72 +589,6 @@ function DailyBarsChart({ data }: { data: { date: string; value: number }[] }) {
         <span>{data[0]?.date.slice(5)}</span>
         <span>{data[Math.floor(data.length / 2)]?.date.slice(5)}</span>
         <span>{data[data.length - 1]?.date.slice(5)} (hoje)</span>
-      </div>
-    </div>
-  )
-}
-
-function ConvStatusDonut({ data, total }: { data: Record<string, number>; total: number }) {
-  if (total === 0) {
-    return (
-      <div className="flex items-center justify-center h-32 text-xs text-slate-500 italic">
-        Nenhuma conversa ainda
-      </div>
-    )
-  }
-
-  const radius     = 50
-  const stroke     = 14
-  const circumference = 2 * Math.PI * radius
-  const entries = Object.entries(data).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
-
-  let offset = 0
-  const segments = entries.map(([status, qty]) => {
-    const pct    = qty / total
-    const dash   = circumference * pct
-    const seg    = { status, qty, pct, dash, dashOffset: -offset }
-    offset += dash
-    return seg
-  })
-
-  return (
-    <div className="flex items-center gap-4">
-      {/* Donut */}
-      <div className="relative shrink-0">
-        <svg width="120" height="120" viewBox="0 0 120 120">
-          <circle cx="60" cy="60" r={radius} fill="none" stroke="#f1f5f9" strokeWidth={stroke} />
-          {segments.map((s) => (
-            <circle
-              key={s.status}
-              cx="60" cy="60" r={radius}
-              fill="none"
-              stroke={STATUS_COLOR[s.status] ?? "#64748b"}
-              strokeWidth={stroke}
-              strokeDasharray={`${s.dash} ${circumference}`}
-              strokeDashoffset={s.dashOffset}
-              transform="rotate(-90 60 60)"
-              strokeLinecap="butt"
-            >
-              <title>{`${STATUS_LABEL[s.status] ?? s.status}: ${s.qty} (${Math.round(s.pct * 100)}%)`}</title>
-            </circle>
-          ))}
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <p className="text-xl font-bold text-slate-900 tabular-nums">{total}</p>
-          <p className="text-[9px] text-slate-500 uppercase tracking-wider">total</p>
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div className="flex-1 min-w-0 space-y-1.5">
-        {entries.map(([status, qty]) => (
-          <div key={status} className="flex items-center gap-2">
-            <span className="size-2.5 rounded-sm shrink-0" style={{ background: STATUS_COLOR[status] ?? "#64748b" }} />
-            <span className="text-xs text-slate-600 flex-1 truncate">{STATUS_LABEL[status] ?? status}</span>
-            <span className="text-xs font-bold text-slate-900 tabular-nums">{qty}</span>
-            <span className="text-[10px] text-slate-400 tabular-nums w-9 text-right">{Math.round((qty / total) * 100)}%</span>
-          </div>
-        ))}
       </div>
     </div>
   )

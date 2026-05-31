@@ -16,7 +16,9 @@
  *   3. Aparece automaticamente em /admin/emails
  */
 
-import { buildInviteEmail, buildDailyReportEmail } from "./send"
+import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail } from "./send"
+
+const WA = "https://wa.me/5511987253394"
 
 export interface EmailTemplateMeta {
   slug:        string
@@ -79,6 +81,22 @@ export const EMAIL_CATALOG: EmailTemplateMeta[] = [
         fromAdLeads:      1,
       },
       appUrl:           "https://kora.bluedigitalhub.com.br",
+    }),
+  },
+  {
+    slug:        "novidades",
+    name:        "Novidades (marketing)",
+    description: "Recap de tudo que o Kora ganhou desde o lançamento + upsell da Kora IA (Pro/Enterprise). Campanha manual.",
+    trigger:     "Disparo manual pelo god mode (não automático). Use 'Enviar teste' antes de qualquer campanha.",
+    variables: [
+      { key: "primeiro_nome",   description: "Primeiro nome do destinatário",          example: "Bernardo" },
+      { key: "unsubscribe_url", description: "Link de descadastro (compliance)",        example: "https://app/unsub/token" },
+    ],
+    build: () => buildNovidadesEmail({
+      firstName:      "Bernardo",
+      unsubscribeUrl: "https://kora.bluedigitalhub.com.br/descadastro",
+      waLink:         `${WA}?text=${encodeURIComponent("Oi! Quero saber mais sobre o Kora.")}`,
+      waLinkAI:       `${WA}?text=${encodeURIComponent("Oi! Quero ativar a Kora IA (Pro/Enterprise).")}`,
     }),
   },
 ]

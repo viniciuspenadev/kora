@@ -511,6 +511,175 @@ Kora · ${ctx.appUrl}
   return { subject, html, text }
 }
 
+// ── Novidades (marketing) ─────────────────────────────────────────
+
+export interface NovidadesEmailContext {
+  firstName:      string
+  unsubscribeUrl: string
+  waLink:         string  // CTA principal "Falar no WhatsApp"
+  waLinkAI:       string  // CTA upgrade "Ativar a Kora IA"
+}
+
+/**
+ * Email de novidades (marketing). Design alinhado ao site oficial:
+ * Inter, azul Kora #004add, navy #001548 nos blocos dramáticos, CTA azul pill.
+ * Fonte canônica do HTML: docs/email-novidades-kora.html.
+ */
+export function buildNovidadesEmail(ctx: NovidadesEmailContext): { subject: string; html: string; text: string } {
+  const subject = "Tudo que o Kora ganhou pra você vender mais no WhatsApp 🚀"
+  const base = getAppBaseUrl()
+  const logoWhiteUrl = "https://kora.bluedigitalhub.com.br/logo_kora_branco.png"
+  const logoUrl      = "https://kora.bluedigitalhub.com.br/logo_kora.png"
+  void base
+
+  const text = `Oi, ${ctx.firstName}!
+
+Desde que você começou no Kora, a gente não parou de construir. Veja tudo que evoluiu:
+
+• Um atendimento que flui — inbox multi-atendente, setas de direção e menu de botão direito.
+• Vender de forma organizada — funil Kanban com cores personalizáveis.
+• No piloto automático — boas-vindas, horário comercial e gatilhos por palavra-chave.
+• Além do WhatsApp — chat no site (com Kora IA nos planos Pro e Enterprise).
+• Decisões com dados — relatórios de SLA, funil, origem e anúncios.
+
+KORA IA (exclusivo Pro e Enterprise): o atendente que qualifica seus leads, salva os dados no cadastro, responde no WhatsApp e no site, e encaminha pro setor certo.
+
+Ativar a Kora IA: ${ctx.waLinkAI}
+Falar no WhatsApp: ${ctx.waLink}
+
+— Equipe Kora`
+
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>${escapeHtml(subject)}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body,table,td,a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table,td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    img { -ms-interpolation-mode:bicubic; border:0; outline:none; text-decoration:none; display:block; }
+    body { margin:0; padding:0; width:100%!important; background:#f1f5f9; }
+    a { color:#004add; }
+    @media only screen and (max-width:600px){
+      .container { width:100%!important; }
+      .px { padding-left:24px!important; padding-right:24px!important; }
+      .hero-h1 { font-size:28px!important; line-height:34px!important; }
+      .stack { display:block!important; width:100%!important; }
+      .feat-ico { margin-bottom:10px!important; }
+    }
+  </style>
+</head>
+<body style="margin:0; padding:0; background:#f1f5f9;">
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; font-size:1px; line-height:1px; color:#f1f5f9;">
+    Inbox, funil, automação e a Kora IA qualificando seus leads no WhatsApp e no site.
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+        <table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px; max-width:600px; background:#ffffff; border-radius:20px; overflow:hidden; box-shadow:0 10px 34px rgba(0,37,122,.10); font-family:'Inter',-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+          <tr>
+            <td bgcolor="#001548" style="background:#001548; background:linear-gradient(160deg,#003db8 0%,#001548 60%,#001033 100%);">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr><td class="px" style="padding:36px 44px 6px 44px;"><img src="${logoWhiteUrl}" width="104" alt="Kora" style="width:104px; height:auto;"></td></tr>
+                <tr><td class="px" style="padding:22px 44px 44px 44px;">
+                  <p style="margin:0 0 14px 0; font-size:12px; font-weight:600; letter-spacing:2.5px; text-transform:uppercase; color:#92acff;">Novidades</p>
+                  <h1 class="hero-h1" style="margin:0 0 14px 0; font-size:34px; line-height:40px; font-weight:800; letter-spacing:-0.8px; color:#ffffff;">Seu WhatsApp,<br>uma operação inteira.</h1>
+                  <p style="margin:0; font-size:16px; line-height:24px; color:#cdd6ee;">Desde que você começou no Kora, a gente não parou de construir. Veja tudo que evoluiu pra você <strong style="color:#ffffff;">vender mais e atender melhor</strong>.</p>
+                </td></tr>
+              </table>
+            </td>
+          </tr>
+          <tr><td class="px" style="padding:36px 44px 4px 44px;"><p style="margin:0; font-size:16px; line-height:24px; color:#334155;">Oi, <strong style="color:#0f172a;">${escapeHtml(ctx.firstName)}</strong> 👋</p></td></tr>
+
+          ${feature("💬", "Um atendimento que flui", "Inbox multi-atendente com mídia, áudios e grupos. Agora com lista mais limpa, <strong style=\"color:#334155;\">setas que mostram quem falou por último</strong> (você, o cliente ou pelo celular) e menu de botão direito pra fixar, marcar pendente e atribuir.", "20px")}
+          ${divider()}
+          ${feature("📊", "Vender de forma organizada", "Funil de vendas em Kanban: arraste conversas entre etapas, marque ganho ou perdido e personalize as cores das colunas do seu jeito.")}
+          ${divider()}
+          ${feature("⚙️", "No piloto automático", "Boas-vindas, aviso de horário comercial e gatilhos por palavra-chave respondendo sozinhos — com variáveis personalizadas como {primeiro_nome} e {empresa}.")}
+          ${divider()}
+          ${feature("🌐", "Além do WhatsApp", "Atenda também pelo <strong style=\"color:#334155;\">chat no seu site</strong>, sem perder o histórico. E nos planos <strong style=\"color:#004add;\">Pro e Enterprise</strong>, a <strong style=\"color:#004add;\">Kora IA</strong> responde no site automaticamente.")}
+          ${divider()}
+          ${feature("📈", "Decisões com dados", "Relatórios de atendimento, SLA de resposta, funil de vendas, origem dos contatos e desempenho dos seus anúncios Click-to-WhatsApp.", "24px", "4px")}
+
+          <tr>
+            <td class="px" style="padding:32px 44px 8px 44px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-radius:18px; overflow:hidden;">
+                <tr>
+                  <td bgcolor="#001548" style="background:#001548; background:linear-gradient(160deg,#00257a 0%,#001548 55%,#001033 100%); padding:34px 30px;">
+                    <span style="display:inline-block; background:rgba(94,133,255,.16); color:#b7c8ff; font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; padding:6px 13px; border-radius:999px;">✦ Exclusivo Pro &amp; Enterprise</span>
+                    <h2 style="margin:16px 0 10px 0; font-size:24px; line-height:30px; font-weight:800; color:#ffffff; letter-spacing:-0.4px;">Kora IA: o atendente que<br>qualifica seus leads</h2>
+                    <p style="margin:0 0 20px 0; font-size:15px; line-height:23px; color:#cdd6ee;">Mais que um chatbot — uma IA dedicada, treinada com a <strong style="color:#ffffff;">persona e o conhecimento da sua empresa</strong>, trabalhando 24/7 por você:</p>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                      <tr><td style="padding:6px 0; font-size:14px; line-height:20px; color:#e7ecfb;">🎯&nbsp;&nbsp;<strong style="color:#ffffff;">Qualifica o lead</strong> e salva nome, telefone e e-mail no cadastro</td></tr>
+                      <tr><td style="padding:6px 0; font-size:14px; line-height:20px; color:#e7ecfb;">💬&nbsp;&nbsp;Responde no <strong style="color:#ffffff;">WhatsApp e no site</strong>, com tom humano</td></tr>
+                      <tr><td style="padding:6px 0; font-size:14px; line-height:20px; color:#e7ecfb;">🔀&nbsp;&nbsp;<strong style="color:#ffffff;">Encaminha pro setor certo</strong> quando precisa de um humano</td></tr>
+                      <tr><td style="padding:6px 0; font-size:14px; line-height:20px; color:#e7ecfb;">📣&nbsp;&nbsp;Sabe de <strong style="color:#ffffff;">qual anúncio</strong> o cliente veio e abre no contexto</td></tr>
+                    </table>
+                    <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:26px;">
+                      <tr><td align="center" bgcolor="#004add" style="border-radius:999px; background:#004add;"><a href="${ctx.waLinkAI}" target="_blank" style="display:inline-block; padding:15px 30px; font-size:15px; font-weight:700; color:#ffffff; text-decoration:none; border-radius:999px;">Ativar a Kora IA&nbsp;&nbsp;→</a></td></tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="px" style="padding:30px 44px 10px 44px;" align="center">
+              <p style="margin:0 0 18px 0; font-size:15px; line-height:22px; color:#475569;">Ficou com alguma dúvida? A gente te ajuda em minutos.</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" align="center">
+                <tr><td align="center" bgcolor="#004add" style="border-radius:999px; background:#004add;"><a href="${ctx.waLink}" target="_blank" style="display:inline-block; padding:15px 32px; font-size:15px; font-weight:700; color:#ffffff; text-decoration:none; border-radius:999px;">Falar no WhatsApp</a></td></tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:32px 44px 36px 44px; border-top:1px solid #eef2f7;">
+              <img src="${logoUrl}" width="84" alt="Kora" style="width:84px; height:auto; margin-bottom:12px;">
+              <p style="margin:0 0 14px 0; font-size:12px; line-height:18px; color:#94a3b8;">WhatsApp + IA com toque humano. Atendimento e vendas no piloto inteligente.</p>
+              <p style="margin:0; font-size:11px; line-height:17px; color:#b6c0cf;">Você recebe este email porque tem uma conta no Kora.<br><a href="${ctx.unsubscribeUrl}" style="color:#94a3b8; text-decoration:underline;">Cancelar inscrição</a> &nbsp;·&nbsp; BlueDigitalHub · contato@bluedigitalhub.com.br</p>
+            </td>
+          </tr>
+        </table>
+        <table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" style="width:600px; max-width:600px;">
+          <tr><td align="center" style="padding:18px 12px; font-size:11px; color:#aab4c4; font-family:'Inter',-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">© Kora · feito pra quem vende no WhatsApp</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+
+  return { subject, html, text }
+}
+
+/** Linha de feature (ícone + título + texto) do email de novidades. */
+function feature(icon: string, title: string, body: string, padTop = "24px", padBottom = "0"): string {
+  return `<tr>
+    <td class="px" style="padding:${padTop} 44px ${padBottom} 44px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td class="feat-ico stack" width="52" valign="top" style="width:52px;">
+            <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="width:44px; height:44px; background:#eef2ff; border-radius:12px; text-align:center; vertical-align:middle; font-size:20px;">${icon}</td></tr></table>
+          </td>
+          <td class="stack" valign="top" style="padding-left:16px;">
+            <p style="margin:0 0 4px 0; font-size:16px; font-weight:700; color:#0f172a;">${title}</p>
+            <p style="margin:0; font-size:14px; line-height:21px; color:#64748b;">${body}</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>`
+}
+
+function divider(): string {
+  return `<tr><td class="px" style="padding:24px 44px 0 44px;"><div style="border-top:1px solid #eef2f7; line-height:1px; font-size:1px;">&nbsp;</div></td></tr>`
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
