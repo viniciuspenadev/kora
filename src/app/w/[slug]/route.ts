@@ -82,7 +82,7 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
   // ─── CSS ───────────────────────────────────────────────────
   var CSS = ''
     // Tokens
-    + ':host,.kw-root{--kw-radius:16px;--kw-shadow-fab:0 8px 24px rgba(15,23,42,.18);--kw-shadow-win:0 24px 64px rgba(15,23,42,.16),0 2px 8px rgba(15,23,42,.06);--kw-ai-1:#60a5fa;--kw-ai-2:#c084fc;--kw-ai-3:#f472b6}'
+    + ':root{--kw-radius:20px;--kw-shadow-fab:0 8px 24px rgba(15,23,42,.18);--kw-shadow-win:0 24px 64px rgba(15,23,42,.16),0 2px 8px rgba(15,23,42,.06);--kw-ai-1:#60a5fa;--kw-ai-2:#c084fc;--kw-ai-3:#f472b6}'
     // FAB
     + '.kw-fab{position:fixed;z-index:2147483600;width:56px;height:56px;border-radius:50%;border:0;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#fff;box-shadow:var(--kw-shadow-fab);transition:transform .25s cubic-bezier(.4,0,.2,1),box-shadow .25s;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;opacity:0;transform:scale(.6);animation:kw-fab-in .35s cubic-bezier(.4,0,.2,1) forwards}'
     + '@keyframes kw-fab-in{to{opacity:1;transform:scale(1)}}'
@@ -95,6 +95,9 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     + '@keyframes kw-pulse{0%{transform:scale(1);opacity:.35}80%,100%{transform:scale(1.5);opacity:0}}'
     + '.kw-fab.kw-shake{animation:kw-fab-in .35s cubic-bezier(.4,0,.2,1) forwards,kw-shake .55s ease-in-out 2 .4s}'
     + '@keyframes kw-shake{0%,100%{translate:0 0}20%{translate:-4px 0}40%{translate:4px 0}60%{translate:-3px 0}80%{translate:3px 0}}'
+    // FAB em modo "fechar" (X) quando o chat está aberto
+    + '.kw-fab.kw-fab-open svg{animation:kw-x-in .25s cubic-bezier(.4,0,.2,1)}'
+    + '@keyframes kw-x-in{from{transform:rotate(-90deg);opacity:0}to{transform:rotate(0);opacity:1}}'
     // FAB tooltip (acena verbal)
     + '.kw-fab-tip{position:fixed;z-index:2147483599;background:#fff;color:#0f172a;padding:9px 14px;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.14);font:500 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;max-width:240px;display:flex;align-items:center}'
     + '.kw-fab-tip.kw-br{bottom:32px;right:86px;border-bottom-right-radius:4px;transform:translateX(8px)}'
@@ -294,11 +297,6 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     cfg.button_color = color; // sanitiza no objeto pra todos os usos downstream
     root.style.setProperty('--kw-primary', color);
     root.style.setProperty('--kw-primary-alpha', hexToRgba(color, 0.18));
-    // Cores do orb da IA (garante que o conic-gradient renderize — os elementos
-    // ficam no body, fora de qualquer :host/.kw-root onde estavam só declaradas).
-    root.style.setProperty('--kw-ai-1', '#60a5fa');
-    root.style.setProperty('--kw-ai-2', '#c084fc');
-    root.style.setProperty('--kw-ai-3', '#f472b6');
   }
 
   function renderFab(cfg){
@@ -311,17 +309,34 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     fab.innerHTML = ''
       + '<span class="kw-fab-pulse" style="background:' + (cfg.button_color || '#004add') + '"></span>'
       + '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.37 5.06L2 22l5.06-1.37C8.55 21.5 10.22 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm.04 18.13c-1.55 0-2.99-.46-4.21-1.24l-.3-.18-3.12.84.84-3.04-.2-.32C4.27 15 3.83 13.55 3.83 12c0-4.51 3.67-8.17 8.21-8.17 2.19 0 4.25.85 5.8 2.4 1.55 1.55 2.4 3.61 2.4 5.8 0 4.51-3.66 8.17-8.2 8.17zm4.48-6.13c-.25-.13-1.45-.71-1.67-.8-.23-.08-.39-.13-.55.13-.16.25-.63.79-.77.96-.14.16-.28.18-.53.06-.25-.13-1.05-.39-2-1.23-.74-.66-1.24-1.47-1.38-1.72-.14-.25-.02-.39.11-.51.11-.11.25-.29.38-.43.13-.14.17-.25.25-.41.08-.16.04-.31-.02-.43-.06-.13-.55-1.33-.76-1.82-.2-.48-.41-.41-.55-.41-.14-.01-.31-.01-.47-.01-.16 0-.43.06-.66.31-.23.25-.86.84-.86 2.04 0 1.2.88 2.37 1 2.53.13.16 1.72 2.63 4.17 3.69.58.25 1.04.4 1.4.51.59.19 1.12.16 1.55.1.47-.07 1.45-.59 1.66-1.16.2-.57.2-1.06.14-1.16-.06-.11-.22-.17-.47-.3z"/></svg>';
-    fab.addEventListener('click', function(){
-      if (tip && tip.parentNode) tip.remove();
-      clearTimeout(tipTimer); clearTimeout(tipHide); clearTimeout(shakeTimer);
-      openWindow(cfg);
-      fab.style.display='none';
-    });
+    // FAB vira toggle: abre o chat e troca pro ícone "X"; clicando de novo, fecha.
+    var chatHTML = fab.innerHTML;
+    var CLOSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    var win = null;
+    function killHints(){ if (tip && tip.parentNode) tip.remove(); clearTimeout(tipTimer); clearTimeout(tipHide); clearTimeout(shakeTimer); fab.classList.remove('kw-shake'); }
+    function closeChat(){
+      if (!win) return;
+      var w = win; win = null;
+      w.classList.remove('kw-show');
+      setTimeout(function(){ if (w.parentNode) w.remove(); }, 250);
+      fab.classList.remove('kw-fab-open');
+      fab.setAttribute('aria-label', cfg.button_label || 'Falar conosco');
+      fab.innerHTML = chatHTML;
+    }
+    function openChat(){
+      killHints();
+      fab.classList.add('kw-fab-open');
+      fab.setAttribute('aria-label', 'Fechar');
+      fab.innerHTML = CLOSE_SVG;
+      win = openWindow(cfg, closeChat);
+    }
+    fab.addEventListener('click', function(){ if (win) closeChat(); else openChat(); });
     document.body.appendChild(fab);
 
     // Tooltip "👋 Fala com a gente" depois de 5s
     var tip = null, tipTimer, tipHide, shakeTimer;
     tipTimer = setTimeout(function(){
+      if (win) return;
       tip = document.createElement('div');
       tip.className = 'kw-fab-tip kw-' + pos;
       tip.innerHTML = '<span>👋 ' + escape(cfg.button_label || 'Fala com a gente') + '</span><span class="kw-fab-tip-close" aria-label="Fechar">×</span>';
@@ -341,11 +356,11 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
 
     // Shake (acena) depois de 30s de ociosidade
     shakeTimer = setTimeout(function(){
-      fab.classList.add('kw-shake');
+      if (!win) fab.classList.add('kw-shake');
     }, 30000);
   }
 
-  function openWindow(cfg){
+  function openWindow(cfg, onClose){
     var pos = cfg.button_position === 'bottom-left' ? 'bl' : 'br';
     var initial = (cfg.brand_name || 'K').charAt(0).toUpperCase();
 
@@ -379,18 +394,14 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
       injectLogoImg(avatarHost, cfg.logo_url, initial);
     }
 
-    win.querySelector('.kw-hd-close').addEventListener('click', function(){
-      win.classList.remove('kw-show');
-      setTimeout(function(){
-        win.remove();
-        var existing = document.querySelector('.kw-fab');
-        if (existing) existing.style.display = '';
-      }, 250);
-    });
+    // Fechar pelo X do header delega pro toggle do FAB (que reverte o ícone).
+    win.querySelector('.kw-hd-close').addEventListener('click', function(){ onClose(); });
 
     // Dois modos: 'chat' = conversa ao vivo com a IA; senão = formulário (atual).
     if (cfg.mode === 'chat') runLiveChat(cfg, win);
     else runConversation(cfg, win);
+
+    return win;
   }
 
   function runConversation(cfg, win){
