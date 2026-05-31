@@ -213,6 +213,25 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     + '.kw-send:active{transform:scale(.9)}'
     // Linha de status (ex: "recebido" quando não há IA na linha de frente)
     + '.kw-chat .kw-sys{align-self:center;max-width:90%;text-align:center;font-size:11px;color:#94a3b8;background:#f8fafc;border:1px solid #e2e8f0;border-radius:999px;padding:5px 12px;margin:2px auto}'
+    // ─── Home premium (tela de abertura estilo Intercom) ───
+    + '.kw-home{display:flex;flex-direction:column;align-items:center;text-align:center;padding:30px 20px 10px;animation:kw-msg-in .4s cubic-bezier(.4,0,.2,1)}'
+    + '.kw-home-avatar{width:72px;height:72px;border-radius:50%;position:relative;display:flex;align-items:center;justify-content:center;margin-bottom:16px}'
+    + '.kw-home-avatar::before{content:"";position:absolute;inset:-3px;border-radius:50%;background:conic-gradient(from 0deg,var(--kw-ai-1,#60a5fa),var(--kw-ai-2,#c084fc),var(--kw-ai-3,#f472b6),var(--kw-ai-1,#60a5fa));animation:kw-orb 4s linear infinite;filter:saturate(1.4) brightness(1.05);box-shadow:0 0 18px rgba(192,132,252,.4)}'
+    + '.kw-home-avatar::after{content:"";position:absolute;inset:0;border-radius:50%;background:#fff}'
+    + '.kw-home-avatar-inner{position:relative;z-index:1;width:64px;height:64px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;overflow:hidden;font-weight:700;font-size:24px;color:var(--kw-primary)}'
+    + '.kw-home-avatar-inner img{width:100%;height:100%;object-fit:cover}'
+    + '.kw-home-title{font-size:21px;font-weight:700;color:#0f172a;margin:0;line-height:1.3;letter-spacing:-.01em;max-width:280px}'
+    + '.kw-home-sub{font-size:13px;color:#64748b;margin:7px 0 0;line-height:1.5;max-width:250px}'
+    + '.kw-home-cards{width:100%;display:flex;flex-direction:column;gap:10px;margin-top:24px}'
+    + '.kw-home-card{display:flex;align-items:center;gap:12px;width:100%;padding:14px 15px;background:#fff;border:1px solid #e2e8f0;border-radius:14px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:600;color:#0f172a;text-align:left;box-shadow:0 1px 2px rgba(15,23,42,.04);transition:border-color .16s,transform .16s,box-shadow .16s;animation:kw-chip-in .32s cubic-bezier(.4,0,.2,1) both}'
+    + '.kw-home-card:nth-child(2){animation-delay:.05s}.kw-home-card:nth-child(3){animation-delay:.1s}.kw-home-card:nth-child(4){animation-delay:.15s}.kw-home-card:nth-child(5){animation-delay:.2s}'
+    + '.kw-home-card:hover{border-color:var(--kw-primary);transform:translateY(-1px);box-shadow:0 8px 20px var(--kw-primary-alpha)}'
+    + '.kw-home-card:active{transform:translateY(0) scale(.99)}'
+    + '.kw-home-card-ico{width:34px;height:34px;border-radius:10px;background:var(--kw-primary-alpha);color:var(--kw-primary);display:flex;align-items:center;justify-content:center;flex-shrink:0}'
+    + '.kw-home-card-ico svg{width:17px;height:17px}'
+    + '.kw-home-card-tx{flex:1;min-width:0}'
+    + '.kw-home-card-arrow{color:#cbd5e1;flex-shrink:0;display:flex;transition:transform .16s,color .16s}'
+    + '.kw-home-card:hover .kw-home-card-arrow{color:var(--kw-primary);transform:translateX(3px)}'
     ;
   var s = document.createElement('style'); s.textContent = CSS; document.head.appendChild(s);
 
@@ -275,6 +294,11 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     cfg.button_color = color; // sanitiza no objeto pra todos os usos downstream
     root.style.setProperty('--kw-primary', color);
     root.style.setProperty('--kw-primary-alpha', hexToRgba(color, 0.18));
+    // Cores do orb da IA (garante que o conic-gradient renderize — os elementos
+    // ficam no body, fora de qualquer :host/.kw-root onde estavam só declaradas).
+    root.style.setProperty('--kw-ai-1', '#60a5fa');
+    root.style.setProperty('--kw-ai-2', '#c084fc');
+    root.style.setProperty('--kw-ai-3', '#f472b6');
   }
 
   function renderFab(cfg){
@@ -649,7 +673,7 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     var conversationId = null;
     // Folga de 10s absorve diferença de relógio browser↔servidor (não perde a 1ª resposta).
     var since = new Date(Date.now() - 10000).toISOString();
-    var pollTimer = null, sending = false, typingRow = null, typingTimer = null, suggRow = null;
+    var pollTimer = null, sending = false, typingRow = null, typingTimer = null, suggRow = null, homeEl = null;
     // IA na linha de frente? Sem ela, o atendimento é manual (humano responde
     // pelo inbox) → não fingimos "digitando", mostramos "recebido".
     var aiActive = cfg.ai_active === true, ackShown = false;
@@ -679,6 +703,37 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
       body.scrollTop = body.scrollHeight;
     }
 
+    // Home premium: avatar grande + saudação + cards de início. Aparece SEMPRE
+    // numa conversa nova (mesmo sem chips configurados → usa starters padrão),
+    // pra nunca ficar aquele vazio. Some quando o visitante manda a 1ª mensagem.
+    function clearHome(){ if (homeEl){ homeEl.remove(); homeEl = null; } }
+    function renderHome(){
+      clearHome();
+      var DEFAULTS = ['Quero saber preços', 'Falar com vendas', 'Tirar uma dúvida'];
+      var starters = (cfg.chat_suggestions && cfg.chat_suggestions.length) ? cfg.chat_suggestions.slice(0, 5) : DEFAULTS;
+      homeEl = document.createElement('div');
+      homeEl.className = 'kw-home';
+      homeEl.innerHTML = ''
+        + '<div class="kw-home-avatar"><div class="kw-home-avatar-inner">' + escape(initial) + '</div></div>'
+        + '<p class="kw-home-title">' + escape(cfg.greeting || 'Oi! 👋') + '</p>'
+        + '<p class="kw-home-sub">Toque numa opção ou escreva sua mensagem 👇</p>'
+        + '<div class="kw-home-cards"></div>';
+      body.appendChild(homeEl);
+      if (cfg.logo_url){ var host = homeEl.querySelector('.kw-home-avatar-inner'); if (host) injectLogoImg(host, cfg.logo_url, initial); }
+      var wrap = homeEl.querySelector('.kw-home-cards');
+      var ICO = '<span class="kw-home-card-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>';
+      var ARROW = '<span class="kw-home-card-arrow"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>';
+      starters.forEach(function(s){
+        if (!s) return;
+        var card = document.createElement('button');
+        card.type = 'button'; card.className = 'kw-home-card';
+        card.innerHTML = ICO + '<span class="kw-home-card-tx">' + escape(String(s)) + '</span>' + ARROW;
+        card.addEventListener('click', function(){ send(String(s)); });
+        wrap.appendChild(card);
+      });
+      body.scrollTop = 0;
+    }
+
     function renderComposer(){
       fm.innerHTML = '';
       var input = document.createElement('textarea');
@@ -698,7 +753,7 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     }
 
     function send(text){
-      clearSuggestions(); sending = true; addUser(text);
+      clearSuggestions(); clearHome(); sending = true; addUser(text);
       if (aiActive) showTyping(); else showReceived();
       try { if (navigator.vibrate) navigator.vibrate(12); } catch(e){}
       api('/api/site/message', { slug: SLUG, visitor_id: getVisitorId(), text: text }).then(function(r){
@@ -726,8 +781,7 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     showTyping();
     function startFresh(){
       hideTyping();
-      addBot(cfg.greeting || 'Oi! Como posso te ajudar?');
-      renderSuggestions(cfg.chat_suggestions);
+      renderHome();
     }
     api('/api/site/history', { slug: SLUG, visitor_id: getVisitorId() }).then(function(r){
       if (r && r.conversation_id && r.messages && r.messages.length){
