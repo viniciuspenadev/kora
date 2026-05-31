@@ -23,6 +23,7 @@ function mkTrigger(t: Partial<AITriggerInput> & { name: string }): AITrigger {
     active:           true,
     conditions:       [],
     context_payload:  [],
+    collect_fields:   [],
     instruction:      null,
     action_type:      "respond_only",
     action_target_id: null,

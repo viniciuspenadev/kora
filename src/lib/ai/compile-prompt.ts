@@ -48,9 +48,11 @@ export interface CompileInput {
     contactLifecycle: boolean
     pipelineStage:    boolean
     lastNote:         boolean
-    /** Contato anônimo/incompleto (ex: visitante do site) → nudge pra coletar identidade. */
-    collectContact?:  boolean
   }
+  /** Rótulos dos campos a coletar — já filtrados pros que FALTAM no contato. */
+  collect?: string[]
+  /** Contexto do anúncio (CTWA) — presente quando context_payload tem ad_context. */
+  adContext?: { title?: string | null; body?: string | null; sourceApp?: string | null } | null
   /** Instrução específica do trigger (roteiro), se houver. */
   instruction: string | null
   /** Presente só quando o trigger encaminha. */
@@ -70,7 +72,7 @@ function section(title: string, body: string): string {
 
 /** Monta o system prompt. Determinístico pra dado o mesmo input. */
 export function compilePrompt(input: CompileInput): string {
-  const { persona, knowledge, contact, show, instruction, route } = input
+  const { persona, knowledge, contact, show, collect, adContext, instruction, route } = input
   const blocks: string[] = []
 
   // ── Quem você é ───────────────────────────────────────────
@@ -135,14 +137,24 @@ export function compilePrompt(input: CompileInput): string {
     blocks.push(section("CONTATO ATUAL", contactLines.join("\n")))
   }
 
-  // ── Captura de identidade (contato anônimo / incompleto) ──
-  if (show.collectContact) {
-    blocks.push(section("DADOS DO CONTATO",
+  // ── Anúncio de origem (CTWA) ──────────────────────────────
+  if (adContext && (adContext.title?.trim() || adContext.body?.trim())) {
+    const adLines = [
+      "O cliente chegou clicando num ANÚNCIO (Click-to-WhatsApp). Abra de forma relevante e natural a partir disso — sem repetir o anúncio inteiro nem soar robótico.",
+    ]
+    if (adContext.sourceApp?.trim()) adLines.push(`Plataforma: ${adContext.sourceApp.trim()}`)
+    if (adContext.title?.trim())     adLines.push(`Título do anúncio: ${adContext.title.trim()}`)
+    if (adContext.body?.trim())      adLines.push(`Texto do anúncio: ${adContext.body.trim()}`)
+    blocks.push(section("ANÚNCIO DE ORIGEM", adLines.join("\n")))
+  }
+
+  // ── Dados a coletar (config do trigger — já só os que faltam) ──
+  if (collect && collect.length > 0) {
+    blocks.push(section("DADOS A COLETAR",
       [
-        "Você ainda não tem o cadastro completo deste cliente (ex: ele chegou pelo site, sem identificação).",
-        "Ao longo da conversa, peça de forma natural o nome e o WhatsApp dele — sem parecer formulário.",
-        "Assim que ele informar nome, WhatsApp/telefone ou e-mail, registre na hora com a ferramenta update_contact.",
-        "Salvar os dados NÃO substitui responder: siga a conversa normalmente.",
+        "Ao longo da conversa, peça de forma natural — sem parecer formulário — os dados abaixo que ainda faltam:",
+        ...collect.map((label) => `- ${label}`),
+        "Assim que o cliente informar, registre NA HORA com a ferramenta update_contact. Não pergunte o que já aparece em CONTATO ATUAL. Coletar NÃO substitui responder — siga a conversa normalmente.",
       ].join("\n"),
     ))
   }

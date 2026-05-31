@@ -11,11 +11,11 @@ import { Switch } from "@/components/ui/switch"
 import { createTrigger, updateTrigger } from "@/lib/actions/ai/triggers"
 import {
   ATTRIBUTE_SPECS, OPERATOR_LABELS, CONTEXT_PAYLOAD_LABELS,
-  LIFECYCLE_OPTIONS, SOURCE_OPTIONS, CHANNEL_OPTIONS, describeConditions,
+  LIFECYCLE_OPTIONS, SOURCE_OPTIONS, CHANNEL_OPTIONS, COLLECT_FIELD_OPTIONS, describeConditions,
 } from "@/lib/ai/describe"
 import type {
   AITrigger, Condition, ConditionAttribute, ConditionOperator,
-  ContextPayloadKey, TriggerActionType, QualificationRule,
+  ContextPayloadKey, CollectFieldKey, TriggerActionType, QualificationRule,
 } from "@/types/ai"
 
 const INPUT_CLASS =
@@ -64,6 +64,7 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
   const [context, setContext]         = useState<ContextPayloadKey[]>(
     trigger?.context_payload ?? ["contact_fields", "conversation_history"],
   )
+  const [collect, setCollect]         = useState<CollectFieldKey[]>(trigger?.collect_fields ?? [])
   const [instruction, setInstruction] = useState(trigger?.instruction ?? "")
   const [actionType, setActionType]   = useState<TriggerActionType>(trigger?.action_type ?? "respond_only")
   const [targetId, setTargetId]       = useState(trigger?.action_target_id ?? "")
@@ -131,6 +132,9 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
   function toggleContext(key: ContextPayloadKey) {
     setContext((c) => (c.includes(key) ? c.filter((k) => k !== key) : [...c, key]))
   }
+  function toggleCollect(key: CollectFieldKey) {
+    setCollect((c) => (c.includes(key) ? c.filter((k) => k !== key) : [...c, key]))
+  }
 
   // ── Qualificação ───────────────────────────────────────────
   function addRule() {
@@ -152,6 +156,7 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
         active,
         conditions,
         context_payload:  context,
+        collect_fields:   collect,
         instruction:      instruction || null,
         action_type:      actionType,
         action_target_id: actionType === "route_to_department" ? (targetId || null) : null,
@@ -169,6 +174,7 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
   const condForSummary = conditions.filter((c) => c.attribute !== "channel")
   const summary        = describeConditions(condForSummary, { tagNameById, stageNameById })
   const ctxLabels      = context.map((k) => CONTEXT_PAYLOAD_LABELS[k]?.label).filter(Boolean)
+  const collectLabels  = collect.map((k) => COLLECT_FIELD_OPTIONS.find((o) => o.value === k)?.label).filter(Boolean)
   const targetDeptName = departments.find((d) => d.id === targetId)?.name ?? null
 
   return (
@@ -329,6 +335,42 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
         </div>
       </SectionCard>
 
+      {/* ── Card 3.5: O que a IA coleta ────────────────────── */}
+      <SectionCard
+        title="O que a IA coleta"
+        description="Dados que a IA deve pedir ao cliente. Ela pede só os que ainda faltam no contato e salva no cadastro."
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {COLLECT_FIELD_OPTIONS.map((f) => {
+            const selected = collect.includes(f.value)
+            return (
+              <button
+                key={f.value}
+                type="button"
+                onClick={() => toggleCollect(f.value)}
+                className={`flex items-start gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${
+                  selected
+                    ? "border-primary-200 bg-primary-50"
+                    : "border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+                }`}
+              >
+                <span className={`mt-0.5 size-4 rounded flex items-center justify-center shrink-0 border ${
+                  selected ? "bg-primary border-primary" : "border-slate-300 bg-white"
+                }`}>
+                  {selected && <span className="size-1.5 rounded-sm bg-white" />}
+                </span>
+                <span className="min-w-0">
+                  <span className={`block text-xs font-semibold ${selected ? "text-primary-700" : "text-slate-700"}`}>
+                    {f.label}
+                  </span>
+                  <span className="block text-[11px] text-slate-400 mt-0.5">{f.hint}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </SectionCard>
+
       {/* ── Card 4: Roteiro ────────────────────────────────── */}
       <SectionCard
         title="Roteiro"
@@ -466,6 +508,7 @@ export function TriggerDetailClient({ trigger, departments, tags, stages }: Prop
             <SummaryRow label="Canais" value={selectedChannels.length ? channelLabels(selectedChannels) : "Todos"} />
             <SummaryRow label="Quando" value={summary} />
             <SummaryRow label="A IA vê" value={ctxLabels.length ? ctxLabels.join(", ") : "—"} />
+            <SummaryRow label="A IA coleta" value={collectLabels.length ? collectLabels.join(", ") : "—"} />
             <SummaryRow label="Roteiro" value={instruction.trim() ? "Personalizado" : "Padrão"} />
             <SummaryRow
               label="Ação"

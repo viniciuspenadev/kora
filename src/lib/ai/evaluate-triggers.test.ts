@@ -29,6 +29,7 @@ function trigger(overrides: Partial<AITrigger> = {}): AITrigger {
     active:           true,
     conditions:       [],
     context_payload:  [],
+    collect_fields:   [],
     instruction:      null,
     action_type:      "respond_only",
     action_target_id: null,

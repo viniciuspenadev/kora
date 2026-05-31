@@ -26,6 +26,8 @@ export interface ContactRow {
   phone_number:    string
   email:           string | null
   company:         string | null
+  doc_id:          string | null
+  birth_date:      string | null
   lifecycle_stage: string
   notes:           string | null
   source:          string
@@ -120,6 +122,7 @@ export async function gatherTriggerState(
 export interface PromptContextResult {
   contact: CompileContact
   history: { role: "user" | "assistant"; content: string }[]
+  adContext: { title: string | null; body: string | null; sourceApp: string | null } | null
 }
 
 /**
@@ -181,6 +184,15 @@ export async function gatherPromptContext(
       }))
   }
 
+  // Anúncio de origem (CTWA) — só se pedido e se a conversa veio de anúncio.
+  let adContext: PromptContextResult["adContext"] = null
+  if (wants.has("ad_context") && conv.from_ad_meta) {
+    const ad = conv.from_ad_meta as { title?: string; body?: string; sourceApp?: string }
+    if (ad.title || ad.body) {
+      adContext = { title: ad.title ?? null, body: ad.body ?? null, sourceApp: ad.sourceApp ?? null }
+    }
+  }
+
   const contact_: CompileContact = {
     name:      wants.has("contact_fields") ? displayName(contact) : null,
     lifecycle: wants.has("contact_lifecycle") ? lifecycleLabel(contact.lifecycle_stage) : null,
@@ -189,5 +201,5 @@ export async function gatherPromptContext(
     stageName,
   }
 
-  return { contact: contact_, history }
+  return { contact: contact_, history, adContext }
 }

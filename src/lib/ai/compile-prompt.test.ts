@@ -138,4 +138,19 @@ describe("compilePrompt", () => {
       A mensagem de despedida ao encaminhar pode ser algo como: "Já passei pro time de vendas, eles te respondem rapidinho!""
     `)
   })
+
+  it("com contexto de anúncio (CTWA) injeta o bloco ANÚNCIO DE ORIGEM", () => {
+    const out = compilePrompt(base({
+      adContext: { title: "Camisas 50% OFF", body: "Só hoje, frete grátis", sourceApp: "instagram" },
+    }))
+    expect(out).toContain("# ANÚNCIO DE ORIGEM")
+    expect(out).toContain("Plataforma: instagram")
+    expect(out).toContain("Título do anúncio: Camisas 50% OFF")
+    expect(out).toContain("Texto do anúncio: Só hoje, frete grátis")
+  })
+
+  it("anúncio sem título nem texto → não injeta o bloco", () => {
+    const out = compilePrompt(base({ adContext: { title: null, body: null, sourceApp: "facebook" } }))
+    expect(out).not.toContain("ANÚNCIO DE ORIGEM")
+  })
 })

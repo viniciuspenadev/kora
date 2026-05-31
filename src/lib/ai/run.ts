@@ -24,7 +24,9 @@ import {
   gatherTriggerState, gatherPromptContext, displayName,
   type ConvRow, type ContactRow,
 } from "@/lib/ai/context"
-import type { AITrigger, AITone, AIRouteRequiredField, QualificationRule } from "@/types/ai"
+import { COLLECT_FIELD_LABELS } from "@/lib/ai/describe"
+import { normalizePhone } from "@/lib/phone-utils"
+import type { AITrigger, AITone, AIRouteRequiredField, QualificationRule, CollectFieldKey } from "@/types/ai"
 import type OpenAI from "openai"
 
 interface InstanceForProvider {
@@ -101,7 +103,7 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     .from("chat_conversations")
     .select(`
       id, contact_id, stage_id, channel, from_ad_meta, is_group, assigned_to, ai_handling, metadata,
-      chat_contacts ( id, custom_name, push_name, phone_number, email, company, lifecycle_stage, notes, source, primary_channel )
+      chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel )
     `)
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
@@ -174,10 +176,25 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
   }
 
   // ── 5) Contexto + conhecimento + persona ───────────────────
-  const [{ contact: promptContact, history }, { data: knowledgeData }] = await Promise.all([
+  const [{ contact: promptContact, history, adContext }, { data: knowledgeData }] = await Promise.all([
     gatherPromptContext(tenantId, conv, contact, matched.context_payload),
     supabaseAdmin.from("ai_knowledge_items").select("title, category, content").eq("tenant_id", tenantId).order("position"),
   ])
+
+  // "O que a IA coleta": dos campos marcados no trigger, só os que FALTAM no
+  // contato (channel-agnostic — nome pode faltar até no WhatsApp). Vira o bloco
+  // DADOS A COLETAR no prompt; o update_contact grava nas colunas reais.
+  const hasField: Record<CollectFieldKey, boolean> = {
+    name:      !!(contact.custom_name?.trim() || contact.push_name?.trim()),
+    phone:     !!contact.phone_number?.trim(),
+    email:     !!contact.email?.trim(),
+    document:  !!contact.doc_id?.trim(),
+    company:   !!contact.company?.trim(),
+    birthdate: !!contact.birth_date?.trim(),
+  }
+  const collectLabels = (matched.collect_fields ?? [])
+    .filter((k) => !hasField[k])
+    .map((k) => COLLECT_FIELD_LABELS[k])
 
   const compileInput: CompileInput = {
     persona: {
@@ -196,9 +213,9 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
       contactLifecycle: matched.context_payload.includes("contact_lifecycle"),
       pipelineStage:    matched.context_payload.includes("pipeline_stage"),
       lastNote:         matched.context_payload.includes("last_internal_note"),
-      // Contato sem telefone (visitante de site) ou de canal não-WhatsApp → coletar identidade.
-      collectContact:   contact.primary_channel === "site" || !contact.phone_number?.trim(),
     },
+    collect:     collectLabels,
+    adContext,
     instruction: matched.instruction,
     route:       routeForPrompt,
   }
@@ -288,6 +305,32 @@ async function doRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     }
   } else {
     result = { status: "error", error: chatErr }
+  }
+
+  // Pós-captura: a IA chamou update_contact mas não escreveu nada (texto vazio,
+  // sem send/route) → a conversa ficaria muda logo após o cliente passar os
+  // dados. 2º passo SEM tools força o reconhecimento + continuação na persona.
+  if (!chatErr && updateCall && result.status === "no_action") {
+    try {
+      const followMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+        ...messages,
+        {
+          role:    "system",
+          content: "Os dados de contato do cliente acabaram de ser registrados com sucesso. Responda agora de forma curta e natural: agradeça e siga o atendimento (ofereça ajuda ou continue o assunto). NÃO peça os dados de novo.",
+        },
+      ]
+      const follow  = await runChat({ model: config.ai_model, messages: followMessages })
+      const ackText = follow.text?.trim()
+      if (ackText) {
+        await sendBotText(tenantId, conversationId, contact, instance, ackText, matched.id)
+        result             = { status: "responded" }
+        outboundText       = ackText
+        usage.inputTokens  += follow.usage.inputTokens
+        usage.outputTokens += follow.usage.outputTokens
+      }
+    } catch (e) {
+      console.error("[ai/run] follow-up pós update_contact falhou:", e instanceof Error ? e.message : e)
+    }
   }
 
   // Sticky: trigger de rota que respondeu (mas ainda não roteou) → marca a
@@ -385,11 +428,22 @@ async function executeQualification(
   }
 }
 
+// Normaliza nascimento pro formato do banco (AAAA-MM-DD). Aceita AAAA-MM-DD
+// e DD/MM/AAAA; qualquer outra coisa → null (não grava lixo).
+function normalizeBirthdate(raw: string): string | null {
+  const s = raw.trim()
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`
+  m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`
+  return null
+}
+
 // ── Grava identidade capturada pela IA no contato ───────────────
-// Enriquece o cadastro com o que o cliente informou. phone_number só é
-// PREENCHIDO quando está vazio (não sobrescreve o WhatsApp real de um contato
-// já identificado). Identidade/merge multicanal fica pra Fase 2 — aqui não
-// tocamos whatsapp_id/primary_external_id.
+// Enriquece colunas REAIS do contato (camada 1, ERP-ready): nome, e-mail,
+// CPF/CNPJ (doc_id), empresa, nascimento. phone_number e doc_id só são
+// PREENCHIDOS quando vazios (não sobrescreve WhatsApp real nem identidade
+// legal). Identidade/merge multicanal fica pra Fase 2.
 async function executeUpdateContact(
   tenantId:       string,
   conversationId: string,
@@ -399,11 +453,25 @@ async function executeUpdateContact(
   const updates: Record<string, string> = {}
   if (parsed.name) updates.custom_name = parsed.name.slice(0, 120)
   if (parsed.phone && !contact.phone_number?.trim()) {
-    const digits = parsed.phone.replace(/\D/g, "").slice(0, 15)
-    if (digits.length >= 8) updates.phone_number = digits
+    // Canoniza pro E.164 (com DDI) — senão não envia nem casa no match. O
+    // país-base do tenant resolve número local; DDI explícito é respeitado.
+    const { data: tc } = await supabaseAdmin
+      .from("tenant_config").select("default_country").eq("tenant_id", tenantId).maybeSingle()
+    const normalized = normalizePhone(parsed.phone, tc?.default_country ?? "BR")
+    if (normalized) updates.phone_number = normalized
   }
   if (parsed.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email)) {
     updates.email = parsed.email.slice(0, 254)
+  }
+  // CPF/CNPJ → doc_id: só preenche quando vazio (não sobrescreve identidade legal).
+  if (parsed.document && !contact.doc_id?.trim()) {
+    const digits = parsed.document.replace(/\D/g, "")
+    if (digits.length === 11 || digits.length === 14) updates.doc_id = digits
+  }
+  if (parsed.company) updates.company = parsed.company.slice(0, 120)
+  if (parsed.birthdate) {
+    const iso = normalizeBirthdate(parsed.birthdate)
+    if (iso) updates.birth_date = iso
   }
   if (Object.keys(updates).length === 0) return
 
@@ -419,9 +487,12 @@ async function executeUpdateContact(
 
   // Nota interna: o time vê que a IA capturou os dados (timeline + auditoria leve).
   const parts = [
-    updates.custom_name  ? `Nome: ${updates.custom_name}`     : "",
+    updates.custom_name  ? `Nome: ${updates.custom_name}`      : "",
     updates.phone_number ? `WhatsApp: ${updates.phone_number}` : "",
-    updates.email        ? `E-mail: ${updates.email}`         : "",
+    updates.email        ? `E-mail: ${updates.email}`          : "",
+    updates.doc_id       ? `CPF/CNPJ: ${updates.doc_id}`       : "",
+    updates.company      ? `Empresa: ${updates.company}`       : "",
+    updates.birth_date   ? `Nascimento: ${updates.birth_date}` : "",
   ].filter(Boolean)
   await supabaseAdmin.from("chat_messages").insert({
     conversation_id: conversationId,

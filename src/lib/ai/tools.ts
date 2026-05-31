@@ -62,15 +62,18 @@ export function buildUpdateContactTool(): OpenAI.Chat.Completions.ChatCompletion
     function: {
       name:        UPDATE_CONTACT_TOOL_NAME,
       description:
-        "Salve no cadastro os dados de identificação que o cliente informar (nome, WhatsApp/telefone, e-mail). " +
+        "Salve no cadastro os dados de identificação que o cliente informar (nome, WhatsApp/telefone, e-mail, CPF/CNPJ, empresa, nascimento). " +
         "Chame ASSIM QUE souber qualquer um deles — especialmente quando o cliente chega sem identificação (ex: pelo site). " +
         "Inclua só os campos que você realmente tem. Não invente nem pergunte de novo o que já está salvo.",
       parameters: {
         type: "object",
         properties: {
-          name:  { type: "string", description: "Nome do contato, como ele se apresentou." },
-          phone: { type: "string", description: "WhatsApp/telefone com DDD (números ou formatado)." },
-          email: { type: "string", description: "E-mail do contato, se informado." },
+          name:      { type: "string", description: "Nome do contato, como ele se apresentou." },
+          phone:     { type: "string", description: "WhatsApp/telefone com DDD (números ou formatado)." },
+          email:     { type: "string", description: "E-mail do contato, se informado." },
+          document:  { type: "string", description: "CPF ou CNPJ do cliente (só números ou formatado)." },
+          company:   { type: "string", description: "Empresa/organização do cliente, se informada." },
+          birthdate: { type: "string", description: "Data de nascimento no formato AAAA-MM-DD." },
         },
         required: [],
         additionalProperties: false,
@@ -80,9 +83,12 @@ export function buildUpdateContactTool(): OpenAI.Chat.Completions.ChatCompletion
 }
 
 export interface ParsedUpdateContact {
-  name:  string | null
-  phone: string | null
-  email: string | null
+  name:      string | null
+  phone:     string | null
+  email:     string | null
+  document:  string | null   // CPF/CNPJ → chat_contacts.doc_id
+  company:   string | null
+  birthdate: string | null   // → chat_contacts.birth_date (AAAA-MM-DD)
 }
 
 /** Extrai os args de update_contact de forma tolerante (nunca lança). */
@@ -90,7 +96,14 @@ export function parseUpdateContact(rawArgs: string): ParsedUpdateContact {
   let p: Record<string, unknown> = {}
   try { p = JSON.parse(rawArgs || "{}") } catch { p = {} }
   const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
-  return { name: str(p.name), phone: str(p.phone), email: str(p.email) }
+  return {
+    name:      str(p.name),
+    phone:     str(p.phone),
+    email:     str(p.email),
+    document:  str(p.document),
+    company:   str(p.company),
+    birthdate: str(p.birthdate),
+  }
 }
 
 export interface RouteToolSpec {

@@ -3,7 +3,9 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
-import type { AITrigger, AITriggerInput, Condition } from "@/types/ai"
+import type { AITrigger, AITriggerInput, Condition, CollectFieldKey } from "@/types/ai"
+
+const VALID_COLLECT: CollectFieldKey[] = ["name", "phone", "email", "document", "company", "birthdate"]
 
 async function requireAdmin() {
   const session = await auth()
@@ -41,6 +43,7 @@ function sanitize(input: AITriggerInput): AITriggerInput {
     active:           !!input.active,
     conditions:       (input.conditions ?? []).map(sanitizeCondition),
     context_payload:  input.context_payload ?? [],
+    collect_fields:   (input.collect_fields ?? []).filter((k) => VALID_COLLECT.includes(k)),
     instruction:      input.instruction?.trim() || null,
     action_type:      input.action_type,
     action_target_id: input.action_target_id,
@@ -110,6 +113,7 @@ export async function createTrigger(input: AITriggerInput): Promise<{ error?: st
       active:           data.active,
       conditions:       data.conditions,
       context_payload:  data.context_payload,
+      collect_fields:   data.collect_fields,
       instruction:      data.instruction,
       action_type:      data.action_type,
       action_target_id: data.action_target_id,
@@ -151,6 +155,7 @@ export async function updateTrigger(
       active:           data.active,
       conditions:       data.conditions,
       context_payload:  data.context_payload,
+      collect_fields:   data.collect_fields,
       instruction:      data.instruction,
       action_type:      data.action_type,
       action_target_id: data.action_target_id,

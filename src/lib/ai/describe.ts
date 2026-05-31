@@ -10,6 +10,7 @@ import type {
   ConditionAttribute,
   ConditionOperator,
   ContextPayloadKey,
+  CollectFieldKey,
 } from "@/types/ai"
 import { SOURCE_META } from "@/lib/lifecycle"
 
@@ -99,7 +100,22 @@ export const CONTEXT_PAYLOAD_LABELS: Record<ContextPayloadKey, { label: string; 
   pipeline_stage:       { label: "Etapa do funil",       hint: "Onde está no pipeline" },
   last_internal_note:   { label: "Última nota interna",  hint: "Anotação mais recente da equipe" },
   conversation_history: { label: "Histórico da conversa", hint: "Mensagens da sessão atual" },
+  ad_context:           { label: "Anúncio de origem",     hint: "Título/oferta do anúncio que trouxe o lead (CTWA)" },
 }
+
+// "O que a IA coleta" — campos de identidade pedíveis (conjunto fechado =
+// colunas reais do contato). Simétrico ao CONTEXT_PAYLOAD_LABELS.
+export const COLLECT_FIELD_OPTIONS: { value: CollectFieldKey; label: string; hint: string }[] = [
+  { value: "name",      label: "Nome",       hint: "Como a pessoa se chama" },
+  { value: "phone",     label: "WhatsApp",   hint: "Telefone com DDD" },
+  { value: "email",     label: "E-mail",     hint: "E-mail de contato" },
+  { value: "document",  label: "CPF/CNPJ",   hint: "Documento" },
+  { value: "company",   label: "Empresa",    hint: "Onde trabalha" },
+  { value: "birthdate", label: "Nascimento", hint: "Data de nascimento" },
+]
+
+export const COLLECT_FIELD_LABELS: Record<CollectFieldKey, string> =
+  Object.fromEntries(COLLECT_FIELD_OPTIONS.map((o) => [o.value, o.label])) as Record<CollectFieldKey, string>
 
 export const LIFECYCLE_OPTIONS: { value: string; label: string }[] = [
   { value: "contact", label: "Contato" },

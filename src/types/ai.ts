@@ -113,6 +113,12 @@ export type ContextPayloadKey =
   | "last_internal_note"
   | "pipeline_stage"
   | "conversation_history"      // sessão atual
+  | "ad_context"                // título/oferta do anúncio (CTWA / from_ad_meta)
+
+// Campos de identidade que a IA pode COLETAR (conjunto FECHADO = colunas reais
+// do contato — camada 1). Simétrico ao context_payload ("O que a IA vê").
+export type CollectFieldKey =
+  | "name" | "phone" | "email" | "document" | "company" | "birthdate"
 
 export type TriggerActionType = "respond_only" | "route_to_department"
 
@@ -132,6 +138,7 @@ export interface AITrigger {
   active:           boolean
   conditions:       Condition[]
   context_payload:  ContextPayloadKey[]
+  collect_fields:   CollectFieldKey[]
   instruction:      string | null
   action_type:      TriggerActionType
   action_target_id: string | null
@@ -146,6 +153,7 @@ export interface AITriggerInput {
   active:           boolean
   conditions:       Condition[]
   context_payload:  ContextPayloadKey[]
+  collect_fields:   CollectFieldKey[]
   instruction:      string | null
   action_type:      TriggerActionType
   action_target_id: string | null
