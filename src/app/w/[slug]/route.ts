@@ -96,11 +96,11 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     + '.kw-fab.kw-shake{animation:kw-fab-in .35s cubic-bezier(.4,0,.2,1) forwards,kw-shake .55s ease-in-out 2 .4s}'
     + '@keyframes kw-shake{0%,100%{translate:0 0}20%{translate:-4px 0}40%{translate:4px 0}60%{translate:-3px 0}80%{translate:3px 0}}'
     // FAB tooltip (acena verbal)
-    + '.kw-fab-tip{position:fixed;z-index:2147483599;background:#fff;color:#0f172a;padding:9px 14px;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.14);font:500 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;max-width:240px}'
+    + '.kw-fab-tip{position:fixed;z-index:2147483599;background:#fff;color:#0f172a;padding:9px 14px;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.14);font:500 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;max-width:240px;display:flex;align-items:center}'
     + '.kw-fab-tip.kw-br{bottom:32px;right:86px;border-bottom-right-radius:4px;transform:translateX(8px)}'
     + '.kw-fab-tip.kw-bl{bottom:32px;left:86px;border-bottom-left-radius:4px;transform:translateX(-8px)}'
     + '.kw-fab-tip.kw-show{opacity:1;transform:translateX(0)}'
-    + '.kw-fab-tip-close{margin-left:6px;cursor:pointer;color:#94a3b8;pointer-events:auto}'
+    + '.kw-fab-tip-close{margin-left:6px;cursor:pointer;color:#94a3b8;pointer-events:auto;display:flex;padding:4px}'
     + '.kw-fab-tip.kw-show{pointer-events:auto}'
     // Window
     + '.kw-win{position:fixed;z-index:2147483601;width:380px;max-width:calc(100vw - 24px);height:580px;max-height:calc(100vh - 120px);background:#fff;border-radius:var(--kw-radius);box-shadow:var(--kw-shadow-win);overflow:hidden;display:flex;flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;transform-origin:bottom right;transform:translateY(12px) scale(.95);opacity:0;pointer-events:none;transition:transform .28s cubic-bezier(.4,0,.2,1),opacity .25s}'
@@ -302,7 +302,8 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
       tip.className = 'kw-fab-tip kw-' + pos;
       tip.innerHTML = '<span>👋 ' + escape(cfg.button_label || 'Fala com a gente') + '</span><span class="kw-fab-tip-close" aria-label="Fechar">×</span>';
       document.body.appendChild(tip);
-      requestAnimationFrame(function(){ tip.classList.add('kw-show'); });
+      tip.offsetHeight; // Força reflow para garantir a transição CSS
+      tip.classList.add('kw-show');
       tip.querySelector('.kw-fab-tip-close').addEventListener('click', function(){
         tip.classList.remove('kw-show');
         setTimeout(function(){ if (tip.parentNode) tip.remove(); }, 280);

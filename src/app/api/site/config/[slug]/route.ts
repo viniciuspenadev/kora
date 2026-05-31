@@ -97,6 +97,6 @@ export async function OPTIONS() {
 function cors(res: NextResponse): NextResponse {
   res.headers.set("Access-Control-Allow-Origin", "*")
   res.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS")
-  res.headers.set("Cache-Control", "public, max-age=300")  // 5 min — config muda raramente
+  res.headers.set("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300")  // 1 min — permite atualizações rápidas do painel
   return res
 }
