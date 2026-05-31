@@ -4,6 +4,10 @@ const nextConfig: NextConfig = {
   // Saída otimizada pra Docker: copia só o necessário (não o node_modules inteiro).
   output: "standalone",
 
+  // @react-pdf/renderer (fontkit, etc.) não deve ser empacotado pelo bundler —
+  // roda como dep externa no server (gera a fatura em PDF).
+  serverExternalPackages: ["@react-pdf/renderer"],
+
   experimental: {
     serverActions: {
       // Default do Next é 1MB. Subimos pra 100MB pra suportar documentos do

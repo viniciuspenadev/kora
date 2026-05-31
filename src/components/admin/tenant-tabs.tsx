@@ -2,11 +2,12 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Users, Smartphone, Boxes, Gauge, FileText, CreditCard } from "lucide-react"
+import { LayoutDashboard, Users, Smartphone, Boxes, Gauge, FileText, CreditCard, Building } from "lucide-react"
 
 const TABS = [
   { seg: "",          label: "Visão geral",      icon: LayoutDashboard },
   { seg: "cobranca",  label: "Plano & cobrança", icon: CreditCard },
+  { seg: "empresa",   label: "Dados da empresa", icon: Building },
   { seg: "usuarios",  label: "Usuários",         icon: Users },
   { seg: "canais",    label: "Canais",           icon: Smartphone },
   { seg: "modulos",   label: "Módulos",          icon: Boxes },

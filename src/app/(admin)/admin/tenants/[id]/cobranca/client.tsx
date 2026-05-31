@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react"
 import {
   CreditCard, Calendar, Users, Boxes, Plus, Trash2, Power, FileText,
-  CheckCircle2, AlertCircle, Loader2, Receipt, Ban,
+  CheckCircle2, AlertCircle, Loader2, Receipt, Ban, Download,
 } from "lucide-react"
 import { assignPlanToTenant, type Plan } from "@/lib/actions/admin-plans"
 import {
@@ -290,23 +290,29 @@ function InvoiceRow({ inv, tenantId, onErr, onOk }: {
               </div>
             ))}
           </div>
-          {(inv.status === "open" || inv.status === "overdue") && (
-            <div className="flex items-center gap-2 mt-3 flex-wrap">
-              <select value={method} onChange={(e) => setMethod(e.target.value)} className={`${INP} w-32 h-8`}>
-                <option value="pix">Pix</option><option value="boleto">Boleto</option><option value="cartao">Cartão</option><option value="manual">Manual</option>
-              </select>
-              <button type="button" disabled={pending}
-                onClick={() => startT(async () => { const r = await markInvoicePaid(inv.id, tenantId, method); if (r.error) onErr(r.error); else onOk("Fatura marcada como paga.") })}
-                className="h-8 px-3 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 inline-flex items-center gap-1.5 disabled:opacity-50">
-                <CheckCircle2 className="size-3.5" /> Marcar pago
-              </button>
-              <button type="button" disabled={pending}
-                onClick={() => startT(async () => { const r = await voidInvoice(inv.id, tenantId); if (r.error) onErr(r.error); else onOk("Fatura anulada.") })}
-                className="h-8 px-3 text-xs font-semibold rounded-lg text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1.5 disabled:opacity-50">
-                <Ban className="size-3.5" /> Anular
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            <a href={`/api/admin/invoice/${inv.id}/pdf`} target="_blank" rel="noopener noreferrer"
+              className="h-8 px-3 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 inline-flex items-center gap-1.5">
+              <Download className="size-3.5" /> Baixar PDF
+            </a>
+            {(inv.status === "open" || inv.status === "overdue") && (
+              <>
+                <select value={method} onChange={(e) => setMethod(e.target.value)} className={`${INP} w-32 h-8`}>
+                  <option value="pix">Pix</option><option value="boleto">Boleto</option><option value="cartao">Cartão</option><option value="manual">Manual</option>
+                </select>
+                <button type="button" disabled={pending}
+                  onClick={() => startT(async () => { const r = await markInvoicePaid(inv.id, tenantId, method); if (r.error) onErr(r.error); else onOk("Fatura marcada como paga.") })}
+                  className="h-8 px-3 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 inline-flex items-center gap-1.5 disabled:opacity-50">
+                  <CheckCircle2 className="size-3.5" /> Marcar pago
+                </button>
+                <button type="button" disabled={pending}
+                  onClick={() => startT(async () => { const r = await voidInvoice(inv.id, tenantId); if (r.error) onErr(r.error); else onOk("Fatura anulada.") })}
+                  className="h-8 px-3 text-xs font-semibold rounded-lg text-slate-600 hover:bg-slate-100 inline-flex items-center gap-1.5 disabled:opacity-50">
+                  <Ban className="size-3.5" /> Anular
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

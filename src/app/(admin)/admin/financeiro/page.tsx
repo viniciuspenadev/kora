@@ -42,14 +42,19 @@ export default async function FinanceiroPage() {
 
   return (
     <div className="min-h-full">
-      <div className="bg-white border-b border-slate-200 px-6 py-5 flex items-center gap-3">
-        <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center">
-          <Wallet className="size-5 text-primary-600" />
+      <div className="bg-white border-b border-slate-200 px-6 py-5 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center">
+            <Wallet className="size-5 text-primary-600" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Financeiro</h1>
+            <p className="text-xs text-slate-400 mt-0.5">{billed} {billed === 1 ? "tenant cobrado" : "tenants cobrados"} · receita recorrente e faturas</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-xl font-bold text-slate-900 tracking-tight">Financeiro</h1>
-          <p className="text-xs text-slate-400 mt-0.5">{billed} {billed === 1 ? "tenant cobrado" : "tenants cobrados"} · receita recorrente e faturas</p>
-        </div>
+        <Link href="/admin/financeiro/emissor" className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors">
+          <Building2 className="size-3.5" /> Dados do emissor
+        </Link>
       </div>
 
       <div className="p-6 space-y-6">
