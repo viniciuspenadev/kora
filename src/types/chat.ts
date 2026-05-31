@@ -89,6 +89,8 @@ export interface ChatConversation {
   last_message_at:       string | null
   last_message_preview:  string | null
   last_message_dir:      "in" | "out" | "out_phone"
+  flagged_pending:       boolean
+  pinned_at:             string | null
   unread_count:          number
   metadata:              Record<string, unknown>
   // Pipeline fields

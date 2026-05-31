@@ -5,6 +5,7 @@ import {
   Search, MessageCircle, AlertCircle, Loader2, Filter,
   Image as ImageIcon, Mic, Video, FileText, X, Plus, Users, ChevronDown,
   ArrowUpRight, ArrowDownLeft, Smartphone,
+  Pin, PinOff, Flag, FlagOff, UserPlus, Archive, ArchiveRestore,
 } from "lucide-react"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { NewConversationModal } from "./new-conversation-modal"
@@ -22,6 +23,11 @@ interface Props {
   conversations:   ChatConversation[]
   activeId:        string | null
   onSelect:        (id: string) => void
+  currentUserId:   string
+  onToggleFlag:    (id: string, value: boolean) => void
+  onTogglePin:     (id: string, value: boolean) => void
+  onAssignMe:      (id: string) => void
+  onArchive:       (id: string) => void
   statusFilter:    string
   onStatusChange:  (status: string) => void
   pipelines:       PipelineMini[]
@@ -88,7 +94,9 @@ function formatTimeAgo(dateStr: string): string {
 }
 
 export function ConversationList({
-  conversations, activeId, onSelect, statusFilter, onStatusChange,
+  conversations, activeId, onSelect,
+  currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
+  statusFilter, onStatusChange,
   pipelines, stages, tags, tagsByContact, agents,
   unreadTotal,
   searchValue, onSearchChange,
@@ -103,6 +111,7 @@ export function ConversationList({
   const [showFilters, setShowFilters]       = useState(false)
   const [showStatusMenu, setShowStatusMenu] = useState(false)
   const [showNewModal, setShowNewModal]     = useState(false)
+  const [menu, setMenu]                     = useState<{ x: number; y: number; conv: ChatConversation } | null>(null)
 
   const stageById = useMemo(() => {
     const m: Record<string, StageMini> = {}
@@ -340,8 +349,10 @@ export function ConversationList({
             // SLA: "a bola está com você" = última msg é do contato e a conversa não foi resolvida.
             // Responder pelo app OU pelo celular vira last_message_dir 'out'/'out_phone' e zera o pendente,
             // igual o relatório de SLA (que credita msg de agente — inclusive via celular — como resposta).
-            const awaitingReply = conv.last_message_dir === "in" && conv.status !== "resolved"
-            const isStale     = awaitingReply && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD
+            // Bolinha = SLA (contato falou por último) OU flag manual de pendente.
+            const awaitingReply = (conv.last_message_dir === "in" || conv.flagged_pending) && conv.status !== "resolved"
+            const isStale     = conv.last_message_dir === "in" && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD && conv.status !== "resolved"
+            const isPinned    = !!conv.pinned_at
             const timeLabel   = conv.last_message_at ? formatTimeAgo(conv.last_message_at) : ""
             const mediaIcon   = inferMediaIcon(conv.last_message_preview)
             const dirArrow    = !conv.last_message_preview
@@ -365,6 +376,12 @@ export function ConversationList({
                 key={conv.id}
                 type="button"
                 onClick={() => onSelect(conv.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  const x = Math.min(e.clientX, window.innerWidth - 224)
+                  const y = Math.min(e.clientY, window.innerHeight - 210)
+                  setMenu({ x, y, conv })
+                }}
                 className={`relative w-full flex items-start gap-3.5 px-4 py-3.5 text-left transition-colors border-b border-slate-100 ${
                   isActive
                     ? "bg-primary-50/60"
@@ -406,6 +423,9 @@ export function ConversationList({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="inline-flex items-center gap-1.5 min-w-0 flex-1">
+                      {isPinned && (
+                        <Pin className="size-3 text-amber-500 shrink-0 -rotate-45" aria-label="Fixada" />
+                      )}
                       <span className={`text-sm truncate ${hasUnread ? "font-bold text-slate-900" : "font-medium text-slate-700"}`}>
                         {name}
                       </span>
@@ -424,7 +444,10 @@ export function ConversationList({
                         {timeLabel}
                       </span>
                       {awaitingReply && (
-                        <span className="size-2 rounded-full bg-primary-600 shrink-0 animate-pulse" title="Aguardando sua resposta" />
+                        <span
+                          className="size-2 rounded-full bg-primary-600 shrink-0 animate-pulse"
+                          title={conv.flagged_pending && conv.last_message_dir !== "in" ? "Marcado como pendente" : "Aguardando sua resposta"}
+                        />
                       )}
                     </span>
                   </div>
@@ -510,6 +533,50 @@ export function ConversationList({
           </>
         )}
       </div>
+
+      {menu && (() => {
+        const c        = menu.conv
+        const mPinned  = !!c.pinned_at
+        const mFlagged = c.flagged_pending
+        const mIsMine  = c.assigned_to === currentUserId
+        const item     = "w-full flex items-center gap-2.5 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-slate-50 transition-colors"
+        return (
+          <>
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setMenu(null)}
+              onContextMenu={(e) => { e.preventDefault(); setMenu(null) }}
+            />
+            <div
+              className="fixed z-50 w-56 bg-white rounded-lg shadow-soft border border-slate-200 py-1"
+              style={{ top: menu.y, left: menu.x }}
+            >
+              <button type="button" className={item} onClick={() => { onToggleFlag(c.id, !mFlagged); setMenu(null) }}>
+                {mFlagged ? <FlagOff className="size-4 text-slate-400 shrink-0" /> : <Flag className="size-4 text-primary-600 shrink-0" />}
+                {mFlagged ? "Remover pendente" : "Marcar como pendente"}
+              </button>
+              <button type="button" className={item} onClick={() => { onTogglePin(c.id, !mPinned); setMenu(null) }}>
+                {mPinned ? <PinOff className="size-4 text-slate-400 shrink-0" /> : <Pin className="size-4 text-amber-500 shrink-0" />}
+                {mPinned ? "Desafixar do topo" : "Fixar no topo"}
+              </button>
+              <button
+                type="button"
+                disabled={mIsMine}
+                className={`${item} disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent`}
+                onClick={() => { onAssignMe(c.id); setMenu(null) }}
+              >
+                <UserPlus className="size-4 text-slate-500 shrink-0" />
+                {mIsMine ? "Atribuída a você" : "Atribuir a mim"}
+              </button>
+              <div className="my-1 border-t border-slate-100" />
+              <button type="button" className={`${item} !text-red-600`} onClick={() => { onArchive(c.id); setMenu(null) }}>
+                {archivedOnly ? <ArchiveRestore className="size-4 shrink-0" /> : <Archive className="size-4 shrink-0" />}
+                {archivedOnly ? "Desarquivar" : "Arquivar"}
+              </button>
+            </div>
+          </>
+        )
+      })()}
 
       <NewConversationModal open={showNewModal} onClose={() => setShowNewModal(false)} />
     </div>

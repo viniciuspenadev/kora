@@ -37,6 +37,7 @@ export default async function InboxPage() {
           initialHasMore={false}
           initialUnreadTotal={0}
           tenantId={tenantId}
+          currentUserId={session.user.id}
           supabaseToken={session.user.supabaseToken}
         />
       </div>
@@ -136,6 +137,7 @@ export default async function InboxPage() {
         initialStatus={INITIAL_STATUS}
         initialUnreadTotal={initialUnread}
         tenantId={tenantId}
+        currentUserId={session.user.id}
         supabaseToken={session.user.supabaseToken}
       />
     </div>

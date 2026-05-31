@@ -4,8 +4,9 @@ import { useState, useEffect, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
-  GripVertical, MessageCircle, Clock, AlertCircle, Trophy, XCircle,
+  GripVertical, Clock, AlertCircle, Trophy, XCircle,
   Phone, DollarSign, Calendar, Loader2,
+  ArrowUpRight, ArrowDownLeft, Smartphone,
 } from "lucide-react"
 import { moveConversation } from "@/lib/actions/pipeline"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -41,6 +42,7 @@ interface Conversation {
   channel:              string | null
   last_message_at:      string | null
   last_message_preview: string | null
+  last_message_dir:     "in" | "out" | "out_phone"
   unread_count:         number
   pipeline_id:          string | null
   stage_id:             string | null
@@ -243,6 +245,13 @@ function ConversationCard({
 
   const ownerName    = conv.profiles?.full_name?.split(" ")[0]
   const time         = conv.last_message_at ? relativeTime(conv.last_message_at) : null
+  // SLA: "a bola está com você" = última msg do contato e conversa não resolvida.
+  const awaitingReply = conv.last_message_dir === "in" && conv.status !== "resolved"
+  const overdueReply  = awaitingReply && !!time?.hot
+  const dirArrow     =
+    conv.last_message_dir === "out_phone" ? <Smartphone    className="size-3 text-emerald-500 shrink-0 mt-0.5" />
+    : conv.last_message_dir === "out"     ? <ArrowUpRight  className="size-3 text-emerald-500 shrink-0 mt-0.5" />
+    :                                       <ArrowDownLeft className="size-3 text-sky-400 shrink-0 mt-0.5" />
   const today        = new Date().toISOString().split("T")[0]
   const overdueDate  = conv.expected_close_date && conv.expected_close_date < today && !conv.won_at && !conv.lost_at
 
@@ -286,7 +295,7 @@ function ConversationCard({
 
         {conv.last_message_preview && (
           <div className="flex items-start gap-1.5 text-[11px] text-slate-500 bg-slate-50 rounded px-2 py-1.5">
-            <MessageCircle className="size-3 text-slate-400 shrink-0 mt-0.5" />
+            {dirArrow}
             <p className="line-clamp-2 leading-snug">{conv.last_message_preview}</p>
           </div>
         )}
@@ -330,9 +339,9 @@ function ConversationCard({
 
         <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
           {time && (
-            <span className={`inline-flex items-center gap-1 text-[10px] ${time.hot ? "text-red-600 font-semibold" : "text-slate-400"}`}>
-              {time.hot ? <AlertCircle className="size-2.5" /> : <Clock className="size-2.5" />}
-              {time.label} {time.hot && "sem resposta"}
+            <span className={`inline-flex items-center gap-1 text-[10px] ${overdueReply ? "text-red-600 font-semibold" : "text-slate-400"}`}>
+              {overdueReply ? <AlertCircle className="size-2.5" /> : <Clock className="size-2.5" />}
+              {time.label}{overdueReply && " sem resposta"}
             </span>
           )}
           <div className="flex items-center gap-1.5">

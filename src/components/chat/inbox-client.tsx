@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useTransition, useCallback, useRef } from "react"
+import { useState, useEffect, useTransition, useCallback, useRef, useMemo } from "react"
 import { useSearchParams, useRouter, usePathname } from "next/navigation"
 import { ConversationList } from "@/components/chat/conversation-list"
 import { ChatPanel } from "@/components/chat/chat-panel"
@@ -17,6 +17,8 @@ import {
   sendChatMedia,
   archiveConversation,
   unarchiveConversation,
+  setConversationFlagged,
+  setConversationPinned,
 } from "@/lib/actions/chat"
 import {
   getConversations,
@@ -58,6 +60,7 @@ interface Props {
   initialStatus?:      string
   initialUnreadTotal?: number
   tenantId:            string
+  currentUserId:       string
   supabaseToken:       string
 }
 
@@ -81,6 +84,7 @@ export function InboxClient({
   initialStatus       = "open",
   initialUnreadTotal  = 0,
   tenantId,
+  currentUserId,
   supabaseToken,
 }: Props) {
   // ── State principal de listagem ─────────────────────────────
@@ -672,6 +676,42 @@ export function InboxClient({
     })
   }, [activeId])
 
+  // ── Ações do menu de contexto (por conversa, não só a ativa) ──
+  const handleToggleFlag = useCallback((id: string, value: boolean) => {
+    setConversations((prev) => prev.map((c) => c.id === id ? { ...c, flagged_pending: value } : c))
+    startTransition(async () => { await setConversationFlagged(id, value) })
+  }, [])
+
+  const handleTogglePin = useCallback((id: string, value: boolean) => {
+    setConversations((prev) => prev.map((c) => c.id === id ? { ...c, pinned_at: value ? new Date().toISOString() : null } : c))
+    startTransition(async () => { await setConversationPinned(id, value) })
+  }, [])
+
+  const handleAssignMe = useCallback((id: string) => {
+    setConversations((prev) => prev.map((c) => c.id === id ? { ...c, assigned_to: currentUserId } : c))
+    startTransition(async () => { await assignConversation(id, currentUserId) })
+  }, [currentUserId])
+
+  const handleArchiveFromMenu = useCallback((id: string) => {
+    const willArchive = !archivedOnly  // na aba "arquivadas" a ação inverte
+    setConversations((prev) => prev.filter((c) => c.id !== id))  // some da lista atual
+    if (activeIdRef.current === id) { setActiveId(null); activeIdRef.current = null }
+    startTransition(async () => {
+      if (willArchive) await archiveConversation(id)
+      else             await unarchiveConversation(id)
+    })
+  }, [archivedOnly])
+
+  // Fixadas sobem pro topo (hoist client-side, ordem por pinned_at desc); o resto
+  // mantém a ordem do server (last_message_at desc). Sort estável (ES2019+).
+  const displayConversations = useMemo(() => {
+    return [...conversations].sort((a, b) => {
+      const pa = a.pinned_at ? new Date(a.pinned_at).getTime() : 0
+      const pb = b.pinned_at ? new Date(b.pinned_at).getTime() : 0
+      return pb - pa
+    })
+  }, [conversations])
+
   // ── Telas de erro ───────────────────────────────────────────
   if (instanceStatus === "not_configured") {
     return (
@@ -736,9 +776,14 @@ export function InboxClient({
       <div className="flex flex-1 overflow-hidden">
         <div className="w-80 shrink-0">
           <ConversationList
-            conversations={conversations}
+            conversations={displayConversations}
             activeId={activeId}
             onSelect={handleSelect}
+            currentUserId={currentUserId}
+            onToggleFlag={handleToggleFlag}
+            onTogglePin={handleTogglePin}
+            onAssignMe={handleAssignMe}
+            onArchive={handleArchiveFromMenu}
             statusFilter={statusFilter}
             onStatusChange={setStatusFilter}
             pipelines={pipelines}

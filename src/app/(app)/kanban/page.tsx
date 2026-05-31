@@ -67,7 +67,7 @@ export default async function KanbanPage({
     .from("chat_conversations")
     .select(`
       id, status, priority, subject, channel,
-      last_message_at, last_message_preview, unread_count,
+      last_message_at, last_message_preview, last_message_dir, unread_count,
       pipeline_id, stage_id, card_position,
       estimated_value, expected_close_date, lost_reason,
       won_at, lost_at,

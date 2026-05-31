@@ -323,6 +323,7 @@ export async function sendMessage(
       last_message_at:     new Date().toISOString(),
       last_message_preview: content.substring(0, 100),
       last_message_dir:     "out",
+      flagged_pending:      false,
       updated_at:          new Date().toISOString(),
     })
     .eq("id", conversationId)
@@ -476,6 +477,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       last_message_at:      new Date().toISOString(),
       last_message_preview: caption || previewLabels[mediaType] || "Mídia",
       last_message_dir:     "out",
+      flagged_pending:      false,
       updated_at:           new Date().toISOString(),
     })
     .eq("id", conversationId)
@@ -522,8 +524,9 @@ export async function updateConversationStatus(conversationId: string, status: s
   }
 
   if (status === "resolved") {
-    updates.unread_count = 0
-    updates.resolved_at  = now
+    updates.unread_count    = 0
+    updates.flagged_pending = false
+    updates.resolved_at     = now
   } else {
     // open/pending/snoozed: limpa resolved_at (caso esteja sendo reaberta)
     updates.resolved_at  = null
@@ -547,6 +550,35 @@ export async function markConversationRead(conversationId: string) {
     .update({ unread_count: 0, updated_at: new Date().toISOString() })
     .eq("id", conversationId)
     .eq("tenant_id", session.user.tenantId)
+}
+
+// Flag manual de "pendente" — bolinha azul volta mesmo já tendo respondido.
+// Limpa sozinha quando o atendente responde (sendMessage/sendChatMedia) ou resolve.
+export async function setConversationFlagged(conversationId: string, value: boolean) {
+  const session = await auth()
+  if (!session) throw new Error("Não autenticado")
+
+  await supabaseAdmin
+    .from("chat_conversations")
+    .update({ flagged_pending: value, updated_at: new Date().toISOString() })
+    .eq("id", conversationId)
+    .eq("tenant_id", session.user.tenantId)
+
+  revalidatePath("/inbox")
+}
+
+// Fixar conversa no topo da lista. pinned_at = timestamp (ordem entre fixadas) ou null.
+export async function setConversationPinned(conversationId: string, value: boolean) {
+  const session = await auth()
+  if (!session) throw new Error("Não autenticado")
+
+  await supabaseAdmin
+    .from("chat_conversations")
+    .update({ pinned_at: value ? new Date().toISOString() : null, updated_at: new Date().toISOString() })
+    .eq("id", conversationId)
+    .eq("tenant_id", session.user.tenantId)
+
+  revalidatePath("/inbox")
 }
 
 // ── Criar conversa manual ───────────────────────────────────
