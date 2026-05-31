@@ -340,17 +340,15 @@ export function ConversationList({
                 : formatPhoneDisplay("")
             const initial    = contact ? displayContactInitial(contact) : "?"
             const isActive   = conv.id === activeId
-            const hasUnread  = conv.unread_count > 0
+            // Bolinha azul = "não aberta por nenhum agente" (não lida) OU marcada como pendente.
+            // Abrir a conversa zera (markConversationRead limpa unread_count + flagged_pending).
+            const hasUnread  = conv.unread_count > 0 || conv.flagged_pending
             const assignedTo = conv.profiles?.full_name
             const stage      = conv.pipeline_stages ?? stageById[conv.stage_id ?? ""]
             const contactTags = (!isGroup && conv.contact_id ? tagsByContact[conv.contact_id] ?? [] : [])
               .map((tid) => tagById[tid])
               .filter(Boolean)
-            // SLA: "a bola está com você" = última msg é do contato e a conversa não foi resolvida.
-            // Responder pelo app OU pelo celular vira last_message_dir 'out'/'out_phone' e zera o pendente,
-            // igual o relatório de SLA (que credita msg de agente — inclusive via celular — como resposta).
-            // Bolinha = SLA (contato falou por último) OU flag manual de pendente.
-            const awaitingReply = (conv.last_message_dir === "in" || conv.flagged_pending) && conv.status !== "resolved"
+            // "Sem resposta há +24h" é sinal de SLA separado: só quando o contato falou por último.
             const isStale     = conv.last_message_dir === "in" && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD && conv.status !== "resolved"
             const isPinned    = !!conv.pinned_at
             const timeLabel   = conv.last_message_at ? formatTimeAgo(conv.last_message_at) : ""
@@ -443,10 +441,10 @@ export function ConversationList({
                       <span className={`text-[11px] ${isStale ? "text-red-500 font-semibold" : "text-slate-400"}`}>
                         {timeLabel}
                       </span>
-                      {awaitingReply && (
+                      {hasUnread && (
                         <span
                           className="size-2 rounded-full bg-primary-600 shrink-0 animate-pulse"
-                          title={conv.flagged_pending && conv.last_message_dir !== "in" ? "Marcado como pendente" : "Aguardando sua resposta"}
+                          title={conv.unread_count > 0 ? `${conv.unread_count} não lida${conv.unread_count > 1 ? "s" : ""}` : "Marcada como pendente"}
                         />
                       )}
                     </span>

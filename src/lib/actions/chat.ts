@@ -547,7 +547,7 @@ export async function markConversationRead(conversationId: string) {
 
   await supabaseAdmin
     .from("chat_conversations")
-    .update({ unread_count: 0, updated_at: new Date().toISOString() })
+    .update({ unread_count: 0, flagged_pending: false, updated_at: new Date().toISOString() })
     .eq("id", conversationId)
     .eq("tenant_id", session.user.tenantId)
 }

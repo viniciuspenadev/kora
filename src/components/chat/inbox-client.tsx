@@ -294,7 +294,7 @@ export function InboxClient({
           if (c.id !== id) return c
           // Decrementa total otimisticamente baseado no que tinha
           if (c.unread_count > 0) setUnreadTotal((t) => Math.max(0, t - c.unread_count))
-          return { ...c, unread_count: 0 }
+          return { ...c, unread_count: 0, flagged_pending: false }
         })
       )
     })
