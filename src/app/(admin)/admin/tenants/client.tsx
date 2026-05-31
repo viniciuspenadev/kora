@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react"
 import Link from "next/link"
-import { Building2, Plus, Boxes, Gauge } from "lucide-react"
+import { Building2, Plus, ChevronRight } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Toolbar, FilterChip } from "@/components/ui/toolbar"
@@ -98,24 +98,15 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
     {
       id: "actions",
       header: "",
-      width: "200px",
+      width: "140px",
       cell: (r) => (
-        <div className="flex items-center gap-1">
-          <Link
-            href={`/admin/tenants/${r.id}/modulos`}
-            className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-700 hover:text-primary-900 px-2 py-1 rounded hover:bg-primary-50"
-          >
-            <Boxes className="size-3" />
-            Módulos
-          </Link>
-          <Link
-            href={`/admin/tenants/${r.id}/limites`}
-            className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 px-2 py-1 rounded hover:bg-slate-100"
-          >
-            <Gauge className="size-3" />
-            Limites
-          </Link>
-        </div>
+        <Link
+          href={`/admin/tenants/${r.id}`}
+          className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-700 hover:text-primary-900 px-2.5 py-1.5 rounded-lg hover:bg-primary-50"
+        >
+          Gerenciar
+          <ChevronRight className="size-3" />
+        </Link>
       ),
     },
   ]

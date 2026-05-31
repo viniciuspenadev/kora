@@ -128,7 +128,7 @@ async function resolveRecipients(tenantId: string, customEmails: string[]): Prom
 
   const { data } = await supabaseAdmin
     .from("tenant_users")
-    .select("user_id, role, profiles ( email )")
+    .select("user_id, role, profiles!tenant_users_user_id_fkey ( email )")
     .eq("tenant_id", tenantId)
     .eq("active", true)
     .in("role", ["owner", "admin"])

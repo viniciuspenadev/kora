@@ -3,13 +3,15 @@
 import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Building2, Mail, LogOut, Smartphone, MailOpen } from "lucide-react"
+import { LayoutDashboard, Building2, Mail, LogOut, Smartphone, MailOpen, Package, Wallet } from "lucide-react"
 import { signOut } from "next-auth/react"
 
 const nav = [
   { href: "/admin",          label: "Visão geral", icon: LayoutDashboard },
-  { href: "/admin/tenants",  label: "Tenants",     icon: Building2 },
-  { href: "/admin/whatsapp", label: "WhatsApp",    icon: Smartphone },
+  { href: "/admin/tenants",    label: "Tenants",     icon: Building2 },
+  { href: "/admin/planos",     label: "Planos",      icon: Package },
+  { href: "/admin/financeiro", label: "Financeiro",  icon: Wallet },
+  { href: "/admin/whatsapp",   label: "WhatsApp",    icon: Smartphone },
   { href: "/admin/invites",  label: "Convites",    icon: Mail },
   { href: "/admin/emails",   label: "Emails",      icon: MailOpen },
 ]

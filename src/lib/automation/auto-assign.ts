@@ -101,7 +101,7 @@ export async function assignNextAgent(
     .select(`
       user_id, role,
       auto_assign_paused, auto_assign_paused_until,
-      profiles ( id, full_name, email )
+      profiles!tenant_users_user_id_fkey ( id, full_name, email )
     `)
     .eq("tenant_id", tenantId)
     .eq("active", true)

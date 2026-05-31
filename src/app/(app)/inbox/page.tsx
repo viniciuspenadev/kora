@@ -63,7 +63,7 @@ export default async function InboxPage() {
       .order("shortcut"),
     supabaseAdmin
       .from("tenant_users")
-      .select("user_id, profiles ( full_name )")
+      .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
       .eq("tenant_id", tenantId)
       .eq("active", true),
     supabaseAdmin

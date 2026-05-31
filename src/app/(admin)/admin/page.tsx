@@ -3,10 +3,13 @@ import Link from "next/link"
 import {
   Building2, MessageCircle, Mail, Activity, Brain, AlertTriangle, ShieldAlert,
   TrendingUp, TrendingDown, Minus, Boxes, Gauge, Clock, FileText,
-  ChevronRight, Server, CheckCircle2,
+  ChevronRight, Server, CheckCircle2, Wallet,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { EmptyState } from "@/components/ui/empty-state"
+import { computeBillingSummary } from "@/lib/billing"
+
+const BRL = (c: number) => (c / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 
 const PLAN_COLORS: Record<string, string> = {
   trial:      "bg-amber-50 text-amber-700 border-amber-200",
@@ -203,6 +206,9 @@ export default async function AdminDashboardPage() {
   const activeTenants30d   = new Set((activeTenants30dRaw.data ?? []).map((r) => r.tenant_id)).size
   const inativos30d        = Math.max(0, (activeTenantCount ?? 0) - activeTenants30d)
 
+  // Resumo financeiro (MRR consolidado)
+  const billing = await computeBillingSummary()
+
   // Top tenants por volume mês
   const topMap = new Map<string, { name: string; slug: string; plan: string; count: number; id: string }>()
   for (const r of topTenants.data ?? []) {
@@ -256,8 +262,15 @@ export default async function AdminDashboardPage() {
 
       <div className="p-6 space-y-6">
 
-        {/* ─── HERO KPIs (4 cards, full width) ─── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {/* ─── HERO KPIs (negócio) ─── */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+          <Kpi
+            label="MRR"
+            value={BRL(billing.mrr_cents)}
+            subtitle={`${billing.billed} ${billing.billed === 1 ? "tenant cobrado" : "tenants cobrados"}`}
+            icon={Wallet}
+            tone="primary"
+          />
           <Kpi
             label="Tenants ativos hoje"
             value={activeTenantsToday}
