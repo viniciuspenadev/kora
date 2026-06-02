@@ -4,6 +4,7 @@ import { useState, useTransition } from "react"
 import { Plus, Pencil, Trash2, Tag as TagIcon, Loader2, X, Check } from "lucide-react"
 import { createTag, updateTag, deleteTag } from "@/lib/actions/tags"
 import { EmptyState } from "@/components/ui/empty-state"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 
 interface Tag {
   id:          string
@@ -89,24 +90,28 @@ export function TagsConfigClient({ tags }: Props) {
 
 function DeleteButton({ tag }: { tag: Tag }) {
   const [pending, startTransition] = useTransition()
+  const { confirm, confirmDialog } = useConfirm()
 
-  function handleDelete() {
-    if (!confirm(`Excluir a tag "${tag.name}"? Ela será removida de todos os contatos e conversas.`)) return
+  async function handleDelete() {
+    if (!(await confirm({ title: `Excluir a tag "${tag.name}"?`, body: "Ela será removida de todos os contatos e conversas. Esta ação não pode ser desfeita.", confirmLabel: "Excluir" }))) return
     startTransition(async () => {
       await deleteTag(tag.id)
     })
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleDelete}
-      disabled={pending}
-      className="size-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
-      title="Excluir"
-    >
-      {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={pending}
+        className="size-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+        title="Excluir"
+      >
+        {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+      </button>
+      {confirmDialog}
+    </>
   )
 }
 

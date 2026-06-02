@@ -1124,6 +1124,7 @@ async function findOrCreateConversation(
   const dedup = await findOrReopenConversation({
     tenantId,
     contactId,
+    instanceId,
     skipOwnershipCheck: true,
   })
 
@@ -1198,6 +1199,7 @@ async function findOrCreateConversation(
     const retry = await findOrReopenConversation({
       tenantId,
       contactId,
+      instanceId,
       skipOwnershipCheck: true,
     })
     if (retry.found !== "none") {

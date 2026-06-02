@@ -24,6 +24,8 @@ export default async function InboxPage() {
   const instanceList = instances ?? []
   const hasUsableInstance = instanceList.some((i) => i.status !== "disconnected")
   const instanceStatus = instanceList.length === 0 ? "not_configured" : (hasUsableInstance ? "connected" : "disconnected")
+  // Badge de canal por conversa só faz sentido com 2+ instâncias (ex: Baileys + Oficial).
+  const showChannel = instanceList.length > 1
 
   if (!hasUsableInstance) {
     return (
@@ -134,6 +136,7 @@ export default async function InboxPage() {
         stages={(stagesRaw ?? []) as unknown as StageMini[]}
         tags={(tagsRaw ?? []) as unknown as TagMini[]}
         tagsByContact={tagsByContact}
+        showChannel={showChannel}
         initialCursor={initialPage.nextCursor}
         initialHasMore={initialPage.hasMore}
         initialStatus={INITIAL_STATUS}

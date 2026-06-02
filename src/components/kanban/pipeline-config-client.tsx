@@ -9,6 +9,7 @@ import {
   createPipeline, updatePipeline, deletePipeline, setDefaultPipeline,
   createStage, updateStage, deleteStage, reorderStages,
 } from "@/lib/actions/pipeline"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 
 interface Pipeline {
   id:          string
@@ -152,9 +153,10 @@ function PipelineCard({
   const [showAddStage, setAdd]   = useState(false)
   const [editingStage, setEdit]  = useState<string | null>(null)
   const [draggingStage, setDrag] = useState<string | null>(null)
+  const { confirm, confirmDialog } = useConfirm()
 
-  function handleDelete() {
-    if (!confirm(`Excluir o funil "${pipeline.name}"? Esta ação não pode ser desfeita.`)) return
+  async function handleDelete() {
+    if (!(await confirm({ title: `Excluir o funil "${pipeline.name}"?`, body: "Esta ação não pode ser desfeita.", confirmLabel: "Excluir" }))) return
     startTransition(async () => {
       try { await deletePipeline(pipeline.id) }
       catch (err) { alert((err as Error).message) }
@@ -196,6 +198,7 @@ function PipelineCard({
   }
 
   return (
+    <>
     <div className="bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden">
       <div className="h-1" style={{ backgroundColor: pipeline.color }} />
 
@@ -285,12 +288,12 @@ function PipelineCard({
                   <Edit2 className="size-3" />
                 </button>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     if ((stageCount[stage.id] ?? 0) > 0) {
                       alert("Estágio tem conversas. Mova-as antes de excluir.")
                       return
                     }
-                    if (confirm(`Excluir estágio "${stage.name}"?`)) {
+                    if (await confirm({ title: `Excluir estágio "${stage.name}"?`, confirmLabel: "Excluir" })) {
                       startTransition(async () => {
                         try {
                           await deleteStage(stage.id)
@@ -327,6 +330,8 @@ function PipelineCard({
         )}
       </div>
     </div>
+    {confirmDialog}
+    </>
   )
 }
 

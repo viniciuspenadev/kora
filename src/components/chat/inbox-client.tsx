@@ -55,6 +55,7 @@ interface Props {
   stages?:             StageMini[]
   tags?:               TagMini[]
   tagsByContact?:      Record<string, string[]>
+  showChannel?:        boolean
   initialCursor?:      ConversationCursor | null
   initialHasMore?:     boolean
   initialStatus?:      string
@@ -79,6 +80,7 @@ export function InboxClient({
   stages         = [],
   tags           = [],
   tagsByContact  = {},
+  showChannel    = false,
   initialCursor       = null,
   initialHasMore      = false,
   initialStatus       = "open",
@@ -790,6 +792,7 @@ export function InboxClient({
             stages={stages}
             tags={tags}
             tagsByContact={tagsByContact}
+            showChannel={showChannel}
             agents={agents}
             unreadTotal={unreadTotal}
             // Filter state (lifted)

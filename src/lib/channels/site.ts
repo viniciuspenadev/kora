@@ -62,6 +62,9 @@ export async function getOrCreateSiteConversation(
   contactId:  string,
   instanceId: string,
 ): Promise<string> {
+  // NOTA: o split por instância (instanceId no dedup) é só pros canais WhatsApp
+  // (Baileys vs Oficial). O widget do site mantém o comportamento legado (continua
+  // a conversa existente do contato), por isso NÃO passa instanceId aqui.
   const dedup = await findOrReopenConversation({ tenantId, contactId, skipOwnershipCheck: true })
   if (dedup.found !== "none") return dedup.conversation.id
 

@@ -6,7 +6,7 @@ import Link from "next/link"
 import {
   GripVertical, Clock, AlertCircle, Trophy, XCircle,
   Phone, DollarSign, Calendar, Loader2,
-  ArrowUpRight, ArrowDownLeft, Smartphone,
+  ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
 } from "lucide-react"
 import { moveConversation } from "@/lib/actions/pipeline"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -55,6 +55,7 @@ interface Conversation {
   assigned_to:          string | null
   chat_contacts:        ChatContact | null
   profiles:             { full_name: string | null; email: string } | null
+  whatsapp_instances:   { provider: string | null } | null
 }
 
 interface Props {
@@ -62,6 +63,8 @@ interface Props {
   conversations: Conversation[]
   /** Pinta o fundo das colunas com a cor da etapa (preferência do tenant). */
   tintColumns:   boolean
+  /** Mostra badge de canal (Baileys/Oficial) no card — só com 2+ instâncias. */
+  showChannel?:  boolean
 }
 
 const BRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -85,7 +88,7 @@ function relativeTime(date: string): { label: string; hot: boolean } {
   return { label: `${days}d`, hot: true }
 }
 
-export function ConversationKanban({ stages, conversations: initial, tintColumns }: Props) {
+export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false }: Props) {
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
   const [draggingId, setDraggingId]   = useState<string | null>(null)
@@ -207,6 +210,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
                 <ConversationCard
                   key={conv.id}
                   conv={conv}
+                  showChannel={showChannel}
                   isDragging={draggingId === conv.id}
                   onDragStart={(e) => handleDragStart(e, conv.id)}
                   onDragEnd={handleDragEnd}
@@ -232,9 +236,10 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
 }
 
 function ConversationCard({
-  conv, isDragging, onDragStart, onDragEnd,
+  conv, showChannel, isDragging, onDragStart, onDragEnd,
 }: {
   conv:        Conversation
+  showChannel: boolean
   isDragging:  boolean
   onDragStart: (e: React.DragEvent) => void
   onDragEnd:   () => void
@@ -345,6 +350,17 @@ function ConversationCard({
             </span>
           )}
           <div className="flex items-center gap-1.5">
+            {showChannel && (
+              conv.whatsapp_instances?.provider === "meta_cloud" ? (
+                <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold px-1 py-0.5 rounded bg-primary-50 text-primary-700" title="WhatsApp API Oficial">
+                  <BadgeCheck className="size-2.5" /> Oficial
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold px-1 py-0.5 rounded bg-slate-100 text-slate-500" title="WhatsApp (QR)">
+                  <Smartphone className="size-2.5" /> QR
+                </span>
+              )
+            )}
             {conv.unread_count > 0 && (
               <span className="size-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center">
                 {conv.unread_count}

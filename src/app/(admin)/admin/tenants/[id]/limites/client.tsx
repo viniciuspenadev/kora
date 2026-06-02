@@ -7,6 +7,7 @@ import {
   RotateCcw, Clock,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 import { setTenantLimit, clearTenantLimit } from "@/lib/actions/limits-admin"
 import { LIMIT_META, type LimitInfo, type LimitResource } from "@/lib/limits-shared"
 
@@ -154,9 +155,10 @@ function LimitRow({
   const daysLeft  = hasExpiry ? Math.max(0, Math.ceil((expiryMs - Date.now()) / 86400000)) : 0
 
   const [pending, startTransition] = useTransition()
+  const { confirm, confirmDialog } = useConfirm()
 
-  function resetToDefault() {
-    if (!confirm(`Resetar ${meta.label} pro default do plano?`)) return
+  async function resetToDefault() {
+    if (!(await confirm({ title: `Resetar ${meta.label} pro default do plano?`, tone: "primary", confirmLabel: "Resetar" }))) return
     startTransition(async () => {
       const result = await clearTenantLimit(tenantId, limit.resource)
       if ("error" in result) onFlash("error", result.error)
@@ -169,6 +171,7 @@ function LimitRow({
   }
 
   return (
+    <>
     <div className="px-5 py-4 flex items-center gap-4 hover:bg-slate-50/50 transition-colors">
       <div className={`size-9 rounded-lg flex items-center justify-center bg-slate-50 ${labelColor}`}>
         <Icon className="size-4" />
@@ -245,6 +248,8 @@ function LimitRow({
         </button>
       </div>
     </div>
+    {confirmDialog}
+    </>
   )
 }
 

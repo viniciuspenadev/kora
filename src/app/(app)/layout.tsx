@@ -26,11 +26,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   // Onboarding só pra owner/admin — atendentes não veem
   const showOnboarding = ["owner", "admin"].includes(session.user.role)
-  const [setup, enabledModules, selfPause] = await Promise.all([
+  const [setup, enabledModules, selfPause, officialRes] = await Promise.all([
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
     getEnabledModuleSlugs(session.user.tenantId),
     getSelfPause(),
+    supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id")
+      .eq("tenant_id", session.user.tenantId)
+      .eq("provider", "meta_cloud")
+      .limit(1)
+      .maybeSingle(),
   ])
+  const hasOfficial = !!officialRes.data
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
@@ -41,6 +49,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         userRole={session.user.role}
         enabledModules={Array.from(enabledModules)}
         selfPause={selfPause}
+        hasOfficial={hasOfficial}
       />
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <UpdateBanner />

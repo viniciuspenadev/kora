@@ -10,6 +10,7 @@ import {
 import { SectionCard } from "@/components/ui/section-card"
 import { EmptyState } from "@/components/ui/empty-state"
 import { StatusDot } from "@/components/ui/status-dot"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 import type { WhatsAppInstance } from "@/types/chat"
 
 interface Props {
@@ -119,9 +120,10 @@ function HealthCard({ instance }: { instance: WhatsAppInstance }) {
 export function ConfigPageClient({ instance }: Props) {
   const [isPending, startTransition] = useTransition()
   const [error, setError]            = useState<string | null>(null)
+  const { confirm, confirmDialog }   = useConfirm()
 
-  function handleDisconnect() {
-    if (!confirm("Desconectar o WhatsApp? Você precisará escanear o QR Code novamente pra reconectar.")) return
+  async function handleDisconnect() {
+    if (!(await confirm({ title: "Desconectar o WhatsApp?", body: "Você precisará escanear o QR Code novamente pra reconectar.", confirmLabel: "Desconectar" }))) return
     startTransition(async () => {
       try {
         await disconnectWhatsApp()
@@ -178,6 +180,7 @@ export function ConfigPageClient({ instance }: Props) {
       </SectionCard>
 
       <HealthCard instance={instance} />
+      {confirmDialog}
     </div>
   )
 }

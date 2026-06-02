@@ -8,6 +8,7 @@ import {
 import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 import { updateContactInfo, setContactNotes, setContactBlocked } from "@/lib/actions/chat"
 import { exportPersonalData, deletePersonalData } from "@/lib/actions/lgpd"
 import { displayContactName } from "@/lib/contact"
@@ -48,6 +49,7 @@ export function ContactEditSheet({ contact, onClose, onFeedback }: Props) {
   const [deletePending, startDelete]   = useTransition()
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [error, setError]              = useState<string | null>(null)
+  const { confirm, confirmDialog }     = useConfirm()
 
   async function handleSave() {
     setError(null)
@@ -75,9 +77,9 @@ export function ContactEditSheet({ contact, onClose, onFeedback }: Props) {
     })
   }
 
-  function handleToggleBlock() {
+  async function handleToggleBlock() {
     const next = !contact.is_blocked
-    if (!confirm(`${next ? "Bloquear" : "Desbloquear"} este contato?`)) return
+    if (!(await confirm({ title: `${next ? "Bloquear" : "Desbloquear"} este contato?`, tone: next ? "danger" : "primary", confirmLabel: next ? "Bloquear" : "Desbloquear" }))) return
     startBlock(async () => {
       await setContactBlocked(contact.id, next)
       onFeedback("ok", next ? "Contato bloqueado" : "Contato desbloqueado")
@@ -354,6 +356,7 @@ export function ContactEditSheet({ contact, onClose, onFeedback }: Props) {
         onConfirm={handleDeleteData}
         onClose={() => setShowDeleteConfirm(false)}
       />
+      {confirmDialog}
     </Sheet>
   )
 }

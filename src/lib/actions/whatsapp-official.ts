@@ -113,6 +113,31 @@ export async function updateOfficialProfile(profile: Partial<MetaBusinessProfile
   }
 }
 
+export interface InboxTemplate {
+  name:     string
+  language: string
+  body:     string
+  varCount: number
+}
+
+/** Templates APROVADOS do tenant — pro seletor do composer quando a janela fecha. */
+export async function getInboxTemplates(): Promise<InboxTemplate[]> {
+  const r = await tenantMetaProvider()
+  if ("error" in r) return []
+  try {
+    const tpls = await r.provider.listTemplates()
+    return tpls
+      .filter((t) => t.status === "APPROVED")
+      .map((t) => {
+        const body = t.components?.find((c) => c.type === "BODY")?.text ?? ""
+        const varCount = new Set((body.match(/\{\{\s*(\d+)\s*\}\}/g) ?? []).map((m) => m.replace(/\D/g, ""))).size
+        return { name: t.name, language: t.language, body, varCount }
+      })
+  } catch {
+    return []
+  }
+}
+
 export async function sendOfficialTest(input: {
   phone: string
   mode: "text" | "template"

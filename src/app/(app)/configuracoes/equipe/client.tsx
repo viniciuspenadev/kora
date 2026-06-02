@@ -9,6 +9,7 @@ import { SectionCard } from "@/components/ui/section-card"
 import { EmptyState } from "@/components/ui/empty-state"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { StatusDot } from "@/components/ui/status-dot"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 import {
   cancelInvite, sendInviteViaWhatsApp, sendInviteViaEmail,
   type TeamMember, type TeamInvite, type Department, type TenantRole,
@@ -383,6 +384,7 @@ function InviteRow({
   const [waPending, startWa]         = useTransition()
   const [emailPending, startEmail]   = useTransition()
   const [copied, setCopied]          = useState(false)
+  const { confirm, confirmDialog }   = useConfirm()
 
   function handleCopy() {
     const url = `${window.location.origin}/invite/${invite.token}`
@@ -391,8 +393,8 @@ function InviteRow({
     setTimeout(() => setCopied(false), 1500)
   }
 
-  function handleCancel() {
-    if (!confirm(`Cancelar o convite pra ${invite.email}?`)) return
+  async function handleCancel() {
+    if (!(await confirm({ title: `Cancelar o convite pra ${invite.email}?`, confirmLabel: "Cancelar convite", cancelLabel: "Voltar" }))) return
     startCancel(async () => {
       await cancelInvite(invite.id)
       onFeedback("ok", `Convite pra ${invite.email} cancelado`)
@@ -418,6 +420,7 @@ function InviteRow({
   const expiresIn = Math.floor((new Date(invite.expires_at).getTime() - Date.now()) / 86400000)
 
   return (
+    <>
     <div className="flex items-center gap-3 px-5 py-3">
       <div className="size-9 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
         <UserPlus className="size-4 text-amber-700" strokeWidth={1.75} />
@@ -489,5 +492,7 @@ function InviteRow({
         </button>
       </div>
     </div>
+    {confirmDialog}
+    </>
   )
 }

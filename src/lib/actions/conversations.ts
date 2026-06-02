@@ -50,7 +50,8 @@ const CONVERSATION_SELECT = `
     created_at, updated_at
   ),
   profiles ( full_name ),
-  pipeline_stages ( id, name, color, is_won, is_lost )
+  pipeline_stages ( id, name, color, is_won, is_lost ),
+  whatsapp_instances!instance_id ( provider, instance_name )
 `
 
 // ── Helpers ─────────────────────────────────────────────────

@@ -116,12 +116,17 @@ export interface ChatConversation {
   // Arquivamento (soft hide do inbox + kanban)
   archived_at:           string | null
 
+  // Janela 24h (WhatsApp Oficial): timestamp da última msg do contato (relógio da Meta no inbound)
+  last_inbound_at:       string | null
+
   created_at:            string
   updated_at:            string
   // Joined
   chat_contacts?:   ChatContact
   profiles?:        { full_name: string | null } | null
   pipeline_stages?: { id: string; name: string; color: string; is_won: boolean; is_lost: boolean } | null
+  // Instância dona da conversa (canal) — pra badge multi-instância (Baileys vs Oficial)
+  whatsapp_instances?: { provider: string | null; instance_name: string | null } | null
 }
 
 export interface ChatMessage {

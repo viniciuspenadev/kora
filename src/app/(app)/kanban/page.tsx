@@ -19,7 +19,7 @@ export default async function KanbanPage({
 
   await ensurePipelineBootstrap(tenantId, session.user.id)
 
-  const [{ data: pipelines }, { data: tu }, { data: cfg }] = await Promise.all([
+  const [{ data: pipelines }, { data: tu }, { data: cfg }, { data: instRows }] = await Promise.all([
     supabaseAdmin
       .from("pipelines")
       .select("*")
@@ -37,8 +37,14 @@ export default async function KanbanPage({
       .select("kanban_tinted_columns")
       .eq("tenant_id", tenantId)
       .maybeSingle(),
+    supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id")
+      .eq("tenant_id", tenantId),
   ])
   const tintColumns = cfg?.kanban_tinted_columns ?? false
+  // Badge de canal só com 2+ instâncias (ex: Baileys + Oficial).
+  const showChannel = (instRows ?? []).length > 1
 
   if (!pipelines || pipelines.length === 0) {
     return <div className="p-6">Erro inicializando pipeline.</div>
@@ -71,11 +77,12 @@ export default async function KanbanPage({
       pipeline_id, stage_id, card_position,
       estimated_value, expected_close_date, lost_reason,
       won_at, lost_at,
-      assigned_to,
+      assigned_to, instance_id,
       chat_contacts (
         id, push_name, custom_name, phone_number, profile_pic_url, source, lifecycle_stage
       ),
-      profiles ( full_name, email )
+      profiles ( full_name, email ),
+      whatsapp_instances!instance_id ( provider )
     `)
     .eq("tenant_id", tenantId)
     .eq("pipeline_id", currentPipeline.id)
@@ -168,6 +175,7 @@ export default async function KanbanPage({
           stages={(stages ?? []).filter((s) => s.show_in_kanban)}
           conversations={(conversations ?? []) as unknown as Parameters<typeof ConversationKanban>[0]["conversations"]}
           tintColumns={tintColumns}
+          showChannel={showChannel}
         />
       </div>
     </div>

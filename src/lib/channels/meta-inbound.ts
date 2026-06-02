@@ -39,8 +39,15 @@ interface InstanceRow {
 interface MetaMedia { id: string; mime_type?: string; caption?: string; filename?: string }
 interface MetaMessage {
   from: string; id: string; type: string
+  timestamp?: string  // epoch (segundos) — relógio da Meta; âncora da janela de 24h
   text?: { body?: string }
   image?: MetaMedia; audio?: MetaMedia; video?: MetaMedia; document?: MetaMedia
+}
+
+/** Converte o timestamp epoch (segundos) da Meta pra ISO. Fallback: agora. */
+function metaTsToIso(ts?: string): string {
+  const n = Number(ts)
+  return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString() : new Date().toISOString()
 }
 
 export async function processMetaWebhook(body: unknown): Promise<void> {
@@ -150,6 +157,8 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     last_message_at:      new Date().toISOString(),
     last_message_preview: preview,
     last_message_dir:     "in",
+    // Âncora da janela de 24h = relógio da Meta (timestamp do inbound), não o nosso.
+    last_inbound_at:      metaTsToIso(msg.timestamp),
     unread_count:         (conv.unread_count ?? 0) + 1,
     status:               wasResolved ? "open" : conv.status,
     updated_at:           new Date().toISOString(),
@@ -215,7 +224,7 @@ async function upsertContact(tenantId: string, jid: string, phone: string, pushN
 }
 
 async function findOrCreateConversation(tenantId: string, contactId: string, instanceId: string) {
-  const dedup = await findOrReopenConversation({ tenantId, contactId, skipOwnershipCheck: true })
+  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, skipOwnershipCheck: true })
   if (dedup.found !== "none") {
     const c = dedup.conversation as unknown as { id: string; status: string; unread_count: number }
     return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false }

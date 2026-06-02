@@ -31,6 +31,12 @@ import { supabaseAdmin } from "@/lib/supabase"
 export interface FindOrReopenInput {
   tenantId:          string
   contactId:         string
+  /**
+   * Escopa o dedup à instância (split por canal). Quando passado, só reusa/reabre
+   * conversa da MESMA instância — o mesmo contato pode ter conversas separadas por
+   * número/canal (Baileys vs Oficial). Omitir = comportamento legado (qualquer instância).
+   */
+  instanceId?:       string
   /** Pula a validação de ownership do contato (usado pelo webhook que já validou upstream). */
   skipOwnershipCheck?: boolean
 }
@@ -66,7 +72,7 @@ export interface ConversationRow {
 export async function findOrReopenConversation(
   input: FindOrReopenInput,
 ): Promise<FindOrReopenResult> {
-  const { tenantId, contactId, skipOwnershipCheck } = input
+  const { tenantId, contactId, instanceId, skipOwnershipCheck } = input
 
   // ── 1. Valida ownership do contato (anti-IDOR) ──
   // Webhook pula porque já validou contact via findOrCreateContact upstream.
@@ -83,12 +89,14 @@ export async function findOrReopenConversation(
   }
 
   // ── 2. Conversa ativa? (open/pending/snoozed) ──
-  const { data: active } = await supabaseAdmin
+  let activeQuery = supabaseAdmin
     .from("chat_conversations")
     .select("*")
     .eq("tenant_id", tenantId)
     .eq("contact_id", contactId)
     .in("status", ["open", "pending", "snoozed"])
+  if (instanceId) activeQuery = activeQuery.eq("instance_id", instanceId)
+  const { data: active } = await activeQuery
     .order("updated_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -119,12 +127,14 @@ export async function findOrReopenConversation(
   }
 
   // ── 3. Conversa fechada (resolved)? Reabre, qualquer idade. ──
-  const { data: resolved } = await supabaseAdmin
+  let resolvedQuery = supabaseAdmin
     .from("chat_conversations")
     .select("*")
     .eq("tenant_id", tenantId)
     .eq("contact_id", contactId)
     .eq("status", "resolved")
+  if (instanceId) resolvedQuery = resolvedQuery.eq("instance_id", instanceId)
+  const { data: resolved } = await resolvedQuery
     .order("updated_at", { ascending: false })
     .limit(1)
     .maybeSingle()

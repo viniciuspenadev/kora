@@ -11,6 +11,7 @@ import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { StatusDot } from "@/components/ui/status-dot"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 import {
   setContactBlocked,
   setContactNotes,
@@ -151,18 +152,20 @@ function HeaderCard({
 }) {
   const [, startTransition] = useTransition()
   const [showActions, setShowActions] = useState(false)
+  const { confirm, confirmDialog } = useConfirm()
 
-  function handleBlock() {
+  async function handleBlock() {
     setShowActions(false)
-    if (!confirm(`${contact.is_blocked ? "Desbloquear" : "Bloquear"} este contato?`)) return
+    const blocking = !contact.is_blocked
+    if (!(await confirm({ title: `${blocking ? "Bloquear" : "Desbloquear"} este contato?`, tone: blocking ? "danger" : "primary", confirmLabel: blocking ? "Bloquear" : "Desbloquear" }))) return
     startTransition(async () => {
       await setContactBlocked(contact.id, !contact.is_blocked)
     })
   }
 
-  function handleArchive() {
+  async function handleArchive() {
     setShowActions(false)
-    if (!confirm("Arquivar esta conversa? Ela será marcada como resolvida.")) return
+    if (!(await confirm({ title: "Arquivar esta conversa?", body: "Ela será marcada como resolvida.", tone: "primary", confirmLabel: "Arquivar" }))) return
     startTransition(async () => {
       await archiveConversation(conversation.id)
     })
@@ -172,6 +175,7 @@ function HeaderCard({
   const initial     = displayContactInitial(contact)
 
   return (
+    <>
     <header className="flex flex-col items-center px-4 pt-4 pb-3 border-b border-slate-100 relative">
       <button
         type="button"
@@ -258,6 +262,8 @@ function HeaderCard({
         </span>
       )}
     </header>
+    {confirmDialog}
+    </>
   )
 }
 

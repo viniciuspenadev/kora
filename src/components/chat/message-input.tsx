@@ -1,16 +1,20 @@
 "use client"
 
-import { useState, useRef } from "react"
-import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic } from "lucide-react"
+import { useState, useRef, useEffect, useTransition } from "react"
+import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2 } from "lucide-react"
 import { EmojiPicker } from "./emoji-picker"
 import { VoiceRecorder } from "./voice-recorder"
 import { validateMediaFile, ACCEPT_ATTR } from "@/lib/chat/media-validation"
+import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
+import { sendOfficialTemplate } from "@/lib/actions/chat"
 import type { ChatQuickReply } from "@/types/chat"
 
 interface Props {
   conversationId: string
   quickReplies:   ChatQuickReply[]
   disabled?:      boolean
+  /** Janela de 24h fechada (WhatsApp Oficial) → bloqueia texto livre, exige template. */
+  windowClosed?:  boolean
   /** Orquestrado em InboxClient: insere msg otimista, chama server action, faz swap do id. */
   onSendText:     (content: string, isPrivate: boolean) => Promise<void>
   onSendMedia:    (file: File, caption: string) => Promise<void>
@@ -30,7 +34,7 @@ function formatBytes(b: number) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function MessageInput({ conversationId, quickReplies, disabled, onSendText, onSendMedia, onSendVoice }: Props) {
+export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, onSendText, onSendMedia, onSendVoice }: Props) {
   void conversationId  // mantido na API por clareza; envio é orquestrado no parent
   const [text, setText]                = useState("")
   const [isPrivate, setIsPrivate]      = useState(false)
@@ -172,6 +176,11 @@ export function MessageInput({ conversationId, quickReplies, disabled, onSendTex
   }
 
   const hasContent = !!attachedFile || text.trim().length > 0
+
+  // Janela de 24h fechada (Oficial): só template aprovado reabre a conversa.
+  if (windowClosed) {
+    return <ClosedWindowComposer conversationId={conversationId} />
+  }
 
   return (
     <div className="border-t border-slate-200 bg-white relative">
@@ -358,6 +367,117 @@ export function MessageInput({ conversationId, quickReplies, disabled, onSendTex
               <Mic className="size-4" />
             </button>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Composer quando a janela de 24h fechou (WhatsApp Oficial) ──────────────
+// Bloqueia texto livre e força o envio de um template aprovado pra reabrir.
+
+const TPL_INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
+
+function renderTemplate(body: string, params: string[]): string {
+  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => params[Number(n) - 1]?.trim() || `{{${n}}}`)
+}
+
+function ClosedWindowComposer({ conversationId }: { conversationId: string }) {
+  const [templates, setTemplates] = useState<InboxTemplate[] | null>(null)
+  const [selected, setSelected]   = useState("")
+  const [params, setParams]       = useState<string[]>([])
+  const [error, setError]         = useState<string | null>(null)
+  const [ok, setOk]               = useState(false)
+  const [pending, startSend]      = useTransition()
+
+  useEffect(() => {
+    let cancelled = false
+    getInboxTemplates().then((t) => {
+      if (cancelled) return
+      setTemplates(t)
+      if (t[0]) { setSelected(t[0].name); setParams(Array(t[0].varCount).fill("")) }
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const tpl = templates?.find((t) => t.name === selected) ?? null
+
+  function pick(name: string) {
+    setSelected(name)
+    const t = templates?.find((x) => x.name === name)
+    setParams(Array(t?.varCount ?? 0).fill(""))
+    setError(null); setOk(false)
+  }
+
+  function send() {
+    if (!tpl) return
+    if (params.some((p) => !p.trim())) { setError("Preencha as variáveis do template."); return }
+    setError(null); setOk(false)
+    const displayText = renderTemplate(tpl.body, params)
+    startSend(async () => {
+      try {
+        await sendOfficialTemplate(conversationId, tpl.name, tpl.language, params, displayText)
+        setOk(true)
+        setParams(Array(tpl.varCount).fill(""))
+      } catch (e) {
+        setError((e as Error).message ?? "Falha ao enviar template.")
+      }
+    })
+  }
+
+  return (
+    <div className="border-t border-slate-200 bg-white p-4">
+      <div className="flex items-start gap-2 mb-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+        <Lock className="size-4 shrink-0 mt-0.5" />
+        <span>Janela de 24h fechada. Pra reabrir a conversa, envie um <strong>template aprovado</strong>. O texto livre volta assim que o cliente responder.</span>
+      </div>
+
+      {templates === null ? (
+        <div className="flex items-center gap-2 text-xs text-slate-400 py-2"><Loader2 className="size-3.5 animate-spin" /> Carregando templates…</div>
+      ) : templates.length === 0 ? (
+        <p className="text-xs text-slate-400 py-2">Nenhum template aprovado ainda. Crie um na área <strong>Templates</strong> pra conseguir reabrir conversas fora da janela.</p>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Template</label>
+            <select value={selected} onChange={(e) => pick(e.target.value)} className={TPL_INPUT.replace("px-3", "px-2")}>
+              {templates.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.language})</option>)}
+            </select>
+          </div>
+
+          {tpl && tpl.varCount > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {Array.from({ length: tpl.varCount }).map((_, i) => (
+                <input
+                  key={i}
+                  value={params[i] ?? ""}
+                  onChange={(e) => setParams((p) => { const n = [...p]; n[i] = e.target.value; return n })}
+                  placeholder={`Variável {{${i + 1}}}`}
+                  className={TPL_INPUT}
+                />
+              ))}
+            </div>
+          )}
+
+          {tpl && (
+            <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5">
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Prévia</span>
+              <p className="mt-1 text-xs text-slate-700 whitespace-pre-wrap">{renderTemplate(tpl.body, params)}</p>
+            </div>
+          )}
+
+          {error && <div className="flex items-center gap-1.5 text-xs text-red-700"><AlertCircle className="size-4 shrink-0" />{error}</div>}
+          {ok && <div className="flex items-center gap-1.5 text-xs text-emerald-700"><Send className="size-3.5 shrink-0" />Template enviado.</div>}
+
+          <div className="flex justify-end">
+            <button
+              onClick={send}
+              disabled={pending || !tpl}
+              className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+            >
+              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Enviar template
+            </button>
+          </div>
         </div>
       )}
     </div>

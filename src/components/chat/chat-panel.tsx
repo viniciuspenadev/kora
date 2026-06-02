@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { MessageBubble } from "./message-bubble"
 import { MessageInput } from "./message-input"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
@@ -40,6 +40,14 @@ const STATUS_OPTIONS = [
   { key: "snoozed",  label: "Adiado",    icon: XCircle,       color: "text-slate-500 bg-slate-100" },
 ]
 
+/** Tempo restante da janela de 24h, formatado curto (ex: "22h 14m", "47m"). */
+function fmtWindowLeft(ms: number): string {
+  const totalMin = Math.floor(ms / 60000)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
 export function ChatPanel({
   conversation, messages, quickReplies, agents, onStatusChange, onAssign,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
@@ -64,6 +72,33 @@ export function ChatPanel({
   const lifecycle = contact?.lifecycle_stage ?? "contact"
   const lc        = lifecycleMeta(lifecycle)
   const channelSource = contact?.source ?? null
+
+  // ── Janela de 24h (só instância oficial Cloud API) ──────────────
+  // Baileys não tem janela → toda a lógica abaixo é gated em isOfficial,
+  // então conversa QR (Bernardo) se comporta exatamente como hoje.
+  const isOfficial = conversation.whatsapp_instances?.provider === "meta_cloud"
+  // Âncora da janela = `last_inbound_at` da conversa (gravado do timestamp da Meta no
+  // inbound — fonte autoritativa). Cross-check com a última msg inbound carregada cobre
+  // o "chegou agora enquanto vejo" (antes do row refresh via realtime). Usa o mais recente.
+  const lastInboundAt = useMemo(() => {
+    let fromMsgs: string | null = null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].sender_type === "contact") { fromMsgs = messages[i].created_at; break }
+    }
+    const fromConv = conversation.last_inbound_at ?? null
+    if (fromConv && fromMsgs) return fromConv > fromMsgs ? fromConv : fromMsgs
+    return fromConv ?? fromMsgs
+  }, [messages, conversation.last_inbound_at])
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    if (!isOfficial) return
+    const id = setInterval(() => setNowTick(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [isOfficial])
+  const windowMsLeft = (isOfficial && lastInboundAt)
+    ? 24 * 60 * 60 * 1000 - (nowTick - new Date(lastInboundAt).getTime())
+    : null
+  const windowOpen = windowMsLeft !== null && windowMsLeft > 0
 
   // Preservação de scroll quando msgs antigas são prepended.
   // Roda ANTES do paint pra evitar flicker.
@@ -217,6 +252,26 @@ export function ChatPanel({
 
         <div className="flex items-center gap-2 shrink-0">
 
+          {isOfficial && (
+            windowOpen ? (
+              <span
+                className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-lg ${
+                  windowMsLeft! < 2 * 60 * 60 * 1000 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"
+                }`}
+                title="Janela de atendimento de 24h (WhatsApp API Oficial). Dentro dela você responde com texto livre."
+              >
+                <Clock className="size-3" /> {fmtWindowLeft(windowMsLeft!)}
+              </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-lg bg-slate-100 text-slate-500"
+                title="Fora da janela de 24h — só dá pra enviar um template aprovado."
+              >
+                <Clock className="size-3" /> Janela fechada
+              </span>
+            )
+          )}
+
           <div className="relative group">
             <button
               type="button"
@@ -353,6 +408,7 @@ export function ChatPanel({
         conversationId={conversation.id}
         quickReplies={quickReplies}
         disabled={conversation.status === "resolved"}
+        windowClosed={isOfficial && !windowOpen}
         onSendText={onSendText}
         onSendMedia={onSendMedia}
         onSendVoice={onSendVoice}

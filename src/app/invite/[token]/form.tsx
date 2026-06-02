@@ -6,6 +6,7 @@ import { signIn } from "next-auth/react"
 import Image from "next/image"
 import { Loader2, AlertCircle, Mail, Lock, User, ArrowRight, Check } from "lucide-react"
 import { acceptInvite, rejectInvite } from "./actions"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 
 const ROLE_LABELS: Record<string, string> = {
   owner: "Owner",
@@ -55,6 +56,7 @@ export function AcceptInviteForm({
   const [pending, startTransition] = useTransition()
   const [rejecting, startReject]   = useTransition()
   const [rejected, setRejected]    = useState(false)
+  const { confirm, confirmDialog } = useConfirm()
 
   const roleLabel = ROLE_LABELS[role] ?? role
   const capabilities = ROLE_CAPABILITIES[role] ?? []
@@ -84,8 +86,8 @@ export function AcceptInviteForm({
     })
   }
 
-  function handleReject() {
-    if (!confirm("Recusar este convite? Você não poderá usá-lo depois — o admin precisará gerar um novo.")) return
+  async function handleReject() {
+    if (!(await confirm({ title: "Recusar este convite?", body: "Você não poderá usá-lo depois — o admin precisará gerar um novo.", confirmLabel: "Recusar" }))) return
     setError("")
     startReject(async () => {
       const result = await rejectInvite(token)
@@ -252,6 +254,7 @@ export function AcceptInviteForm({
           {rejecting ? "Recusando…" : "ou recusar este convite"}
         </button>
       </form>
+      {confirmDialog}
     </div>
   )
 }

@@ -77,6 +77,12 @@ export interface WhatsAppProvider {
   sendVoiceNote(phone: string, audioUrl: string): Promise<SendResult>
 
   /**
+   * Envia um template aprovado (só WhatsApp Oficial / Cloud API). Opcional —
+   * Baileys não implementa (não tem janela de 24h nem templates).
+   */
+  sendTemplate?(phone: string, name: string, langCode?: string, bodyParams?: string[]): Promise<SendResult>
+
+  /**
    * Sinaliza "digitando..." no chat do destinatário. Usado pelo humanizador
    * antes de enviar cada msg da IA, dando sensação de humano digitando.
    *

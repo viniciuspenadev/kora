@@ -22,6 +22,7 @@ export interface MetaTemplate {
   language:   string
   components?: MetaTemplateComponent[]
   rejected_reason?: string
+  quality_score?: { score?: string }
 }
 export interface MetaPhoneInfo {
   display_phone_number?:    string
@@ -194,7 +195,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
   /** Lista os message templates da WABA (com corpo e motivo de rejeição) pra UI de gestão. */
   async listTemplates(): Promise<MetaTemplate[]> {
     const json = await this.graph<{ data?: MetaTemplate[] }>(
-      `/${this.config.meta_business_account_id}/message_templates?fields=name,status,category,language,components,rejected_reason,id&limit=100`,
+      `/${this.config.meta_business_account_id}/message_templates?fields=name,status,category,language,components,rejected_reason,quality_score,id&limit=100`,
     )
     return json.data ?? []
   }

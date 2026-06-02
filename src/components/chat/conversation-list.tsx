@@ -4,7 +4,7 @@ import { useState, useMemo, useRef, useEffect } from "react"
 import {
   Search, MessageCircle, AlertCircle, Loader2, Filter,
   Image as ImageIcon, Mic, Video, FileText, X, Plus, Users, ChevronDown,
-  ArrowUpRight, ArrowDownLeft, Smartphone,
+  ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
   Pin, PinOff, Flag, FlagOff, UserPlus, Archive, ArchiveRestore,
 } from "lucide-react"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
@@ -34,6 +34,7 @@ interface Props {
   stages:          StageMini[]
   tags:            TagMini[]
   tagsByContact:   Record<string, string[]>
+  showChannel?:    boolean         // mostra badge de canal (Baileys/Oficial) — só com 2+ instâncias
   agents:          AgentMini[]
   unreadTotal:     number          // Total de não-lidas (tenant inteiro, não só carregadas)
 
@@ -68,6 +69,22 @@ const STATUS_TABS = [
 
 const STALE_HOURS_THRESHOLD = 24
 
+/** Badge de canal por conversa (só aparece com 2+ instâncias no tenant). */
+function ChannelBadge({ provider }: { provider: string | null }) {
+  const isMeta = provider === "meta_cloud"
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 text-[9px] font-semibold px-1 py-0.5 rounded shrink-0 ${
+        isMeta ? "bg-primary-50 text-primary-700" : "bg-slate-100 text-slate-500"
+      }`}
+      title={isMeta ? "WhatsApp API Oficial" : "WhatsApp (QR)"}
+    >
+      {isMeta ? <BadgeCheck className="size-2.5" /> : <Smartphone className="size-2.5" />}
+      {isMeta ? "Oficial" : "QR"}
+    </span>
+  )
+}
+
 function inferMediaIcon(preview: string | null): React.ReactNode | null {
   if (!preview) return null
   if (preview.startsWith("📷")) return <ImageIcon className="size-3 text-slate-400" />
@@ -97,7 +114,7 @@ export function ConversationList({
   conversations, activeId, onSelect,
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
   statusFilter, onStatusChange,
-  pipelines, stages, tags, tagsByContact, agents,
+  pipelines, stages, tags, tagsByContact, showChannel = false, agents,
   unreadTotal,
   searchValue, onSearchChange,
   pipelineFilter, onPipelineFilterChange,
@@ -129,7 +146,7 @@ export function ConversationList({
   // Tarefa do client: só renderizar.
 
   const activeFiltersCount =
-    (pipelineFilter ? 1 : 0) + (tagFilter ? 1 : 0) + (agentFilter ? 1 : 0) + (staleOnly ? 1 : 0) + (fromAd ? 1 : 0) + (archivedOnly ? 1 : 0)
+    (pipelineFilter ? 1 : 0) + (tagFilter ? 1 : 0) + (agentFilter ? 1 : 0) + (staleOnly ? 1 : 0) + (fromAd ? 1 : 0)
 
   function clearFilters() {
     onPipelineFilterChange("")
@@ -137,7 +154,7 @@ export function ConversationList({
     onAgentFilterChange("")
     onStaleOnlyChange(false)
     onFromAdChange(false)
-    onArchivedOnlyChange(false)
+    // archivedOnly NÃO entra aqui — é uma visão de status (seletor), não filtro secundário.
   }
 
   // IntersectionObserver no rodapé pra disparar loadMore
@@ -200,7 +217,7 @@ export function ConversationList({
                   : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
               }`}
             >
-              {STATUS_TABS.find((t) => t.key === statusFilter)?.label ?? statusFilter}
+              {archivedOnly ? "Arquivadas" : (STATUS_TABS.find((t) => t.key === statusFilter)?.label ?? statusFilter)}
               <ChevronDown className={`size-3 text-slate-400 transition-transform ${showStatusMenu ? "rotate-180" : ""}`} />
             </button>
 
@@ -209,12 +226,12 @@ export function ConversationList({
                 <div className="fixed inset-0 z-40" onClick={() => setShowStatusMenu(false)} />
                 <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg shadow-soft border border-slate-200 z-50 overflow-hidden">
                   {STATUS_TABS.map((tab) => {
-                    const active = statusFilter === tab.key
+                    const active = !archivedOnly && statusFilter === tab.key
                     return (
                       <button
                         key={tab.key}
                         type="button"
-                        onClick={() => { onStatusChange(tab.key); setShowStatusMenu(false) }}
+                        onClick={() => { onArchivedOnlyChange(false); onStatusChange(tab.key); setShowStatusMenu(false) }}
                         className={`w-full flex items-center justify-between px-3 py-2 text-[11px] font-medium ${
                           active ? "bg-primary-50 text-primary-700" : "text-slate-700 hover:bg-slate-50"
                         }`}
@@ -223,6 +240,17 @@ export function ConversationList({
                       </button>
                     )
                   })}
+                  <div className="border-t border-slate-100" />
+                  <button
+                    type="button"
+                    onClick={() => { onArchivedOnlyChange(true); onStatusChange("all"); setShowStatusMenu(false) }}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] font-medium ${
+                      archivedOnly ? "bg-primary-50 text-primary-700" : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    <Archive className="size-3.5 shrink-0" />
+                    <span>Arquivadas</span>
+                  </button>
                 </div>
               </>
             )}
@@ -291,14 +319,6 @@ export function ConversationList({
                 checked={fromAd}
                 onChange={onFromAdChange}
                 label="Apenas vieram de anúncio Meta"
-              />
-            </div>
-            <div className="pt-1">
-              <Switch
-                size="sm"
-                checked={archivedOnly}
-                onChange={onArchivedOnlyChange}
-                label="Apenas arquivadas"
               />
             </div>
             {activeFiltersCount > 0 && (
@@ -456,6 +476,7 @@ export function ConversationList({
                     <p className={`text-xs truncate flex-1 ${hasUnread ? "font-medium text-slate-700" : "text-slate-500"}`}>
                       {conv.last_message_preview ?? "Nova conversa"}
                     </p>
+                    {showChannel && <ChannelBadge provider={conv.whatsapp_instances?.provider ?? null} />}
                   </div>
 
                   {isWaiting && (

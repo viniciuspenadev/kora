@@ -324,7 +324,13 @@ export async function sendMessage(
           .from("chat_messages")
           .update({ status: "failed" })
           .eq("id", msg.id)
-        throw new Error(`Erro ao enviar: ${(err as Error).message}`)
+        const m = (err as Error).message ?? ""
+        // #131047 = "re-engagement message": a Meta recusou pq a janela de 24h fechou.
+        // É a verdade definitiva — sobrepõe nosso cálculo. Mensagem acionável pro atendente.
+        if (m.includes("131047")) {
+          throw new Error("A janela de 24h fechou — envie um template aprovado pra reabrir a conversa.")
+        }
+        throw new Error(`Erro ao enviar: ${m}`)
       }
     } else if (channel === "site") {
       // Site-chat: nada a enviar externamente. A msg 'agent' já está persistida;
@@ -350,6 +356,93 @@ export async function sendMessage(
       last_message_dir:     "out",
       flagged_pending:      false,
       updated_at:          new Date().toISOString(),
+    })
+    .eq("id", conversationId)
+
+  revalidatePath("/inbox")
+  return { id: msg.id }
+}
+
+/**
+ * Envia um TEMPLATE aprovado pra conversa (WhatsApp Oficial). Usado pelo composer
+ * quando a janela de 24h está fechada (única forma de reabrir). Espelha o
+ * `sendMessage` (permissão + auto-assign + insert + update), mas via template.
+ * `displayText` = corpo já renderizado com as variáveis (pra exibir no chat).
+ */
+export async function sendOfficialTemplate(
+  conversationId: string,
+  templateName:   string,
+  language:       string,
+  params:         string[],
+  displayText:    string,
+): Promise<{ id: string }> {
+  const session = await auth()
+  if (!session) throw new Error("Não autenticado")
+  const tenantId = session.user.tenantId
+
+  const { data: conv } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id, instance_id, assigned_to, participants, chat_contacts(phone_number, primary_channel)")
+    .eq("id", conversationId)
+    .eq("tenant_id", tenantId)
+    .single()
+  if (!conv) throw new Error("Conversa não encontrada")
+
+  const assignedTo    = (conv as { assigned_to: string | null }).assigned_to
+  const isAdmin       = ["owner", "admin"].includes(session.user.role)
+  const isAssigned    = assignedTo === session.user.id
+  const isParticipant = ((conv as { participants?: string[] }).participants ?? []).includes(session.user.id)
+  const isPool        = assignedTo === null
+  if (!isAdmin && !isAssigned && !isParticipant && !isPool) {
+    throw new Error("Sem permissão para responder nesta conversa.")
+  }
+  if (isPool) {
+    await supabaseAdmin.from("chat_conversations")
+      .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
+      .eq("id", conversationId)
+  }
+
+  const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null }
+
+  const { data: msg, error } = await supabaseAdmin
+    .from("chat_messages")
+    .insert({
+      conversation_id: conversationId,
+      tenant_id:       tenantId,
+      sender_type:     "agent",
+      sender_id:       session.user.id,
+      content_type:    "text",
+      content:         displayText,
+      status:          "pending",
+      is_private_note: false,
+      metadata:        { template: templateName, language },
+    })
+    .select("id")
+    .single()
+  if (error || !msg) throw new Error(error?.message ?? "Erro ao salvar mensagem")
+
+  try {
+    const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
+    if (!provider.sendTemplate) throw new Error("Esta instância não suporta templates (use o canal oficial).")
+    const result   = await provider.sendTemplate(contact.phone_number ?? "", templateName, language, params.length > 0 ? params : undefined)
+    await supabaseAdmin.from("chat_messages")
+      .update({ whatsapp_msg_id: result.messageId || null, status: "sent" })
+      .eq("id", msg.id)
+    await supabaseAdmin.from("whatsapp_instances")
+      .update({ last_outbound_message_at: new Date().toISOString() })
+      .eq("tenant_id", tenantId)
+  } catch (err) {
+    await supabaseAdmin.from("chat_messages").update({ status: "failed" }).eq("id", msg.id)
+    throw new Error(`Erro ao enviar template: ${(err as Error).message}`)
+  }
+
+  await supabaseAdmin.from("chat_conversations")
+    .update({
+      last_message_at:      new Date().toISOString(),
+      last_message_preview: displayText.substring(0, 100),
+      last_message_dir:     "out",
+      flagged_pending:      false,
+      updated_at:           new Date().toISOString(),
     })
     .eq("id", conversationId)
 

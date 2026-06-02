@@ -5,6 +5,7 @@ import { Loader2, AlertCircle, Copy, Check, Trash2 } from "lucide-react"
 import { createInvite, deleteInvite } from "@/lib/actions/admin"
 import { SectionCard } from "@/components/ui/section-card"
 import { FormRow } from "@/components/ui/form-row"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 
 const inputCls =
   "w-full h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
@@ -115,23 +116,27 @@ export function CopyInviteLink({ token }: { token: string }) {
 
 export function DeleteInviteButton({ inviteId }: { inviteId: string }) {
   const [pending, startTransition] = useTransition()
+  const { confirm, confirmDialog } = useConfirm()
 
-  function handleDelete() {
-    if (!confirm("Apagar este convite?")) return
+  async function handleDelete() {
+    if (!(await confirm({ title: "Apagar este convite?", confirmLabel: "Apagar" }))) return
     startTransition(async () => {
       await deleteInvite(inviteId)
     })
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleDelete}
-      disabled={pending}
-      aria-label="Apagar convite"
-      className="size-8 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors flex items-center justify-center disabled:opacity-50"
-    >
-      {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={pending}
+        aria-label="Apagar convite"
+        className="size-8 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 transition-colors flex items-center justify-center disabled:opacity-50"
+      >
+        {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+      </button>
+      {confirmDialog}
+    </>
   )
 }

@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown,
   Bot, Bell, Filter, MessageSquare, Layers,
-  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks,
+  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText,
 } from "lucide-react"
 import { getUnreadTotal } from "@/lib/actions/chat"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
@@ -21,6 +21,8 @@ interface NavLeaf {
   adminOnly?: boolean
   /** Slug do módulo. Se setado e tenant não tem habilitado, item é escondido. Omitir = sempre visível (core). */
   module?:   string
+  /** Só aparece se o tenant tem instância WhatsApp API Oficial (meta_cloud). */
+  officialOnly?: boolean
 }
 
 interface NavGroup {
@@ -57,6 +59,7 @@ const NAV: NavItem[] = [
     ],
   },
   { href: "/integracoes", label: "Integrações", icon: <Blocks className="w-5 h-5 shrink-0" strokeWidth={1.75} />, adminOnly: true },
+  { href: "/templates", label: "Templates", icon: <FileText className="w-5 h-5 shrink-0" strokeWidth={1.75} />, adminOnly: true, officialOnly: true },
   {
     key:       "config",
     label:     "Configurações",
@@ -80,9 +83,10 @@ interface Props {
   userRole:        string
   enabledModules:  string[]   // slugs habilitados (vem do server layout)
   selfPause:      { paused: boolean; paused_until: string | null }
+  hasOfficial?:   boolean     // tenant tem instância WhatsApp API Oficial
 }
 
-export function Sidebar({ userName, userEmail, tenantName, userRole, enabledModules, selfPause }: Props) {
+export function Sidebar({ userName, userEmail, tenantName, userRole, enabledModules, selfPause, hasOfficial }: Props) {
   const pathname              = usePathname()
   const [signing, setSigning] = useState(false)
   const [unread, setUnread]   = useState(0)
@@ -100,9 +104,10 @@ export function Sidebar({ userName, userEmail, tenantName, userRole, enabledModu
         return [{ ...item, children: visibleChildren }]
       }
       if (item.module && !modulesSet.has(item.module)) return []
+      if (item.officialOnly && !hasOfficial) return []
       return [item]
     })
-  }, [modulesSet])
+  }, [modulesSet, hasOfficial])
 
   // Polling global de mensagens não-lidas. Atualiza o badge do Inbox a cada 10s
   // em qualquer página do app, não só /inbox. Reduz pra 5s quando a aba volta a ficar visível.
