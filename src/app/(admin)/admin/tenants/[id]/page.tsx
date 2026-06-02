@@ -55,7 +55,7 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
     supabaseAdmin.from("chat_conversations").select("id", { count: "exact", head: true }).eq("tenant_id", id),
     supabaseAdmin.from("chat_messages").select("id", { count: "exact", head: true }).eq("tenant_id", id),
     supabaseAdmin.from("tenant_users").select("role, profiles!tenant_users_user_id_fkey ( full_name, email )").eq("tenant_id", id).eq("role", "owner").maybeSingle(),
-    supabaseAdmin.from("whatsapp_instances").select("status, phone_number").eq("tenant_id", id).maybeSingle(),
+    supabaseAdmin.from("whatsapp_instances").select("status, phone_number").eq("tenant_id", id).order("created_at", { ascending: true }).limit(1).maybeSingle(),
     supabaseAdmin.from("chat_conversations").select("last_message_at").eq("tenant_id", id).order("last_message_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
   ])
 

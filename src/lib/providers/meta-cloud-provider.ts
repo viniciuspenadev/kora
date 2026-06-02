@@ -10,7 +10,7 @@ interface MetaCloudConfig {
   meta_app_secret:          string
 }
 
-const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? "v21.0"
+const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? "v25.0"
 const BASE = `https://graph.facebook.com/${GRAPH_VERSION}`
 
 const MIME_FALLBACK: Record<ContentType, string> = {

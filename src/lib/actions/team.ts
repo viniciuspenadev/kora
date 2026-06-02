@@ -390,11 +390,13 @@ export async function sendInviteViaWhatsApp(inviteId: string): Promise<{ error?:
 
   if (!ctx.invite.phone) return { error: "Convite sem telefone. Edite o convite ou copie o link manualmente." }
 
-  // Provider do tenant
+  // Provider do tenant (default — 1ª instância; multi-instância: M2 dá a escolha)
   const { data: instance } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("*")
     .eq("tenant_id", tenantId)
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle()
 
   if (!instance) return { error: "WhatsApp não configurado no tenant" }

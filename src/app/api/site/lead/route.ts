@@ -79,11 +79,13 @@ export async function POST(req: NextRequest) {
       return cors(NextResponse.json({ error: "widget desabilitado" }, { status: 403 }))
     }
 
-    // Instância WhatsApp do tenant (pra associar a conversa)
+    // Instância WhatsApp do tenant (pra associar a conversa) — default (1ª)
     const { data: instance } = await supabaseAdmin
       .from("whatsapp_instances")
       .select("id")
       .eq("tenant_id", tenant.id)
+      .order("created_at", { ascending: true })
+      .limit(1)
       .maybeSingle()
 
     if (!instance) {

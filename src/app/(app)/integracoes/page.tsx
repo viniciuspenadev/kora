@@ -29,27 +29,38 @@ export default async function IntegracoesPage() {
 
   const tenantId = session.user.tenantId
 
-  const [{ data: instance }, modules] = await Promise.all([
+  const [{ data: instances }, modules] = await Promise.all([
     supabaseAdmin
       .from("whatsapp_instances")
-      .select("status")
-      .eq("tenant_id", tenantId)
-      .limit(1)
-      .maybeSingle(),
+      .select("provider, status")
+      .eq("tenant_id", tenantId),
     getEnabledModuleSlugs(tenantId),
   ])
 
-  const whatsappConnected = !!instance && CONNECTED_STATES.has(instance.status ?? "")
+  const list = instances ?? []
+  const baileysConnected = list.some((i) => i.provider !== "meta_cloud" && CONNECTED_STATES.has(i.status ?? ""))
+  const metaInstance     = list.find((i) => i.provider === "meta_cloud")
+  const metaConnected    = !!metaInstance && CONNECTED_STATES.has(metaInstance.status ?? "")
 
   const integrations: IntegrationCard[] = [
     {
       slug:        "whatsapp",
-      name:        "WhatsApp",
-      description: "Atenda e venda pelo WhatsApp da sua empresa, com vários atendentes.",
+      name:        "WhatsApp (QR)",
+      description: "Conecte um número via QR Code. Rápido pra começar, ideal pra PMEs.",
       source:      "whatsapp_inbound",
       category:    "Canais",
       href:        "/configuracoes/whatsapp",
-      status:      whatsappConnected ? "connected" : "available",
+      status:      baileysConnected ? "connected" : "available",
+    },
+    {
+      slug:        "whatsapp_official",
+      name:        "WhatsApp API Oficial",
+      description: "Número oficial via Meta Cloud API — templates, escala e confiabilidade.",
+      source:      "whatsapp_inbound",
+      category:    "Canais",
+      // Gestão (Embedded Signup) vem na Fase 2 — por ora reflete o status.
+      href:        null,
+      status:      metaInstance ? (metaConnected ? "connected" : "available") : "soon",
     },
     {
       slug:        "widget_site",
@@ -120,7 +131,8 @@ function StatusPill({ status }: { status: IntegrationStatus }) {
 }
 
 function IntegrationTile({ integration: it }: { integration: IntegrationCard }) {
-  const soon = it.status === "soon" || !it.href
+  const soon = it.status === "soon"
+  const clickable = !soon && !!it.href
 
   const inner = (
     <>
@@ -137,11 +149,13 @@ function IntegrationTile({ integration: it }: { integration: IntegrationCard }) 
       <div className="mt-4 pt-3 border-t border-slate-100">
         {soon ? (
           <span className="text-xs font-medium text-slate-300">Em breve</span>
-        ) : (
+        ) : clickable ? (
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary-700">
             {it.status === "connected" ? "Gerenciar" : "Configurar"}
             <ChevronRight className="size-3.5" />
           </span>
+        ) : (
+          <span className="text-xs font-medium text-slate-400">Gestão em breve</span>
         )}
       </div>
     </>
@@ -153,10 +167,10 @@ function IntegrationTile({ integration: it }: { integration: IntegrationCard }) 
       ? "border-slate-200 opacity-70 cursor-default"
       : "border-slate-200 shadow-card hover:shadow-soft hover:border-slate-300")
 
-  if (soon) return <div className={cardClass}>{inner}</div>
-  return (
+  if (clickable) return (
     <Link href={it.href!} className={cardClass}>
       {inner}
     </Link>
   )
+  return <div className={cardClass}>{inner}</div>
 }

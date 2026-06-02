@@ -260,6 +260,8 @@ export async function adminProvisionForTenant(tenantId: string) {
     .from("whatsapp_instances")
     .select("id")
     .eq("tenant_id", tenantId)
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle()
 
   if (existing) return { error: "Tenant já tem instância. Use Reprovisionar." }

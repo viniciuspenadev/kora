@@ -15,15 +15,17 @@ export default async function InboxPage() {
 
   const tenantId = session.user.tenantId
 
-  const { data: instance } = await supabaseAdmin
+  // Multi-instância (M1): pode haver 2+ (ex: Baileys + Meta oficial).
+  const { data: instances } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("id, status")
     .eq("tenant_id", tenantId)
-    .single()
 
-  const instanceStatus = !instance ? "not_configured" : instance.status
+  const instanceList = instances ?? []
+  const hasUsableInstance = instanceList.some((i) => i.status !== "disconnected")
+  const instanceStatus = instanceList.length === 0 ? "not_configured" : (hasUsableInstance ? "connected" : "disconnected")
 
-  if (!instance || instance.status === "disconnected") {
+  if (!hasUsableInstance) {
     return (
       <div className="h-[calc(100vh-3.5rem)]">
         <InboxClient

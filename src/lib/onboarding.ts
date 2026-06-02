@@ -41,6 +41,8 @@ export async function getSetupState(tenantId: string): Promise<SetupState> {
       .from("whatsapp_instances")
       .select("status, phone_number")
       .eq("tenant_id", tenantId)
+      .order("created_at", { ascending: true })
+      .limit(1)
       .maybeSingle(),
     supabaseAdmin
       .from("tenant_users")

@@ -10,12 +10,34 @@ import { findOrReopenConversation } from "@/lib/conversation-dedup"
 
 // ── Helpers ─────────────────────────────────────────────────
 
+/**
+ * Provider da instância ESPECÍFICA de uma conversa (multi-instância).
+ * Envio sempre sai pela instância dona da conversa (conv.instance_id).
+ */
+async function getProviderForInstance(instanceId: string, tenantId: string): Promise<WhatsAppProvider> {
+  const { data } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("*")
+    .eq("id", instanceId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+  if (!data) throw new Error("Instância da conversa não encontrada.")
+  return getProvider(data)
+}
+
+/**
+ * Provider "default" do tenant — só pra operações de config/conexão que ainda
+ * não escolhem instância (UI multi-instância vem na Fase M2). Pega a 1ª (mais
+ * antiga) pra NÃO quebrar quando o tenant tem 2+ instâncias.
+ */
 async function getInstanceProvider(tenantId: string): Promise<WhatsAppProvider> {
   const { data } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("*")
     .eq("tenant_id", tenantId)
-    .single()
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
 
   if (!data) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
 
@@ -40,7 +62,10 @@ export async function saveWhatsAppConfig(formData: {
     .from("whatsapp_instances")
     .select("id")
     .eq("tenant_id", tenantId)
-    .single()
+    .eq("provider", "baileys")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
 
   if (existing) {
     await supabaseAdmin
@@ -281,7 +306,7 @@ export async function sendMessage(
     const channel = contact.primary_channel ?? "whatsapp"
     if (channel === "whatsapp") {
       try {
-        const provider = await getInstanceProvider(tenantId)
+        const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
         const result   = await provider.sendText(contact.phone_number ?? "", content)
 
         await supabaseAdmin
@@ -362,7 +387,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, assigned_to, participants, chat_contacts(phone_number, primary_channel)")
+    .select("id, contact_id, instance_id, assigned_to, participants, chat_contacts(phone_number, primary_channel)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -440,7 +465,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   }
 
   try {
-    const provider = await getInstanceProvider(tenantId)
+    const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
     const result   = sendAsVoiceNote
       ? await provider.sendVoiceNote(contact.phone_number, signed.signedUrl)
       : await provider.sendMedia(
@@ -659,7 +684,9 @@ export async function createManualConversation(input: {
     .from("whatsapp_instances")
     .select("id")
     .eq("tenant_id", tenantId)
-    .single()
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
   if (!instance) throw new Error("WhatsApp não configurado.")
 
   let contactId = input.contactId ?? null

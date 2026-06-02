@@ -13,10 +13,15 @@ export default async function WhatsAppConfigPage() {
     redirect("/inbox")
   }
 
+  // Fase M1: a tela de QR foca na instância Baileys (1ª). A UI multi-instância
+  // (listar/gerenciar N) vem na Fase M2.
   const { data: instance } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("*")
     .eq("tenant_id", session.user.tenantId)
+    .eq("provider", "baileys")
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle()
 
   return (
