@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase"
 import { Smartphone, Globe, BadgeCheck } from "lucide-react"
+import { CloudTestSend } from "@/components/admin/cloud-test-send"
 
 const WA_STATUS: Record<string, { label: string; tone: string }> = {
   connected:    { label: "Conectado",     tone: "text-emerald-700 bg-emerald-50 border-emerald-200" },
@@ -25,6 +26,7 @@ export default async function TenantChannelsPage({ params }: { params: Promise<{
 
   const instances = (instRes.data ?? []) as InstanceRow[]
   const widget = widgetRes.data
+  const hasMeta = instances.some((i) => i.provider === "meta_cloud")
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -60,6 +62,9 @@ export default async function TenantChannelsPage({ params }: { params: Promise<{
           </div>
         )
       })}
+
+      {/* Envio de teste pela API oficial (vídeo do App Review) */}
+      {hasMeta && <CloudTestSend tenantId={id} />}
 
       {/* Site */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-card p-5">

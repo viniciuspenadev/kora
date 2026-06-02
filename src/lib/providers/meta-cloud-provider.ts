@@ -111,6 +111,55 @@ export class MetaCloudProvider implements WhatsAppProvider {
     return this.sendMessage({ to: this.toWa(phone), type, [type]: media })
   }
 
+  /**
+   * Envia um template aprovado. `bodyParams` preenche as variáveis posicionais
+   * do corpo ({{1}}, {{2}}, ...) — ex: ["Bernardo"] vira "Olá Bernardo, tudo bem?".
+   * Único jeito de iniciar conversa fora da janela de 24h.
+   */
+  async sendTemplate(
+    phone: string, name: string, langCode = "en_US", bodyParams?: string[],
+  ): Promise<SendResult> {
+    const template: Record<string, unknown> = { name, language: { code: langCode } }
+    if (bodyParams && bodyParams.length > 0) {
+      template.components = [{
+        type: "body",
+        parameters: bodyParams.map((text) => ({ type: "text", text })),
+      }]
+    }
+    return this.sendMessage({ to: this.toWa(phone), type: "template", template })
+  }
+
+  /**
+   * Cria um message template na WABA (precisa aprovação da Meta).
+   * `body` usa variáveis posicionais {{1}}; `bodyExamples` dá a amostra exigida.
+   */
+  async createTemplate(opts: {
+    wabaId:   string
+    name:     string
+    category: "MARKETING" | "UTILITY" | "AUTHENTICATION"
+    language: string
+    body:     string
+    bodyExamples?: string[]
+  }): Promise<{ id: string; status: string }> {
+    const components: Array<Record<string, unknown>> = [{
+      type: "BODY",
+      text: opts.body,
+      ...(opts.bodyExamples && opts.bodyExamples.length > 0
+        ? { example: { body_text: [opts.bodyExamples] } }
+        : {}),
+    }]
+    return this.graph<{ id: string; status: string }>(
+      `/${opts.wabaId}/message_templates`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: opts.name, category: opts.category, language: opts.language, components,
+        }),
+      },
+    )
+  }
+
   async sendVoiceNote(phone: string, audioUrl: string): Promise<SendResult> {
     // Cloud API envia como áudio (sem flag PTT explícita no envio simples).
     const mediaId = await this.uploadMedia(audioUrl, "audio")
