@@ -13,6 +13,16 @@ export default async function WhatsAppConfigPage() {
     redirect("/inbox")
   }
 
+  // Tenant "só-oficial" (hide_qr_channel) não acessa a conexão QR/Baileys.
+  const { data: tenantRow } = await supabaseAdmin
+    .from("tenants")
+    .select("hide_qr_channel")
+    .eq("id", session.user.tenantId)
+    .maybeSingle()
+  if ((tenantRow as { hide_qr_channel?: boolean } | null)?.hide_qr_channel) {
+    redirect("/integracoes")
+  }
+
   // Fase M1: a tela de QR foca na instância Baileys (1ª). A UI multi-instância
   // (listar/gerenciar N) vem na Fase M2.
   const { data: instance } = await supabaseAdmin

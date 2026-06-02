@@ -10,6 +10,38 @@ interface MetaCloudConfig {
   meta_app_secret:          string
 }
 
+export interface MetaTemplateComponent {
+  type: string; text?: string; format?: string; example?: unknown
+  buttons?: Array<{ type: string; text?: string }>
+}
+export interface MetaTemplate {
+  id?:        string
+  name:       string
+  status:     string
+  category:   string
+  language:   string
+  components?: MetaTemplateComponent[]
+  rejected_reason?: string
+}
+export interface MetaPhoneInfo {
+  display_phone_number?:    string
+  verified_name?:           string
+  quality_rating?:          string
+  code_verification_status?: string
+  messaging_limit_tier?:    string
+  platform_type?:           string
+  throughput?:              { level?: string }
+}
+export interface MetaBusinessProfile {
+  about?:               string
+  address?:             string
+  description?:         string
+  email?:               string
+  profile_picture_url?: string
+  websites?:            string[]
+  vertical?:            string
+}
+
 const GRAPH_VERSION = process.env.META_GRAPH_VERSION ?? "v25.0"
 const BASE = `https://graph.facebook.com/${GRAPH_VERSION}`
 
@@ -134,7 +166,6 @@ export class MetaCloudProvider implements WhatsAppProvider {
    * `body` usa variáveis posicionais {{1}}; `bodyExamples` dá a amostra exigida.
    */
   async createTemplate(opts: {
-    wabaId:   string
     name:     string
     category: "MARKETING" | "UTILITY" | "AUTHENTICATION"
     language: string
@@ -149,7 +180,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
         : {}),
     }]
     return this.graph<{ id: string; status: string }>(
-      `/${opts.wabaId}/message_templates`,
+      `/${this.config.meta_business_account_id}/message_templates`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -158,6 +189,49 @@ export class MetaCloudProvider implements WhatsAppProvider {
         }),
       },
     )
+  }
+
+  /** Lista os message templates da WABA (com corpo e motivo de rejeição) pra UI de gestão. */
+  async listTemplates(): Promise<MetaTemplate[]> {
+    const json = await this.graph<{ data?: MetaTemplate[] }>(
+      `/${this.config.meta_business_account_id}/message_templates?fields=name,status,category,language,components,rejected_reason,id&limit=100`,
+    )
+    return json.data ?? []
+  }
+
+  /** Exclui um template da WABA pelo nome. */
+  async deleteTemplate(name: string): Promise<void> {
+    await this.graph(`/${this.config.meta_business_account_id}/message_templates?name=${encodeURIComponent(name)}`, { method: "DELETE" })
+  }
+
+  /** Detalhes do número oficial (nome, número, qualidade, tier de limite, throughput). */
+  async getPhoneInfo(): Promise<MetaPhoneInfo> {
+    return this.graph(`/${this.config.meta_phone_number_id}?fields=display_phone_number,verified_name,quality_rating,code_verification_status,messaging_limit_tier,platform_type,throughput`)
+  }
+
+  /** Perfil comercial do número (o que o cliente final vê no WhatsApp). */
+  async getBusinessProfile(): Promise<MetaBusinessProfile> {
+    const json = await this.graph<{ data?: MetaBusinessProfile[] }>(
+      `/${this.config.meta_phone_number_id}/whatsapp_business_profile?fields=about,address,description,email,profile_picture_url,websites,vertical`,
+    )
+    return json.data?.[0] ?? {}
+  }
+
+  /** Atualiza o perfil comercial. Campos omitidos não mudam. */
+  async updateBusinessProfile(profile: Partial<MetaBusinessProfile>): Promise<void> {
+    await this.graph(`/${this.config.meta_phone_number_id}/whatsapp_business_profile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", ...profile }),
+    })
+  }
+
+  /** Saúde do webhook: nosso app está subscrito na WABA? */
+  async isWebhookSubscribed(): Promise<boolean> {
+    try {
+      const json = await this.graph<{ data?: unknown[] }>(`/${this.config.meta_business_account_id}/subscribed_apps`)
+      return (json.data?.length ?? 0) > 0
+    } catch { return false }
   }
 
   async sendVoiceNote(phone: string, audioUrl: string): Promise<SendResult> {

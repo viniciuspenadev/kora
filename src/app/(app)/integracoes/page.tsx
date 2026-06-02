@@ -29,14 +29,20 @@ export default async function IntegracoesPage() {
 
   const tenantId = session.user.tenantId
 
-  const [{ data: instances }, modules] = await Promise.all([
+  const [{ data: instances }, { data: tenantRow }, modules] = await Promise.all([
     supabaseAdmin
       .from("whatsapp_instances")
       .select("provider, status")
       .eq("tenant_id", tenantId),
+    supabaseAdmin
+      .from("tenants")
+      .select("hide_qr_channel")
+      .eq("id", tenantId)
+      .maybeSingle(),
     getEnabledModuleSlugs(tenantId),
   ])
 
+  const hideQr = (tenantRow as { hide_qr_channel?: boolean } | null)?.hide_qr_channel ?? false
   const list = instances ?? []
   const baileysConnected = list.some((i) => i.provider !== "meta_cloud" && CONNECTED_STATES.has(i.status ?? ""))
   const metaInstance     = list.find((i) => i.provider === "meta_cloud")
@@ -58,8 +64,8 @@ export default async function IntegracoesPage() {
       description: "Número oficial via Meta Cloud API — templates, escala e confiabilidade.",
       source:      "whatsapp_inbound",
       category:    "Canais",
-      // Gestão (Embedded Signup) vem na Fase 2 — por ora reflete o status.
-      href:        null,
+      // Gestão própria (status + templates). Conexão self-service (Embedded Signup) vem na Fase 2.
+      href:        metaInstance ? "/integracoes/whatsapp-oficial" : null,
       status:      metaInstance ? (metaConnected ? "connected" : "available") : "soon",
     },
     {
@@ -91,9 +97,12 @@ export default async function IntegracoesPage() {
     },
   ]
 
+  // Esconde o canal QR/Baileys pra tenants "só-oficial" (flag por-tenant).
+  const visibleIntegrations = hideQr ? integrations.filter((it) => it.slug !== "whatsapp") : integrations
+
   // Agrupa por categoria (hoje só "Canais", mas já preparado pra crescer)
   const byCategory = new Map<string, IntegrationCard[]>()
-  for (const it of integrations) {
+  for (const it of visibleIntegrations) {
     if (!byCategory.has(it.category)) byCategory.set(it.category, [])
     byCategory.get(it.category)!.push(it)
   }
