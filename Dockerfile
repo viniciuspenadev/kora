@@ -29,9 +29,13 @@ FROM base AS builder
 # Build args (públicos — entram no bundle do client)
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+# Chave pública do Web Push — inlinada no client (push-prompt). Sem ela no build,
+# a faixa "Ativar avisos" nunca aparece (VAPID vazio).
+ARG NEXT_PUBLIC_VAPID_PUBLIC_KEY
 
 ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+ENV NEXT_PUBLIC_VAPID_PUBLIC_KEY=${NEXT_PUBLIC_VAPID_PUBLIC_KEY}
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
