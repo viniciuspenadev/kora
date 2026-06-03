@@ -1,6 +1,7 @@
 import "server-only"
 import webpush from "web-push"
 import { supabaseAdmin } from "@/lib/supabase"
+import { memberSeesPool } from "@/lib/visibility"
 
 // ── Config VAPID (lazy) ─────────────────────────────────────────
 // Sem chaves no env → tudo vira no-op silencioso (não quebra o webhook em dev
@@ -78,20 +79,31 @@ export async function notifyInboundMessage(opts: {
 
     const { data: conv } = await supabaseAdmin
       .from("chat_conversations")
-      .select("assigned_to")
+      .select("assigned_to, participants")
       .eq("id", opts.conversationId)
       .maybeSingle()
 
+    const participants = ((conv?.participants ?? []) as string[])
+
+    // Destinatários = quem REALMENTE pode ver a conversa (mesma regra de
+    // @/lib/visibility). Não basta "todos os ativos": um atendente see_pool=false
+    // não vê o pool, então receber push dele seria ruído E vazamento de preview.
     let userIds: string[]
     if (conv?.assigned_to) {
-      userIds = [conv.assigned_to as string]
+      // Atribuída → o responsável + quem participa (admins não levam push de
+      // cada conversa de cada atendente; eles consultam o inbox).
+      userIds = [conv.assigned_to as string, ...participants]
     } else {
+      // Pool → só quem enxerga o pool (owner/admin, view_all ou see_pool) + participantes.
       const { data: members } = await supabaseAdmin
         .from("tenant_users")
-        .select("user_id")
+        .select("user_id, role, view_all, see_pool")
         .eq("tenant_id", opts.tenantId)
         .eq("active", true)
-      userIds = (members ?? []).map((m) => (m as { user_id: string }).user_id)
+      const poolViewers = (members ?? [])
+        .filter((m) => memberSeesPool(m as { role: string; view_all: boolean | null; see_pool: boolean | null }))
+        .map((m) => (m as { user_id: string }).user_id)
+      userIds = [...poolViewers, ...participants]
     }
 
     await sendPushToUsers(userIds, {

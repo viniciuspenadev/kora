@@ -75,6 +75,16 @@ export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFiel
  * Usado nas LISTAS (inbox, kanban) onde filtramos no banco. Mantém a mesma
  * semântica de `canViewConversation`.
  */
+/**
+ * Predicado de FAN-OUT (ex: push): um membro enxerga o POOL (conversas não
+ * atribuídas) se é owner/admin, supervisor (view_all) ou tem see_pool. Mesma
+ * regra do branch de pool em `canViewConversation`, mas pra avaliar VÁRIOS
+ * membros server-side (sem sessão de cada um). Mantém a regra centralizada.
+ */
+export function memberSeesPool(m: { role: string; view_all?: boolean | null; see_pool?: boolean | null }): boolean {
+  return ["owner", "admin"].includes(m.role) || m.view_all === true || m.see_pool !== false
+}
+
 export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
   if (scope.isAdmin || scope.viewAll) return query
   const clauses = [
