@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { getProvider, type WhatsAppProvider } from "@/lib/providers"
+import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
@@ -262,15 +263,12 @@ export async function sendMessage(
 
   if (!conv) throw new Error("Conversa não encontrada")
 
-  const assignedTo    = (conv as { assigned_to: string | null }).assigned_to
-  const isAdmin       = ["owner", "admin"].includes(session.user.role)
-  const isAssigned    = assignedTo === session.user.id
-  const isParticipant = ((conv as { participants?: string[] }).participants ?? []).includes(session.user.id)
-  const isPool        = assignedTo === null
-
-  if (!isAdmin && !isAssigned && !isParticipant && !isPool) {
+  const assignedTo = (conv as { assigned_to: string | null }).assigned_to
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants })) {
     throw new Error("Sem permissão para responder nesta conversa. Peça para o atendente atribuído te adicionar como participante.")
   }
+  const isPool = assignedTo === null
 
   // Pool — primeiro a responder vira responsável (auto-assign).
   // Notas privadas não atribuem (são internas).
@@ -388,14 +386,12 @@ export async function sendOfficialTemplate(
     .single()
   if (!conv) throw new Error("Conversa não encontrada")
 
-  const assignedTo    = (conv as { assigned_to: string | null }).assigned_to
-  const isAdmin       = ["owner", "admin"].includes(session.user.role)
-  const isAssigned    = assignedTo === session.user.id
-  const isParticipant = ((conv as { participants?: string[] }).participants ?? []).includes(session.user.id)
-  const isPool        = assignedTo === null
-  if (!isAdmin && !isAssigned && !isParticipant && !isPool) {
+  const assignedTo = (conv as { assigned_to: string | null }).assigned_to
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants })) {
     throw new Error("Sem permissão para responder nesta conversa.")
   }
+  const isPool = assignedTo === null
   if (isPool) {
     await supabaseAdmin.from("chat_conversations")
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
@@ -494,15 +490,12 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     throw new Error("Envio de mídia ainda não disponível nesse canal. Use texto.")
   }
 
-  const assignedTo    = (conv as { assigned_to: string | null }).assigned_to
-  const isAdmin       = ["owner", "admin"].includes(session.user.role)
-  const isAssigned    = assignedTo === session.user.id
-  const isParticipant = ((conv as { participants?: string[] }).participants ?? []).includes(session.user.id)
-  const isPool        = assignedTo === null
-
-  if (!isAdmin && !isAssigned && !isParticipant && !isPool) {
+  const assignedTo = (conv as { assigned_to: string | null }).assigned_to
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants })) {
     throw new Error("Sem permissão para enviar mídia nesta conversa.")
   }
+  const isPool = assignedTo === null
 
   // Pool — primeiro a enviar mídia vira responsável
   if (isPool) {

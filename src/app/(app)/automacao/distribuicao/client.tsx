@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useState, useTransition } from "react"
 import {
   Save, Loader2, AlertCircle, CheckCircle2, Sparkles,
@@ -107,6 +108,16 @@ export function DistribuicaoClient({ initialConfig, initialAgents }: Props) {
           </div>
         </div>
       </SectionCard>
+
+      {/* Ponte com a visibilidade (Equipe): quem não vê o pool depende desta distribuição. */}
+      <div className="flex items-start gap-2 rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-slate-600">
+        <Users className="size-4 shrink-0 text-slate-400 mt-0.5" />
+        <p className="leading-relaxed">
+          Atendentes que <strong>não veem o pool</strong> dependem desta distribuição (ou de atribuição manual) pra receber conversas.
+          Configure quem vê o pool em{" "}
+          <Link href="/configuracoes/equipe" className="font-semibold text-primary-700 hover:underline">Configurações → Equipe</Link>.
+        </p>
+      </div>
 
       <div className={isDisabled ? "opacity-50 pointer-events-none" : ""}>
 

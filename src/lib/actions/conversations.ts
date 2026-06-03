@@ -1,7 +1,7 @@
 "use server"
 
-import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getViewerScope, applyVisibilityFilter, type ViewerScope } from "@/lib/visibility"
 import type { ChatConversation } from "@/types/chat"
 
 /**
@@ -55,40 +55,14 @@ const CONVERSATION_SELECT = `
 `
 
 // ── Helpers ─────────────────────────────────────────────────
-
-interface Session {
-  tenantId: string
-  userId:   string
-  isAdmin:  boolean
-  viewAll:  boolean
-}
-
-async function getSession(): Promise<Session> {
-  const session = await auth()
-  if (!session?.user?.tenantId) throw new Error("Não autenticado")
-  const isAdmin = ["owner", "admin"].includes(session.user.role)
-
-  let viewAll = false
-  if (!isAdmin) {
-    const { data: tu } = await supabaseAdmin
-      .from("tenant_users")
-      .select("view_all").eq("tenant_id", session.user.tenantId).eq("user_id", session.user.id).maybeSingle()
-    viewAll = tu?.view_all === true
-  }
-
-  return {
-    tenantId: session.user.tenantId,
-    userId:   session.user.id,
-    isAdmin,
-    viewAll,
-  }
-}
+// Visibilidade (scope + filtro) centralizada em @/lib/visibility — fonte única
+// usada por inbox, kanban, mídia, mensagens e envio.
 
 /**
  * Pré-resolve contact_ids filtrados por search/tag — usados em IN(...) no query
  * principal. Retorna null se filtro não aplica (significa "sem restrição").
  */
-async function resolveContactIds(s: Session, f: ConversationFilters): Promise<string[] | null> {
+async function resolveContactIds(s: ViewerScope, f: ConversationFilters): Promise<string[] | null> {
   if (!f.search && !f.tagId) return null
 
   let contactIds: string[] | null = null
@@ -118,15 +92,6 @@ async function resolveContactIds(s: Session, f: ConversationFilters): Promise<st
   return contactIds
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyVisibility<T>(query: T, s: Session): T {
-  if (s.isAdmin || s.viewAll) return query
-  // Regra única (CLAUDE.md): pool aberto OR assigned_to=eu OR eu em participants
-  const expr = `assigned_to.is.null,assigned_to.eq.${s.userId},participants.cs.{${s.userId}}`
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (query as any).or(expr) as T
-}
-
 // ── Public actions ──────────────────────────────────────────
 
 export async function getConversations(opts: {
@@ -134,7 +99,7 @@ export async function getConversations(opts: {
   cursor?:  ConversationCursor | null
   limit?:   number
 }): Promise<ConversationsPage> {
-  const s = await getSession()
+  const s = await getViewerScope()
   const filters = opts.filters ?? {}
   const limit   = opts.limit   ?? DEFAULT_LIMIT
   const cursor  = opts.cursor  ?? null
@@ -167,7 +132,7 @@ export async function getConversations(opts: {
   }
 
   // Visibilidade
-  q = applyVisibility(q, s)
+  q = applyVisibilityFilter(q, s)
 
   // Cursor (last_message_at, id) — tie-break por id pra ordem estável
   if (cursor) {
@@ -206,7 +171,7 @@ export async function getConversations(opts: {
  * seleção funciona mesmo pra convs antigas, resolvidas, em outro funil, etc.
  */
 export async function getConversationById(id: string): Promise<ChatConversation | null> {
-  const s = await getSession()
+  const s = await getViewerScope()
 
   let q = supabaseAdmin
     .from("chat_conversations")
@@ -214,7 +179,7 @@ export async function getConversationById(id: string): Promise<ChatConversation 
     .eq("tenant_id", s.tenantId)
     .eq("id", id)
 
-  q = applyVisibility(q, s)
+  q = applyVisibilityFilter(q, s)
 
   const { data, error } = await q.maybeSingle()
   if (error) throw new Error(`getConversationById: ${error.message}`)
@@ -230,7 +195,7 @@ export async function getConversationsUpdates(opts: {
   since:    string
   filters?: ConversationFilters
 }): Promise<{ conversations: ChatConversation[] }> {
-  const s = await getSession()
+  const s = await getViewerScope()
   const filters = opts.filters ?? {}
 
   const contactIds = await resolveContactIds(s, filters)
@@ -257,7 +222,7 @@ export async function getConversationsUpdates(opts: {
     q = q.is("archived_at", null)
   }
 
-  q = applyVisibility(q, s)
+  q = applyVisibilityFilter(q, s)
   q = q.order("updated_at", { ascending: false }).limit(50)  // safety cap
 
   const { data, error } = await q

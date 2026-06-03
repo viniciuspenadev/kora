@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getViewerScope, applyVisibilityFilter } from "@/lib/visibility"
 import { ensurePipelineBootstrap } from "@/lib/actions/pipeline"
 import { ConversationKanban } from "@/components/kanban/conversation-kanban"
 import { Workflow, ChevronRight, Settings, Plus } from "lucide-react"
@@ -19,19 +20,14 @@ export default async function KanbanPage({
 
   await ensurePipelineBootstrap(tenantId, session.user.id)
 
-  const [{ data: pipelines }, { data: tu }, { data: cfg }, { data: instRows }] = await Promise.all([
+  const [{ data: pipelines }, scope, { data: cfg }, { data: instRows }] = await Promise.all([
     supabaseAdmin
       .from("pipelines")
       .select("*")
       .eq("tenant_id", tenantId)
       .eq("active", true)
       .order("position"),
-    supabaseAdmin
-      .from("tenant_users")
-      .select("view_all")
-      .eq("tenant_id", tenantId)
-      .eq("user_id", session.user.id)
-      .maybeSingle(),
+    getViewerScope(),
     supabaseAdmin
       .from("tenant_config")
       .select("kanban_tinted_columns")
@@ -60,8 +56,7 @@ export default async function KanbanPage({
     .eq("pipeline_id", currentPipeline.id)
     .order("position")
 
-  const isAdminOrOwner = ["owner", "admin"].includes(session.user.role)
-  const canSeeAll      = isAdminOrOwner || (tu?.view_all ?? false)
+  const isAdminOrOwner = scope.isAdmin
 
   // Stages visíveis no Kanban = não-triagem, não-ganho, não-perdido.
   // (Triagem entra com position=-1; ganho/perdido vão pra histórico no futuro.)
@@ -90,16 +85,9 @@ export default async function KanbanPage({
     .is("archived_at", null)
     .order("card_position", { ascending: true })
 
-  // Filtro de visibilidade (mesma regra do inbox):
-  //   - admin/owner ou view_all → tudo
-  //   - assigned_to NULL (pool) → todos veem
-  //   - assigned_to = eu → visível
-  //   - participants contém eu → visível
-  if (!canSeeAll) {
-    convQuery = convQuery.or(
-      `assigned_to.is.null,assigned_to.eq.${session.user.id},participants.cs.{${session.user.id}}`,
-    )
-  }
+  // Filtro de visibilidade — regra única de @/lib/visibility (mesma do inbox,
+  // agora ciente do see_pool por atendente).
+  convQuery = applyVisibilityFilter(convQuery, scope)
 
   const { data: conversations } = await convQuery
 
@@ -120,7 +108,7 @@ export default async function KanbanPage({
             <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">{currentPipeline.name}</h1>
             <p className="text-xs text-slate-400 mt-0.5">
               {(conversations ?? []).length} {(conversations ?? []).length === 1 ? "conversa" : "conversas"} ·
-              {" "}{!canSeeAll ? "vendo apenas minhas" : "visão completa"}
+              {" "}{!(scope.isAdmin || scope.viewAll) ? "vendo só o que posso" : "visão completa"}
             </p>
           </div>
         </div>

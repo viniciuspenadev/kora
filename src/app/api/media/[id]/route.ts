@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getViewerScope, canViewConversation } from "@/lib/visibility"
 
 /**
  * GET /api/media/[id]
@@ -74,34 +75,15 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "Mídia indisponível" }, { status: 404 })
   }
 
-  // ── 3. RLS de visibilidade — regra única do sistema ─────────
-  const isAdmin = ["owner", "admin"].includes(session.user.role)
-
-  if (!isAdmin) {
-    const conv = msg.chat_conversations as unknown as { assigned_to: string | null; participants: string[] | null } | null
-    if (!conv) {
-      return NextResponse.json({ error: "Conversa não encontrada" }, { status: 404 })
-    }
-
-    const isPool        = conv.assigned_to === null
-    const isAssigned    = conv.assigned_to === session.user.id
-    const isParticipant = (conv.participants ?? []).includes(session.user.id)
-
-    let viewAll = false
-    if (!isPool && !isAssigned && !isParticipant) {
-      const { data: tu } = await supabaseAdmin
-        .from("tenant_users")
-        .select("view_all")
-        .eq("tenant_id", session.user.tenantId)
-        .eq("user_id", session.user.id)
-        .maybeSingle()
-      viewAll = tu?.view_all === true
-    }
-
-    if (!isPool && !isAssigned && !isParticipant && !viewAll) {
-      logMedia({ event: "media_request", msgId, status: 403, reason: "no_visibility", tenantId: session.user.tenantId, userId: session.user.id, ms: Date.now() - start })
-      return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
-    }
+  // ── 3. Visibilidade — regra única do sistema (@/lib/visibility) ─
+  const conv = msg.chat_conversations as unknown as { assigned_to: string | null; participants: string[] | null } | null
+  if (!conv) {
+    return NextResponse.json({ error: "Conversa não encontrada" }, { status: 404 })
+  }
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, conv)) {
+    logMedia({ event: "media_request", msgId, status: 403, reason: "no_visibility", tenantId: session.user.tenantId, userId: session.user.id, ms: Date.now() - start })
+    return NextResponse.json({ error: "Sem permissão" }, { status: 403 })
   }
 
   // ── 4. Download direto do Storage (Blob) ────────────────────

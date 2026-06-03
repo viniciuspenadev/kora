@@ -6,7 +6,7 @@ import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
-  updateMemberRole, updateMemberDepartment, toggleMemberViewAll, setMemberActive,
+  updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool, setMemberActive,
   type TeamMember, type Department, type TenantRole,
 } from "@/lib/actions/team"
 
@@ -26,6 +26,7 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
   const [role, setRole]               = useState<TenantRole>(member.role)
   const [departmentId, setDepartment] = useState<string>(member.department_id ?? "")
   const [viewAll, setViewAll]         = useState(member.view_all)
+  const [seePool, setSeePool]         = useState(member.see_pool)
 
   const [savePending, startSave]     = useTransition()
   const [statusPending, startStatus] = useTransition()
@@ -60,6 +61,14 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
       if (viewAll !== member.view_all) {
         anyChange = true
         const r = await toggleMemberViewAll(member.user_id, viewAll)
+        if (r.error) anyError = r.error
+      }
+
+      // see_pool (persiste o valor mesmo quando view_all está ligado — preserva
+      // a preferência pra quando view_all for desligado depois)
+      if (seePool !== member.see_pool) {
+        anyChange = true
+        const r = await toggleMemberSeePool(member.user_id, seePool)
         if (r.error) anyError = r.error
       }
 
@@ -181,6 +190,31 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
                 <p className="text-[11px] text-slate-500 mt-0.5">
                   Quando desligado, essa pessoa vê apenas conversas atribuídas a ela ou do seu departamento. Ligue para supervisores que precisam do panorama completo.
                 </p>
+              </div>
+            </label>
+          </div>
+
+          <div className="pt-4 border-t border-slate-100">
+            <label className={`flex items-start gap-3 ${viewAll ? "cursor-not-allowed" : "cursor-pointer"}`}>
+              <input
+                type="checkbox"
+                checked={viewAll ? true : seePool}
+                onChange={(e) => setSeePool(e.target.checked)}
+                disabled={!canEditOther || viewAll}
+                className="size-4 mt-0.5 rounded border-slate-300 text-primary focus:ring-primary/30 disabled:opacity-50"
+              />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-slate-800">Ver conversas não atribuídas (pool)</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {viewAll
+                    ? "Como vê todas as conversas, já enxerga o pool."
+                    : "Quando desligado, essa pessoa só vê conversas atribuídas a ela ou que participa."}
+                </p>
+                {!viewAll && !seePool && (
+                  <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mt-1.5 leading-relaxed">
+                    ⚠️ Esta pessoa só verá conversas atribuídas a ela. Garanta que a <strong>Distribuição automática</strong> está ligada (ou que alguém atribui manualmente), senão ela não recebe conversas novas.
+                  </p>
+                )}
               </div>
             </label>
           </div>

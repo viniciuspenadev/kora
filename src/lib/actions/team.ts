@@ -17,6 +17,7 @@ export interface TeamMember {
   role:          TenantRole
   active:        boolean
   view_all:      boolean
+  see_pool:      boolean
   department_id: string | null
   department:    { id: string; name: string; color: string } | null
   joined_at:     string
@@ -63,7 +64,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, department_id, joined_at,
+      user_id, role, active, view_all, see_pool, department_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color )
     `)
@@ -83,6 +84,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       role:          row.role as TenantRole,
       active:        row.active,
       view_all:      row.view_all,
+      see_pool:      row.see_pool ?? true,
       department_id: row.department_id,
       department:    dept,
       joined_at:     row.joined_at,
@@ -306,6 +308,26 @@ export async function toggleMemberViewAll(userId: string, viewAll: boolean): Pro
   const { error } = await supabaseAdmin
     .from("tenant_users")
     .update({ view_all: viewAll })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Liga/desliga se o atendente vê as conversas não atribuídas (pool).
+ * Default true (vê). Desligado = só vê o atribuído a ele + participações;
+ * depende da Distribuição/atribuição manual pra receber conversas novas.
+ */
+export async function toggleMemberSeePool(userId: string, seePool: boolean): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ see_pool: seePool })
     .eq("tenant_id", session.user.tenantId)
     .eq("user_id", userId)
 

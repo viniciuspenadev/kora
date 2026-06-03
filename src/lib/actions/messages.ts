@@ -1,7 +1,7 @@
 "use server"
 
-import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import type { ChatMessage } from "@/types/chat"
 
 /**
@@ -30,10 +30,26 @@ const DEFAULT_LIMIT = 20
 // SELECT padrão usado em ambas actions
 const MESSAGE_SELECT = "*, profiles!chat_messages_sender_id_fkey ( full_name )"
 
-async function tenantId(): Promise<string> {
-  const session = await auth()
-  if (!session?.user?.tenantId) throw new Error("Não autenticado")
-  return session.user.tenantId
+/**
+ * Resolve o tenant E garante que o usuário pode VER esta conversa.
+ * Gate de visibilidade que faltava: antes dava pra ler as mensagens de uma
+ * conversa de OUTRO atendente só sabendo o conversation_id (a query filtrava só
+ * por conversation_id + tenant_id). Agora aplica a regra única de
+ * @/lib/visibility — mesma de inbox/kanban/mídia.
+ */
+async function assertCanView(conversationId: string): Promise<string> {
+  const scope = await getViewerScope()
+  const { data: conv } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("assigned_to, participants")
+    .eq("id", conversationId)
+    .eq("tenant_id", scope.tenantId)
+    .maybeSingle()
+  if (!conv) throw new Error("Conversa não encontrada")
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null })) {
+    throw new Error("Sem permissão para ver esta conversa.")
+  }
+  return scope.tenantId
 }
 
 /**
@@ -44,7 +60,7 @@ export async function getMessages(opts: {
   before?:        MessagesCursor | null
   limit?:         number
 }): Promise<MessagesPage> {
-  const t = await tenantId()
+  const t = await assertCanView(opts.conversationId)
   const limit  = opts.limit ?? DEFAULT_LIMIT
   const before = opts.before ?? null
 
@@ -92,7 +108,7 @@ export async function getMessagesUpdates(opts: {
   conversationId: string
   since:          string  // ISO
 }): Promise<{ messages: ChatMessage[] }> {
-  const t = await tenantId()
+  const t = await assertCanView(opts.conversationId)
 
   const { data, error } = await supabaseAdmin
     .from("chat_messages")
