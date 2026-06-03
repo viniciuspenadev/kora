@@ -34,7 +34,7 @@ export default async function InboxPage() {
 
   if (!hasUsableInstance) {
     return (
-      <div className="h-[calc(100vh-3.5rem)]">
+      <div className="h-[calc(100dvh-3.5rem)]">
         <InboxClient
           conversations={[]}
           messages={{}}
@@ -129,7 +129,7 @@ export default async function InboxPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-3.5rem)]">
+    <div className="h-[calc(100dvh-3.5rem)]">
       <InboxClient
         conversations={conversations}
         messages={messagesByConv}

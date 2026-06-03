@@ -21,10 +21,12 @@ declare module "next-auth" {
 
 declare module "next-auth/jwt" {
   interface JWT {
-    userId:          string
-    tenantId:        string
-    role:            string
-    supabaseToken:   string
-    isPlatformAdmin: boolean
+    userId:           string
+    tenantId:         string
+    role:             string
+    supabaseToken:    string
+    isPlatformAdmin:  boolean
+    supabaseTokenExp?: number
+    checkedAt?:        number  // epoch s da última revalidação de acesso no banco
   }
 }

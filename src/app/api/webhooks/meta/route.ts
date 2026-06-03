@@ -27,14 +27,13 @@ export function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const raw = await req.text()
 
-  // Valida assinatura (se o app secret estiver configurado).
+  // Valida assinatura — FAIL-CLOSED: sem o app secret, recusa (não processa sem verificar).
   const secret = process.env.META_APP_SECRET
-  if (secret) {
-    const sig = req.headers.get("x-hub-signature-256") ?? ""
-    const expected = "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex")
-    const ok = sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
-    if (!ok) return new NextResponse("Invalid signature", { status: 401 })
-  }
+  if (!secret) return new NextResponse("Webhook not configured", { status: 503 })
+  const sig = req.headers.get("x-hub-signature-256") ?? ""
+  const expected = "sha256=" + crypto.createHmac("sha256", secret).update(raw).digest("hex")
+  const ok = sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
+  if (!ok) return new NextResponse("Invalid signature", { status: 401 })
 
   let body: unknown
   try { body = JSON.parse(raw) } catch { return new NextResponse("Bad JSON", { status: 400 }) }

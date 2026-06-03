@@ -2,6 +2,9 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { Sidebar } from "@/components/app/sidebar"
+import { MobileSidebar } from "@/components/app/mobile-sidebar"
+import { AppShellProvider } from "@/components/app/app-shell-context"
+import { PushPrompt } from "@/components/app/push-prompt"
 import { Topbar } from "@/components/app/topbar"
 import { OnboardingBanner } from "@/components/app/onboarding-banner"
 import { UpdateBanner } from "@/components/app/update-banner"
@@ -40,23 +43,29 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   ])
   const hasOfficial = !!officialRes.data
 
+  const navProps = {
+    userName:       session.user.name ?? "Usuário",
+    userEmail:      session.user.email ?? "",
+    tenantName:     tenant.name,
+    userRole:       session.user.role,
+    enabledModules: Array.from(enabledModules),
+    selfPause,
+    hasOfficial,
+  }
+
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50">
-      <Sidebar
-        userName={session.user.name ?? "Usuário"}
-        userEmail={session.user.email ?? ""}
-        tenantName={tenant.name}
-        userRole={session.user.role}
-        enabledModules={Array.from(enabledModules)}
-        selfPause={selfPause}
-        hasOfficial={hasOfficial}
-      />
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <UpdateBanner />
-        <Topbar userName={session.user.name ?? "Usuário"} userRole={session.user.role} />
-        {setup && !setup.allDone && <OnboardingBanner setup={setup} />}
-        <main className="flex-1 overflow-y-auto">{children}</main>
+    <AppShellProvider>
+      <div className="flex h-dvh overflow-hidden bg-slate-50">
+        <Sidebar {...navProps} />
+        <MobileSidebar {...navProps} />
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          <UpdateBanner />
+          <Topbar userName={navProps.userName} userRole={session.user.role} />
+          <PushPrompt />
+          {setup && !setup.allDone && <OnboardingBanner setup={setup} />}
+          <main className="flex-1 overflow-y-auto">{children}</main>
+        </div>
       </div>
-    </div>
+    </AppShellProvider>
   )
 }

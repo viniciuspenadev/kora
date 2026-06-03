@@ -2,7 +2,8 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { ChevronRight, Home } from "lucide-react"
+import { ChevronRight, Home, Menu } from "lucide-react"
+import { useAppShell } from "@/components/app/app-shell-context"
 
 const ROUTE_LABELS: Record<string, string> = {
   "/inbox":         "Inbox",
@@ -27,16 +28,26 @@ export function Topbar({ userName, userRole }: { userName: string; userRole: str
   const pathname = usePathname()
   const label    = getLabel(pathname)
   const initial  = userName?.[0]?.toUpperCase() ?? "U"
+  const { setNavOpen } = useAppShell()
 
   return (
-    <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6 shrink-0">
+    <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 shrink-0">
       <div className="flex items-center gap-1.5 text-sm">
-        <Link href="/inbox" className="text-slate-400 hover:text-slate-600 transition-colors">
+        {/* Hambúrguer — só no mobile, abre o drawer de navegação */}
+        <button
+          type="button"
+          onClick={() => setNavOpen(true)}
+          aria-label="Abrir menu"
+          className="md:hidden -ml-1 mr-1 size-9 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+        >
+          <Menu className="size-5" />
+        </button>
+        <Link href="/inbox" className="hidden md:inline-flex text-slate-400 hover:text-slate-600 transition-colors">
           <Home className="size-4" />
         </Link>
         {label && (
           <>
-            <ChevronRight className="size-3.5 text-slate-300" />
+            <ChevronRight className="hidden md:inline size-3.5 text-slate-300" />
             <span className="font-medium text-slate-700">{label}</span>
           </>
         )}

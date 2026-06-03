@@ -187,7 +187,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   }
 
   return (
-    <div className="border-t border-slate-200 bg-white relative">
+    <div className="border-t border-slate-200 bg-white relative pb-[env(safe-area-inset-bottom)]">
 
       {showQuickReplies && (
         <div className="border-b border-slate-100 max-h-40 overflow-y-auto">
@@ -438,7 +438,7 @@ function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName }:
   }
 
   return (
-    <div className="border-t border-slate-200 bg-white p-4">
+    <div className="border-t border-slate-200 bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <div className="flex items-start gap-2 mb-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
         <Lock className="size-4 shrink-0 mt-0.5" />
         <span>

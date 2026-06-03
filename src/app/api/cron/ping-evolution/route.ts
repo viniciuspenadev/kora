@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { requireCronSecret } from "@/lib/cron-auth"
 
 /**
  * GET /api/cron/ping-evolution
@@ -36,13 +37,8 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
 }
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET
-  if (secret) {
-    const auth = req.headers.get("authorization")
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-  }
+  const denied = requireCronSecret(req)
+  if (denied) return denied
 
   // ── 1. Servidores únicos (ping leve) ────────────────────────
   const { data: servers } = await supabaseAdmin.from("evolution_servers").select("url")

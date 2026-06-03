@@ -7,6 +7,55 @@ import { rateLimit } from "@/lib/rate-limit"
 
 const IS_PROD = process.env.NODE_ENV === "production"
 
+// Revogação de privilégio: a sessão JWT dura 30d, mas role/active (e o token RLS
+// derivado) não podem ficar 30d defasados. Revalidamos no banco no máximo 1×/REVALIDATE_S
+// por usuário — num único ponto (callback jwt), não por página. Lag de revogação ≈ 5min.
+const REVALIDATE_S = 300
+
+type AccessState =
+  | { status: "ok"; role: string; isPlatformAdmin: boolean }
+  | { status: "revoked" }
+  | { status: "error" }
+
+/**
+ * Re-checa, no banco, se o usuário ainda tem acesso e qual a role ATUAL.
+ * - "revoked": não é mais platform admin E não tem membership ativa → mata a sessão.
+ * - "error":  falha transitória (DB indisponível) → fail-open (mantém o token, re-tenta depois).
+ * Platform admin nunca é deslogado por perder membership de tenant (opera via /admin).
+ */
+async function revalidateAccess(
+  userId: string,
+  tenantId: string,
+  wasPlatformAdmin: boolean,
+): Promise<AccessState> {
+  try {
+    const [mem, pa] = await Promise.all([
+      tenantId
+        ? supabaseAdmin
+            .from("tenant_users")
+            .select("role, active")
+            .eq("user_id", userId)
+            .eq("tenant_id", tenantId)
+            .maybeSingle()
+        : Promise.resolve({ data: null as { role: string; active: boolean } | null, error: null }),
+      wasPlatformAdmin
+        ? supabaseAdmin.from("platform_admins").select("id").eq("user_id", userId).maybeSingle()
+        : Promise.resolve({ data: null as { id: string } | null, error: null }),
+    ])
+
+    if (mem.error || pa.error) return { status: "error" }
+
+    const isPlatformAdmin = wasPlatformAdmin && !!pa.data
+    const membership = mem.data as { role: string; active: boolean } | null
+    const membershipActive = !!membership && membership.active === true
+
+    if (!isPlatformAdmin && !membershipActive) return { status: "revoked" }
+    return { status: "ok", role: membershipActive ? membership!.role : "", isPlatformAdmin }
+  } catch {
+    return { status: "error" }
+  }
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
   session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 }, // 30 dias
@@ -116,9 +165,30 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.role            = (user as any).role
         token.isPlatformAdmin = (user as any).isPlatformAdmin ?? false
         token.supabaseTokenExp = 0
+        token.checkedAt        = Math.floor(Date.now() / 1000) // acabou de validar no authorize
       }
 
       const now = Math.floor(Date.now() / 1000)
+
+      // ── Revogação de privilégio (revalida acesso a cada REVALIDATE_S) ──
+      if (now - ((token.checkedAt as number | undefined) ?? 0) >= REVALIDATE_S) {
+        const acc = await revalidateAccess(
+          token.userId as string,
+          token.tenantId as string,
+          token.isPlatformAdmin as boolean,
+        )
+        if (acc.status === "revoked") return null            // expulso/inativo → apaga a sessão
+        if (acc.status === "ok") {
+          if (acc.role !== token.role) {
+            token.role = acc.role
+            token.supabaseTokenExp = 0                         // role mudou → regenera token RLS
+          }
+          token.isPlatformAdmin = acc.isPlatformAdmin
+          token.checkedAt = now
+        }
+        // status "error": mantém o token e NÃO atualiza checkedAt (re-tenta no próximo acesso)
+      }
+
       if (!token.supabaseToken || (token.supabaseTokenExp as number) - now < 300) {
         token.supabaseToken = await generateSupabaseToken({
           userId: token.userId as string,

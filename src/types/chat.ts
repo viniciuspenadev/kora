@@ -211,6 +211,14 @@ export interface ExternalAdReply {
   conversionSource?: string          // "FB_Ads" | "IG_Ads" | ...
   ctwaPayload?: string               // base64 encoded payload de tracking Meta
   ctwaSignals?: string               // "all,all" | ...
+
+  // Origem (formato LID enxuto). `attributionFormat` marca de qual shape veio:
+  // "external_ad_reply" (rico, com criativo) | "ctwa_signals" (enxuto, sem criativo).
+  entryPointConversionApp?:    string
+  entryPointConversionSource?: string
+  // "referral" = formato da Cloud API oficial (messages[].referral) — rico e
+  // confiável, melhor que o LID do Baileys.
+  attributionFormat?: "external_ad_reply" | "ctwa_signals" | "referral"
 }
 
 /**
@@ -232,6 +240,15 @@ interface MessageContextInfo {
   stanzaId?:        string
   participant?:     string
   quotedMessage?:   QuotedMessagePayload
+
+  // CTWA "enxuto" — formato entregue no novo addressingMode LID (@lid), sem
+  // externalAdReply. Só sinais de conversão. Ver extractAdAttribution().
+  entryPointConversionApp?:            string  // "instagram" | "facebook" | ...
+  entryPointConversionSource?:         string  // "ctwa_ad"
+  entryPointConversionExternalSource?: string  // "FB_Ads"
+  conversionSource?:                   string  // "FB_Ads" | "IG_Ads"
+  ctwaPayload?:                        string  // base64 → ctwaClid
+  ctwaSignals?:                        string  // "all,all"
 }
 
 // ── Payloads de tipos novos ──────────────────────────────────

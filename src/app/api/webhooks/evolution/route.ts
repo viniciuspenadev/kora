@@ -8,7 +8,8 @@ import { runAITurn } from "@/lib/ai/run"
 import { latestInboundAt } from "@/lib/ai/context"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
-import type { EvolutionMessageData } from "@/types/chat"
+import { notifyInboundMessage } from "@/lib/push/send"
+import type { EvolutionMessageData, ExternalAdReply } from "@/types/chat"
 
 // Janela de debounce do Atendente IA: agrupa rajada de mensagens do contato.
 // Se chegar msg mais nova durante a janela, o turno atual aborta e o da
@@ -171,52 +172,16 @@ export async function dispatchEvolutionEvent(
  */
 export async function POST(req: NextRequest) {
   try {
-    const body         = await req.json()
-    const event        = body.event as string
-    const instanceName = body.instance as string
-
-    if (!event || !instanceName) {
-      return NextResponse.json({ error: "Missing event or instance" }, { status: 400 })
-    }
-
-    const { data: instance } = await supabaseAdmin
-      .from("whatsapp_instances")
-      .select("id, tenant_id, evolution_url, evolution_key, instance_name, webhook_secret")
-      .eq("instance_name", instanceName)
-      .single()
-
-    if (!instance) {
-      // Resposta genérica — não confirma existência de instance_name
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    // 🔒 SECURITY: se a instância JÁ tem secret, ela DEVE usar a URL nova.
-    // Bloquear aqui impede atacante de spoofar via URL antiga (mesmo conhecendo o instance_name).
-    if (instance.webhook_secret) {
-      console.warn(
-        `[Webhook Evolution] BLOCKED legacy call for migrated instance=${instance.instance_name} (tenant=${instance.tenant_id}). ` +
-        `Caller must use /api/webhooks/evolution/[secret]. Possible spoof attempt.`
-      )
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-
-    // Apenas instâncias ainda NÃO migradas chegam aqui (futuro provisionamento que ainda não rodou).
-    // Aviso pro admin migrar.
+    // 🔒 SECURITY (S8): rota legacy DESATIVADA. Toda instância usa /api/webhooks/evolution/[secret].
+    // Resposta UNIFORME (410) SEM consultar o banco: não revela se um instance_name existe
+    // (sem oráculo de enumeração) e não gasta query/IO com tentativa de spoof.
+    let instanceName = "?"
+    try { instanceName = ((await req.json())?.instance as string) ?? "?" } catch { /* corpo inválido */ }
     console.warn(
-      `[Webhook Evolution] LEGACY route used by un-migrated instance=${instance.instance_name} (tenant=${instance.tenant_id}). ` +
-      `Migrate via admin action or wait for next provisioning.`
+      `[Webhook Evolution] LEGACY route hit (instance=${instanceName}). ` +
+      `Rejected — use /api/webhooks/evolution/[secret]. Possible spoof attempt.`
     )
-
-    // ACK 200 imediato + dispatch em background (evita timeout/retry).
-    after(async () => {
-      try {
-        await dispatchEvolutionEvent(instance, body)
-      } catch (err) {
-        console.error("[Webhook Evolution] LEGACY dispatch failed in after():", err)
-      }
-    })
-
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ error: "Gone — use the secret webhook URL" }, { status: 410 })
   } catch (err) {
     console.error("[Webhook Evolution] LEGACY", err)
     return NextResponse.json({ error: "Internal error" }, { status: 500 })
@@ -289,7 +254,7 @@ async function handleMessageUpsert(
     const pushName = msg.pushName ?? null
     const extracted = extractMessageContent(msg)
     const { contentType, content, mediaMimeType, mediaFileName, extraMetadata } = extracted
-    const externalAdReply = extractExternalAdReply(msg)
+    const externalAdReply = extractAdAttribution(msg)
     const quoted          = extractQuoted(msg)
 
     // ═══════════════════════════════════════════════════════════
@@ -534,6 +499,17 @@ async function handleMessageUpsert(
       })
       .eq("id", conversation.id)
 
+    // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o
+    // atendente atribuído (ou todo o pool se ninguém assumiu). Só inbound real
+    // de contato (este branch); fromMe/grupos sem nome caem no fallback de telefone.
+    {
+      const notifyTitle = (isGroup ? null : pushName) || `+${jidToPhone(jid)}`
+      const notifyPreview = preview
+      after(() => notifyInboundMessage({
+        tenantId, conversationId: conversation.id, title: notifyTitle, preview: notifyPreview,
+      }))
+    }
+
     // CTWA — registra atribuição no contato pra relatórios/segmentação futura.
     // Só guarda na 1ª vez (first-touch attribution). Se já existir, mantém.
     if (externalAdReply && contact) {
@@ -746,8 +722,64 @@ function extractContextInfo(msg: EvolutionMessageData) {
   )
 }
 
-function extractExternalAdReply(msg: EvolutionMessageData) {
-  return extractContextInfo(msg)?.externalAdReply ?? null
+/**
+ * Decodifica o `ctwaPayload` (base64) → `ctwaClid`. Best-effort: se não for
+ * base64 ASCII válido, devolve o valor cru.
+ */
+function decodeCtwaClid(payload?: string | null): string | undefined {
+  if (!payload) return undefined
+  try {
+    const decoded = Buffer.from(payload, "base64").toString("utf8")
+    return /^[A-Za-z0-9_-]+$/.test(decoded) ? decoded : payload
+  } catch {
+    return payload
+  }
+}
+
+/**
+ * Extrai atribuição de anúncio (Click-to-WhatsApp) de DOIS formatos:
+ *
+ *  A) `externalAdReply` (RICO) — addressingMode clássico (@s.whatsapp.net).
+ *     Traz o criativo completo: sourceId, sourceUrl, title, body, thumbnail,
+ *     ctwaClid, sourceApp.
+ *
+ *  B) `contextInfo` ENXUTO (entryPointConversion* / ctwaPayload) — novo
+ *     addressingMode LID (@lid). NÃO traz criativo, só sinais de conversão.
+ *     Normalizamos pro mesmo shape (ExternalAdReply) pra não perder a
+ *     atribuição. ⚠️ Meta está migrando todos pra LID — este vira o caminho
+ *     comum, então tratá-lo é o que mantém a atribuição "à prova de update".
+ *
+ * Retorna sempre no shape ExternalAdReply (com `attributionFormat` marcando a
+ * origem) ou null se a mensagem não veio de anúncio.
+ */
+function extractAdAttribution(msg: EvolutionMessageData): ExternalAdReply | null {
+  const ctx = extractContextInfo(msg)
+  if (!ctx) return null
+
+  // A) Formato rico — usa direto, só carimba a origem.
+  if (ctx.externalAdReply) {
+    return { ...ctx.externalAdReply, attributionFormat: "external_ad_reply" }
+  }
+
+  // B) Formato enxuto (LID). Detecta por qualquer sinal de CTWA.
+  const isCtwa =
+    ctx.entryPointConversionSource === "ctwa_ad" ||
+    typeof ctx.ctwaPayload === "string" ||
+    typeof ctx.conversionSource === "string"
+  if (!isCtwa) return null
+
+  return {
+    sourceApp:                  ctx.entryPointConversionApp,
+    sourceType:                 "ad",
+    ctwaClid:                   decodeCtwaClid(ctx.ctwaPayload),
+    ctwaPayload:                ctx.ctwaPayload,
+    ctwaSignals:                ctx.ctwaSignals,
+    conversionSource:           ctx.conversionSource ?? ctx.entryPointConversionExternalSource,
+    entryPointConversionApp:    ctx.entryPointConversionApp,
+    entryPointConversionSource: ctx.entryPointConversionSource,
+    showAdAttribution:          true,
+    attributionFormat:          "ctwa_signals",
+  }
 }
 
 function extractQuoted(msg: EvolutionMessageData) {

@@ -46,6 +46,11 @@ interface Props {
   agents:        AgentMini[]
   /** ad reply do primeiro contato — fica em chat_messages.metadata.external_ad_reply */
   externalAdReply?: ExternalAdReply | null
+  /** Mobile sheet: ignora o estado colapsado (sempre full) e troca o botão de
+      colapsar por um X de fechar. Desktop não passa isso → comportamento intacto. */
+  forceExpanded?: boolean
+  /** Mobile sheet: fecha o painel (botão X). */
+  onClose?:       () => void
 }
 
 const TAG_COLORS = [
@@ -58,10 +63,12 @@ const TAG_COLORS = [
 // ═══════════════════════════════════════════════════════════════
 
 export function ContactSidebar(props: Props) {
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
+  const [collapsedState, setCollapsed] = useState<boolean>(() => {
     if (typeof window === "undefined") return false
     return window.localStorage.getItem("kora.contact-sidebar.collapsed") === "1"
   })
+  // No mobile sheet (forceExpanded) o colapso não faz sentido — sempre full.
+  const collapsed = props.forceExpanded ? false : collapsedState
 
   function toggle() {
     setCollapsed((v) => {
@@ -105,6 +112,8 @@ export function ContactSidebar(props: Props) {
         contact={props.contact}
         appliedTags={appliedTags}
         onCollapse={toggle}
+        sheetMode={props.forceExpanded}
+        onClose={props.onClose}
       />
       <ContactInfoCard contact={props.contact} />
       <LifecycleCard conversation={props.conversation} contact={props.contact} />
@@ -143,12 +152,14 @@ function Hint({ icon: Icon, label }: { icon: typeof Target; label: string }) {
 // ═══════════════════════════════════════════════════════════════
 
 function HeaderCard({
-  conversation, contact, appliedTags, onCollapse,
+  conversation, contact, appliedTags, onCollapse, sheetMode, onClose,
 }: {
   conversation: ChatConversation
   contact:      ChatContact
   appliedTags:  TagMini[]
   onCollapse:   () => void
+  sheetMode?:   boolean
+  onClose?:     () => void
 }) {
   const [, startTransition] = useTransition()
   const [showActions, setShowActions] = useState(false)
@@ -179,12 +190,12 @@ function HeaderCard({
     <header className="flex flex-col items-center px-4 pt-4 pb-3 border-b border-slate-100 relative">
       <button
         type="button"
-        onClick={onCollapse}
-        aria-label="Esconder painel"
-        title="Esconder painel"
+        onClick={sheetMode ? onClose : onCollapse}
+        aria-label={sheetMode ? "Fechar" : "Esconder painel"}
+        title={sheetMode ? "Fechar" : "Esconder painel"}
         className="absolute top-3 left-3 size-7 rounded-lg hover:bg-slate-100 text-slate-400 flex items-center justify-center transition-colors"
       >
-        <ChevronRight className="size-4" />
+        {sheetMode ? <X className="size-4" /> : <ChevronRight className="size-4" />}
       </button>
 
       <button
@@ -767,7 +778,7 @@ function ParticipantsCard({
             type="button"
             onClick={() => remove(p.id)}
             aria-label="Remover"
-            className="size-5 inline-flex items-center justify-center rounded text-slate-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
+            className="size-5 inline-flex items-center justify-center rounded text-slate-300 hover:text-red-500 hover:bg-red-50 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
           >
             <X className="size-3" />
           </button>

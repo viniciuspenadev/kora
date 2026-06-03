@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { sendDailyReports } from "@/lib/reports/daily"
+import { requireCronSecret } from "@/lib/cron-auth"
 
 /**
  * GET /api/cron/daily-reports
@@ -18,13 +19,8 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 60  // até 1min de execução (orquestra todos tenants)
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET
-  if (secret) {
-    const auth = req.headers.get("authorization")
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
-  }
+  const denied = requireCronSecret(req)
+  if (denied) return denied
 
   const startedAt = Date.now()
   const results = await sendDailyReports()

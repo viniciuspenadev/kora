@@ -113,6 +113,8 @@ export function InboxClient({
 
   // ── Conv ativa + msgs ───────────────────────────────────────
   const [activeId, setActiveId]                 = useState<string | null>(null)
+  // Mobile: ficha do contato como sheet (no desktop é coluna fixa, sempre visível).
+  const [contactSheetOpen, setContactSheetOpen] = useState(false)
   const [activeMessages, setActiveMessages]     = useState<ChatMessage[]>([])
   const [hasMoreOlder, setHasMoreOlder]         = useState(false)
   const [loadingOlder, setLoadingOlder]         = useState(false)
@@ -285,6 +287,7 @@ export function InboxClient({
 
   const handleSelect = useCallback((id: string) => {
     setActiveId(id)
+    setContactSheetOpen(false)   // fecha a ficha ao trocar de conversa (mobile)
     setActiveMessages([])
     setHasMoreOlder(false)
     setLoadingMsg(true)
@@ -488,6 +491,26 @@ export function InboxClient({
   }, [])
 
   const activeConv = activeId ? conversations.find((c) => c.id === activeId) : null
+
+  // Ad reply (CTWA) da 1ª msg do contato — compartilhado pelas duas instâncias
+  // do ContactSidebar (coluna desktop + sheet mobile).
+  const activeAdReply = useMemo(() => {
+    const m = activeMessages.find((msg) =>
+      msg.sender_type === "contact" &&
+      (msg.metadata as { external_ad_reply?: unknown } | null)?.external_ad_reply
+    )
+    return ((m?.metadata as { external_ad_reply?: NonNullable<Parameters<typeof ContactSidebar>[0]["externalAdReply"]> } | null)
+      ?.external_ad_reply) ?? null
+  }, [activeMessages])
+
+  // Trava o scroll do body enquanto o sheet de contato está aberto (mobile) —
+  // senão o fundo rola atrás do painel fixo (jank no iOS).
+  useEffect(() => {
+    if (!contactSheetOpen) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => { document.body.style.overflow = prev }
+  }, [contactSheetOpen])
 
   // ── Envio otimista ──────────────────────────────────────────
   // Insere msg "fantasma" na UI antes de bater no server. Quando server
@@ -778,7 +801,9 @@ export function InboxClient({
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
-        <div className="w-80 shrink-0">
+        {/* Master (lista) — full-width no mobile; coluna fixa no desktop.
+            Quando há conversa ativa no mobile, some pra dar lugar ao chat. */}
+        <div className={`${activeId ? "hidden md:block" : "block"} w-full md:w-80 shrink-0`}>
           <ConversationList
             conversations={displayConversations}
             activeId={activeId}
@@ -821,7 +846,9 @@ export function InboxClient({
           />
         </div>
 
-        <div className="flex-1 min-w-0 flex">
+        {/* Detail (chat) — escondido no mobile até abrir uma conversa; full-width
+            quando ativo. No desktop é sempre a coluna principal. */}
+        <div className={`${activeId ? "flex" : "hidden md:flex"} flex-1 min-w-0`}>
           {activeConv ? (
             <>
               <div className="flex-1 min-w-0">
@@ -839,25 +866,53 @@ export function InboxClient({
                   onSendMedia={handleSendMedia}
                   onSendVoice={handleSendVoice}
                   onArchiveToggle={handleArchiveToggle}
+                  onBack={() => { setActiveId(null); setActiveMessages([]); setContactSheetOpen(false) }}
+                  onOpenContact={() => setContactSheetOpen(true)}
                 />
               </div>
               {activeConv.chat_contacts && (
-                <ContactSidebar
-                  conversation={activeConv}
-                  contact={activeConv.chat_contacts}
-                  pipelines={pipelines}
-                  stages={stages}
-                  tags={tags}
-                  tagsByContact={tagsByContact}
-                  agents={agents}
-                  externalAdReply={
-                    (activeMessages.find((m) =>
-                      m.sender_type === "contact" &&
-                      (m.metadata as { external_ad_reply?: unknown } | null)?.external_ad_reply
-                    )?.metadata as { external_ad_reply?: NonNullable<Parameters<typeof ContactSidebar>[0]["externalAdReply"]> } | null)
-                      ?.external_ad_reply ?? null
-                  }
-                />
+                <>
+                  {/* Desktop: coluna fixa (mantém o colapso via localStorage). */}
+                  <div className="hidden md:block shrink-0">
+                    <ContactSidebar
+                      conversation={activeConv}
+                      contact={activeConv.chat_contacts}
+                      pipelines={pipelines}
+                      stages={stages}
+                      tags={tags}
+                      tagsByContact={tagsByContact}
+                      agents={agents}
+                      externalAdReply={activeAdReply}
+                    />
+                  </div>
+
+                  {/* Mobile: sheet deslizante da direita + backdrop. Instância
+                      própria, sempre expandida, com X pra fechar. */}
+                  <div
+                    onClick={() => setContactSheetOpen(false)}
+                    className={`md:hidden fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm transition-opacity duration-200 ${
+                      contactSheetOpen ? "opacity-100" : "opacity-0 pointer-events-none"
+                    }`}
+                  />
+                  <div
+                    className={`md:hidden fixed inset-y-0 right-0 z-50 w-72 max-w-[88vw] h-dvh transition-transform duration-200 ease-out ${
+                      contactSheetOpen ? "translate-x-0" : "translate-x-full pointer-events-none"
+                    }`}
+                  >
+                    <ContactSidebar
+                      conversation={activeConv}
+                      contact={activeConv.chat_contacts}
+                      pipelines={pipelines}
+                      stages={stages}
+                      tags={tags}
+                      tagsByContact={tagsByContact}
+                      agents={agents}
+                      externalAdReply={activeAdReply}
+                      forceExpanded
+                      onClose={() => setContactSheetOpen(false)}
+                    />
+                  </div>
+                </>
               )}
             </>
           ) : (

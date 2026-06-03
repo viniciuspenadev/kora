@@ -9,6 +9,7 @@ import { displayContactName, displayContactInitial } from "@/lib/contact"
 import {
   User, Phone, CheckCircle2, Clock, XCircle,
   ChevronDown, UserPlus, Users, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore,
+  ArrowLeft, Info,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
 import { buildTimelineGroups, TimelineDivider, DateDivider } from "@/components/chat/timeline-divider"
@@ -31,6 +32,10 @@ interface Props {
   onSendMedia:    (file: File, caption: string) => Promise<void>
   onSendVoice:    (file: File) => Promise<void>
   onArchiveToggle: () => void
+  /** Mobile (<md): volta pra lista de conversas. */
+  onBack?:         () => void
+  /** Mobile (<md): abre a ficha do contato (sheet). */
+  onOpenContact?:  () => void
 }
 
 const STATUS_OPTIONS = [
@@ -52,8 +57,13 @@ export function ChatPanel({
   conversation, messages, quickReplies, agents, onStatusChange, onAssign,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
   onSendText, onSendMedia, onSendVoice, onArchiveToggle,
+  onBack, onOpenContact,
 }: Props) {
   const isArchived = !!conversation.archived_at
+  // Dropdowns por clique (status/atribuir) — antes eram group-hover puro, que
+  // não abre no toque. Clique funciona em desktop e mobile.
+  const [statusOpen, setStatusOpen] = useState(false)
+  const [assignOpen, setAssignOpen] = useState(false)
   const messagesEndRef     = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const topSentinelRef     = useRef<HTMLDivElement>(null)
@@ -189,8 +199,18 @@ export function ChatPanel({
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-slate-200 shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex items-center justify-between px-3 sm:px-5 py-3 bg-white border-b border-slate-200 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="Voltar para conversas"
+              className="md:hidden -ml-1 size-9 shrink-0 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+            >
+              <ArrowLeft className="size-5" />
+            </button>
+          )}
           {conversation.is_group ? (
             conversation.group_picture ? (
               /* eslint-disable-next-line @next/next/no-img-element */
@@ -235,14 +255,18 @@ export function ChatPanel({
                   {phone && (
                     <span className="text-[11px] text-slate-400 font-mono">{phone}</span>
                   )}
+                  {/* Badges secundárias: escondidas no mobile (estão na ficha "i") — evita
+                      quebra de linha que deixa o header alto. Reaparecem no desktop (md+). */}
                   <span
-                    className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`}
+                    className={`hidden md:inline text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`}
                     title={lc.label}
                   >
                     {lc.icon} {lc.label}
                   </span>
                   {channelSource && (
-                    <SourceChip source={channelSource} className="text-[10px]" />
+                    <span className="hidden md:inline-flex">
+                      <SourceChip source={channelSource} className="text-[10px]" />
+                    </span>
                   )}
                 </>
               )}
@@ -250,7 +274,7 @@ export function ChatPanel({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1 md:gap-2 shrink-0">
 
           {isOfficial && (
             windowOpen ? (
@@ -272,37 +296,43 @@ export function ChatPanel({
             )
           )}
 
-          <div className="relative group">
+          <div className="relative">
             <button
               type="button"
-              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${currentStatus.color}`}
+              onClick={() => { setStatusOpen((v) => !v); setAssignOpen(false) }}
+              className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 sm:px-3 py-1.5 rounded-lg transition-colors ${currentStatus.color}`}
             >
               <currentStatus.icon className="size-3.5" />
-              {currentStatus.label}
+              <span className="hidden sm:inline">{currentStatus.label}</span>
               <ChevronDown className="size-3" />
             </button>
-            <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[140px] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-              {STATUS_OPTIONS.map((opt) => (
-                <button
-                  key={opt.key}
-                  type="button"
-                  onClick={() => onStatusChange(opt.key)}
-                  className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-slate-50 transition-colors ${
-                    opt.key === conversation.status ? "text-primary-600" : "text-slate-700"
-                  }`}
-                >
-                  <opt.icon className="size-3.5" />
-                  {opt.label}
-                </button>
-              ))}
-            </div>
+            {statusOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setStatusOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[140px] z-20">
+                  {STATUS_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => { onStatusChange(opt.key); setStatusOpen(false) }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-slate-50 transition-colors ${
+                        opt.key === conversation.status ? "text-primary-600" : "text-slate-700"
+                      }`}
+                    >
+                      <opt.icon className="size-3.5" />
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           <button
             type="button"
             onClick={onArchiveToggle}
             title={isArchived ? "Restaurar conversa (volta pro inbox + kanban)" : "Arquivar conversa (esconde do inbox e do kanban)"}
-            className={`size-8 inline-flex items-center justify-center rounded-lg transition-colors ${
+            className={`hidden md:inline-flex size-8 items-center justify-center rounded-lg transition-colors ${
               isArchived
                 ? "bg-amber-100 text-amber-700 hover:bg-amber-200"
                 : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -311,43 +341,61 @@ export function ChatPanel({
             {isArchived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
           </button>
 
-          <div className="relative group">
+          <div className="relative hidden md:block">
             <button
               type="button"
-              className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+              onClick={() => { setAssignOpen((v) => !v); setStatusOpen(false) }}
+              className="flex items-center gap-1.5 text-xs font-medium px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors max-w-[120px] sm:max-w-none"
             >
-              <UserPlus className="size-3.5" />
-              {conversation.profiles?.full_name ?? "Atribuir"}
-              <ChevronDown className="size-3" />
+              <UserPlus className="size-3.5 shrink-0" />
+              <span className="hidden sm:inline truncate">{conversation.profiles?.full_name ?? "Atribuir"}</span>
+              <ChevronDown className="size-3 shrink-0" />
             </button>
-            <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[160px] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
-              <button
-                type="button"
-                onClick={() => onAssign(null)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
-              >
-                <User className="size-3.5" />
-                Sem atribuição
-              </button>
-              {agents.map((agent) => (
-                <button
-                  key={agent.id}
-                  type="button"
-                  onClick={() => onAssign(agent.id)}
-                  className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-slate-50 ${
-                    agent.id === conversation.assigned_to ? "text-primary-600 font-semibold" : "text-slate-700"
-                  }`}
-                >
-                  <div className="size-5 rounded-full bg-primary-100 flex items-center justify-center shrink-0">
-                    <span className="text-[9px] font-bold text-primary-600">
-                      {agent.full_name?.[0]?.toUpperCase() ?? "?"}
-                    </span>
-                  </div>
-                  {agent.full_name}
-                </button>
-              ))}
-            </div>
+            {assignOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setAssignOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[160px] z-20 max-h-72 overflow-y-auto">
+                  <button
+                    type="button"
+                    onClick={() => { onAssign(null); setAssignOpen(false) }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
+                  >
+                    <User className="size-3.5" />
+                    Sem atribuição
+                  </button>
+                  {agents.map((agent) => (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      onClick={() => { onAssign(agent.id); setAssignOpen(false) }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-slate-50 ${
+                        agent.id === conversation.assigned_to ? "text-primary-600 font-semibold" : "text-slate-700"
+                      }`}
+                    >
+                      <div className="size-5 rounded-full bg-primary-100 flex items-center justify-center shrink-0">
+                        <span className="text-[9px] font-bold text-primary-600">
+                          {agent.full_name?.[0]?.toUpperCase() ?? "?"}
+                        </span>
+                      </div>
+                      {agent.full_name}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
+
+          {/* Mobile: abre a ficha do contato (no desktop ela é coluna fixa) */}
+          {onOpenContact && (
+            <button
+              type="button"
+              onClick={onOpenContact}
+              aria-label="Ver dados do contato"
+              className="md:hidden size-8 shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+            >
+              <Info className="size-4" />
+            </button>
+          )}
         </div>
       </div>
 

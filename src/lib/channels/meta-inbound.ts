@@ -8,6 +8,8 @@ import { latestInboundAt } from "@/lib/ai/context"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
+import { notifyInboundMessage } from "@/lib/push/send"
+import type { ExternalAdReply } from "@/types/chat"
 
 /**
  * Ingestão do WhatsApp Cloud API (oficial) — ISOLADA do webhook Evolution.
@@ -37,11 +39,62 @@ interface InstanceRow {
   meta_access_token?: string | null; meta_app_secret?: string | null
 }
 interface MetaMedia { id: string; mime_type?: string; caption?: string; filename?: string }
+/**
+ * CTWA — bloco que a Cloud API anexa na 1ª mensagem quando o lead vem de um
+ * anúncio "Enviar mensagem". Formato RICO e confiável (≠ Baileys, que oscila
+ * entre externalAdReply e o LID enxuto). Doc: WhatsApp Cloud API > referral.
+ */
+interface MetaReferral {
+  source_url?:    string
+  source_id?:     string   // Ad ID do Meta Ads Manager
+  source_type?:   string   // "ad" | "post"
+  headline?:      string
+  body?:          string
+  media_type?:    string   // "image" | "video"
+  image_url?:     string
+  video_url?:     string
+  thumbnail_url?: string
+  ctwa_clid?:     string   // Click-to-WhatsApp Click ID
+}
 interface MetaMessage {
   from: string; id: string; type: string
   timestamp?: string  // epoch (segundos) — relógio da Meta; âncora da janela de 24h
   text?: { body?: string }
   image?: MetaMedia; audio?: MetaMedia; video?: MetaMedia; document?: MetaMedia
+  referral?: MetaReferral
+}
+
+/**
+ * Infere a plataforma ("instagram"/"facebook") a partir do source_url — a Cloud
+ * API NÃO manda um campo de app no referral. Relatórios filtram por `sourceApp`,
+ * então preenchemos no ingest. UI também sabe inferir, mas guardar normaliza.
+ */
+function inferAdSourceApp(sourceUrl?: string): string | undefined {
+  const u = (sourceUrl ?? "").toLowerCase()
+  if (u.includes("instagram")) return "instagram"
+  if (u.includes("facebook") || u.includes("fb.")) return "facebook"
+  return undefined
+}
+
+/** Normaliza o `referral` da Cloud API pro shape ExternalAdReply (= from_ad_meta). */
+function extractMetaReferral(msg: MetaMessage): ExternalAdReply | null {
+  const r = msg.referral
+  if (!r || (!r.source_id && !r.source_url && !r.ctwa_clid)) return null
+  return {
+    sourceApp:        inferAdSourceApp(r.source_url),
+    sourceType:       r.source_type ?? "ad",
+    sourceId:         r.source_id,
+    sourceUrl:        r.source_url,
+    ctwaClid:         r.ctwa_clid,
+    title:            r.headline,
+    body:             r.body,
+    mediaType:        r.media_type,
+    mediaUrl:         r.video_url ?? r.image_url,
+    thumbnailUrl:     r.thumbnail_url,
+    originalImageUrl: r.image_url,
+    showAdAttribution: true,
+    attributionFormat: "referral",
+  }
 }
 
 /** Converte o timestamp epoch (segundos) da Meta pra ISO. Fallback: agora. */
@@ -98,6 +151,9 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   const contact = await upsertContact(instance.tenant_id, jid, phone, pushName)
   const conv    = await findOrCreateConversation(instance.tenant_id, contact.id, instance.id)
 
+  // CTWA — atribuição de anúncio (formato rico da Cloud API).
+  const adReply = extractMetaReferral(msg)
+
   // Conteúdo + mídia
   let content: string | null = null
   let contentType = "text"
@@ -105,6 +161,11 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   let mediaMime: string | null = null
   let mediaFileName: string | null = null
   const metadata: Record<string, unknown> = {}
+  if (adReply) metadata.external_ad_reply = adReply
+  // Rede de segurança temporária: guarda o referral CRU pra validar o mapeamento
+  // contra o 1º lead de anúncio real no número oficial (campos da Meta não
+  // diferenciados contra payload real ainda). Remover após confirmar o mapeamento.
+  if (msg.referral) metadata.referral_raw = msg.referral
 
   if (msg.type === "text") {
     content = msg.text?.body ?? ""
@@ -164,6 +225,48 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     updated_at:           new Date().toISOString(),
     ...(wasResolved ? { resolved_at: null } : {}),
   }).eq("id", conv.id)
+
+  // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o
+  // atendente atribuído (ou todo o pool se ninguém assumiu ainda).
+  {
+    const notifyTitle = pushName || `+${phone}`
+    const notifyPreview = preview
+    after(() => notifyInboundMessage({
+      tenantId: instance.tenant_id, conversationId: conv.id, title: notifyTitle, preview: notifyPreview,
+    }))
+  }
+
+  // CTWA — registra atribuição (first-touch) no contato + denormaliza na conversa.
+  // Espelha o caminho Baileys; nice-to-have, nunca falha o webhook.
+  if (adReply) {
+    console.log(JSON.stringify({
+      event:       "ctwa_captured",
+      channel:     "meta_cloud",
+      tenant_id:   instance.tenant_id,
+      contact_id:  contact.id,
+      conv_id:     conv.id,
+      source_app:  adReply.sourceApp ?? null,
+      source_id:   adReply.sourceId ?? null,
+      ctwa_clid:   adReply.ctwaClid ?? null,
+    }))
+    try {
+      const { data: contactRow } = await supabaseAdmin
+        .from("chat_contacts").select("metadata").eq("id", contact.id).single()
+      const existingMeta = (contactRow?.metadata ?? {}) as Record<string, unknown>
+      if (!existingMeta.first_ad_reply) {
+        await supabaseAdmin.from("chat_contacts").update({
+          metadata:   { ...existingMeta, first_ad_reply: adReply, first_ad_at: new Date().toISOString() },
+          updated_at: new Date().toISOString(),
+        }).eq("id", contact.id)
+      }
+    } catch (e) { console.error("[meta-webhook] first_ad_reply:", e) }
+
+    // Denormaliza na conversa (first-touch wins — só se ainda NULL).
+    try {
+      await supabaseAdmin.from("chat_conversations")
+        .update({ from_ad_meta: adReply }).eq("id", conv.id).is("from_ad_meta", null)
+    } catch (e) { console.error("[meta-webhook] from_ad_meta:", e) }
+  }
 
   // Auto-assign só em conversa nova (mesma regra do Evolution)
   if (conv._isNew) {

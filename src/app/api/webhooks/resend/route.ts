@@ -75,13 +75,12 @@ export async function POST(req: NextRequest) {
   const secret = process.env.RESEND_WEBHOOK_SECRET
   const body   = await req.text()
 
-  // Em dev sem secret configurada: aceita sem validação MAS loga aviso
+  // FAIL-CLOSED: sem secret, recusa em vez de aceitar evento não-assinado.
   if (!secret) {
-    console.warn("[resend-webhook] RESEND_WEBHOOK_SECRET não setada — assinatura não validada (OK em dev, inseguro em prod)")
-  } else {
-    if (!verifySignature(body, req.headers, secret)) {
-      return NextResponse.json({ error: "invalid signature" }, { status: 401 })
-    }
+    return NextResponse.json({ error: "webhook not configured" }, { status: 503 })
+  }
+  if (!verifySignature(body, req.headers, secret)) {
+    return NextResponse.json({ error: "invalid signature" }, { status: 401 })
   }
 
   let event: ResendEvent
