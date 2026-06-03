@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { X, Search, Phone, User, Loader2, MessageCircle, RotateCcw } from "lucide-react"
+import { X, Search, Phone, User, Loader2, MessageCircle, RotateCcw, FileText } from "lucide-react"
 import { searchContacts, createManualConversation } from "@/lib/actions/chat"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 
@@ -19,9 +19,11 @@ interface ContactResult {
 interface Props {
   open:    boolean
   onClose: () => void
+  /** Canal default é oficial (Meta Cloud) → 1ª msg fora da janela exige template. */
+  officialChannel?: boolean
 }
 
-export function NewConversationModal({ open, onClose }: Props) {
+export function NewConversationModal({ open, onClose, officialChannel }: Props) {
   const router = useRouter()
   const [tab, setTab]                = useState<"search" | "phone">("search")
   const [search, setSearch]          = useState("")
@@ -124,6 +126,15 @@ export function NewConversationModal({ open, onClose }: Props) {
             Novo telefone
           </button>
         </div>
+
+        {officialChannel && (
+          <div className="mx-4 mt-3 flex items-start gap-2 text-[11px] text-primary-700 bg-primary-50 border border-primary-200 rounded-lg p-2.5">
+            <FileText className="size-3.5 shrink-0 mt-0.5" />
+            <span>
+              Número <strong>oficial</strong>: se o contato não te enviou mensagem nas últimas 24h, a primeira mensagem precisa ser um <strong>template aprovado</strong> (você escolhe no chat). O texto livre libera quando ele responder.
+            </span>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "search" ? (

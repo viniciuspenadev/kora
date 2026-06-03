@@ -164,22 +164,48 @@ export class MetaCloudProvider implements WhatsAppProvider {
 
   /**
    * Cria um message template na WABA (precisa aprovação da Meta).
-   * `body` usa variáveis posicionais {{1}}; `bodyExamples` dá a amostra exigida.
+   * Monta os components: cabeçalho (texto) + corpo + rodapé + botões.
+   * Variáveis posicionais {{1}}; exemplos são exigidos quando há variável.
    */
   async createTemplate(opts: {
     name:     string
     category: "MARKETING" | "UTILITY" | "AUTHENTICATION"
     language: string
-    body:     string
-    bodyExamples?: string[]
+    headerText?:    string
+    headerExample?: string
+    body:           string
+    bodyExamples?:  string[]
+    footer?:        string
+    buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
   }): Promise<{ id: string; status: string }> {
-    const components: Array<Record<string, unknown>> = [{
+    const components: Array<Record<string, unknown>> = []
+
+    if (opts.headerText?.trim()) {
+      components.push({
+        type: "HEADER", format: "TEXT", text: opts.headerText.trim(),
+        ...(opts.headerExample?.trim() ? { example: { header_text: [opts.headerExample.trim()] } } : {}),
+      })
+    }
+
+    components.push({
       type: "BODY",
       text: opts.body,
-      ...(opts.bodyExamples && opts.bodyExamples.length > 0
-        ? { example: { body_text: [opts.bodyExamples] } }
-        : {}),
-    }]
+      ...(opts.bodyExamples && opts.bodyExamples.length > 0 ? { example: { body_text: [opts.bodyExamples] } } : {}),
+    })
+
+    if (opts.footer?.trim()) components.push({ type: "FOOTER", text: opts.footer.trim() })
+
+    if (opts.buttons && opts.buttons.length > 0) {
+      components.push({
+        type: "BUTTONS",
+        buttons: opts.buttons.map((b) =>
+          b.type === "URL"          ? { type: "URL",          text: b.text, url: b.url }
+          : b.type === "PHONE_NUMBER" ? { type: "PHONE_NUMBER", text: b.text, phone_number: b.phone }
+          :                             { type: "QUICK_REPLY",  text: b.text },
+        ),
+      })
+    }
+
     return this.graph<{ id: string; status: string }>(
       `/${this.config.meta_business_account_id}/message_templates`,
       {

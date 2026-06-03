@@ -212,8 +212,8 @@ export function ChatPanel({
               className="size-10 rounded-full object-cover shrink-0"
             />
           ) : (
-            <div className="size-10 rounded-full bg-primary flex items-center justify-center shrink-0">
-              <span className="text-sm font-bold text-white">
+            <div className="size-10 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0">
+              <span className="text-sm font-bold text-slate-400">
                 {contact ? displayContactInitial(contact) : "?"}
               </span>
             </div>
@@ -409,6 +409,8 @@ export function ChatPanel({
         quickReplies={quickReplies}
         disabled={conversation.status === "resolved"}
         windowClosed={isOfficial && !windowOpen}
+        windowNeverOpened={isOfficial && !lastInboundAt}
+        contactFirstName={name.split(/\s+/)[0] ?? ""}
         onSendText={onSendText}
         onSendMedia={onSendMedia}
         onSendVoice={onSendVoice}

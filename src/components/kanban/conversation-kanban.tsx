@@ -273,12 +273,12 @@ function ConversationCard({
       <div className="p-3 space-y-2">
 
         <div className="flex items-start gap-2.5">
-          <div className="size-9 rounded-full bg-slate-100 flex items-center justify-center shrink-0 overflow-hidden">
+          <div className="size-9 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0 overflow-hidden">
             {contact?.profile_pic_url ? (
               /* eslint-disable-next-line @next/next/no-img-element */
               <img src={contact.profile_pic_url} alt="" className="size-9 object-cover" />
             ) : (
-              <span className="text-sm font-bold text-slate-500">{initial}</span>
+              <span className="text-sm font-bold text-slate-400">{initial}</span>
             )}
           </div>
           <div className="flex-1 min-w-0">

@@ -16,16 +16,21 @@ export default async function InboxPage() {
   const tenantId = session.user.tenantId
 
   // Multi-instância (M1): pode haver 2+ (ex: Baileys + Meta oficial).
+  // Ordena por created_at asc — o [0] é a instância "default" (mesma regra do
+  // createManualConversation), usada pra saber o canal de uma conversa nova.
   const { data: instances } = await supabaseAdmin
     .from("whatsapp_instances")
-    .select("id, status")
+    .select("id, status, provider")
     .eq("tenant_id", tenantId)
+    .order("created_at", { ascending: true })
 
   const instanceList = instances ?? []
   const hasUsableInstance = instanceList.some((i) => i.status !== "disconnected")
   const instanceStatus = instanceList.length === 0 ? "not_configured" : (hasUsableInstance ? "connected" : "disconnected")
   // Badge de canal por conversa só faz sentido com 2+ instâncias (ex: Baileys + Oficial).
   const showChannel = instanceList.length > 1
+  // Conversa nova sai pela 1ª instância → se for oficial, a 1ª msg exige template.
+  const officialChannel = instanceList[0]?.provider === "meta_cloud"
 
   if (!hasUsableInstance) {
     return (
@@ -137,6 +142,7 @@ export default async function InboxPage() {
         tags={(tagsRaw ?? []) as unknown as TagMini[]}
         tagsByContact={tagsByContact}
         showChannel={showChannel}
+        officialChannel={officialChannel}
         initialCursor={initialPage.nextCursor}
         initialHasMore={initialPage.hasMore}
         initialStatus={INITIAL_STATUS}

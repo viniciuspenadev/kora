@@ -15,6 +15,10 @@ interface Props {
   disabled?:      boolean
   /** Janela de 24h fechada (WhatsApp Oficial) → bloqueia texto livre, exige template. */
   windowClosed?:  boolean
+  /** Conversa nova/oficial que nunca teve inbound (janela nunca abriu) — copy diferente. */
+  windowNeverOpened?: boolean
+  /** Primeiro nome do contato — pré-preenche {{1}} no picker de template. */
+  contactFirstName?:  string
   /** Orquestrado em InboxClient: insere msg otimista, chama server action, faz swap do id. */
   onSendText:     (content: string, isPrivate: boolean) => Promise<void>
   onSendMedia:    (file: File, caption: string) => Promise<void>
@@ -34,7 +38,7 @@ function formatBytes(b: number) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, onSendText, onSendMedia, onSendVoice }: Props) {
+export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice }: Props) {
   void conversationId  // mantido na API por clareza; envio é orquestrado no parent
   const [text, setText]                = useState("")
   const [isPrivate, setIsPrivate]      = useState(false)
@@ -179,7 +183,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
 
   // Janela de 24h fechada (Oficial): só template aprovado reabre a conversa.
   if (windowClosed) {
-    return <ClosedWindowComposer conversationId={conversationId} />
+    return <ClosedWindowComposer conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} />
   }
 
   return (
@@ -382,7 +386,7 @@ function renderTemplate(body: string, params: string[]): string {
   return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => params[Number(n) - 1]?.trim() || `{{${n}}}`)
 }
 
-function ClosedWindowComposer({ conversationId }: { conversationId: string }) {
+function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName }: { conversationId: string; neverOpened: boolean; contactFirstName: string }) {
   const [templates, setTemplates] = useState<InboxTemplate[] | null>(null)
   const [selected, setSelected]   = useState("")
   const [params, setParams]       = useState<string[]>([])
@@ -390,14 +394,22 @@ function ClosedWindowComposer({ conversationId }: { conversationId: string }) {
   const [ok, setOk]               = useState(false)
   const [pending, startSend]      = useTransition()
 
+  /** Inicializa os params de um template: pré-preenche {{1}} com o primeiro nome. */
+  function initParams(varCount: number): string[] {
+    const p = Array(varCount).fill("")
+    if (varCount >= 1 && contactFirstName) p[0] = contactFirstName
+    return p
+  }
+
   useEffect(() => {
     let cancelled = false
     getInboxTemplates().then((t) => {
       if (cancelled) return
       setTemplates(t)
-      if (t[0]) { setSelected(t[0].name); setParams(Array(t[0].varCount).fill("")) }
+      if (t[0]) { setSelected(t[0].name); setParams(initParams(t[0].varCount)) }
     })
     return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const tpl = templates?.find((t) => t.name === selected) ?? null
@@ -405,7 +417,7 @@ function ClosedWindowComposer({ conversationId }: { conversationId: string }) {
   function pick(name: string) {
     setSelected(name)
     const t = templates?.find((x) => x.name === name)
-    setParams(Array(t?.varCount ?? 0).fill(""))
+    setParams(initParams(t?.varCount ?? 0))
     setError(null); setOk(false)
   }
 
@@ -429,7 +441,11 @@ function ClosedWindowComposer({ conversationId }: { conversationId: string }) {
     <div className="border-t border-slate-200 bg-white p-4">
       <div className="flex items-start gap-2 mb-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
         <Lock className="size-4 shrink-0 mt-0.5" />
-        <span>Janela de 24h fechada. Pra reabrir a conversa, envie um <strong>template aprovado</strong>. O texto livre volta assim que o cliente responder.</span>
+        <span>
+          {neverOpened
+            ? <>Conversa nova no número oficial. Inicie com um <strong>template aprovado</strong> — o texto livre libera quando o cliente responder.</>
+            : <>Janela de 24h fechada. Pra reabrir a conversa, envie um <strong>template aprovado</strong>. O texto livre volta assim que o cliente responder.</>}
+        </span>
       </div>
 
       {templates === null ? (
@@ -448,13 +464,18 @@ function ClosedWindowComposer({ conversationId }: { conversationId: string }) {
           {tpl && tpl.varCount > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {Array.from({ length: tpl.varCount }).map((_, i) => (
-                <input
-                  key={i}
-                  value={params[i] ?? ""}
-                  onChange={(e) => setParams((p) => { const n = [...p]; n[i] = e.target.value; return n })}
-                  placeholder={`Variável {{${i + 1}}}`}
-                  className={TPL_INPUT}
-                />
+                <div key={i}>
+                  <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                    {`{{${i + 1}}}`}
+                    {i === 0 && <span className="ml-1 text-slate-400 font-normal">← nome do cliente</span>}
+                  </label>
+                  <input
+                    value={params[i] ?? ""}
+                    onChange={(e) => setParams((p) => { const n = [...p]; n[i] = e.target.value; return n })}
+                    placeholder={i === 0 ? (contactFirstName || "Primeiro nome") : `Variável ${i + 1}`}
+                    className={TPL_INPUT}
+                  />
+                </div>
               ))}
             </div>
           )}

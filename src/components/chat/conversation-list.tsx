@@ -35,6 +35,7 @@ interface Props {
   tags:            TagMini[]
   tagsByContact:   Record<string, string[]>
   showChannel?:    boolean         // mostra badge de canal (Baileys/Oficial) — só com 2+ instâncias
+  officialChannel?: boolean        // canal default é oficial → nova conversa exige template
   agents:          AgentMini[]
   unreadTotal:     number          // Total de não-lidas (tenant inteiro, não só carregadas)
 
@@ -114,7 +115,7 @@ export function ConversationList({
   conversations, activeId, onSelect,
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
   statusFilter, onStatusChange,
-  pipelines, stages, tags, tagsByContact, showChannel = false, agents,
+  pipelines, stages, tags, tagsByContact, showChannel = false, officialChannel = false, agents,
   unreadTotal,
   searchValue, onSearchChange,
   pipelineFilter, onPipelineFilterChange,
@@ -413,9 +414,7 @@ export function ConversationList({
                   <div className={`size-11 rounded-full flex items-center justify-center overflow-hidden ${
                     isGroup
                       ? "bg-amber-100 text-amber-700"
-                      : isActive
-                      ? "bg-primary-100 text-primary-700"
-                      : "bg-slate-100 text-slate-600"
+                      : "bg-gradient-to-br from-white to-slate-200 text-slate-400 ring-1 ring-inset ring-slate-200/70"
                   }`}>
                     {isGroup ? (
                       conv.group_picture ? (
@@ -597,7 +596,7 @@ export function ConversationList({
         )
       })()}
 
-      <NewConversationModal open={showNewModal} onClose={() => setShowNewModal(false)} />
+      <NewConversationModal open={showNewModal} onClose={() => setShowNewModal(false)} officialChannel={officialChannel} />
     </div>
   )
 }

@@ -43,12 +43,18 @@ function countVars(body: string): number {
   return set.size
 }
 
+export interface TemplateButton { type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }
+
 export async function createOfficialTemplate(input: {
   name: string
   category: "MARKETING" | "UTILITY"
   language: string
+  headerText?:    string
+  headerExample?: string
   body: string
   samples: string[]
+  footer?:  string
+  buttons?: TemplateButton[]
 }): Promise<Result> {
   const r = await tenantMetaProvider()
   if ("error" in r) return { ok: false, error: r.error }
@@ -61,7 +67,20 @@ export async function createOfficialTemplate(input: {
   const nVars = countVars(body)
   const samples = input.samples.slice(0, nVars).map((s) => s.trim())
   if (samples.length < nVars || samples.some((s) => !s)) {
-    return { ok: false, error: "Preencha um exemplo para cada variável." }
+    return { ok: false, error: "Preencha um exemplo para cada variável do corpo." }
+  }
+
+  // Cabeçalho de texto: se tiver variável {{1}}, exige exemplo.
+  const headerText = input.headerText?.trim() || undefined
+  if (headerText && countVars(headerText) > 0 && !input.headerExample?.trim()) {
+    return { ok: false, error: "Preencha o exemplo da variável do cabeçalho." }
+  }
+
+  // Botões: valida texto + url/telefone conforme o tipo.
+  const buttons = (input.buttons ?? []).filter((b) => b.text.trim())
+  for (const b of buttons) {
+    if (b.type === "URL" && !b.url?.trim()) return { ok: false, error: `Botão "${b.text}": informe a URL.` }
+    if (b.type === "PHONE_NUMBER" && !b.phone?.trim()) return { ok: false, error: `Botão "${b.text}": informe o telefone.` }
   }
 
   try {
@@ -69,8 +88,12 @@ export async function createOfficialTemplate(input: {
       name,
       category: input.category,
       language: input.language,
+      headerText,
+      headerExample: input.headerExample?.trim() || undefined,
       body,
       bodyExamples: nVars > 0 ? samples : undefined,
+      footer: input.footer?.trim() || undefined,
+      buttons: buttons.length > 0 ? buttons : undefined,
     })
     revalidatePath(PAGE)
     return { ok: true, id: res.id }

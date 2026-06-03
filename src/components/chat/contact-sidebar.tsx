@@ -216,12 +216,12 @@ function HeaderCard({
         </div>
       )}
 
-      <div className="size-14 rounded-full bg-primary flex items-center justify-center mb-2 overflow-hidden mt-1">
+      <div className="size-14 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center mb-2 overflow-hidden mt-1">
         {contact.profile_pic_url ? (
           /* eslint-disable-next-line @next/next/no-img-element */
           <img src={contact.profile_pic_url} alt="" className="size-14 object-cover" />
         ) : (
-          <span className="text-lg font-bold text-white">{initial}</span>
+          <span className="text-lg font-bold text-slate-400">{initial}</span>
         )}
       </div>
       <p className="text-sm font-semibold text-slate-900 text-center truncate max-w-full">

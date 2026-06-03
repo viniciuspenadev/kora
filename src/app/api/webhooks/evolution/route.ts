@@ -1072,33 +1072,71 @@ async function findOrCreateContact(
       },
       { onConflict: "tenant_id,whatsapp_id", ignoreDuplicates: false },
     )
-    .select("id, profile_pic_url")
+    .select("id, profile_pic_url, profile_pic_fetched_at")
     .single()
 
   if (upErr || !upserted) throw new Error(`Failed to upsert contact: ${upErr?.message}`)
 
-  if (!upserted.profile_pic_url && instance) {
-    fetchAndSaveProfilePicture(instance, jid, upserted.id).catch(() => {})
+  // Refresh por TTL (fire-and-forget): busca a foto se nunca buscou OU se venceu (>7 dias).
+  // Pega carona no tráfego (só contato que mandou msg) e nunca bloqueia o webhook.
+  if (instance) {
+    const fetchedAt = upserted.profile_pic_fetched_at ? new Date(upserted.profile_pic_fetched_at).getTime() : 0
+    if (Date.now() - fetchedAt > PROFILE_PIC_TTL_MS) {
+      fetchAndSaveProfilePicture(instance, jid, upserted.id, tenantId).catch(() => {})
+    }
   }
 
   return { id: upserted.id }
 }
 
+const PROFILE_PIC_TTL_MS = 7 * 24 * 60 * 60 * 1000  // 7 dias
+const AVATAR_BUCKET      = "chat-attachments"
+
 /**
- * Fire-and-forget: busca foto de perfil do WhatsApp e grava em chat_contacts.profile_pic_url.
+ * Fire-and-forget: busca a foto de perfil do WhatsApp, **baixa os bytes e salva no
+ * nosso storage** (URL estável via /api/avatar — a URL do CDN da WhatsApp expira).
+ * Marca `profile_pic_fetched_at` mesmo sem foto, pra não re-tentar antes do TTL.
  */
 async function fetchAndSaveProfilePicture(
   instance:  InstanceRow,
   jid:       string,
   contactId: string,
+  tenantId:  string,
 ) {
-  const provider = getProvider(instance)
-  const url      = await provider.fetchProfilePictureUrl(jid)
-  if (!url) return
-  await supabaseAdmin
-    .from("chat_contacts")
-    .update({ profile_pic_url: url, updated_at: new Date().toISOString() })
-    .eq("id", contactId)
+  const fetchedAt = new Date().toISOString()
+  const markChecked = async () => {
+    await supabaseAdmin.from("chat_contacts").update({ profile_pic_fetched_at: fetchedAt }).eq("id", contactId)
+  }
+
+  try {
+    const provider = getProvider(instance)
+    const url = await provider.fetchProfilePictureUrl(jid)
+    if (!url) { await markChecked(); return }
+
+    const res = await fetch(url)
+    if (!res.ok) { await markChecked(); return }
+    const blob = await res.blob()
+    const mime = blob.type || "image/jpeg"
+    const ext  = (mime.split("/")[1] || "jpg").replace(/[^a-z0-9]/gi, "")
+    const path = `avatars/${tenantId}/${contactId}.${ext}`
+    const buffer = Buffer.from(await blob.arrayBuffer())
+
+    const { error: upErr } = await supabaseAdmin.storage.from(AVATAR_BUCKET)
+      .upload(path, buffer, { contentType: mime, upsert: true })
+    if (upErr) { await markChecked(); return }
+
+    // Merge metadata (preserva o resto) + URL estável do proxy.
+    const { data: c } = await supabaseAdmin.from("chat_contacts").select("metadata").eq("id", contactId).maybeSingle()
+    const meta = { ...((c?.metadata as Record<string, unknown> | null) ?? {}), avatar_path: path }
+    await supabaseAdmin.from("chat_contacts").update({
+      profile_pic_url:        `/api/avatar/${contactId}`,
+      profile_pic_fetched_at: fetchedAt,
+      metadata:               meta,
+      updated_at:             fetchedAt,
+    }).eq("id", contactId)
+  } catch {
+    await markChecked().catch(() => {})
+  }
 }
 
 /**
