@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { X, Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply } from "lucide-react"
+import { Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply } from "lucide-react"
 import { createOfficialTemplate, type TemplateButton } from "@/lib/actions/whatsapp-official"
 import type { MetaTemplate } from "@/lib/providers/meta-cloud-provider"
 import { parseVars } from "@/lib/whatsapp/template-vars"
@@ -28,6 +28,7 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
   const [pending, startT]         = useTransition()
 
   const bodyVars     = parseVars(body)
+  const mixedVars    = bodyVars.some((v) => v.named) && bodyVars.some((v) => !v.named)
   const headerHasVar = parseVars(headerText).length > 0
 
   function insertBodyVar() {
@@ -43,6 +44,7 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
 
   function submit() {
     setErr(null)
+    if (mixedVars) { setErr("Não misture variáveis numeradas ({{1}}) e nomeadas ({{nome}}) — use só um tipo no template."); return }
     startT(async () => {
       const r = await createOfficialTemplate({
         name, category, language,
@@ -68,16 +70,10 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
   }
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4 supports-backdrop-filter:backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-soft w-full max-w-4xl max-h-[92vh] flex flex-col ring-1 ring-slate-200" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 shrink-0">
-          <h3 className="text-sm font-bold text-slate-900">Novo template</h3>
-          <button onClick={onClose} className="size-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100"><X className="size-4" /></button>
-        </div>
-
-        <div className="flex-1 overflow-hidden grid grid-cols-1 md:grid-cols-[1fr_330px] min-h-0">
+    <div className="max-w-5xl mx-auto pb-24">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
           {/* Formulário */}
-          <div className="overflow-y-auto p-5 space-y-6">
+          <div className="space-y-6">
             <Section title="Básico">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Field label="Nome" hint="minúsculas e _">
@@ -139,6 +135,11 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
                   ))}
                 </div>
               )}
+              {mixedVars && (
+                <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+                  ⚠️ Você misturou variável numerada ({"{{1}}"}) e nomeada ({"{{nome}}"}). Use só um tipo — a Meta não aceita os dois juntos.
+                </p>
+              )}
               <Hint>
                 {varMode === "name" && "Variáveis nomeadas se auto-documentam (ex: nome, numero_pedido). "}
                 Use *negrito*, _itálico_, ~tachado~. Não comece/termine com variável, nem use duas seguidas.
@@ -181,10 +182,12 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
           </div>
 
           {/* Prévia + regras */}
-          <div className="hidden md:flex flex-col border-l border-slate-100 bg-slate-50/40 p-4 overflow-y-auto">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Prévia (WhatsApp)</p>
-            <TemplatePreview t={preview} />
-            <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+          <div className="lg:sticky lg:top-4 flex flex-col gap-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Prévia (WhatsApp)</p>
+              <TemplatePreview t={preview} />
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-3">
               <p className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5 mb-1.5"><Info className="size-3.5 text-primary-600" /> Regras pra aprovar</p>
               <ul className="text-[11px] text-slate-500 space-y-1 list-disc list-inside leading-relaxed">
                 <li>Preencha os <strong>exemplos</strong> de todas as variáveis</li>
@@ -197,14 +200,13 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
           </div>
         </div>
 
-        {err && <div className="mx-5 mb-3 flex items-start gap-2 p-2.5 rounded-lg text-xs bg-red-50 border border-red-200 text-red-800"><AlertCircle className="size-4 shrink-0 mt-0.5" /><span>{err}</span></div>}
-        <div className="flex items-center justify-end gap-2 px-5 py-4 bg-slate-50 border-t border-slate-100 shrink-0">
-          <button onClick={onClose} className="h-9 px-3 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-white">Cancelar</button>
-          <button onClick={submit} disabled={pending || !name.trim() || !body.trim()}
-            className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors">
-            {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Enviar para análise
-          </button>
-        </div>
+      {err && <div className="mt-4 flex items-start gap-2 p-2.5 rounded-lg text-xs bg-red-50 border border-red-200 text-red-800"><AlertCircle className="size-4 shrink-0 mt-0.5" /><span>{err}</span></div>}
+      <div className="sticky bottom-0 z-10 mt-4 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/90 supports-backdrop-filter:backdrop-blur px-1 py-3">
+        <button onClick={onClose} className="h-9 px-3 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Descartar</button>
+        <button onClick={submit} disabled={pending || !name.trim() || !body.trim()}
+          className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors">
+          {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Enviar para análise
+        </button>
       </div>
     </div>
   )

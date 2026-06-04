@@ -9,10 +9,12 @@ import { FileText } from "lucide-react"
 
 export const dynamic = "force-dynamic"
 
-export default async function TemplatesPage() {
+export default async function TemplatesPage({ searchParams }: { searchParams: Promise<{ created?: string }> }) {
   const session = await auth()
   if (!session) redirect("/auth/signin")
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
+
+  const { created } = await searchParams
 
   const { data: inst } = await supabaseAdmin
     .from("whatsapp_instances")
@@ -46,7 +48,7 @@ export default async function TemplatesPage() {
       description="Modelos de mensagem da sua linha oficial — crie, monitore e gerencie."
       icon={FileText}
     >
-      <TemplatesClient templates={templates} error={error} />
+      <TemplatesClient templates={templates} error={error} created={created === "1"} />
     </PageShell>
   )
 }

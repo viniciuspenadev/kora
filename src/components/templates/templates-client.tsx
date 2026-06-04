@@ -1,8 +1,9 @@
 "use client"
 
 import { useState, useMemo, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import {
-  Plus, Trash2, Loader2, X, AlertCircle, CheckCircle2, FileText,
+  Plus, Trash2, X, AlertCircle, CheckCircle2, FileText,
   Search, LayoutGrid, List as ListIcon, Gauge,
 } from "lucide-react"
 import { deleteOfficialTemplate } from "@/lib/actions/whatsapp-official"
@@ -11,7 +12,6 @@ import { StatusDot } from "@/components/ui/status-dot"
 import { EmptyState } from "@/components/ui/empty-state"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import { TemplatePreview, comp, bodyText, countVars } from "./template-preview"
-import { TemplateBuilder } from "./template-builder"
 
 const INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
 
@@ -29,15 +29,15 @@ const QUALITY: Record<string, { tone: Tone; label: string }> = {
 }
 const CATEGORY: Record<string, string> = { MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Autenticação" }
 
-export function TemplatesClient({ templates, error }: { templates: MetaTemplate[]; error: string | null }) {
+export function TemplatesClient({ templates, error, created }: { templates: MetaTemplate[]; error: string | null; created?: boolean }) {
+  const router = useRouter()
   const [view, setView] = useState<"grid" | "list">("grid")
   const [q, setQ] = useState("")
   const [fStatus, setFStatus] = useState("all")
   const [fCat, setFCat] = useState("all")
   const [selected, setSelected] = useState<MetaTemplate | null>(null)
-  const [creating, setCreating] = useState(false)
   const [toDelete, setToDelete] = useState<string | null>(null)
-  const [fb, setFb] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [fb, setFb] = useState<{ ok: boolean; msg: string } | null>(created ? { ok: true, msg: "Template enviado para análise!" } : null)
   const [, startT] = useTransition()
 
   const filtered = useMemo(() => {
@@ -94,7 +94,7 @@ export function TemplatesClient({ templates, error }: { templates: MetaTemplate[
           <button onClick={() => setView("grid")} className={`size-7 inline-flex items-center justify-center rounded-md ${view === "grid" ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`} title="Grade"><LayoutGrid className="size-4" /></button>
           <button onClick={() => setView("list")} className={`size-7 inline-flex items-center justify-center rounded-md ${view === "list" ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`} title="Lista"><ListIcon className="size-4" /></button>
         </div>
-        <button onClick={() => { setCreating(true); setFb(null) }}
+        <button onClick={() => router.push("/templates/novo")}
           className="h-9 px-3 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 transition-colors">
           <Plus className="size-3.5" /> Criar template
         </button>
@@ -104,7 +104,7 @@ export function TemplatesClient({ templates, error }: { templates: MetaTemplate[
       {filtered.length === 0 ? (
         <EmptyState icon={FileText} title={templates.length === 0 ? "Nenhum template ainda" : "Nada encontrado"}
           description={templates.length === 0 ? "Crie seu primeiro modelo para iniciar conversas fora da janela de 24 horas." : "Ajuste a busca ou os filtros."}
-          action={templates.length === 0 ? <button onClick={() => setCreating(true)} className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5"><Plus className="size-3.5" /> Criar template</button> : undefined} />
+          action={templates.length === 0 ? <button onClick={() => router.push("/templates/novo")} className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5"><Plus className="size-3.5" /> Criar template</button> : undefined} />
       ) : view === "grid" ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((t) => {
@@ -151,14 +151,6 @@ export function TemplatesClient({ templates, error }: { templates: MetaTemplate[
       {/* Detail modal */}
       {selected && (
         <DetailModal t={selected} onClose={() => setSelected(null)} onDelete={() => setToDelete(selected.name)} />
-      )}
-
-      {/* Builder de template (modal grande) */}
-      {creating && (
-        <TemplateBuilder
-          onClose={() => setCreating(false)}
-          onDone={(msg) => { setFb({ ok: true, msg }); setCreating(false) }}
-        />
       )}
 
       <DangerConfirm

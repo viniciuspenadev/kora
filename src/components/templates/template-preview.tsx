@@ -11,14 +11,15 @@ export function bodyText(t: MetaTemplate) {
   return comp(t, "BODY")?.text ?? ""
 }
 export function countVars(body: string) {
-  return new Set((body.match(/\{\{\s*(\d+)\s*\}\}/g) ?? []).map((m) => m.replace(/\D/g, ""))).size
+  // Conta variáveis distintas — posicionais {{1}} E nomeadas {{nome}}.
+  return new Set((body.match(/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/g) ?? []).map((m) => m.replace(/[{}\s]/g, ""))).size
 }
 
-/** Renderiza texto com {{n}} destacado. */
+/** Renderiza texto com variáveis destacadas — posicionais {{1}} E nomeadas {{nome}}. */
 export function renderVars(text?: string) {
   if (!text) return null
-  return text.split(/(\{\{\s*\d+\s*\}\})/g).map((part, i) =>
-    /\{\{\s*\d+\s*\}\}/.test(part)
+  return text.split(/(\{\{\s*[a-zA-Z0-9_]+\s*\}\})/g).map((part, i) =>
+    /\{\{\s*[a-zA-Z0-9_]+\s*\}\}/.test(part)
       ? <span key={i} className="inline-block bg-primary-50 text-primary-700 rounded px-1 text-[0.92em] font-medium">{part}</span>
       : <Fragment key={i}>{part}</Fragment>,
   )
