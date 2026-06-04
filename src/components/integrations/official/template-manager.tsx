@@ -48,7 +48,8 @@ export function TemplateManager({ templates }: { templates: MetaTemplate[] }) {
   function submit() {
     setFb(null)
     startT(async () => {
-      const r = await createOfficialTemplate({ name, category, language, body, samples })
+      const examples = Object.fromEntries(samples.map((s, i) => [String(i + 1), s]))
+      const r = await createOfficialTemplate({ name, category, language, body, examples })
       if (r.ok) { setFb({ ok: true, msg: "Template enviado para análise!" }); reset(); setCreating(false) }
       else setFb({ ok: false, msg: r.error ?? "Falha ao criar template." })
     })

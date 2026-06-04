@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { MetaCloudProvider, type MetaBusinessProfile } from "@/lib/providers/meta-cloud-provider"
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets"
 import { getEnabledModuleSlugs } from "@/lib/modules"
+import { parseVars, type TemplateVar } from "@/lib/whatsapp/template-vars"
 import { revalidatePath } from "next/cache"
 
 const PAGE = "/integracoes/whatsapp-oficial"
@@ -131,10 +132,35 @@ async function tenantMetaProvider(): Promise<{ provider: MetaCloudProvider } | {
   }
 }
 
-/** Conta as variáveis {{n}} no corpo. */
-function countVars(body: string): number {
-  const set = new Set((body.match(/\{\{\s*(\d+)\s*\}\}/g) ?? []).map((m) => m.replace(/\D/g, "")))
-  return set.size
+/** Variáveis NOMEADAS: minúsculas, números e _, começando por letra (regra da Meta). */
+function validateNamedVars(vars: TemplateVar[]): string | null {
+  for (const v of vars) {
+    if (!/^[a-z][a-z0-9_]*$/.test(v.key)) {
+      return `Variável "${v.key}" inválida. Use minúsculas, números e _ começando por letra (ex: nome, numero_pedido).`
+    }
+  }
+  return null
+}
+
+/**
+ * Valida as regras da Meta pra variáveis POSICIONAIS no corpo (senão a Graph rejeita
+ * com erro cru). Retorna mensagem PT-BR ou null. Regras: sequenciais 1..n, não
+ * começar/terminar com variável, não usar duas seguidas.
+ */
+function validateTemplateVars(body: string): string | null {
+  const nums = (body.match(/\{\{\s*\d+\s*\}\}/g) ?? []).map((m) => parseInt(m.replace(/\D/g, ""), 10))
+  if (nums.length === 0) return null
+  const distinct = Array.from(new Set(nums)).sort((a, b) => a - b)
+  for (let i = 0; i < distinct.length; i++) {
+    if (distinct[i] !== i + 1) {
+      return "As variáveis precisam ser sequenciais começando em {{1}} (ex: {{1}}, {{2}}). Ajuste a numeração."
+    }
+  }
+  const trimmed = body.trim()
+  if (/^\{\{\s*\d+\s*\}\}/.test(trimmed)) return "O texto não pode COMEÇAR com uma variável. Coloque algum texto antes do {{1}}."
+  if (/\{\{\s*\d+\s*\}\}$/.test(trimmed)) return "O texto não pode TERMINAR com uma variável. Coloque algum texto depois da última."
+  if (/\}\}\s*\{\{/.test(body)) return "Não use duas variáveis seguidas — coloque um texto entre elas."
+  return null
 }
 
 export interface TemplateButton { type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }
@@ -146,7 +172,7 @@ export async function createOfficialTemplate(input: {
   headerText?:    string
   headerExample?: string
   body: string
-  samples: string[]
+  examples: Record<string, string>   // key da variável (número OU nome) → exemplo
   footer?:  string
   buttons?: TemplateButton[]
 }): Promise<Result> {
@@ -158,15 +184,22 @@ export async function createOfficialTemplate(input: {
   const body = input.body.trim()
   if (!body) return { ok: false, error: "Informe o corpo da mensagem." }
 
-  const nVars = countVars(body)
-  const samples = input.samples.slice(0, nVars).map((s) => s.trim())
-  if (samples.length < nVars || samples.some((s) => !s)) {
-    return { ok: false, error: "Preencha um exemplo para cada variável do corpo." }
+  const vars  = parseVars(body)
+  const named = vars.some((v) => v.named)
+
+  // Validação por tipo (nomeado: nomes válidos; posicional: sequência/posição).
+  const varErr = named ? validateNamedVars(vars) : validateTemplateVars(body)
+  if (varErr) return { ok: false, error: varErr }
+
+  // Cada variável precisa de um exemplo.
+  const examples = input.examples ?? {}
+  for (const v of vars) {
+    if (!examples[v.key]?.trim()) return { ok: false, error: `Preencha o exemplo da variável {{${v.key}}}.` }
   }
 
-  // Cabeçalho de texto: se tiver variável {{1}}, exige exemplo.
+  // Cabeçalho de texto: se tiver variável, exige exemplo.
   const headerText = input.headerText?.trim() || undefined
-  if (headerText && countVars(headerText) > 0 && !input.headerExample?.trim()) {
+  if (headerText && parseVars(headerText).length > 0 && !input.headerExample?.trim()) {
     return { ok: false, error: "Preencha o exemplo da variável do cabeçalho." }
   }
 
@@ -185,7 +218,7 @@ export async function createOfficialTemplate(input: {
       headerText,
       headerExample: input.headerExample?.trim() || undefined,
       body,
-      bodyExamples: nVars > 0 ? samples : undefined,
+      bodyExamples: vars.length > 0 ? examples : undefined,
       footer: input.footer?.trim() || undefined,
       buttons: buttons.length > 0 ? buttons : undefined,
     })
@@ -194,6 +227,47 @@ export async function createOfficialTemplate(input: {
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }
+}
+
+/**
+ * Desconecta o número oficial do tenant. Best-effort: desassina o app da WABA na
+ * Meta (para de receber webhooks daquela conta) + limpa as credenciais e marca
+ * desconectado. NÃO deleta a linha — preserva o histórico de conversas; reconectar
+ * pelo Embedded Signup atualiza a mesma instância. owner/admin.
+ */
+export async function disconnectWhatsAppOfficial(): Promise<Result> {
+  const session = await auth()
+  if (!session) return { ok: false, error: "Não autenticado." }
+  if (!["owner", "admin"].includes(session.user.role)) return { ok: false, error: "Acesso restrito a administradores." }
+
+  const { data: inst } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("id, meta_business_account_id, meta_access_token")
+    .eq("tenant_id", session.user.tenantId)
+    .eq("provider", "meta_cloud")
+    .maybeSingle()
+  if (!inst) return { ok: false, error: "Nenhum número oficial conectado." }
+
+  // Best-effort: remove a assinatura do app na WABA (decifra o token pra usar).
+  try {
+    const token = decryptSecret(inst.meta_access_token)
+    if (token && inst.meta_business_account_id) {
+      await fetch(`${GRAPH}/${inst.meta_business_account_id}/subscribed_apps`, {
+        method:  "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    }
+  } catch { /* best-effort — segue pra limpar local de qualquer jeito */ }
+
+  const { error } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .update({ meta_access_token: null, status: "disconnected", updated_at: new Date().toISOString() })
+    .eq("id", inst.id)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath(PAGE)
+  revalidatePath("/integracoes")
+  return { ok: true }
 }
 
 export async function deleteOfficialTemplate(name: string): Promise<Result> {
@@ -218,7 +292,8 @@ export async function updateOfficialProfile(profile: Partial<MetaBusinessProfile
   if (profile.description !== undefined) payload.description = profile.description
   if (profile.address !== undefined) payload.address = profile.address
   if (profile.email !== undefined) payload.email = profile.email
-  if (profile.vertical !== undefined) payload.vertical = profile.vertical
+  // "UNDEFINED" é placeholder de "sem segmento" — a Meta recusa setar isso (#131000).
+  if (profile.vertical !== undefined && profile.vertical !== "UNDEFINED") payload.vertical = profile.vertical
   if (profile.websites) payload.websites = profile.websites.filter((w) => w.trim()).slice(0, 2)
 
   try {
@@ -234,7 +309,7 @@ export interface InboxTemplate {
   name:     string
   language: string
   body:     string
-  varCount: number
+  vars:     TemplateVar[]   // ordenadas; posicionais ({{1}}) ou nomeadas ({{nome}})
 }
 
 /** Templates APROVADOS do tenant — pro seletor do composer quando a janela fecha. */
@@ -247,8 +322,7 @@ export async function getInboxTemplates(): Promise<InboxTemplate[]> {
       .filter((t) => t.status === "APPROVED")
       .map((t) => {
         const body = t.components?.find((c) => c.type === "BODY")?.text ?? ""
-        const varCount = new Set((body.match(/\{\{\s*(\d+)\s*\}\}/g) ?? []).map((m) => m.replace(/\D/g, ""))).size
-        return { name: t.name, language: t.language, body, varCount }
+        return { name: t.name, language: t.language, body, vars: parseVars(body) }
       })
   } catch {
     return []

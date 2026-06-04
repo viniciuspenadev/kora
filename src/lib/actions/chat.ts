@@ -373,7 +373,7 @@ export async function sendOfficialTemplate(
   conversationId: string,
   templateName:   string,
   language:       string,
-  params:         string[],
+  params:         Array<{ paramName?: string; text: string }>,
   displayText:    string,
 ): Promise<{ id: string }> {
   const session = await auth()

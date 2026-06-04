@@ -7,6 +7,7 @@ import { VoiceRecorder } from "./voice-recorder"
 import { validateMediaFile, ACCEPT_ATTR } from "@/lib/chat/media-validation"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { sendOfficialTemplate } from "@/lib/actions/chat"
+import { nameVarKey, type TemplateVar } from "@/lib/whatsapp/template-vars"
 import type { ChatQuickReply } from "@/types/chat"
 
 interface Props {
@@ -382,22 +383,25 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
 
 const TPL_INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
 
-function renderTemplate(body: string, params: string[]): string {
-  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => params[Number(n) - 1]?.trim() || `{{${n}}}`)
+/** Substitui {{key}} (número ou nome) pelo valor preenchido. */
+function renderTemplate(body: string, params: Record<string, string>): string {
+  return body.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => params[k]?.trim() || `{{${k}}}`)
 }
 
 function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName }: { conversationId: string; neverOpened: boolean; contactFirstName: string }) {
   const [templates, setTemplates] = useState<InboxTemplate[] | null>(null)
   const [selected, setSelected]   = useState("")
-  const [params, setParams]       = useState<string[]>([])
+  const [params, setParams]       = useState<Record<string, string>>({})
   const [error, setError]         = useState<string | null>(null)
   const [ok, setOk]               = useState(false)
   const [pending, startSend]      = useTransition()
 
-  /** Inicializa os params de um template: pré-preenche {{1}} com o primeiro nome. */
-  function initParams(varCount: number): string[] {
-    const p = Array(varCount).fill("")
-    if (varCount >= 1 && contactFirstName) p[0] = contactFirstName
+  /** Inicializa os params: pré-preenche a variável de NOME (nomeada ou {{1}}) com o 1º nome. */
+  function initParams(vars: TemplateVar[]): Record<string, string> {
+    const p: Record<string, string> = {}
+    for (const v of vars) p[v.key] = ""
+    const nameKey = nameVarKey(vars)
+    if (nameKey && contactFirstName) p[nameKey] = contactFirstName
     return p
   }
 
@@ -406,31 +410,34 @@ function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName }:
     getInboxTemplates().then((t) => {
       if (cancelled) return
       setTemplates(t)
-      if (t[0]) { setSelected(t[0].name); setParams(initParams(t[0].varCount)) }
+      if (t[0]) { setSelected(t[0].name); setParams(initParams(t[0].vars)) }
     })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const tpl = templates?.find((t) => t.name === selected) ?? null
+  const tpl     = templates?.find((t) => t.name === selected) ?? null
+  const nameKey = tpl ? nameVarKey(tpl.vars) : null
 
   function pick(name: string) {
     setSelected(name)
     const t = templates?.find((x) => x.name === name)
-    setParams(initParams(t?.varCount ?? 0))
+    setParams(initParams(t?.vars ?? []))
     setError(null); setOk(false)
   }
 
   function send() {
     if (!tpl) return
-    if (params.some((p) => !p.trim())) { setError("Preencha as variáveis do template."); return }
+    if (tpl.vars.some((v) => !(params[v.key] ?? "").trim())) { setError("Preencha as variáveis do template."); return }
     setError(null); setOk(false)
     const displayText = renderTemplate(tpl.body, params)
+    // Monta os params na ORDEM das variáveis; nomeadas levam parameter_name.
+    const bodyParams = tpl.vars.map((v) => ({ paramName: v.named ? v.key : undefined, text: (params[v.key] ?? "").trim() }))
     startSend(async () => {
       try {
-        await sendOfficialTemplate(conversationId, tpl.name, tpl.language, params, displayText)
+        await sendOfficialTemplate(conversationId, tpl.name, tpl.language, bodyParams, displayText)
         setOk(true)
-        setParams(Array(tpl.varCount).fill(""))
+        setParams(initParams(tpl.vars))
       } catch (e) {
         setError((e as Error).message ?? "Falha ao enviar template.")
       }
@@ -461,22 +468,25 @@ function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName }:
             </select>
           </div>
 
-          {tpl && tpl.varCount > 0 && (
+          {tpl && tpl.vars.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {Array.from({ length: tpl.varCount }).map((_, i) => (
-                <div key={i}>
-                  <label className="block text-[10px] font-semibold text-slate-500 mb-1">
-                    {`{{${i + 1}}}`}
-                    {i === 0 && <span className="ml-1 text-slate-400 font-normal">← nome do cliente</span>}
-                  </label>
-                  <input
-                    value={params[i] ?? ""}
-                    onChange={(e) => setParams((p) => { const n = [...p]; n[i] = e.target.value; return n })}
-                    placeholder={i === 0 ? (contactFirstName || "Primeiro nome") : `Variável ${i + 1}`}
-                    className={TPL_INPUT}
-                  />
-                </div>
-              ))}
+              {tpl.vars.map((v) => {
+                const isName = v.key === nameKey
+                return (
+                  <div key={v.key}>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                      {`{{${v.key}}}`}
+                      {isName && <span className="ml-1 text-slate-400 font-normal">← nome do cliente</span>}
+                    </label>
+                    <input
+                      value={params[v.key] ?? ""}
+                      onChange={(e) => setParams((p) => ({ ...p, [v.key]: e.target.value }))}
+                      placeholder={isName ? (contactFirstName || "Primeiro nome") : (v.named ? v.key : "Valor")}
+                      className={TPL_INPUT}
+                    />
+                  </div>
+                )
+              })}
             </div>
           )}
 

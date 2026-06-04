@@ -2,6 +2,7 @@ import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
   GroupMetadata, MediaDownload, ContentType,
 } from "./types"
+import { parseVars } from "@/lib/whatsapp/template-vars"
 
 interface MetaCloudConfig {
   meta_phone_number_id:     string
@@ -150,18 +151,23 @@ export class MetaCloudProvider implements WhatsAppProvider {
   }
 
   /**
-   * Envia um template aprovado. `bodyParams` preenche as variáveis posicionais
-   * do corpo ({{1}}, {{2}}, ...) — ex: ["Bernardo"] vira "Olá Bernardo, tudo bem?".
-   * Único jeito de iniciar conversa fora da janela de 24h.
+   * Envia um template aprovado. `bodyParams` preenche as variáveis do corpo, na
+   * ordem. Cada param com `paramName` → variável NOMEADA ({{nome}}); sem `paramName`
+   * → posicional ({{1}}). Único jeito de iniciar conversa fora da janela de 24h.
    */
   async sendTemplate(
-    phone: string, name: string, langCode = "en_US", bodyParams?: string[],
+    phone: string, name: string, langCode = "en_US",
+    bodyParams?: Array<{ paramName?: string; text: string }>,
   ): Promise<SendResult> {
     const template: Record<string, unknown> = { name, language: { code: langCode } }
     if (bodyParams && bodyParams.length > 0) {
       template.components = [{
         type: "body",
-        parameters: bodyParams.map((text) => ({ type: "text", text })),
+        parameters: bodyParams.map((p) =>
+          p.paramName
+            ? { type: "text", parameter_name: p.paramName, text: p.text }
+            : { type: "text", text: p.text },
+        ),
       }]
     }
     return this.sendMessage({ to: this.toWa(phone), type: "template", template })
@@ -179,24 +185,32 @@ export class MetaCloudProvider implements WhatsAppProvider {
     headerText?:    string
     headerExample?: string
     body:           string
-    bodyExamples?:  string[]
+    bodyExamples?:  Record<string, string>   // key da variável (número ou nome) → exemplo
     footer?:        string
     buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
   }): Promise<{ id: string; status: string }> {
     const components: Array<Record<string, unknown>> = []
 
     if (opts.headerText?.trim()) {
-      components.push({
-        type: "HEADER", format: "TEXT", text: opts.headerText.trim(),
-        ...(opts.headerExample?.trim() ? { example: { header_text: [opts.headerExample.trim()] } } : {}),
-      })
+      const h: Record<string, unknown> = { type: "HEADER", format: "TEXT", text: opts.headerText.trim() }
+      const hVars = parseVars(opts.headerText)
+      if (hVars.length > 0 && opts.headerExample?.trim()) {
+        const v = hVars[0]   // cabeçalho aceita no máx. 1 variável
+        h.example = v.named
+          ? { header_text_named_params: [{ param_name: v.key, example: opts.headerExample.trim() }] }
+          : { header_text: [opts.headerExample.trim()] }
+      }
+      components.push(h)
     }
 
-    components.push({
-      type: "BODY",
-      text: opts.body,
-      ...(opts.bodyExamples && opts.bodyExamples.length > 0 ? { example: { body_text: [opts.bodyExamples] } } : {}),
-    })
+    const bodyComp: Record<string, unknown> = { type: "BODY", text: opts.body }
+    const bodyVars = parseVars(opts.body)
+    if (bodyVars.length > 0 && opts.bodyExamples) {
+      bodyComp.example = bodyVars.some((v) => v.named)
+        ? { body_text_named_params: bodyVars.map((v) => ({ param_name: v.key, example: opts.bodyExamples![v.key] ?? "" })) }
+        : { body_text: [bodyVars.map((v) => opts.bodyExamples![v.key] ?? "")] }
+    }
+    components.push(bodyComp)
 
     if (opts.footer?.trim()) components.push({ type: "FOOTER", text: opts.footer.trim() })
 

@@ -1,9 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
 import Link from "next/link"
-import { BadgeCheck, Phone, ShieldCheck, Gauge, Send, Webhook, FileText, Building2, LayoutGrid, ArrowRight } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { BadgeCheck, Phone, ShieldCheck, Gauge, Send, Webhook, FileText, Building2, LayoutGrid, ArrowRight, Unplug, Loader2, AlertTriangle, X } from "lucide-react"
 import type { MetaPhoneInfo, MetaTemplate, MetaBusinessProfile } from "@/lib/providers/meta-cloud-provider"
+import { disconnectWhatsAppOfficial } from "@/lib/actions/whatsapp-official"
 import { SectionCard } from "@/components/ui/section-card"
 import { StatusDot } from "@/components/ui/status-dot"
 import { ProfileForm } from "./profile-form"
@@ -35,6 +37,21 @@ export function OfficialDashboard({
   const connected = status === "connected"
   const tier = phone.messaging_limit_tier ? (TIER[phone.messaging_limit_tier] ?? phone.messaging_limit_tier) : "—"
   const approvedCount = templates.filter((t) => t.status === "APPROVED").length
+
+  const router = useRouter()
+  const [pending, startTransition] = useTransition()
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [disErr, setDisErr] = useState<string | null>(null)
+
+  function doDisconnect() {
+    setDisErr(null)
+    startTransition(async () => {
+      const res = await disconnectWhatsAppOfficial()
+      if (res.error) { setDisErr(res.error); return }
+      setConfirmOpen(false)
+      router.refresh()
+    })
+  }
 
   return (
     <div className="space-y-5">
@@ -104,10 +121,48 @@ export function OfficialDashboard({
           </SectionCard>
 
           <OfficialTestSend templates={templates} />
+
+          <SectionCard title="Desconectar" description="Encerra a conexão deste número com a Kora." icon={Unplug}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-slate-500 max-w-md leading-relaxed">
+                A Kora para de enviar e receber por este número. As conversas e o histórico ficam
+                preservados — você pode reconectar quando quiser.
+              </p>
+              <button
+                type="button"
+                onClick={() => { setDisErr(null); setConfirmOpen(true) }}
+                className="h-9 px-4 text-xs font-semibold rounded-lg border border-red-200 text-red-600 hover:bg-red-50 inline-flex items-center gap-1.5 shrink-0 transition-colors"
+              >
+                <Unplug className="size-3.5" /> Desconectar
+              </button>
+            </div>
+          </SectionCard>
         </div>
       )}
 
       {tab === "profile" && <ProfileForm profile={profile} />}
+
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-4" onClick={() => !pending && setConfirmOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">
+            <div className="flex items-start gap-3">
+              <span className="size-9 shrink-0 rounded-lg bg-red-50 text-red-600 flex items-center justify-center"><AlertTriangle className="size-5" /></span>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-slate-900">Desconectar o WhatsApp Oficial?</h3>
+                <p className="text-xs text-slate-500 mt-1 leading-snug">A Kora para de enviar/receber por este número. Histórico preservado; dá pra reconectar depois.</p>
+              </div>
+              <button onClick={() => !pending && setConfirmOpen(false)} className="size-7 shrink-0 rounded-lg hover:bg-slate-100 flex items-center justify-center"><X className="size-4 text-slate-400" /></button>
+            </div>
+            {disErr && <p className="mt-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg p-2">{disErr}</p>}
+            <div className="flex items-center justify-end gap-2 mt-5">
+              <button type="button" disabled={pending} onClick={() => setConfirmOpen(false)} className="h-9 px-4 text-xs font-semibold rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-50">Cancelar</button>
+              <button type="button" disabled={pending} onClick={doDisconnect} className="h-9 px-4 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-1.5">
+                {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Unplug className="size-3.5" />} Desconectar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

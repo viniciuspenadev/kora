@@ -12,15 +12,19 @@ const INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-whi
 const VERTICALS: Array<{ value: string; label: string }> = [
   { value: "UNDEFINED", label: "—" },
   { value: "PROF_SERVICES", label: "Serviços profissionais" },
-  { value: "RETAIL", label: "Varejo" },
-  { value: "ECOMMERCE", label: "E-commerce" },
+  { value: "RETAIL", label: "Varejo / E-commerce" },
+  { value: "APPAREL", label: "Vestuário / Moda" },
+  { value: "GROCERY", label: "Mercado / Alimentos" },
   { value: "EDU", label: "Educação" },
   { value: "HEALTH", label: "Saúde" },
   { value: "FINANCE", label: "Finanças" },
   { value: "RESTAURANT", label: "Restaurante" },
   { value: "BEAUTY", label: "Beleza" },
+  { value: "HOTEL", label: "Hotelaria" },
   { value: "TRAVEL", label: "Viagem" },
   { value: "EVENT_PLAN", label: "Eventos" },
+  { value: "AUTO", label: "Automotivo" },
+  { value: "NONPROFIT", label: "ONG / Sem fins lucrativos" },
   { value: "OTHER", label: "Outro" },
 ]
 
