@@ -1,10 +1,10 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply } from "lucide-react"
-import { createOfficialTemplate, type TemplateButton } from "@/lib/actions/whatsapp-official"
-import type { MetaTemplate } from "@/lib/providers/meta-cloud-provider"
-import { parseVars } from "@/lib/whatsapp/template-vars"
+import { Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply, Save, Lock } from "lucide-react"
+import { createOfficialTemplate, editOfficialTemplate, type TemplateButton } from "@/lib/actions/whatsapp-official"
+import type { MetaTemplate, MetaTemplateComponent } from "@/lib/providers/meta-cloud-provider"
+import { parseVars, isNamed } from "@/lib/whatsapp/template-vars"
 import { TemplatePreview } from "./template-preview"
 
 const INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
@@ -13,17 +13,44 @@ const SELECT = INPUT.replace("px-3", "px-2")
 type BtnType = "QUICK_REPLY" | "URL" | "PHONE_NUMBER"
 const BTN_LABEL: Record<BtnType, string> = { QUICK_REPLY: "Resposta rápida", URL: "Link (URL)", PHONE_NUMBER: "Ligar" }
 
-export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDone: (msg: string) => void }) {
-  const [name, setName]           = useState("")
-  const [category, setCategory]   = useState<"MARKETING" | "UTILITY">("MARKETING")
-  const [language, setLanguage]   = useState("pt_BR")
-  const [headerText, setHeaderText] = useState("")
-  const [headerExample, setHeaderExample] = useState("")
-  const [body, setBody]           = useState("")
-  const [varMode, setVarMode]     = useState<"number" | "name">("number")
-  const [examples, setExamples]   = useState<Record<string, string>>({})
-  const [footer, setFooter]       = useState("")
-  const [buttons, setButtons]     = useState<TemplateButton[]>([])
+/**
+ * Estado serializável do builder — usado pra pré-carregar a edição.
+ * É o mesmo conjunto de campos editáveis, sem o `templateId` (vai por prop).
+ */
+export interface BuilderInitial {
+  name:          string
+  category:      "MARKETING" | "UTILITY"
+  language:      string
+  varMode:       "number" | "name"
+  headerText:    string
+  headerExample: string
+  body:          string
+  examples:      Record<string, string>
+  footer:        string
+  buttons:       TemplateButton[]
+}
+
+interface TemplateBuilderProps {
+  onClose: () => void
+  onDone:  (msg: string) => void
+  /** "create" (default) mantém o fluxo de criação; "edit" pré-carrega + salva alterações. */
+  mode?:       "create" | "edit"
+  templateId?: string         // obrigatório quando mode === "edit"
+  initial?:    BuilderInitial  // estado-semente da edição
+}
+
+export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, initial }: TemplateBuilderProps) {
+  const isEdit = mode === "edit"
+  const [name, setName]           = useState(initial?.name ?? "")
+  const [category, setCategory]   = useState<"MARKETING" | "UTILITY">(initial?.category ?? "MARKETING")
+  const [language, setLanguage]   = useState(initial?.language ?? "pt_BR")
+  const [headerText, setHeaderText] = useState(initial?.headerText ?? "")
+  const [headerExample, setHeaderExample] = useState(initial?.headerExample ?? "")
+  const [body, setBody]           = useState(initial?.body ?? "")
+  const [varMode, setVarMode]     = useState<"number" | "name">(initial?.varMode ?? "number")
+  const [examples, setExamples]   = useState<Record<string, string>>(initial?.examples ?? {})
+  const [footer, setFooter]       = useState(initial?.footer ?? "")
+  const [buttons, setButtons]     = useState<TemplateButton[]>(initial?.buttons ?? [])
   const [err, setErr]             = useState<string | null>(null)
   const [pending, startT]         = useTransition()
 
@@ -54,17 +81,20 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
       return
     }
     startT(async () => {
-      const r = await createOfficialTemplate({
+      const payload = {
         name, category, language,
-        parameterFormat: varMode === "name" ? "NAMED" : "POSITIONAL",
+        parameterFormat: (varMode === "name" ? "NAMED" : "POSITIONAL") as "NAMED" | "POSITIONAL",
         headerText: headerText.trim() || undefined,
         headerExample: headerExample.trim() || undefined,
         body, examples,
         footer: footer.trim() || undefined,
         buttons,
-      })
-      if (r.ok) onDone("Template enviado para análise!")
-      else setErr(r.error ?? "Falha ao criar template.")
+      }
+      const r = isEdit
+        ? await editOfficialTemplate({ ...payload, templateId: templateId! })
+        : await createOfficialTemplate(payload)
+      if (r.ok) onDone(isEdit ? "Alterações enviadas para análise!" : "Template enviado para análise!")
+      else setErr(r.error ?? (isEdit ? "Falha ao salvar alterações." : "Falha ao criar template."))
     })
   }
 
@@ -79,14 +109,19 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
   }
 
   return (
-    <div className="max-w-5xl mx-auto pb-24">
+    <div className="pb-24">
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 items-start">
           {/* Formulário */}
           <div className="space-y-6">
             <Section title="Básico">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <Field label="Nome" hint="minúsculas e _">
-                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="confirmacao_pedido" className={INPUT} />
+                {/* Na edição, nome e idioma são imutáveis na Meta → travados. */}
+                <Field label="Nome" hint={isEdit ? "imutável" : "minúsculas e _"}>
+                  <div className="relative">
+                    <input value={name} onChange={(e) => setName(e.target.value)} disabled={isEdit}
+                      placeholder="confirmacao_pedido" className={`${INPUT} ${isEdit ? "bg-slate-50 text-slate-500 pr-8 cursor-not-allowed" : ""}`} />
+                    {isEdit && <Lock className="size-3.5 text-slate-300 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />}
+                  </div>
                 </Field>
                 <Field label="Categoria">
                   <select value={category} onChange={(e) => setCategory(e.target.value as "MARKETING" | "UTILITY")} className={SELECT}>
@@ -94,15 +129,22 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
                     <option value="UTILITY">Utilidade</option>
                   </select>
                 </Field>
-                <Field label="Idioma">
-                  <select value={language} onChange={(e) => setLanguage(e.target.value)} className={SELECT}>
-                    <option value="pt_BR">Português (BR)</option>
-                    <option value="en_US">English (US)</option>
-                    <option value="es_ES">Español</option>
-                  </select>
+                <Field label="Idioma" hint={isEdit ? "imutável" : undefined}>
+                  <div className="relative">
+                    <select value={language} onChange={(e) => setLanguage(e.target.value)} disabled={isEdit}
+                      className={`${SELECT} ${isEdit ? "bg-slate-50 text-slate-500 pr-8 cursor-not-allowed" : ""}`}>
+                      <option value="pt_BR">Português (BR)</option>
+                      <option value="en_US">English (US)</option>
+                      <option value="es_ES">Español</option>
+                    </select>
+                    {isEdit && <Lock className="size-3.5 text-slate-300 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />}
+                  </div>
                 </Field>
               </div>
-              <Hint>Marketing = promocional. Utilidade = transacional (confirmações, avisos) — sem conteúdo promocional, senão a Meta recategoriza.</Hint>
+              <Hint>
+                {isEdit && <span className="text-amber-700">Mudar a categoria reenvia para análise. </span>}
+                Marketing = promocional. Utilidade = transacional (confirmações, avisos) — sem conteúdo promocional, senão a Meta recategoriza.
+              </Hint>
             </Section>
 
             <Section title="Cabeçalho" optional>
@@ -214,10 +256,11 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
 
       {err && <div className="mt-4 flex items-start gap-2 p-2.5 rounded-lg text-xs bg-red-50 border border-red-200 text-red-800"><AlertCircle className="size-4 shrink-0 mt-0.5" /><span>{err}</span></div>}
       <div className="sticky bottom-0 z-10 mt-4 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/90 supports-backdrop-filter:backdrop-blur px-1 py-3">
-        <button onClick={onClose} className="h-9 px-3 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Descartar</button>
+        <button onClick={onClose} className="h-9 px-3 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{isEdit ? "Cancelar" : "Descartar"}</button>
         <button onClick={submit} disabled={pending || !name.trim() || !body.trim() || modeMismatch}
           className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors">
-          {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Enviar para análise
+          {pending ? <Loader2 className="size-3.5 animate-spin" /> : isEdit ? <Save className="size-3.5" /> : <Plus className="size-3.5" />}
+          {isEdit ? "Salvar alterações" : "Enviar para análise"}
         </button>
       </div>
     </div>
@@ -259,4 +302,87 @@ function AddBtn({ onClick, icon, children }: { onClick: () => void; icon: React.
       <Plus className="size-3" />{icon}{children}
     </button>
   )
+}
+
+// ── Mapeamento reverso: MetaTemplate → estado do builder ──────────────────────
+
+type NamedParam = { param_name?: string; example?: string }
+
+/** Acessor defensivo do `example` de um component (a Meta tipa como `unknown`). */
+function exObj(c: MetaTemplateComponent): Record<string, unknown> {
+  return (c.example && typeof c.example === "object" ? c.example : {}) as Record<string, unknown>
+}
+
+/**
+ * Converte um `MetaTemplate` no estado-semente do builder (`BuilderInitial`).
+ * Faz o caminho inverso do que o provider monta: cada component vira campo do form,
+ * extraindo os exemplos das variáveis (posicionais via `*_text[0]`, nomeadas via
+ * `*_text_named_params`). Tudo defensivo — campos podem faltar em templates antigos.
+ */
+export function templateToBuilderState(t: MetaTemplate): BuilderInitial {
+  const comps = t.components ?? []
+  const find  = (type: string) => comps.find((c) => c.type?.toUpperCase() === type)
+
+  const header = find("HEADER")
+  const bodyC  = find("BODY")
+  const footer = find("FOOTER")
+  const btns   = find("BUTTONS")
+
+  const body = bodyC?.text ?? ""
+  // Formato: usa o declarado pela Meta; senão infere do conteúdo do corpo.
+  const named   = t.parameter_format
+    ? t.parameter_format.toUpperCase() === "NAMED"
+    : isNamed(body) || isNamed(header?.text ?? "")
+  const varMode: "number" | "name" = named ? "name" : "number"
+
+  // Cabeçalho de texto: 1 variável no máx. Exemplo vem de header_text[0] (posicional)
+  // ou header_text_named_params[0].example (nomeado).
+  let headerText = "", headerExample = ""
+  if (header && (header.format ?? "").toUpperCase() === "TEXT") {
+    headerText = header.text ?? ""
+    const hex = exObj(header)
+    const hNamed = hex.header_text_named_params as NamedParam[] | undefined
+    const hPos   = hex.header_text as unknown[] | undefined
+    headerExample = hNamed?.[0]?.example ?? (typeof hPos?.[0] === "string" ? (hPos[0] as string) : "")
+  }
+
+  // Corpo: mapeia exemplos das variáveis pra { key → exemplo }, casando pela ORDEM
+  // de aparição (posicional: body_text[0][i] → "1","2"…; nomeado: param_name → example).
+  const examples: Record<string, string> = {}
+  if (bodyC) {
+    const bex   = exObj(bodyC)
+    const bNamed = bex.body_text_named_params as NamedParam[] | undefined
+    if (bNamed) {
+      for (const p of bNamed) if (p.param_name) examples[p.param_name] = p.example ?? ""
+    } else {
+      const row = (bex.body_text as unknown[] | undefined)?.[0]
+      const vals = Array.isArray(row) ? row : []
+      parseVars(body).forEach((v, i) => { examples[v.key] = typeof vals[i] === "string" ? (vals[i] as string) : "" })
+    }
+  }
+
+  // Botões: mapeia type/text/url/phone (phone_number → phone).
+  const buttons: TemplateButton[] = (btns?.buttons ?? []).map((b) => {
+    const raw = b as { type?: string; text?: string; url?: string; phone_number?: string }
+    const type = (raw.type?.toUpperCase() as BtnType) ?? "QUICK_REPLY"
+    return {
+      type,
+      text:  raw.text ?? "",
+      ...(type === "URL" ? { url: raw.url ?? "" } : {}),
+      ...(type === "PHONE_NUMBER" ? { phone: raw.phone_number ?? "" } : {}),
+    }
+  })
+
+  return {
+    name:     t.name ?? "",
+    category: (t.category?.toUpperCase() === "UTILITY" ? "UTILITY" : "MARKETING"),
+    language: t.language ?? "pt_BR",
+    varMode,
+    headerText,
+    headerExample,
+    body,
+    examples,
+    footer:  footer?.text ?? "",
+    buttons,
+  }
 }

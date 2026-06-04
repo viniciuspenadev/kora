@@ -2,10 +2,14 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
-import { MetaCloudProvider, type MetaBusinessProfile } from "@/lib/providers/meta-cloud-provider"
+import {
+  MetaCloudProvider,
+  type MetaBusinessProfile, type MetaTemplate, type TemplateAnalytics,
+} from "@/lib/providers/meta-cloud-provider"
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { parseVars, type TemplateVar } from "@/lib/whatsapp/template-vars"
+import { upsertTemplateCache } from "@/lib/channels/template-cache"
 import { revalidatePath } from "next/cache"
 
 const PAGE = "/integracoes/whatsapp-oficial"
@@ -165,7 +169,8 @@ function validateTemplateVars(body: string): string | null {
 
 export interface TemplateButton { type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }
 
-export async function createOfficialTemplate(input: {
+/** Shape comum de criação/edição (edição só acrescenta `templateId`). */
+export interface TemplateInput {
   name: string
   category: "MARKETING" | "UTILITY"
   language: string
@@ -176,14 +181,32 @@ export async function createOfficialTemplate(input: {
   examples: Record<string, string>   // key da variável (número OU nome) → exemplo
   footer?:  string
   buttons?: TemplateButton[]
-}): Promise<Result> {
-  const r = await tenantMetaProvider()
-  if ("error" in r) return { ok: false, error: r.error }
+}
 
+/** Opts já validados/normalizados, no shape que `createTemplate`/`editTemplate` aceitam. */
+type BuildableTemplate = {
+  name:     string
+  category: "MARKETING" | "UTILITY"
+  language: string
+  parameterFormat: "NAMED" | "POSITIONAL"
+  headerText?:    string
+  headerExample?: string
+  body:           string
+  bodyExamples?:  Record<string, string>
+  footer?:        string
+  buttons?:       TemplateButton[]
+}
+
+/**
+ * Valida + normaliza o input de template (regras da Meta), compartilhado por
+ * `createOfficialTemplate` e `editOfficialTemplate`. Retorna `{ error }` em falha
+ * OU `{ build }` com os opts prontos pra `provider.createTemplate/editTemplate`.
+ */
+function validateTemplateInput(input: TemplateInput): { error: string } | { build: BuildableTemplate } {
   const name = input.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_")
-  if (!name) return { ok: false, error: "Informe um nome." }
+  if (!name) return { error: "Informe um nome." }
   const body = input.body.trim()
-  if (!body) return { ok: false, error: "Informe o corpo da mensagem." }
+  if (!body) return { error: "Informe o corpo da mensagem." }
 
   const vars = parseVars(body)
 
@@ -195,35 +218,35 @@ export async function createOfficialTemplate(input: {
 
   // Conteúdo precisa bater com o formato — a Meta rejeita divergência ("Invalid parameter").
   if (parameterFormat === "NAMED" && vars.some((v) => !v.named))
-    return { ok: false, error: "Tipo Nome selecionado, mas há variável numerada ({{1}}). Use nomes (ex: {{nome}})." }
+    return { error: "Tipo Nome selecionado, mas há variável numerada ({{1}}). Use nomes (ex: {{nome}})." }
   if (parameterFormat === "POSITIONAL" && vars.some((v) => v.named))
-    return { ok: false, error: "Tipo Número selecionado, mas há variável nomeada ({{nome}}). Use {{1}}, {{2}}…" }
+    return { error: "Tipo Número selecionado, mas há variável nomeada ({{nome}}). Use {{1}}, {{2}}…" }
 
   // Validação por tipo (nomeado: nomes válidos; posicional: sequência/posição).
   const varErr = parameterFormat === "NAMED" ? validateNamedVars(vars) : validateTemplateVars(body)
-  if (varErr) return { ok: false, error: varErr }
+  if (varErr) return { error: varErr }
 
   // Cada variável precisa de um exemplo.
   const examples = input.examples ?? {}
   for (const v of vars) {
-    if (!examples[v.key]?.trim()) return { ok: false, error: `Preencha o exemplo da variável {{${v.key}}}.` }
+    if (!examples[v.key]?.trim()) return { error: `Preencha o exemplo da variável {{${v.key}}}.` }
   }
 
   // Cabeçalho de texto: se tiver variável, exige exemplo.
   const headerText = input.headerText?.trim() || undefined
   if (headerText && parseVars(headerText).length > 0 && !input.headerExample?.trim()) {
-    return { ok: false, error: "Preencha o exemplo da variável do cabeçalho." }
+    return { error: "Preencha o exemplo da variável do cabeçalho." }
   }
 
   // Botões: valida texto + url/telefone conforme o tipo.
   const buttons = (input.buttons ?? []).filter((b) => b.text.trim())
   for (const b of buttons) {
-    if (b.type === "URL" && !b.url?.trim()) return { ok: false, error: `Botão "${b.text}": informe a URL.` }
-    if (b.type === "PHONE_NUMBER" && !b.phone?.trim()) return { ok: false, error: `Botão "${b.text}": informe o telefone.` }
+    if (b.type === "URL" && !b.url?.trim()) return { error: `Botão "${b.text}": informe a URL.` }
+    if (b.type === "PHONE_NUMBER" && !b.phone?.trim()) return { error: `Botão "${b.text}": informe o telefone.` }
   }
 
-  try {
-    const res = await r.provider.createTemplate({
+  return {
+    build: {
       name,
       category: input.category,
       language: input.language,
@@ -234,9 +257,141 @@ export async function createOfficialTemplate(input: {
       bodyExamples: vars.length > 0 ? examples : undefined,
       footer: input.footer?.trim() || undefined,
       buttons: buttons.length > 0 ? buttons : undefined,
-    })
+    },
+  }
+}
+
+export async function createOfficialTemplate(input: TemplateInput): Promise<Result> {
+  const r = await tenantMetaProvider()
+  if ("error" in r) return { ok: false, error: r.error }
+
+  const v = validateTemplateInput(input)
+  if ("error" in v) return { ok: false, error: v.error }
+
+  try {
+    const res = await r.provider.createTemplate(v.build)
     revalidatePath(PAGE)
     return { ok: true, id: res.id }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+/**
+ * Edita um template existente (mesmas regras de validação da criação). `name` e
+ * `language` são imutáveis na Meta — o provider não os envia no body. owner/admin.
+ */
+export async function editOfficialTemplate(input: TemplateInput & { templateId: string }): Promise<Result> {
+  const r = await tenantMetaProvider()
+  if ("error" in r) return { ok: false, error: r.error }
+  if (!input.templateId) return { ok: false, error: "Template inválido." }
+
+  const v = validateTemplateInput(input)
+  if ("error" in v) return { ok: false, error: v.error }
+
+  try {
+    await r.provider.editTemplate(input.templateId, v.build)
+    revalidatePath(PAGE)
+    return { ok: true, id: input.templateId }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+/** Detalhes completos de um template pelo ID (tela de edição/auditoria). owner/admin. */
+export async function getOfficialTemplate(
+  templateId: string,
+): Promise<{ ok: boolean; template?: MetaTemplate; error?: string }> {
+  const r = await tenantMetaProvider()
+  if ("error" in r) return { ok: false, error: r.error }
+  try {
+    const template = await r.provider.getTemplate(templateId)
+    return { ok: true, template }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+/**
+ * Analytics (enviadas/entregues/lidas/cliques) de UM template nos últimos `days`
+ * dias. Calcula a janela unix e delega ao provider. owner/admin.
+ */
+export async function getOfficialTemplateAnalytics(
+  templateId: string, days = 30,
+): Promise<{ ok: boolean; analytics?: TemplateAnalytics; error?: string }> {
+  const r = await tenantMetaProvider()
+  if ("error" in r) return { ok: false, error: r.error }
+
+  const end   = Math.floor(Date.now() / 1000)
+  const start = end - days * 86400
+  try {
+    const analytics = await r.provider.getTemplateAnalytics([templateId], start, end)
+    return { ok: true, analytics }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+/** Exclui UMA versão de idioma de um template (pelo ID + nome). owner/admin. */
+export async function deleteOfficialTemplateById(templateId: string, name: string): Promise<Result> {
+  const r = await tenantMetaProvider()
+  if ("error" in r) return { ok: false, error: r.error }
+  try {
+    await r.provider.deleteTemplateById(templateId, name)
+    revalidatePath(PAGE)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+/**
+ * Sincroniza o cache local (`wa_templates`) com o que a Graph lista pra WABA do
+ * tenant. Best-effort por item: uma falha de cache não derruba o resto. owner/admin.
+ */
+export async function syncTemplatesCache(): Promise<Result> {
+  const session = await auth()
+  if (!session) return { ok: false, error: "Não autenticado." }
+  if (!["owner", "admin"].includes(session.user.role)) return { ok: false, error: "Acesso restrito a administradores." }
+  const tenantId = session.user.tenantId
+
+  // Busca a instância oficial (precisamos do id da instância + WABA pro cache).
+  const { data: inst } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("id, meta_phone_number_id, meta_business_account_id, meta_access_token, meta_app_secret")
+    .eq("tenant_id", tenantId)
+    .eq("provider", "meta_cloud")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  if (!inst?.meta_phone_number_id || !inst.meta_access_token) {
+    return { ok: false, error: "Instância oficial não configurada." }
+  }
+
+  const provider = new MetaCloudProvider({
+    meta_phone_number_id:     inst.meta_phone_number_id,
+    meta_business_account_id: inst.meta_business_account_id ?? "",
+    meta_access_token:        decryptSecret(inst.meta_access_token),
+    meta_app_secret:          decryptSecret(inst.meta_app_secret) ?? "",
+  })
+
+  try {
+    const templates = await provider.listTemplates()
+    for (const t of templates) {
+      // Best-effort: upsertTemplateCache já engole erros por item.
+      await upsertTemplateCache(tenantId, inst.id, inst.meta_business_account_id ?? null, {
+        templateId:     t.id,
+        name:           t.name,
+        language:       t.language,
+        category:       t.category,
+        status:         t.status,
+        qualityScore:   t.quality_score?.score,
+        rejectedReason: t.rejected_reason,
+        components:     t.components,
+      })
+    }
+    return { ok: true }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }

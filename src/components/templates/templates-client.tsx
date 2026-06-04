@@ -1,17 +1,15 @@
 "use client"
 
-import { useState, useMemo, useTransition } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import {
-  Plus, Trash2, X, AlertCircle, CheckCircle2, FileText,
+  Plus, CheckCircle2, FileText,
   Search, LayoutGrid, List as ListIcon, Gauge,
 } from "lucide-react"
-import { deleteOfficialTemplate } from "@/lib/actions/whatsapp-official"
 import type { MetaTemplate } from "@/lib/providers/meta-cloud-provider"
 import { StatusDot } from "@/components/ui/status-dot"
 import { EmptyState } from "@/components/ui/empty-state"
-import { DangerConfirm } from "@/components/ui/danger-confirm"
-import { TemplatePreview, comp, bodyText, countVars } from "./template-preview"
+import { TemplatePreview, bodyText } from "./template-preview"
 
 const INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
 
@@ -35,10 +33,6 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
   const [q, setQ] = useState("")
   const [fStatus, setFStatus] = useState("all")
   const [fCat, setFCat] = useState("all")
-  const [selected, setSelected] = useState<MetaTemplate | null>(null)
-  const [toDelete, setToDelete] = useState<string | null>(null)
-  const [fb, setFb] = useState<{ ok: boolean; msg: string } | null>(created ? { ok: true, msg: "Template enviado para análise!" } : null)
-  const [, startT] = useTransition()
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase()
@@ -49,16 +43,9 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
     )
   }, [templates, q, fStatus, fCat])
 
-  function confirmDelete() {
-    if (!toDelete) return
-    return new Promise<void>((resolve) => {
-      startT(async () => {
-        const r = await deleteOfficialTemplate(toDelete)
-        if (!r.ok) setFb({ ok: false, msg: r.error ?? "Falha ao excluir." })
-        setSelected(null)
-        resolve()
-      })
-    })
+  // Cada card/linha navega pra página dedicada (precisa do id da Graph).
+  function open(t: MetaTemplate) {
+    if (t.id) router.push(`/templates/${t.id}`)
   }
 
   return (
@@ -68,10 +55,10 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
           Não foi possível carregar os templates: {error}
         </div>
       )}
-      {fb && (
-        <div className={`flex items-start gap-2 p-2.5 rounded-lg text-xs ${fb.ok ? "bg-emerald-50 border border-emerald-200 text-emerald-800" : "bg-red-50 border border-red-200 text-red-800"}`}>
-          {fb.ok ? <CheckCircle2 className="size-4 shrink-0 mt-0.5" /> : <AlertCircle className="size-4 shrink-0 mt-0.5" />}
-          <span>{fb.msg}</span>
+      {created && (
+        <div className="flex items-start gap-2 p-2.5 rounded-lg text-xs bg-emerald-50 border border-emerald-200 text-emerald-800">
+          <CheckCircle2 className="size-4 shrink-0 mt-0.5" />
+          <span>Template enviado para análise!</span>
         </div>
       )}
 
@@ -111,7 +98,7 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
             const st = STATUS[t.status] ?? { tone: "neutral" as Tone, label: t.status }
             const ql = QUALITY[t.quality_score?.score ?? "UNKNOWN"] ?? QUALITY.UNKNOWN
             return (
-              <button key={`${t.name}-${t.language}`} onClick={() => setSelected(t)}
+              <button key={`${t.name}-${t.language}`} onClick={() => open(t)}
                 className="text-left bg-white rounded-xl border border-slate-200 shadow-card hover:shadow-soft hover:border-slate-300 transition-shadow p-4 flex flex-col gap-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -134,7 +121,7 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
             const st = STATUS[t.status] ?? { tone: "neutral" as Tone, label: t.status }
             const ql = QUALITY[t.quality_score?.score ?? "UNKNOWN"] ?? QUALITY.UNKNOWN
             return (
-              <button key={`${t.name}-${t.language}`} onClick={() => setSelected(t)} className="w-full text-left flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
+              <button key={`${t.name}-${t.language}`} onClick={() => open(t)} className="w-full text-left flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-slate-800 truncate">{t.name}</p>
                   <p className="text-xs text-slate-500 truncate mt-0.5">{bodyText(t)}</p>
@@ -147,75 +134,6 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
           })}
         </div>
       )}
-
-      {/* Detail modal */}
-      {selected && (
-        <DetailModal t={selected} onClose={() => setSelected(null)} onDelete={() => setToDelete(selected.name)} />
-      )}
-
-      <DangerConfirm
-        open={!!toDelete}
-        title="Excluir template?"
-        body={<>O template <strong>{toDelete}</strong> será removido permanentemente. Esta ação não pode ser desfeita.</>}
-        confirmLabel="Excluir"
-        onConfirm={confirmDelete}
-        onClose={() => setToDelete(null)}
-      />
     </div>
   )
 }
-
-function DetailModal({ t, onClose, onDelete }: { t: MetaTemplate; onClose: () => void; onDelete: () => void }) {
-  const st = STATUS[t.status] ?? { tone: "neutral" as Tone, label: t.status }
-  const ql = QUALITY[t.quality_score?.score ?? "UNKNOWN"] ?? QUALITY.UNKNOWN
-  const nVars = countVars(bodyText(t))
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4 supports-backdrop-filter:backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-soft w-full max-w-lg max-h-[90vh] overflow-y-auto ring-1 ring-slate-200" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-100 sticky top-0 bg-white">
-          <div className="min-w-0">
-            <h3 className="text-sm font-bold text-slate-900 truncate">{t.name}</h3>
-            <p className="text-[11px] text-slate-400 mt-0.5">{CATEGORY[t.category] ?? t.category} · {t.language}</p>
-          </div>
-          <button onClick={onClose} className="size-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 shrink-0"><X className="size-4" /></button>
-        </div>
-        <div className="p-5 space-y-4">
-          <TemplatePreview t={t} />
-
-          <div className="grid grid-cols-2 gap-3 text-xs">
-            <Info label="Status"><StatusDot tone={st.tone} label={st.label} size="sm" /></Info>
-            <Info label="Qualidade"><StatusDot tone={ql.tone} label={ql.label} size="sm" /></Info>
-            <Info label="Variáveis">{nVars}</Info>
-            <Info label="Idioma">{t.language}</Info>
-          </div>
-
-          {t.status === "REJECTED" && t.rejected_reason && (
-            <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-xs text-red-700">
-              <strong>Motivo da reprovação:</strong> {t.rejected_reason}
-            </div>
-          )}
-
-          <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Analytics</p>
-            <p className="text-xs text-slate-400">Métricas de envio/entrega/leitura/cliques chegam em breve (monitoramento por webhook de qualidade).</p>
-          </div>
-        </div>
-        <div className="flex items-center justify-end gap-2 px-5 py-4 bg-slate-50 border-t border-slate-100">
-          <button onClick={onDelete} className="h-9 px-3 text-xs font-semibold text-red-600 hover:bg-red-50 rounded-lg inline-flex items-center gap-1.5 transition-colors">
-            <Trash2 className="size-3.5" /> Excluir
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function Info({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
-      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{label}</p>
-      <div className="mt-1 text-slate-800 font-medium">{children}</div>
-    </div>
-  )
-}
-

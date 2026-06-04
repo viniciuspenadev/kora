@@ -24,6 +24,25 @@ export interface MetaTemplate {
   components?: MetaTemplateComponent[]
   rejected_reason?: string
   quality_score?: { score?: string }
+  correct_category?:        string
+  previous_category?:       string
+  parameter_format?:        string
+  message_send_ttl_seconds?: number
+}
+
+/** Um ponto da série de analytics de um template (janela start→end em unix). */
+export interface TemplateAnalyticsPoint {
+  template_id?: string
+  start:        number
+  end:          number
+  sent:         number
+  delivered:    number
+  read:         number
+  clicked?:     Array<{ type?: string; button_content?: string; count?: number }>
+}
+export interface TemplateAnalytics {
+  granularity?: string
+  data_points:  TemplateAnalyticsPoint[]
 }
 export interface MetaPhoneInfo {
   display_phone_number?:    string
@@ -174,23 +193,20 @@ export class MetaCloudProvider implements WhatsAppProvider {
   }
 
   /**
-   * Cria um message template na WABA (precisa aprovação da Meta).
-   * Monta os components: cabeçalho (texto) + corpo + rodapé + botões.
-   * Variáveis posicionais {{1}} OU nomeadas {{nome}} — `parameter_format` é
-   * derivado do corpo/cabeçalho; exemplos são exigidos quando há variável.
+   * Monta o array de `components` (cabeçalho + corpo + rodapé + botões, com exemplos)
+   * e deriva o `parameter_format`. Fonte única usada por `createTemplate` e
+   * `editTemplate` — o request final é idêntico nos dois fluxos.
+   * Variáveis posicionais {{1}} OU nomeadas {{nome}}; exemplos exigidos quando há variável.
    */
-  async createTemplate(opts: {
-    name:     string
-    category: "MARKETING" | "UTILITY" | "AUTHENTICATION"
-    language: string
-    parameterFormat?: "NAMED" | "POSITIONAL"   // explícito (seleção do usuário); senão inferido
+  private buildTemplatePayload(opts: {
     headerText?:    string
     headerExample?: string
     body:           string
-    bodyExamples?:  Record<string, string>   // key da variável (número ou nome) → exemplo
+    bodyExamples?:  Record<string, string>
     footer?:        string
     buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
-  }): Promise<{ id: string; status: string }> {
+    parameterFormat?: "NAMED" | "POSITIONAL"
+  }): { components: Array<Record<string, unknown>>; parameterFormat: "NAMED" | "POSITIONAL" } {
     const components: Array<Record<string, unknown>> = []
 
     if (opts.headerText?.trim()) {
@@ -230,11 +246,32 @@ export class MetaCloudProvider implements WhatsAppProvider {
     // A Meta exige declarar o formato das variáveis no nível do request. O default
     // da API é POSITIONAL — sem isto, {{nome}} é rejeitado com "Invalid parameter".
     // (a UI já barra mistura de tipos, então body/header concordam no formato.)
-    const parameterFormat =
+    const parameterFormat: "NAMED" | "POSITIONAL" =
       opts.parameterFormat ??
       (bodyVars.some((v) => v.named) || parseVars(opts.headerText ?? "").some((v) => v.named)
         ? "NAMED"
         : "POSITIONAL")
+
+    return { components, parameterFormat }
+  }
+
+  /**
+   * Cria um message template na WABA (precisa aprovação da Meta).
+   * Monta os components via `buildTemplatePayload`; `parameter_format` derivado lá.
+   */
+  async createTemplate(opts: {
+    name:     string
+    category: "MARKETING" | "UTILITY" | "AUTHENTICATION"
+    language: string
+    parameterFormat?: "NAMED" | "POSITIONAL"   // explícito (seleção do usuário); senão inferido
+    headerText?:    string
+    headerExample?: string
+    body:           string
+    bodyExamples?:  Record<string, string>   // key da variável (número ou nome) → exemplo
+    footer?:        string
+    buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
+  }): Promise<{ id: string; status: string }> {
+    const { components, parameterFormat } = this.buildTemplatePayload(opts)
 
     return this.graph<{ id: string; status: string }>(
       `/${this.config.meta_business_account_id}/message_templates`,
@@ -249,6 +286,41 @@ export class MetaCloudProvider implements WhatsAppProvider {
     )
   }
 
+  /**
+   * Edita um template existente (POST no ID). `name` e `language` são IMUTÁVEIS na
+   * Meta — não vão no body. Só categoria + components + parameter_format mudam.
+   * Reaproveita `buildTemplatePayload`. Retorna `{ success }` (true se a Graph não jogar).
+   */
+  async editTemplate(templateId: string, opts: {
+    name:     string
+    category: "MARKETING" | "UTILITY" | "AUTHENTICATION"
+    language: string
+    parameterFormat?: "NAMED" | "POSITIONAL"
+    headerText?:    string
+    headerExample?: string
+    body:           string
+    bodyExamples?:  Record<string, string>
+    footer?:        string
+    buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
+  }): Promise<{ success: boolean }> {
+    const { components, parameterFormat } = this.buildTemplatePayload(opts)
+
+    await this.graph(`/${templateId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // name/language omitidos de propósito — imutáveis na edição.
+      body: JSON.stringify({ category: opts.category, components, parameter_format: parameterFormat }),
+    })
+    return { success: true }
+  }
+
+  /** Detalhes completos de um template pelo ID (pra tela de edição/auditoria). */
+  async getTemplate(templateId: string): Promise<MetaTemplate> {
+    return this.graph<MetaTemplate>(
+      `/${templateId}?fields=name,status,category,language,components,rejected_reason,quality_score,id,parameter_format,message_send_ttl_seconds,previous_category`,
+    )
+  }
+
   /** Lista os message templates da WABA (com corpo e motivo de rejeição) pra UI de gestão. */
   async listTemplates(): Promise<MetaTemplate[]> {
     const json = await this.graph<{ data?: MetaTemplate[] }>(
@@ -257,9 +329,69 @@ export class MetaCloudProvider implements WhatsAppProvider {
     return json.data ?? []
   }
 
-  /** Exclui um template da WABA pelo nome. */
+  /** Exclui um template da WABA pelo nome (todas as versões de idioma). */
   async deleteTemplate(name: string): Promise<void> {
     await this.graph(`/${this.config.meta_business_account_id}/message_templates?name=${encodeURIComponent(name)}`, { method: "DELETE" })
+  }
+
+  /** Exclui UMA versão de idioma de um template (pelo ID + nome). */
+  async deleteTemplateById(templateId: string, name: string): Promise<void> {
+    await this.graph(
+      `/${this.config.meta_business_account_id}/message_templates?hsm_id=${encodeURIComponent(templateId)}&name=${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    )
+  }
+
+  /**
+   * Analytics de templates (enviadas/entregues/lidas/cliques) num intervalo unix.
+   * Usa field expansion na WABA — `template_analytics(...)` aninhado em `fields`.
+   * Achata todos os `data[].data_points` numa única série.
+   */
+  async getTemplateAnalytics(
+    templateIds: string[], startUnix: number, endUnix: number, granularity = "DAILY",
+  ): Promise<TemplateAnalytics> {
+    const ids = templateIds.map((id) => `"${id}"`).join(",")
+    const fieldsValue =
+      `template_analytics.start(${startUnix}).end(${endUnix}).granularity(${granularity})` +
+      `.metric_types(["SENT","DELIVERED","READ","CLICKED"]).template_ids([${ids}])`
+
+    // TODO: validar shape com WABA real
+    const json = await this.graph<{
+      template_analytics?: {
+        granularity?: string
+        data?:        Array<{ data_points?: unknown[] }>
+        data_points?: unknown[]
+      }
+    }>(`/${this.config.meta_business_account_id}?fields=${encodeURIComponent(fieldsValue)}`)
+
+    const ta = json.template_analytics
+    // A resposta pode vir como data[].data_points (por template) OU data_points direto.
+    const rawPoints: unknown[] = ta?.data
+      ? ta.data.flatMap((d) => d.data_points ?? [])
+      : (ta?.data_points ?? [])
+
+    // Defensivo: campo faltando = 0; nunca joga.
+    const data_points: TemplateAnalyticsPoint[] = rawPoints.map((p) => {
+      const o = (p ?? {}) as Record<string, unknown>
+      const clicked = Array.isArray(o.clicked)
+        ? (o.clicked as Array<Record<string, unknown>>).map((c) => ({
+            type:            typeof c.type === "string" ? c.type : undefined,
+            button_content:  typeof c.button_content === "string" ? c.button_content : undefined,
+            count:           typeof c.count === "number" ? c.count : 0,
+          }))
+        : undefined
+      return {
+        template_id: typeof o.template_id === "string" ? o.template_id : undefined,
+        start:       typeof o.start === "number" ? o.start : 0,
+        end:         typeof o.end === "number" ? o.end : 0,
+        sent:        typeof o.sent === "number" ? o.sent : 0,
+        delivered:   typeof o.delivered === "number" ? o.delivered : 0,
+        read:        typeof o.read === "number" ? o.read : 0,
+        ...(clicked ? { clicked } : {}),
+      }
+    })
+
+    return { granularity: ta?.granularity, data_points }
   }
 
   /** Detalhes do número oficial (nome, número, qualidade, tier de limite, throughput). */

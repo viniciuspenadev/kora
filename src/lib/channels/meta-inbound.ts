@@ -9,6 +9,7 @@ import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { notifyInboundMessage } from "@/lib/push/send"
+import { upsertTemplateCache, logTemplateEvent } from "@/lib/channels/template-cache"
 import type { ExternalAdReply } from "@/types/chat"
 
 /**
@@ -56,6 +57,30 @@ interface MetaReferral {
   thumbnail_url?: string
   ctwa_clid?:     string   // Click-to-WhatsApp Click ID
 }
+/** Os 3 fields de ciclo de vida de template que a Cloud API entrega via webhook. */
+const TEMPLATE_FIELDS = new Set([
+  "message_template_status_update",
+  "message_template_quality_update",
+  "message_template_category_update",
+])
+
+/** Value cru de um change de template (campos opcionais — Meta omite o que não muda). */
+interface MetaTemplateValue {
+  message_template_id?:       string | number
+  message_template_name?:     string
+  message_template_language?: string
+  // status_update
+  event?:                     string   // APPROVED | REJECTED | PAUSED | DISABLED | ...
+  reason?:                    string
+  // quality_update
+  previous_quality_score?:    string
+  new_quality_score?:         string
+  // category_update
+  previous_category?:         string
+  correct_category?:          string
+  new_category?:              string   // alias usado em algumas versões do payload
+}
+
 interface MetaMessage {
   from: string; id: string; type: string
   timestamp?: string  // epoch (segundos) — relógio da Meta; âncora da janela de 24h
@@ -108,6 +133,15 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
   for (const entry of entries) {
     for (const change of ((entry as { changes?: unknown[] })?.changes ?? [])) {
       const c = change as { field?: string; value?: Record<string, unknown> }
+
+      // Ciclo de vida de templates (status/qualidade/categoria). Resolve o tenant
+      // por WABA id (= entry.id), NÃO por phone_number_id (templates são por WABA).
+      if (TEMPLATE_FIELDS.has(c.field ?? "")) {
+        await processTemplateChange((entry as { id?: string })?.id, c.field!, c.value ?? {})
+          .catch((e) => console.error("[meta-webhook] template:", e))
+        continue
+      }
+
       if (c.field !== "messages") continue
       const value = c.value ?? {}
       const pnid = (value.metadata as { phone_number_id?: string } | undefined)?.phone_number_id
@@ -311,6 +345,69 @@ async function processStatus(tenantId: string, st: { id: string; status: string 
   const update: Record<string, unknown> = { status: m.status }
   if (m.field) update[m.field] = new Date().toISOString()
   await supabaseAdmin.from("chat_messages").update(update).eq("whatsapp_msg_id", st.id).eq("tenant_id", tenantId)
+}
+
+// ── Ciclo de vida de templates (status/qualidade/categoria) ──
+
+/** Resolve tenant+instância pelo WABA id (entry.id) no provider oficial. */
+async function findInstanceByWaba(wabaId: string): Promise<{ id: string; tenant_id: string } | null> {
+  const { data } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("id, tenant_id")
+    .eq("meta_business_account_id", wabaId)
+    .eq("provider", "meta_cloud")
+    .maybeSingle()
+  return (data ?? null) as { id: string; tenant_id: string } | null
+}
+
+/**
+ * Processa um change de template: atualiza o cache (estado atual) e loga o evento
+ * (histórico). Defensivo — campos podem faltar; cache/log são fire-and-forget.
+ */
+async function processTemplateChange(wabaId: string | undefined, field: string, value: Record<string, unknown>) {
+  if (!wabaId) { console.warn("[meta-webhook] template sem entry.id (WABA id)"); return }
+  const instance = await findInstanceByWaba(wabaId)
+  if (!instance) { console.warn("[meta-webhook] instância não achada p/ WABA id", wabaId); return }
+
+  const v = value as MetaTemplateValue
+  const templateId = v.message_template_id != null ? String(v.message_template_id) : null
+  const name       = v.message_template_name ?? ""
+  const language   = v.message_template_language ?? ""
+
+  // Mapeia o field → tipo do evento e os deltas (old/new) específicos de cada um.
+  let event: "status_update" | "quality_update" | "category_update"
+  let cachePatch: Parameters<typeof upsertTemplateCache>[3]
+  let oldValue: string | null = null
+  let newValue: string | null = null
+
+  if (field === "message_template_status_update") {
+    event = "status_update"
+    const isRejected = v.event === "REJECTED"
+    cachePatch = {
+      templateId, name, language,
+      status:         v.event ?? null,
+      rejectedReason: isRejected ? (v.reason ?? null) : null,
+    }
+    newValue = v.event ?? null
+  } else if (field === "message_template_quality_update") {
+    event = "quality_update"
+    cachePatch = { templateId, name, language, qualityScore: v.new_quality_score ?? null }
+    oldValue = v.previous_quality_score ?? null
+    newValue = v.new_quality_score ?? null
+  } else {
+    // message_template_category_update — `correct_category` (ou `new_category` em algumas versões).
+    event = "category_update"
+    const correct = v.correct_category ?? v.new_category ?? null
+    cachePatch = { templateId, name, language, correctCategory: correct }
+    oldValue = v.previous_category ?? null
+    newValue = correct
+  }
+
+  // Fire-and-forget (ambas já têm try/catch interno) — nunca derruba o webhook.
+  await upsertTemplateCache(instance.tenant_id, instance.id, wabaId, cachePatch)
+  await logTemplateEvent(instance.tenant_id, {
+    templateId, name, language, event, oldValue, newValue, reason: v.reason ?? null,
+  })
 }
 
 // ── Contato/conversa slim (próprios — não tocam no Evolution) ──
