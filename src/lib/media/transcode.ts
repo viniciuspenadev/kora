@@ -44,8 +44,16 @@ export async function transcodeForMeta(
     await writeFile(inPath, input)
 
     if (type === "audio") {
+      // WhatsApp Cloud API toca voice note SÓ em ogg/opus MONO. Estéreo a Meta aceita
+      // no upload mas o WhatsApp não reproduz ("áudio não disponível"). `-ac 1` é o pulo
+      // do gato; `-application voip` = perfil de voz (o mesmo que o WhatsApp usa).
       const out = join(dir, "out.ogg")
-      await runFfmpeg(["-y", "-i", inPath, "-vn", "-c:a", "libopus", "-b:a", "64k", "-ar", "48000", "-f", "ogg", out])
+      await runFfmpeg([
+        "-y", "-i", inPath,
+        "-vn", "-ac", "1", "-ar", "48000",
+        "-c:a", "libopus", "-b:a", "24k", "-application", "voip",
+        "-f", "ogg", out,
+      ])
       return { buffer: await readFile(out), mime: "audio/ogg", ext: "ogg" }
     }
 

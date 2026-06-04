@@ -109,18 +109,23 @@ export class MetaCloudProvider implements WhatsAppProvider {
   private async uploadMedia(sourceUrl: string, type: ContentType, fileName?: string): Promise<string> {
     const r = await fetch(sourceUrl)
     if (!r.ok) throw new Error(`Falha ao baixar mídia (${r.status}) pra upload Meta`)
-    const blob = await r.blob()
-    const mime = blob.type || MIME_FALLBACK[type]
+    // Materializa os bytes e monta um Blob limpo (evita problemas de streaming de Blob
+    // re-encaminhado no undici, que podiam subir mídia truncada).
+    const ab   = await r.arrayBuffer()
+    const mime = (r.headers.get("content-type")?.split(";")[0].trim()) || MIME_FALLBACK[type]
+    const fileBlob = new Blob([ab], { type: mime })
 
     const form = new FormData()
     form.append("messaging_product", "whatsapp")
     form.append("type", mime)
-    form.append("file", blob, fileName ?? `file.${mime.split("/")[1] ?? "bin"}`)
+    form.append("file", fileBlob, fileName ?? `file.${mime.split("/")[1] ?? "bin"}`)
 
     const json = await this.graph<{ id: string }>(
       `/${this.config.meta_phone_number_id}/media`,
       { method: "POST", body: form }, // fetch seta o boundary do multipart
     )
+    // Diagnóstico: confirma que subiu bytes (não 0) + o media_id que vai na mensagem.
+    console.log("[meta uploadMedia]", JSON.stringify({ type, mime, bytes: ab.byteLength, id: json.id }))
     return json.id
   }
 
