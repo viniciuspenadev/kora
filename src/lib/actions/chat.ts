@@ -524,7 +524,14 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   let uploadMime   = file.type
   let uploadName   = file.name
 
-  if (inst?.provider === "meta_cloud" && !metaAcceptsMedia(mediaType, file.type)) {
+  // No oficial, transcodifica quando: (a) formato não-aceito (webm/.mov), OU
+  // (b) é NOTA DE VOZ — o WhatsApp só toca voice note em ogg/opus; mp4 do iOS é
+  // "aceito" no upload mas não reproduz ("áudio não disponível"). Força ogg sempre.
+  const isVoiceNoteAudio = isVoiceNote && mediaType === "audio"
+  const needsTranscode = inst?.provider === "meta_cloud" &&
+    (isVoiceNoteAudio || !metaAcceptsMedia(mediaType, file.type))
+
+  if (needsTranscode) {
     try {
       const tc = await transcodeForMeta(uploadBuffer, mediaType)
       if (!tc) return { error: metaFormatMessage(mediaType) } // tipo não-transcodificável (documento)
