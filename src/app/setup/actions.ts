@@ -2,6 +2,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase"
 import bcrypt from "bcryptjs"
+import { validatePassword } from "@/lib/password"
 
 export async function registerSuperAdmin(formData: FormData): Promise<{ error?: string; ok?: boolean }> {
   const { count } = await supabaseAdmin
@@ -16,9 +17,9 @@ export async function registerSuperAdmin(formData: FormData): Promise<{ error?: 
   const fullName = (formData.get("full_name") as string)?.trim()
   const password = formData.get("password") as string
 
-  if (!email || !password || password.length < 8) {
-    return { error: "Preencha todos os campos. Senha mínima de 8 caracteres." }
-  }
+  if (!email || !fullName) return { error: "Preencha todos os campos." }
+  const pwErr = validatePassword(password)
+  if (pwErr) return { error: pwErr }
 
   const passwordHash = await bcrypt.hash(password, 10)
 

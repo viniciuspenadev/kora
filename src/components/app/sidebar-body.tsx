@@ -333,16 +333,21 @@ export function SidebarBody({
       />
 
       <div className="px-2.5 pb-3 pt-2 border-t border-slate-200 shrink-0 overflow-hidden">
-        <div className="flex items-center gap-3 py-1 overflow-hidden">
-          <div className="flex size-11 items-center justify-center shrink-0">
-            <div className="size-8 rounded-full bg-primary flex items-center justify-center ring-2 ring-white shadow-sm shadow-primary/20">
-              <span className="text-xs font-bold text-white">{userName?.[0]?.toUpperCase() ?? "U"}</span>
+        <div className="flex items-center gap-1 py-1 overflow-hidden">
+          <Link
+            href="/configuracoes/perfil"
+            onClick={() => onNavigate?.()}
+            title="Meu perfil"
+            className="group/profile flex items-center gap-2 min-w-0 flex-1 overflow-hidden rounded-lg hover:bg-slate-50 transition-colors"
+          >
+            <div className="flex size-11 items-center justify-center shrink-0">
+              <ProfileAvatar name={userName} />
             </div>
-          </div>
-          <div className={`min-w-0 flex-1 overflow-hidden ${reveal}`}>
-            <p className="text-xs font-semibold text-slate-700 truncate whitespace-nowrap">{userName}</p>
-            <p className="text-[11px] text-slate-400 truncate whitespace-nowrap leading-none mt-0.5">{userEmail}</p>
-          </div>
+            <div className={`min-w-0 flex-1 overflow-hidden ${reveal}`}>
+              <p className="text-xs font-semibold text-slate-700 truncate whitespace-nowrap group-hover/profile:text-primary-700">{userName}</p>
+              <p className="text-[11px] text-slate-400 truncate whitespace-nowrap leading-none mt-0.5">{userEmail}</p>
+            </div>
+          </Link>
           <button
             type="button"
             onClick={handleSignOut}
@@ -355,5 +360,26 @@ export function SidebarBody({
         </div>
       </div>
     </>
+  )
+}
+
+/** Avatar do usuário na sidebar: tenta a foto (/api/me/avatar), cai pra inicial. */
+function ProfileAvatar({ name }: { name: string }) {
+  const [err, setErr] = useState(false)
+  if (err) {
+    return (
+      <div className="size-8 rounded-full bg-primary flex items-center justify-center ring-2 ring-white shadow-sm shadow-primary/20">
+        <span className="text-xs font-bold text-white">{name?.[0]?.toUpperCase() ?? "U"}</span>
+      </div>
+    )
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src="/api/me/avatar"
+      alt=""
+      onError={() => setErr(true)}
+      className="size-8 rounded-full object-cover ring-2 ring-white shadow-sm"
+    />
   )
 }

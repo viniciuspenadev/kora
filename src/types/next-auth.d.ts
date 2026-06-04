@@ -8,6 +8,7 @@ declare module "next-auth" {
       role:            "owner" | "admin" | "agent" | ""
       supabaseToken:   string
       isPlatformAdmin: boolean
+      sid?:            string  // id da sessão atual (gerenciador) — marca "este dispositivo"
     } & DefaultSession["user"]
   }
 
@@ -16,6 +17,7 @@ declare module "next-auth" {
     tenantId?:       string | null
     role?:           string | null
     isPlatformAdmin?: boolean
+    sid?:            string | null
   }
 }
 
@@ -28,5 +30,6 @@ declare module "next-auth/jwt" {
     isPlatformAdmin:  boolean
     supabaseTokenExp?: number
     checkedAt?:        number  // epoch s da última revalidação de acesso no banco
+    sid?:             string  // id da sessão no gerenciador (user_sessions)
   }
 }

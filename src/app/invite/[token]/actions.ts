@@ -3,6 +3,7 @@
 import { supabaseAdmin } from "@/lib/supabase"
 import bcrypt from "bcryptjs"
 import { checkLimit } from "@/lib/limits"
+import { validatePassword } from "@/lib/password"
 
 export async function acceptInvite(
   token: string,
@@ -50,7 +51,8 @@ export async function acceptInvite(
     const password = formData.get("password") as string
 
     if (!fullName || !password) return { error: "Preencha nome e senha." }
-    if (password.length < 8) return { error: "Senha mínima de 8 caracteres." }
+    const pwErr = validatePassword(password)
+    if (pwErr) return { error: pwErr }
 
     const passwordHash = await bcrypt.hash(password, 10)
 

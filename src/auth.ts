@@ -3,7 +3,8 @@ import Credentials from "next-auth/providers/credentials"
 import bcrypt from "bcryptjs"
 import { supabaseAdmin } from "@/lib/supabase"
 import { generateSupabaseToken } from "@/lib/supabase-token"
-import { rateLimit } from "@/lib/rate-limit"
+import { rateLimit, getClientIp } from "@/lib/rate-limit"
+import { randomUUID } from "crypto"
 
 const IS_PROD = process.env.NODE_ENV === "production"
 
@@ -56,6 +57,33 @@ async function revalidateAccess(
   }
 }
 
+/**
+ * Gerenciador de sessões: grava esta sessão/device em `user_sessions` no login e
+ * devolve o `sid` que vai no JWT. **Fire-and-forget seguro** — se a gravação falhar,
+ * devolve null → o token fica SEM sid → o enforcement é pulado (a sessão funciona,
+ * só não entra no gerenciador). Nunca bloqueia o login.
+ */
+async function recordSession(
+  userId: string,
+  tenantId: string | null,
+  ip: string | null,
+  ua: string | null,
+): Promise<string | null> {
+  try {
+    const sid = randomUUID()
+    const { error } = await supabaseAdmin.from("user_sessions").insert({
+      user_id:    userId,
+      tenant_id:  tenantId || null,
+      sid,
+      last_ip:    ip && ip !== "unknown" ? ip.slice(0, 64) : null,
+      user_agent: ua ? ua.slice(0, 400) : null,
+    })
+    return error ? null : sid
+  } catch {
+    return null
+  }
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
   session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 }, // 30 dias
@@ -101,7 +129,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         email: { label: "Email", type: "email" },
         password: { label: "Senha", type: "password" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, request) {
         if (!credentials?.email || !credentials?.password) return null
 
         // Rate-limit por email — 5 tentativas / 15 min.
@@ -111,6 +139,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const rl = rateLimit(`auth:login:${emailKey}`, 5, 15 * 60_000)
         if (!rl.ok) {
           // Retorna null (mesma resposta de senha errada) — não vaza info de bloqueio
+          return null
+        }
+
+        // Rate-limit secundário por IP — barra credential-stuffing distribuído
+        // (muitos emails diferentes de um mesmo IP). Pula se IP desconhecido (sem
+        // proxy) pra não jogar todos os usuários no mesmo balde.
+        const ip = getClientIp(request)
+        if (ip !== "unknown" && !rateLimit(`auth:login:ip:${ip}`, 20, 15 * 60_000).ok) {
           return null
         }
 
@@ -145,13 +181,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         if ((!memberships || memberships.length === 0) && !isPlatformAdmin) return null
 
+        const tenantId = memberships?.[0]?.tenant_id ?? ""
+
+        // Registra a sessão/device no gerenciador (presença + auditoria + revogável).
+        const sid = await recordSession(
+          profile.id,
+          tenantId,
+          getClientIp(request),
+          request.headers.get("user-agent"),
+        )
+
         return {
           id:              profile.id,
           email:           profile.email,
           name:            profile.full_name,
-          tenantId:        memberships?.[0]?.tenant_id ?? "",
+          tenantId,
           role:            memberships?.[0]?.role ?? "",
           isPlatformAdmin,
+          sid,
         }
       },
     }),
@@ -166,6 +213,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.isPlatformAdmin = (user as any).isPlatformAdmin ?? false
         token.supabaseTokenExp = 0
         token.checkedAt        = Math.floor(Date.now() / 1000) // acabou de validar no authorize
+        token.sid              = (user as any).sid ?? undefined // sessão no gerenciador (pode ser null se a gravação falhou)
       }
 
       const now = Math.floor(Date.now() / 1000)
@@ -184,6 +232,25 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             token.supabaseTokenExp = 0                         // role mudou → regenera token RLS
           }
           token.isPlatformAdmin = acc.isPlatformAdmin
+
+          // ── Gerenciador de sessões: confirma que esta sessão não foi revogada + presença ──
+          // Só pra tokens que têm sid (logaram já com a feature). Token legado (sem sid) é
+          // pulado → não expulsa; entra no gerenciador no próximo login. Tudo fail-open.
+          if (token.sid) {
+            try {
+              const sid = token.sid as string
+              const { data, error } = await supabaseAdmin
+                .from("user_sessions").select("id").eq("sid", sid).maybeSingle()
+              if (!error && !data) return null   // linha sumiu → sessão revogada → apaga o cookie
+              if (!error && data) {
+                await supabaseAdmin
+                  .from("user_sessions")
+                  .update({ last_seen_at: new Date(now * 1000).toISOString() })
+                  .eq("sid", sid)
+              }
+            } catch { /* fail-open: mantém a sessão */ }
+          }
+
           token.checkedAt = now
         }
         // status "error": mantém o token e NÃO atualiza checkedAt (re-tenta no próximo acesso)
@@ -207,6 +274,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.role            = token.role as any
       session.user.supabaseToken   = token.supabaseToken as string
       session.user.isPlatformAdmin = token.isPlatformAdmin as boolean
+      session.user.sid             = token.sid as string | undefined
       return session
     },
   },

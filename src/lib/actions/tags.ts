@@ -70,12 +70,23 @@ export async function deleteTag(id: string) {
 
 export async function applyTag(tagId: string, taggableType: TaggableType, taggableId: string) {
   const session = await requireSession()
+  const tenantId = session.user.tenantId
+
+  // Defense-in-depth: a tag E o alvo (contato/conversa) devem pertencer ao tenant
+  // do chamador — senão dava pra etiquetar item de outro tenant via ID adivinhado.
+  const targetTable = taggableType === "contact" ? "chat_contacts" : "chat_conversations"
+  const [tagRow, targetRow] = await Promise.all([
+    supabaseAdmin.from("tags").select("id").eq("id", tagId).eq("tenant_id", tenantId).maybeSingle(),
+    supabaseAdmin.from(targetTable).select("id").eq("id", taggableId).eq("tenant_id", tenantId).maybeSingle(),
+  ])
+  if (!tagRow.data)    throw new Error("Tag não encontrada.")
+  if (!targetRow.data) throw new Error("Item não encontrado.")
 
   const { error } = await supabaseAdmin
     .from("taggings")
     .insert({
       tag_id:        tagId,
-      tenant_id:     session.user.tenantId,
+      tenant_id:     tenantId,
       taggable_type: taggableType,
       taggable_id:   taggableId,
       tagged_by:     session.user.id,

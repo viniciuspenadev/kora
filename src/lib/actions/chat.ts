@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { getProvider, type WhatsAppProvider } from "@/lib/providers"
+import { encryptSecret } from "@/lib/crypto/secrets"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
@@ -73,7 +74,7 @@ export async function saveWhatsAppConfig(formData: {
       .from("whatsapp_instances")
       .update({
         evolution_url:  formData.evolution_url.replace(/\/$/, ""),
-        evolution_key:  formData.evolution_key,
+        evolution_key:  encryptSecret(formData.evolution_key),
         instance_name:  formData.instance_name,
         webhook_url:    formData.webhook_url || null,
         updated_at:     new Date().toISOString(),
@@ -85,7 +86,7 @@ export async function saveWhatsAppConfig(formData: {
       .insert({
         tenant_id:      tenantId,
         evolution_url:  formData.evolution_url.replace(/\/$/, ""),
-        evolution_key:  formData.evolution_key,
+        evolution_key:  encryptSecret(formData.evolution_key),
         instance_name:  formData.instance_name,
         webhook_url:    formData.webhook_url || null,
         status:         "disconnected",

@@ -9,6 +9,7 @@
 
 import { EvolutionProvider } from "./evolution-provider"
 import { MetaCloudProvider } from "./meta-cloud-provider"
+import { decryptSecret } from "@/lib/crypto/secrets"
 import type { WhatsAppProvider } from "./types"
 
 interface InstanceRow {
@@ -32,8 +33,8 @@ export function getProvider(instance: InstanceRow): WhatsAppProvider {
     return new MetaCloudProvider({
       meta_phone_number_id:     instance.meta_phone_number_id,
       meta_business_account_id: instance.meta_business_account_id ?? "",
-      meta_access_token:        instance.meta_access_token,
-      meta_app_secret:          instance.meta_app_secret ?? "",
+      meta_access_token:        decryptSecret(instance.meta_access_token),
+      meta_app_secret:          decryptSecret(instance.meta_app_secret) ?? "",
     })
   }
 
@@ -43,7 +44,7 @@ export function getProvider(instance: InstanceRow): WhatsAppProvider {
   }
   return new EvolutionProvider({
     evolution_url: instance.evolution_url,
-    evolution_key: instance.evolution_key,
+    evolution_key: decryptSecret(instance.evolution_key),
     instance_name: instance.instance_name,
   })
 }

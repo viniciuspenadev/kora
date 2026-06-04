@@ -8,6 +8,7 @@ import bcrypt from "bcryptjs"
 import { randomBytes } from "crypto"
 import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { applyDefaultModules } from "@/lib/modules"
+import { validatePassword } from "@/lib/password"
 
 async function requireAdmin() {
   const session = await auth()
@@ -37,9 +38,8 @@ export async function createTenant(formData: FormData): Promise<{ error?: string
   if (!name || !slug || !ownerName || !ownerEmail || !ownerPass) {
     return { error: "Preencha todos os campos obrigatórios" }
   }
-  if (ownerPass.length < 8) {
-    return { error: "Senha do owner deve ter pelo menos 8 caracteres" }
-  }
+  const ownerPwErr = validatePassword(ownerPass)
+  if (ownerPwErr) return { error: ownerPwErr }
 
   // Slug: minúsculas, dígitos, hífens — 3 a 40 chars
   // Bloqueia path traversal (/api/...), reserved words, lookalike unicode

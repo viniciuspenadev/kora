@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireCronSecret } from "@/lib/cron-auth"
+import { decryptSecret } from "@/lib/crypto/secrets"
 
 /**
  * GET /api/cron/ping-evolution
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest) {
 
     try {
       const resp = await fetchWithTimeout(`${s.url}/instance/fetchInstances`, {
-        method: "GET", headers: { apikey: inst.evolution_key },
+        method: "GET", headers: { apikey: decryptSecret(inst.evolution_key) },
       })
       latencyMs = Date.now() - start
       pingStatus = resp.ok ? "ok" : "error"
@@ -100,7 +101,7 @@ export async function GET(req: NextRequest) {
     let connState: string = "error"
     try {
       const resp = await fetchWithTimeout(`${i.evolution_url}/instance/connectionState/${i.instance_name}`, {
-        method: "GET", headers: { apikey: i.evolution_key },
+        method: "GET", headers: { apikey: decryptSecret(i.evolution_key) },
       })
       if (resp.ok) {
         const data = await resp.json() as { instance?: { state?: string } }
@@ -114,7 +115,7 @@ export async function GET(req: NextRequest) {
     let urlMatches: boolean | null = null
     try {
       const resp = await fetchWithTimeout(`${i.evolution_url}/webhook/find/${i.instance_name}`, {
-        method: "GET", headers: { apikey: i.evolution_key },
+        method: "GET", headers: { apikey: decryptSecret(i.evolution_key) },
       })
       if (resp.ok) {
         const data = await resp.json() as { url?: string; enabled?: boolean }

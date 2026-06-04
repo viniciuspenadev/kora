@@ -11,6 +11,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
+import { encryptSecret } from "@/lib/crypto/secrets"
 import { randomBytes } from "crypto"
 
 /**
@@ -57,7 +58,7 @@ export async function autoProvisionWhatsApp(
       tenant_id:      tenantId,
       provider:       "baileys",
       evolution_url:  url,
-      evolution_key:  apiKey,
+      evolution_key:  encryptSecret(apiKey),
       instance_name:  instanceName,
       webhook_secret: webhookSecret,
       status:         "disconnected",

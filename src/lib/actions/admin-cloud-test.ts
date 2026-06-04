@@ -3,6 +3,7 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { MetaCloudProvider } from "@/lib/providers/meta-cloud-provider"
+import { decryptSecret } from "@/lib/crypto/secrets"
 
 /**
  * Envia um template pela Cloud API a partir da instância oficial do tenant.
@@ -36,8 +37,8 @@ export async function sendCloudTestTemplate(
   const provider = new MetaCloudProvider({
     meta_phone_number_id:     inst.meta_phone_number_id,
     meta_business_account_id: inst.meta_business_account_id ?? "",
-    meta_access_token:        inst.meta_access_token,
-    meta_app_secret:          inst.meta_app_secret ?? "",
+    meta_access_token:        decryptSecret(inst.meta_access_token),
+    meta_app_secret:          decryptSecret(inst.meta_app_secret) ?? "",
   })
 
   try {
@@ -82,8 +83,8 @@ export async function sendCloudTestText(
   const provider = new MetaCloudProvider({
     meta_phone_number_id:     inst.meta_phone_number_id,
     meta_business_account_id: inst.meta_business_account_id ?? "",
-    meta_access_token:        inst.meta_access_token,
-    meta_app_secret:          inst.meta_app_secret ?? "",
+    meta_access_token:        decryptSecret(inst.meta_access_token),
+    meta_app_secret:          decryptSecret(inst.meta_app_secret) ?? "",
   })
 
   try {

@@ -3,6 +3,7 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
+import { encryptSecret } from "@/lib/crypto/secrets"
 import { autoProvisionWhatsApp, generateWebhookSecret } from "@/lib/whatsapp/provisioning"
 import { revalidatePath } from "next/cache"
 
@@ -26,7 +27,7 @@ export async function adminUpdateInstance(id: string, input: InstanceUpdateInput
   const payload: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (input.provider      !== undefined) payload.provider      = input.provider
   if (input.evolution_url !== undefined) payload.evolution_url = input.evolution_url.trim().replace(/\/$/, "")
-  if (input.evolution_key !== undefined) payload.evolution_key = input.evolution_key.trim()
+  if (input.evolution_key !== undefined) payload.evolution_key = encryptSecret(input.evolution_key.trim())
   if (input.instance_name !== undefined) payload.instance_name = input.instance_name.trim()
   if (input.webhook_url   !== undefined) payload.webhook_url   = input.webhook_url
 

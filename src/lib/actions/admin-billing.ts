@@ -85,6 +85,7 @@ export async function setChargeActive(id: string, tenantId: string, active: bool
     .from("tenant_charges")
     .update({ active, updated_at: new Date().toISOString() })
     .eq("id", id)
+    .eq("tenant_id", tenantId)
   if (error) return { error: error.message }
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   return {}
@@ -92,7 +93,7 @@ export async function setChargeActive(id: string, tenantId: string, active: bool
 
 export async function deleteCharge(id: string, tenantId: string): Promise<{ error?: string }> {
   await requirePlatformAdmin()
-  const { error } = await supabaseAdmin.from("tenant_charges").delete().eq("id", id)
+  const { error } = await supabaseAdmin.from("tenant_charges").delete().eq("id", id).eq("tenant_id", tenantId)
   if (error) return { error: error.message }
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   return {}

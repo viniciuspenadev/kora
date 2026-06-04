@@ -1137,7 +1137,7 @@ async function fetchAndSaveProfilePicture(
 ) {
   const fetchedAt = new Date().toISOString()
   const markChecked = async () => {
-    await supabaseAdmin.from("chat_contacts").update({ profile_pic_fetched_at: fetchedAt }).eq("id", contactId)
+    await supabaseAdmin.from("chat_contacts").update({ profile_pic_fetched_at: fetchedAt }).eq("id", contactId).eq("tenant_id", tenantId)
   }
 
   try {
@@ -1158,14 +1158,14 @@ async function fetchAndSaveProfilePicture(
     if (upErr) { await markChecked(); return }
 
     // Merge metadata (preserva o resto) + URL estável do proxy.
-    const { data: c } = await supabaseAdmin.from("chat_contacts").select("metadata").eq("id", contactId).maybeSingle()
+    const { data: c } = await supabaseAdmin.from("chat_contacts").select("metadata").eq("id", contactId).eq("tenant_id", tenantId).maybeSingle()
     const meta = { ...((c?.metadata as Record<string, unknown> | null) ?? {}), avatar_path: path }
     await supabaseAdmin.from("chat_contacts").update({
       profile_pic_url:        `/api/avatar/${contactId}`,
       profile_pic_fetched_at: fetchedAt,
       metadata:               meta,
       updated_at:             fetchedAt,
-    }).eq("id", contactId)
+    }).eq("id", contactId).eq("tenant_id", tenantId)
   } catch {
     await markChecked().catch(() => {})
   }
