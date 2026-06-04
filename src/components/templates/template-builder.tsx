@@ -28,8 +28,11 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
   const [pending, startT]         = useTransition()
 
   const bodyVars     = parseVars(body)
-  const mixedVars    = bodyVars.some((v) => v.named) && bodyVars.some((v) => !v.named)
-  const headerHasVar = parseVars(headerText).length > 0
+  const headerVars   = parseVars(headerText)
+  const headerHasVar = headerVars.length > 0
+  // O tipo selecionado é a fonte da verdade. Qualquer variável do outro tipo é divergência.
+  const isOffMode    = (v: { named: boolean }) => (varMode === "name" ? !v.named : v.named)
+  const modeMismatch = bodyVars.some(isOffMode) || headerVars.some(isOffMode)
 
   function insertBodyVar() {
     if (varMode === "name") {
@@ -44,10 +47,16 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
 
   function submit() {
     setErr(null)
-    if (mixedVars) { setErr("Não misture variáveis numeradas ({{1}}) e nomeadas ({{nome}}) — use só um tipo no template."); return }
+    if (modeMismatch) {
+      setErr(varMode === "name"
+        ? "Tipo selecionado: Nome — mas há variável numerada ({{1}}) no texto. Troque para {{nome}} ou mude o tipo para Número."
+        : "Tipo selecionado: Número — mas há variável nomeada ({{nome}}) no texto. Use {{1}}, {{2}}… ou mude o tipo para Nome.")
+      return
+    }
     startT(async () => {
       const r = await createOfficialTemplate({
         name, category, language,
+        parameterFormat: varMode === "name" ? "NAMED" : "POSITIONAL",
         headerText: headerText.trim() || undefined,
         headerExample: headerExample.trim() || undefined,
         body, examples,
@@ -112,10 +121,11 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
               <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
                 <div className="inline-flex items-center gap-1.5">
                   <span className="text-[11px] text-slate-500">Tipo de variável:</span>
-                  <div className="inline-flex rounded-lg border border-slate-200 p-0.5 text-[11px] font-semibold">
-                    <button type="button" onClick={() => setVarMode("number")} className={`px-2 py-0.5 rounded-md transition-colors ${varMode === "number" ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:text-slate-700"}`}>Número</button>
-                    <button type="button" onClick={() => setVarMode("name")} className={`px-2 py-0.5 rounded-md transition-colors ${varMode === "name" ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:text-slate-700"}`}>Nome</button>
-                  </div>
+                  <select value={varMode} onChange={(e) => setVarMode(e.target.value as "number" | "name")}
+                    className="h-7 pl-2 pr-7 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40">
+                    <option value="number">{"Número — {{1}}, {{2}}"}</option>
+                    <option value="name">{"Nome — {{nome}}"}</option>
+                  </select>
                 </div>
                 <div className="inline-flex items-center gap-2">
                   <span className="text-[11px] text-slate-400">{body.length}/1024</span>
@@ -135,9 +145,11 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
                   ))}
                 </div>
               )}
-              {mixedVars && (
+              {modeMismatch && (
                 <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-                  ⚠️ Você misturou variável numerada ({"{{1}}"}) e nomeada ({"{{nome}}"}). Use só um tipo — a Meta não aceita os dois juntos.
+                  {varMode === "name"
+                    ? "⚠️ Tipo selecionado: Nome — mas há variável numerada {{1}} no texto. Troque para {{nome}} ou mude o tipo acima."
+                    : "⚠️ Tipo selecionado: Número — mas há variável nomeada {{nome}} no texto. Use {{1}}, {{2}}… ou mude o tipo acima."}
                 </p>
               )}
               <Hint>
@@ -203,7 +215,7 @@ export function TemplateBuilder({ onClose, onDone }: { onClose: () => void; onDo
       {err && <div className="mt-4 flex items-start gap-2 p-2.5 rounded-lg text-xs bg-red-50 border border-red-200 text-red-800"><AlertCircle className="size-4 shrink-0 mt-0.5" /><span>{err}</span></div>}
       <div className="sticky bottom-0 z-10 mt-4 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/90 supports-backdrop-filter:backdrop-blur px-1 py-3">
         <button onClick={onClose} className="h-9 px-3 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Descartar</button>
-        <button onClick={submit} disabled={pending || !name.trim() || !body.trim()}
+        <button onClick={submit} disabled={pending || !name.trim() || !body.trim() || modeMismatch}
           className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors">
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Enviar para análise
         </button>

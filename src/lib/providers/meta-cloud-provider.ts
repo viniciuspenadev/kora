@@ -176,12 +176,14 @@ export class MetaCloudProvider implements WhatsAppProvider {
   /**
    * Cria um message template na WABA (precisa aprovação da Meta).
    * Monta os components: cabeçalho (texto) + corpo + rodapé + botões.
-   * Variáveis posicionais {{1}}; exemplos são exigidos quando há variável.
+   * Variáveis posicionais {{1}} OU nomeadas {{nome}} — `parameter_format` é
+   * derivado do corpo/cabeçalho; exemplos são exigidos quando há variável.
    */
   async createTemplate(opts: {
     name:     string
     category: "MARKETING" | "UTILITY" | "AUTHENTICATION"
     language: string
+    parameterFormat?: "NAMED" | "POSITIONAL"   // explícito (seleção do usuário); senão inferido
     headerText?:    string
     headerExample?: string
     body:           string
@@ -225,13 +227,23 @@ export class MetaCloudProvider implements WhatsAppProvider {
       })
     }
 
+    // A Meta exige declarar o formato das variáveis no nível do request. O default
+    // da API é POSITIONAL — sem isto, {{nome}} é rejeitado com "Invalid parameter".
+    // (a UI já barra mistura de tipos, então body/header concordam no formato.)
+    const parameterFormat =
+      opts.parameterFormat ??
+      (bodyVars.some((v) => v.named) || parseVars(opts.headerText ?? "").some((v) => v.named)
+        ? "NAMED"
+        : "POSITIONAL")
+
     return this.graph<{ id: string; status: string }>(
       `/${this.config.meta_business_account_id}/message_templates`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: opts.name, category: opts.category, language: opts.language, components,
+          name: opts.name, category: opts.category, language: opts.language,
+          parameter_format: parameterFormat, components,
         }),
       },
     )

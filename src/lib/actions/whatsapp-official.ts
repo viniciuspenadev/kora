@@ -169,6 +169,7 @@ export async function createOfficialTemplate(input: {
   name: string
   category: "MARKETING" | "UTILITY"
   language: string
+  parameterFormat?: "NAMED" | "POSITIONAL"   // seleção do usuário; vai à Meta como parameter_format
   headerText?:    string
   headerExample?: string
   body: string
@@ -184,11 +185,22 @@ export async function createOfficialTemplate(input: {
   const body = input.body.trim()
   if (!body) return { ok: false, error: "Informe o corpo da mensagem." }
 
-  const vars  = parseVars(body)
-  const named = vars.some((v) => v.named)
+  const vars = parseVars(body)
+
+  // O formato é a SELEÇÃO do usuário, enviada à Meta como `parameter_format` (o
+  // default da API é POSITIONAL). Fallback infere do conteúdo p/ chamadas legadas.
+  const parameterFormat: "NAMED" | "POSITIONAL" =
+    vars.length === 0 ? "POSITIONAL"
+    : input.parameterFormat ?? (vars.some((v) => v.named) ? "NAMED" : "POSITIONAL")
+
+  // Conteúdo precisa bater com o formato — a Meta rejeita divergência ("Invalid parameter").
+  if (parameterFormat === "NAMED" && vars.some((v) => !v.named))
+    return { ok: false, error: "Tipo Nome selecionado, mas há variável numerada ({{1}}). Use nomes (ex: {{nome}})." }
+  if (parameterFormat === "POSITIONAL" && vars.some((v) => v.named))
+    return { ok: false, error: "Tipo Número selecionado, mas há variável nomeada ({{nome}}). Use {{1}}, {{2}}…" }
 
   // Validação por tipo (nomeado: nomes válidos; posicional: sequência/posição).
-  const varErr = named ? validateNamedVars(vars) : validateTemplateVars(body)
+  const varErr = parameterFormat === "NAMED" ? validateNamedVars(vars) : validateTemplateVars(body)
   if (varErr) return { ok: false, error: varErr }
 
   // Cada variável precisa de um exemplo.
@@ -215,6 +227,7 @@ export async function createOfficialTemplate(input: {
       name,
       category: input.category,
       language: input.language,
+      parameterFormat,
       headerText,
       headerExample: input.headerExample?.trim() || undefined,
       body,
