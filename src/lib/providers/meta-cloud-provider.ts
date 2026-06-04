@@ -267,9 +267,11 @@ export class MetaCloudProvider implements WhatsAppProvider {
   }
 
   async sendVoiceNote(phone: string, audioUrl: string): Promise<SendResult> {
-    // Cloud API envia como áudio (sem flag PTT explícita no envio simples).
+    // `voice: true` (doc oficial Meta) = mensagem de VOZ (PTT), não áudio-arquivo.
+    // Sem ele, a Meta trata como anexo de áudio e o iOS nativo NÃO toca ogg ("não
+    // disponível"). Exige ogg/opus MONO (garantido pelo transcode no canal oficial).
     const mediaId = await this.uploadMedia(audioUrl, "audio")
-    return this.sendMessage({ to: this.toWa(phone), type: "audio", audio: { id: mediaId } })
+    return this.sendMessage({ to: this.toWa(phone), type: "audio", audio: { id: mediaId, voice: true } })
   }
 
   async sendPresence(_phone: string, _state: "typing" | "paused"): Promise<void> {
