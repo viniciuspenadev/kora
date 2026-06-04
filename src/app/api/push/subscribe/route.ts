@@ -1,5 +1,6 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { rateLimit } from "@/lib/rate-limit"
 import { NextResponse } from "next/server"
 
 export const runtime = "nodejs"
@@ -10,6 +11,12 @@ export async function POST(req: Request) {
   const session = await auth()
   if (!session?.user?.id || !session.user.tenantId) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+  }
+
+  // Rate-limit por usuário — re-subscribe legítimo é raro; barra spam de device.
+  const rl = rateLimit(`push:sub:${session.user.id}`, 30, 60_000)
+  if (!rl.ok) {
+    return NextResponse.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } })
   }
 
   let body: unknown
