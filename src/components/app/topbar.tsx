@@ -4,6 +4,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { ChevronRight, Home, Menu } from "lucide-react"
 import { useAppShell } from "@/components/app/app-shell-context"
+import { MyAvatar } from "@/components/app/my-avatar"
 
 const ROUTE_LABELS: Record<string, string> = {
   "/inbox":         "Inbox",
@@ -27,7 +28,6 @@ const ROLE_LABELS: Record<string, string> = {
 export function Topbar({ userName, userRole }: { userName: string; userRole: string }) {
   const pathname = usePathname()
   const label    = getLabel(pathname)
-  const initial  = userName?.[0]?.toUpperCase() ?? "U"
   const { setNavOpen } = useAppShell()
 
   return (
@@ -58,9 +58,7 @@ export function Topbar({ userName, userRole }: { userName: string; userRole: str
           <p className="text-xs font-semibold text-slate-700 leading-none">{userName}</p>
           <p className="text-[11px] text-slate-400 leading-none mt-0.5">{ROLE_LABELS[userRole] ?? userRole}</p>
         </div>
-        <div className="size-8 rounded-full bg-primary flex items-center justify-center shrink-0">
-          <span className="text-xs font-bold text-white">{initial}</span>
-        </div>
+        <MyAvatar name={userName} className="size-8" />
       </div>
     </header>
   )

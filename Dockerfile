@@ -46,6 +46,10 @@ RUN npm run build
 # ── Stage 3: runner ──────────────────────────────────────────────
 FROM base AS runner
 
+# ffmpeg: transcodifica mídia pro formato aceito pela WhatsApp Cloud API (oficial)
+# — áudio gravado no navegador (webm) → ogg/opus, vídeo → mp4. Ver src/lib/media/transcode.ts.
+RUN apk add --no-cache ffmpeg
+
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000

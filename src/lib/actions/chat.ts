@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { getProvider, type WhatsAppProvider } from "@/lib/providers"
 import { encryptSecret } from "@/lib/crypto/secrets"
+import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
@@ -458,9 +459,28 @@ function detectMediaType(mime: string): "image" | "audio" | "video" | "document"
   return "document"
 }
 
+// Formatos aceitos pela WhatsApp Cloud API (oficial). Documento não restringe.
+// Sem transcodificação (ffmpeg) por ora — ver backlog. O Evolution transcodifica, libera tudo.
+const META_ACCEPTED_MEDIA: Record<string, string[]> = {
+  image: ["image/jpeg", "image/png"],
+  video: ["video/mp4", "video/3gpp"],
+  audio: ["audio/aac", "audio/amr", "audio/mpeg", "audio/mp4", "audio/ogg"],
+}
+function metaAcceptsMedia(type: string, mime: string): boolean {
+  const list = META_ACCEPTED_MEDIA[type]
+  if (!list) return true // documento e afins
+  return list.includes(mime.toLowerCase().split(";")[0].trim())
+}
+function metaFormatMessage(type: string): string {
+  if (type === "video") return "O WhatsApp Oficial aceita vídeo só em .mp4. Converta o arquivo e envie de novo."
+  if (type === "audio") return "O WhatsApp Oficial aceita áudio em .mp3, .ogg, .m4a ou .aac (áudio gravado no navegador não é aceito). Envie um arquivo nesses formatos."
+  if (type === "image") return "O WhatsApp Oficial aceita imagem só em .jpg ou .png."
+  return "Formato não aceito pelo WhatsApp Oficial."
+}
+
 export async function sendChatMedia(conversationId: string, formData: FormData) {
   const session = await auth()
-  if (!session?.user?.tenantId) throw new Error("Não autenticado")
+  if (!session?.user?.tenantId) return { error: "Não autenticado." }
 
   const file    = formData.get("file") as File | null
   const caption = (formData.get("caption") as string) || ""
@@ -470,7 +490,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   // Validação server-side (defesa em profundidade — client já valida)
   const validation = validateMediaFile(file)
-  if (!validation.ok || !file) throw new Error(validation.error ?? "Arquivo inválido")
+  if (!validation.ok || !file) return { error: validation.error ?? "Arquivo inválido." }
 
   const tenantId  = session.user.tenantId
   const mediaType = detectMediaType(file.type)
@@ -482,19 +502,45 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     .eq("tenant_id", tenantId)
     .single()
 
-  if (!conv) throw new Error("Conversa não encontrada")
+  if (!conv) return { error: "Conversa não encontrada." }
 
   // Mídia hoje só sai no WhatsApp. Em canais sem envio de mídia (site-chat),
   // bloqueia com mensagem clara em vez de tentar enviar pra um destino vazio.
   const mediaChannel = (conv.chat_contacts as unknown as { primary_channel: string | null } | null)?.primary_channel ?? "whatsapp"
   if (mediaChannel !== "whatsapp") {
-    throw new Error("Envio de mídia ainda não disponível nesse canal. Use texto.")
+    return { error: "Envio de mídia ainda não disponível nesse canal. Use texto." }
+  }
+
+  // WhatsApp Oficial (Meta Cloud) só aceita formatos específicos. Em vez de rejeitar,
+  // TRANSCODIFICA pro formato aceito (ffmpeg) — áudio→ogg/opus (voice note), vídeo→mp4,
+  // imagem→jpg. O Evolution transcodifica sozinho, então só mexe no oficial.
+  const { data: inst } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("provider")
+    .eq("id", (conv as { instance_id: string }).instance_id)
+    .maybeSingle()
+
+  let uploadBuffer: Buffer = Buffer.from(await file.arrayBuffer())
+  let uploadMime   = file.type
+  let uploadName   = file.name
+
+  if (inst?.provider === "meta_cloud" && !metaAcceptsMedia(mediaType, file.type)) {
+    try {
+      const tc = await transcodeForMeta(uploadBuffer, mediaType)
+      if (!tc) return { error: metaFormatMessage(mediaType) } // tipo não-transcodificável (documento)
+      uploadBuffer = tc.buffer
+      uploadMime   = tc.mime
+      uploadName   = file.name.replace(/\.[^.]+$/, "") + "." + tc.ext
+    } catch (e) {
+      console.error("[sendChatMedia] transcode falhou:", (e as Error).message)
+      return { error: metaFormatMessage(mediaType) }
+    }
   }
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
   if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants })) {
-    throw new Error("Sem permissão para enviar mídia nesta conversa.")
+    return { error: "Sem permissão para enviar mídia nesta conversa." }
   }
   const isPool = assignedTo === null
 
@@ -508,21 +554,20 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const contact = conv.chat_contacts as unknown as { phone_number: string }
 
-  const safeName    = file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")
+  const safeName    = uploadName.replace(/[^a-zA-Z0-9.\-_]/g, "_")
   const storagePath = `${tenantId}/${conversationId}/${Date.now()}_${safeName}`
-  const arrayBuffer = await file.arrayBuffer()
 
   const { error: uploadErr } = await supabaseAdmin.storage
     .from(CHAT_BUCKET)
-    .upload(storagePath, arrayBuffer, { contentType: file.type, upsert: false })
-  if (uploadErr) throw new Error(`Storage: ${uploadErr.message}`)
+    .upload(storagePath, uploadBuffer, { contentType: uploadMime, upsert: false })
+  if (uploadErr) return { error: `Falha ao salvar o arquivo: ${uploadErr.message}` }
 
   const { data: signed, error: urlErr } = await supabaseAdmin.storage
     .from(CHAT_BUCKET)
     .createSignedUrl(storagePath, 3600)
   if (urlErr || !signed) {
     await supabaseAdmin.storage.from(CHAT_BUCKET).remove([storagePath])
-    throw new Error("Erro ao gerar URL")
+    return { error: "Erro ao gerar a URL da mídia." }
   }
 
   const sendAsVoiceNote = isVoiceNote && mediaType === "audio"
@@ -537,8 +582,8 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       content_type:    mediaType,
       content:         caption || null,
       media_url:       signed.signedUrl,
-      media_mime_type: file.type,
-      media_file_name: file.name,
+      media_mime_type: uploadMime,
+      media_file_name: uploadName,
       status:          "pending",
       is_private_note: false,
       metadata:        { storage_path: storagePath, ...(sendAsVoiceNote ? { is_voice_note: true } : {}) },
@@ -548,11 +593,13 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   if (dbErr || !msg) {
     await supabaseAdmin.storage.from(CHAT_BUCKET).remove([storagePath])
-    throw new Error(dbErr?.message ?? "Erro ao salvar")
+    return { error: dbErr?.message ?? "Erro ao salvar a mensagem." }
   }
 
+  let providerName = "baileys"
   try {
     const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
+    providerName = provider.providerName
     const result   = sendAsVoiceNote
       ? await provider.sendVoiceNote(contact.phone_number, signed.signedUrl)
       : await provider.sendMedia(
@@ -560,7 +607,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
           signed.signedUrl,
           mediaType,
           caption || undefined,
-          file.name,
+          uploadName,
         )
 
     await supabaseAdmin
@@ -577,7 +624,14 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       .from("chat_messages")
       .update({ status: "failed" })
       .eq("id", msg.id)
-    throw new Error(`Falha no envio: ${(err as Error).message}`)
+    const raw = (err as Error).message
+    console.error("[sendChatMedia] envio falhou:", raw)
+    // Meta Cloud rejeita formatos não suportados (navegador grava áudio/vídeo em webm;
+    // iPhone grava vídeo em .mov). O Evolution transcodifica via ffmpeg; a Meta não.
+    const fmtHint = providerName === "meta_cloud" && (mediaType === "audio" || mediaType === "video")
+      ? ` O WhatsApp Oficial não aceita esse formato de ${mediaType === "audio" ? "áudio" : "vídeo"} (use vídeo .mp4; áudio .mp3/.ogg/.m4a).`
+      : ""
+    return { error: `Não consegui enviar a mídia.${fmtHint}` }
   }
 
   const previewLabels: Record<string, string> = {

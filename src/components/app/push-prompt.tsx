@@ -79,7 +79,7 @@ export function PushPrompt() {
   // ── "done" — confirmação efêmera ────────────────────────────
   if (mode === "done") {
     return (
-      <div className="md:hidden flex items-center gap-3 px-4 py-3 bg-emerald-50 border-b border-emerald-100">
+      <div className="flex items-center gap-3 px-4 py-3 bg-emerald-50 border-b border-emerald-100">
         <span className="size-8 shrink-0 rounded-lg bg-emerald-600 text-white flex items-center justify-center">
           <Check className="size-4" />
         </span>
@@ -93,7 +93,7 @@ export function PushPrompt() {
   // ── "denied" — permissão bloqueada ──────────────────────────
   if (mode === "denied") {
     return (
-      <div className="md:hidden flex items-center gap-3 px-4 py-3 bg-amber-50 border-b border-amber-100">
+      <div className="flex items-center gap-3 px-4 py-3 bg-amber-50 border-b border-amber-100">
         <span className="size-8 shrink-0 rounded-lg bg-amber-500 text-white flex items-center justify-center">
           <BellOff className="size-4" />
         </span>
@@ -115,7 +115,7 @@ export function PushPrompt() {
 
   // ── "enable" / "ios-install" ────────────────────────────────
   return (
-    <div className="md:hidden flex items-start gap-3 px-4 py-3 bg-primary-50 border-b border-primary-100">
+    <div className={`${mode === "ios-install" ? "md:hidden " : ""}flex items-start gap-3 px-4 py-3 bg-primary-50 border-b border-primary-100`}>
       <span className="size-8 shrink-0 rounded-lg bg-primary text-white flex items-center justify-center mt-0.5">
         <Bell className="size-4" />
       </span>

@@ -12,6 +12,7 @@ import {
   ArrowLeft, Info,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
+import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { buildTimelineGroups, TimelineDivider, DateDivider } from "@/components/chat/timeline-divider"
 import type { ChatMessage, ChatConversation, ChatQuickReply, ExternalAdReply } from "@/types/chat"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
@@ -347,7 +348,9 @@ export function ChatPanel({
               onClick={() => { setAssignOpen((v) => !v); setStatusOpen(false) }}
               className="flex items-center gap-1.5 text-xs font-medium px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors max-w-[120px] sm:max-w-none"
             >
-              <UserPlus className="size-3.5 shrink-0" />
+              {conversation.assigned_to
+                ? <AgentAvatar userId={conversation.assigned_to} name={conversation.profiles?.full_name} className="size-4" />
+                : <UserPlus className="size-3.5 shrink-0" />}
               <span className="hidden sm:inline truncate">{conversation.profiles?.full_name ?? "Atribuir"}</span>
               <ChevronDown className="size-3 shrink-0" />
             </button>
@@ -372,11 +375,7 @@ export function ChatPanel({
                         agent.id === conversation.assigned_to ? "text-primary-600 font-semibold" : "text-slate-700"
                       }`}
                     >
-                      <div className="size-5 rounded-full bg-primary-100 flex items-center justify-center shrink-0">
-                        <span className="text-[9px] font-bold text-primary-600">
-                          {agent.full_name?.[0]?.toUpperCase() ?? "?"}
-                        </span>
-                      </div>
+                      <AgentAvatar userId={agent.id} name={agent.full_name} className="size-5" />
                       {agent.full_name}
                     </button>
                   ))}

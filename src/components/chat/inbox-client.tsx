@@ -7,6 +7,7 @@ import { ChatPanel } from "@/components/chat/chat-panel"
 import { ContactSidebar } from "@/components/chat/contact-sidebar"
 import { PendingGroupsBanner } from "@/components/chat/pending-groups-banner"
 import { MessageCircle, WifiOff, Settings } from "lucide-react"
+import { toast } from "sonner"
 import Link from "next/link"
 import {
   assignConversation,
@@ -622,17 +623,28 @@ export function InboxClient({
       if (caption) fd.append("caption", caption)
       if (isVoiceNote) fd.append("ptt", "1")
       const result = await sendChatMedia(convId, fd)
+      if ("error" in result) {
+        // Falha tratada (ex: formato não aceito pelo WhatsApp Oficial) — bolha
+        // marca "falhou" + toast claro, SEM crashar a UI (era o bug do re-throw).
+        URL.revokeObjectURL(blobUrl)
+        setActiveMessages((prev) =>
+          prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m)
+        )
+        toast.error(result.error)
+        return
+      }
       // Swap id. Mantém blob URL até o próximo poll/realtime trazer o real
       // (com storage_path no metadata → resolveMediaUrl passa a usar /api/media/<id>).
       setActiveMessages((prev) =>
         prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m)
       )
     } catch (err) {
+      console.error("sendMedia:", err)
       URL.revokeObjectURL(blobUrl)
       setActiveMessages((prev) =>
         prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m)
       )
-      throw err
+      toast.error("Não consegui enviar a mídia. Tente de novo.")
     }
   }, [makeTempMessage])
 

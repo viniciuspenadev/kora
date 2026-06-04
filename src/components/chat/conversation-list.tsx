@@ -11,6 +11,7 @@ import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { NewConversationModal } from "./new-conversation-modal"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { SourceLogo } from "@/components/chat/source-logo"
+import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { Switch } from "@/components/ui/switch"
 import type { ChatConversation } from "@/types/chat"
 
@@ -525,13 +526,8 @@ export function ConversationList({
                 </div>
 
                 {assignedTo && (
-                  <span
-                    className="absolute bottom-3 right-3 size-5 rounded-full bg-primary-100 inline-flex items-center justify-center ring-2 ring-white shadow-sm"
-                    title={`Atribuído a ${assignedTo}`}
-                  >
-                    <span className="text-[9px] font-bold text-primary-700">
-                      {assignedTo[0]?.toUpperCase()}
-                    </span>
+                  <span className="absolute bottom-3 right-3" title={`Atribuído a ${assignedTo}`}>
+                    <AgentAvatar userId={conv.assigned_to} name={assignedTo} className="size-5" />
                   </span>
                 )}
               </button>

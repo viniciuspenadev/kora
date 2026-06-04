@@ -353,7 +353,7 @@ export function SidebarBody({
             onClick={handleSignOut}
             disabled={signing}
             title="Sair"
-            className={`shrink-0 size-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-30 ${reveal}`}
+            className={`shrink-0 size-7 items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-30 ${expanded ? "flex" : "hidden group-hover/sb:flex"}`}
           >
             <LogOut className="size-3.5" />
           </button>

@@ -10,6 +10,7 @@ import {
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
 import { SourceLogo } from "@/components/chat/source-logo"
+import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { StatusDot } from "@/components/ui/status-dot"
 import { useConfirm } from "@/components/ui/confirm-dialog"
 import {
@@ -758,9 +759,7 @@ function ParticipantsCard({
 
       {owner ? (
         <div className="flex items-center gap-2 mb-1.5">
-          <div className="size-6 rounded-full bg-primary text-white text-[10px] font-bold flex items-center justify-center shrink-0">
-            {owner.full_name?.[0]?.toUpperCase() ?? "?"}
-          </div>
+          <AgentAvatar userId={owner.id} name={owner.full_name} className="size-6" />
           <span className="text-xs font-medium text-slate-700 truncate flex-1">{owner.full_name ?? "—"}</span>
           <span className="text-[9px] font-bold uppercase tracking-wider text-primary-700">Resp.</span>
         </div>
@@ -770,9 +769,7 @@ function ParticipantsCard({
 
       {others.map((p) => (
         <div key={p.id} className="flex items-center gap-2 mb-1.5 group">
-          <div className="size-6 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold flex items-center justify-center shrink-0">
-            {p.full_name?.[0]?.toUpperCase() ?? "?"}
-          </div>
+          <AgentAvatar userId={p.id} name={p.full_name} className="size-6" />
           <span className="text-xs text-slate-600 truncate flex-1">{p.full_name ?? "—"}</span>
           <button
             type="button"
@@ -794,9 +791,7 @@ function ParticipantsCard({
               onClick={() => add(a.id)}
               className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-slate-700 hover:bg-white"
             >
-              <div className="size-5 rounded-full bg-slate-200 text-slate-600 text-[9px] font-bold flex items-center justify-center shrink-0">
-                {a.full_name?.[0]?.toUpperCase() ?? "?"}
-              </div>
+              <AgentAvatar userId={a.id} name={a.full_name} className="size-5" />
               <span className="truncate">{a.full_name ?? "—"}</span>
             </button>
           ))}
