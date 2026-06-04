@@ -3,12 +3,105 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { MetaCloudProvider, type MetaBusinessProfile } from "@/lib/providers/meta-cloud-provider"
-import { decryptSecret } from "@/lib/crypto/secrets"
+import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets"
+import { getEnabledModuleSlugs } from "@/lib/modules"
 import { revalidatePath } from "next/cache"
 
 const PAGE = "/integracoes/whatsapp-oficial"
+const GRAPH = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION ?? "v25.0"}`
 
 type Result = { ok: boolean; error?: string; id?: string }
+
+/**
+ * Embedded Signup — o cliente conectou a WABA dele no popup da Meta. Recebe o `code`
+ * + WABA + phone_number_id do frontend, troca por token, assina o webhook, registra
+ * o número e cria/atualiza a instância `meta_cloud` do tenant (token CIFRADO).
+ * Gate: owner/admin + módulo `whatsapp_official` habilitado pro tenant.
+ */
+export async function connectWhatsAppOfficial(input: {
+  code:          string
+  wabaId:        string
+  phoneNumberId: string
+}): Promise<Result> {
+  const session = await auth()
+  if (!session) return { ok: false, error: "Não autenticado." }
+  if (!["owner", "admin"].includes(session.user.role)) return { ok: false, error: "Acesso restrito a administradores." }
+  const tenantId = session.user.tenantId
+
+  const modules = await getEnabledModuleSlugs(tenantId)
+  if (!modules.has("whatsapp_official")) {
+    return { ok: false, error: "Módulo WhatsApp Oficial não está habilitado para sua conta." }
+  }
+
+  const appId     = process.env.NEXT_PUBLIC_META_APP_ID
+  const appSecret = process.env.META_APP_SECRET
+  if (!appId || !appSecret) return { ok: false, error: "Integração Meta não configurada no servidor." }
+  if (!input.code || !input.wabaId || !input.phoneNumberId) return { ok: false, error: "Dados do cadastro incompletos." }
+
+  try {
+    // 1. code → access_token (token de usuário de sistema da integração)
+    const tokenJson = await fetch(
+      `${GRAPH}/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${encodeURIComponent(input.code)}`,
+    ).then((r) => r.json()) as { access_token?: string; error?: { message?: string } }
+    if (!tokenJson.access_token) {
+      return { ok: false, error: `Falha ao obter o token da Meta: ${tokenJson.error?.message ?? "sem token"}` }
+    }
+    const accessToken = tokenJson.access_token
+    const authH = { Authorization: `Bearer ${accessToken}` }
+
+    // 2. assina o app na WABA (passa a receber os webhooks dessa conta)
+    const subRes = await fetch(`${GRAPH}/${input.wabaId}/subscribed_apps`, { method: "POST", headers: authH })
+    if (!subRes.ok) {
+      const j = await subRes.json().catch(() => ({})) as { error?: { message?: string } }
+      return { ok: false, error: `Falha ao assinar o webhook na WABA: ${j.error?.message ?? subRes.status}` }
+    }
+
+    // 3. registra o número na Cloud API (PIN de verificação em 2 etapas). "Já
+    //    registrado" não é erro — segue (fire-and-forget).
+    const pin = String(Math.floor(100000 + Math.random() * 900000))
+    await fetch(`${GRAPH}/${input.phoneNumberId}/register`, {
+      method:  "POST",
+      headers: { ...authH, "Content-Type": "application/json" },
+      body:    JSON.stringify({ messaging_product: "whatsapp", pin }),
+    }).catch(() => {})
+
+    // 4. info do número (pra exibir)
+    const info = await fetch(
+      `${GRAPH}/${input.phoneNumberId}?fields=display_phone_number,verified_name`, { headers: authH },
+    ).then((r) => r.json()).catch(() => ({})) as { display_phone_number?: string; verified_name?: string }
+
+    // 5. cria/atualiza a instância meta_cloud do tenant — token CIFRADO
+    const row = {
+      tenant_id:                tenantId,
+      provider:                 "meta_cloud",
+      meta_phone_number_id:     input.phoneNumberId,
+      meta_business_account_id: input.wabaId,
+      meta_access_token:        encryptSecret(accessToken),
+      phone_number:             info.display_phone_number ?? null,
+      instance_name:            info.verified_name || `Oficial ${info.display_phone_number ?? input.phoneNumberId}`,
+      status:                   "connected",
+      updated_at:               new Date().toISOString(),
+    }
+
+    const { data: existing } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("provider", "meta_cloud")
+      .maybeSingle()
+
+    const { error } = existing
+      ? await supabaseAdmin.from("whatsapp_instances").update(row).eq("id", existing.id)
+      : await supabaseAdmin.from("whatsapp_instances").insert(row)
+    if (error) return { ok: false, error: error.message }
+
+    revalidatePath(PAGE)
+    revalidatePath("/integracoes")
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
 
 /** Resolve o provider Meta da instância oficial do tenant logado (owner/admin). */
 async function tenantMetaProvider(): Promise<{ provider: MetaCloudProvider } | { error: string }> {

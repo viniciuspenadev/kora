@@ -32,10 +32,16 @@ ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 # Chave pública do Web Push — inlinada no client (push-prompt). Sem ela no build,
 # a faixa "Ativar avisos" nunca aparece (VAPID vazio).
 ARG NEXT_PUBLIC_VAPID_PUBLIC_KEY
+# Embedded Signup do WhatsApp (FB SDK no client). Sem isso no build, o botão
+# "Conectar WhatsApp Oficial" não funciona (appId/configId vazios).
+ARG NEXT_PUBLIC_META_APP_ID
+ARG NEXT_PUBLIC_META_CONFIG_ID
 
 ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 ENV NEXT_PUBLIC_VAPID_PUBLIC_KEY=${NEXT_PUBLIC_VAPID_PUBLIC_KEY}
+ENV NEXT_PUBLIC_META_APP_ID=${NEXT_PUBLIC_META_APP_ID}
+ENV NEXT_PUBLIC_META_CONFIG_ID=${NEXT_PUBLIC_META_CONFIG_ID}
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules

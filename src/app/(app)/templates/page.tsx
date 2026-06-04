@@ -2,6 +2,7 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { MetaCloudProvider, type MetaTemplate } from "@/lib/providers/meta-cloud-provider"
+import { decryptSecret } from "@/lib/crypto/secrets"
 import { PageShell } from "@/components/ui/page-shell"
 import { TemplatesClient } from "@/components/templates/templates-client"
 import { FileText } from "lucide-react"
@@ -27,8 +28,8 @@ export default async function TemplatesPage() {
   const provider = new MetaCloudProvider({
     meta_phone_number_id:     inst.meta_phone_number_id ?? "",
     meta_business_account_id: inst.meta_business_account_id,
-    meta_access_token:        inst.meta_access_token,
-    meta_app_secret:          inst.meta_app_secret ?? "",
+    meta_access_token:        decryptSecret(inst.meta_access_token),
+    meta_app_secret:          decryptSecret(inst.meta_app_secret) ?? "",
   })
 
   let templates: MetaTemplate[] = []

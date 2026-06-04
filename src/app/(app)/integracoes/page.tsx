@@ -47,6 +47,7 @@ export default async function IntegracoesPage() {
   const baileysConnected = list.some((i) => i.provider !== "meta_cloud" && CONNECTED_STATES.has(i.status ?? ""))
   const metaInstance     = list.find((i) => i.provider === "meta_cloud")
   const metaConnected    = !!metaInstance && CONNECTED_STATES.has(metaInstance.status ?? "")
+  const hasOfficialModule = modules.has("whatsapp_official")
 
   const integrations: IntegrationCard[] = [
     {
@@ -64,9 +65,10 @@ export default async function IntegracoesPage() {
       description: "Número oficial via Meta Cloud API — templates, escala e confiabilidade.",
       source:      "whatsapp_inbound",
       category:    "Canais",
-      // Gestão própria (status + templates). Conexão self-service (Embedded Signup) vem na Fase 2.
-      href:        metaInstance ? "/integracoes/whatsapp-oficial" : null,
-      status:      metaInstance ? (metaConnected ? "connected" : "available") : "soon",
+      // Self-service (Embedded Signup): com o módulo ligado, abre a página pra CONECTAR.
+      // Sem módulo e sem instância → "em breve" (gate por tenant_modules).
+      href:        (metaInstance || hasOfficialModule) ? "/integracoes/whatsapp-oficial" : null,
+      status:      metaConnected ? "connected" : (metaInstance || hasOfficialModule) ? "available" : "soon",
     },
     {
       slug:        "widget_site",
