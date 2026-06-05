@@ -3,6 +3,25 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
+import { applyPlan } from "@/lib/plans"
+import { LIMIT_META, type LimitResource } from "@/lib/limits-shared"
+
+const LIMIT_KEYS = Object.keys(LIMIT_META) as LimitResource[]
+
+/** Sanitiza o jsonb de limites: só number≥0 ou null, por recurso conhecido. */
+function cleanLimits(raw: unknown): Record<string, number | null> {
+  const out: Record<string, number | null> = {}
+  if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>
+    for (const k of LIMIT_KEYS) {
+      if (!(k in o)) continue
+      const v = o[k]
+      if (v === null) out[k] = null
+      else if (typeof v === "number" && Number.isFinite(v) && v >= 0) out[k] = Math.round(v)
+    }
+  }
+  return out
+}
 
 /**
  * CRUD de planos (god mode). Plano = nome + preço + cota de usuários +
@@ -23,6 +42,9 @@ export interface Plan {
   user_quota:             number
   extra_user_price_cents: number
   included_modules:       string[]
+  limits:                 Record<string, number | null>
+  trial_days:             number   // 0 = sem validade (permanente); >0 = expira em N dias
+  trial_activation_mode:  string   // "auto" | "manual"
   active:                 boolean
   position:               number
   created_at:             string
@@ -36,6 +58,9 @@ export interface PlanInput {
   user_quota:             number
   extra_user_price_cents: number
   included_modules:       string[]
+  limits:                 Record<string, number | null>
+  trial_days:             number   // 0 = sem validade (permanente); >0 = expira em N dias
+  trial_activation_mode:  string   // "auto" | "manual"
   active:                 boolean
 }
 
@@ -44,6 +69,8 @@ function validate(input: PlanInput): string | null {
   if (input.price_cents < 0)               return "Preço inválido"
   if (input.user_quota < 1)                return "A cota de usuários precisa ser ao menos 1"
   if (input.extra_user_price_cents < 0)    return "Preço por usuário adicional inválido"
+  if (input.trial_days < 0)                return "Dias de validade inválidos"
+  if (!["auto", "manual"].includes(input.trial_activation_mode)) return "Modo de ativação inválido"
   return null
 }
 
@@ -55,6 +82,9 @@ function clean(input: PlanInput) {
     user_quota:             Math.round(input.user_quota),
     extra_user_price_cents: Math.round(input.extra_user_price_cents),
     included_modules:       Array.from(new Set((input.included_modules ?? []).map((s) => s.trim()).filter(Boolean))),
+    limits:                 cleanLimits(input.limits),
+    trial_days:             Math.max(0, Math.round(input.trial_days ?? 0)),
+    trial_activation_mode:  input.trial_activation_mode === "auto" ? "auto" : "manual",
     active:                 input.active,
   }
 }
@@ -131,29 +161,18 @@ export async function deletePlan(id: string): Promise<{ error?: string }> {
 export async function assignPlanToTenant(tenantId: string, planId: string | null): Promise<{ error?: string }> {
   await requirePlatformAdmin()
 
-  const { error } = await supabaseAdmin
-    .from("tenants")
-    .update({ plan_id: planId })
-    .eq("id", tenantId)
-  if (error) return { error: error.message }
-
-  if (planId) {
-    const { data: plan } = await supabaseAdmin
-      .from("plans").select("name, included_modules").eq("id", planId).maybeSingle()
-    const mods = (plan?.included_modules ?? []) as string[]
-    if (mods.length > 0) {
-      const rows = mods.map((slug) => ({
-        tenant_id:   tenantId,
-        module_slug: slug,
-        enabled:     true,
-        reason:      `Plano ${plan?.name ?? ""}`.trim(),
-      }))
-      await supabaseAdmin.from("tenant_modules").upsert(rows, { onConflict: "tenant_id,module_slug" })
-    }
+  if (!planId) {
+    const { error } = await supabaseAdmin.from("tenants").update({ plan_id: null }).eq("id", tenantId)
+    if (error) return { error: error.message }
+  } else {
+    // Fonte única: aplica plan_id + plan string + módulos do plano (mantém manuais).
+    const r = await applyPlan(tenantId, planId)
+    if (!r.ok) return { error: r.error }
   }
 
   revalidatePath(`/admin/tenants/${tenantId}`)
   revalidatePath(`/admin/tenants/${tenantId}/modulos`)
+  revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   revalidatePath("/admin/planos")
   return {}
 }

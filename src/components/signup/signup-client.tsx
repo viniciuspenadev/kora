@@ -4,16 +4,35 @@ import { useState, useRef, useEffect, useCallback } from "react"
 import Link from "next/link"
 import Image from "next/image"
 import {
-  Loader2, AlertCircle, ArrowRight, ArrowLeft, Mail, Lock, User, Phone,
-  Building2, IdCard, CheckCircle2, ShieldCheck, Sparkles, Clock, Users,
+  Loader2, AlertCircle, ArrowRight, ArrowLeft, Mail, Lock, User,
+  Building2, IdCard, CheckCircle2, Eye, EyeOff,
 } from "lucide-react"
 import { startSignup, confirmSignup, resendSignupCode } from "@/lib/actions/signup"
 
 const SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? ""
-const PRIVACY_URL = "https://kora.bluedigitalhub.com.br/privacidade"
+const PRIVACY_URL = "https://www.omnikora.com.br/privacidade"
 
 const INPUT =
-  "w-full h-12 rounded-xl border border-slate-200/70 bg-white/60 pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 focus:bg-white transition-all disabled:opacity-50 shadow-sm"
+  "w-full h-11 rounded-lg border border-slate-200 bg-white pl-10 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-shadow disabled:opacity-50"
+
+// ── Máscaras (display) — a action server-side faz strip dos não-dígitos ─
+function applyMask(digits: string, pattern: string): string {
+  let out = "", di = 0
+  for (const p of pattern) {
+    if (di >= digits.length) break
+    if (p === "#") out += digits[di++]
+    else out += p
+  }
+  return out
+}
+const maskTax = (v: string, type: "pf" | "pj") => {
+  const d = v.replace(/\D/g, "").slice(0, type === "pf" ? 11 : 14)
+  return applyMask(d, type === "pf" ? "###.###.###-##" : "##.###.###/####-##")
+}
+const maskPhone = (v: string) => {
+  const d = v.replace(/\D/g, "").slice(0, 11)
+  return applyMask(d, d.length > 10 ? "(##) #####-####" : "(##) ####-####")
+}
 
 type Step = "form" | "verify" | "done"
 
@@ -22,18 +41,17 @@ export function SignupClient() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
 
-  // form
   const [name, setName]         = useState("")
   const [email, setEmail]       = useState("")
   const [phone, setPhone]       = useState("")
   const [type, setType]         = useState<"pj" | "pf">("pj")
   const [taxId, setTaxId]       = useState("")
   const [password, setPassword] = useState("")
+  const [showPw, setShowPw]     = useState(false)
   const [captcha, setCaptcha]   = useState("")
   const [consent, setConsent]   = useState(false)
 
-  // verify
-  const [code, setCode]         = useState("")
+  const [code, setCode]           = useState("")
   const [activated, setActivated] = useState(false)
   const [resentMsg, setResentMsg] = useState("")
 
@@ -41,8 +59,7 @@ export function SignupClient() {
 
   async function submitForm(e: React.FormEvent) {
     e.preventDefault()
-    setError("")
-    setLoading(true)
+    setError(""); setLoading(true)
     const r = await startSignup({ name, email, phone, personType: type, taxId, password, consent, captchaToken: captcha })
     setLoading(false)
     if (r.ok) { setStep("verify"); setCode("") }
@@ -52,8 +69,7 @@ export function SignupClient() {
   async function submitCode(e: React.FormEvent) {
     e.preventDefault()
     if (code.length !== 6) return
-    setError("")
-    setLoading(true)
+    setError(""); setLoading(true)
     const r = await confirmSignup(email, code)
     setLoading(false)
     if (r.ok) { setActivated(!!r.activated); setStep("done") }
@@ -68,55 +84,13 @@ export function SignupClient() {
   }
 
   return (
-    <div className="min-h-screen relative flex font-sans bg-slate-50 selection:bg-indigo-500/20">
-      {/* Orbs de fundo */}
-      <div className="absolute inset-0 z-0 overflow-hidden">
-        <div className="absolute top-[-10%] left-[-10%] w-[45%] h-[45%] rounded-full bg-indigo-300/40 blur-[110px] animate-pulse duration-[10000ms]" />
-        <div className="absolute bottom-[-15%] right-[-10%] w-[45%] h-[45%] rounded-full bg-violet-300/40 blur-[110px] animate-pulse duration-[8000ms]" />
-        <div className="absolute top-[25%] right-[20%] w-[30%] h-[30%] rounded-full bg-blue-300/30 blur-[100px]" />
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] mix-blend-multiply" />
-      </div>
-
-      {/* Painel de valor (lg+) */}
-      <aside className="relative z-10 hidden lg:flex w-[44%] flex-col justify-between p-12 text-white overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-indigo-600 via-violet-600 to-indigo-700" />
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.06] mix-blend-overlay" />
-        <div className="relative z-10">
-          <Image src="/logo_kora_branco.png" alt="Kora" width={120} height={40} priority className="h-9 w-auto" />
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center px-6 py-12">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <Image src="/logo_kora.png" alt="Kora" width={140} height={48} priority className="h-10 w-auto mx-auto" />
         </div>
-        <div className="relative z-10 space-y-8">
-          <div>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold backdrop-blur-sm">
-              <Sparkles className="size-3.5" /> Teste grátis · sem cartão
-            </span>
-            <h1 className="mt-5 text-4xl font-bold leading-tight tracking-tight">
-              Seu WhatsApp,<br />uma operação inteira.
-            </h1>
-            <p className="mt-4 text-base text-indigo-100/90 leading-relaxed max-w-sm">
-              Atendimento, funil de vendas e automações no mesmo lugar. Comece em minutos.
-            </p>
-          </div>
-          <ul className="space-y-3.5 text-sm">
-            <Benefit icon={Users}>Time todo atendendo no mesmo número</Benefit>
-            <Benefit icon={Sparkles}>Funil de vendas + automações prontas</Benefit>
-            <Benefit icon={Clock}>Configuração guiada, conecta sozinho</Benefit>
-            <Benefit icon={ShieldCheck}>Sem compromisso — cancele quando quiser</Benefit>
-          </ul>
-        </div>
-        <p className="relative z-10 text-xs text-indigo-200/70">
-          © Kora · WhatsApp Business para times de atendimento
-        </p>
-      </aside>
 
-      {/* Coluna do formulário */}
-      <main className="relative z-10 flex-1 flex items-center justify-center px-6 py-10">
-        <div className="w-full max-w-md">
-          {/* Logo mobile */}
-          <div className="lg:hidden text-center mb-8">
-            <Image src="/logo_kora.png" alt="Kora" width={140} height={48} priority className="h-10 w-auto mx-auto" />
-          </div>
-
-          <div className="rounded-3xl border border-white/80 bg-white/70 backdrop-blur-2xl shadow-[0_8px_32px_rgba(0,0,0,0.06)] p-7 sm:p-9">
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-card p-7 sm:p-9">
             <Steps step={step} />
 
             {step === "form" && (
@@ -131,38 +105,52 @@ export function SignupClient() {
                   <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" required disabled={loading}
                     placeholder="seu@email.com" className={INPUT} />
                 </Field>
-                <Field icon={Phone}>
-                  <input value={phone} onChange={(e) => setPhone(e.target.value)} type="tel" inputMode="tel" required disabled={loading}
-                    placeholder="WhatsApp com DDD" className={INPUT} />
-                </Field>
 
-                {/* PF/PJ */}
+                {/* Telefone com prefixo +55 */}
+                <div className="flex gap-2">
+                  <span className="inline-flex items-center h-11 px-3 rounded-lg border border-slate-200 bg-slate-50 text-sm font-medium text-slate-500 shrink-0">+55</span>
+                  <input value={phone} onChange={(e) => setPhone(maskPhone(e.target.value))} type="tel" inputMode="tel" required disabled={loading}
+                    placeholder="(11) 99999-9999"
+                    className="flex-1 h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-shadow disabled:opacity-50" />
+                </div>
+
+                {/* PF/PJ + documento */}
                 <div className="flex items-center gap-2">
-                  <div className="inline-flex rounded-xl border border-slate-200/70 bg-white/60 p-0.5 shrink-0">
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shrink-0">
                     {(["pj", "pf"] as const).map((t) => (
-                      <button key={t} type="button" onClick={() => setType(t)} disabled={loading}
-                        className={`h-10 px-4 text-xs font-semibold rounded-[10px] transition-colors ${type === t ? "bg-indigo-600 text-white shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                      <button key={t} type="button" disabled={loading}
+                        onClick={() => { setType(t); setTaxId(maskTax(taxId, t)) }}
+                        className={`h-9 px-3.5 text-xs font-semibold rounded-md transition-colors ${type === t ? "bg-primary text-white" : "text-slate-500 hover:text-slate-700"}`}>
                         {t === "pj" ? "Empresa" : "Pessoa"}
                       </button>
                     ))}
                   </div>
                   <Field icon={type === "pj" ? Building2 : IdCard} className="flex-1">
-                    <input value={taxId} onChange={(e) => setTaxId(e.target.value)} required disabled={loading} inputMode="numeric"
-                      placeholder={type === "pj" ? "CNPJ" : "CPF"} className={INPUT} />
+                    <input value={taxId} onChange={(e) => setTaxId(maskTax(e.target.value, type))} required disabled={loading} inputMode="numeric"
+                      placeholder={type === "pj" ? "00.000.000/0000-00" : "000.000.000-00"} className={INPUT} />
                   </Field>
                 </div>
 
-                <Field icon={Lock}>
-                  <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="new-password" required disabled={loading}
-                    placeholder="Crie uma senha (8+ caracteres)" className={INPUT} />
-                </Field>
+                {/* Senha com mostrar/ocultar */}
+                <div className="relative group/input">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Lock className="size-4 text-slate-400 group-focus-within/input:text-primary-600 transition-colors" />
+                  </div>
+                  <input value={password} onChange={(e) => setPassword(e.target.value)} type={showPw ? "text" : "password"}
+                    autoComplete="new-password" required disabled={loading}
+                    placeholder="Crie uma senha (8+ caracteres)" className={`${INPUT} pr-10`} />
+                  <button type="button" onClick={() => setShowPw((v) => !v)} tabIndex={-1}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition-colors">
+                    {showPw ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </button>
+                </div>
 
                 <label className="flex items-start gap-2.5 text-xs text-slate-500 cursor-pointer select-none">
                   <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={loading}
-                    className="mt-0.5 size-4 rounded border-slate-300 text-indigo-600 focus:ring-2 focus:ring-indigo-500/50" />
+                    className="mt-0.5 size-4 rounded border-slate-300 text-primary focus:ring-2 focus:ring-primary/20" />
                   <span>
                     Li e concordo com a{" "}
-                    <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-indigo-600 hover:text-indigo-700 underline">Política de Privacidade</a>
+                    <a href={PRIVACY_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-primary-700 hover:text-primary-800 underline">Política de Privacidade</a>
                     {" "}e o tratamento dos meus dados para o teste.
                   </span>
                 </label>
@@ -175,7 +163,7 @@ export function SignupClient() {
 
                 <p className="text-center text-xs text-slate-500 pt-1">
                   Já tem conta?{" "}
-                  <Link href="/auth/signin" className="font-semibold text-indigo-600 hover:text-indigo-700">Entrar</Link>
+                  <Link href="/auth/signin" className="font-semibold text-primary-700 hover:text-primary-800">Entrar</Link>
                 </p>
               </form>
             )}
@@ -195,7 +183,7 @@ export function SignupClient() {
                   <button type="button" onClick={() => { setStep("form"); setError("") }} className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-700">
                     <ArrowLeft className="size-3.5" /> Trocar dados
                   </button>
-                  <button type="button" onClick={resend} className="font-medium text-indigo-600 hover:text-indigo-700">
+                  <button type="button" onClick={resend} className="font-medium text-primary-700 hover:text-primary-800">
                     Reenviar código
                   </button>
                 </div>
@@ -209,21 +197,21 @@ export function SignupClient() {
                 </div>
                 {activated ? (
                   <>
-                    <h2 className="mt-5 text-xl font-bold text-slate-900">Tudo pronto! 🎉</h2>
+                    <h2 className="mt-5 text-xl font-bold text-slate-900 tracking-tight">Tudo pronto! 🎉</h2>
                     <p className="mt-2 text-sm text-slate-500 leading-relaxed">
                       Seu período de teste começou. Entre na plataforma e siga o guia pra conectar seu WhatsApp.
                     </p>
-                    <Link href="/auth/signin" className="mt-6 inline-flex items-center justify-center gap-2 h-12 w-full rounded-xl bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-600 text-white text-sm font-semibold shadow-md shadow-indigo-500/20">
+                    <Link href="/auth/signin" className="mt-6 inline-flex items-center justify-center gap-2 h-11 w-full rounded-lg bg-primary hover:bg-primary-700 text-white text-sm font-semibold transition-colors">
                       Entrar na plataforma <ArrowRight className="size-4" />
                     </Link>
                   </>
                 ) : (
                   <>
-                    <h2 className="mt-5 text-xl font-bold text-slate-900">Cadastro recebido! ✅</h2>
+                    <h2 className="mt-5 text-xl font-bold text-slate-900 tracking-tight">Cadastro recebido! ✅</h2>
                     <p className="mt-2 text-sm text-slate-500 leading-relaxed">
                       Vamos liberar seu acesso e te avisamos por email em <strong className="text-slate-700">{email}</strong>. Fica de olho na caixa de entrada.
                     </p>
-                    <Link href="/auth/signin" className="mt-6 inline-flex items-center justify-center gap-2 h-11 w-full rounded-xl border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50">
+                    <Link href="/auth/signin" className="mt-6 inline-flex items-center justify-center gap-2 h-11 w-full rounded-lg border border-slate-200 text-slate-600 text-sm font-medium hover:bg-slate-50 transition-colors">
                       Ir para o login
                     </Link>
                   </>
@@ -232,21 +220,11 @@ export function SignupClient() {
             )}
           </div>
         </div>
-      </main>
     </div>
   )
 }
 
 // ── Subcomponentes ────────────────────────────────────────────────
-
-function Benefit({ icon: Icon, children }: { icon: typeof Users; children: React.ReactNode }) {
-  return (
-    <li className="flex items-center gap-3">
-      <span className="size-7 rounded-lg bg-white/15 flex items-center justify-center shrink-0"><Icon className="size-4" /></span>
-      <span className="text-indigo-50/90">{children}</span>
-    </li>
-  )
-}
 
 function Steps({ step }: { step: Step }) {
   const idx = step === "form" ? 0 : step === "verify" ? 1 : 2
@@ -254,9 +232,9 @@ function Steps({ step }: { step: Step }) {
     <div className="flex items-center gap-2">
       {["Dados", "Verificação", "Pronto"].map((label, i) => (
         <div key={label} className="flex items-center gap-2 flex-1">
-          <span className={`size-1.5 rounded-full transition-colors ${i <= idx ? "bg-indigo-600" : "bg-slate-200"}`} />
-          <span className={`text-[10px] font-semibold uppercase tracking-wide transition-colors ${i === idx ? "text-indigo-600" : "text-slate-300"}`}>{label}</span>
-          {i < 2 && <span className={`flex-1 h-px transition-colors ${i < idx ? "bg-indigo-200" : "bg-slate-100"}`} />}
+          <span className={`size-1.5 rounded-full transition-colors ${i <= idx ? "bg-primary" : "bg-slate-200"}`} />
+          <span className={`text-[10px] font-semibold uppercase tracking-wide transition-colors ${i === idx ? "text-primary-700" : "text-slate-300"}`}>{label}</span>
+          {i < 2 && <span className={`flex-1 h-px transition-colors ${i < idx ? "bg-primary-200" : "bg-slate-100"}`} />}
         </div>
       ))}
     </div>
@@ -276,7 +254,7 @@ function Field({ icon: Icon, children, className = "" }: { icon: typeof Mail; ch
   return (
     <div className={`relative group/input ${className}`}>
       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-        <Icon className="size-4 text-slate-400 group-focus-within/input:text-indigo-600 transition-colors" />
+        <Icon className="size-4 text-slate-400 group-focus-within/input:text-primary-600 transition-colors" />
       </div>
       {children}
     </div>
@@ -285,8 +263,8 @@ function Field({ icon: Icon, children, className = "" }: { icon: typeof Mail; ch
 
 function ErrorBox({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-start gap-2.5 rounded-xl bg-red-50 border border-red-100 px-4 py-3">
-      <AlertCircle className="size-4 text-red-500 shrink-0 mt-0.5" />
+    <div className="flex items-start gap-2.5 rounded-lg bg-danger-bg border border-red-100 px-4 py-3">
+      <AlertCircle className="size-4 text-danger shrink-0 mt-0.5" />
       <p className="text-sm text-red-800">{children}</p>
     </div>
   )
@@ -295,11 +273,8 @@ function ErrorBox({ children }: { children: React.ReactNode }) {
 function SubmitButton({ loading, disabled, children }: { loading: boolean; disabled?: boolean; children: React.ReactNode }) {
   return (
     <button type="submit" disabled={loading || disabled}
-      className="w-full h-12 relative group/btn overflow-hidden rounded-xl disabled:opacity-60 disabled:cursor-not-allowed shadow-md shadow-indigo-500/20">
-      <div className="absolute inset-0 bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-600 bg-[length:200%_auto] transition-all duration-500 group-hover/btn:bg-[center_right_1rem]" />
-      <span className="relative h-full flex items-center justify-center gap-2 text-white font-medium text-sm">
-        {loading ? <><Loader2 className="size-4 animate-spin" /> Aguarde…</> : <>{children} <ArrowRight className="size-4 group-hover/btn:translate-x-1 transition-transform" /></>}
-      </span>
+      className="w-full h-11 rounded-lg bg-primary hover:bg-primary-700 text-white font-semibold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+      {loading ? <><Loader2 className="size-4 animate-spin" /> Aguarde…</> : <>{children} <ArrowRight className="size-4" /></>}
     </button>
   )
 }
@@ -326,7 +301,7 @@ function CodeInput({ value, onChange, disabled }: { value: string; onChange: (v:
           onChange={(e) => setAt(i, e.target.value)}
           onKeyDown={(e) => { if (e.key === "Backspace" && !value[i] && i > 0) refs.current[i - 1]?.focus() }}
           inputMode="numeric" maxLength={1} disabled={disabled} autoFocus={i === 0}
-          className="size-12 text-center text-xl font-bold text-slate-900 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 disabled:opacity-50 transition-all" />
+          className="size-12 text-center text-xl font-bold text-slate-900 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 disabled:opacity-50 transition-shadow" />
       ))}
     </div>
   )

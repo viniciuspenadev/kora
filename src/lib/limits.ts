@@ -18,13 +18,47 @@ import {
 export { LIMIT_META, DEFAULT_LIMITS_BY_PLAN, ALL_PLANS } from "@/lib/limits-shared"
 export type { LimitResource, LimitInfo } from "@/lib/limits-shared"
 
-// ── Resolver max (override OU default do plano) ────────────────
+// ── Resolver max (override do tenant → limite do PLANO → fallback) ──
+
+const ALL_RESOURCES: LimitResource[] = [
+  "users", "whatsapp_instances", "messages_per_month",
+  "conversations_per_month", "broadcasts_per_month", "storage_mb", "contacts",
+]
+
+/** Parse SEGURO do jsonb `plans.limits`: só aceita number≥0 ou null; ignora lixo. */
+function parsePlanLimits(raw: unknown): Partial<Record<LimitResource, number | null>> {
+  const out: Partial<Record<LimitResource, number | null>> = {}
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>
+    for (const r of ALL_RESOURCES) {
+      if (!Object.prototype.hasOwnProperty.call(o, r)) continue
+      const v = o[r]
+      if (v === null || (typeof v === "number" && Number.isFinite(v) && v >= 0)) out[r] = v as number | null
+    }
+  }
+  return out
+}
+
+interface PlanCtx { plan: string; planLimits: Partial<Record<LimitResource, number | null>> }
+
+/** Plano do tenant + limites do plano (lidos AO VIVO de `plans.limits` via plan_id). */
+async function getPlanContext(tenantId: string): Promise<PlanCtx> {
+  const { data } = await supabaseAdmin
+    .from("tenants")
+    .select("plan, plan_id, plans:plan_id ( limits )")
+    .eq("id", tenantId)
+    .maybeSingle()
+  const plan = (data?.plan as string | undefined) ?? "trial"
+  const rel = (data as { plans?: { limits?: unknown } | { limits?: unknown }[] | null } | null)?.plans
+  const limitsRaw = Array.isArray(rel) ? rel[0]?.limits : rel?.limits
+  return { plan, planLimits: parsePlanLimits(limitsRaw) }
+}
 
 async function resolveMax(
   tenantId: string,
   resource: LimitResource,
-  plan:     string,
-): Promise<{ max: number | null; source: "override" | "default" }> {
+  ctx:      PlanCtx,
+): Promise<{ max: number | null; source: "override" | "plan" | "default" }> {
   const { data: override } = await supabaseAdmin
     .from("tenant_limits")
     .select("max_value, expires_at")
@@ -34,12 +68,16 @@ async function resolveMax(
 
   if (override) {
     const expired = override.expires_at && new Date(override.expires_at).getTime() < Date.now()
-    if (!expired) {
-      return { max: override.max_value, source: "override" }
-    }
+    if (!expired) return { max: override.max_value, source: "override" }
   }
 
-  const planDefaults = DEFAULT_LIMITS_BY_PLAN[plan] ?? DEFAULT_LIMITS_BY_PLAN.trial
+  // Limite do PLANO (ao vivo). Chave presente vale — inclusive `null` = ilimitado.
+  if (Object.prototype.hasOwnProperty.call(ctx.planLimits, resource)) {
+    return { max: ctx.planLimits[resource] ?? null, source: "plan" }
+  }
+
+  // Fallback: defaults hardcoded por string de plano (legado / tenant sem plano).
+  const planDefaults = DEFAULT_LIMITS_BY_PLAN[ctx.plan] ?? DEFAULT_LIMITS_BY_PLAN.trial
   return { max: planDefaults[resource], source: "default" }
 }
 
@@ -92,6 +130,18 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
       return count ?? 0
     }
 
+    case "conversations_per_month": {
+      const monthStart = new Date()
+      monthStart.setDate(1)
+      monthStart.setHours(0, 0, 0, 0)
+      const { count } = await supabaseAdmin
+        .from("chat_conversations")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId)
+        .gte("created_at", monthStart.toISOString())
+      return count ?? 0
+    }
+
     case "storage_mb": {
       const { data } = await supabaseAdmin
         .from("chat_messages")
@@ -107,21 +157,12 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
   }
 }
 
-async function getTenantPlan(tenantId: string): Promise<string> {
-  const { data } = await supabaseAdmin
-    .from("tenants")
-    .select("plan")
-    .eq("id", tenantId)
-    .maybeSingle()
-  return data?.plan ?? "trial"
-}
-
 // ── API pública ────────────────────────────────────────────────
 
 export async function checkLimit(tenantId: string, resource: LimitResource): Promise<LimitInfo> {
-  const plan = await getTenantPlan(tenantId)
+  const ctx = await getPlanContext(tenantId)
   const [{ max, source }, used] = await Promise.all([
-    resolveMax(tenantId, resource, plan),
+    resolveMax(tenantId, resource, ctx),
     getUsage(tenantId, resource),
   ])
 
@@ -152,7 +193,7 @@ export async function requireLimit(tenantId: string, resource: LimitResource): P
 export async function listAllLimits(tenantId: string): Promise<LimitInfo[]> {
   const resources: LimitResource[] = [
     "users", "whatsapp_instances", "contacts",
-    "messages_per_month",
+    "conversations_per_month", "messages_per_month",
     "broadcasts_per_month", "storage_mb",
   ]
   return Promise.all(resources.map((r) => checkLimit(tenantId, r)))

@@ -1,7 +1,7 @@
 "use client"
 
 import {
-  Users, Server, MessageCircle, Brain, Megaphone, Database, Contact,
+  Users, Server, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact,
   Infinity as InfinityIcon, AlertCircle, CheckCircle2, Mail,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
@@ -28,6 +28,7 @@ const RESOURCE_ICONS: Record<LimitResource, typeof Users> = {
   users:                Users,
   whatsapp_instances:   Server,
   contacts:             Contact,
+  conversations_per_month: MessagesSquare,
   messages_per_month:   MessageCircle,
   broadcasts_per_month: Megaphone,
   storage_mb:           Database,

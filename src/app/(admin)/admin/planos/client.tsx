@@ -3,6 +3,9 @@
 import { useState, useMemo, useTransition } from "react"
 import { Package, Plus, Pencil, Trash2, Users, Boxes, X, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import { createPlan, updatePlan, deletePlan, type Plan, type PlanInput } from "@/lib/actions/admin-plans"
+import { LIMIT_META, type LimitResource } from "@/lib/limits-shared"
+
+const LIMIT_KEYS = Object.keys(LIMIT_META) as LimitResource[]
 
 export interface ModuleOption { slug: string; name: string; category: string }
 
@@ -133,6 +136,10 @@ function PlanEditor({ plan, modules, tenantsUsing, onClose }: {
   const [extra, setExtra]         = useState(plan ? centsToInput(plan.extra_user_price_cents) : "")
   const [active, setActive]       = useState(plan?.active ?? true)
   const [mods, setMods]           = useState<Set<string>>(new Set(plan?.included_modules ?? []))
+  const [limits, setLimits]       = useState<Record<string, number | null | undefined>>(() => ({ ...(plan?.limits ?? {}) }))
+  const [hasValidity, setHasValidity] = useState((plan?.trial_days ?? 0) > 0)
+  const [trialDays, setTrialDays]     = useState(plan?.trial_days ? String(plan.trial_days) : "3")
+  const [activation, setActivation]   = useState<string>(plan?.trial_activation_mode ?? "manual")
   const [feedback, setFeedback]   = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
@@ -155,6 +162,9 @@ function PlanEditor({ plan, modules, tenantsUsing, onClose }: {
       user_quota:             parseInt(quota, 10) || 1,
       extra_user_price_cents: inputToCents(extra),
       included_modules:       Array.from(mods),
+      limits:                 Object.fromEntries(Object.entries(limits).filter(([, v]) => v !== undefined)) as Record<string, number | null>,
+      trial_days:             hasValidity ? Math.max(1, parseInt(trialDays, 10) || 1) : 0,
+      trial_activation_mode:  activation,
       active,
     }
     startTransition(async () => {
@@ -220,6 +230,68 @@ function PlanEditor({ plan, modules, tenantsUsing, onClose }: {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-slate-700 mb-2">Limites do plano</p>
+            <div className="space-y-1.5 border border-slate-200 rounded-lg p-3 max-h-56 overflow-y-auto">
+              {LIMIT_KEYS.map((r) => {
+                const v = limits[r]
+                const unlimited = v === null
+                return (
+                  <div key={r} className="flex items-center gap-2">
+                    <span className="flex-1 text-xs text-slate-600 truncate">{LIMIT_META[r].label}</span>
+                    <input
+                      type="number" min={0} disabled={unlimited}
+                      value={unlimited || v === undefined ? "" : String(v)}
+                      onChange={(e) => setLimits((p) => ({ ...p, [r]: e.target.value === "" ? undefined : Math.max(0, Math.round(Number(e.target.value) || 0)) }))}
+                      placeholder="—"
+                      className="w-24 h-8 px-2 text-sm text-right tabular-nums rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:bg-slate-50 disabled:text-slate-300"
+                    />
+                    <label className="inline-flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer select-none w-[68px]">
+                      <input type="checkbox" checked={unlimited} onChange={(e) => setLimits((p) => ({ ...p, [r]: e.target.checked ? null : undefined }))} />
+                      ilimitado
+                    </label>
+                  </div>
+                )
+              })}
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1.5">Vazio = usa o padrão do sistema · &quot;ilimitado&quot; = sem teto.</p>
+          </div>
+
+          <div className="space-y-2.5 border border-slate-200 rounded-lg p-3">
+            <p className="text-xs font-semibold text-slate-700">Cadastro self-service &amp; validade</p>
+
+            <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input type="checkbox" checked={hasValidity} onChange={(e) => setHasValidity(e.target.checked)} />
+              Plano com validade (trial que expira)
+            </label>
+
+            {hasValidity ? (
+              <div className="pl-6 flex items-center gap-2">
+                <span className="text-xs text-slate-600">Expira em</span>
+                <input
+                  type="number" min={1} value={trialDays}
+                  onChange={(e) => setTrialDays(e.target.value)}
+                  className="w-20 h-8 px-2 text-sm text-right tabular-nums rounded-md border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <span className="text-xs text-slate-600">dias após a ativação</span>
+              </div>
+            ) : (
+              <p className="pl-6 text-[11px] text-slate-400">Sem validade — o cliente segue ativo até você suspender no painel.</p>
+            )}
+
+            <div>
+              <p className="text-[11px] font-medium text-slate-500 mb-1">Ativação ao se cadastrar</p>
+              <div className="flex gap-2">
+                {([["auto", "Automática"], ["manual", "Manual (aprovo no painel)"]] as const).map(([val, label]) => (
+                  <label key={val} className={`flex-1 flex items-center gap-2 text-xs rounded-md border px-2.5 py-2 cursor-pointer transition-colors ${activation === val ? "border-primary bg-primary-50 text-primary-700 font-medium" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+                    <input type="radio" name="activation" checked={activation === val} onChange={() => setActivation(val)} />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
 

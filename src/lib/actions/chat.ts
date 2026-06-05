@@ -9,6 +9,7 @@ import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
+import { requireLimit } from "@/lib/limits"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -883,6 +884,10 @@ export async function createManualConversation(input: {
     revalidatePath("/kanban")
     return { id: dedup.conversation.id, reused: true, reopened: dedup.found === "reopened" }
   }
+
+  // Limite de conversas/mês — só conta conversa NOVA iniciada pelo tenant (outbound).
+  // Reusar/reabrir acima não conta; inbound (webhooks) flui livre; IA/automação intactas.
+  await requireLimit(tenantId, "conversations_per_month")
 
   let pipelineId: string | null = null
   let stageId:    string | null = null

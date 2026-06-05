@@ -8,6 +8,7 @@ import { validatePassword } from "@/lib/password"
 import { verifyTurnstile } from "@/lib/turnstile"
 import { rateLimit } from "@/lib/rate-limit"
 import { applyDefaultModules } from "@/lib/modules"
+import { applyPlan } from "@/lib/plans"
 import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { sendEmail, buildVerificationEmail } from "@/lib/email/send"
 
@@ -233,16 +234,27 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
     return { ok: false, error: "Código incorreto." }
   }
 
-  // Re-checa unicidade (corrida entre start e confirm)
+  // M1: reivindica a linha ATOMICAMENTE (consome) antes de provisionar — evita
+  // dupla-provisão se dois confirms concorrentes passarem no check do código.
+  const { data: claimed } = await supabaseAdmin
+    .from("signup_verifications")
+    .update({ consumed_at: new Date().toISOString() })
+    .eq("id", row.id)
+    .is("consumed_at", null)
+    .select("id")
+    .maybeSingle()
+  if (!claimed) return { ok: false, error: "Cadastro já processado." }
+
+  // Re-checa unicidade (corrida entre start e confirm) — a linha já está consumida.
   if (await alreadyExists(e, row.tax_id ?? "", row.phone ?? "")) {
-    await supabaseAdmin.from("signup_verifications").update({ consumed_at: new Date().toISOString() }).eq("id", row.id)
     return { ok: false, error: "Já existe um cadastro com esses dados." }
   }
 
   const { data: plan } = row.plan_id
     ? await supabaseAdmin.from("plans").select("trial_days, trial_activation_mode").eq("id", row.plan_id).maybeSingle()
     : { data: null }
-  const trialDays    = (plan?.trial_days as number | undefined) ?? 3
+  const trialDays    = (plan?.trial_days as number | undefined) ?? 0
+  const hasExpiry    = trialDays > 0
   const autoActivate = ((plan?.trial_activation_mode as string | undefined) ?? "manual") === "auto"
   const nowIso       = new Date().toISOString()
 
@@ -260,8 +272,8 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
     plan:            "trial",
     plan_id:         row.plan_id,
     active:          autoActivate,
-    lifecycle_state: autoActivate ? "trialing" : "pending_approval",
-    trial_ends_at:   autoActivate ? new Date(Date.now() + trialDays * 86_400_000).toISOString() : null,
+    lifecycle_state: autoActivate ? (hasExpiry ? "trialing" : "active") : "pending_approval",
+    trial_ends_at:   autoActivate && hasExpiry ? new Date(Date.now() + trialDays * 86_400_000).toISOString() : null,
     activated_at:    autoActivate ? nowIso : null,
   }).select("id, slug").single()
   if (tErr || !tenant) return { ok: false, error: "Erro ao criar o ambiente." }
@@ -288,7 +300,9 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
     await supabaseAdmin.from("tenant_config").insert({ tenant_id: tenant.id })
   }
 
-  await applyDefaultModules(tenant.id)
+  // Encaixa o plano: habilita os módulos do plano (mantém manuais). Limites resolvem do plano.
+  if (row.plan_id) await applyPlan(tenant.id, row.plan_id as string)
+  else await applyDefaultModules(tenant.id)
 
   // Auto-provisiona a instância WhatsApp (QR self-connect). Fire-and-forget.
   try {
@@ -297,6 +311,5 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
     console.error("[signup] auto-provision falhou:", err)
   }
 
-  await supabaseAdmin.from("signup_verifications").update({ consumed_at: nowIso }).eq("id", row.id)
   return { ok: true, activated: autoActivate }
 }
