@@ -4,7 +4,7 @@ import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { MetaCloudProvider, type MetaTemplate } from "@/lib/providers/meta-cloud-provider"
 import { decryptSecret } from "@/lib/crypto/secrets"
-import { syncTemplatesCache } from "@/lib/actions/whatsapp-official"
+import { syncTemplatesCacheFor } from "@/lib/actions/whatsapp-official"
 import { PageShell } from "@/components/ui/page-shell"
 import { TemplatesClient } from "@/components/templates/templates-client"
 import { FileText } from "lucide-react"
@@ -45,7 +45,8 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
   }
 
   // Visitar a lista atualiza o cache local (status/qualidade) — fire-and-forget.
-  after(() => syncTemplatesCache())
+  // tenantId resolvido AQUI (fora do after) — headers()/auth() não rodam dentro de after().
+  after(() => syncTemplatesCacheFor(session.user.tenantId))
 
   return (
     <PageShell

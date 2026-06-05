@@ -353,8 +353,14 @@ export async function syncTemplatesCache(): Promise<Result> {
   const session = await auth()
   if (!session) return { ok: false, error: "Não autenticado." }
   if (!["owner", "admin"].includes(session.user.role)) return { ok: false, error: "Acesso restrito a administradores." }
-  const tenantId = session.user.tenantId
+  return syncTemplatesCacheFor(session.user.tenantId)
+}
 
+/**
+ * Núcleo do sync (SEM auth) — seguro pra chamar de dentro de `after()` passando o
+ * tenantId já resolvido. NUNCA chamar auth()/headers() dentro de after() (Next 16).
+ */
+export async function syncTemplatesCacheFor(tenantId: string): Promise<Result> {
   // Busca a instância oficial (precisamos do id da instância + WABA pro cache).
   const { data: inst } = await supabaseAdmin
     .from("whatsapp_instances")

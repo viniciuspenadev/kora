@@ -40,12 +40,20 @@ ARG NEXT_PUBLIC_META_CONFIG_ID
 # não renderiza no cadastro público.
 ARG NEXT_PUBLIC_TURNSTILE_SITE_KEY
 
+# EXCEÇÃO à regra "server var = runtime": a chave de criptografia das Server Actions
+# é BAKED no build. Se o Next gerar uma nova a cada build (default), TODA action de
+# páginas já abertas quebra após o deploy ("Failed to find Server Action"). Fixar com
+# um valor estável (openssl rand -base64 32) mantém as actions válidas entre deploys.
+# NÃO é NEXT_PUBLIC → não vaza no bundle do client.
+ARG NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+
 ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 ENV NEXT_PUBLIC_VAPID_PUBLIC_KEY=${NEXT_PUBLIC_VAPID_PUBLIC_KEY}
 ENV NEXT_PUBLIC_META_APP_ID=${NEXT_PUBLIC_META_APP_ID}
 ENV NEXT_PUBLIC_META_CONFIG_ID=${NEXT_PUBLIC_META_CONFIG_ID}
 ENV NEXT_PUBLIC_TURNSTILE_SITE_KEY=${NEXT_PUBLIC_TURNSTILE_SITE_KEY}
+ENV NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY}
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY --from=deps /app/node_modules ./node_modules
