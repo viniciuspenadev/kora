@@ -2,11 +2,15 @@
 
 import { useMemo, useState } from "react"
 import Link from "next/link"
-import { Building2, Plus, ChevronRight, Users, Smartphone } from "lucide-react"
+import { Building2, Plus, ChevronRight, Users, Smartphone, AlertCircle } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Toolbar, FilterChip } from "@/components/ui/toolbar"
-import { StatusDot } from "@/components/ui/status-dot"
+import { LifecycleActions } from "@/components/admin/lifecycle-actions"
+import {
+  STATE_META, STATE_ORDER, normalizeState, trialDaysLeft, trialCountdownLabel,
+  type LifecycleState,
+} from "@/lib/lifecycle-shared"
 
 export interface TenantRow {
   id:         string
@@ -15,6 +19,8 @@ export interface TenantRow {
   plan:       string
   plan_name:  string | null   // plano novo atribuído (plan_id → plans.name)
   active:     boolean
+  lifecycle_state: string | null
+  trial_ends_at:   string | null
   created_at: string
   // enriquecimento (dados que já temos)
   person_type:        string | null   // 'pf' | 'pj'
@@ -33,6 +39,11 @@ const PLAN_BADGE: Record<string, string> = {
   starter:    "bg-sky-50 text-sky-700 border-sky-200",
   pro:        "bg-emerald-50 text-emerald-700 border-emerald-200",
   enterprise: "bg-violet-50 text-violet-700 border-violet-200",
+}
+
+// Rótulos curtos (plural) pros KPIs/tabs por estado.
+const STATE_LABEL_SHORT: Record<LifecycleState, string> = {
+  pending_approval: "Aguardando", trialing: "Trial", active: "Ativos", suspended: "Suspensos", deactivated: "Desativados",
 }
 
 const DATE = (d: string) =>
@@ -59,28 +70,24 @@ function ago(iso: string | null): string {
   return d < 30 ? `há ${d}d` : `há ${Math.floor(d / 30)}mes`
 }
 
-type FilterKey = "all" | "active" | "inactive" | "trial"
-
 export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
   const [search, setSearch] = useState("")
-  const [filter, setFilter] = useState<FilterKey>("all")
+  const [filter, setFilter] = useState<"all" | LifecycleState>("all")
 
-  const kpis = useMemo(() => ({
-    total:    rows.length,
-    trial:    rows.filter((r) => r.plan === "trial").length,
-    active:   rows.filter((r) => r.active).length,
-    inactive: rows.filter((r) => !r.active).length,
-  }), [rows])
+  const counts = useMemo(() => {
+    const by: Record<LifecycleState, number> = {
+      pending_approval: 0, trialing: 0, active: 0, suspended: 0, deactivated: 0,
+    }
+    for (const r of rows) by[normalizeState(r.lifecycle_state)]++
+    return by
+  }, [rows])
 
   const filtered = useMemo(() => {
     return rows.filter((r) => {
-      if (filter === "active"   && !r.active)            return false
-      if (filter === "inactive" &&  r.active)            return false
-      if (filter === "trial"    &&  r.plan !== "trial")  return false
+      if (filter !== "all" && normalizeState(r.lifecycle_state) !== filter) return false
       if (search) {
         const q = search.toLowerCase()
-        const hay = `${r.name} ${r.slug} ${r.tax_id ?? ""}`.toLowerCase()
-        if (!hay.includes(q)) return false
+        if (!`${r.name} ${r.slug} ${r.tax_id ?? ""}`.toLowerCase().includes(q)) return false
       }
       return true
     })
@@ -114,7 +121,7 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
     {
       id: "plan",
       header: "Plano",
-      width: "120px",
+      width: "110px",
       cell: (r) => (
         r.plan_name ? (
           <span className="inline-flex h-5 items-center text-[10px] font-semibold px-2 rounded-md border bg-primary-50 text-primary-700 border-primary-200">
@@ -130,16 +137,31 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
     {
       id: "status",
       header: "Status",
-      width: "120px",
+      width: "140px",
       mobile: true,
-      cell: (r) => (
-        <StatusDot tone={r.active ? "success" : "neutral"} label={r.active ? "Ativo" : "Inativo"} />
-      ),
+      cell: (r) => {
+        const st   = normalizeState(r.lifecycle_state)
+        const meta = STATE_META[st]
+        const days = st === "trialing" ? trialDaysLeft(r.trial_ends_at) : null
+        const cd   = st === "trialing" ? trialCountdownLabel(r.trial_ends_at) : null
+        return (
+          <div className="flex flex-col gap-1">
+            <span className={`inline-flex w-fit items-center gap-1.5 h-5 text-[10px] font-semibold px-2 rounded-md border ${meta.badge}`}>
+              <span className={`size-1.5 rounded-full ${meta.dot}`} />{meta.label}
+            </span>
+            {cd && (
+              <span className={`text-[10px] tabular-nums ${days !== null && days <= 1 ? "text-red-600 font-semibold" : "text-slate-400"}`}>
+                {cd}
+              </span>
+            )}
+          </div>
+        )
+      },
     },
     {
       id: "users",
       header: "Usuários",
-      width: "100px",
+      width: "90px",
       cell: (r) => (
         <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 tabular-nums">
           <Users className="size-3.5 text-slate-400" /> {r.users}
@@ -149,7 +171,7 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
     {
       id: "channels",
       header: "Canais",
-      width: "110px",
+      width: "100px",
       cell: (r) => (
         r.channels === 0
           ? <span className="text-[11px] text-slate-400">sem canal</span>
@@ -165,7 +187,7 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
     {
       id: "active_at",
       header: "Última ativ.",
-      width: "120px",
+      width: "110px",
       cell: (r) => (
         <span className="text-xs text-slate-500 tabular-nums" title={r.last_active ? DATE(r.last_active) : undefined}>
           {ago(r.last_active)}
@@ -175,27 +197,57 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
     {
       id: "actions",
       header: "",
-      width: "130px",
+      width: "minmax(200px, auto)",
       cell: (r) => (
-        <Link
-          href={`/admin/tenants/${r.id}`}
-          className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-700 hover:text-primary-900 px-2.5 py-1.5 rounded-lg hover:bg-primary-50"
-        >
-          Gerenciar
-          <ChevronRight className="size-3" />
-        </Link>
+        <div className="flex items-center justify-end gap-2">
+          <LifecycleActions tenantId={r.id} state={normalizeState(r.lifecycle_state)} onlyPrimary />
+          <Link
+            href={`/admin/tenants/${r.id}`}
+            className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-700 hover:text-primary-900 px-2.5 py-1.5 rounded-lg hover:bg-primary-50 shrink-0"
+          >
+            Gerenciar
+            <ChevronRight className="size-3" />
+          </Link>
+        </div>
       ),
     },
   ]
 
+  const pending = counts.pending_approval
+
   return (
     <div className="space-y-4">
-      {/* KPIs — pulso do funil */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi label="Clientes" value={kpis.total} />
-        <Kpi label="Em trial" value={kpis.trial} tone="amber" />
-        <Kpi label="Ativos" value={kpis.active} tone="emerald" />
-        <Kpi label="Inativos" value={kpis.inactive} tone="slate" />
+      {/* Caixa de aprovação — só aparece se houver pendentes (gestão por exceção) */}
+      {pending > 0 && (
+        <button
+          type="button"
+          onClick={() => setFilter("pending_approval")}
+          className="w-full flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-left hover:bg-amber-100/60 transition-colors"
+        >
+          <span className="size-8 rounded-lg bg-amber-100 border border-amber-200 flex items-center justify-center shrink-0">
+            <AlertCircle className="size-4 text-amber-600" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-amber-900">
+              {pending} {pending === 1 ? "cadastro aguardando" : "cadastros aguardando"} sua aprovação
+            </p>
+            <p className="text-xs text-amber-700/80">Habilite pra iniciar o trial e liberar o acesso.</p>
+          </div>
+          <span className="text-xs font-semibold text-amber-700 shrink-0">Revisar →</span>
+        </button>
+      )}
+
+      {/* KPIs por estado — clicáveis (toggle de filtro) */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        {STATE_ORDER.map((st) => (
+          <StateKpi
+            key={st}
+            state={st}
+            value={counts[st]}
+            active={filter === st}
+            onClick={() => setFilter(filter === st ? "all" : st)}
+          />
+        ))}
       </div>
 
       <SectionCard flush>
@@ -204,10 +256,10 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
             search={{ value: search, onChange: setSearch, placeholder: "Nome · slug · CNPJ/CPF…" }}
             filters={
               <>
-                <FilterChip active={filter === "all"}      onClick={() => setFilter("all")}>Todos</FilterChip>
-                <FilterChip active={filter === "trial"}    onClick={() => setFilter("trial")}>Trial</FilterChip>
-                <FilterChip active={filter === "active"}   onClick={() => setFilter("active")}>Ativos</FilterChip>
-                <FilterChip active={filter === "inactive"} onClick={() => setFilter("inactive")}>Inativos</FilterChip>
+                <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>Todos</FilterChip>
+                {STATE_ORDER.map((st) => (
+                  <FilterChip key={st} active={filter === st} onClick={() => setFilter(st)}>{STATE_LABEL_SHORT[st]}</FilterChip>
+                ))}
               </>
             }
           />
@@ -239,18 +291,21 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
   )
 }
 
-const KPI_TONE: Record<string, string> = {
-  default: "text-slate-900",
-  amber:   "text-amber-600",
-  emerald: "text-emerald-600",
-  slate:   "text-slate-400",
-}
-
-function Kpi({ label, value, tone = "default" }: { label: string; value: number; tone?: keyof typeof KPI_TONE }) {
+function StateKpi({ state, value, active, onClick }: {
+  state: LifecycleState; value: number; active: boolean; onClick: () => void
+}) {
+  const meta = STATE_META[state]
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-card px-4 py-3">
-      <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">{label}</p>
-      <p className={`text-2xl font-bold tabular-nums mt-0.5 ${KPI_TONE[tone]}`}>{value}</p>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left rounded-xl border bg-white px-4 py-3 transition-colors ${active ? "border-primary ring-1 ring-primary/20" : "border-slate-200 hover:border-slate-300"}`}
+    >
+      <div className="flex items-center gap-1.5 mb-1">
+        <span className={`size-1.5 rounded-full ${meta.dot}`} />
+        <span className="text-[11px] font-medium text-slate-500">{STATE_LABEL_SHORT[state]}</span>
+      </div>
+      <p className="text-2xl font-bold text-slate-900 tabular-nums leading-none">{value}</p>
+    </button>
   )
 }

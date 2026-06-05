@@ -5,6 +5,12 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
 import { Loader2, AlertCircle, Mail, Lock, ArrowRight } from "lucide-react"
+import { getSigninNotice } from "@/lib/actions/auth-notice"
+
+const NOTICE: Record<string, string> = {
+  pending_approval: "Seu cadastro está em análise. Assim que liberarmos o acesso, avisamos por email.",
+  suspended:        "Seu acesso está suspenso no momento. Fale com o suporte para reativar.",
+}
 
 export default function SignInPage() {
   const router = useRouter()
@@ -16,17 +22,16 @@ export default function SignInPage() {
     setError("")
     setLoading(true)
 
-    const form = new FormData(e.currentTarget)
-    const result = await signIn("credentials", {
-      email: form.get("email"),
-      password: form.get("password"),
-      redirect: false,
-    })
-
-    setLoading(false)
+    const form  = new FormData(e.currentTarget)
+    const email = String(form.get("email") ?? "")
+    const pw    = String(form.get("password") ?? "")
+    const result = await signIn("credentials", { email, password: pw, redirect: false })
 
     if (result?.error) {
-      setError("E-mail ou senha inválidos.")
+      // Falhou: descobre se é conta bloqueada (só revela com senha correta).
+      const notice = await getSigninNotice(email, pw)
+      setError((notice.reason && NOTICE[notice.reason]) || "E-mail ou senha inválidos.")
+      setLoading(false)
     } else {
       router.push("/")
     }

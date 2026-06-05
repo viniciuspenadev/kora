@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation"
 import Link from "next/link"
-import { Users, Contact, MessagesSquare, Inbox, Crown, Smartphone, CalendarClock, Clock } from "lucide-react"
+import { Users, Contact, MessagesSquare, Inbox, Crown, Smartphone, CalendarClock, Clock, History } from "lucide-react"
 import { supabaseAdmin } from "@/lib/supabase"
+import { LifecycleActions } from "@/components/admin/lifecycle-actions"
+import { STATE_META, normalizeState, trialCountdownLabel } from "@/lib/lifecycle-shared"
 
 function fmtNum(n: number): string {
   return n.toLocaleString("pt-BR")
@@ -35,11 +37,15 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
 
   const { data: tenant } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, plan, active, created_at")
+    .select("id, name, plan, active, lifecycle_state, trial_ends_at, created_at")
     .eq("id", id)
     .maybeSingle()
 
   if (!tenant) notFound()
+
+  const lcState   = normalizeState(tenant.lifecycle_state as string | null)
+  const lcMeta    = STATE_META[lcState]
+  const countdown = lcState === "trialing" ? trialCountdownLabel(tenant.trial_ends_at as string | null) : null
 
   const [
     { count: usersCount },
@@ -49,6 +55,7 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
     ownerRes,
     instanceRes,
     lastConvRes,
+    eventsRes,
   ] = await Promise.all([
     supabaseAdmin.from("tenant_users").select("id", { count: "exact", head: true }).eq("tenant_id", id).eq("active", true),
     supabaseAdmin.from("chat_contacts").select("id", { count: "exact", head: true }).eq("tenant_id", id),
@@ -57,7 +64,10 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
     supabaseAdmin.from("tenant_users").select("role, profiles!tenant_users_user_id_fkey ( full_name, email )").eq("tenant_id", id).eq("role", "owner").maybeSingle(),
     supabaseAdmin.from("whatsapp_instances").select("status, phone_number").eq("tenant_id", id).order("created_at", { ascending: true }).limit(1).maybeSingle(),
     supabaseAdmin.from("chat_conversations").select("last_message_at").eq("tenant_id", id).order("last_message_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
+    supabaseAdmin.from("audit_log").select("action, actor_email, metadata, created_at").eq("target_type", "tenant").eq("target_id", id).like("action", "tenant.lifecycle.%").order("created_at", { ascending: false }).limit(20),
   ])
+
+  const lifecycleEvents = (eventsRes.data ?? []) as { action: string; actor_email: string | null; metadata: { from?: string; to?: string } | null; created_at: string }[]
 
   const ownerProf = ownerRes.data?.profiles as { full_name: string | null; email: string } | { full_name: string | null; email: string }[] | null
   const owner = Array.isArray(ownerProf) ? ownerProf[0] : ownerProf
@@ -94,6 +104,22 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
         })}
       </div>
 
+      {/* Ciclo de vida — estado atual + ações válidas (máquina de estados) */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden">
+        <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+          <h2 className="text-sm font-bold text-slate-900">Ciclo de vida</h2>
+          <span className={`inline-flex items-center gap-1.5 h-6 text-[11px] font-semibold px-2.5 rounded-md border ${lcMeta.badge}`}>
+            <span className={`size-1.5 rounded-full ${lcMeta.dot}`} />{lcMeta.label}
+          </span>
+        </div>
+        <div className="px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
+          <p className="text-xs text-slate-500">
+            {lcMeta.hint}{countdown ? <> · <span className="font-medium text-slate-700">trial {countdown}</span></> : ""}
+          </p>
+          <LifecycleActions tenantId={id} state={lcState} size="md" />
+        </div>
+      </div>
+
       {/* Info do tenant */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-100">
@@ -121,6 +147,34 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
           </InfoRow>
         </div>
       </div>
+
+      {/* Histórico do ciclo de vida (audit_log) */}
+      {lifecycleEvents.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2">
+            <History className="size-4 text-slate-400" />
+            <h2 className="text-sm font-bold text-slate-900">Histórico</h2>
+          </div>
+          <ol className="divide-y divide-slate-100">
+            {lifecycleEvents.map((e, i) => {
+              const to   = e.metadata?.to   ? STATE_META[normalizeState(e.metadata.to)]   : null
+              const from = e.metadata?.from ? STATE_META[normalizeState(e.metadata.from)] : null
+              return (
+                <li key={i} className="flex items-center gap-3 px-5 py-3">
+                  <span className={`size-2 rounded-full shrink-0 ${to?.dot ?? "bg-slate-300"}`} />
+                  <div className="min-w-0 flex-1 text-sm">
+                    <span className="text-slate-600">{from?.label ?? "—"}</span>
+                    <span className="text-slate-300 mx-1.5">→</span>
+                    <span className="font-semibold text-slate-900">{to?.label ?? "—"}</span>
+                    <span className="text-[11px] text-slate-400 ml-2">· {e.actor_email ?? "sistema"}</span>
+                  </div>
+                  <span className="text-[11px] text-slate-400 tabular-nums shrink-0">{fmtRelative(e.created_at)}</span>
+                </li>
+              )
+            })}
+          </ol>
+        </div>
+      )}
     </div>
   )
 }

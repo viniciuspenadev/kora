@@ -216,7 +216,9 @@ export interface VerificationEmailContext {
 
 /** Código de confirmação de email no cadastro público do trial (/signup). */
 export function buildVerificationEmail(ctx: VerificationEmailContext): { subject: string; html: string; text: string } {
-  const subject = `Seu código de verificação: ${ctx.code}`
+  // Assunto SEM o código — o OTP é segredo de vida curta e não pode persistir no
+  // email_outbox.subject nem vazar em preview de notificação. Código só no corpo.
+  const subject = `Seu código de verificação · Kora`
   const logoUrl = `${getAppBaseUrl()}/logo_kora.png`
 
   const text = `Olá, ${ctx.firstName}!

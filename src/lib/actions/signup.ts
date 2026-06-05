@@ -35,8 +35,14 @@ const DEFAULT_STAGES = [
 
 // ── helpers ───────────────────────────────────────────────────────
 const digits  = (s?: string) => (s ?? "").replace(/\D/g, "")
-const sha256  = (s: string)  => crypto.createHash("sha256").update(s).digest("hex")
 const isEmail = (s: string)  => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length <= 254
+
+// Hash do código com PEPPER (HMAC) — segredo do servidor, nunca no banco. Mesmo
+// que `signup_verifications` vaze, sem o pepper o code_hash é irreversível (um
+// SHA puro de 6 dígitos = rainbow-table trivial de 1M). Default = AUTH_SECRET
+// (sempre setado em prod); override opcional via OTP_PEPPER.
+const OTP_PEPPER = process.env.OTP_PEPPER || process.env.AUTH_SECRET || "kora-otp-dev-pepper"
+const hashCode = (code: string) => crypto.createHmac("sha256", OTP_PEPPER).update(code).digest("hex")
 
 function isValidCPF(v: string): boolean {
   const d = digits(v)
@@ -70,7 +76,16 @@ function slugify(s: string): string {
 
 async function clientIp(): Promise<string | undefined> {
   const h = await headers()
-  return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || undefined
+  // NÃO confiar no IP mais à ESQUERDA do X-Forwarded-For (é fornecido pelo cliente
+  // e spoofável). O proxy (Traefik/EasyPanel) ANEXA o IP real à direita → pegamos
+  // o N-ésimo a partir do fim, onde N = nº de proxies confiáveis (default 1).
+  const hops = Math.max(1, parseInt(process.env.XFF_TRUSTED_HOPS ?? "1", 10) || 1)
+  const xff = h.get("x-forwarded-for")
+  if (xff) {
+    const parts = xff.split(",").map((s) => s.trim()).filter(Boolean)
+    if (parts.length) return parts[Math.max(0, parts.length - hops)]
+  }
+  return h.get("x-real-ip") || undefined
 }
 
 /** True se email/CPF-CNPJ/telefone já pertencem a alguém (anti-abuse). */
@@ -135,6 +150,13 @@ export async function startSignup(input: SignupInput): Promise<Result> {
   const pwErr = validatePassword(input.password)
   if (pwErr) return { ok: false, error: pwErr }
 
+  // Cap por IDENTIDADE (email) — sobrevive a spoof de X-Forwarded-For. Bucket
+  // compartilhado com o reenvio: no máx 8 códigos por email/hora (anti
+  // email-bombing de vítima + brute por reemissão).
+  if (!rateLimit(`signup:id:${email}`, 8, 60 * 60_000).ok) {
+    return { ok: false, error: "Muitas tentativas para este email. Tente novamente mais tarde." }
+  }
+
   // Captcha (fail-closed em produção)
   if (!(await verifyTurnstile(input.captchaToken, ip))) {
     return { ok: false, error: "Falha na verificação anti-robô. Recarregue a página e tente de novo." }
@@ -163,7 +185,7 @@ export async function startSignup(input: SignupInput): Promise<Result> {
 
   await supabaseAdmin.from("signup_verifications").delete().eq("email", email).is("consumed_at", null)
   const { error: insErr } = await supabaseAdmin.from("signup_verifications").insert({
-    email, code_hash: sha256(code), password_hash: passwordHash,
+    email, code_hash: hashCode(code), password_hash: passwordHash,
     name, phone, person_type: type, tax_id: tax, plan_id: plan?.id ?? null,
     ip: ip ?? null, expires_at: new Date(Date.now() + CODE_TTL_MIN * 60_000).toISOString(),
   })
@@ -192,6 +214,10 @@ export async function resendSignupCode(email: string): Promise<Result> {
     return { ok: false, error: "Muitas solicitações. Aguarde alguns minutos." }
   }
   const e = email?.trim().toLowerCase()
+  // Cap por identidade (mesmo bucket do startSignup): 8 códigos/email/hora.
+  if (e && !rateLimit(`signup:id:${e}`, 8, 60 * 60_000).ok) {
+    return { ok: false, error: "Muitas solicitações para este email. Aguarde alguns minutos." }
+  }
   const { data: row } = await supabaseAdmin
     .from("signup_verifications").select("*")
     .eq("email", e).is("consumed_at", null)
@@ -202,7 +228,7 @@ export async function resendSignupCode(email: string): Promise<Result> {
   }
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0")
   await supabaseAdmin.from("signup_verifications").update({
-    code_hash: sha256(code), attempts: 0, created_at: new Date().toISOString(),
+    code_hash: hashCode(code), attempts: 0, created_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + CODE_TTL_MIN * 60_000).toISOString(),
   }).eq("id", row.id)
   const mail = await sendEmail({
@@ -229,7 +255,7 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
   if (!row)                                              return { ok: false, error: "Cadastro não encontrado. Comece de novo." }
   if (new Date(row.expires_at).getTime() < Date.now())  return { ok: false, error: "O código expirou. Reenvie um novo." }
   if (row.attempts >= MAX_ATTEMPTS)                      return { ok: false, error: "Muitas tentativas. Reenvie um novo código." }
-  if (sha256(c) !== row.code_hash) {
+  if (hashCode(c) !== row.code_hash) {
     await supabaseAdmin.from("signup_verifications").update({ attempts: row.attempts + 1 }).eq("id", row.id)
     return { ok: false, error: "Código incorreto." }
   }

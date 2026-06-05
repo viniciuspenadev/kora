@@ -11,7 +11,7 @@ export default async function TenantsPage() {
     await Promise.all([
       supabaseAdmin
         .from("tenants")
-        .select("id, name, slug, plan, active, created_at, plans ( name )")
+        .select("id, name, slug, plan, active, lifecycle_state, trial_ends_at, created_at, plans ( name )")
         .order("created_at", { ascending: false }),
       supabaseAdmin.from("tenant_billing_profile").select("tenant_id, person_type, tax_id"),
       supabaseAdmin.from("tenant_users").select("tenant_id"),
@@ -52,6 +52,8 @@ export default async function TenantsPage() {
       plan:               t.plan,
       plan_name:          planName,
       active:             t.active,
+      lifecycle_state:    (t as { lifecycle_state: string | null }).lifecycle_state ?? null,
+      trial_ends_at:      (t as { trial_ends_at: string | null }).trial_ends_at ?? null,
       created_at:         t.created_at,
       person_type:        bp?.person_type ?? null,
       tax_id:             bp?.tax_id ?? null,
