@@ -39,7 +39,7 @@ export default async function TenantUsersPage({ params }: { params: Promise<{ id
       </div>
 
       {rows.length === 0 ? (
-        <p className="px-5 py-8 text-sm text-slate-400 text-center">Nenhum usuário neste tenant.</p>
+        <p className="px-5 py-8 text-sm text-slate-400 text-center">Nenhum usuário neste cliente.</p>
       ) : (
         <div className="divide-y divide-slate-100">
           {rows.map((r) => (

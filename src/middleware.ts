@@ -21,25 +21,37 @@ const SUPABASE_HOST  = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/^ht
 const SUPABASE_WS    = SUPABASE_HOST ? `wss://${SUPABASE_HOST}` : ""
 const SUPABASE_HTTPS = SUPABASE_HOST ? `https://${SUPABASE_HOST}` : ""
 
-const CSP_APP = [
-  "default-src 'self'",
-  // 'unsafe-eval' temporariamente por Next 16 + React 19 dev/hydration; remover em S2.1
-  `script-src 'self' 'unsafe-inline' 'unsafe-eval'`,
-  // 'unsafe-inline' style por styled-jsx + Tailwind runtime; remover em S2.1
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: blob: https:",
-  // Áudio/vídeo do Supabase Storage (signed URLs) — sem media-src cai em default-src e bloqueia
-  `media-src 'self' blob: ${SUPABASE_HTTPS}`.trim(),
-  // Supabase REST + Realtime + Storage; OpenAI direto não chamamos do client
-  `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}`.trim(),
-  // 'self' permite iframes da própria app (ex: preview de email em /admin/emails).
-  // Mantém proteção anti-clickjacking de origens externas.
-  "frame-ancestors 'self'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "object-src 'none'",
-].join("; ")
+// Cloudflare Turnstile (captcha do /signup) carrega script + iframe de
+// challenges.cloudflare.com. Liberado SÓ na rota /signup (blast radius mínimo).
+const TURNSTILE = "https://challenges.cloudflare.com"
+
+function buildCsp(turnstile: boolean): string {
+  const cf = turnstile ? ` ${TURNSTILE}` : ""
+  return [
+    "default-src 'self'",
+    // 'unsafe-eval' temporariamente por Next 16 + React 19 dev/hydration; remover em S2.1
+    `script-src 'self' 'unsafe-inline' 'unsafe-eval'${cf}`,
+    // 'unsafe-inline' style por styled-jsx + Tailwind runtime; remover em S2.1
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https:",
+    // Áudio/vídeo do Supabase Storage (signed URLs) — sem media-src cai em default-src e bloqueia
+    `media-src 'self' blob: ${SUPABASE_HTTPS}`.trim(),
+    // Supabase REST + Realtime + Storage; OpenAI direto não chamamos do client
+    `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}`.trim(),
+    // iframe do widget Turnstile (só no /signup); 'self' p/ preview de email no admin
+    `frame-src 'self'${cf}`,
+    // 'self' permite iframes da própria app (ex: preview de email em /admin/emails).
+    // Mantém proteção anti-clickjacking de origens externas.
+    "frame-ancestors 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join("; ")
+}
+
+const CSP_APP    = buildCsp(false)
+const CSP_SIGNUP = buildCsp(true)
 
 const PERMISSIONS_POLICY = [
   "camera=()",
@@ -78,7 +90,8 @@ export function middleware(req: NextRequest) {
   // é fallback pra browsers antigos.
   res.headers.set("X-Frame-Options",      "SAMEORIGIN")
   res.headers.set("Permissions-Policy",   PERMISSIONS_POLICY)
-  res.headers.set("Content-Security-Policy", CSP_APP)
+  const isSignup = path === "/signup" || path.startsWith("/signup/")
+  res.headers.set("Content-Security-Policy", isSignup ? CSP_SIGNUP : CSP_APP)
 
   return res
 }

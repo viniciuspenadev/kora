@@ -54,7 +54,7 @@ export function TenantForm() {
             />
           </FormRow>
 
-          <FormRow label="Slug" hint="Identifica o tenant nas URLs. Gerado a partir do nome.">
+          <FormRow label="Slug" hint="Identifica o cliente nas URLs. Gerado a partir do nome.">
             <input value={slug} readOnly placeholder="gerado-automaticamente" className={inputReadOnlyCls} />
           </FormRow>
 
@@ -69,7 +69,7 @@ export function TenantForm() {
         </div>
       </SectionCard>
 
-      <SectionCard icon={UserPlus} title="Owner" description="Primeiro usuário do tenant. Pode fazer login imediatamente.">
+      <SectionCard icon={UserPlus} title="Owner" description="Primeiro usuário do cliente. Pode fazer login imediatamente.">
         <div className="space-y-4">
           <FormRow label="Nome do owner" required>
             <input name="owner_name" required className={inputCls} />
@@ -99,7 +99,7 @@ export function TenantForm() {
           disabled={pending || !name}
           className="inline-flex items-center justify-center gap-2 h-10 px-5 bg-primary hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors"
         >
-          {pending ? <><Loader2 className="size-4 animate-spin" /> Criando…</> : "Criar tenant"}
+          {pending ? <><Loader2 className="size-4 animate-spin" /> Criando…</> : "Criar cliente"}
         </button>
       </div>
     </form>

@@ -752,13 +752,37 @@ function decodeCtwaClid(payload?: string | null): string | undefined {
  * Retorna sempre no shape ExternalAdReply (com `attributionFormat` marcando a
  * origem) ou null se a mensagem não veio de anúncio.
  */
+/**
+ * Normaliza o externalAdReply CRU do Baileys pra shape 100% serializável e
+ * renderizável. O Baileys manda `thumbnail`/`jpegThumbnail` (e raramente
+ * `ctwaClid`/`ctwaPayload`) como **Buffer/Uint8Array** — gravar isso no jsonb
+ * vira `{"0":..,"N":..}` e estoura o **React #31** no inbox (objeto como filho).
+ * Aqui: primitivos passam; o binário do thumbnail vira **base64 string** (o
+ * render passa a exibir); qualquer outro objeto/Buffer é **descartado**.
+ */
+function normalizeBaileysAdReply(raw: Record<string, unknown>): ExternalAdReply {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (v == null) continue
+    const t = typeof v
+    if (t === "string" || t === "number" || t === "boolean") { out[k] = v; continue }
+    if (k === "thumbnail" || k === "jpegThumbnail") {
+      try { out[k] = Buffer.from(v as Uint8Array).toString("base64") } catch { /* descarta */ }
+    }
+    // demais objetos/Buffers (ex: ctwaClid binário) são descartados — não-renderizáveis.
+  }
+  if (!out.thumbnail && typeof out.jpegThumbnail === "string") out.thumbnail = out.jpegThumbnail
+  out.attributionFormat = "external_ad_reply"
+  return out as unknown as ExternalAdReply
+}
+
 function extractAdAttribution(msg: EvolutionMessageData): ExternalAdReply | null {
   const ctx = extractContextInfo(msg)
   if (!ctx) return null
 
-  // A) Formato rico — usa direto, só carimba a origem.
+  // A) Formato rico — normaliza (Baileys manda thumbnail como Buffer) + carimba origem.
   if (ctx.externalAdReply) {
-    return { ...ctx.externalAdReply, attributionFormat: "external_ad_reply" }
+    return normalizeBaileysAdReply(ctx.externalAdReply as Record<string, unknown>)
   }
 
   // B) Formato enxuto (LID). Detecta por qualquer sinal de CTWA.

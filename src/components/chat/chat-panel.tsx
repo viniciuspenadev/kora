@@ -15,6 +15,7 @@ import { SourceChip } from "@/components/chat/source-chip"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { buildTimelineGroups, TimelineDivider, DateDivider } from "@/components/chat/timeline-divider"
 import type { ChatMessage, ChatConversation, ChatQuickReply, ExternalAdReply } from "@/types/chat"
+import { sanitizeAdReply } from "@/lib/ad-reply"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
 
 interface Props {
@@ -472,9 +473,10 @@ export function ChatPanel({
  * Meta (Click-to-WhatsApp). Sempre visível enquanto a conv tá aberta — útil
  * pro atendente saber o contexto sem precisar abrir a sidebar.
  */
-function AdSourceBanner({ ad }: { ad: ExternalAdReply | null }) {
+function AdSourceBanner({ ad: adRaw }: { ad: ExternalAdReply | null }) {
   const [thumbBroken, setThumbBroken] = useState(false)
 
+  const ad = sanitizeAdReply(adRaw)
   if (!ad) return null
 
   const thumb = ad.thumbnailUrl

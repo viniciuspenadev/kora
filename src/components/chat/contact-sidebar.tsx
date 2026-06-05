@@ -22,6 +22,7 @@ import {
   removeConversationParticipant,
 } from "@/lib/actions/chat"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
+import { sanitizeAdReply } from "@/lib/ad-reply"
 import {
   moveConversation,
   markConversationWonLost,
@@ -954,12 +955,13 @@ function TagsCard({
 // ═══════════════════════════════════════════════════════════════
 
 function LeadSourceCard({
-  contact, adReply,
+  contact, adReply: adReplyRaw,
 }: {
   contact: ChatContact
   adReply: Props["externalAdReply"]
 }) {
   const src = sourceMeta(contact.source)
+  const adReply = sanitizeAdReply(adReplyRaw)
   const [thumbBroken, setThumbBroken] = useState(false)
 
   return (

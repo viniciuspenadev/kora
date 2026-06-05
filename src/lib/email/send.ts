@@ -206,6 +206,68 @@ Kora
   return { subject, html, text }
 }
 
+// ── Verificação de cadastro (trial self-serve) ────────────────────
+
+export interface VerificationEmailContext {
+  firstName:      string
+  code:           string
+  expiresMinutes: number
+}
+
+/** Código de confirmação de email no cadastro público do trial (/signup). */
+export function buildVerificationEmail(ctx: VerificationEmailContext): { subject: string; html: string; text: string } {
+  const subject = `Seu código de verificação: ${ctx.code}`
+  const logoUrl = `${getAppBaseUrl()}/logo_kora.png`
+
+  const text = `Olá, ${ctx.firstName}!
+
+Seu código de verificação no Kora é:
+
+${ctx.code}
+
+Digite esse código na tela de cadastro pra confirmar seu email. Ele expira em ${ctx.expiresMinutes} minutos.
+
+Se você não tentou criar uma conta no Kora, ignore este email.
+
+—
+Kora
+`
+
+  const html = `<!doctype html>
+<html lang="pt-BR">
+<body style="margin:0;padding:0;background:#f8fafc;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 16px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:16px;border:1px solid #e2e8f0;overflow:hidden;">
+        <tr><td style="padding:32px 32px 16px 32px;">
+          <img src="${logoUrl}" alt="Kora" height="28" style="display:block;height:28px;width:auto;border:0;outline:none;text-decoration:none;" />
+        </td></tr>
+        <tr><td style="padding:0 32px 8px 32px;">
+          <h1 style="margin:0 0 8px 0;font-size:20px;font-weight:700;color:#0f172a;line-height:1.3;">Confirme seu email</h1>
+          <p style="margin:0 0 20px 0;font-size:14px;color:#475569;line-height:1.6;">
+            Olá, <strong>${escapeHtml(ctx.firstName)}</strong>! Use o código abaixo pra confirmar seu cadastro no Kora.
+          </p>
+        </td></tr>
+        <tr><td style="padding:0 32px 24px 32px;">
+          <div style="background:#f0f4ff;border:1px solid #bcd0ff;border-radius:12px;padding:18px;text-align:center;">
+            <span style="font-size:34px;font-weight:800;letter-spacing:10px;color:#004add;font-variant-numeric:tabular-nums;">${escapeHtml(ctx.code)}</span>
+          </div>
+          <p style="margin:16px 0 0 0;font-size:12px;color:#94a3b8;line-height:1.6;">
+            Este código expira em ${ctx.expiresMinutes} minutos. Se você não tentou criar uma conta, ignore este email.
+          </p>
+        </td></tr>
+      </table>
+      <p style="max-width:480px;margin:16px auto 0 auto;font-size:11px;color:#94a3b8;text-align:center;">
+        Kora · WhatsApp Business para times de atendimento
+      </p>
+    </td></tr>
+  </table>
+</body>
+</html>`
+
+  return { subject, html, text }
+}
+
 // ── Relatório diário ──────────────────────────────────────────────
 
 export interface DailyReportContext {

@@ -14,9 +14,9 @@ export default function NewTenantPage() {
           <ChevronLeft className="size-4 text-slate-600" />
         </Link>
         <div className="flex items-center gap-1.5 text-sm font-medium text-slate-400">
-          <span>Tenants</span>
+          <span>Clientes</span>
           <ChevronRight className="size-3.5" />
-          <span className="text-slate-900">Novo tenant</span>
+          <span className="text-slate-900">Novo cliente</span>
         </div>
       </div>
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6">

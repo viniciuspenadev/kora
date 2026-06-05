@@ -14,22 +14,30 @@ interface Props {
    * ou lista que precisa ir borda-a-borda.
    */
   flush?:       boolean
+  /**
+   * `soft` (default) = borda clara + shadow-card (look atual).
+   * `outline` = flat sem sombra + stroke escuro firme (look editorial, menos "cara de IA").
+   * Em experimentação na página de detalhe do template.
+   */
+  variant?:     "soft" | "outline"
 }
 
 export function SectionCard({
-  title, description, icon: Icon, actions, children, className, bodyClassName, flush,
+  title, description, icon: Icon, actions, children, className, bodyClassName, flush, variant = "soft",
 }: Props) {
   const hasHeader = title || actions
+  const outline = variant === "outline"
 
   return (
     <section
       className={cn(
-        "bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden",
+        "bg-white rounded-xl overflow-hidden",
+        outline ? "border border-slate-900/15" : "border border-slate-200 shadow-card",
         className,
       )}
     >
       {hasHeader && (
-        <header className="flex items-start gap-3 px-5 py-4 border-b border-slate-100">
+        <header className={cn("flex items-start gap-3 px-5 py-4 border-b", outline ? "border-slate-900/10" : "border-slate-100")}>
           {Icon && (
             <div className="size-8 rounded-lg bg-primary-50 flex items-center justify-center shrink-0">
               <Icon className="size-4 text-primary-600" strokeWidth={1.75} />

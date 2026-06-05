@@ -24,13 +24,17 @@ type AccessState =
  * - "error":  falha transitória (DB indisponível) → fail-open (mantém o token, re-tenta depois).
  * Platform admin nunca é deslogado por perder membership de tenant (opera via /admin).
  */
+// Estados de ciclo de vida do tenant que NEGAM acesso ao app (trial não-ativado,
+// suspenso por fim do trial, desativado). Tenant legado/pago tem lifecycle NULL.
+const BLOCKED_LIFECYCLE = new Set(["pending_approval", "suspended", "deactivated"])
+
 async function revalidateAccess(
   userId: string,
   tenantId: string,
   wasPlatformAdmin: boolean,
 ): Promise<AccessState> {
   try {
-    const [mem, pa] = await Promise.all([
+    const [mem, pa, ten] = await Promise.all([
       tenantId
         ? supabaseAdmin
             .from("tenant_users")
@@ -42,6 +46,9 @@ async function revalidateAccess(
       wasPlatformAdmin
         ? supabaseAdmin.from("platform_admins").select("id").eq("user_id", userId).maybeSingle()
         : Promise.resolve({ data: null as { id: string } | null, error: null }),
+      tenantId
+        ? supabaseAdmin.from("tenants").select("active, lifecycle_state").eq("id", tenantId).maybeSingle()
+        : Promise.resolve({ data: null as { active: boolean; lifecycle_state: string | null } | null, error: null }),
     ])
 
     if (mem.error || pa.error) return { status: "error" }
@@ -50,7 +57,13 @@ async function revalidateAccess(
     const membership = mem.data as { role: string; active: boolean } | null
     const membershipActive = !!membership && membership.active === true
 
-    if (!isPlatformAdmin && !membershipActive) return { status: "revoked" }
+    // Gate de tenant: tenant inativo/pendente/suspenso = sem acesso (trial não-ativado,
+    // suspensão por fim do trial, etc). Fail-OPEN em erro de query (não trava login).
+    const tenant = ten.data as { active: boolean; lifecycle_state: string | null } | null
+    const tenantBlocked = !ten.error && !!tenant &&
+      (tenant.active === false || BLOCKED_LIFECYCLE.has(tenant.lifecycle_state ?? ""))
+
+    if (!isPlatformAdmin && (!membershipActive || tenantBlocked)) return { status: "revoked" }
     return { status: "ok", role: membershipActive ? membership!.role : "", isPlatformAdmin }
   } catch {
     return { status: "error" }
@@ -179,9 +192,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         const isPlatformAdmin = !!platformAdmin
 
-        if ((!memberships || memberships.length === 0) && !isPlatformAdmin) return null
+        // Gate de tenant: remove memberships de tenant inativo/pendente/suspenso
+        // (trial não-ativado pelo admin, suspenso por fim do trial, etc).
+        // Fail-OPEN em erro de query (não bloqueia login por falha transitória).
+        let accessible = memberships ?? []
+        if (accessible.length > 0) {
+          const { data: tens, error: tenErr } = await supabaseAdmin
+            .from("tenants")
+            .select("id, active, lifecycle_state")
+            .in("id", accessible.map((m) => m.tenant_id))
+          if (!tenErr && tens) {
+            const okIds = new Set(
+              tens.filter((t) => t.active === true && !BLOCKED_LIFECYCLE.has(t.lifecycle_state ?? "")).map((t) => t.id),
+            )
+            accessible = accessible.filter((m) => okIds.has(m.tenant_id))
+          }
+        }
 
-        const tenantId = memberships?.[0]?.tenant_id ?? ""
+        if (accessible.length === 0 && !isPlatformAdmin) return null
+
+        const tenantId = accessible[0]?.tenant_id ?? ""
 
         // Registra a sessão/device no gerenciador (presença + auditoria + revogável).
         const sid = await recordSession(
@@ -196,7 +226,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email:           profile.email,
           name:            profile.full_name,
           tenantId,
-          role:            memberships?.[0]?.role ?? "",
+          role:            accessible[0]?.role ?? "",
           isPlatformAdmin,
           sid,
         }

@@ -16,7 +16,7 @@
  *   3. Aparece automaticamente em /admin/emails
  */
 
-import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail } from "./send"
+import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVerificationEmail } from "./send"
 
 const WA = "https://wa.me/5511987253394"
 
@@ -30,6 +30,18 @@ export interface EmailTemplateMeta {
 }
 
 export const EMAIL_CATALOG: EmailTemplateMeta[] = [
+  {
+    slug:        "signup_verification",
+    name:        "Verificação de cadastro",
+    description: "Código de confirmação enviado quando um novo cliente se cadastra no trial pelo site (/signup).",
+    trigger:     "Disparado ao iniciar o cadastro público; o cliente digita o código pra confirmar o email antes de criar a conta.",
+    variables: [
+      { key: "firstName",      description: "Primeiro nome de quem se cadastrou",     example: "Maria" },
+      { key: "code",           description: "Código numérico de verificação",          example: "428193" },
+      { key: "expiresMinutes", description: "Validade do código em minutos",           example: "15" },
+    ],
+    build: () => buildVerificationEmail({ firstName: "Maria", code: "428193", expiresMinutes: 15 }),
+  },
   {
     slug:        "invite",
     name:        "Convite de equipe",

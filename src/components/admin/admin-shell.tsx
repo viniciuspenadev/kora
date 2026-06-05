@@ -8,7 +8,7 @@ import { signOut } from "next-auth/react"
 
 const nav = [
   { href: "/admin",          label: "Visão geral", icon: LayoutDashboard },
-  { href: "/admin/tenants",    label: "Tenants",     icon: Building2 },
+  { href: "/admin/tenants",    label: "Clientes",    icon: Building2 },
   { href: "/admin/planos",     label: "Planos",      icon: Package },
   { href: "/admin/financeiro", label: "Financeiro",  icon: Wallet },
   { href: "/admin/whatsapp",   label: "WhatsApp",    icon: Smartphone },

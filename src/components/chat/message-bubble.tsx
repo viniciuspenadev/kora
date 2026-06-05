@@ -8,6 +8,7 @@ import {
   User as UserIcon, ListChecks, Square, Sparkles, ArrowRight,
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
+import { sanitizeAdReply } from "@/lib/ad-reply"
 import { AudioPlayer } from "./audio-player"
 import { resolveMediaUrl } from "@/lib/media"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
@@ -206,7 +207,7 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
 
   const meta          = (message.metadata ?? {}) as MessageMeta
   const quoted        = meta.quoted ?? null
-  const adReply       = meta.external_ad_reply
+  const adReply       = sanitizeAdReply(meta.external_ad_reply)
   const sentFromPhone = !isIncoming && !!meta.via_celular
   const isAiMessage   = message.sender_type === "bot" && (message.metadata as { ai?: boolean })?.ai === true
 
@@ -696,7 +697,7 @@ function formatMediaType(t: string | number | undefined): string | null {
   return null
 }
 
-function AdReplyCard({ ad }: { ad: ExternalAdReply | undefined }) {
+function AdReplyCard({ ad }: { ad: ExternalAdReply | null | undefined }) {
   const [copiedClid, setCopiedClid] = useState(false)
   const [copiedId, setCopiedId]     = useState(false)
   const [thumbBroken, setThumbBroken] = useState(false)

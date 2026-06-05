@@ -147,8 +147,8 @@ export default function SignInPage() {
 
         <p className="text-center text-xs text-slate-500 mt-8 relative z-10">
           Não possui uma conta?{" "}
-          <a href="#" className="font-medium text-indigo-600 hover:text-indigo-700 transition-colors">
-            Solicitar acesso
+          <a href="/signup" className="font-medium text-indigo-600 hover:text-indigo-700 transition-colors">
+            Criar conta grátis
           </a>
         </p>
       </div>
