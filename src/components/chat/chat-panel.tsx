@@ -29,6 +29,8 @@ interface Props {
   hasMoreOlder?:  boolean
   loadingOlder?:  boolean
   onLoadOlder?:   () => void
+  /** Carga inicial das mensagens ao abrir a conversa → mostra skeleton. */
+  loadingMessages?: boolean
   // Envio otimista — orquestrado em InboxClient
   onSendText:     (content: string, isPrivate: boolean) => Promise<void>
   onSendMedia:    (file: File, caption: string) => Promise<void>
@@ -55,9 +57,35 @@ function fmtWindowLeft(ms: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
+// Placeholder da thread enquanto a 1ª página de mensagens carrega (~130ms).
+// Bolhas de larguras/lados variados pra parecer uma conversa real — evita o
+// flash de "Nenhuma mensagem" no clique.
+const SKELETON_ROWS = [
+  { side: "left",  w: "w-40" }, { side: "left",  w: "w-56" },
+  { side: "right", w: "w-48" }, { side: "left",  w: "w-32" },
+  { side: "right", w: "w-60" }, { side: "right", w: "w-36" },
+] as const
+
+function MessageSkeleton() {
+  return (
+    <div className="space-y-3 py-2" aria-hidden="true">
+      {SKELETON_ROWS.map((r, i) => (
+        <div key={i} className={`flex ${r.side === "right" ? "justify-end" : "justify-start"}`}>
+          <div
+            className={`h-10 ${r.w} max-w-[70%] rounded-2xl bg-slate-200/70 animate-pulse ${
+              r.side === "right" ? "rounded-br-sm" : "rounded-bl-sm"
+            }`}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function ChatPanel({
   conversation, messages, quickReplies, agents, onStatusChange, onAssign,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
+  loadingMessages = false,
   onSendText, onSendMedia, onSendVoice, onArchiveToggle,
   onBack, onOpenContact,
 }: Props) {
@@ -418,7 +446,9 @@ export function ChatPanel({
             )}
           </div>
         )}
-        {messages.length === 0 ? (
+        {loadingMessages && messages.length === 0 ? (
+          <MessageSkeleton />
+        ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <Phone className="size-10 text-slate-200 mb-3" />
             <p className="text-sm font-medium text-slate-500 mb-1">Nenhuma mensagem</p>

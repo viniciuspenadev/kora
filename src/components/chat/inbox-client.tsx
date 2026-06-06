@@ -70,8 +70,10 @@ interface Props {
 
 const SEARCH_DEBOUNCE_MS = 300
 // Realtime é o caminho primário. Poll fica como fallback (token expirou,
-// WebSocket caiu, dropped events durante reconnect). 30s é suficiente.
+// WebSocket caiu, dropped events durante reconnect). 30s quando o WS está
+// saudável; 5s no modo degradado (WS caído) pra não ficar 30s no escuro.
 const POLL_INTERVAL_MS   = 30_000
+const POLL_DEGRADED_MS   = 5_000
 const STALE_MS           = 24 * 3600_000
 
 // Ordena por última mensagem (fallback created_at), desc. O server já entrega
@@ -132,6 +134,10 @@ export function InboxClient({
   // Tags por contato — estado (não prop) pra permitir update otimista no
   // toggle da sidebar sem revalidar o RSC inteiro do /inbox.
   const [tagsByContact, setTagsByContact] = useState(initialTagsByContact)
+  // Saúde do WebSocket do Realtime (canal da lista). true = caído/reconectando
+  // → mostra aviso + acelera o poll. NÃO afeta recebimento (webhook→DB é
+  // independente do navegador); é só a entrega ao vivo na tela deste atendente.
+  const [realtimeDown, setRealtimeDown]   = useState(false)
 
   // ── Filtros (server-side) ───────────────────────────────────
   const [statusFilter, setStatusFilter]     = useState(initialStatus)
@@ -151,7 +157,7 @@ export function InboxClient({
   const [activeMessages, setActiveMessages]     = useState<ChatMessage[]>([])
   const [hasMoreOlder, setHasMoreOlder]         = useState(false)
   const [loadingOlder, setLoadingOlder]         = useState(false)
-  const [, setLoadingMsg]                       = useState(false)
+  const [loadingMsg, setLoadingMsg]             = useState(false)
   const [, startTransition]                     = useTransition()
 
   // ── Refs ────────────────────────────────────────────────────
@@ -160,6 +166,11 @@ export function InboxClient({
   const abortRef        = useRef<AbortController | null>(null)
   const lastSyncRef     = useRef<string>(new Date().toISOString())
   const lastMsgSyncRef  = useRef<string>(new Date().toISOString())
+  const lastUnreadAtRef = useRef<number>(0)
+  // Latest-ref do poll pra o callback de status do canal disparar reconciliação
+  // sem entrar nas deps do effect (senão re-subscreveria a cada mudança de filtro).
+  const pollFnRef       = useRef<() => void>(() => {})
+  const wasDownRef      = useRef(false)
   const searchParams    = useSearchParams()
   const router          = useRouter()
   const pathname        = usePathname()
@@ -240,11 +251,7 @@ export function InboxClient({
         setConversations((prev) => {
           const byId = new Map(prev.map((c) => [c.id, c]))
           for (const u of updates) byId.set(u.id, u)
-          return Array.from(byId.values()).sort((a, b) => {
-            const da = a.last_message_at ?? a.created_at
-            const db = b.last_message_at ?? b.created_at
-            return new Date(db).getTime() - new Date(da).getTime()
-          })
+          return Array.from(byId.values()).sort(sortByLastMessage)
         })
       }
 
@@ -268,13 +275,21 @@ export function InboxClient({
       }
 
       // Total de não-lidas (badge global do inbox). Cobre tenant inteiro,
-      // não só convs já carregadas.
-      const total = await getUnreadTotal()
-      setUnreadTotal(total)
+      // não só convs já carregadas. Com o poll adaptativo (5s no modo
+      // degradado), limita a ~1x/30s pra não multiplicar o count query — o
+      // badge tolera essa cadência.
+      const nowMs = Date.now()
+      if (nowMs - lastUnreadAtRef.current >= POLL_INTERVAL_MS - 5_000) {
+        lastUnreadAtRef.current = nowMs
+        const total = await getUnreadTotal()
+        setUnreadTotal(total)
+      }
     } catch {
       // silently — próximo poll tenta de novo
     }
   }, [buildFilters])
+
+  pollFnRef.current = poll
 
   // ── Refetch quando filtros mudam ────────────────────────────
   // Primeira renderização usa dados do SSR — pula. A partir do 2º render
@@ -332,7 +347,9 @@ export function InboxClient({
     setHasMoreOlder(false)
     setLoadingMsg(true)
 
-    loadMessages(id).finally(() => setLoadingMsg(false))
+    // Só limpa o loading se ESTA conversa ainda é a ativa (evita apagar o
+    // skeleton da conversa nova quando troca-se rápido A→B).
+    loadMessages(id).finally(() => { if (activeIdRef.current === id) setLoadingMsg(false) })
 
     startTransition(async () => {
       await markConversationRead(id)
@@ -403,13 +420,14 @@ export function InboxClient({
 
   // Polling — fallback. Realtime cobre 95% dos updates; poll pega o que escapou
   // (token expirado, WebSocket caiu, eventos perdidos durante reconnect).
-  // Intervalo bem mais longo agora que Realtime é o caminho primário.
+  // Adaptativo: 30s com WS saudável, 5s quando caído (modo degradado).
   useEffect(() => {
-    pollRef.current = setInterval(poll, POLL_INTERVAL_MS)
+    const interval = realtimeDown ? POLL_DEGRADED_MS : POLL_INTERVAL_MS
+    pollRef.current = setInterval(poll, interval)
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [poll])
+  }, [poll, realtimeDown])
 
   // ── Realtime: lista de conversas do tenant ──────────────────
   // Channel único por tenant — UPDATE/INSERT em chat_conversations chega
@@ -418,6 +436,8 @@ export function InboxClient({
   useEffect(() => {
     if (!supabaseToken || !tenantId) return
     const client = getRealtimeClient(supabaseToken)
+    // Evita setState após o cleanup (unsubscribe dispara CLOSED).
+    let active = true
 
     const channel = client
       .channel(`list:${tenantId}`)
@@ -464,9 +484,23 @@ export function InboxClient({
           }
         },
       )
-      .subscribe()
+      .subscribe((status) => {
+        if (!active) return
+        if (status === "SUBSCRIBED") {
+          setRealtimeDown(false)
+          // Reconexão: reconcilia o que escapou durante a queda (1 poll imediato).
+          if (wasDownRef.current) {
+            wasDownRef.current = false
+            pollFnRef.current()
+          }
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          wasDownRef.current = true
+          setRealtimeDown(true)
+        }
+      })
 
     return () => {
+      active = false
       channel.unsubscribe()
     }
   }, [supabaseToken, tenantId])
@@ -614,11 +648,7 @@ export function InboxClient({
           ? { ...c, last_message_at: temp.created_at, last_message_preview: content.slice(0, 100), last_message_dir: "out" as const }
           : c
       )
-      return next.sort((a, b) => {
-        const da = a.last_message_at ?? a.created_at
-        const db = b.last_message_at ?? b.created_at
-        return new Date(db).getTime() - new Date(da).getTime()
-      })
+      return next.sort(sortByLastMessage)
     })
 
     try {
@@ -663,11 +693,7 @@ export function InboxClient({
           ? { ...c, last_message_at: temp.created_at, last_message_preview: preview, last_message_dir: "out" as const }
           : c
       )
-      return next.sort((a, b) => {
-        const da = a.last_message_at ?? a.created_at
-        const db = b.last_message_at ?? b.created_at
-        return new Date(db).getTime() - new Date(da).getTime()
-      })
+      return next.sort(sortByLastMessage)
     })
 
     try {
@@ -876,6 +902,12 @@ export function InboxClient({
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <PendingGroupsBanner />
+      {realtimeDown && (
+        <div className="px-4 py-1.5 text-[11px] font-medium flex items-center gap-2 bg-amber-50 text-amber-700 border-b border-amber-200">
+          <span className="size-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+          Reconectando ao tempo real… as mensagens continuam chegando normalmente.
+        </div>
+      )}
       {dedupNotice && (
         <div className={`px-4 py-2 text-xs font-medium flex items-center gap-2 border-b ${
           dedupNotice === "reopened"
@@ -949,6 +981,7 @@ export function InboxClient({
                   hasMoreOlder={hasMoreOlder}
                   loadingOlder={loadingOlder}
                   onLoadOlder={loadOlderMessages}
+                  loadingMessages={loadingMsg}
                   onSendText={handleSendText}
                   onSendMedia={handleSendMedia}
                   onSendVoice={handleSendVoice}
