@@ -33,3 +33,30 @@ export function sanitizeAdReply(
   }
   return safe as ExternalAdReply
 }
+
+/**
+ * Campos "pesados" do ad reply que NÃO devem ir nas cópias denormalizadas que
+ * trafegam em caminhos quentes: `chat_conversations.from_ad_meta` (payload da
+ * lista do inbox + re-broadcast Realtime a cada UPDATE) e
+ * `chat_contacts.metadata.first_ad_reply` (embed do contato na lista).
+ *
+ * O `thumbnail`/`jpegThumbnail` é a miniatura do anúncio em **base64** (~17 KB,
+ * até 35 KB) e `ctwaPayload` é um blob opaco da Meta. Ambos são redundantes: o
+ * render (AdSourceBanner, LeadSourceCard) sempre prefere `thumbnailUrl` /
+ * `originalImageUrl`, e só cairia no base64 como último fallback — cenário que
+ * hoje não existe em nenhuma linha (toda atribuição traz a URL).
+ *
+ * A cópia RICA permanece em `chat_messages.metadata.external_ad_reply`, que não
+ * está em caminho quente (carrega só ao abrir a conversa) e serve de fallback
+ * autoritativo. Idempotente e não-mutante.
+ */
+const HEAVY_AD_FIELDS = ["thumbnail", "jpegThumbnail", "ctwaPayload"] as const
+
+export function slimAdMeta(
+  ad: ExternalAdReply | null | undefined,
+): ExternalAdReply | null {
+  if (!ad || typeof ad !== "object") return ad ?? null
+  const slim: Record<string, unknown> = { ...ad }
+  for (const k of HEAVY_AD_FIELDS) delete slim[k]
+  return slim as ExternalAdReply
+}

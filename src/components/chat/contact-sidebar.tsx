@@ -45,6 +45,9 @@ interface Props {
   stages:        StageMini[]
   tags:          TagMini[]
   tagsByContact: Record<string, string[]>
+  /** Toggle otimista de tag, tratado no pai (inbox-client). Sem ele, o TagsCard
+      cai no caminho legado (chama applyTag/removeTag direto, sem otimismo). */
+  onTagChange?:  (contactId: string, tagId: string, applied: boolean) => void
   agents:        AgentMini[]
   /** ad reply do primeiro contato — fica em chat_messages.metadata.external_ad_reply */
   externalAdReply?: ExternalAdReply | null
@@ -129,6 +132,7 @@ export function ContactSidebar(props: Props) {
         contactId={props.contact.id}
         tags={props.tags}
         appliedIds={appliedTagIds}
+        onTagChange={props.onTagChange}
       />
       <LeadSourceCard contact={props.contact} adReply={props.externalAdReply ?? null} />
       <SiteLeadCard conversation={props.conversation} contact={props.contact} />
@@ -807,11 +811,12 @@ function ParticipantsCard({
 // ═══════════════════════════════════════════════════════════════
 
 function TagsCard({
-  contactId, tags, appliedIds,
+  contactId, tags, appliedIds, onTagChange,
 }: {
-  contactId:  string
-  tags:       TagMini[]
-  appliedIds: string[]
+  contactId:    string
+  tags:         TagMini[]
+  appliedIds:   string[]
+  onTagChange?: (contactId: string, tagId: string, applied: boolean) => void
 }) {
   const [, startTransition] = useTransition()
   const [showPicker, setShowPicker] = useState(false)
@@ -823,6 +828,12 @@ function TagsCard({
   const available = tags.filter((t) => !appliedIds.includes(t.id))
 
   function toggle(tagId: string, isApplied: boolean) {
+    // Caminho otimista (inbox): o pai cuida do estado + server call + rollback.
+    if (onTagChange) {
+      onTagChange(contactId, tagId, !isApplied)
+      return
+    }
+    // Fallback legado (sem otimismo).
     startTransition(async () => {
       try {
         if (isApplied) await removeTag(tagId, "contact", contactId)

@@ -33,6 +33,7 @@ import {
   getMessagesUpdates,
   type MessagesCursor,
 } from "@/lib/actions/messages"
+import { applyTag, removeTag } from "@/lib/actions/tags"
 import { getRealtimeClient, refreshRealtimeAuth } from "@/lib/realtime"
 import type {
   ChatConversation,
@@ -71,6 +72,34 @@ const SEARCH_DEBOUNCE_MS = 300
 // Realtime é o caminho primário. Poll fica como fallback (token expirou,
 // WebSocket caiu, dropped events durante reconnect). 30s é suficiente.
 const POLL_INTERVAL_MS   = 30_000
+const STALE_MS           = 24 * 3600_000
+
+// Ordena por última mensagem (fallback created_at), desc. O server já entrega
+// ordenado; isto mantém o topo após merges/inserts vindos do Realtime.
+function sortByLastMessage(a: ChatConversation, b: ChatConversation): number {
+  const da = a.last_message_at ?? a.created_at
+  const db = b.last_message_at ?? b.created_at
+  return new Date(db).getTime() - new Date(da).getTime()
+}
+
+interface ActiveFilters {
+  statusFilter: string; pipelineFilter: string; agentFilter: string; tagFilter: string
+  staleOnly: boolean; fromAd: boolean; archivedOnly: boolean; searchDebounced: string
+}
+
+// Conversa nova (via Realtime INSERT) só entra na lista se casar com os filtros
+// ATIVOS — mas só os "baratos" (resolvíveis client-side). search/tag exigem
+// ILIKE/taggings no server → nesses casos deixamos o poll trazer.
+function matchesActiveFilters(conv: ChatConversation, f: ActiveFilters): boolean {
+  if (f.searchDebounced || f.tagFilter) return false            // resolve no server → poll
+  if (f.archivedOnly || conv.archived_at) return false          // conv nova nunca é arquivada
+  if (f.statusFilter && f.statusFilter !== "all" && conv.status !== f.statusFilter) return false
+  if (f.pipelineFilter && conv.pipeline_id !== f.pipelineFilter) return false
+  if (f.agentFilter && conv.assigned_to !== f.agentFilter) return false
+  if (f.fromAd && !conv.from_ad_meta) return false
+  if (f.staleOnly && (!conv.last_message_at || new Date(conv.last_message_at).getTime() >= Date.now() - STALE_MS)) return false
+  return true
+}
 
 export function InboxClient({
   conversations: initialConversations,
@@ -81,7 +110,7 @@ export function InboxClient({
   pipelines      = [],
   stages         = [],
   tags           = [],
-  tagsByContact  = {},
+  tagsByContact: initialTagsByContact = {},
   showChannel    = false,
   officialChannel = false,
   initialCursor       = null,
@@ -100,6 +129,9 @@ export function InboxClient({
   const [loadingList, setLoadingList]     = useState(false)
   const [unreadTotal, setUnreadTotal]     = useState(initialUnreadTotal)
   const [, setContacts]                   = useState(initialContacts)
+  // Tags por contato — estado (não prop) pra permitir update otimista no
+  // toggle da sidebar sem revalidar o RSC inteiro do /inbox.
+  const [tagsByContact, setTagsByContact] = useState(initialTagsByContact)
 
   // ── Filtros (server-side) ───────────────────────────────────
   const [statusFilter, setStatusFilter]     = useState(initialStatus)
@@ -133,6 +165,13 @@ export function InboxClient({
   const pathname        = usePathname()
 
   activeIdRef.current = activeId
+
+  // Snapshot dos filtros pro handler do Realtime (canal não re-subscreve a cada
+  // mudança de filtro — lê daqui). Atualizado a cada render.
+  const filtersRef = useRef<ActiveFilters>({
+    statusFilter, pipelineFilter, agentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced,
+  })
+  filtersRef.current = { statusFilter, pipelineFilter, agentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
 
   // ── Debounce search ─────────────────────────────────────────
   useEffect(() => {
@@ -394,21 +433,35 @@ export function InboxClient({
           const row = (payload.new ?? payload.old) as ChatConversation | undefined
           if (!row?.id) return
 
-          // Merge na lista. Se a conv não está carregada (página anterior),
-          // ignora — poll vai trazer quando o usuário scrollar ou filtrar.
+          // Conv já carregada: merge (preserva joins que o Realtime não traz).
           setConversations((prev) => {
             const idx = prev.findIndex((c) => c.id === row.id)
             if (idx < 0) return prev
-            // Preserva joins (chat_contacts, profiles) que Realtime não traz
             const merged = { ...prev[idx], ...row, chat_contacts: prev[idx].chat_contacts, profiles: prev[idx].profiles }
             const next = [...prev]
             next[idx] = merged
-            return next.sort((a, b) => {
-              const da = a.last_message_at ?? a.created_at
-              const db = b.last_message_at ?? b.created_at
-              return new Date(db).getTime() - new Date(da).getTime()
-            })
+            return next.sort(sortByLastMessage)
           })
+
+          // Conversa NOVA (INSERT) fora da lista: busca a row completa
+          // (getConversationById aplica visibilidade server-side → NÃO vaza
+          // conv que o atendente não pode ver) e prepend se casar com os
+          // filtros baratos atuais. UPDATE de conv fora da lista fica pro poll
+          // (evita um fetch por evento).
+          if (payload.eventType === "INSERT") {
+            getConversationById(row.id)
+              .then((conv) => {
+                if (!conv || !matchesActiveFilters(conv, filtersRef.current)) return
+                let inserted = false
+                setConversations((prev) => {
+                  if (prev.some((c) => c.id === conv.id)) return prev
+                  inserted = true
+                  return [conv, ...prev].sort(sortByLastMessage)
+                })
+                if (inserted && conv.unread_count > 0) setUnreadTotal((t) => t + conv.unread_count)
+              })
+              .catch((err) => console.error("Realtime INSERT fetch:", err))
+          }
         },
       )
       .subscribe()
@@ -731,6 +784,28 @@ export function InboxClient({
     startTransition(async () => { await assignConversation(id, currentUserId) })
   }, [currentUserId])
 
+  // Tag toggle otimista (sidebar). Atualiza tagsByContact na hora; em falha,
+  // reverte + toast. Sem revalidate do /inbox (ver applyTag/removeTag).
+  const handleTagChange = useCallback((contactId: string, tagId: string, applied: boolean) => {
+    const apply = (on: boolean) => setTagsByContact((prev) => {
+      const cur = prev[contactId] ?? []
+      const next = on
+        ? (cur.includes(tagId) ? cur : [...cur, tagId])
+        : cur.filter((id) => id !== tagId)
+      return { ...prev, [contactId]: next }
+    })
+    apply(applied)  // otimista
+    startTransition(async () => {
+      try {
+        if (applied) await applyTag(tagId, "contact", contactId)
+        else         await removeTag(tagId, "contact", contactId)
+      } catch {
+        apply(!applied)  // rollback
+        toast.error("Não consegui atualizar a tag. Tente de novo.")
+      }
+    })
+  }, [])
+
   const handleArchiveFromMenu = useCallback((id: string) => {
     const willArchive = !archivedOnly  // na aba "arquivadas" a ação inverte
     setConversations((prev) => prev.filter((c) => c.id !== id))  // some da lista atual
@@ -893,6 +968,7 @@ export function InboxClient({
                       stages={stages}
                       tags={tags}
                       tagsByContact={tagsByContact}
+                      onTagChange={handleTagChange}
                       agents={agents}
                       externalAdReply={activeAdReply}
                     />
@@ -918,6 +994,7 @@ export function InboxClient({
                       stages={stages}
                       tags={tags}
                       tagsByContact={tagsByContact}
+                      onTagChange={handleTagChange}
                       agents={agents}
                       externalAdReply={activeAdReply}
                       forceExpanded

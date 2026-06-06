@@ -95,8 +95,10 @@ export async function applyTag(tagId: string, taggableType: TaggableType, taggab
   // Ignora duplicate key (já tagueado)
   if (error && !error.message.includes("duplicate")) throw new Error(error.message)
 
+  // Inbox NÃO revalida aqui: o cliente faz update otimista de tagsByContact
+  // (ver handleTagChange em inbox-client). Revalidar /inbox re-roda o RSC inteiro
+  // (getConversations + joins) a cada toggle — caro e desnecessário.
   revalidatePath("/contatos")
-  revalidatePath("/inbox")
 }
 
 export async function removeTag(tagId: string, taggableType: TaggableType, taggableId: string) {
@@ -111,6 +113,6 @@ export async function removeTag(tagId: string, taggableType: TaggableType, tagga
     .eq("taggable_id", taggableId)
 
   if (error) throw new Error(error.message)
+  // Ver nota em applyTag: inbox usa update otimista, não revalida o RSC.
   revalidatePath("/contatos")
-  revalidatePath("/inbox")
 }

@@ -9,6 +9,7 @@ import { latestInboundAt } from "@/lib/ai/context"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { notifyInboundMessage } from "@/lib/push/send"
+import { slimAdMeta } from "@/lib/ad-reply"
 import type { EvolutionMessageData, ExternalAdReply } from "@/types/chat"
 
 // Janela de debounce do Atendente IA: agrupa rajada de mensagens do contato.
@@ -255,6 +256,9 @@ async function handleMessageUpsert(
     const extracted = extractMessageContent(msg)
     const { contentType, content, mediaMimeType, mediaFileName, extraMetadata } = extracted
     const externalAdReply = extractAdAttribution(msg)
+    // Versão sem o thumbnail base64 (~17 KB) pras cópias denormalizadas em
+    // caminho quente (conversa + contato). A mensagem guarda a versão rica.
+    const slimAdReply     = slimAdMeta(externalAdReply)
     const quoted          = extractQuoted(msg)
 
     // ═══════════════════════════════════════════════════════════
@@ -539,7 +543,7 @@ async function handleMessageUpsert(
             .update({
               metadata: {
                 ...existingMeta,
-                first_ad_reply: externalAdReply,
+                first_ad_reply: slimAdReply,
                 first_ad_at:    new Date().toISOString(),
               },
               updated_at: new Date().toISOString(),
@@ -556,7 +560,7 @@ async function handleMessageUpsert(
       try {
         await supabaseAdmin
           .from("chat_conversations")
-          .update({ from_ad_meta: externalAdReply })
+          .update({ from_ad_meta: slimAdReply })
           .eq("id", conversation.id)
           .is("from_ad_meta", null)
       } catch (err) {

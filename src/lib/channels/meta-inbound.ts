@@ -10,6 +10,7 @@ import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { notifyInboundMessage } from "@/lib/push/send"
 import { upsertTemplateCache, logTemplateEvent } from "@/lib/channels/template-cache"
+import { slimAdMeta } from "@/lib/ad-reply"
 import type { ExternalAdReply } from "@/types/chat"
 
 /**
@@ -289,7 +290,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
       const existingMeta = (contactRow?.metadata ?? {}) as Record<string, unknown>
       if (!existingMeta.first_ad_reply) {
         await supabaseAdmin.from("chat_contacts").update({
-          metadata:   { ...existingMeta, first_ad_reply: adReply, first_ad_at: new Date().toISOString() },
+          metadata:   { ...existingMeta, first_ad_reply: slimAdMeta(adReply), first_ad_at: new Date().toISOString() },
           updated_at: new Date().toISOString(),
         }).eq("id", contact.id)
       }
@@ -298,7 +299,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     // Denormaliza na conversa (first-touch wins — só se ainda NULL).
     try {
       await supabaseAdmin.from("chat_conversations")
-        .update({ from_ad_meta: adReply }).eq("id", conv.id).is("from_ad_meta", null)
+        .update({ from_ad_meta: slimAdMeta(adReply) }).eq("id", conv.id).is("from_ad_meta", null)
     } catch (e) { console.error("[meta-webhook] from_ad_meta:", e) }
   }
 
