@@ -15,9 +15,11 @@ export type FlowNodeType =
   | "end"        // encerra o fluxo
 
 export interface FlowNode {
-  id:     string
-  type:   FlowNodeType
-  config: Record<string, unknown>
+  id:        string
+  type:      FlowNodeType
+  config:    Record<string, unknown>
+  /** Layout do canvas (editor). O runtime IGNORA — é só pra desenhar. */
+  position?: { x: number; y: number }
 }
 
 export interface FlowEdge {
