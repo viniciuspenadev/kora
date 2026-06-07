@@ -58,8 +58,70 @@ export function ConfigPanel({
         </div>
       )}
 
+      {type === "http" && (
+        <div className="space-y-3">
+          <div>
+            <label className={LABEL}>URL (https)</label>
+            <input className={INPUT} value={String(cfg.url ?? "")} onChange={(e) => set({ url: e.target.value })} placeholder="https://api.seusistema.com/pedido" />
+          </div>
+          <div>
+            <label className={LABEL}>Método</label>
+            <select className={INPUT} value={String(cfg.method ?? "GET")} onChange={(e) => set({ method: e.target.value })}>
+              <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+            </select>
+          </div>
+          <div>
+            <label className={LABEL}>Corpo (JSON) <span className="text-slate-400 font-normal">(opcional)</span></label>
+            <textarea className={AREA} rows={3} value={String(cfg.body ?? "")} onChange={(e) => set({ body: e.target.value })} placeholder={'{"telefone": "..."}'} />
+          </div>
+          <div>
+            <label className={LABEL}>Guardar resposta como</label>
+            <input className={INPUT} value={String(cfg.saveAs ?? "http_response")} onChange={(e) => set({ saveAs: e.target.value })} placeholder="http_response" />
+            <p className="text-[11px] text-slate-400 mt-1">
+              Use depois numa Mensagem com <code className="bg-slate-100 px-1 rounded">{"{{http_response.body}}"}</code> ou deixe o Agente IA usar o dado.
+            </p>
+          </div>
+          <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">🔒 Só https; endereços internos são bloqueados (anti-SSRF).</p>
+        </div>
+      )}
+
+      {type === "collect" && (
+        <div className="space-y-3">
+          <div>
+            <label className={LABEL}>Pergunta ao cliente</label>
+            <textarea className={AREA} rows={2} value={String(cfg.question ?? "")} onChange={(e) => set({ question: e.target.value })} placeholder="Qual o seu nome?" />
+          </div>
+          <div>
+            <label className={LABEL}>Guardar resposta como</label>
+            <input className={INPUT} value={String(cfg.saveAs ?? "resposta")} onChange={(e) => set({ saveAs: e.target.value })} placeholder="nome" />
+          </div>
+          <div>
+            <label className={LABEL}>Validação</label>
+            <select className={INPUT} value={String(cfg.validate ?? "text")} onChange={(e) => set({ validate: e.target.value })}>
+              <option value="text">Texto livre</option>
+              <option value="email">E-mail</option>
+              <option value="phone">Telefone</option>
+              <option value="number">Número</option>
+            </select>
+          </div>
+          <p className="text-[11px] text-slate-400">O fluxo espera a resposta e guarda na variável. Use depois com <code className="bg-slate-100 px-1 rounded">{"{{nome}}"}</code> ou pelo Agente IA.</p>
+        </div>
+      )}
+
       {type === "ai_agent" && (
-        <p className="text-xs text-slate-400">A IA (com a persona + base de conhecimento) assume a conversa a partir daqui: responde, qualifica e pode encaminhar. É um nó terminal.</p>
+        <div className="space-y-3">
+          <p className="text-xs text-slate-400">A IA (com a persona + base de conhecimento) assume a conversa: responde, qualifica e pode encaminhar.</p>
+          <div>
+            <label className={LABEL}>Missão deste passo <span className="text-slate-400 font-normal">(opcional)</span></label>
+            <textarea
+              className={AREA} rows={4}
+              value={String(cfg.instruction ?? "")}
+              onChange={(e) => set({ instruction: e.target.value })}
+              placeholder="Ex: Você é o time de Vendas. Qualifique: pergunte o segmento e o tamanho da empresa, depois ofereça uma demonstração."
+            />
+            <p className="text-[11px] text-slate-400 mt-1">É assim que a mesma IA vira &quot;Vendas&quot; num ramo e &quot;Suporte&quot; em outro.</p>
+          </div>
+        </div>
       )}
 
       {type === "transfer" && (
@@ -173,5 +235,5 @@ export function FlowSettingsPanel({
 
 const TITLE: Record<string, string> = {
   start: "Início", message: "Mensagem", menu: "Menu", condition: "Condição",
-  ai_agent: "Agente IA", transfer: "Transferir", end: "Encerrar",
+  http: "Requisição HTTP", collect: "Coletar dado", ai_agent: "Agente IA", transfer: "Transferir", end: "Encerrar",
 }

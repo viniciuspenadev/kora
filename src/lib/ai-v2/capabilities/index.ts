@@ -10,6 +10,7 @@ import { sendMessageCapability } from "./send-message"
 import { transferCapability } from "./transfer"
 import { updateContactCapability } from "./update-contact"
 import { searchKnowledgeCapability } from "./search-knowledge"
+import { httpRequestCapability } from "./http-request"
 
 let _registered = false
 
@@ -21,6 +22,7 @@ export function ensureCapabilitiesRegistered(): void {
     transferCapability,
     updateContactCapability,
     searchKnowledgeCapability,
+    httpRequestCapability,
   ])
   _registered = true
 }
@@ -29,5 +31,6 @@ export { SEND_MESSAGE } from "./send-message"
 export { TRANSFER } from "./transfer"
 export { UPDATE_CONTACT } from "./update-contact"
 export { SEARCH_KNOWLEDGE } from "./search-knowledge"
+export { HTTP_REQUEST } from "./http-request"
 export * from "./registry"
 export type { Capability, CapabilitySpec, ExecCtx, CapabilityResult, CapabilityCategory } from "./types"

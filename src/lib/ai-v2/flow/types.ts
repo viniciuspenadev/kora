@@ -7,9 +7,11 @@
 
 export type FlowNodeType =
   | "start"      // entrada
-  | "message"    // envia texto e avança
+  | "message"    // envia texto e avança (suporta {{variavel}})
   | "menu"       // pergunta com opções — ESPERA resposta, ramifica
   | "condition"  // checa um fato do contato — ramifica true/false
+  | "http"       // chama uma API externa, guarda a resposta numa variável
+  | "collect"    // pergunta, ESPERA a resposta, guarda numa variável (tipado)
   | "ai_agent"   // delega ao agente (a IA assume) — terminal
   | "transfer"   // encaminha pra departamento — terminal
   | "end"        // encerra o fluxo
@@ -48,6 +50,20 @@ export interface TransferNodeConfig {
   department: string
   summary?:   string
   handoff?:   string
+}
+export interface HttpNodeConfig {
+  url:      string
+  method?:  string
+  headers?: Record<string, string>
+  body?:    string
+  /** Nome da variável onde a resposta é guardada (default: http_response). */
+  saveAs?:  string
+}
+export interface CollectNodeConfig {
+  question:  string
+  saveAs:    string
+  validate?: "text" | "email" | "phone" | "number"
+  retry?:    string
 }
 
 // ── Trigger (quando o fluxo dispara) ──

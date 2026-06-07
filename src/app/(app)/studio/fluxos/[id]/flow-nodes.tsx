@@ -8,7 +8,7 @@
 // terminais (sem saída). start não tem entrada.
 
 import { Handle, Position, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Bot, ArrowRightLeft, Flag } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag } from "lucide-react"
 import type { MenuNodeConfig } from "@/lib/ai-v2/flow/types"
 
 const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
@@ -111,6 +111,34 @@ function ConditionNode(p: NodeProps) {
   )
 }
 
+function HttpNode(p: NodeProps) {
+  const url = String(cfgOf(p).url ?? "")
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Globe} accent="bg-teal-100 text-teal-700" title="Requisição HTTP" selected={p.selected}>
+        {url ? url.replace(/^https?:\/\//, "").slice(0, 40) : "configure a URL"}
+      </Card>
+      <Handle type="source" position={Position.Bottom} style={HS} />
+    </>
+  )
+}
+
+function CollectNode(p: NodeProps) {
+  const q = String(cfgOf(p).question ?? "")
+  const saveAs = String(cfgOf(p).saveAs ?? "resposta")
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={ClipboardList} accent="bg-indigo-100 text-indigo-700" title="Coletar dado" selected={p.selected}>
+        {q ? q.slice(0, 50) : "pergunta"}
+        <span className="block text-[10px] text-slate-400 mt-0.5">→ {saveAs}</span>
+      </Card>
+      <Handle type="source" position={Position.Bottom} style={HS} />
+    </>
+  )
+}
+
 function AgentNode(p: NodeProps) {
   return (
     <>
@@ -151,6 +179,8 @@ export const nodeTypes = {
   message:   MessageNode,
   menu:      MenuNode,
   condition: ConditionNode,
+  http:      HttpNode,
+  collect:   CollectNode,
   ai_agent:  AgentNode,
   transfer:  TransferNode,
   end:       EndNode,

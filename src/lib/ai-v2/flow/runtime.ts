@@ -12,14 +12,38 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { sendBotText } from "../outbound"
-import { getCapability, TRANSFER, type ExecCtx } from "../capabilities"
+import { getCapability, TRANSFER, HTTP_REQUEST, type ExecCtx } from "../capabilities"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
 import type { PersonaInput } from "../prompt"
 import { sendMenu, parseMenuReply } from "./menu"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow,
-  MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
+  MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig, HttpNodeConfig, CollectNodeConfig,
 } from "./types"
+
+function validateInput(v: string, type: string): boolean {
+  const s = v.trim()
+  switch (type) {
+    case "email":  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
+    case "phone":  return s.replace(/\D/g, "").length >= 10
+    case "number": return /^\d+([.,]\d+)?$/.test(s)
+    default:       return s.length > 0
+  }
+}
+
+// Interpola {{variavel}} (e {{a.b.c}}) com as variáveis do fluxo.
+function resolvePath(obj: Record<string, unknown>, path: string): unknown {
+  return path.split(".").reduce<unknown>(
+    (acc, k) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[k] : undefined), obj,
+  )
+}
+function interpolate(text: string, vars: Record<string, unknown>): string {
+  if (!text.includes("{{")) return text
+  return text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, path: string) => {
+    const v = resolvePath(vars, path)
+    return v == null ? "" : typeof v === "string" ? v : JSON.stringify(v)
+  })
+}
 
 const MAX_HOPS = 25
 
@@ -103,6 +127,16 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       variables[`menu:${node.id}`] = picked.id
       currentId = edgeTarget(graph, node.id, picked.id)
+    } else if (node?.type === "collect") {
+      const cfg = node.config as unknown as CollectNodeConfig
+      const reply = input.incomingText.trim()
+      if (cfg.validate && !validateInput(reply, cfg.validate)) {
+        await sendBotText(ctx, cfg.retry?.trim() || "Hmm, não parece válido. Pode mandar de novo?")
+        await persistRun(run.id, { current_node_id: node.id, variables, status: "waiting" })
+        return { status: "responded", departmentId: null, error: null, agent: null }
+      }
+      variables[cfg.saveAs?.trim() || "resposta"] = reply
+      currentId = edgeTarget(graph, node.id)
     }
   }
 
@@ -120,7 +154,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "message": {
         const cfg = node.config as unknown as MessageNodeConfig
-        const text = (cfg.text ?? "").trim()
+        const text = interpolate((cfg.text ?? "").trim(), variables)
         if (text) { await sendBotText(ctx, text, { studio_flow: true }); responded = true }
         currentId = edgeTarget(graph, node.id)
         break
@@ -129,6 +163,21 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         const ok = evalCondition(node, ctx)
         currentId = edgeTarget(graph, node.id, ok ? "true" : "false")
         break
+      }
+      case "http": {
+        const cfg = node.config as unknown as HttpNodeConfig
+        const cap = getCapability(HTTP_REQUEST)
+        const r = await cap?.run(ctx, node.config)
+        const saveAs = cfg.saveAs?.trim() || "http_response"
+        variables[saveAs] = r?.ok && r.data !== undefined ? r.data : { error: r?.error ?? "falha" }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "collect": {
+        const cfg = node.config as unknown as CollectNodeConfig
+        await sendBotText(ctx, interpolate(cfg.question ?? "", variables), { studio_flow: true })
+        await persistRun(run.id, { current_node_id: node.id, variables, status: "waiting" })
+        return { status: "responded", departmentId: null, error: null, agent: null }
       }
       case "menu": {
         const cfg = node.config as unknown as MenuNodeConfig
@@ -150,7 +199,8 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         return { status: responded ? "responded" : "no_action", departmentId: null, error: r?.error ?? null, agent: null }
       }
       case "ai_agent": {
-        const turn = await runAgentTurn(input)
+        const cfg = node.config as unknown as { instruction?: string }
+        const turn = await runAgentTurn({ ...input, instruction: cfg.instruction ?? null, variables })
         await finishRun(run.id)
         if (turn.status === "routed")    return { status: "routed", departmentId: turn.departmentId, error: null, agent: turn }
         if (turn.status === "responded") return { status: "responded", departmentId: null, error: null, agent: turn }

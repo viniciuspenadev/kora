@@ -26,8 +26,12 @@ export function compileStudioPrompt(args: {
   persona:      PersonaInput
   departments:  { id: string; name: string }[]
   contactName:  string
+  /** Instrução do nó (ai_agent) — objetivo específico deste passo. */
+  instruction?: string | null
+  /** Variáveis do fluxo (ex: dados de um nó HTTP). */
+  variables?:   Record<string, unknown>
 }): string {
-  const { persona, departments, contactName } = args
+  const { persona, departments, contactName, instruction, variables } = args
   const name = persona.name?.trim() || "Assistente"
   const tone = persona.tone ? (TONE_PT[persona.tone] ?? persona.tone) : "amigável e acolhedor"
 
@@ -35,6 +39,20 @@ export function compileStudioPrompt(args: {
   lines.push(`# QUEM VOCÊ É`)
   lines.push(`Você é ${name}, atendente virtual da empresa. Fale em ${persona.language || "pt-BR"}, com tom ${tone}.`)
   if (persona.identityText?.trim()) lines.push(persona.identityText.trim())
+
+  // Missão do passo (instrução do nó) — alta prioridade, logo após a identidade.
+  if (instruction?.trim()) {
+    lines.push(``, `# SUA MISSÃO NESTE MOMENTO`, instruction.trim())
+  }
+
+  // Dados disponíveis (variáveis do fluxo, ex: resposta de uma API).
+  if (variables && Object.keys(variables).length > 0) {
+    lines.push(``, `# DADOS DISPONÍVEIS (use pra responder; não invente além disto)`)
+    for (const [k, v] of Object.entries(variables)) {
+      const val = typeof v === "string" ? v : JSON.stringify(v)
+      lines.push(`- ${k}: ${val.slice(0, 1500)}`)
+    }
+  }
 
   if (persona.communicationStyle?.trim()) {
     lines.push(``, `# COMO VOCÊ SE COMUNICA`, persona.communicationStyle.trim())

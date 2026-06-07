@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import {
-  AlertCircle, User, Network, BookOpen, ChevronRight, Sparkles,
+  AlertCircle, User, Network, BookOpen, Activity, ChevronRight, Sparkles,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { setStudioEnabled } from "@/lib/actions/studio/config"
@@ -94,7 +94,12 @@ export function StudioOverviewClient({ config, flowCount, knowledgeCount }: Prop
           icon={BookOpen}
           title="Base de conhecimento"
           subtitle={knowledgeCount > 0 ? `${knowledgeCount} item${knowledgeCount > 1 ? "s" : ""}` : "Ensine sua IA sobre o negócio"}
-          soon
+        />
+        <NavCard
+          href="/studio/atividade"
+          icon={Activity}
+          title="Atividade da IA"
+          subtitle="Turnos, tools e custo"
         />
       </div>
     </div>

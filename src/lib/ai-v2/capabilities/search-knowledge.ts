@@ -7,7 +7,7 @@
 // só muda a implementação interna, não o agente. Retorna toolMessage:
 // o resultado volta pra LLM como contexto pra responder com fundamento.
 import { defineCapability } from "./registry"
-import { supabaseAdmin } from "@/lib/supabase"
+import { searchKnowledgeVector, searchKnowledgeKeyword } from "../rag"
 
 export const SEARCH_KNOWLEDGE = "search_knowledge"
 const MAX_HITS = 4
@@ -42,21 +42,15 @@ export const searchKnowledgeCapability = defineCapability<{ query: string }>({
     const q = query.trim()
     if (!q) return { ok: true, toolMessage: "Busca vazia." }
 
-    // Keyword retrieval (ILIKE em título + conteúdo). Escape básico de % e _.
-    const safe = q.replace(/[%_]/g, (c) => `\\${c}`).slice(0, 120)
-    const { data, error } = await supabaseAdmin
-      .from("studio_knowledge")
-      .select("title, content")
-      .eq("tenant_id", ctx.tenantId)
-      .or(`title.ilike.%${safe}%,content.ilike.%${safe}%`)
-      .limit(MAX_HITS)
+    // RAG: vetorial (cosseno) primeiro; fallback keyword se vier vazia.
+    let hits = await searchKnowledgeVector(ctx.tenantId, q, MAX_HITS)
+    if (hits.length === 0) hits = await searchKnowledgeKeyword(ctx.tenantId, q, MAX_HITS)
 
-    if (error) return { ok: false, error: `search_knowledge: ${error.message}` }
-    if (!data || data.length === 0) {
+    if (hits.length === 0) {
       return { ok: true, toolMessage: `Nada encontrado na base para "${q}". Não invente; se não souber, ofereça encaminhar a um humano.` }
     }
 
-    const blocks = data.map((k, i) => `[${i + 1}] ${k.title}\n${k.content.slice(0, SNIPPET)}`).join("\n\n")
+    const blocks = hits.map((h, i) => `[${i + 1}] ${h.title}\n${h.chunk.slice(0, SNIPPET)}`).join("\n\n")
     return { ok: true, toolMessage: `Trechos da base de conhecimento:\n\n${blocks}` }
   },
 })

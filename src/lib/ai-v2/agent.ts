@@ -32,6 +32,10 @@ export interface AgentTurnInput {
   persona:      PersonaInput
   history:      { role: "user" | "assistant"; content: string }[]
   incomingText: string
+  /** Instrução específica do nó (ai_agent) — Vendas ≠ Suporte. */
+  instruction?: string | null
+  /** Variáveis do fluxo (ex: resposta de um nó HTTP) — viram contexto. */
+  variables?:   Record<string, unknown>
 }
 
 export interface AgentTurnResult {
@@ -49,12 +53,14 @@ type Msg = OpenAI.Chat.Completions.ChatCompletionMessageParam
 
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
   ensureCapabilitiesRegistered()
-  const { ctx, model, persona, history, incomingText } = input
+  const { ctx, model, persona, history, incomingText, instruction, variables } = input
 
   const systemPrompt = compileStudioPrompt({
     persona,
     departments: ctx.departments,
     contactName: ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || "o cliente",
+    instruction,
+    variables,
   })
 
   const messages: Msg[] = [{ role: "system", content: systemPrompt }]

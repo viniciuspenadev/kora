@@ -17,7 +17,7 @@ import {
 import "@xyflow/react/dist/style.css"
 import {
   ArrowLeft, Loader2, CheckCircle2, AlertCircle,
-  MessageSquare, ListChecks, GitBranch, Bot, ArrowRightLeft, Flag,
+  MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag,
 } from "lucide-react"
 import { nodeTypes } from "./flow-nodes"
 import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
@@ -35,6 +35,8 @@ const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ 
   { type: "message",   label: "Mensagem",   icon: MessageSquare },
   { type: "menu",      label: "Menu",       icon: ListChecks },
   { type: "condition", label: "Condição",   icon: GitBranch },
+  { type: "http",      label: "Requisição HTTP", icon: Globe },
+  { type: "collect",   label: "Coletar dado", icon: ClipboardList },
   { type: "ai_agent",  label: "Agente IA",  icon: Bot },
   { type: "transfer",  label: "Transferir", icon: ArrowRightLeft },
   { type: "end",       label: "Encerrar",   icon: Flag },

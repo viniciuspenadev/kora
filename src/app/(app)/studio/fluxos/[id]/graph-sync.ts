@@ -22,6 +22,8 @@ const DEFAULT_CONFIG: Record<FlowNodeType, () => Record<string, unknown>> = {
   message:   () => ({ text: "" }),
   menu:      () => ({ text: "Como posso ajudar?", options: [{ id: genId(), label: "Opção 1" }], noMatch: "" }),
   condition: () => ({ check: "has_phone" }),
+  http:      () => ({ url: "", method: "GET", headers: {}, body: "", saveAs: "http_response" }),
+  collect:   () => ({ question: "Qual o seu nome?", saveAs: "resposta", validate: "text" }),
   ai_agent:  () => ({}),
   transfer:  () => ({ department: "", summary: "", handoff: "" }),
   end:       () => ({}),

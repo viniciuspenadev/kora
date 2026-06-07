@@ -55,6 +55,8 @@ export interface CapabilityResult {
   routedDepartmentId?: string | null
   /** Conteúdo a devolver à LLM como resultado da tool (retrieval). */
   toolMessage?:        string | null
+  /** Dado estruturado produzido (ex: resposta de um nó HTTP) → vira variável do fluxo. */
+  data?:               unknown
   /** Erro legível (vai pra studio_runs.error). */
   error?:              string | null
 }
