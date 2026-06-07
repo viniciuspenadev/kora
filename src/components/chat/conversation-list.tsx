@@ -17,8 +17,9 @@ import type { ChatConversation } from "@/types/chat"
 
 interface PipelineMini { id: string; name: string; color: string; is_default: boolean }
 interface StageMini    { id: string; pipeline_id: string; name: string; color: string; position: number; is_won: boolean; is_lost: boolean }
-interface TagMini      { id: string; name: string; color: string }
-interface AgentMini    { id: string; full_name: string | null }
+interface TagMini        { id: string; name: string; color: string }
+interface DepartmentMini { id: string; name: string; color: string }
+interface AgentMini      { id: string; full_name: string | null }
 
 interface Props {
   conversations:   ChatConversation[]
@@ -34,6 +35,7 @@ interface Props {
   pipelines:       PipelineMini[]
   stages:          StageMini[]
   tags:            TagMini[]
+  departments:     DepartmentMini[]
   tagsByContact:   Record<string, string[]>
   showChannel?:    boolean         // mostra badge de canal (Baileys/Oficial) — só com 2+ instâncias
   officialChannel?: boolean        // canal default é oficial → nova conversa exige template
@@ -47,6 +49,8 @@ interface Props {
   onPipelineFilterChange: (v: string) => void
   agentFilter:          string
   onAgentFilterChange:  (v: string) => void
+  departmentFilter:     string
+  onDepartmentFilterChange: (v: string) => void
   tagFilter:            string
   onTagFilterChange:    (v: string) => void
   staleOnly:            boolean
@@ -116,11 +120,12 @@ export function ConversationList({
   conversations, activeId, onSelect,
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
   statusFilter, onStatusChange,
-  pipelines, stages, tags, tagsByContact, showChannel = false, officialChannel = false, agents,
+  pipelines, stages, tags, departments, tagsByContact, showChannel = false, officialChannel = false, agents,
   unreadTotal,
   searchValue, onSearchChange,
   pipelineFilter, onPipelineFilterChange,
   agentFilter,    onAgentFilterChange,
+  departmentFilter, onDepartmentFilterChange,
   tagFilter,      onTagFilterChange,
   staleOnly,      onStaleOnlyChange,
   fromAd,         onFromAdChange,
@@ -148,12 +153,13 @@ export function ConversationList({
   // Tarefa do client: só renderizar.
 
   const activeFiltersCount =
-    (pipelineFilter ? 1 : 0) + (tagFilter ? 1 : 0) + (agentFilter ? 1 : 0) + (staleOnly ? 1 : 0) + (fromAd ? 1 : 0)
+    (pipelineFilter ? 1 : 0) + (tagFilter ? 1 : 0) + (agentFilter ? 1 : 0) + (departmentFilter ? 1 : 0) + (staleOnly ? 1 : 0) + (fromAd ? 1 : 0)
 
   function clearFilters() {
     onPipelineFilterChange("")
     onTagFilterChange("")
     onAgentFilterChange("")
+    onDepartmentFilterChange("")
     onStaleOnlyChange(false)
     onFromAdChange(false)
     // archivedOnly NÃO entra aqui — é uma visão de status (seletor), não filtro secundário.
@@ -307,6 +313,16 @@ export function ConversationList({
               <option value="">Todos os agentes</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.full_name ?? "—"}</option>)}
             </select>
+            {departments.length > 0 && (
+              <select
+                value={departmentFilter}
+                onChange={(e) => onDepartmentFilterChange(e.target.value)}
+                className="w-full h-7 px-2 text-[11px] rounded border border-slate-200 bg-white"
+              >
+                <option value="">Todos os departamentos</option>
+                {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            )}
             <div className="pt-1">
               <Switch
                 size="sm"

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useTransition } from "react"
+import { useState, useEffect, useMemo, useCallback, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
@@ -8,7 +8,8 @@ import {
   Phone, DollarSign, Calendar, Loader2,
   ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
 } from "lucide-react"
-import { moveConversation } from "@/lib/actions/pipeline"
+import { moveConversation, getManagementCards } from "@/lib/actions/pipeline"
+import { getRealtimeClient } from "@/lib/realtime"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { SourceLogo } from "@/components/chat/source-logo"
@@ -53,10 +54,16 @@ interface Conversation {
   won_at:               string | null
   lost_at:              string | null
   assigned_to:          string | null
+  department_id:        string | null
   chat_contacts:        ChatContact | null
   profiles:             { full_name: string | null; email: string } | null
   whatsapp_instances:   { provider: string | null } | null
 }
+
+interface AgentMini { id: string; full_name: string | null; department_id?: string | null }
+interface DeptMini  { id: string; name: string; color: string }
+export type GroupBy = "stage" | "agent" | "department"
+interface Column { key: string; title: string; color?: string; stage?: Stage }
 
 interface Props {
   stages:        Stage[]
@@ -65,6 +72,34 @@ interface Props {
   tintColumns:   boolean
   /** Mostra badge de canal (Baileys/Oficial) no card — só com 2+ instâncias. */
   showChannel?:  boolean
+  /** Lente de agrupamento — controlada pelo header (KanbanView). */
+  groupBy:       GroupBy
+  agents?:       AgentMini[]
+  departments?:  DeptMini[]
+  tenantId:      string
+  supabaseToken: string
+}
+
+// Atualiza os campos escalares de um card a partir da row crua do Realtime
+// (que NÃO traz os embeds chat_contacts/profiles/whatsapp_instances → preserva).
+function mergeCardScalars(existing: Conversation, row: Conversation): Conversation {
+  return {
+    ...existing,
+    stage_id:             row.stage_id,
+    assigned_to:          row.assigned_to,
+    department_id:        row.department_id,
+    status:               row.status,
+    last_message_at:      row.last_message_at,
+    last_message_preview: row.last_message_preview,
+    last_message_dir:     row.last_message_dir,
+    unread_count:         row.unread_count,
+    card_position:        row.card_position,
+    won_at:               row.won_at,
+    lost_at:              row.lost_at,
+    estimated_value:      row.estimated_value,
+    expected_close_date:  row.expected_close_date,
+    lost_reason:          row.lost_reason,
+  }
 }
 
 const BRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -88,142 +123,238 @@ function relativeTime(date: string): { label: string; hot: boolean } {
   return { label: `${days}d`, hot: true }
 }
 
-export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false }: Props) {
+export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false, groupBy, agents = [], departments = [], tenantId, supabaseToken }: Props) {
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
   const [draggingId, setDraggingId]   = useState<string | null>(null)
   const [dragOverStage, setDragOver]  = useState<string | null>(null)
   const [pending, startTransition]    = useTransition()
 
-  // Sincroniza com novo `initial` quando o server re-renderiza (router.refresh)
+  const [mgmtCards, setMgmtCards] = useState<Conversation[] | null>(null)
+
+  // Sincroniza o funil com o SSR (router.refresh / fallback)
+  useEffect(() => { setConvs(initial) }, [initial])
+
+  const loadMgmt = useCallback(async () => {
+    try { setMgmtCards(await getManagementCards() as unknown as Conversation[]) }
+    catch (e) { console.error("getManagementCards:", e) }
+  }, [])
+
+  // Carrega/recarrega o panorama de gestão ao entrar numa lente (fica fresco;
+  // o Realtime mantém atualizado a partir daí).
   useEffect(() => {
-    setConvs(initial)
-  }, [initial])
+    if (groupBy !== "stage") loadMgmt()
+  }, [groupBy, loadMgmt])
 
-  // Polling do server component a cada 10s — cards sobem quando nova mensagem chega
+  // ── Realtime: substitui o poll de 10s/15s ───────────────────
+  // Merge incremental in-place dos cards já carregados (move de coluna, atualiza
+  // preview/valor; remove quando sai do board). Card NOVO/entrando → refresh
+  // debounced (precisa dos embeds que o Realtime não traz). Fallback 60s.
+  const groupByRef  = useRef(groupBy);          groupByRef.current  = groupBy
+  const stageIdsRef = useRef<string[]>([]);     stageIdsRef.current = stages.map((s) => s.id)
+  const convsRef    = useRef(convs);            convsRef.current    = convs
+  const mgmtRef     = useRef(mgmtCards);         mgmtRef.current     = mgmtCards
+  const loadMgmtRef = useRef(loadMgmt);          loadMgmtRef.current = loadMgmt
+  const refreshT    = useRef<NodeJS.Timeout | null>(null)
+
   useEffect(() => {
-    const id = setInterval(() => router.refresh(), 10_000)
-    return () => clearInterval(id)
-  }, [router])
+    if (!supabaseToken || !tenantId) return
+    const client = getRealtimeClient(supabaseToken)
+    let active = true
 
-  function inStage(stageId: string) {
-    return convs
-      .filter((c) => c.stage_id === stageId)
-      .sort((a, b) => {
-        // Cards com atividade recente sobem; sem atividade ficam ao fim na ordem manual.
-        const aTime = a.last_message_at ? new Date(a.last_message_at).getTime() : 0
-        const bTime = b.last_message_at ? new Date(b.last_message_at).getTime() : 0
-        if (aTime !== bTime) return bTime - aTime
-        return (a.card_position ?? 0) - (b.card_position ?? 0)
-      })
-  }
+    const scheduleRefresh = () => {
+      if (refreshT.current) return
+      refreshT.current = setTimeout(() => {
+        refreshT.current = null
+        if (!active) return
+        if (groupByRef.current === "stage") router.refresh()
+        else loadMgmtRef.current()
+      }, 800)
+    }
 
-  function stageTotal(stageId: string) {
-    return inStage(stageId).reduce((s, c) => s + Number(c.estimated_value ?? 0), 0)
+    const channel = client
+      .channel(`kanban:${tenantId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "chat_conversations", filter: `tenant_id=eq.${tenantId}` },
+        (payload) => {
+          if (!active) return
+          // A row do Realtime traz as colunas cruas (inclui archived_at, que o
+          // shape do card não tem por ser filtrado na query).
+          const row = (payload.new ?? payload.old) as (Conversation & { archived_at: string | null }) | undefined
+          if (!row?.id) return
+          const gb = groupByRef.current
+          const isDelete = payload.eventType === "DELETE"
+
+          const qualifies = !isDelete && !row.archived_at && (
+            gb === "stage"
+              ? stageIdsRef.current.includes(row.stage_id ?? "")
+              : ["open", "pending", "snoozed"].includes(row.status)
+          )
+
+          const prev = gb === "stage" ? convsRef.current : mgmtRef.current
+          if (prev == null) return                 // panorama ainda não carregado
+          const has = prev.some((c) => c.id === row.id)
+
+          if (has) {
+            const apply = (list: Conversation[]) => qualifies
+              ? list.map((c) => c.id === row.id ? mergeCardScalars(c, row) : c)   // move/atualiza
+              : list.filter((c) => c.id !== row.id)                               // saiu do board
+            if (gb === "stage") setConvs(apply)
+            else setMgmtCards((p) => (p ? apply(p) : p))
+          } else if (qualifies) {
+            scheduleRefresh()                       // card novo/entrando → busca completa
+          }
+        },
+      )
+      .subscribe()
+
+    const fallback = setInterval(() => {
+      if (!active) return
+      if (groupByRef.current === "stage") router.refresh()
+      else loadMgmtRef.current()
+    }, 60_000)
+
+    return () => {
+      active = false
+      if (refreshT.current) clearTimeout(refreshT.current)
+      clearInterval(fallback)
+      channel.unsubscribe()
+    }
+  }, [supabaseToken, tenantId, router])
+
+  const readOnly    = groupBy !== "stage"
+  const loadingMgmt = readOnly && mgmtCards === null
+  const dataset     = groupBy === "stage" ? convs : (mgmtCards ?? [])
+
+  const columns = useMemo<Column[]>(() => {
+    if (groupBy === "agent") return [
+      { key: "__pool__", title: "Pool · não atribuído" },
+      ...agents.map((a) => ({ key: a.id, title: a.full_name ?? "—" })),
+    ]
+    if (groupBy === "department") return [
+      ...departments.map((d) => ({ key: d.id, title: d.name, color: d.color })),
+      { key: "__none__", title: "Sem departamento" },
+    ]
+    return stages.map((s) => ({ key: s.id, title: s.name, color: s.color, stage: s }))
+  }, [groupBy, stages, agents, departments])
+
+  function cardsFor(key: string): Conversation[] {
+    const list =
+        groupBy === "stage" ? dataset.filter((c) => c.stage_id === key)
+      : groupBy === "agent" ? dataset.filter((c) => (c.assigned_to ?? "__pool__") === key)
+      :                       dataset.filter((c) => (c.department_id ?? "__none__") === key)
+    return list.sort((a, b) => {
+      const at = a.last_message_at ? new Date(a.last_message_at).getTime() : 0
+      const bt = b.last_message_at ? new Date(b.last_message_at).getTime() : 0
+      if (at !== bt) return bt - at
+      return (a.card_position ?? 0) - (b.card_position ?? 0)
+    })
   }
 
   function handleDragStart(e: React.DragEvent, id: string) {
     setDraggingId(id)
     e.dataTransfer.effectAllowed = "move"
+    // Ghost custom: clone do card inclinado + sombra (parece "solto da mesa").
+    // Largura via getBoundingClientRect → casa com o tamanho VISUAL (respeita zoom).
+    const card = e.currentTarget as HTMLElement
+    const rect = card.getBoundingClientRect()
+    const ghost = card.cloneNode(true) as HTMLElement
+    ghost.style.cssText =
+      `position:fixed; top:-9999px; left:-9999px; margin:0; pointer-events:none; ` +
+      `width:${rect.width}px; transform:rotate(3deg); box-shadow:0 18px 40px rgba(15,23,42,.28); opacity:1;`
+    document.body.appendChild(ghost)
+    try {
+      e.dataTransfer.setDragImage(ghost, e.clientX - rect.left, e.clientY - rect.top)
+    } catch { /* setDragImage não suportado — usa o ghost nativo */ }
+    setTimeout(() => ghost.remove(), 0)
   }
-
-  function handleDragEnd() {
-    setDraggingId(null)
-    setDragOver(null)
-  }
-
-  function handleDragOver(e: React.DragEvent, stageId: string) {
-    e.preventDefault()
-    setDragOver(stageId)
-  }
-
+  function handleDragEnd() { setDraggingId(null); setDragOver(null) }
+  function handleDragOver(e: React.DragEvent, key: string) { e.preventDefault(); setDragOver(key) }
   function handleDrop(e: React.DragEvent, stageId: string) {
     e.preventDefault()
     if (!draggingId) return
-
     const c = convs.find((x) => x.id === draggingId)
-    if (!c || c.stage_id === stageId) {
-      setDraggingId(null)
-      setDragOver(null)
-      return
-    }
-
-    const newPos = inStage(stageId).length
-
-    setConvs((prev) => prev.map((x) =>
-      x.id === draggingId ? { ...x, stage_id: stageId, card_position: newPos } : x
-    ))
-    setDraggingId(null)
-    setDragOver(null)
-
+    if (!c || c.stage_id === stageId) { setDraggingId(null); setDragOver(null); return }
+    const newPos = cardsFor(stageId).length
+    setConvs((prev) => prev.map((x) => x.id === draggingId ? { ...x, stage_id: stageId, card_position: newPos } : x))
+    setDraggingId(null); setDragOver(null)
     startTransition(async () => {
-      try {
-        await moveConversation(c.id, stageId, newPos)
-      } catch (err) {
-        setConvs(initial)
-        alert((err as Error).message ?? "Erro ao mover")
-      }
+      try { await moveConversation(c.id, stageId, newPos) }
+      catch (err) { setConvs(initial); alert((err as Error).message ?? "Erro ao mover") }
     })
   }
 
   return (
-    <div className="flex gap-3 overflow-x-auto pb-4">
-      {stages.map((stage) => {
-        const list   = inStage(stage.id)
-        const isOver = dragOverStage === stage.id
-        const StageIcon = stage.is_won ? Trophy : stage.is_lost ? XCircle : null
+    <div className="h-full">
+      {loadingMgmt ? (
+        <div className="flex items-center justify-center gap-2 h-full text-sm text-slate-400">
+          <Loader2 className="size-4 animate-spin" /> Carregando panorama…
+        </div>
+      ) : (
+        <div className="flex gap-3 overflow-x-auto pb-4 h-full">
+          {columns.map((col) => {
+            const list      = cardsFor(col.key)
+            const isOver    = !readOnly && dragOverStage === col.key
+            const StageIcon = col.stage?.is_won ? Trophy : col.stage?.is_lost ? XCircle : null
+            const total     = list.reduce((s, c) => s + Number(c.estimated_value ?? 0), 0)
+            const tinted    = tintColumns && !!col.color
+            return (
+              <div
+                key={col.key}
+                style={{
+                  borderTop: `3px solid ${col.color ?? "#cbd5e1"}`,
+                  backgroundColor: isOver || !tinted ? undefined : `color-mix(in srgb, ${col.color} 12%, transparent)`,
+                }}
+                className={`shrink-0 w-80 flex flex-col rounded-xl overflow-hidden transition-all duration-150 ${
+                  isOver ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : tinted ? "" : "bg-slate-100/60"
+                }`}
+                onDragOver={readOnly ? undefined : (e) => handleDragOver(e, col.key)}
+                onDrop={readOnly ? undefined : (e) => handleDrop(e, col.key)}
+                onDragLeave={readOnly ? undefined : () => setDragOver(null)}
+              >
+                <div className="px-3 py-2.5 border-b border-slate-200/70">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-sm font-semibold text-slate-900 flex-1 truncate">{col.title}</span>
+                    {StageIcon && <StageIcon className={`size-3.5 ${col.stage?.is_won ? "text-emerald-600" : "text-red-500"}`} />}
+                    <span className="text-[10px] font-bold text-slate-500 tabular-nums bg-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center shadow-sm">
+                      {list.length}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm font-bold text-slate-800 tabular-nums truncate">
+                      {total > 0 ? BRL(total) : <span className="text-xs font-normal text-slate-300">—</span>}
+                    </span>
+                    {col.stage && <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{col.stage.probability_pct}% prob.</span>}
+                  </div>
+                </div>
 
-        return (
-          <div
-            key={stage.id}
-            style={{
-              borderTop: `3px solid ${stage.color}`,
-              backgroundColor: isOver || !tintColumns ? undefined : `color-mix(in srgb, ${stage.color} 12%, transparent)`,
-            }}
-            className={`shrink-0 w-80 flex flex-col rounded-xl overflow-hidden transition-colors ${
-              isOver ? "bg-primary-50 ring-2 ring-primary-200" : tintColumns ? "" : "bg-slate-100/60"
-            }`}
-            onDragOver={(e) => handleDragOver(e, stage.id)}
-            onDrop={(e) => handleDrop(e, stage.id)}
-            onDragLeave={() => setDragOver(null)}
-          >
-            <div className="px-3 py-2.5 border-b border-slate-200/70">
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-sm font-semibold text-slate-900 flex-1 truncate">{stage.name}</span>
-                {StageIcon && <StageIcon className={`size-3.5 ${stage.is_won ? "text-emerald-600" : "text-red-500"}`} />}
-                <span className="text-[10px] font-bold text-slate-500 tabular-nums bg-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center shadow-sm">
-                  {list.length}
-                </span>
+                <div className="flex-1 min-h-0 px-2 py-2 space-y-2 overflow-y-auto">
+                  {list.map((conv) => (
+                    <ConversationCard
+                      key={conv.id}
+                      conv={conv}
+                      showChannel={showChannel}
+                      readOnly={readOnly}
+                      isDragging={draggingId === conv.id}
+                      onDragStart={(e) => handleDragStart(e, conv.id)}
+                      onDragEnd={handleDragEnd}
+                    />
+                  ))}
+                  {!readOnly && isOver && draggingId && (
+                    <div className="rounded-lg border-2 border-dashed border-primary-300 bg-primary-50/60 h-14 flex items-center justify-center text-[11px] font-semibold text-primary-600 shrink-0">
+                      Soltar aqui
+                    </div>
+                  )}
+                  {list.length === 0 && !(isOver && draggingId) && (
+                    <p className="text-[11px] text-slate-400 italic text-center py-6">{readOnly ? "—" : "Solte conversas aqui"}</p>
+                  )}
+                </div>
               </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-sm font-bold text-slate-800 tabular-nums truncate">
-                  {stageTotal(stage.id) > 0
-                    ? BRL(stageTotal(stage.id))
-                    : <span className="text-xs font-normal text-slate-300">—</span>}
-                </span>
-                <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{stage.probability_pct}% prob.</span>
-              </div>
-            </div>
-
-            <div className="flex-1 px-2 py-2 space-y-2 max-h-[calc(100vh-260px)] overflow-y-auto">
-              {list.map((conv) => (
-                <ConversationCard
-                  key={conv.id}
-                  conv={conv}
-                  showChannel={showChannel}
-                  isDragging={draggingId === conv.id}
-                  onDragStart={(e) => handleDragStart(e, conv.id)}
-                  onDragEnd={handleDragEnd}
-                />
-              ))}
-
-              {list.length === 0 && (
-                <p className="text-[11px] text-slate-400 italic text-center py-6">Solte conversas aqui</p>
-              )}
-            </div>
-          </div>
-        )
-      })}
+            )
+          })}
+        </div>
+      )}
 
       {pending && (
         <div className="fixed top-20 right-4 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-lg flex items-center gap-2 text-xs text-slate-600 z-50">
@@ -236,13 +367,14 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
 }
 
 function ConversationCard({
-  conv, showChannel, isDragging, onDragStart, onDragEnd,
+  conv, showChannel, isDragging, onDragStart, onDragEnd, readOnly = false,
 }: {
   conv:        Conversation
   showChannel: boolean
   isDragging:  boolean
   onDragStart: (e: React.DragEvent) => void
   onDragEnd:   () => void
+  readOnly?:   boolean
 }) {
   const contact      = conv.chat_contacts
   const displayName  = contact ? displayContactName(contact) : "Sem nome"
@@ -263,12 +395,12 @@ function ConversationCard({
   return (
     <Link
       href={`/inbox?conversation=${conv.id}`}
-      draggable
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      className={`block group bg-white rounded-lg border border-slate-200 shadow-sm hover:shadow-md hover:border-primary-200 transition-all cursor-grab active:cursor-grabbing ${
-        isDragging ? "opacity-40" : ""
-      }`}
+      draggable={!readOnly}
+      onDragStart={readOnly ? undefined : onDragStart}
+      onDragEnd={readOnly ? undefined : onDragEnd}
+      className={`block group bg-white rounded-lg border border-slate-200 shadow-sm hover:shadow-md hover:border-primary-200 transition-all ${
+        readOnly ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"
+      } ${isDragging ? "opacity-40 scale-[0.97]" : ""}`}
     >
       <div className="p-3 space-y-2">
 

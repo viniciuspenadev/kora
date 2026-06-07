@@ -2,7 +2,44 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getViewerScope } from "@/lib/visibility"
 import { revalidatePath } from "next/cache"
+
+// Select dos cards do kanban (espelha o da página). Inclui department_id pro
+// agrupamento da visão de gestão.
+const KANBAN_CARD_SELECT = `
+  id, status, priority, subject, channel,
+  last_message_at, last_message_preview, last_message_dir, unread_count,
+  pipeline_id, stage_id, card_position, department_id,
+  estimated_value, expected_close_date, lost_reason, won_at, lost_at,
+  assigned_to, instance_id,
+  chat_contacts ( id, push_name, custom_name, phone_number, profile_pic_url, source, lifecycle_stage ),
+  profiles ( full_name, email ),
+  whatsapp_instances!instance_id ( provider )
+`
+
+/**
+ * Panorama de GESTÃO (read-only): TODAS as conversas ativas do tenant, pra
+ * agrupar por atendente/departamento no kanban. Manager-only (owner/admin/
+ * view_all) — gestor vê tudo, então não precisa filtro de visibilidade. Capado
+ * pra não estourar em tenant grande. Não-gestor recebe [] (fail-closed).
+ */
+export async function getManagementCards(): Promise<unknown[]> {
+  const scope = await getViewerScope()
+  if (!scope.isAdmin && !scope.viewAll) return []   // só alto escalão
+
+  const { data, error } = await supabaseAdmin
+    .from("chat_conversations")
+    .select(KANBAN_CARD_SELECT)
+    .eq("tenant_id", scope.tenantId)
+    .in("status", ["open", "pending", "snoozed"])
+    .is("archived_at", null)
+    .order("last_message_at", { ascending: false, nullsFirst: false })
+    .limit(500)
+
+  if (error) throw new Error(`getManagementCards: ${error.message}`)
+  return data ?? []
+}
 
 async function requireSession() {
   const session = await auth()

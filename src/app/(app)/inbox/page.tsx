@@ -62,6 +62,7 @@ export default async function InboxPage() {
     { data: stagesRaw },
     { data: tagsRaw },
     { data: taggingsRaw },
+    { data: departmentsRaw },
   ] = await Promise.all([
     getConversations({ filters: { status: INITIAL_STATUS }, limit: INITIAL_LIMIT }),
     getUnreadTotal(),
@@ -72,7 +73,7 @@ export default async function InboxPage() {
       .order("shortcut"),
     supabaseAdmin
       .from("tenant_users")
-      .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
+      .select("user_id, department_id, profiles!tenant_users_user_id_fkey ( full_name )")
       .eq("tenant_id", tenantId)
       .eq("active", true),
     supabaseAdmin
@@ -96,6 +97,11 @@ export default async function InboxPage() {
       .select("tag_id, taggable_id")
       .eq("tenant_id", tenantId)
       .eq("taggable_type", "contact"),
+    supabaseAdmin
+      .from("tenant_departments")
+      .select("id, name, color")
+      .eq("tenant_id", tenantId)
+      .order("name"),
   ])
 
   const conversations = initialPage.conversations
@@ -116,8 +122,9 @@ export default async function InboxPage() {
     const prof = (a as { profiles?: { full_name: string | null } | { full_name: string | null }[] | null }).profiles
     const fullName = Array.isArray(prof) ? prof[0]?.full_name ?? null : prof?.full_name ?? null
     return {
-      id:        (a as { user_id: string }).user_id,
-      full_name: fullName,
+      id:            (a as { user_id: string }).user_id,
+      full_name:     fullName,
+      department_id: (a as { department_id: string | null }).department_id ?? null,
     }
   })
 
@@ -140,6 +147,7 @@ export default async function InboxPage() {
         pipelines={(pipelinesRaw ?? []) as unknown as PipelineMini[]}
         stages={(stagesRaw ?? []) as unknown as StageMini[]}
         tags={(tagsRaw ?? []) as unknown as TagMini[]}
+        departments={(departmentsRaw ?? []) as unknown as DepartmentMini[]}
         tagsByContact={tagsByContact}
         showChannel={showChannel}
         officialChannel={officialChannel}
@@ -157,4 +165,5 @@ export default async function InboxPage() {
 
 interface PipelineMini { id: string; name: string; color: string; is_default: boolean }
 interface StageMini    { id: string; pipeline_id: string; name: string; color: string; position: number; is_won: boolean; is_lost: boolean }
+interface DepartmentMini { id: string; name: string; color: string }
 interface TagMini      { id: string; name: string; color: string }

@@ -15,20 +15,28 @@ import { supabaseAdmin } from "@/lib/supabase"
  *   • tem view_all=true (supervisor), OU
  *   • assigned_to = ele, OU
  *   • está em participants, OU
- *   • a conversa está no pool (assigned_to IS NULL) E ele tem see_pool=true.
+ *   • a conversa está no pool (assigned_to IS NULL) E ele tem see_pool=true, OU
+ *   • a conversa está na FILA DO SETOR dele (assigned_to IS NULL E
+ *     department_id = o departamento do atendente).
+ *
+ * Visibilidade é sempre UNION (OR): cada condição só ADICIONA acesso, nunca
+ * remove. A fila do setor é gated por o atendente TER departamento — quem não
+ * tem (maioria) fica idêntico ao comportamento clássico.
  */
 
 export interface ViewerScope {
-  tenantId: string
-  userId:   string
-  isAdmin:  boolean   // owner | admin
-  viewAll:  boolean   // supervisor — vê tudo do tenant
-  seePool:  boolean   // vê conversas não atribuídas (pool)
+  tenantId:     string
+  userId:       string
+  isAdmin:      boolean        // owner | admin
+  viewAll:      boolean        // supervisor — vê tudo do tenant
+  seePool:      boolean        // vê conversas não atribuídas (pool)
+  departmentId: string | null  // departamento do atendente — habilita a fila do setor
 }
 
 export interface ConvVisibilityFields {
-  assigned_to:   string | null
-  participants?: string[] | null
+  assigned_to:    string | null
+  participants?:  string[] | null
+  department_id?: string | null
 }
 
 /**
@@ -43,19 +51,21 @@ export async function getViewerScope(): Promise<ViewerScope> {
   const isAdmin = ["owner", "admin"].includes(session.user.role)
   let viewAll = false
   let seePool = true   // default = comportamento clássico (vê o pool)
+  let departmentId: string | null = null
 
   if (!isAdmin) {
     const { data: tu } = await supabaseAdmin
       .from("tenant_users")
-      .select("view_all, see_pool")
+      .select("view_all, see_pool, department_id")
       .eq("tenant_id", session.user.tenantId)
       .eq("user_id", session.user.id)
       .maybeSingle()
     viewAll = tu?.view_all === true
     seePool = tu?.see_pool !== false   // null/undefined → true
+    departmentId = tu?.department_id ?? null
   }
 
-  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool }
+  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId }
 }
 
 /**
@@ -67,6 +77,8 @@ export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFiel
   if (conv.assigned_to === scope.userId) return true
   if ((conv.participants ?? []).includes(scope.userId)) return true
   if (conv.assigned_to === null && scope.seePool) return true
+  // Fila do setor: não-atribuída E do departamento do atendente.
+  if (conv.assigned_to === null && scope.departmentId && conv.department_id === scope.departmentId) return true
   return false
 }
 
@@ -92,6 +104,11 @@ export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
     `participants.cs.{${scope.userId}}`,
   ]
   if (scope.seePool) clauses.unshift("assigned_to.is.null")
+  // Fila do setor — só quando NÃO vê o pool inteiro (senão seria redundante:
+  // quem vê o pool já enxerga todo não-atribuído, depto incluso).
+  if (scope.departmentId && !scope.seePool) {
+    clauses.push(`and(assigned_to.is.null,department_id.eq.${scope.departmentId})`)
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (query as any).or(clauses.join(",")) as T
 }

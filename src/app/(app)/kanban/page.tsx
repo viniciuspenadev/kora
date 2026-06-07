@@ -1,11 +1,9 @@
 import { redirect } from "next/navigation"
-import Link from "next/link"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, applyVisibilityFilter } from "@/lib/visibility"
 import { ensurePipelineBootstrap } from "@/lib/actions/pipeline"
-import { ConversationKanban } from "@/components/kanban/conversation-kanban"
-import { Workflow, ChevronRight, Settings, Plus } from "lucide-react"
+import { KanbanView } from "@/components/kanban/kanban-view"
 
 export default async function KanbanPage({
   searchParams,
@@ -20,7 +18,7 @@ export default async function KanbanPage({
 
   await ensurePipelineBootstrap(tenantId, session.user.id)
 
-  const [{ data: pipelines }, scope, { data: cfg }, { data: instRows }] = await Promise.all([
+  const [{ data: pipelines }, scope, { data: cfg }, { data: instRows }, { data: agentsRaw }, { data: departmentsRaw }] = await Promise.all([
     supabaseAdmin
       .from("pipelines")
       .select("*")
@@ -37,7 +35,24 @@ export default async function KanbanPage({
       .from("whatsapp_instances")
       .select("id")
       .eq("tenant_id", tenantId),
+    supabaseAdmin
+      .from("tenant_users")
+      .select("user_id, department_id, profiles!tenant_users_user_id_fkey ( full_name )")
+      .eq("tenant_id", tenantId)
+      .eq("active", true),
+    supabaseAdmin
+      .from("tenant_departments")
+      .select("id, name, color")
+      .eq("tenant_id", tenantId)
+      .order("name"),
   ])
+  // Alto escalão: vê o switcher de gestão (Atendente/Departamento). Agente não.
+  const isManager = scope.isAdmin || scope.viewAll
+  const agents = (agentsRaw ?? []).map((a) => {
+    const prof = (a as { profiles?: { full_name: string | null } | { full_name: string | null }[] | null }).profiles
+    const fullName = Array.isArray(prof) ? prof[0]?.full_name ?? null : prof?.full_name ?? null
+    return { id: (a as { user_id: string }).user_id, full_name: fullName, department_id: (a as { department_id: string | null }).department_id ?? null }
+  })
   const tintColumns = cfg?.kanban_tinted_columns ?? false
   // Badge de canal só com 2+ instâncias (ex: Baileys + Oficial).
   const showChannel = (instRows ?? []).length > 1
@@ -92,80 +107,20 @@ export default async function KanbanPage({
   const { data: conversations } = await convQuery
 
   return (
-    <div className="min-h-full bg-slate-50">
-
-      <div className="bg-white border-b border-slate-200 px-6 py-5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center shrink-0">
-            <Workflow className="size-5 text-primary-600" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-xs text-slate-400 mb-0.5">
-              <span>Kanban</span>
-              <ChevronRight className="size-3" />
-              <span className="text-slate-600 font-medium">{currentPipeline.name}</span>
-            </div>
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">{currentPipeline.name}</h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {(conversations ?? []).length} {(conversations ?? []).length === 1 ? "conversa" : "conversas"} ·
-              {" "}{!(scope.isAdmin || scope.viewAll) ? "vendo só o que posso" : "visão completa"}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {pipelines.length > 1 && (
-            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg p-1 shrink-0">
-              {pipelines.map((p) => {
-                const active = p.id === currentPipeline.id
-                return (
-                  <a
-                    key={p.id}
-                    href={`/kanban?pipeline=${p.id}`}
-                    className={`flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-md transition-all ${
-                      active
-                        ? "bg-white text-slate-900 shadow-sm"
-                        : "text-slate-500 hover:text-slate-900"
-                    }`}
-                    style={active ? { boxShadow: `inset 0 -2px 0 ${p.color}` } : undefined}
-                  >
-                    <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
-                    {p.name}
-                  </a>
-                )
-              })}
-            </div>
-          )}
-
-          {pipelines.length === 1 && isAdminOrOwner && (
-            <Link
-              href="/kanban/configuracao"
-              className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-primary-600 px-2 py-1 rounded-md hover:bg-slate-50 transition-colors"
-            >
-              <Plus className="size-3" /> Novo funil
-            </Link>
-          )}
-
-          {isAdminOrOwner && (
-            <Link
-              href="/kanban/configuracao"
-              title="Configurar funis"
-              className="size-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors shrink-0"
-            >
-              <Settings className="size-4" />
-            </Link>
-          )}
-        </div>
-      </div>
-
-      <div className="p-4">
-        <ConversationKanban
-          stages={(stages ?? []).filter((s) => s.show_in_kanban)}
-          conversations={(conversations ?? []) as unknown as Parameters<typeof ConversationKanban>[0]["conversations"]}
-          tintColumns={tintColumns}
-          showChannel={showChannel}
-        />
-      </div>
-    </div>
+    <KanbanView
+      pipelines={pipelines.map((p) => ({ id: p.id, name: p.name, color: p.color }))}
+      currentPipeline={{ id: currentPipeline.id, name: currentPipeline.name, color: currentPipeline.color }}
+      convCount={(conversations ?? []).length}
+      isAdminOrOwner={isAdminOrOwner}
+      isManager={isManager}
+      stages={(stages ?? []).filter((s) => s.show_in_kanban)}
+      conversations={(conversations ?? []) as unknown as Parameters<typeof KanbanView>[0]["conversations"]}
+      agents={agents}
+      departments={(departmentsRaw ?? []) as { id: string; name: string; color: string }[]}
+      tintColumns={tintColumns}
+      showChannel={showChannel}
+      tenantId={tenantId}
+      supabaseToken={session.user.supabaseToken}
+    />
   )
 }

@@ -259,7 +259,7 @@ export async function sendMessage(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, chat_contacts(whatsapp_id, phone_number, primary_channel)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(whatsapp_id, phone_number, primary_channel)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -268,7 +268,7 @@ export async function sendMessage(
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id })) {
     throw new Error("Sem permissão para responder nesta conversa. Peça para o atendente atribuído te adicionar como participante.")
   }
   const isPool = assignedTo === null
@@ -383,7 +383,7 @@ export async function sendOfficialTemplate(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, chat_contacts(phone_number, primary_channel)")
+    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -391,7 +391,7 @@ export async function sendOfficialTemplate(
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id })) {
     throw new Error("Sem permissão para responder nesta conversa.")
   }
   const isPool = assignedTo === null
@@ -498,7 +498,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, chat_contacts(phone_number, primary_channel)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -547,7 +547,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id })) {
     return { error: "Sem permissão para enviar mídia nesta conversa." }
   }
   const isPool = assignedTo === null
@@ -685,6 +685,134 @@ export async function assignConversation(conversationId: string, agentId: string
     .eq("tenant_id", session.user.tenantId)
 
   revalidatePath("/inbox")
+}
+
+/**
+ * Transferência (handoff) — destino é um DEPARTAMENTO (fila do setor ou agente
+ * específico do setor) OU um ATENDENTE direto. Distinto de "Participantes"
+ * (colaborar sem largar — ver addConversationParticipant).
+ *
+ *   • department + sem agente → fila do setor: assigned_to=null, department_id=X
+ *   • department + agente     → assigned_to=agente, department_id=X
+ *   • agent                   → assigned_to=agente, department_id = depto do agente
+ *                               (ou mantém o atual se o agente não tiver depto)
+ *
+ * `stayAsParticipant` adiciona o autor a participants (sai como responsável mas
+ * segue vendo/atuando). Visibilidade é union → nunca tira acesso de ninguém.
+ */
+export async function transferConversation(
+  conversationId: string,
+  opts: {
+    mode:               "department" | "agent" | "pool"
+    departmentId?:      string | null
+    agentId?:           string | null
+    stayAsParticipant?: boolean
+  },
+): Promise<{ error?: string }> {
+  const session = await auth()
+  if (!session) throw new Error("Não autenticado")
+  const tenantId = session.user.tenantId
+
+  const { data: conv } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id, assigned_to, participants, department_id")
+    .eq("id", conversationId)
+    .eq("tenant_id", tenantId)
+    .single()
+  if (!conv) throw new Error("Conversa não encontrada")
+
+  // Só transfere quem pode ATUAR na conversa (gate de visibilidade único).
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null })) {
+    return { error: "Sem permissão para transferir esta conversa." }
+  }
+
+  // Valida agente (anti-IDOR) e devolve o depto dele. Reusado pelos dois modos.
+  async function resolveAgent(agentId: string): Promise<{ deptId: string | null; name: string } | null> {
+    const { data: member } = await supabaseAdmin
+      .from("tenant_users")
+      .select("user_id, department_id")
+      .eq("tenant_id", tenantId)
+      .eq("user_id", agentId)
+      .eq("active", true)
+      .maybeSingle()
+    if (!member) return null
+    const { data: prof } = await supabaseAdmin.from("profiles").select("full_name").eq("id", agentId).maybeSingle()
+    return { deptId: (member as { department_id: string | null }).department_id ?? null, name: prof?.full_name ?? "atendente" }
+  }
+
+  let nextAssigned:   string | null
+  let nextDepartment: string | null
+  let label:          string
+
+  if (opts.mode === "pool") {
+    // Devolver pra fila geral — sem responsável e sem setor.
+    nextAssigned   = null
+    nextDepartment = null
+    label          = "a fila geral"
+  } else if (opts.mode === "agent") {
+    if (!opts.agentId) return { error: "Selecione um atendente." }
+    const a = await resolveAgent(opts.agentId)
+    if (!a) return { error: "Atendente não pertence a este tenant." }
+    nextAssigned   = opts.agentId
+    nextDepartment = a.deptId ?? (conv as { department_id: string | null }).department_id ?? null  // herda; não limpa à toa
+    label          = a.name
+  } else {
+    if (!opts.departmentId) return { error: "Selecione um departamento." }
+    const { data: dept } = await supabaseAdmin
+      .from("tenant_departments")
+      .select("id, name")
+      .eq("tenant_id", tenantId)
+      .eq("id", opts.departmentId)
+      .maybeSingle()
+    if (!dept) return { error: "Departamento inválido." }
+    nextDepartment = opts.departmentId
+    if (opts.agentId) {
+      const a = await resolveAgent(opts.agentId)
+      if (!a) return { error: "Atendente não pertence a este tenant." }
+      nextAssigned = opts.agentId
+      label        = `${a.name} (${dept.name})`
+    } else {
+      nextAssigned = null            // fila do setor
+      label        = `o departamento ${dept.name}`
+    }
+  }
+
+  // "Continuar acompanhando" → autor entra como participante (se não virou o dono).
+  let nextParticipants = ((conv as { participants: string[] | null }).participants ?? []) as string[]
+  if (opts.stayAsParticipant && session.user.id !== nextAssigned && !nextParticipants.includes(session.user.id)) {
+    nextParticipants = [...nextParticipants, session.user.id]
+  }
+
+  await supabaseAdmin
+    .from("chat_conversations")
+    .update({
+      assigned_to:   nextAssigned,
+      department_id: nextDepartment,
+      participants:  nextParticipants,
+      updated_at:    new Date().toISOString(),
+    })
+    .eq("id", conversationId)
+    .eq("tenant_id", tenantId)
+
+  // Nota de sistema (histórico auditável) — nomeia QUEM transferiu, voz ativa.
+  const { data: actor } = await supabaseAdmin.from("profiles").select("full_name").eq("id", session.user.id).maybeSingle()
+  const who = actor?.full_name ?? "Alguém"
+  await supabaseAdmin.from("chat_messages").insert({
+    conversation_id: conversationId,
+    tenant_id:       tenantId,
+    sender_type:     "system",
+    content_type:    "text",
+    content:         opts.mode === "pool"
+      ? `${who} devolveu a conversa para ${label}.`
+      : `${who} transferiu a conversa para ${label}.`,
+    status:          "delivered",
+    is_private_note: false,
+  })
+
+  revalidatePath("/inbox")
+  revalidatePath("/kanban")
+  return {}
 }
 
 export async function updateConversationStatus(conversationId: string, status: string) {

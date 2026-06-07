@@ -7,12 +7,14 @@ import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import {
-  User, Phone, CheckCircle2, Clock, XCircle,
-  ChevronDown, UserPlus, Users, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore,
+  Phone, CheckCircle2, Clock, XCircle,
+  ChevronDown, Users, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore,
   ArrowLeft, Info,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
+import { TransferDialog, type TransferOpts } from "@/components/chat/transfer-dialog"
+import { ArrowLeftRight } from "lucide-react"
 import { buildTimelineGroups, TimelineDivider, DateDivider } from "@/components/chat/timeline-divider"
 import type { ChatMessage, ChatConversation, ChatQuickReply, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
@@ -22,9 +24,10 @@ interface Props {
   conversation: ChatConversation
   messages:     ChatMessage[]
   quickReplies: ChatQuickReply[]
-  agents:       Array<{ id: string; full_name: string | null }>
+  agents:       Array<{ id: string; full_name: string | null; department_id?: string | null }>
+  departments:  Array<{ id: string; name: string; color: string }>
   onStatusChange: (status: string) => void
-  onAssign:       (agentId: string | null) => void
+  onTransfer:     (opts: TransferOpts) => Promise<void>
   // Paginação de mensagens antigas (scroll-up)
   hasMoreOlder?:  boolean
   loadingOlder?:  boolean
@@ -83,7 +86,7 @@ function MessageSkeleton() {
 }
 
 export function ChatPanel({
-  conversation, messages, quickReplies, agents, onStatusChange, onAssign,
+  conversation, messages, quickReplies, agents, departments, onStatusChange, onTransfer,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
   loadingMessages = false,
   onSendText, onSendMedia, onSendVoice, onArchiveToggle,
@@ -93,7 +96,7 @@ export function ChatPanel({
   // Dropdowns por clique (status/atribuir) — antes eram group-hover puro, que
   // não abre no toque. Clique funciona em desktop e mobile.
   const [statusOpen, setStatusOpen] = useState(false)
-  const [assignOpen, setAssignOpen] = useState(false)
+  const [transferOpen, setTransferOpen] = useState(false)
   const messagesEndRef     = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const topSentinelRef     = useRef<HTMLDivElement>(null)
@@ -329,7 +332,7 @@ export function ChatPanel({
           <div className="relative">
             <button
               type="button"
-              onClick={() => { setStatusOpen((v) => !v); setAssignOpen(false) }}
+              onClick={() => { setStatusOpen((v) => !v) }}
               className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 sm:px-3 py-1.5 rounded-lg transition-colors ${currentStatus.color}`}
             >
               <currentStatus.icon className="size-3.5" />
@@ -371,47 +374,17 @@ export function ChatPanel({
             {isArchived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
           </button>
 
-          <div className="relative hidden md:block">
-            <button
-              type="button"
-              onClick={() => { setAssignOpen((v) => !v); setStatusOpen(false) }}
-              className="flex items-center gap-1.5 text-xs font-medium px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors max-w-[120px] sm:max-w-none"
-            >
-              {conversation.assigned_to
-                ? <AgentAvatar userId={conversation.assigned_to} name={conversation.profiles?.full_name} className="size-4" />
-                : <UserPlus className="size-3.5 shrink-0" />}
-              <span className="hidden sm:inline truncate">{conversation.profiles?.full_name ?? "Atribuir"}</span>
-              <ChevronDown className="size-3 shrink-0" />
-            </button>
-            {assignOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setAssignOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[160px] z-20 max-h-72 overflow-y-auto">
-                  <button
-                    type="button"
-                    onClick={() => { onAssign(null); setAssignOpen(false) }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-500 hover:bg-slate-50"
-                  >
-                    <User className="size-3.5" />
-                    Sem atribuição
-                  </button>
-                  {agents.map((agent) => (
-                    <button
-                      key={agent.id}
-                      type="button"
-                      onClick={() => { onAssign(agent.id); setAssignOpen(false) }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-slate-50 ${
-                        agent.id === conversation.assigned_to ? "text-primary-600 font-semibold" : "text-slate-700"
-                      }`}
-                    >
-                      <AgentAvatar userId={agent.id} name={agent.full_name} className="size-5" />
-                      {agent.full_name}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={() => setTransferOpen(true)}
+            title="Transferir conversa"
+            className="hidden md:flex items-center gap-1.5 text-xs font-medium px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors max-w-[140px] sm:max-w-none"
+          >
+            {conversation.assigned_to
+              ? <AgentAvatar userId={conversation.assigned_to} name={conversation.profiles?.full_name} className="size-4" />
+              : <ArrowLeftRight className="size-3.5 shrink-0" />}
+            <span className="hidden sm:inline truncate">{conversation.profiles?.full_name ?? "Transferir"}</span>
+          </button>
 
           {/* Mobile: abre a ficha do contato (no desktop ela é coluna fixa) */}
           {onOpenContact && (
@@ -494,6 +467,14 @@ export function ChatPanel({
         onSendVoice={onSendVoice}
       />
 
+      <TransferDialog
+        open={transferOpen}
+        onClose={() => setTransferOpen(false)}
+        departments={departments}
+        agents={agents}
+        currentAssignedTo={conversation.assigned_to}
+        onTransfer={onTransfer}
+      />
     </div>
   )
 }

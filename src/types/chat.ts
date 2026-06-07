@@ -82,6 +82,7 @@ export interface ChatConversation {
   contact_id:            string | null
   instance_id:           string
   assigned_to:           string | null
+  department_id:         string | null
   status:                ConversationStatus
   priority:              ConversationPriority
   channel:               string

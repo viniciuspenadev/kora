@@ -20,7 +20,9 @@ import {
   unarchiveConversation,
   setConversationFlagged,
   setConversationPinned,
+  transferConversation,
 } from "@/lib/actions/chat"
+import type { TransferOpts } from "@/components/chat/transfer-dialog"
 import {
   getConversations,
   getConversationsUpdates,
@@ -42,20 +44,22 @@ import type {
   ChatQuickReply,
 } from "@/types/chat"
 
-interface PipelineMini { id: string; name: string; color: string; is_default: boolean }
-interface StageMini    { id: string; pipeline_id: string; name: string; color: string; position: number; is_won: boolean; is_lost: boolean }
-interface TagMini      { id: string; name: string; color: string }
+interface PipelineMini   { id: string; name: string; color: string; is_default: boolean }
+interface StageMini      { id: string; pipeline_id: string; name: string; color: string; position: number; is_won: boolean; is_lost: boolean }
+interface TagMini        { id: string; name: string; color: string }
+interface DepartmentMini { id: string; name: string; color: string }
 
 interface Props {
   conversations:       ChatConversation[]
   messages:            Record<string, ChatMessage[]>
   contacts:            Record<string, ChatContact>
   quickReplies:        ChatQuickReply[]
-  agents:              Array<{ id: string; full_name: string | null }>
+  agents:              Array<{ id: string; full_name: string | null; department_id?: string | null }>
   instanceStatus:      string
   pipelines?:          PipelineMini[]
   stages?:             StageMini[]
   tags?:               TagMini[]
+  departments?:        DepartmentMini[]
   tagsByContact?:      Record<string, string[]>
   showChannel?:        boolean
   officialChannel?:    boolean
@@ -85,7 +89,7 @@ function sortByLastMessage(a: ChatConversation, b: ChatConversation): number {
 }
 
 interface ActiveFilters {
-  statusFilter: string; pipelineFilter: string; agentFilter: string; tagFilter: string
+  statusFilter: string; pipelineFilter: string; agentFilter: string; departmentFilter: string; tagFilter: string
   staleOnly: boolean; fromAd: boolean; archivedOnly: boolean; searchDebounced: string
 }
 
@@ -98,6 +102,7 @@ function matchesActiveFilters(conv: ChatConversation, f: ActiveFilters): boolean
   if (f.statusFilter && f.statusFilter !== "all" && conv.status !== f.statusFilter) return false
   if (f.pipelineFilter && conv.pipeline_id !== f.pipelineFilter) return false
   if (f.agentFilter && conv.assigned_to !== f.agentFilter) return false
+  if (f.departmentFilter && conv.department_id !== f.departmentFilter) return false
   if (f.fromAd && !conv.from_ad_meta) return false
   if (f.staleOnly && (!conv.last_message_at || new Date(conv.last_message_at).getTime() >= Date.now() - STALE_MS)) return false
   return true
@@ -112,6 +117,7 @@ export function InboxClient({
   pipelines      = [],
   stages         = [],
   tags           = [],
+  departments    = [],
   tagsByContact: initialTagsByContact = {},
   showChannel    = false,
   officialChannel = false,
@@ -143,6 +149,7 @@ export function InboxClient({
   const [statusFilter, setStatusFilter]     = useState(initialStatus)
   const [pipelineFilter, setPipelineFilter] = useState("")
   const [agentFilter, setAgentFilter]       = useState("")
+  const [departmentFilter, setDepartmentFilter] = useState("")
   const [tagFilter, setTagFilter]           = useState("")
   const [staleOnly, setStaleOnly]           = useState(false)
   const [fromAd, setFromAd]                 = useState(false)
@@ -180,9 +187,9 @@ export function InboxClient({
   // Snapshot dos filtros pro handler do Realtime (canal não re-subscreve a cada
   // mudança de filtro — lê daqui). Atualizado a cada render.
   const filtersRef = useRef<ActiveFilters>({
-    statusFilter, pipelineFilter, agentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced,
+    statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced,
   })
-  filtersRef.current = { statusFilter, pipelineFilter, agentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
+  filtersRef.current = { statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
 
   // ── Debounce search ─────────────────────────────────────────
   useEffect(() => {
@@ -195,12 +202,13 @@ export function InboxClient({
     status:       statusFilter,
     pipelineId:   pipelineFilter || undefined,
     agentId:      agentFilter    || undefined,
+    departmentId: departmentFilter || undefined,
     tagId:        tagFilter      || undefined,
     staleOnly:    staleOnly || undefined,
     fromAd:       fromAd    || undefined,
     archivedOnly: archivedOnly || undefined,
     search:       searchDebounced || undefined,
-  }), [statusFilter, pipelineFilter, agentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced])
+  }), [statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced])
 
   // ── Fetch primeira página (chama em mudança de filtro) ──────
   const loadFirstPage = useCallback(async () => {
@@ -301,7 +309,7 @@ export function InboxClient({
       return
     }
     loadFirstPage()
-  }, [statusFilter, pipelineFilter, agentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced, loadFirstPage])
+  }, [statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced, loadFirstPage])
 
   // ── Carregar últimas 20 msgs ao selecionar conv ─────────────
   const loadMessages = useCallback(async (convId: string) => {
@@ -784,15 +792,31 @@ export function InboxClient({
     })
   }, [activeId, conversations, archivedOnly])
 
-  const handleAssign = useCallback((agentId: string | null) => {
+  // Transferência (header). Otimista: reflete dono/depto/participante na lista.
+  const handleTransfer = useCallback(async (opts: TransferOpts) => {
     if (!activeId) return
-    startTransition(async () => {
-      await assignConversation(activeId, agentId)
-      setConversations((prev) =>
-        prev.map((c) => c.id === activeId ? { ...c, assigned_to: agentId } : c)
-      )
-    })
-  }, [activeId])
+    const result = await transferConversation(activeId, opts)
+    if (result?.error) { toast.error(result.error); return }
+    setConversations((prev) => prev.map((c) => {
+      if (c.id !== activeId) return c
+      let assigned_to    = c.assigned_to
+      let department_id  = c.department_id
+      if (opts.mode === "pool") {
+        assigned_to = null; department_id = null
+      } else if (opts.mode === "agent") {
+        assigned_to   = opts.agentId ?? null
+        const a       = agents.find((x) => x.id === opts.agentId)
+        department_id = a?.department_id ?? c.department_id ?? null   // espelha o backend (herda; não limpa à toa)
+      } else {
+        department_id = opts.departmentId ?? null
+        assigned_to   = opts.agentId ?? null
+      }
+      const participants = opts.stayAsParticipant && assigned_to !== currentUserId && !(c.participants ?? []).includes(currentUserId)
+        ? [...(c.participants ?? []), currentUserId]
+        : c.participants
+      return { ...c, assigned_to, department_id, participants }
+    }))
+  }, [activeId, agents, currentUserId])
 
   // ── Ações do menu de contexto (por conversa, não só a ativa) ──
   const handleToggleFlag = useCallback((id: string, value: boolean) => {
@@ -937,6 +961,7 @@ export function InboxClient({
             pipelines={pipelines}
             stages={stages}
             tags={tags}
+            departments={departments}
             tagsByContact={tagsByContact}
             showChannel={showChannel}
             officialChannel={officialChannel}
@@ -949,6 +974,8 @@ export function InboxClient({
             onPipelineFilterChange={setPipelineFilter}
             agentFilter={agentFilter}
             onAgentFilterChange={setAgentFilter}
+            departmentFilter={departmentFilter}
+            onDepartmentFilterChange={setDepartmentFilter}
             tagFilter={tagFilter}
             onTagFilterChange={setTagFilter}
             staleOnly={staleOnly}
@@ -976,8 +1003,9 @@ export function InboxClient({
                   messages={activeMessages}
                   quickReplies={quickReplies}
                   agents={agents}
+                  departments={departments}
                   onStatusChange={handleStatusChange}
-                  onAssign={handleAssign}
+                  onTransfer={handleTransfer}
                   hasMoreOlder={hasMoreOlder}
                   loadingOlder={loadingOlder}
                   onLoadOlder={loadOlderMessages}

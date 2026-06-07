@@ -161,7 +161,7 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
 
           <FormRow
             label="Departamento"
-            hint="Influencia o que essa pessoa vê por padrão no inbox"
+            hint="Habilita a fila do setor: a pessoa passa a ver as conversas não-atribuídas deste departamento (além das atribuídas a ela)."
           >
             <select
               value={departmentId}
@@ -188,7 +188,7 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
               <div className="flex-1">
                 <p className="text-sm font-medium text-slate-800">Pode ver todas as conversas</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Quando desligado, essa pessoa vê apenas conversas atribuídas a ela ou do seu departamento. Ligue para supervisores que precisam do panorama completo.
+                  Quando desligado, essa pessoa vê apenas: conversas atribuídas a ela, as que participa, a fila do seu departamento e — se permitido — o pool não-atribuído. Ligue para supervisores que precisam do panorama completo.
                 </p>
               </div>
             </label>

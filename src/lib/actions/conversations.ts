@@ -21,6 +21,7 @@ export interface ConversationFilters {
   status?:       string  // 'open' | 'pending' | 'resolved' | 'snoozed' | 'all'
   pipelineId?:   string
   agentId?:      string
+  departmentId?: string
   tagId?:        string
   staleOnly?:    boolean // só convs com last_message_at >24h
   fromAd?:       boolean // só convs com from_ad_meta IS NOT NULL (Click-to-WhatsApp)
@@ -118,6 +119,7 @@ export async function getConversations(opts: {
   if (filters.status && filters.status !== "all") q = q.eq("status", filters.status)
   if (filters.pipelineId)                          q = q.eq("pipeline_id", filters.pipelineId)
   if (filters.agentId)                             q = q.eq("assigned_to", filters.agentId)
+  if (filters.departmentId)                        q = q.eq("department_id", filters.departmentId)
   if (contactIds !== null)                         q = q.in("contact_id", contactIds)
   if (filters.staleOnly) {
     const cutoff = new Date(Date.now() - STALE_HOURS * 3600_000).toISOString()
@@ -210,6 +212,7 @@ export async function getConversationsUpdates(opts: {
   if (filters.status && filters.status !== "all") q = q.eq("status", filters.status)
   if (filters.pipelineId)                          q = q.eq("pipeline_id", filters.pipelineId)
   if (filters.agentId)                             q = q.eq("assigned_to", filters.agentId)
+  if (filters.departmentId)                        q = q.eq("department_id", filters.departmentId)
   if (contactIds !== null)                         q = q.in("contact_id", contactIds)
   if (filters.staleOnly) {
     const cutoff = new Date(Date.now() - STALE_HOURS * 3600_000).toISOString()
