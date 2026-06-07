@@ -133,7 +133,10 @@ async function doStudioRun(input: RunAITurnInput): Promise<RunAITurnResult> {
         .eq("id", existingRun.id)
     }
   } else {
-    const flow = await findFlowToStart(tenantId, incomingText, history.length === 0)
+    // "Contato novo" = é a 1ª mensagem da conversa. O histórico JÁ inclui a
+    // mensagem que acabou de chegar, então a 1ª vez vem com length <= 1.
+    const isNewContact = history.length <= 1
+    const flow = await findFlowToStart(tenantId, incomingText, isNewContact)
     if (flow) {
       const run    = await startFlowRun(tenantId, conversationId, flow)
       activeFlowId = flow.id
