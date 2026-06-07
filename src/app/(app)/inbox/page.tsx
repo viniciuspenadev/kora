@@ -127,6 +127,8 @@ export default async function InboxPage() {
       department_id: (a as { department_id: string | null }).department_id ?? null,
     }
   })
+  // Departamento do atendente logado → habilita a "fila do setor" subir ao vivo.
+  const userDepartmentId = agents.find((a) => a.id === session.user.id)?.department_id ?? null
 
   const tagsByContact: Record<string, string[]> = {}
   for (const t of taggingsRaw ?? []) {
@@ -157,6 +159,7 @@ export default async function InboxPage() {
         initialUnreadTotal={initialUnread}
         tenantId={tenantId}
         currentUserId={session.user.id}
+        userDepartmentId={userDepartmentId}
         supabaseToken={session.user.supabaseToken}
       />
     </div>

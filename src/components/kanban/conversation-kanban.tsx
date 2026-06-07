@@ -8,6 +8,10 @@ import {
   Phone, DollarSign, Calendar, Loader2,
   ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
 } from "lucide-react"
+import {
+  DndContext, DragOverlay, PointerSensor, useSensor, useSensors, useDraggable, useDroppable,
+  type DragStartEvent, type DragEndEvent, type DraggableAttributes,
+} from "@dnd-kit/core"
 import { moveConversation, getManagementCards } from "@/lib/actions/pipeline"
 import { getRealtimeClient } from "@/lib/realtime"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -126,9 +130,9 @@ function relativeTime(date: string): { label: string; hot: boolean } {
 export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false, groupBy, agents = [], departments = [], tenantId, supabaseToken }: Props) {
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
-  const [draggingId, setDraggingId]   = useState<string | null>(null)
-  const [dragOverStage, setDragOver]  = useState<string | null>(null)
+  const [activeId, setActiveId]       = useState<string | null>(null)
   const [pending, startTransition]    = useTransition()
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   const [mgmtCards, setMgmtCards] = useState<Conversation[] | null>(null)
 
@@ -252,129 +256,143 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     })
   }
 
-  function handleDragStart(e: React.DragEvent, id: string) {
-    setDraggingId(id)
-    e.dataTransfer.effectAllowed = "move"
-    // Ghost custom: clone do card inclinado + sombra (parece "solto da mesa").
-    // Largura via getBoundingClientRect → casa com o tamanho VISUAL (respeita zoom).
-    const card = e.currentTarget as HTMLElement
-    const rect = card.getBoundingClientRect()
-    const ghost = card.cloneNode(true) as HTMLElement
-    ghost.style.cssText =
-      `position:fixed; top:-9999px; left:-9999px; margin:0; pointer-events:none; ` +
-      `width:${rect.width}px; transform:rotate(3deg); box-shadow:0 18px 40px rgba(15,23,42,.28); opacity:1;`
-    document.body.appendChild(ghost)
-    try {
-      e.dataTransfer.setDragImage(ghost, e.clientX - rect.left, e.clientY - rect.top)
-    } catch { /* setDragImage não suportado — usa o ghost nativo */ }
-    setTimeout(() => ghost.remove(), 0)
-  }
-  function handleDragEnd() { setDraggingId(null); setDragOver(null) }
-  function handleDragOver(e: React.DragEvent, key: string) { e.preventDefault(); setDragOver(key) }
-  function handleDrop(e: React.DragEvent, stageId: string) {
-    e.preventDefault()
-    if (!draggingId) return
-    const c = convs.find((x) => x.id === draggingId)
-    if (!c || c.stage_id === stageId) { setDraggingId(null); setDragOver(null); return }
+  // ── Drag-and-drop (dnd-kit) ─────────────────────────────────
+  function onDragStart(e: DragStartEvent) { setActiveId(String(e.active.id)) }
+  function onDragEnd(e: DragEndEvent) {
+    setActiveId(null)
+    const { active, over } = e
+    if (!over) return
+    const cardId  = String(active.id)
+    const stageId = String(over.id)            // droppable.id = key da etapa
+    const c = convs.find((x) => x.id === cardId)
+    if (!c || c.stage_id === stageId) return
     const newPos = cardsFor(stageId).length
-    setConvs((prev) => prev.map((x) => x.id === draggingId ? { ...x, stage_id: stageId, card_position: newPos } : x))
-    setDraggingId(null); setDragOver(null)
+    setConvs((prev) => prev.map((x) => x.id === cardId ? { ...x, stage_id: stageId, card_position: newPos } : x))
     startTransition(async () => {
-      try { await moveConversation(c.id, stageId, newPos) }
+      try { await moveConversation(cardId, stageId, newPos) }
       catch (err) { setConvs(initial); alert((err as Error).message ?? "Erro ao mover") }
     })
   }
+  const activeCard = activeId ? dataset.find((c) => c.id === activeId) ?? null : null
 
   return (
-    <div className="h-full">
-      {loadingMgmt ? (
-        <div className="flex items-center justify-center gap-2 h-full text-sm text-slate-400">
-          <Loader2 className="size-4 animate-spin" /> Carregando panorama…
-        </div>
-      ) : (
-        <div className="flex gap-3 overflow-x-auto pb-4 h-full">
-          {columns.map((col) => {
-            const list      = cardsFor(col.key)
-            const isOver    = !readOnly && dragOverStage === col.key
-            const StageIcon = col.stage?.is_won ? Trophy : col.stage?.is_lost ? XCircle : null
-            const total     = list.reduce((s, c) => s + Number(c.estimated_value ?? 0), 0)
-            const tinted    = tintColumns && !!col.color
-            return (
-              <div
+    <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+      <div className="h-full">
+        {loadingMgmt ? (
+          <div className="flex items-center justify-center gap-2 h-full text-sm text-slate-400">
+            <Loader2 className="size-4 animate-spin" /> Carregando panorama…
+          </div>
+        ) : (
+          <div className="flex gap-3 overflow-x-auto pb-4 h-full">
+            {columns.map((col) => (
+              <KanbanColumn
                 key={col.key}
-                style={{
-                  borderTop: `3px solid ${col.color ?? "#cbd5e1"}`,
-                  backgroundColor: isOver || !tinted ? undefined : `color-mix(in srgb, ${col.color} 12%, transparent)`,
-                }}
-                className={`shrink-0 w-80 flex flex-col rounded-xl overflow-hidden transition-all duration-150 ${
-                  isOver ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : tinted ? "" : "bg-slate-100/60"
-                }`}
-                onDragOver={readOnly ? undefined : (e) => handleDragOver(e, col.key)}
-                onDrop={readOnly ? undefined : (e) => handleDrop(e, col.key)}
-                onDragLeave={readOnly ? undefined : () => setDragOver(null)}
-              >
-                <div className="px-3 py-2.5 border-b border-slate-200/70">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <span className="text-sm font-semibold text-slate-900 flex-1 truncate">{col.title}</span>
-                    {StageIcon && <StageIcon className={`size-3.5 ${col.stage?.is_won ? "text-emerald-600" : "text-red-500"}`} />}
-                    <span className="text-[10px] font-bold text-slate-500 tabular-nums bg-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center shadow-sm">
-                      {list.length}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-sm font-bold text-slate-800 tabular-nums truncate">
-                      {total > 0 ? BRL(total) : <span className="text-xs font-normal text-slate-300">—</span>}
-                    </span>
-                    {col.stage && <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{col.stage.probability_pct}% prob.</span>}
-                  </div>
-                </div>
+                col={col}
+                list={cardsFor(col.key)}
+                tinted={tintColumns && !!col.color}
+                readOnly={readOnly}
+                showChannel={showChannel}
+                dragging={!!activeId}
+              />
+            ))}
+          </div>
+        )}
 
-                <div className="flex-1 min-h-0 px-2 py-2 space-y-2 overflow-y-auto">
-                  {list.map((conv) => (
-                    <ConversationCard
-                      key={conv.id}
-                      conv={conv}
-                      showChannel={showChannel}
-                      readOnly={readOnly}
-                      isDragging={draggingId === conv.id}
-                      onDragStart={(e) => handleDragStart(e, conv.id)}
-                      onDragEnd={handleDragEnd}
-                    />
-                  ))}
-                  {!readOnly && isOver && draggingId && (
-                    <div className="rounded-lg border-2 border-dashed border-primary-300 bg-primary-50/60 h-14 flex items-center justify-center text-[11px] font-semibold text-primary-600 shrink-0">
-                      Soltar aqui
-                    </div>
-                  )}
-                  {list.length === 0 && !(isOver && draggingId) && (
-                    <p className="text-[11px] text-slate-400 italic text-center py-6">{readOnly ? "—" : "Solte conversas aqui"}</p>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
+        {pending && (
+          <div className="fixed top-20 right-4 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-lg flex items-center gap-2 text-xs text-slate-600 z-50">
+            <Loader2 className="size-3.5 animate-spin text-primary-600" />
+            Salvando...
+          </div>
+        )}
+      </div>
 
-      {pending && (
-        <div className="fixed top-20 right-4 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-lg flex items-center gap-2 text-xs text-slate-600 z-50">
-          <Loader2 className="size-3.5 animate-spin text-primary-600" />
-          Salvando...
+      {/* Card "levantado" que segue o cursor — DOM real, 100% opaco (resolve a
+          transparência do DnD nativo). dnd-kit dimensiona pelo tamanho visual
+          do card de origem → casa em qualquer zoom sem double-scale. */}
+      <DragOverlay dropAnimation={null}>
+        {activeCard ? <ConversationCard conv={activeCard} showChannel={showChannel} overlay /> : null}
+      </DragOverlay>
+    </DndContext>
+  )
+}
+
+// ── Coluna droppable (dnd-kit) ──────────────────────────────────
+function KanbanColumn({ col, list, tinted, readOnly, showChannel, dragging }: {
+  col: Column; list: Conversation[]; tinted: boolean; readOnly: boolean; showChannel: boolean; dragging: boolean
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: col.key, disabled: readOnly })
+  const StageIcon = col.stage?.is_won ? Trophy : col.stage?.is_lost ? XCircle : null
+  const total     = list.reduce((s, c) => s + Number(c.estimated_value ?? 0), 0)
+  const highlight = isOver && !readOnly && dragging
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        borderTop: `3px solid ${col.color ?? "#cbd5e1"}`,
+        backgroundColor: highlight || !tinted ? undefined : `color-mix(in srgb, ${col.color} 12%, transparent)`,
+      }}
+      className={`shrink-0 w-80 flex flex-col rounded-xl overflow-hidden transition-all duration-150 ${
+        highlight ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : tinted ? "" : "bg-slate-100/60"
+      }`}
+    >
+      <div className="px-3 py-2.5 border-b border-slate-200/70">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-sm font-semibold text-slate-900 flex-1 truncate">{col.title}</span>
+          {StageIcon && <StageIcon className={`size-3.5 ${col.stage?.is_won ? "text-emerald-600" : "text-red-500"}`} />}
+          <span className="text-[10px] font-bold text-slate-500 tabular-nums bg-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center shadow-sm">
+            {list.length}
+          </span>
         </div>
-      )}
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm font-bold text-slate-800 tabular-nums truncate">
+            {total > 0 ? BRL(total) : <span className="text-xs font-normal text-slate-300">—</span>}
+          </span>
+          {col.stage && <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{col.stage.probability_pct}% prob.</span>}
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 px-2 py-2 space-y-2 overflow-y-auto">
+        {list.map((conv) => <DraggableCard key={conv.id} conv={conv} showChannel={showChannel} readOnly={readOnly} />)}
+        {highlight && (
+          <div className="rounded-lg border-2 border-dashed border-primary-300 bg-primary-50/60 h-14 flex items-center justify-center text-[11px] font-semibold text-primary-600 shrink-0">
+            Soltar aqui
+          </div>
+        )}
+        {list.length === 0 && !highlight && (
+          <p className="text-[11px] text-slate-400 italic text-center py-6">{readOnly ? "—" : "Solte conversas aqui"}</p>
+        )}
+      </div>
     </div>
   )
 }
 
+// ── Card draggable (dnd-kit) ────────────────────────────────────
+function DraggableCard({ conv, showChannel, readOnly }: { conv: Conversation; showChannel: boolean; readOnly: boolean }) {
+  const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: conv.id, disabled: readOnly })
+  return (
+    <ConversationCard
+      conv={conv}
+      showChannel={showChannel}
+      readOnly={readOnly}
+      dragRef={setNodeRef}
+      listeners={listeners}
+      attributes={attributes}
+      isDragging={isDragging}
+    />
+  )
+}
+
 function ConversationCard({
-  conv, showChannel, isDragging, onDragStart, onDragEnd, readOnly = false,
+  conv, showChannel, readOnly = false, dragRef, listeners, attributes, isDragging = false, overlay = false,
 }: {
   conv:        Conversation
   showChannel: boolean
-  isDragging:  boolean
-  onDragStart: (e: React.DragEvent) => void
-  onDragEnd:   () => void
   readOnly?:   boolean
+  dragRef?:    (el: HTMLElement | null) => void
+  listeners?:  Record<string, unknown>
+  attributes?: DraggableAttributes
+  isDragging?: boolean
+  overlay?:    boolean
 }) {
   const contact      = conv.chat_contacts
   const displayName  = contact ? displayContactName(contact) : "Sem nome"
@@ -392,17 +410,14 @@ function ConversationCard({
   const today        = new Date().toISOString().split("T")[0]
   const overdueDate  = conv.expected_close_date && conv.expected_close_date < today && !conv.won_at && !conv.lost_at
 
-  return (
-    <Link
-      href={`/inbox?conversation=${conv.id}`}
-      draggable={!readOnly}
-      onDragStart={readOnly ? undefined : onDragStart}
-      onDragEnd={readOnly ? undefined : onDragEnd}
-      className={`block group bg-white rounded-lg border border-slate-200 shadow-sm hover:shadow-md hover:border-primary-200 transition-all ${
-        readOnly ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"
-      } ${isDragging ? "opacity-40 scale-[0.97]" : ""}`}
-    >
-      <div className="p-3 space-y-2">
+  const cardCls = `block group bg-white rounded-lg border shadow-sm transition-all ${
+    overlay
+      ? "border-primary-300 shadow-2xl rotate-2 cursor-grabbing"
+      : `border-slate-200 hover:shadow-md hover:border-primary-200 ${readOnly ? "cursor-pointer" : "cursor-grab"}`
+  } ${isDragging ? "opacity-40 scale-[0.97]" : ""}`
+
+  const body = (
+    <div className="p-3 space-y-2">
 
         <div className="flex items-start gap-2.5">
           <div className="size-9 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0 overflow-hidden">
@@ -506,6 +521,18 @@ function ConversationCard({
           </div>
         </div>
       </div>
+  )
+
+  if (overlay) return <div className={cardCls}>{body}</div>
+  return (
+    <Link
+      href={`/inbox?conversation=${conv.id}`}
+      ref={dragRef as React.Ref<HTMLAnchorElement>}
+      {...listeners}
+      {...attributes}
+      className={cardCls}
+    >
+      {body}
     </Link>
   )
 }

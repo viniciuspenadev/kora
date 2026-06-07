@@ -69,6 +69,7 @@ interface Props {
   initialUnreadTotal?: number
   tenantId:            string
   currentUserId:       string
+  userDepartmentId?:   string | null
   supabaseToken:       string
 }
 
@@ -127,6 +128,7 @@ export function InboxClient({
   initialUnreadTotal  = 0,
   tenantId,
   currentUserId,
+  userDepartmentId = null,
   supabaseToken,
 }: Props) {
   // ── State principal de listagem ─────────────────────────────
@@ -190,6 +192,10 @@ export function InboxClient({
     statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced,
   })
   filtersRef.current = { statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
+
+  // Latest-ref da lista pro handler do Realtime checar membership sem closure stale.
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
 
   // ── Debounce search ─────────────────────────────────────────
   useEffect(() => {
@@ -471,12 +477,20 @@ export function InboxClient({
             return next.sort(sortByLastMessage)
           })
 
-          // Conversa NOVA (INSERT) fora da lista: busca a row completa
-          // (getConversationById aplica visibilidade server-side → NÃO vaza
-          // conv que o atendente não pode ver) e prepend se casar com os
-          // filtros baratos atuais. UPDATE de conv fora da lista fica pro poll
-          // (evita um fetch por evento).
-          if (payload.eventType === "INSERT") {
+          // Conversa que entra na lista AO VIVO (fora dela hoje):
+          //  • INSERT (conversa nova), OU
+          //  • UPDATE que a tornou MINHA — atribuída a mim, ou na fila do MEU
+          //    setor (não-atribuída + meu department_id), ou virei participante.
+          //    Cobre "rotear/transferir pra departamento" subindo na hora.
+          // Só busca se NÃO está na lista (UPDATE de conv já carregada é só
+          // merge acima — evita fetch a cada mensagem). getConversationById
+          // aplica visibilidade server-side (não vaza).
+          const inList = conversationsRef.current.some((c) => c.id === row.id)
+          const becameMine =
+            row.assigned_to === currentUserId ||
+            (row.assigned_to == null && !!userDepartmentId && row.department_id === userDepartmentId) ||
+            (row.participants ?? []).includes(currentUserId)
+          if (!inList && (payload.eventType === "INSERT" || (payload.eventType === "UPDATE" && becameMine))) {
             getConversationById(row.id)
               .then((conv) => {
                 if (!conv || !matchesActiveFilters(conv, filtersRef.current)) return
@@ -488,7 +502,7 @@ export function InboxClient({
                 })
                 if (inserted && conv.unread_count > 0) setUnreadTotal((t) => t + conv.unread_count)
               })
-              .catch((err) => console.error("Realtime INSERT fetch:", err))
+              .catch((err) => console.error("Realtime fetch (entrou na lista):", err))
           }
         },
       )
@@ -511,7 +525,7 @@ export function InboxClient({
       active = false
       channel.unsubscribe()
     }
-  }, [supabaseToken, tenantId])
+  }, [supabaseToken, tenantId, currentUserId, userDepartmentId])
 
   // ── Realtime: mensagens da conv ATIVA ───────────────────────
   // Channel novo a cada troca de conv. RLS na `chat_messages` também filtra

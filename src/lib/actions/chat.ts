@@ -784,13 +784,17 @@ export async function transferConversation(
     nextParticipants = [...nextParticipants, session.user.id]
   }
 
+  const now = new Date().toISOString()
   await supabaseAdmin
     .from("chat_conversations")
     .update({
-      assigned_to:   nextAssigned,
-      department_id: nextDepartment,
-      participants:  nextParticipants,
-      updated_at:    new Date().toISOString(),
+      assigned_to:     nextAssigned,
+      department_id:   nextDepartment,
+      participants:    nextParticipants,
+      // Bumpa o topo do inbox (igual à IA ao rotear): a conversa sobe pra quem
+      // agora a vê — a fila do setor / o novo dono — e desce naturalmente depois.
+      last_message_at: now,
+      updated_at:      now,
     })
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)

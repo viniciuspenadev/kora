@@ -149,6 +149,12 @@ export function ConversationList({
     return m
   }, [tags])
 
+  const departmentById = useMemo(() => {
+    const m: Record<string, DepartmentMini> = {}
+    for (const d of departments) m[d.id] = d
+    return m
+  }, [departments])
+
   // Lista vem JÁ filtrada/buscada/ordenada do server.
   // Tarefa do client: só renderizar.
 
@@ -400,9 +406,11 @@ export function ConversationList({
                   : <ArrowDownLeft className="size-3.5 text-sky-400 shrink-0" />
             const isSiteLead  = conv.channel === "site"
             const awaitingFirst = isSiteLead && /^(voltou|novo lead|lead via)/i.test(conv.last_message_preview ?? "")
-            // Lead encaminhado pela IA e ainda sem atendente → aguardando na fila.
-            const aiRouted   = (conv.metadata as { ai_routed?: { department_name?: string } } | null | undefined)?.ai_routed
-            const isWaiting  = !!aiRouted && !assignedTo
+            // Fila do setor: sem atendente E com departamento (roteado pela IA OU
+            // transferido manualmente). Mostra explícito "Aguardando atendimento · <Setor>".
+            const aiRouted    = (conv.metadata as { ai_routed?: { department_name?: string } } | null | undefined)?.ai_routed
+            const queueDept   = aiRouted?.department_name ?? (conv.department_id ? departmentById[conv.department_id]?.name : null) ?? null
+            const isWaiting   = !assignedTo && (!!aiRouted || !!conv.department_id)
 
             const showSource = !!contact?.source && !isGroup
             const hasFooter = (stage && !stage.name?.toLowerCase().includes("triagem")) || contactTags.length > 0
@@ -500,8 +508,8 @@ export function ConversationList({
                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
                         <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
                         Aguardando atendimento
-                        {aiRouted?.department_name && (
-                          <span className="text-amber-600 font-medium">· {aiRouted.department_name}</span>
+                        {queueDept && (
+                          <span className="text-amber-600 font-medium">· {queueDept}</span>
                         )}
                       </span>
                     </div>
