@@ -4,7 +4,7 @@ import { jidToPhone } from "@/lib/phone-utils"
 import { getProvider } from "@/lib/providers"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
-import { runAITurn } from "@/lib/ai/run"
+import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
@@ -588,7 +588,7 @@ async function handleMessageUpsert(
     //   1. Keyword triggers — já rodou acima (sync). Se matchou, bypass do resto.
     //   2. Atendente IA — se habilitada e algum trigger casar (com debounce de rajada).
     //   3. Automações fixas (welcome / horário comercial) — fallback se a IA não atuou.
-    // Guardas de takeover/grupo/disabled ficam dentro de runAITurn.
+    // Guardas de takeover/grupo/disabled ficam dentro do motor (v1/v2).
     if (!kwMatched) {
       const convId = conversation.id
       after(async () => {
@@ -601,7 +601,7 @@ async function handleMessageUpsert(
             await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
             if ((await latestInboundAt(convId)) !== baseline) return
 
-            const ai = await runAITurn({
+            const ai = await routeAutomationTurn({
               tenantId,
               conversationId: convId,
               incomingText:   content,

@@ -3,7 +3,7 @@ import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
-import { runAITurn } from "@/lib/ai/run"
+import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
@@ -324,7 +324,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
           const baseline = await latestInboundAt(convId)
           await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
           if ((await latestInboundAt(convId)) !== baseline) return
-          const ai = await runAITurn({ tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance })
+          const ai = await routeAutomationTurn({ tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance })
           if (ai.status === "responded" || ai.status === "routed") return
           if (ai.status === "skipped" && ai.reason === "already_routed") return
         }

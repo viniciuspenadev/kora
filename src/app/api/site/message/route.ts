@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { getOrCreateSiteContact, getOrCreateSiteConversation } from "@/lib/channels/site"
-import { runAITurn } from "@/lib/ai/run"
+import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 
 /**
  * POST /api/site/message
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
     // widget pega via polling). Sem debounce: chat ao vivo quer resposta já.
     after(async () => {
       try {
-        await runAITurn({ tenantId: tenant.id, conversationId: convId, incomingText: text, instance })
+        await routeAutomationTurn({ tenantId: tenant.id, conversationId: convId, incomingText: text, instance })
       } catch (err) {
         console.error("[/api/site/message] runAITurn falhou:", err)
       }

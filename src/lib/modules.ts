@@ -32,7 +32,7 @@ export type ModuleSlug =
   // Lead gen
   | "widget_site" | "keyword_triggers" | "welcome_message" | "business_hours"
   // AI
-  | "ai_atendente" | "ai_suggestions" | "ai_knowledge_base"
+  | "ai_atendente" | "ai_suggestions" | "ai_knowledge_base" | "ai_studio"
   // Engagement
   | "broadcasts" | "sequences" | "chatbot_builder"
   // Multi-channel

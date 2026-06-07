@@ -47,6 +47,7 @@ const NAV: NavItem[] = [
   { href: "/contatos",   label: "Contatos",   icon: <Contact   className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts" },
   { href: "/relatorios", label: "Relatórios", icon: <BarChart3 className="w-5 h-5 shrink-0" strokeWidth={1.75} /> },
   { href: "/automacao/ia", label: "Kora IA", icon: <Sparkles className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "ai_atendente" },
+  { href: "/studio",       label: "Kora Studio", icon: <Blocks className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "ai_studio" },
   {
     key:   "automacao",
     label: "Automação",
