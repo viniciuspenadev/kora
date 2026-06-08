@@ -32,8 +32,12 @@ export function compileStudioPrompt(args: {
   variables?:   Record<string, unknown>
   /** Controle de fluxo: se a IA está num nó com saídas/coleta (§11.3). */
   flowControl?: { outcomes: { id: string; label?: string }[]; collect: { key: string; description?: string }[] } | null
+  /** Etiquetas que a IA pode aplicar (só quando a tool `tag` está liberada). */
+  availableTags?:   { id: string; name: string }[]
+  /** Etapas que a IA pode usar (só quando a tool `move_stage` está liberada). */
+  availableStages?: { id: string; name: string }[]
 }): string {
-  const { persona, departments, contactName, instruction, variables, flowControl } = args
+  const { persona, departments, contactName, instruction, variables, flowControl, availableTags, availableStages } = args
   const name = persona.name?.trim() || "Assistente"
   const tone = persona.tone ? (TONE_PT[persona.tone] ?? persona.tone) : "amigável e acolhedor"
 
@@ -90,6 +94,17 @@ export function compileStudioPrompt(args: {
     for (const d of departments) lines.push(`- ${d.name}`)
   } else {
     lines.push(``, `# TRANSFERÊNCIA`, `Nenhum departamento configurado — não use transfer.`)
+  }
+
+  // Etiquetas/etapas disponíveis — só aparecem quando a tool respectiva está
+  // liberada pro nó. A IA deve usar SOMENTE estes valores (são os reais do CRM).
+  if (availableTags && availableTags.length > 0) {
+    lines.push(``, `# ETIQUETAS DISPONÍVEIS (use a ferramenta tag pra qualificar — nome exato)`)
+    for (const t of availableTags) lines.push(`- ${t.name}`)
+  }
+  if (availableStages && availableStages.length > 0) {
+    lines.push(``, `# ETAPAS DO PIPELINE (use a ferramenta move_stage — nome exato)`)
+    for (const s of availableStages) lines.push(`- ${s.name}`)
   }
 
   return lines.join("\n")

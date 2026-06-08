@@ -17,6 +17,24 @@ export const tagCapability = defineCapability<TagArgs>({
   category:     "crm",
   minPlanLevel: 0,
   isNode:       true,
+  toolSchema: {
+    type: "function",
+    function: {
+      name: TAG,
+      description:
+        "Aplica ('add') ou remove ('remove') uma etiqueta no contato da conversa — use pra QUALIFICAR. " +
+        "Prefira as etiquetas da lista ETIQUETAS DISPONÍVEIS no prompt; se usar uma nova, ela é criada.",
+      parameters: {
+        type: "object",
+        properties: {
+          tag:    { type: "string", description: "Nome da etiqueta." },
+          action: { type: "string", enum: ["add", "remove"], description: "add (aplicar) ou remove (tirar). Default add." },
+        },
+        required: ["tag"],
+        additionalProperties: false,
+      },
+    },
+  },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     return {
@@ -34,13 +52,13 @@ export const tagCapability = defineCapability<TagArgs>({
     let tagId = tagRows?.[0]?.id as string | undefined
 
     if (args.action === "remove") {
-      if (!tagId) return { ok: true } // nada a remover
+      if (!tagId) return { ok: true, toolMessage: `Etiqueta "${args.tag}" não estava aplicada.` }
       const { error } = await supabaseAdmin
         .from("taggings").delete()
         .eq("tenant_id", tenantId).eq("tag_id", tagId)
         .eq("taggable_type", "contact").eq("taggable_id", contact.id)
       if (error) return { ok: false, error: error.message }
-      return { ok: true }
+      return { ok: true, toolMessage: `Etiqueta "${args.tag}" removida do contato.` }
     }
 
     // add: cria a tag se ainda não existe (no tenant).
@@ -55,6 +73,6 @@ export const tagCapability = defineCapability<TagArgs>({
       tag_id: tagId, tenant_id: tenantId, taggable_type: "contact", taggable_id: contact.id, tagged_by: null,
     })
     if (error && !error.message.includes("duplicate")) return { ok: false, error: error.message }
-    return { ok: true }
+    return { ok: true, toolMessage: `Etiqueta "${args.tag}" aplicada ao contato.` }
   },
 })

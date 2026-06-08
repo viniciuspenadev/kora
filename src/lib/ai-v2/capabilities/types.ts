@@ -37,6 +37,10 @@ export interface ExecCtx {
   instance:             RunAITurnInput["instance"]
   /** Departamentos do tenant (destinos válidos de transferência). */
   departments:          { id: string; name: string }[]
+  /** Etiquetas do tenant (valores válidos pra ferramenta tag da IA). */
+  tags?:                { id: string; name: string }[]
+  /** Etapas do pipeline (valores válidos pra ferramenta move_stage da IA). */
+  stages?:              { id: string; name: string }[]
   /** metadata atual da conversa (pra preservar no update de roteamento). */
   conversationMetadata: Record<string, unknown>
   /** Modo SIMULADOR: não transmite ao WhatsApp; ainda persiste (sandbox). */

@@ -12,12 +12,13 @@ const LABEL = "block text-[11px] font-semibold text-slate-600 mb-1"
 interface Opt { id: string; label: string }
 
 export function ConfigPanel({
-  node, departments, flows, stages, onChange, onDelete,
+  node, departments, flows, stages, tags, onChange, onDelete,
 }: {
   node: RFNode
   departments: { id: string; name: string }[]
   flows: { id: string; name: string }[]
   stages: { id: string; name: string }[]
+  tags: { id: string; name: string }[]
   onChange: (config: Record<string, unknown>) => void
   onDelete: () => void
 }) {
@@ -185,8 +186,15 @@ export function ConfigPanel({
           </div>
           <div>
             <label className={LABEL}>Etiqueta</label>
-            <input className={INPUT} value={String(cfg.tag ?? "")} onChange={(e) => set({ tag: e.target.value })} placeholder="Ex: Lead quente" />
-            <p className="text-[11px] text-slate-400 mt-1">Aplica no contato da conversa. Se não existir (ao adicionar), a etiqueta é criada.</p>
+            <input className={INPUT} list="studio-tag-list" value={String(cfg.tag ?? "")} onChange={(e) => set({ tag: e.target.value })} placeholder={tags.length ? "Escolha uma etiqueta ou digite uma nova" : "Ex: Lead quente"} />
+            <datalist id="studio-tag-list">
+              {tags.map((t) => <option key={t.id} value={t.name} />)}
+            </datalist>
+            <p className="text-[11px] text-slate-400 mt-1">
+              {tags.length
+                ? "Escolha uma das etiquetas do sistema ou digite uma nova (criada na hora ao adicionar)."
+                : "Aplica no contato da conversa. Se não existir (ao adicionar), a etiqueta é criada."}
+            </p>
           </div>
         </div>
       )}
@@ -413,6 +421,29 @@ function WaitConfig({ cfg, set }: { cfg: WaitNodeConfig; set: (patch: Record<str
 interface Route { id: string; label: string; description?: string }
 interface CollectField { key: string; description?: string }
 
+const AGENT_TOOLS: { id: string; label: string; hint: string }[] = [
+  { id: "tag", label: "Etiquetar o contato", hint: "aplica/remove etiquetas pra qualificar" },
+  { id: "move_stage", label: "Mover no pipeline", hint: "move a conversa de etapa" },
+]
+function AgentToolsConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void }) {
+  const tools = (cfg.tools as string[] | undefined) ?? []
+  const toggle = (id: string) => set({ tools: tools.includes(id) ? tools.filter((t) => t !== id) : [...tools, id] })
+  return (
+    <div>
+      <label className={LABEL}>A IA pode <span className="text-slate-400 font-normal">(qualificação)</span></label>
+      <div className="space-y-1.5">
+        {AGENT_TOOLS.map((t) => (
+          <label key={t.id} className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={tools.includes(t.id)} onChange={() => toggle(t.id)} />
+            <span><b className="font-medium text-slate-700">{t.label}</b> <span className="text-slate-400">— {t.hint}</span></span>
+          </label>
+        ))}
+      </div>
+      <p className="text-[11px] text-slate-400 mt-1">A IA usa só as etiquetas/etapas que já existem no sistema.</p>
+    </div>
+  )
+}
+
 function AgentConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void }) {
   const outcomes = (cfg.outcomes as Opt[] | undefined) ?? []
   const collect  = (cfg.collect as CollectField[] | undefined) ?? []
@@ -430,6 +461,8 @@ function AgentConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: 
         />
         <p className="text-[11px] text-slate-400 mt-1">É assim que a mesma IA vira &quot;Vendas&quot; num ramo e &quot;Suporte&quot; em outro.</p>
       </div>
+
+      <AgentToolsConfig cfg={cfg} set={set} />
 
       <div>
         <label className={LABEL}>Dados a coletar <span className="text-slate-400 font-normal">(opcional)</span></label>

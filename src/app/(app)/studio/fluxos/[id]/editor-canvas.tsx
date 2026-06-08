@@ -32,6 +32,7 @@ interface Props {
   departments: { id: string; name: string }[]
   flows:       { id: string; name: string }[]
   stages:      { id: string; name: string }[]
+  tags:        { id: string; name: string }[]
 }
 
 const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -64,7 +65,7 @@ export function FlowEditorCanvas(props: Props) {
   )
 }
 
-function EditorInner({ flow, departments, flows, stages }: Props) {
+function EditorInner({ flow, departments, flows, stages, tags }: Props) {
   const router = useRouter()
   const initial = toRF(flow.graph)
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(
@@ -199,7 +200,7 @@ function EditorInner({ flow, departments, flows, stages }: Props) {
         {/* Painel direito */}
         <div className="w-80 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
           {selectedNode
-            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel triggerType={triggerType} keywords={keywords} onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords} />}
         </div>
       </div>

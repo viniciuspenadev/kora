@@ -113,6 +113,9 @@ export interface AiAgentNodeConfig {
   /** Saídas nomeadas (ramos). A IA escolhe uma ao concluir (finish_step).
    *  Vazio = saída única (aresta default). */
   outcomes?:    { id: string; label?: string }[]
+  /** Ferramentas EXTRA que a IA pode usar neste nó (além das core):
+   *  "tag" (etiquetar/qualificar) · "move_stage" (mover no pipeline). */
+  tools?:       string[]
 }
 export interface AiRouterNodeConfig {
   instruction?: string

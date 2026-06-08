@@ -18,13 +18,15 @@ import { sendBotText } from "./outbound"
 import { compileStudioPrompt, type PersonaInput } from "./prompt"
 import {
   ensureCapabilitiesRegistered, getCapability, toolsForAgent,
-  SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE,
+  SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE, TAG, MOVE_STAGE,
   type ExecCtx,
 } from "./capabilities"
 
 const MAX_STEPS    = 4
 const PLAN_LEVEL   = 99   // agente core usa só caps nível 0; gating real vem no flow (Fatia 4+)
 const GRANTED_TOOLS = [SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE]
+// Ferramentas extra que um nó de IA PODE liberar (least-privilege: só estas).
+const GRANTABLE_EXTRA = new Set([TAG, MOVE_STAGE])
 
 const FINISH_STEP = "finish_step"
 
@@ -47,6 +49,8 @@ export interface AgentTurnInput {
   variables?:   Record<string, unknown>
   /** Se presente, expõe finish_step → a IA pode devolver o controle ao fluxo. */
   flowControl?: FlowControl | null
+  /** Ferramentas extra liberadas por este nó (filtradas por GRANTABLE_EXTRA). */
+  extraTools?:  string[]
 }
 
 export interface AgentTurnResult {
@@ -96,7 +100,16 @@ type Msg = OpenAI.Chat.Completions.ChatCompletionMessageParam
 
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
   ensureCapabilitiesRegistered()
-  const { ctx, model, persona, history, incomingText, instruction, variables, flowControl } = input
+  const { ctx, model, persona, history, incomingText, instruction, variables, flowControl, extraTools } = input
+
+  // Ferramentas do turno:
+  //  • core — mas tira `transfer` quando o nó tem SAÍDAS (grafo é dono do
+  //    roteamento; senão a IA atalha encaminhando em vez de usar finish_step).
+  //  • extras liberadas pelo nó (só as de GRANTABLE_EXTRA — least-privilege).
+  const routing = !!flowControl && flowControl.outcomes.length > 0
+  const core   = routing ? GRANTED_TOOLS.filter((id) => id !== TRANSFER) : GRANTED_TOOLS
+  const extras = (extraTools ?? []).filter((id) => GRANTABLE_EXTRA.has(id))
+  const granted = [...core, ...extras]
 
   const systemPrompt = compileStudioPrompt({
     persona,
@@ -105,13 +118,15 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     instruction,
     variables,
     flowControl: flowControl ?? null,
+    availableTags:   extras.includes(TAG) ? ctx.tags : undefined,
+    availableStages: extras.includes(MOVE_STAGE) ? ctx.stages : undefined,
   })
 
   const messages: Msg[] = [{ role: "system", content: systemPrompt }]
   if (history.length > 0) for (const h of history) messages.push({ role: h.role, content: h.content })
   else messages.push({ role: "user", content: incomingText })
 
-  const tools = toolsForAgent(GRANTED_TOOLS, PLAN_LEVEL)
+  const tools = toolsForAgent(granted, PLAN_LEVEL)
   if (flowControl) tools.push(finishStepTool(flowControl))
 
   const usage = { inputTokens: 0, outputTokens: 0 }

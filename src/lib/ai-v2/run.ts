@@ -96,12 +96,15 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   }
   const { history } = await gatherPromptContext(tenantId, conv, contact, ["conversation_history"])
 
-  // ── 4) Departamentos (destinos de transferência) ───────────
-  const { data: deptData } = await supabaseAdmin
-    .from("tenant_departments")
-    .select("id, name")
-    .eq("tenant_id", tenantId)
+  // ── 4) Destinos: departamentos + etiquetas + etapas ────────
+  const [{ data: deptData }, { data: tagData }, { data: stageData }] = await Promise.all([
+    supabaseAdmin.from("tenant_departments").select("id, name").eq("tenant_id", tenantId),
+    supabaseAdmin.from("tags").select("id, name").eq("tenant_id", tenantId).order("name"),
+    supabaseAdmin.from("pipeline_stages").select("id, name, position").eq("tenant_id", tenantId).order("position"),
+  ])
   const departments = (deptData ?? []) as { id: string; name: string }[]
+  const tags        = (tagData ?? []) as { id: string; name: string }[]
+  const stages      = (stageData ?? []) as { id: string; name: string }[]
 
   // ── 5) Persona + contexto de execução ──────────────────────
   const persona: PersonaInput = {
@@ -114,7 +117,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   }
   const ctx: ExecCtx = {
     tenantId, conversationId, contact, instance,
-    departments,
+    departments, tags, stages,
     conversationMetadata: convMeta,
     dryRun:   opts?.dryRun,
     captured: opts?.dryRun ? [] : undefined,
@@ -273,13 +276,19 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
     channel: convData.channel, from_ad_meta: convData.from_ad_meta,
   }
   const { history } = await gatherPromptContext(tenantId, conv, contact, ["conversation_history"])
-  const { data: deptData } = await supabaseAdmin.from("tenant_departments").select("id, name").eq("tenant_id", tenantId)
+  const [{ data: deptData }, { data: tagData }, { data: stageData }] = await Promise.all([
+    supabaseAdmin.from("tenant_departments").select("id, name").eq("tenant_id", tenantId),
+    supabaseAdmin.from("tags").select("id, name").eq("tenant_id", tenantId).order("name"),
+    supabaseAdmin.from("pipeline_stages").select("id, name, position").eq("tenant_id", tenantId).order("position"),
+  ])
   const departments = (deptData ?? []) as { id: string; name: string }[]
+  const tags        = (tagData ?? []) as { id: string; name: string }[]
+  const stages      = (stageData ?? []) as { id: string; name: string }[]
   const persona: PersonaInput = {
     name: config.ai_name, tone: config.ai_tone, language: config.ai_language,
     identityText: config.identity_text, communicationStyle: config.communication_style_text, antiPatterns: config.anti_patterns_text,
   }
-  const ctx: ExecCtx = { tenantId, conversationId, contact, instance, departments, conversationMetadata: convMeta }
+  const ctx: ExecCtx = { tenantId, conversationId, contact, instance, departments, tags, stages, conversationMetadata: convMeta }
   const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText: "" }
 
   // Acorda: status active + limpa resume_at; runFlow continua do nó já pré-avançado.

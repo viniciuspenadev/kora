@@ -323,6 +323,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           instruction: cfg.instruction ?? null,
           variables,
           flowControl: { outcomes: cfg.outcomes ?? [], collect: cfg.collect ?? [] },
+          extraTools:  cfg.tools,
         })
         lastAgent = turn
         if (turn.sentMessage) responded = true

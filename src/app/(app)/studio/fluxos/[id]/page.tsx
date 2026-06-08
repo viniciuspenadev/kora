@@ -15,7 +15,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }] = await Promise.all([
+  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }, { data: tagList }] = await Promise.all([
     supabaseAdmin.from("studio_flows")
       .select("id, name, status, active, version, trigger, graph")
       .eq("tenant_id", tenantId).eq("id", id).maybeSingle(),
@@ -27,6 +27,8 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
       .order("name"),
     // Etapas do pipeline pro nó "Mover etapa".
     supabaseAdmin.from("pipeline_stages").select("id, name, position").eq("tenant_id", tenantId).order("position"),
+    // Etiquetas existentes pro nó "Etiquetar" (seletor, não texto livre).
+    supabaseAdmin.from("tags").select("id, name").eq("tenant_id", tenantId).order("name"),
   ])
   if (!flow) redirect("/studio/fluxos")
 
@@ -36,6 +38,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
       departments={(depts ?? []) as { id: string; name: string }[]}
       flows={(flowList ?? []) as { id: string; name: string }[]}
       stages={(stageList ?? []) as { id: string; name: string }[]}
+      tags={(tagList ?? []) as { id: string; name: string }[]}
     />
   )
 }
