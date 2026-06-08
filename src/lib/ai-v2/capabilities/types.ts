@@ -35,6 +35,8 @@ export interface ExecCtx {
   conversationId:       string
   contact:              ContactRow
   instance:             RunAITurnInput["instance"]
+  /** Canal da conversa (whatsapp/site/…) — pra condição/switch por canal. */
+  channel?:             string | null
   /** Departamentos do tenant (destinos válidos de transferência). */
   departments:          { id: string; name: string }[]
   /** Etiquetas do tenant (valores válidos pra ferramenta tag da IA). */

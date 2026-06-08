@@ -59,15 +59,24 @@ export interface MenuNodeConfig {
   options:  { id: string; label: string }[]
   noMatch?: string
 }
+export type ConditionCheck =
+  | "has_email" | "has_phone" | "has_name" | "has_document" | "has_company"
+  | "lifecycle_is"  // contato.lifecycle == value (novo/lead/cliente/…)
+  | "has_tag"       // contato tem a etiqueta `value`
+  | "channel_is"    // conversa veio do canal `value`
 export interface ConditionNodeConfig {
-  check: "has_email" | "has_phone" | "has_name" | "has_document"
+  check:  ConditionCheck
+  /** Parâmetro pros checks que precisam (lifecycle/etiqueta/canal). */
+  value?: string
 }
 export interface SetVariableNodeConfig {
   /** Pares chave→valor. O value aceita {{outraVar}} (interpolado). */
   assignments: { key: string; value: string }[]
 }
 export interface SwitchNodeConfig {
-  /** Nome da variável a comparar (suporta a.b.c). */
+  /** O que comparar: variável de fluxo (default) · canal · lifecycle. */
+  source?:  "variable" | "channel" | "lifecycle"
+  /** Nome da variável a comparar (quando source=variable; suporta a.b.c). */
   variable: string
   /** Cada caso = uma saída (id = handle). Compara por igualdade case-insensitive. */
   cases:    { id: string; equals: string }[]

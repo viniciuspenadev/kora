@@ -6,6 +6,7 @@
 // visibilidade (etapa ≠ quem vê). Tenant-scoping em toda query.
 import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
+import { resolveLifecycle } from "@/lib/lifecycle-stage"
 
 export const MOVE_STAGE = "move_stage"
 
@@ -37,11 +38,11 @@ export const moveStageCapability = defineCapability<MoveStageArgs>({
     return { stage: typeof p.stage === "string" ? p.stage.trim() : "" }
   },
   execute: async (ctx, args) => {
-    const { tenantId, conversationId } = ctx
+    const { tenantId, conversationId, contact } = ctx
     if (!args.stage) return { ok: false, error: "etapa vazia" }
 
     const { data: stages } = await supabaseAdmin
-      .from("pipeline_stages").select("id, pipeline_id, name").eq("tenant_id", tenantId)
+      .from("pipeline_stages").select("id, pipeline_id, name, is_won, is_lost, is_triage").eq("tenant_id", tenantId)
     const norm = (s: string) => s.trim().toLowerCase()
     const st = (stages ?? []).find((s) => norm(s.name) === norm(args.stage))
     if (!st) {
@@ -54,6 +55,14 @@ export const moveStageCapability = defineCapability<MoveStageArgs>({
       .update({ stage_id: st.id, pipeline_id: st.pipeline_id, updated_at: new Date().toISOString() })
       .eq("id", conversationId).eq("tenant_id", tenantId)
     if (error) return { ok: false, error: error.message }
-    return { ok: true, toolMessage: `Conversa movida para a etapa "${st.name}".` }
+
+    // Acoplamento pipeline → lifecycle (nunca rebaixa) — mesma regra do kanban.
+    const next = resolveLifecycle(contact.lifecycle_stage, st)
+    if (next) {
+      await supabaseAdmin.from("chat_contacts")
+        .update({ lifecycle_stage: next, lifecycle_changed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", contact.id).eq("tenant_id", tenantId)
+    }
+    return { ok: true, toolMessage: `Conversa movida para a etapa "${st.name}"${next ? ` (lifecycle: ${next})` : ""}.` }
   },
 })

@@ -87,16 +87,36 @@ function startNodeOf(g: FlowGraph): FlowNode | null {
   return g.nodes.find((n) => n.type === "start") ?? g.nodes[0] ?? null
 }
 
-function evalCondition(node: FlowNode, ctx: ExecCtx): boolean {
+async function evalCondition(node: FlowNode, ctx: ExecCtx): Promise<boolean> {
   const cfg = node.config as unknown as ConditionNodeConfig
   const c = ctx.contact
+  const val = (cfg.value ?? "").trim().toLowerCase()
   switch (cfg.check) {
     case "has_email":    return !!c.email?.trim()
     case "has_phone":    return !!c.phone_number?.trim()
     case "has_name":     return !!(c.custom_name?.trim() || c.push_name?.trim())
     case "has_document": return !!c.doc_id?.trim()
+    case "has_company":  return !!c.company?.trim()
+    case "lifecycle_is": return (c.lifecycle_stage ?? "contact").toLowerCase() === val
+    case "channel_is":   return (ctx.channel ?? c.primary_channel ?? "").toLowerCase() === val
+    case "has_tag":      return await contactHasTag(ctx, cfg.value ?? "")
     default:             return false
   }
+}
+
+/** Contato tem a etiqueta `tagName`? (tenant-scoped; resolve id → taggings). */
+async function contactHasTag(ctx: ExecCtx, tagName: string): Promise<boolean> {
+  const name = tagName.trim()
+  if (!name) return false
+  const { data: tagRows } = await supabaseAdmin
+    .from("tags").select("id").eq("tenant_id", ctx.tenantId).ilike("name", name).limit(1)
+  const tagId = tagRows?.[0]?.id
+  if (!tagId) return false
+  const { data: tg } = await supabaseAdmin
+    .from("taggings").select("id")
+    .eq("tenant_id", ctx.tenantId).eq("tag_id", tagId)
+    .eq("taggable_type", "contact").eq("taggable_id", ctx.contact.id).limit(1)
+  return !!(tg && tg.length)
 }
 
 // Dia da semana (0=dom…6=sáb) + "HH:MM" no fuso dado. Fail-open: fuso inválido → null.
@@ -224,7 +244,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         break
       }
       case "condition": {
-        const ok = evalCondition(node, ctx)
+        const ok = await evalCondition(node, ctx)
         currentId = edgeTarget(graph, node.id, ok ? "true" : "false")
         break
       }
@@ -239,10 +259,13 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "switch": {
         const cfg = node.config as unknown as SwitchNodeConfig
-        const val = String(resolvePath(variables, (cfg.variable ?? "").trim()) ?? "").trim()
-        const matched = (cfg.cases ?? []).find(
-          (c) => String(c.equals ?? "").trim().toLowerCase() === val.toLowerCase(),
-        )
+        const raw = cfg.source === "channel"
+          ? (ctx.channel ?? ctx.contact.primary_channel ?? "")
+          : cfg.source === "lifecycle"
+            ? (ctx.contact.lifecycle_stage ?? "contact")
+            : resolvePath(variables, (cfg.variable ?? "").trim())
+        const val = String(raw ?? "").trim().toLowerCase()
+        const matched = (cfg.cases ?? []).find((c) => String(c.equals ?? "").trim().toLowerCase() === val)
         currentId = edgeTarget(graph, node.id, matched ? matched.id : "else")
         break
       }

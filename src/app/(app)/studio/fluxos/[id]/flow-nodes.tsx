@@ -15,7 +15,21 @@ const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", bo
 const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
 
 const CHECK_LABEL: Record<string, string> = {
-  has_email: "Tem e-mail?", has_phone: "Tem telefone?", has_name: "Tem nome?", has_document: "Tem CPF/CNPJ?",
+  has_email: "Tem e-mail?", has_phone: "Tem telefone?", has_name: "Tem nome?",
+  has_document: "Tem CPF/CNPJ?", has_company: "Tem empresa?",
+}
+const LIFECYCLE_LBL: Record<string, string> = {
+  contact: "Novo", lead: "Lead", won: "Cliente", lost: "Perdido", unfit: "Fora do perfil",
+}
+function conditionLabel(cfg: Record<string, unknown>): string {
+  const check = String(cfg.check ?? "")
+  const value = String(cfg.value ?? "")
+  switch (check) {
+    case "lifecycle_is": return `Lifecycle é ${LIFECYCLE_LBL[value] ?? (value || "…")}?`
+    case "has_tag":      return `Tem etiqueta "${value || "…"}"?`
+    case "channel_is":   return `Veio do canal ${value || "…"}?`
+    default:             return CHECK_LABEL[check] ?? check
+  }
 }
 
 function cfgOf(p: NodeProps): Record<string, unknown> {
@@ -108,12 +122,11 @@ function MenuNode(p: NodeProps) {
 }
 
 function ConditionNode(p: NodeProps) {
-  const check = String(cfgOf(p).check ?? "")
   return (
     <>
       <Handle type="target" position={Position.Top} style={HS_T} />
       <Card icon={GitBranch} accent="bg-amber-100 text-amber-700" title="Condição" selected={p.selected}>
-        {CHECK_LABEL[check] ?? check}
+        {conditionLabel(cfgOf(p))}
         <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
           <span className="text-emerald-600">sim</span>
           <span className="text-slate-400">não</span>

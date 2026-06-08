@@ -3,6 +3,7 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope } from "@/lib/visibility"
+import { resolveLifecycle } from "@/lib/lifecycle-stage"
 import { revalidatePath } from "next/cache"
 
 // Select dos cards do kanban (espelha o da página). Inclui department_id pro
@@ -339,7 +340,7 @@ export async function moveConversation(
 
   const { data: newStage } = await supabaseAdmin
     .from("pipeline_stages")
-    .select("id, pipeline_id, name, is_won, is_lost")
+    .select("id, pipeline_id, name, is_won, is_lost, is_triage")
     .eq("id", newStageId)
     .eq("tenant_id", session.user.tenantId)
     .maybeSingle()
@@ -370,20 +371,27 @@ export async function moveConversation(
     .eq("id", conversationId)
     .eq("tenant_id", session.user.tenantId)
 
-  // Atualiza lifecycle do contato quando o deal é ganho ou perdido
-  if (newStage.is_won || newStage.is_lost) {
-    const { data: convWithContact } = await supabaseAdmin
-      .from("chat_conversations")
-      .select("contact_id")
-      .eq("id", conversationId)
-      .eq("tenant_id", session.user.tenantId)
-      .single()
+  // Acoplamento pipeline → lifecycle do contato (toda etapa, nunca rebaixa).
+  const { data: convWithContact } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("contact_id")
+    .eq("id", conversationId)
+    .eq("tenant_id", session.user.tenantId)
+    .single()
 
-    if (convWithContact?.contact_id) {
+  if (convWithContact?.contact_id) {
+    const { data: ct } = await supabaseAdmin
+      .from("chat_contacts")
+      .select("lifecycle_stage")
+      .eq("id", convWithContact.contact_id)
+      .eq("tenant_id", session.user.tenantId)
+      .maybeSingle()
+    const next = resolveLifecycle(ct?.lifecycle_stage, newStage)
+    if (next) {
       await supabaseAdmin
         .from("chat_contacts")
         .update({
-          lifecycle_stage:      newStage.is_won ? "won" : "lost",
+          lifecycle_stage:      next,
           lifecycle_changed_at: new Date().toISOString(),
           updated_at:           new Date().toISOString(),
         })

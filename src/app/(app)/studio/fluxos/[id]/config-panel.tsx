@@ -71,18 +71,7 @@ export function ConfigPanel({
 
       {type === "menu" && <MenuConfig cfg={cfg as unknown as MenuNodeConfig} set={set} />}
 
-      {type === "condition" && (
-        <div>
-          <label className={LABEL}>Condição</label>
-          <select className={INPUT} value={String(cfg.check ?? "has_phone")} onChange={(e) => set({ check: e.target.value })}>
-            <option value="has_name">Tem nome?</option>
-            <option value="has_phone">Tem telefone?</option>
-            <option value="has_email">Tem e-mail?</option>
-            <option value="has_document">Tem CPF/CNPJ?</option>
-          </select>
-          <p className="text-[11px] text-slate-400 mt-1.5">Saída <b className="text-emerald-600">sim</b> se verdadeiro, <b>não</b> caso contrário.</p>
-        </div>
-      )}
+      {type === "condition" && <ConditionConfig cfg={cfg} set={set} tags={tags} />}
 
       {type === "set_variable" && <SetVariableConfig cfg={cfg as unknown as SetVariableNodeConfig} set={set} />}
 
@@ -325,15 +314,103 @@ function SetVariableConfig({ cfg, set }: { cfg: SetVariableNodeConfig; set: (pat
   )
 }
 
-function SwitchConfig({ cfg, set }: { cfg: SwitchNodeConfig; set: (patch: Record<string, unknown>) => void }) {
-  const cases: SwitchCase[] = cfg.cases ?? []
+const LIFECYCLE_OPTS: { v: string; label: string }[] = [
+  { v: "contact", label: "Novo (contato)" },
+  { v: "lead", label: "Lead" },
+  { v: "won", label: "Cliente (ganho)" },
+  { v: "lost", label: "Perdido" },
+  { v: "unfit", label: "Fora do perfil" },
+]
+const CHANNEL_OPTS: { v: string; label: string }[] = [
+  { v: "whatsapp", label: "WhatsApp" },
+  { v: "site", label: "Site (chat)" },
+]
+
+function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void; tags: { id: string; name: string }[] }) {
+  const check = String(cfg.check ?? "has_phone")
+  const onCheck = (next: string) => {
+    const defVal = next === "lifecycle_is" ? "contact" : next === "channel_is" ? "whatsapp" : ""
+    set({ check: next, value: defVal })
+  }
   return (
     <div className="space-y-3">
-      <p className="text-xs text-slate-400">Compara uma variável com cada caso (sem diferenciar maiúsculas). Cada caso vira uma <b>saída</b> do nó.</p>
       <div>
-        <label className={LABEL}>Variável a comparar</label>
-        <input className={INPUT} value={String(cfg.variable ?? "")} onChange={(e) => set({ variable: e.target.value })} placeholder="ex: menu:abc ou segmento" />
+        <label className={LABEL}>Checar</label>
+        <select className={INPUT} value={check} onChange={(e) => onCheck(e.target.value)}>
+          <optgroup label="Relacionamento">
+            <option value="lifecycle_is">Lifecycle é…</option>
+            <option value="has_tag">Tem a etiqueta…</option>
+          </optgroup>
+          <optgroup label="Canal">
+            <option value="channel_is">Veio do canal…</option>
+          </optgroup>
+          <optgroup label="Dados do contato">
+            <option value="has_name">Tem nome?</option>
+            <option value="has_phone">Tem telefone?</option>
+            <option value="has_email">Tem e-mail?</option>
+            <option value="has_document">Tem CPF/CNPJ?</option>
+            <option value="has_company">Tem empresa?</option>
+          </optgroup>
+        </select>
       </div>
+
+      {check === "lifecycle_is" && (
+        <div>
+          <label className={LABEL}>Lifecycle</label>
+          <select className={INPUT} value={String(cfg.value ?? "contact")} onChange={(e) => set({ value: e.target.value })}>
+            {LIFECYCLE_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+          </select>
+          <p className="text-[11px] text-slate-400 mt-1">Ex: <b>Novo (contato)</b> = ainda não qualificado.</p>
+        </div>
+      )}
+      {check === "has_tag" && (
+        <div>
+          <label className={LABEL}>Etiqueta</label>
+          <input className={INPUT} list="cond-tag-list" value={String(cfg.value ?? "")} onChange={(e) => set({ value: e.target.value })} placeholder={tags.length ? "escolha uma etiqueta" : "cliente"} />
+          <datalist id="cond-tag-list">{tags.map((t) => <option key={t.id} value={t.name} />)}</datalist>
+        </div>
+      )}
+      {check === "channel_is" && (
+        <div>
+          <label className={LABEL}>Canal</label>
+          <select className={INPUT} value={String(cfg.value ?? "whatsapp")} onChange={(e) => set({ value: e.target.value })}>
+            {CHANNEL_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+          </select>
+        </div>
+      )}
+
+      <p className="text-[11px] text-slate-400">Saída <b className="text-emerald-600">sim</b> se verdadeiro, <b>não</b> caso contrário.</p>
+    </div>
+  )
+}
+
+function SwitchConfig({ cfg, set }: { cfg: SwitchNodeConfig; set: (patch: Record<string, unknown>) => void }) {
+  const cases: SwitchCase[] = cfg.cases ?? []
+  const source = String(cfg.source ?? "variable")
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">Ramifica por valor (sem diferenciar maiúsculas). Cada caso vira uma <b>saída</b> do nó (+ &quot;senão&quot;).</p>
+      <div>
+        <label className={LABEL}>Comparar por</label>
+        <select className={INPUT} value={source} onChange={(e) => set({ source: e.target.value })}>
+          <option value="variable">Variável de fluxo</option>
+          <option value="channel">Canal (WhatsApp / Site / …)</option>
+          <option value="lifecycle">Lifecycle (novo / lead / cliente / …)</option>
+        </select>
+      </div>
+      {source === "variable" && (
+        <div>
+          <label className={LABEL}>Variável a comparar</label>
+          <input className={INPUT} value={String(cfg.variable ?? "")} onChange={(e) => set({ variable: e.target.value })} placeholder="ex: menu:abc ou segmento" />
+        </div>
+      )}
+      {source !== "variable" && (
+        <p className="text-[11px] text-slate-400">
+          {source === "channel"
+            ? "Use os casos: whatsapp, site… (nome do canal)."
+            : "Use os casos: contact, lead, won, lost, unfit."}
+        </p>
+      )}
       <div>
         <label className={LABEL}>Casos</label>
         <div className="space-y-1.5">
