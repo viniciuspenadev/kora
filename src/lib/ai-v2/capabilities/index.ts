@@ -11,6 +11,9 @@ import { transferCapability } from "./transfer"
 import { updateContactCapability } from "./update-contact"
 import { searchKnowledgeCapability } from "./search-knowledge"
 import { httpRequestCapability } from "./http-request"
+import { tagCapability } from "./tag"
+import { moveStageCapability } from "./move-stage"
+import { assignCapability } from "./assign"
 
 let _registered = false
 
@@ -23,6 +26,9 @@ export function ensureCapabilitiesRegistered(): void {
     updateContactCapability,
     searchKnowledgeCapability,
     httpRequestCapability,
+    tagCapability,
+    moveStageCapability,
+    assignCapability,
   ])
   _registered = true
 }
@@ -32,5 +38,8 @@ export { TRANSFER } from "./transfer"
 export { UPDATE_CONTACT } from "./update-contact"
 export { SEARCH_KNOWLEDGE } from "./search-knowledge"
 export { HTTP_REQUEST } from "./http-request"
+export { TAG } from "./tag"
+export { MOVE_STAGE } from "./move-stage"
+export { ASSIGN } from "./assign"
 export * from "./registry"
 export type { Capability, CapabilitySpec, ExecCtx, CapabilityResult, CapabilityCategory } from "./types"

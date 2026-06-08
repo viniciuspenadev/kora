@@ -15,11 +15,18 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const [{ data: flow }, { data: depts }] = await Promise.all([
+  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }] = await Promise.all([
     supabaseAdmin.from("studio_flows")
       .select("id, name, status, active, version, trigger, graph")
       .eq("tenant_id", tenantId).eq("id", id).maybeSingle(),
     supabaseAdmin.from("tenant_departments").select("id, name").eq("tenant_id", tenantId),
+    // Fluxos alvo do nó "Executar fluxo" (exclui o próprio + arquivados).
+    supabaseAdmin.from("studio_flows")
+      .select("id, name")
+      .eq("tenant_id", tenantId).neq("status", "archived").neq("id", id)
+      .order("name"),
+    // Etapas do pipeline pro nó "Mover etapa".
+    supabaseAdmin.from("pipeline_stages").select("id, name, position").eq("tenant_id", tenantId).order("position"),
   ])
   if (!flow) redirect("/studio/fluxos")
 
@@ -27,6 +34,8 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     <FlowEditorCanvas
       flow={flow as StudioFlowFull}
       departments={(depts ?? []) as { id: string; name: string }[]}
+      flows={(flowList ?? []) as { id: string; name: string }[]}
+      stages={(stageList ?? []) as { id: string; name: string }[]}
     />
   )
 }

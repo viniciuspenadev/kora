@@ -11,6 +11,7 @@
 
 import "server-only"
 import { getProvider } from "@/lib/providers"
+import type { ContentType } from "@/lib/providers/types"
 
 type ProviderInstance = Parameters<typeof getProvider>[0]
 
@@ -45,5 +46,30 @@ export async function sendChannelText(
     // case "instagram": ...  (entra com o canal Instagram Direct)
     default:
       throw new Error(`Resposta no canal '${channel}' ainda não suportada`)
+  }
+}
+
+/**
+ * Envia mídia (por URL) pelo canal certo — irmã aditiva de sendChannelText,
+ * NÃO altera o caminho de texto. Usada pelo nó "Enviar mídia" do Studio.
+ * A URL deve ser pública (provider busca o arquivo). Transcode/upload não
+ * acontece aqui (ao contrário da server-action sendChatMedia do inbox).
+ */
+export async function sendChannelMedia(
+  target:   ReplyTarget,
+  media:    { url: string; mediaType: ContentType; caption?: string; fileName?: string },
+  instance: ProviderInstance,
+): Promise<{ messageId: string | null }> {
+  const channel = target.channel ?? "whatsapp"
+
+  switch (channel) {
+    case "whatsapp": {
+      const r = await getProvider(instance).sendMedia(target.phoneNumber, media.url, media.mediaType, media.caption, media.fileName)
+      return { messageId: r.messageId ?? null }
+    }
+    case "site":
+      return { messageId: null }
+    default:
+      throw new Error(`Mídia no canal '${channel}' ainda não suportada`)
   }
 }

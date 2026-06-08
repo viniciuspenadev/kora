@@ -73,15 +73,53 @@ export async function searchKnowledgeVector(tenantId: string, query: string, lim
   return (data ?? []) as KnowledgeHit[]
 }
 
-/** Fallback keyword (ILIKE) — usado quando a vetorial não retorna nada. */
+// Palavras curtas / muito comuns não ajudam o ILIKE (ruído). Lista enxuta PT.
+const STOP = new Set([
+  "que", "qual", "quais", "com", "sem", "uma", "uns", "umas", "dos", "das", "para", "pra",
+  "por", "como", "sobre", "tem", "ter", "voce", "você", "vocês", "seu", "sua", "meu", "minha",
+  "the", "and", "are", "you",
+])
+
+/** Tokeniza: minúsculas, sem acento, só palavras ≥4 chars não-stopword (até 6). */
+function keywords(query: string): string[] {
+  const norm = query
+    .toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+  const words = norm.split(/\s+/).filter((w) => w.length >= 4 && !STOP.has(w))
+  return [...new Set(words)].slice(0, 6)
+}
+
+/**
+ * Fallback keyword (ILIKE) — usado quando a vetorial não retorna nada.
+ * Casa por PALAVRA (OR), não pela frase inteira: "ferramentas e integrações"
+ * acha o item que fala de "integrações" mesmo sem a frase literal. Ranqueia
+ * pelo nº de termos que batem.
+ */
 export async function searchKnowledgeKeyword(tenantId: string, query: string, limit = 4): Promise<KnowledgeHit[]> {
-  const safe = query.replace(/[%_]/g, (c) => `\\${c}`).slice(0, 120)
+  const terms = keywords(query)
+  if (terms.length === 0) return []
+  const esc = (t: string) => t.replace(/[%_]/g, (c) => `\\${c}`)
+  const ors = terms.flatMap((t) => [`title.ilike.%${esc(t)}%`, `content.ilike.%${esc(t)}%`]).join(",")
+
   const { data, error } = await supabaseAdmin
     .from("studio_knowledge")
     .select("title, content")
     .eq("tenant_id", tenantId)
-    .or(`title.ilike.%${safe}%,content.ilike.%${safe}%`)
-    .limit(limit)
+    .or(ors)
+    .limit(limit * 4)
   if (error || !data) return []
-  return data.map((k) => ({ title: k.title, chunk: k.content.slice(0, 700), similarity: 0 }))
+
+  // Ranqueia pelo nº de termos distintos presentes (título conta dobrado).
+  const scored = data.map((k) => {
+    const hay = `${k.title} ${k.content}`.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+    const hits = terms.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0)
+    const titleHits = terms.reduce((n, t) => n + (k.title.toLowerCase().includes(t) ? 1 : 0), 0)
+    return { title: k.title, chunk: k.content.slice(0, 700), similarity: 0, score: hits + titleHits }
+  })
+  return scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(({ title, chunk, similarity }) => ({ title, chunk, similarity }))
 }

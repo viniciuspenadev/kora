@@ -30,8 +30,10 @@ export function compileStudioPrompt(args: {
   instruction?: string | null
   /** Variáveis do fluxo (ex: dados de um nó HTTP). */
   variables?:   Record<string, unknown>
+  /** Controle de fluxo: se a IA está num nó com saídas/coleta (§11.3). */
+  flowControl?: { outcomes: { id: string; label?: string }[]; collect: { key: string; description?: string }[] } | null
 }): string {
-  const { persona, departments, contactName, instruction, variables } = args
+  const { persona, departments, contactName, instruction, variables, flowControl } = args
   const name = persona.name?.trim() || "Assistente"
   const tone = persona.tone ? (TONE_PT[persona.tone] ?? persona.tone) : "amigável e acolhedor"
 
@@ -51,6 +53,18 @@ export function compileStudioPrompt(args: {
     for (const [k, v] of Object.entries(variables)) {
       const val = typeof v === "string" ? v : JSON.stringify(v)
       lines.push(`- ${k}: ${val.slice(0, 1500)}`)
+    }
+  }
+
+  // Controle de fluxo: a IA é um NÓ do fluxo e devolve o controle (§11.3).
+  if (flowControl) {
+    lines.push(``, `# VOCÊ FAZ PARTE DE UM FLUXO`)
+    lines.push(`Esta é uma ETAPA de um fluxo maior. Cumpra o objetivo acima conversando o necessário. Quando concluir, chame a ferramenta finish_step para DEVOLVER o controle ao fluxo (os próximos passos continuam). Não fique preso — assim que tiver o que precisa, conclua.`)
+    if (flowControl.collect.length > 0) {
+      lines.push(`Antes de concluir, capture estes dados e devolva em "fields": ${flowControl.collect.map((c) => `${c.key}${c.description ? ` (${c.description})` : ""}`).join(", ")}.`)
+    }
+    if (flowControl.outcomes.length > 0) {
+      lines.push(`Ao concluir, escolha uma saída (outcome): ${flowControl.outcomes.map((o) => `${o.id}${o.label ? ` = ${o.label}` : ""}`).join(" · ")}.`)
     }
   }
 

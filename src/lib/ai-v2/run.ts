@@ -37,12 +37,15 @@ function estimateCost(model: string, inTok: number, outTok: number): number | nu
   return (inTok / 1_000_000) * p.in + (outTok / 1_000_000) * p.out
 }
 
-export async function runStudioTurn(input: RunAITurnInput): Promise<RunAITurnResult> {
+/** opts.dryRun = modo SIMULADOR: persiste tudo (sandbox), mas não transmite ao WhatsApp. */
+export interface StudioTurnOpts { dryRun?: boolean }
+
+export async function runStudioTurn(input: RunAITurnInput, opts?: StudioTurnOpts): Promise<RunAITurnResult> {
   const { conversationId } = input
   if (activeTurns.has(conversationId)) return { status: "skipped", reason: "locked" }
   activeTurns.add(conversationId)
   try {
-    return await doStudioRun(input)
+    return await doStudioRun(input, opts)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[studio/run] turno falhou:", msg)
@@ -52,7 +55,7 @@ export async function runStudioTurn(input: RunAITurnInput): Promise<RunAITurnRes
   }
 }
 
-async function doStudioRun(input: RunAITurnInput): Promise<RunAITurnResult> {
+async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promise<RunAITurnResult> {
   const { tenantId, conversationId, incomingText, instance } = input
   const startedAt = Date.now()
 
@@ -113,6 +116,8 @@ async function doStudioRun(input: RunAITurnInput): Promise<RunAITurnResult> {
     tenantId, conversationId, contact, instance,
     departments,
     conversationMetadata: convMeta,
+    dryRun:   opts?.dryRun,
+    captured: opts?.dryRun ? [] : undefined,
   }
   const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText }
 
@@ -197,4 +202,95 @@ function mapResult(status: string, departmentId: string | null, error: string | 
     case "error":     return { status: "error", error: error ?? "studio_error" }
     default:          return { status: "no_action" }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Resume de fluxo "adormecido" (nó wait) — acordado pelo pg_cron
+// ═══════════════════════════════════════════════════════════════
+// O nó wait pré-avança current_node pro passo seguinte e grava resume_at.
+// Aqui apenas reconstruímos o contexto e seguimos o grafo (incomingText="").
+// Guardas: se um humano assumiu durante a espera (assigned_to/ai_routed), o
+// run é finalizado sem continuar.
+async function finalizeRun(runId: string): Promise<void> {
+  await supabaseAdmin.from("studio_flow_runs")
+    .update({ status: "done", resume_at: null, updated_at: new Date().toISOString() })
+    .eq("id", runId)
+}
+
+export async function resumeStudioRun(tenantId: string, conversationId: string): Promise<RunAITurnResult> {
+  if (activeTurns.has(conversationId)) return { status: "skipped", reason: "locked" }
+  activeTurns.add(conversationId)
+  try {
+    return await doResume(tenantId, conversationId)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error("[studio/resume] falhou:", msg)
+    return { status: "error", error: msg }
+  } finally {
+    activeTurns.delete(conversationId)
+  }
+}
+
+async function doResume(tenantId: string, conversationId: string): Promise<RunAITurnResult> {
+  const startedAt = Date.now()
+
+  const existingRun = await activeFlowRun(conversationId)
+  if (!existingRun || existingRun.status !== "waiting") return { status: "skipped", reason: "no_sleeping_run" }
+
+  const { data: config } = await supabaseAdmin
+    .from("studio_config").select("*").eq("tenant_id", tenantId).maybeSingle()
+  if (!config || !config.ai_enabled) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "disabled" } }
+
+  const { data: convData } = await supabaseAdmin
+    .from("chat_conversations")
+    .select(`
+      id, contact_id, stage_id, channel, from_ad_meta, is_group, assigned_to, ai_handling, metadata, department_id, instance_id,
+      chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel )
+    `)
+    .eq("id", conversationId).eq("tenant_id", tenantId).maybeSingle()
+  if (!convData || convData.is_group || !convData.contact_id) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "not_eligible" } }
+
+  const convMeta = (convData.metadata as Record<string, unknown> | null) ?? {}
+  if (convData.assigned_to || convMeta.ai_routed) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "taken_over" } }
+  const contact = convData.chat_contacts as unknown as ContactRow | null
+  if (!contact) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "no_contact" } }
+
+  // Instância (envio real após o sono) — carrega da própria conversa.
+  let instance: RunAITurnInput["instance"] = {}
+  if (convData.instance_id) {
+    const { data: inst } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("provider, evolution_url, evolution_key, instance_name, meta_phone_number_id, meta_business_account_id, meta_access_token, meta_app_secret")
+      .eq("id", convData.instance_id).eq("tenant_id", tenantId).maybeSingle()
+    if (inst) instance = inst as RunAITurnInput["instance"]
+  }
+
+  const flow = await loadFlow(tenantId, existingRun.flow_id)
+  if (!flow) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "flow_gone" } }
+
+  const conv: ConvRow = {
+    id: convData.id, contact_id: convData.contact_id, stage_id: convData.stage_id,
+    channel: convData.channel, from_ad_meta: convData.from_ad_meta,
+  }
+  const { history } = await gatherPromptContext(tenantId, conv, contact, ["conversation_history"])
+  const { data: deptData } = await supabaseAdmin.from("tenant_departments").select("id, name").eq("tenant_id", tenantId)
+  const departments = (deptData ?? []) as { id: string; name: string }[]
+  const persona: PersonaInput = {
+    name: config.ai_name, tone: config.ai_tone, language: config.ai_language,
+    identityText: config.identity_text, communicationStyle: config.communication_style_text, antiPatterns: config.anti_patterns_text,
+  }
+  const ctx: ExecCtx = { tenantId, conversationId, contact, instance, departments, conversationMetadata: convMeta }
+  const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText: "" }
+
+  // Acorda: status active + limpa resume_at; runFlow continua do nó já pré-avançado.
+  await supabaseAdmin.from("studio_flow_runs")
+    .update({ status: "active", resume_at: null, updated_at: new Date().toISOString() })
+    .eq("id", existingRun.id)
+  const flowResult = await runFlow(flowInput, flow, { ...existingRun, status: "active" })
+
+  await persistStudioRun({
+    tenantId, conversationId, model: config.ai_model, startedAt,
+    flowId: flow.id, kind: "node_exec", agent: flowResult.agent, error: flowResult.error,
+  })
+  return mapResult(flowResult.status, flowResult.departmentId, flowResult.error)
 }

@@ -50,11 +50,13 @@ export async function loadFlow(tenantId: string, flowId: string): Promise<FlowRo
   return (data as FlowRow | null) ?? null
 }
 
+const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, variables, call_stack, status"
+
 /** Run ativo (active|waiting) da conversa, se houver. */
 export async function activeFlowRun(conversationId: string): Promise<FlowRunRow | null> {
   const { data } = await supabaseAdmin
     .from("studio_flow_runs")
-    .select("id, conversation_id, flow_id, flow_version, current_node_id, variables, status")
+    .select(RUN_SELECT)
     .eq("conversation_id", conversationId)
     .in("status", ["active", "waiting"])
     .maybeSingle()
@@ -71,12 +73,13 @@ export async function startFlowRun(tenantId: string, conversationId: string, flo
     flow_version: flow.version,
     current_node_id: startNode?.id ?? null,
     variables: {},
+    call_stack: [],
     status: "active" as const,
   }
   const { data } = await supabaseAdmin
     .from("studio_flow_runs")
     .upsert(row, { onConflict: "conversation_id" })
-    .select("id, conversation_id, flow_id, flow_version, current_node_id, variables, status")
+    .select(RUN_SELECT)
     .maybeSingle()
   // Fallback defensivo (upsert deve sempre retornar a linha).
   return (data as FlowRunRow | null) ?? { id: "", ...row }

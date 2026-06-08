@@ -1,24 +1,31 @@
 // ═══════════════════════════════════════════════════════════════
-// Kora Studio (IA v2) — RUNTIME do fluxo (máquina de estado)
+// Kora Studio (IA v2) — RUNTIME do fluxo (grafo composável) §11
 // ═══════════════════════════════════════════════════════════════
 // Dois modos de entrada:
-//   • RESUME: a conversa esperava input num menu → parseia, escolhe o
-//     branch, e avança.
-//   • ADVANCE: caminha o grafo executando nós até esperar input (menu),
-//     encaminhar (transfer), delegar (ai_agent), ou terminar (end).
-// Estado persistido em studio_flow_runs (1 por conversa). Bounded por
-// MAX_HOPS (anti-ciclo). Nós determinísticos não custam LLM; só ai_agent.
+//   • RESUME: a conversa esperava input (menu/collect/ai_agent) → parseia
+//     e avança.
+//   • ADVANCE: caminha o grafo executando nós até esperar input, encaminhar,
+//     ou terminar.
+// Composição (§11): o estado é uma PILHA de frames (call_stack). call_flow
+// empilha/troca; end/return faz pop. A IA é um NÓ (ai_agent contínuo /
+// ai_router) que DEVOLVE o controle ao grafo. Estado em studio_flow_runs
+// (1 por conversa). Bounded por MAX_HOPS (anti-ciclo) + MAX_DEPTH (anti-recursão).
 
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
-import { sendBotText } from "../outbound"
-import { getCapability, TRANSFER, HTTP_REQUEST, type ExecCtx } from "../capabilities"
+import { sendBotText, sendBotMedia } from "../outbound"
+import { getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
 import type { PersonaInput } from "../prompt"
+import { loadFlow } from "./triggers"
+import { classifyIntent } from "./router"
 import { sendMenu, parseMenuReply } from "./menu"
 import type {
-  FlowGraph, FlowNode, FlowRow, FlowRunRow,
-  MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig, HttpNodeConfig, CollectNodeConfig,
+  FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
+  MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
+  HttpNodeConfig, CollectNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
+  SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
+  WaitNodeConfig, SendMediaNodeConfig,
 } from "./types"
 
 function validateInput(v: string, type: string): boolean {
@@ -45,7 +52,8 @@ function interpolate(text: string, vars: Record<string, unknown>): string {
   })
 }
 
-const MAX_HOPS = 25
+const MAX_HOPS  = 25
+const MAX_DEPTH = 8
 
 export interface FlowExecInput {
   ctx:          ExecCtx
@@ -75,6 +83,9 @@ function edgeTarget(g: FlowGraph, from: string, branch?: string): string | null 
   const def = g.edges.find((e) => e.from === from && (e.branch == null || e.branch === ""))
   return def?.to ?? null
 }
+function startNodeOf(g: FlowGraph): FlowNode | null {
+  return g.nodes.find((n) => n.type === "start") ?? g.nodes[0] ?? null
+}
 
 function evalCondition(node: FlowNode, ctx: ExecCtx): boolean {
   const cfg = node.config as unknown as ConditionNodeConfig
@@ -88,14 +99,47 @@ function evalCondition(node: FlowNode, ctx: ExecCtx): boolean {
   }
 }
 
+// Dia da semana (0=dom…6=sáb) + "HH:MM" no fuso dado. Fail-open: fuso inválido → null.
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+}
+function nowInZone(timezone: string): { weekday: number; hhmm: string } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).formatToParts(new Date())
+    const wdShort = parts.find((p) => p.type === "weekday")?.value ?? ""
+    const hour    = parts.find((p) => p.type === "hour")?.value ?? ""
+    const minute  = parts.find((p) => p.type === "minute")?.value ?? ""
+    const weekday = WEEKDAY_INDEX[wdShort]
+    if (weekday === undefined || !hour || !minute) return null
+    // hour12:false às vezes devolve "24" à meia-noite — normaliza pra "00".
+    const hh = hour === "24" ? "00" : hour.padStart(2, "0")
+    return { weekday, hhmm: `${hh}:${minute.padStart(2, "0")}` }
+  } catch {
+    return null
+  }
+}
+
 // ── persistência do estado ──────────────────────────────────────
+// Sempre grava o frame ativo COMPLETO (flow + nó + pilha) — essencial pra
+// sub-fluxos: ao esperar/avançar dentro de um filho, o run precisa apontar
+// pro flow_id do filho com a pilha do(s) pai(s).
 async function persistRun(
-  runId: string,
-  fields: { current_node_id: string | null; variables: Record<string, unknown>; status: FlowRunRow["status"] },
+  runId: string, flow: FlowRow, nodeId: string | null,
+  variables: Record<string, unknown>, callStack: CallFrame[], status: FlowRunRow["status"],
 ): Promise<void> {
   await supabaseAdmin
     .from("studio_flow_runs")
-    .update({ ...fields, updated_at: new Date().toISOString() })
+    .update({
+      flow_id:         flow.id,
+      flow_version:    flow.version,
+      current_node_id: nodeId,
+      variables,
+      call_stack:      callStack,
+      status,
+      updated_at:      new Date().toISOString(),
+    })
     .eq("id", runId)
 }
 async function finishRun(runId: string): Promise<void> {
@@ -108,12 +152,19 @@ async function finishRun(runId: string): Promise<void> {
 // ── execução ────────────────────────────────────────────────────
 export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunRow): Promise<FlowResult> {
   const { ctx } = input
-  const graph = flow.graph
+  let activeFlow = flow
+  let graph      = activeFlow.graph
   const variables = { ...run.variables }
+  const callStack: CallFrame[] = [...(run.call_stack ?? [])]
   let currentId: string | null = run.current_node_id
   let responded = false
+  let lastAgent: AgentTurnResult | null = null
 
-  // RESUME — estava esperando input num menu.
+  const done = (): FlowResult =>
+    ({ status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: lastAgent })
+
+  // RESUME — estava esperando input. (ai_agent waiting cai direto no ADVANCE,
+  // que re-roda o agente com a nova mensagem.)
   if (run.status === "waiting" && currentId) {
     const node = nodeById(graph, currentId)
     if (node?.type === "menu") {
@@ -122,7 +173,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       if (!picked) {
         await sendBotText(ctx, cfg.noMatch?.trim() || "Não entendi 🤔 Responda com o número da opção:")
         await sendMenu(ctx, cfg)
-        await persistRun(run.id, { current_node_id: node.id, variables, status: "waiting" })
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
       variables[`menu:${node.id}`] = picked.id
@@ -132,7 +183,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       const reply = input.incomingText.trim()
       if (cfg.validate && !validateInput(reply, cfg.validate)) {
         await sendBotText(ctx, cfg.retry?.trim() || "Hmm, não parece válido. Pode mandar de novo?")
-        await persistRun(run.id, { current_node_id: node.id, variables, status: "waiting" })
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
       variables[cfg.saveAs?.trim() || "resposta"] = reply
@@ -159,10 +210,76 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         currentId = edgeTarget(graph, node.id)
         break
       }
+      case "send_media": {
+        const cfg = node.config as unknown as SendMediaNodeConfig
+        const url = interpolate((cfg.url ?? "").trim(), variables)
+        if (url) {
+          await sendBotMedia(ctx, {
+            url, mediaType: cfg.mediaType ?? "image",
+            caption: interpolate((cfg.caption ?? "").trim(), variables) || undefined,
+          }, { studio_flow: true })
+          responded = true
+        }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
       case "condition": {
         const ok = evalCondition(node, ctx)
         currentId = edgeTarget(graph, node.id, ok ? "true" : "false")
         break
+      }
+      case "set_variable": {
+        const cfg = node.config as unknown as SetVariableNodeConfig
+        for (const a of cfg.assignments ?? []) {
+          const key = a.key?.trim()
+          if (key) variables[key] = interpolate(a.value ?? "", variables)
+        }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "switch": {
+        const cfg = node.config as unknown as SwitchNodeConfig
+        const val = String(resolvePath(variables, (cfg.variable ?? "").trim()) ?? "").trim()
+        const matched = (cfg.cases ?? []).find(
+          (c) => String(c.equals ?? "").trim().toLowerCase() === val.toLowerCase(),
+        )
+        currentId = edgeTarget(graph, node.id, matched ? matched.id : "else")
+        break
+      }
+      case "business_hours": {
+        const cfg = node.config as unknown as BusinessHoursNodeConfig
+        const now = nowInZone(cfg.timezone || "America/Sao_Paulo")
+        // Fuso inválido → fail-open (trata como aberto) pra não travar o fluxo.
+        const isOpen = now === null
+          ? true
+          : (cfg.days ?? []).includes(now.weekday)
+            && now.hhmm >= (cfg.open ?? "")
+            && now.hhmm <= (cfg.close ?? "")
+        currentId = edgeTarget(graph, node.id, isOpen ? "open" : "closed")
+        break
+      }
+      case "wait": {
+        const cfg = node.config as unknown as WaitNodeConfig
+        const factor = cfg.unit === "days" ? 86400 : cfg.unit === "hours" ? 3600 : 60
+        const ms = Math.max(1, cfg.amount) * factor * 1000
+        const resumeAt = new Date(Date.now() + ms).toISOString()
+        // Pré-avança pra UMA saída — ao acordar, o cron retoma deste nó-alvo.
+        const next = edgeTarget(graph, node.id)
+        await supabaseAdmin
+          .from("studio_flow_runs")
+          .update({
+            flow_id:         activeFlow.id,
+            flow_version:    activeFlow.version,
+            current_node_id: next,
+            variables,
+            call_stack:      callStack,
+            status:          "waiting",
+            resume_at:       resumeAt,
+            updated_at:      new Date().toISOString(),
+          })
+          .eq("id", run.id)
+        // Dorme: não continua o loop — o cron (resume_at) acorda o fluxo.
+        return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: lastAgent }
       }
       case "http": {
         const cfg = node.config as unknown as HttpNodeConfig
@@ -176,14 +293,95 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       case "collect": {
         const cfg = node.config as unknown as CollectNodeConfig
         await sendBotText(ctx, interpolate(cfg.question ?? "", variables), { studio_flow: true })
-        await persistRun(run.id, { current_node_id: node.id, variables, status: "waiting" })
-        return { status: "responded", departmentId: null, error: null, agent: null }
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }
       case "menu": {
         const cfg = node.config as unknown as MenuNodeConfig
         await sendMenu(ctx, cfg)
-        await persistRun(run.id, { current_node_id: node.id, variables, status: "waiting" })
-        return { status: "responded", departmentId: null, error: null, agent: null }
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+      }
+      case "ai_router": {
+        const cfg = node.config as unknown as AiRouterNodeConfig
+        const routes = cfg.routes ?? []
+        if (routes.length === 0) { currentId = edgeTarget(graph, node.id); break }
+        const chosen = await classifyIntent({
+          model: input.model, routes, instruction: cfg.instruction ?? null,
+          history: input.history, incomingText: input.incomingText,
+        })
+        // rota escolhida → fallback configurado → saída "else" (ou aresta default).
+        currentId = edgeTarget(graph, node.id, (chosen || cfg.fallback) || "else")
+        break
+      }
+      case "ai_agent": {
+        const cfg = node.config as unknown as AiAgentNodeConfig
+        // ai_agent SEMPRE pode devolver o controle (finish_step). Sem outcomes,
+        // a saída é única (aresta default).
+        const turn = await runAgentTurn({
+          ...input,
+          instruction: cfg.instruction ?? null,
+          variables,
+          flowControl: { outcomes: cfg.outcomes ?? [], collect: cfg.collect ?? [] },
+        })
+        lastAgent = turn
+        if (turn.sentMessage) responded = true
+
+        if (turn.status === "routed") {
+          await finishRun(run.id)
+          return { status: "routed", departmentId: turn.departmentId, error: null, agent: turn }
+        }
+        if (turn.status === "error") {
+          return { status: "error", departmentId: null, error: turn.error, agent: turn }
+        }
+        if (turn.status === "step_done") {
+          if (turn.fields) for (const [k, v] of Object.entries(turn.fields)) variables[k] = v
+          currentId = edgeTarget(graph, node.id, turn.outcome ?? undefined)
+          break   // continua avançando o grafo NESTE turno
+        }
+        // responded / no_action → a IA ainda conduz a etapa → ESPERA neste nó.
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
+      }
+      case "call_flow": {
+        const cfg = node.config as unknown as CallFlowNodeConfig
+        const target = cfg.flowId ? await loadFlow(ctx.tenantId, cfg.flowId) : null
+        const childStart = target ? startNodeOf(target.graph) : null
+        // alvo inválido OU profundidade estourada → segue reto (fail-safe).
+        if (!target || !childStart || (cfg.mode === "subflow" && callStack.length >= MAX_DEPTH)) {
+          currentId = edgeTarget(graph, node.id)
+          break
+        }
+        if (cfg.mode === "subflow") {
+          callStack.push({
+            flow_id:        activeFlow.id,
+            flow_version:   activeFlow.version,
+            return_node_id: edgeTarget(graph, node.id),
+          })
+        }
+        activeFlow = target
+        graph      = target.graph
+        currentId  = childStart.id
+        await persistRun(run.id, activeFlow, currentId, variables, callStack, "active")
+        break
+      }
+      case "tag": {
+        const cfg = node.config as unknown as TagNodeConfig
+        await getCapability(TAG)?.run(ctx, { tag: cfg.tag, action: cfg.action })
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "move_stage": {
+        const cfg = node.config as unknown as MoveStageNodeConfig
+        await getCapability(MOVE_STAGE)?.run(ctx, { stage: cfg.stage })
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "assign": {
+        const r = await getCapability(ASSIGN)?.run(ctx, {})
+        const assigned = !!(r?.data && (r.data as { assigned?: boolean }).assigned)
+        currentId = edgeTarget(graph, node.id, assigned ? "assigned" : "pool")
+        break
       }
       case "transfer": {
         const cfg = node.config as unknown as TransferNodeConfig
@@ -194,22 +392,26 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           handoff_message: cfg.handoff ?? null,
         })
         await finishRun(run.id)
-        if (r?.routedDepartmentId) return { status: "routed", departmentId: r.routedDepartmentId, error: null, agent: null }
-        // departamento inválido na config → não encaminhou; deixa o registro pro admin ver.
-        return { status: responded ? "responded" : "no_action", departmentId: null, error: r?.error ?? null, agent: null }
+        if (r?.routedDepartmentId) return { status: "routed", departmentId: r.routedDepartmentId, error: null, agent: lastAgent }
+        // departamento inválido na config → não encaminhou; registra pro admin ver.
+        return { status: responded ? "responded" : "no_action", departmentId: null, error: r?.error ?? null, agent: lastAgent }
       }
-      case "ai_agent": {
-        const cfg = node.config as unknown as { instruction?: string }
-        const turn = await runAgentTurn({ ...input, instruction: cfg.instruction ?? null, variables })
-        await finishRun(run.id)
-        if (turn.status === "routed")    return { status: "routed", departmentId: turn.departmentId, error: null, agent: turn }
-        if (turn.status === "responded") return { status: "responded", departmentId: null, error: null, agent: turn }
-        if (turn.status === "error")     return { status: "error", departmentId: null, error: turn.error, agent: turn }
-        return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
-      }
+      case "return":
       case "end": {
+        // Sub-fluxo → volta ao pai (pop). Raiz → encerra (§11.5).
+        const frame = callStack.pop()
+        if (frame) {
+          const parent = await loadFlow(ctx.tenantId, frame.flow_id)
+          if (parent) {
+            activeFlow = parent
+            graph      = parent.graph
+            currentId  = frame.return_node_id
+            await persistRun(run.id, activeFlow, currentId, variables, callStack, "active")
+            break
+          }
+        }
         await finishRun(run.id)
-        return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: null }
+        return done()
       }
       default: {
         currentId = edgeTarget(graph, node.id)
@@ -220,5 +422,5 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
 
   // Fim implícito (sem próximo nó ou estourou hops).
   await finishRun(run.id)
-  return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: null }
+  return done()
 }

@@ -39,6 +39,10 @@ export interface ExecCtx {
   departments:          { id: string; name: string }[]
   /** metadata atual da conversa (pra preservar no update de roteamento). */
   conversationMetadata: Record<string, unknown>
+  /** Modo SIMULADOR: não transmite ao WhatsApp; ainda persiste (sandbox). */
+  dryRun?:              boolean
+  /** Saídas capturadas no dry-run (pra UI do simulador exibir). */
+  captured?:            { kind: "text" | "media"; content: string }[]
 }
 
 /**

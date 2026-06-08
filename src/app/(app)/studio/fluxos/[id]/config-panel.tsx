@@ -3,7 +3,7 @@
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
 import { Trash2, Plus, Settings2 } from "lucide-react"
 import { genId, type RFNode } from "./graph-sync"
-import type { MenuNodeConfig } from "@/lib/ai-v2/flow/types"
+import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig } from "@/lib/ai-v2/flow/types"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
@@ -12,10 +12,12 @@ const LABEL = "block text-[11px] font-semibold text-slate-600 mb-1"
 interface Opt { id: string; label: string }
 
 export function ConfigPanel({
-  node, departments, onChange, onDelete,
+  node, departments, flows, stages, onChange, onDelete,
 }: {
   node: RFNode
   departments: { id: string; name: string }[]
+  flows: { id: string; name: string }[]
+  stages: { id: string; name: string }[]
   onChange: (config: Record<string, unknown>) => void
   onDelete: () => void
 }) {
@@ -43,6 +45,29 @@ export function ConfigPanel({
         </div>
       )}
 
+      {type === "send_media" && (
+        <div className="space-y-3">
+          <div>
+            <label className={LABEL}>Tipo de mídia</label>
+            <select className={INPUT} value={String(cfg.mediaType ?? "image")} onChange={(e) => set({ mediaType: e.target.value })}>
+              <option value="image">Imagem</option>
+              <option value="video">Vídeo</option>
+              <option value="audio">Áudio</option>
+              <option value="document">Documento</option>
+            </select>
+          </div>
+          <div>
+            <label className={LABEL}>URL da mídia (pública)</label>
+            <input className={INPUT} value={String(cfg.url ?? "")} onChange={(e) => set({ url: e.target.value })} placeholder="https://.../arquivo.jpg" />
+            <p className="text-[11px] text-slate-400 mt-1">A URL precisa ser pública (o WhatsApp busca o arquivo). Aceita <code className="bg-slate-100 px-1 rounded">{"{{variavel}}"}</code>.</p>
+          </div>
+          <div>
+            <label className={LABEL}>Legenda <span className="text-slate-400 font-normal">(opcional)</span></label>
+            <input className={INPUT} value={String(cfg.caption ?? "")} onChange={(e) => set({ caption: e.target.value })} placeholder="Texto junto da mídia" />
+          </div>
+        </div>
+      )}
+
       {type === "menu" && <MenuConfig cfg={cfg as unknown as MenuNodeConfig} set={set} />}
 
       {type === "condition" && (
@@ -57,6 +82,14 @@ export function ConfigPanel({
           <p className="text-[11px] text-slate-400 mt-1.5">Saída <b className="text-emerald-600">sim</b> se verdadeiro, <b>não</b> caso contrário.</p>
         </div>
       )}
+
+      {type === "set_variable" && <SetVariableConfig cfg={cfg as unknown as SetVariableNodeConfig} set={set} />}
+
+      {type === "switch" && <SwitchConfig cfg={cfg as unknown as SwitchNodeConfig} set={set} />}
+
+      {type === "business_hours" && <BusinessHoursConfig cfg={cfg as unknown as BusinessHoursNodeConfig} set={set} />}
+
+      {type === "wait" && <WaitConfig cfg={cfg as unknown as WaitNodeConfig} set={set} />}
 
       {type === "http" && (
         <div className="space-y-3">
@@ -108,19 +141,71 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "ai_agent" && (
+      {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} />}
+
+      {type === "ai_router" && <RouterConfig cfg={cfg} set={set} />}
+
+      {type === "call_flow" && (
         <div className="space-y-3">
-          <p className="text-xs text-slate-400">A IA (com a persona + base de conhecimento) assume a conversa: responde, qualifica e pode encaminhar.</p>
+          <p className="text-xs text-slate-400">Executa outro fluxo a partir daqui — reaproveite blocos (ex: &quot;Qualificar lead&quot;).</p>
           <div>
-            <label className={LABEL}>Missão deste passo <span className="text-slate-400 font-normal">(opcional)</span></label>
-            <textarea
-              className={AREA} rows={4}
-              value={String(cfg.instruction ?? "")}
-              onChange={(e) => set({ instruction: e.target.value })}
-              placeholder="Ex: Você é o time de Vendas. Qualifique: pergunte o segmento e o tamanho da empresa, depois ofereça uma demonstração."
-            />
-            <p className="text-[11px] text-slate-400 mt-1">É assim que a mesma IA vira &quot;Vendas&quot; num ramo e &quot;Suporte&quot; em outro.</p>
+            <label className={LABEL}>Fluxo a executar</label>
+            <select className={INPUT} value={String(cfg.flowId ?? "")} onChange={(e) => set({ flowId: e.target.value })}>
+              <option value="">— selecione —</option>
+              {flows.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
           </div>
+          <div>
+            <label className={LABEL}>Modo</label>
+            <select className={INPUT} value={String(cfg.mode ?? "subflow")} onChange={(e) => set({ mode: e.target.value })}>
+              <option value="subflow">Sub-fluxo (executa e VOLTA pra cá)</option>
+              <option value="goto">Ir para (troca de fluxo, não volta)</option>
+            </select>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            {cfg.mode === "goto"
+              ? "O fluxo atual sai de cena; o alvo assume a conversa."
+              : "Ao terminar o fluxo alvo, a execução volta pela saída deste nó. As variáveis são compartilhadas."}
+          </p>
+        </div>
+      )}
+
+      {type === "return" && (
+        <p className="text-xs text-slate-400">Volta ao fluxo que chamou este (pop da pilha). Se este já for o fluxo raiz, encerra a conversa.</p>
+      )}
+
+      {type === "tag" && (
+        <div className="space-y-3">
+          <div>
+            <label className={LABEL}>Ação</label>
+            <select className={INPUT} value={String(cfg.action ?? "add")} onChange={(e) => set({ action: e.target.value })}>
+              <option value="add">Adicionar etiqueta</option>
+              <option value="remove">Remover etiqueta</option>
+            </select>
+          </div>
+          <div>
+            <label className={LABEL}>Etiqueta</label>
+            <input className={INPUT} value={String(cfg.tag ?? "")} onChange={(e) => set({ tag: e.target.value })} placeholder="Ex: Lead quente" />
+            <p className="text-[11px] text-slate-400 mt-1">Aplica no contato da conversa. Se não existir (ao adicionar), a etiqueta é criada.</p>
+          </div>
+        </div>
+      )}
+
+      {type === "move_stage" && (
+        <div>
+          <label className={LABEL}>Mover para a etapa</label>
+          <select className={INPUT} value={String(cfg.stage ?? "")} onChange={(e) => set({ stage: e.target.value })}>
+            <option value="">— selecione —</option>
+            {stages.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+          </select>
+          {stages.length === 0 && <p className="text-[11px] text-amber-700 mt-1">Nenhuma etapa de pipeline configurada ainda.</p>}
+        </div>
+      )}
+
+      {type === "assign" && (
+        <div className="space-y-2">
+          <p className="text-xs text-slate-400">Distribui a conversa a um atendente via <b>round-robin</b>, respeitando a configuração de Distribuição do tenant (estratégia, papéis, horário, cap).</p>
+          <p className="text-[11px] text-slate-400">Duas saídas: <b className="text-emerald-600">atribuído</b> (deu certo) e <b>pool</b> (fora do horário / sem agente / Distribuição desligada). Conecte cada uma.</p>
         </div>
       )}
 
@@ -198,6 +283,245 @@ function MenuConfig({ cfg, set }: { cfg: MenuNodeConfig; set: (patch: Record<str
   )
 }
 
+interface Assignment { key: string; value: string }
+interface SwitchCase { id: string; equals: string }
+const WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"]
+
+function SetVariableConfig({ cfg, set }: { cfg: SetVariableNodeConfig; set: (patch: Record<string, unknown>) => void }) {
+  const assignments: Assignment[] = cfg.assignments ?? []
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">Define variáveis em memória pro restante do fluxo. O valor aceita <code className="bg-slate-100 px-1 rounded">{"{{outraVar}}"}</code>.</p>
+      <div>
+        <label className={LABEL}>Variáveis</label>
+        <div className="space-y-1.5">
+          {assignments.map((a, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input className={INPUT} value={a.key} placeholder="nome"
+                onChange={(e) => set({ assignments: assignments.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)) })} />
+              <input className={INPUT} value={a.value} placeholder="valor"
+                onChange={(e) => set({ assignments: assignments.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)) })} />
+              <button type="button" onClick={() => set({ assignments: assignments.filter((_, j) => j !== i) })}
+                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0" aria-label="Remover">
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => set({ assignments: [...assignments, { key: "", value: "" }] })}
+          className="mt-1.5 inline-flex items-center gap-1 h-7 px-2 text-[11px] font-medium text-primary-600 hover:bg-primary-50 rounded-md">
+          <Plus className="size-3" /> Variável
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SwitchConfig({ cfg, set }: { cfg: SwitchNodeConfig; set: (patch: Record<string, unknown>) => void }) {
+  const cases: SwitchCase[] = cfg.cases ?? []
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">Compara uma variável com cada caso (sem diferenciar maiúsculas). Cada caso vira uma <b>saída</b> do nó.</p>
+      <div>
+        <label className={LABEL}>Variável a comparar</label>
+        <input className={INPUT} value={String(cfg.variable ?? "")} onChange={(e) => set({ variable: e.target.value })} placeholder="ex: menu:abc ou segmento" />
+      </div>
+      <div>
+        <label className={LABEL}>Casos</label>
+        <div className="space-y-1.5">
+          {cases.map((c) => (
+            <div key={c.id} className="flex items-center gap-1.5">
+              <input className={INPUT} value={c.equals} placeholder="é igual a…"
+                onChange={(e) => set({ cases: cases.map((x) => (x.id === c.id ? { ...x, equals: e.target.value } : x)) })} />
+              <button type="button" onClick={() => set({ cases: cases.filter((x) => x.id !== c.id) })}
+                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0" aria-label="Remover">
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => set({ cases: [...cases, { id: genId(), equals: "" }] })}
+          className="mt-1.5 inline-flex items-center gap-1 h-7 px-2 text-[11px] font-medium text-primary-600 hover:bg-primary-50 rounded-md">
+          <Plus className="size-3" /> Caso
+        </button>
+        <p className="text-[11px] text-slate-400 mt-2">Conecte cada caso + a saída <b>senão</b> aos próximos passos no canvas.</p>
+      </div>
+    </div>
+  )
+}
+
+function BusinessHoursConfig({ cfg, set }: { cfg: BusinessHoursNodeConfig; set: (patch: Record<string, unknown>) => void }) {
+  const days: number[] = cfg.days ?? []
+  const toggleDay = (d: number) =>
+    set({ days: days.includes(d) ? days.filter((x) => x !== d).sort((a, b) => a - b) : [...days, d].sort((a, b) => a - b) })
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">Ramifica conforme o horário atual no fuso. Saída <b className="text-emerald-600">aberto</b> dentro do expediente, <b>fechado</b> fora.</p>
+      <div>
+        <label className={LABEL}>Dias</label>
+        <div className="flex flex-wrap gap-1">
+          {WEEKDAYS.map((label, d) => (
+            <button key={d} type="button" onClick={() => toggleDay(d)}
+              className={`h-8 px-2.5 text-[11px] font-medium rounded-lg border transition-colors ${days.includes(d) ? "bg-primary text-white border-primary" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <label className={LABEL}>Abre</label>
+          <input type="time" className={INPUT} value={String(cfg.open ?? "")} onChange={(e) => set({ open: e.target.value })} />
+        </div>
+        <div className="flex-1">
+          <label className={LABEL}>Fecha</label>
+          <input type="time" className={INPUT} value={String(cfg.close ?? "")} onChange={(e) => set({ close: e.target.value })} />
+        </div>
+      </div>
+      <div>
+        <label className={LABEL}>Fuso horário</label>
+        <input className={INPUT} value={String(cfg.timezone ?? "")} onChange={(e) => set({ timezone: e.target.value })} placeholder="America/Sao_Paulo" />
+      </div>
+    </div>
+  )
+}
+
+function WaitConfig({ cfg, set }: { cfg: WaitNodeConfig; set: (patch: Record<string, unknown>) => void }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">Pausa o fluxo por um tempo e retoma sozinho — útil pra follow-ups (&quot;volto em 1 dia&quot;).</p>
+      <div className="flex gap-2">
+        <div className="w-24">
+          <label className={LABEL}>Quantidade</label>
+          <input type="number" min={1} className={INPUT}
+            value={Number.isFinite(cfg.amount) ? cfg.amount : 1}
+            onChange={(e) => set({ amount: Math.max(1, Math.floor(Number(e.target.value) || 1)) })} />
+        </div>
+        <div className="flex-1">
+          <label className={LABEL}>Unidade</label>
+          <select className={INPUT} value={String(cfg.unit ?? "hours")} onChange={(e) => set({ unit: e.target.value })}>
+            <option value="minutes">Minutos</option>
+            <option value="hours">Horas</option>
+            <option value="days">Dias</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface Route { id: string; label: string; description?: string }
+interface CollectField { key: string; description?: string }
+
+function AgentConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void }) {
+  const outcomes = (cfg.outcomes as Opt[] | undefined) ?? []
+  const collect  = (cfg.collect as CollectField[] | undefined) ?? []
+  const setCollect = (next: CollectField[]) => set({ collect: next })
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">A IA conduz esta etapa (persona + base de conhecimento), extrai dados e <b>devolve o controle</b> ao fluxo.</p>
+      <div>
+        <label className={LABEL}>Missão deste passo <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <textarea
+          className={AREA} rows={4}
+          value={String(cfg.instruction ?? "")}
+          onChange={(e) => set({ instruction: e.target.value })}
+          placeholder="Ex: Você é o time de Vendas. Qualifique: pergunte o segmento e o tamanho da empresa, depois ofereça uma demonstração."
+        />
+        <p className="text-[11px] text-slate-400 mt-1">É assim que a mesma IA vira &quot;Vendas&quot; num ramo e &quot;Suporte&quot; em outro.</p>
+      </div>
+
+      <div>
+        <label className={LABEL}>Dados a coletar <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <div className="space-y-1.5">
+          {collect.map((c, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input className={INPUT} value={c.key} placeholder="segmento"
+                onChange={(e) => setCollect(collect.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
+              <input className={INPUT} value={c.description ?? ""} placeholder="o que é"
+                onChange={(e) => setCollect(collect.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))} />
+              <button type="button" onClick={() => setCollect(collect.filter((_, j) => j !== i))}
+                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0" aria-label="Remover">
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => setCollect([...collect, { key: "", description: "" }])}
+          className="mt-1.5 inline-flex items-center gap-1 h-7 px-2 text-[11px] font-medium text-primary-600 hover:bg-primary-50 rounded-md">
+          <Plus className="size-3" /> Campo
+        </button>
+        <p className="text-[11px] text-slate-400 mt-1">A IA preenche e vira variável — use <code className="bg-slate-100 px-1 rounded">{"{{segmento}}"}</code> adiante.</p>
+      </div>
+
+      <div>
+        <label className={LABEL}>Saídas <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <div className="space-y-1.5">
+          {outcomes.map((o) => (
+            <div key={o.id} className="flex items-center gap-1.5">
+              <input className={INPUT} value={o.label} placeholder="Ex: quer_comprar"
+                onChange={(e) => set({ outcomes: outcomes.map((x) => (x.id === o.id ? { ...x, label: e.target.value } : x)) })} />
+              <button type="button" onClick={() => set({ outcomes: outcomes.filter((x) => x.id !== o.id) })}
+                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0" aria-label="Remover">
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => set({ outcomes: [...outcomes, { id: genId(), label: "" }] })}
+          className="mt-1.5 inline-flex items-center gap-1 h-7 px-2 text-[11px] font-medium text-primary-600 hover:bg-primary-50 rounded-md">
+          <Plus className="size-3" /> Saída
+        </button>
+        <p className="text-[11px] text-slate-400 mt-1">Cada saída vira uma bolinha no nó — a IA escolhe ao concluir. Sem saídas = saída única.</p>
+      </div>
+    </div>
+  )
+}
+
+function RouterConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void }) {
+  const routes = (cfg.routes as Route[] | undefined) ?? []
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">A IA lê a intenção do cliente e escolhe uma rota. Cada rota vira uma <b>saída</b> do nó.</p>
+      <div>
+        <label className={LABEL}>Contexto pra IA <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <input className={INPUT} value={String(cfg.instruction ?? "")} onChange={(e) => set({ instruction: e.target.value })} placeholder="Ex: triagem de uma loja de roupas" />
+      </div>
+      <div>
+        <label className={LABEL}>Rotas</label>
+        <div className="space-y-2">
+          {routes.map((r) => (
+            <div key={r.id} className="space-y-1 border border-slate-200 rounded-lg p-2">
+              <div className="flex items-center gap-1.5">
+                <input className={INPUT} value={r.label} placeholder="Vendas"
+                  onChange={(e) => set({ routes: routes.map((x) => (x.id === r.id ? { ...x, label: e.target.value } : x)) })} />
+                <button type="button" onClick={() => set({ routes: routes.filter((x) => x.id !== r.id) })}
+                  className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0" aria-label="Remover">
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+              <input className={INPUT} value={r.description ?? ""} placeholder="quando usar (ex: quer comprar/contratar)"
+                onChange={(e) => set({ routes: routes.map((x) => (x.id === r.id ? { ...x, description: e.target.value } : x)) })} />
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={() => set({ routes: [...routes, { id: genId(), label: "", description: "" }] })}
+          className="mt-1.5 inline-flex items-center gap-1 h-7 px-2 text-[11px] font-medium text-primary-600 hover:bg-primary-50 rounded-md">
+          <Plus className="size-3" /> Rota
+        </button>
+        <p className="text-[11px] text-slate-400 mt-2">Conecte cada rota + a saída <b>senão</b> aos próximos passos no canvas.</p>
+      </div>
+      <div>
+        <label className={LABEL}>Se nada casar, ir para</label>
+        <select className={INPUT} value={String(cfg.fallback ?? "")} onChange={(e) => set({ fallback: e.target.value })}>
+          <option value="">saída &quot;senão&quot;</option>
+          {routes.map((r) => <option key={r.id} value={r.id}>{r.label || "—"}</option>)}
+        </select>
+      </div>
+    </div>
+  )
+}
+
 export function FlowSettingsPanel({
   triggerType, keywords, onType, onKeywords,
 }: {
@@ -234,6 +558,11 @@ export function FlowSettingsPanel({
 }
 
 const TITLE: Record<string, string> = {
-  start: "Início", message: "Mensagem", menu: "Menu", condition: "Condição",
-  http: "Requisição HTTP", collect: "Coletar dado", ai_agent: "Agente IA", transfer: "Transferir", end: "Encerrar",
+  start: "Início", message: "Mensagem", send_media: "Enviar mídia", menu: "Menu", condition: "Condição",
+  set_variable: "Definir variável", switch: "Desviar (switch)", business_hours: "Horário comercial",
+  wait: "Esperar",
+  http: "Requisição HTTP", collect: "Coletar dado", ai_agent: "Agente IA",
+  ai_router: "Roteador IA", call_flow: "Executar fluxo",
+  tag: "Etiquetar", move_stage: "Mover etapa", assign: "Distribuir",
+  transfer: "Transferir", return: "Voltar", end: "Encerrar",
 }

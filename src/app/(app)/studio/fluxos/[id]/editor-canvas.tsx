@@ -18,6 +18,7 @@ import "@xyflow/react/dist/style.css"
 import {
   ArrowLeft, Loader2, CheckCircle2, AlertCircle,
   MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag,
+  GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon,
 } from "lucide-react"
 import { nodeTypes } from "./flow-nodes"
 import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
@@ -29,16 +30,29 @@ import type { StudioFlowFull } from "@/types/studio"
 interface Props {
   flow:        StudioFlowFull
   departments: { id: string; name: string }[]
+  flows:       { id: string; name: string }[]
+  stages:      { id: string; name: string }[]
 }
 
 const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { type: "message",   label: "Mensagem",   icon: MessageSquare },
+  { type: "send_media", label: "Enviar mídia", icon: ImageIcon },
   { type: "menu",      label: "Menu",       icon: ListChecks },
   { type: "condition", label: "Condição",   icon: GitBranch },
-  { type: "http",      label: "Requisição HTTP", icon: Globe },
+  { type: "set_variable",   label: "Definir variável", icon: Braces },
+  { type: "switch",         label: "Desviar (switch)", icon: Split },
+  { type: "business_hours", label: "Horário comercial", icon: Clock },
+  { type: "wait",      label: "Esperar",     icon: Timer },
   { type: "collect",   label: "Coletar dado", icon: ClipboardList },
   { type: "ai_agent",  label: "Agente IA",  icon: Bot },
+  { type: "ai_router", label: "Roteador IA", icon: GitFork },
+  { type: "http",      label: "Requisição HTTP", icon: Globe },
+  { type: "call_flow", label: "Executar fluxo", icon: Workflow },
+  { type: "tag",        label: "Etiquetar",   icon: Tag },
+  { type: "move_stage", label: "Mover etapa", icon: Columns3 },
+  { type: "assign",     label: "Distribuir",  icon: UserPlus },
   { type: "transfer",  label: "Transferir", icon: ArrowRightLeft },
+  { type: "return",    label: "Voltar",     icon: CornerUpLeft },
   { type: "end",       label: "Encerrar",   icon: Flag },
 ]
 
@@ -50,7 +64,7 @@ export function FlowEditorCanvas(props: Props) {
   )
 }
 
-function EditorInner({ flow, departments }: Props) {
+function EditorInner({ flow, departments, flows, stages }: Props) {
   const router = useRouter()
   const initial = toRF(flow.graph)
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(
@@ -83,9 +97,16 @@ function EditorInner({ flow, departments }: Props) {
   const updateConfig = useCallback((config: Record<string, unknown>) => {
     if (!selectedId) return
     setNodes((ns) => ns.map((n) => (n.id === selectedId ? { ...n, data: { ...n.data, config } } : n)))
-    if (selectedNode?.type === "menu") {
-      const ids = new Set(((config.options as { id: string }[] | undefined) ?? []).map((o) => o.id))
-      setEdges((eds) => eds.filter((e) => e.source !== selectedId || e.sourceHandle == null || ids.has(e.sourceHandle)))
+    // Poda arestas órfãs quando saídas (handles) somem do nó ramificado.
+    const t = selectedNode?.type
+    let valid: Set<string> | null = null
+    if (t === "menu")           valid = new Set(((config.options as { id: string }[] | undefined) ?? []).map((o) => o.id))
+    else if (t === "ai_router") valid = new Set([...((config.routes as { id: string }[] | undefined) ?? []).map((r) => r.id), "else"])
+    else if (t === "switch")    valid = new Set([...((config.cases as { id: string }[] | undefined) ?? []).map((c) => c.id), "else"])
+    else if (t === "ai_agent")  valid = new Set(((config.outcomes as { id: string }[] | undefined) ?? []).map((o) => o.id))
+    if (valid) {
+      const keep = valid
+      setEdges((eds) => eds.filter((e) => e.source !== selectedId || e.sourceHandle == null || keep.has(e.sourceHandle)))
     }
   }, [selectedId, selectedNode, setNodes, setEdges])
 
@@ -178,7 +199,7 @@ function EditorInner({ flow, departments }: Props) {
         {/* Painel direito */}
         <div className="w-80 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
           {selectedNode
-            ? <ConfigPanel node={selectedNode} departments={departments} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel triggerType={triggerType} keywords={keywords} onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords} />}
         </div>
       </div>

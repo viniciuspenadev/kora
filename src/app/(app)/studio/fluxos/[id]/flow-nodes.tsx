@@ -3,13 +3,13 @@
 // ═══════════════════════════════════════════════════════════════
 // Kora Studio (IA v2) — nós do canvas (React Flow)
 // ═══════════════════════════════════════════════════════════════
-// Cada tipo = um card com handles. Menu tem 1 saída por opção (handle
-// id = option.id → vira o branch da aresta). ai_agent/transfer/end são
-// terminais (sem saída). start não tem entrada.
+// Cada tipo = um card com handles. Menu/Roteador IA têm 1 saída por opção
+// (handle id = branch). Agente IA tem 1 saída por outcome (ou única) — DEVOLVE
+// o controle. transfer/return/end são terminais. start não tem entrada.
 
 import { Handle, Position, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag } from "lucide-react"
-import type { MenuNodeConfig } from "@/lib/ai-v2/flow/types"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon } from "lucide-react"
+import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig } from "@/lib/ai-v2/flow/types"
 
 const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
 const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
@@ -69,6 +69,20 @@ function MessageNode(p: NodeProps) {
   )
 }
 
+function SendMediaNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as SendMediaNodeConfig
+  const url = String(cfg.url ?? "")
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={ImageIcon} accent="bg-pink-100 text-pink-700" title="Enviar mídia" selected={p.selected}>
+        {url ? `${cfg.mediaType ?? "image"} · ${url.replace(/^https?:\/\//, "").slice(0, 32)}` : "configure a URL da mídia"}
+      </Card>
+      <Handle type="source" position={Position.Bottom} style={HS} />
+    </>
+  )
+}
+
 function MenuNode(p: NodeProps) {
   const cfg = cfgOf(p) as unknown as MenuNodeConfig
   const opts = cfg.options ?? []
@@ -111,6 +125,80 @@ function ConditionNode(p: NodeProps) {
   )
 }
 
+function SetVariableNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as SetVariableNodeConfig
+  const n = (cfg.assignments ?? []).filter((a) => a.key?.trim()).length
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Braces} accent="bg-lime-100 text-lime-700" title="Definir variável" selected={p.selected}>
+        {n > 0 ? `${n} variáve${n === 1 ? "l" : "is"} definida${n === 1 ? "" : "s"}` : "nenhuma variável"}
+      </Card>
+      <Handle type="source" position={Position.Bottom} style={HS} />
+    </>
+  )
+}
+
+function SwitchNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as SwitchNodeConfig
+  const cases = cfg.cases ?? []
+  const handles = [...cases.map((c) => ({ id: c.id, label: c.equals, isElse: false })), { id: "else", label: "senão", isElse: true }]
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Split} accent="bg-amber-100 text-amber-700" title="Desviar (switch)" selected={p.selected}>
+        <p className="font-medium text-slate-700 truncate">{cfg.variable ? `{{${cfg.variable}}}` : "escolha a variável"}</p>
+        <div className="mt-1.5 space-y-1">
+          {cases.length === 0 && <span className="text-slate-400">sem casos</span>}
+          {cases.map((c) => (
+            <div key={c.id} className="text-[10px] bg-slate-50 border border-slate-100 rounded px-1.5 py-0.5 truncate">{c.equals || "—"}</div>
+          ))}
+        </div>
+      </Card>
+      {handles.map((h, i) => (
+        <Handle key={h.id} id={h.id} type="source" position={Position.Bottom}
+          style={{ ...HS, left: `${(100 / (handles.length + 1)) * (i + 1)}%`, background: h.isElse ? "#94a3b8" : "#d97706" }} />
+      ))}
+    </>
+  )
+}
+
+function BusinessHoursNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as BusinessHoursNodeConfig
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Clock} accent="bg-orange-100 text-orange-700" title="Horário comercial" selected={p.selected}>
+        {`${cfg.open || "--:--"}–${cfg.close || "--:--"}`}
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-emerald-600">aberto</span>
+          <span className="text-slate-400">fechado</span>
+        </div>
+      </Card>
+      <Handle id="open" type="source" position={Position.Bottom} style={{ ...HS, left: "28%", background: "#059669" }} />
+      <Handle id="closed" type="source" position={Position.Bottom} style={{ ...HS, left: "72%", background: "#94a3b8" }} />
+    </>
+  )
+}
+
+const UNIT_LABEL: Record<string, [string, string]> = {
+  minutes: ["minuto", "minutos"], hours: ["hora", "horas"], days: ["dia", "dias"],
+}
+function WaitNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as WaitNodeConfig
+  const amount = Number(cfg.amount ?? 1)
+  const [one, many] = UNIT_LABEL[cfg.unit] ?? UNIT_LABEL.hours
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Timer} accent="bg-slate-100 text-slate-600" title="Esperar" selected={p.selected}>
+        esperar {amount} {amount === 1 ? one : many}
+      </Card>
+      <Handle type="source" position={Position.Bottom} style={HS} />
+    </>
+  )
+}
+
 function HttpNode(p: NodeProps) {
   const url = String(cfgOf(p).url ?? "")
   return (
@@ -140,12 +228,122 @@ function CollectNode(p: NodeProps) {
 }
 
 function AgentNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as AiAgentNodeConfig
+  const outcomes = cfg.outcomes ?? []
+  const instr = String(cfg.instruction ?? "")
   return (
     <>
       <Handle type="target" position={Position.Top} style={HS_T} />
       <Card icon={Bot} accent="bg-gradient-to-br from-violet-500 to-blue-600 text-white" title="Agente IA" selected={p.selected}>
-        a IA assume a conversa
+        {instr ? instr.slice(0, 60) : "a IA conduz e devolve o controle"}
+        {outcomes.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {outcomes.map((o) => (
+              <span key={o.id} className="text-[9px] bg-violet-50 text-violet-700 border border-violet-100 rounded px-1 py-0.5">{o.label || o.id}</span>
+            ))}
+          </div>
+        )}
       </Card>
+      {outcomes.length === 0
+        ? <Handle type="source" position={Position.Bottom} style={HS} />
+        : outcomes.map((o, i) => (
+            <Handle key={o.id} id={o.id} type="source" position={Position.Bottom}
+              style={{ ...HS, left: `${(100 / (outcomes.length + 1)) * (i + 1)}%`, background: "#7c3aed" }} />
+          ))}
+    </>
+  )
+}
+
+function AiRouterNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as AiRouterNodeConfig
+  const routes = cfg.routes ?? []
+  const handles = [...routes.map((r) => ({ id: r.id, label: r.label, isElse: false })), { id: "else", label: "senão", isElse: true }]
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={GitFork} accent="bg-fuchsia-100 text-fuchsia-700" title="Roteador IA" selected={p.selected}>
+        <p className="font-medium text-slate-700">classifica a intenção e ramifica</p>
+        <div className="mt-1.5 space-y-1">
+          {routes.length === 0 && <span className="text-slate-400">sem rotas</span>}
+          {routes.map((r) => (
+            <div key={r.id} className="text-[10px] bg-slate-50 border border-slate-100 rounded px-1.5 py-0.5 truncate">{r.label || "—"}</div>
+          ))}
+        </div>
+      </Card>
+      {handles.map((h, i) => (
+        <Handle key={h.id} id={h.id} type="source" position={Position.Bottom}
+          style={{ ...HS, left: `${(100 / (handles.length + 1)) * (i + 1)}%`, background: h.isElse ? "#94a3b8" : "#a21caf" }} />
+      ))}
+    </>
+  )
+}
+
+function CallFlowNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as CallFlowNodeConfig
+  const isGoto = cfg.mode === "goto"
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Workflow} accent="bg-cyan-100 text-cyan-700" title="Executar fluxo" selected={p.selected}>
+        {cfg.flowId ? (isGoto ? "→ ir para outro fluxo" : "↪ sub-fluxo (volta)") : "escolha o fluxo"}
+      </Card>
+      {/* subflow volta → tem saída de continuação; goto não volta → terminal */}
+      {!isGoto && <Handle type="source" position={Position.Bottom} style={HS} />}
+    </>
+  )
+}
+
+function ReturnNode(p: NodeProps) {
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={CornerUpLeft} accent="bg-slate-200 text-slate-600" title="Voltar" selected={p.selected}>
+        volta ao fluxo que chamou
+      </Card>
+    </>
+  )
+}
+
+function TagNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as TagNodeConfig
+  const isRemove = cfg.action === "remove"
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Tag} accent="bg-rose-100 text-rose-700" title="Etiquetar" selected={p.selected}>
+        {cfg.tag ? `${isRemove ? "− remover" : "+ adicionar"} "${cfg.tag}"` : "escolha a etiqueta"}
+      </Card>
+      <Handle type="source" position={Position.Bottom} style={HS} />
+    </>
+  )
+}
+
+function MoveStageNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as MoveStageNodeConfig
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={Columns3} accent="bg-orange-100 text-orange-700" title="Mover etapa" selected={p.selected}>
+        {cfg.stage ? `→ ${cfg.stage}` : "escolha a etapa"}
+      </Card>
+      <Handle type="source" position={Position.Bottom} style={HS} />
+    </>
+  )
+}
+
+function AssignNode(p: NodeProps) {
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={UserPlus} accent="bg-green-100 text-green-700" title="Distribuir" selected={p.selected}>
+        round-robin ao atendente
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-emerald-600">atribuído</span>
+          <span className="text-slate-400">pool</span>
+        </div>
+      </Card>
+      <Handle id="assigned" type="source" position={Position.Bottom} style={{ ...HS, left: "28%", background: "#059669" }} />
+      <Handle id="pool" type="source" position={Position.Bottom} style={{ ...HS, left: "72%", background: "#94a3b8" }} />
     </>
   )
 }
@@ -175,13 +373,24 @@ function EndNode(p: NodeProps) {
 }
 
 export const nodeTypes = {
-  start:     StartNode,
-  message:   MessageNode,
-  menu:      MenuNode,
+  start:      StartNode,
+  message:    MessageNode,
+  send_media: SendMediaNode,
+  menu:       MenuNode,
   condition: ConditionNode,
+  set_variable:   SetVariableNode,
+  switch:         SwitchNode,
+  business_hours: BusinessHoursNode,
+  wait:           WaitNode,
   http:      HttpNode,
   collect:   CollectNode,
   ai_agent:  AgentNode,
+  ai_router: AiRouterNode,
+  call_flow: CallFlowNode,
+  tag:        TagNode,
+  move_stage: MoveStageNode,
+  assign:     AssignNode,
   transfer:  TransferNode,
+  return:    ReturnNode,
   end:       EndNode,
 }
