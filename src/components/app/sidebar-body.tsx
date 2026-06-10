@@ -7,8 +7,8 @@ import { signOut } from "next-auth/react"
 import { useState, useEffect, useMemo } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown,
-  Bot, Bell, Filter, MessageSquare, Layers,
-  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText,
+  Bot, Bell, MessageSquare, Layers,
+  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -55,7 +55,6 @@ const NAV: NavItem[] = [
     children: [
       { href: "/automacao/mensagens",      label: "Mensagens automáticas", icon: <Bell      className={subIcon} strokeWidth={1.75} />, module: "welcome_message"  },
       { href: "/automacao/palavras-chave", label: "Palavras-chave",        icon: <Wand2     className={subIcon} strokeWidth={1.75} />, module: "keyword_triggers" },
-      { href: "/automacao/distribuicao",   label: "Distribuição",          icon: <Filter    className={subIcon} strokeWidth={1.75} />, module: "auto_assign" },
       { href: "/automacao/funil",          label: "Fluxos de funil",       icon: <Layers    className={subIcon} strokeWidth={1.75} />, soon: true, module: "sequences" },
     ],
   },
@@ -67,6 +66,7 @@ const NAV: NavItem[] = [
     icon:      <Settings className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
     adminOnly: true,
     children: [
+      { href: "/configuracoes/atendimento",    label: "Atendimento",       icon: <Headset      className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/tags",           label: "Tags",              icon: <TagIcon      className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/respostas",      label: "Respostas rápidas", icon: <MessageSquare className={subIcon} strokeWidth={1.75} />, module: "quick_replies" },
       { href: "/configuracoes/equipe",         label: "Equipe",            icon: <Users        className={subIcon} strokeWidth={1.75} /> },

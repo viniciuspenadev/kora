@@ -715,7 +715,7 @@ export async function transferConversation(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, assigned_to, participants, department_id")
+    .select("id, assigned_to, participants, department_id, metadata")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -785,12 +785,19 @@ export async function transferConversation(
   }
 
   const now = new Date().toISOString()
+  // Controle SAI da IA: uma transferência humana tira a conversa do alcance da
+  // IA (corrige o conflito #1 — a fila não é mais "roubada" pela IA na próxima
+  // mensagem). Reusa o marcador que o guard já lê (`metadata.ai_routed`) e seta
+  // `ai_handling=false` (forward-compat com a unificação do controle — §3 da spec).
+  const prevMeta = ((conv as { metadata?: Record<string, unknown> | null }).metadata) ?? {}
   await supabaseAdmin
     .from("chat_conversations")
     .update({
       assigned_to:     nextAssigned,
       department_id:   nextDepartment,
       participants:    nextParticipants,
+      ai_handling:     false,
+      metadata:        { ...prevMeta, ai_routed: { at: now, by: session.user.id, via: "manual_transfer" } },
       // Bumpa o topo do inbox (igual à IA ao rotear): a conversa sobe pra quem
       // agora a vê — a fila do setor / o novo dono — e desce naturalmente depois.
       last_message_at: now,

@@ -17,10 +17,11 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { runAgentTurn, type AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
-import { findFlowToStart, loadFlow, activeFlowRun, startFlowRun } from "./flow/triggers"
+import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun } from "./flow/triggers"
 import type { PersonaInput } from "./prompt"
 import type { ExecCtx } from "./capabilities"
 import { gatherPromptContext, type ConvRow, type ContactRow } from "@/lib/ai/context"
+import { hasModule } from "@/lib/modules"
 import type { RunAITurnInput, RunAITurnResult } from "@/lib/ai/run"
 
 // Lock em processo por conversa (evita 2 turnos simultâneos). O lock
@@ -130,7 +131,25 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   let flowResult: FlowResult | null = null
   let activeFlowId: string | null = null
 
-  if (existingRun) {
+  // 6a) Fluxo de retorno FIXADO (vínculo='ai' marcou metadata.ai_pinned_flow no
+  // reopen). Tem precedência sobre run pendente e sobre o gatilho — o tenant
+  // escolheu ESTE fluxo dedicado (sem o filtro de lifecycle do fluxo de captação).
+  const pinnedFlowId = typeof convMeta.ai_pinned_flow === "string" ? convMeta.ai_pinned_flow : null
+  if (pinnedFlowId) {
+    // Consome o pin uma vez só (dê certo ou não) — não fica preso à conversa.
+    const m = { ...convMeta }; delete m.ai_pinned_flow
+    await supabaseAdmin.from("chat_conversations")
+      .update({ metadata: m }).eq("id", conversationId).eq("tenant_id", tenantId)
+    const flow = await loadStartableFlow(tenantId, pinnedFlowId)
+    if (flow) {
+      const run    = await startFlowRun(tenantId, conversationId, flow) // reseta o run por conversation_id
+      activeFlowId = flow.id
+      flowResult   = await runFlow(flowInput, flow, run)
+    }
+    // Fluxo sumiu/despublicou → flowResult null → cai direto no agente (degrada).
+    // (De propósito NÃO re-tenta o gatilho aqui pra não cair no fluxo de captação
+    //  com filtro de lifecycle, que é justamente o que o pin existe pra evitar.)
+  } else if (existingRun) {
     const flow = await loadFlow(tenantId, existingRun.flow_id)
     if (flow) {
       activeFlowId = flow.id
@@ -244,6 +263,8 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
   const { data: config } = await supabaseAdmin
     .from("studio_config").select("*").eq("tenant_id", tenantId).maybeSingle()
   if (!config || !config.ai_enabled) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "disabled" } }
+  // God mode tirou o módulo? Não acorda o fluxo (mesma regra do dispatcher na entrada).
+  if (!(await hasModule(tenantId, "ai_studio"))) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "module_disabled" } }
 
   const { data: convData } = await supabaseAdmin
     .from("chat_conversations")

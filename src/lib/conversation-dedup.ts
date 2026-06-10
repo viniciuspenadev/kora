@@ -27,6 +27,7 @@
 //  - Toda query com .eq('tenant_id') explícito
 
 import { supabaseAdmin } from "@/lib/supabase"
+import { tenantAiActive } from "@/lib/ai/active"
 
 export interface FindOrReopenInput {
   tenantId:          string
@@ -141,15 +142,52 @@ export async function findOrReopenConversation(
 
   if (resolved) {
     const wasArchived = !!resolved.archived_at
-    // ── Reabre: status → open + clear resolved_at + unarchive se necessário ──
-    //    Stage/lifecycle/won_at/lost_at INTACTOS (decisão de design: manter histórico).
+    const now = new Date().toISOString()
+
+    // ── Política de Atendimento — VÍNCULO no retorno (docs/politica-atendimento.md §7) ──
+    // Default (carteira) → `policy` vazio → update IDÊNTICO ao comportamento de hoje
+    // (sticky). Pool e IA são opt-in por tenant (vínculo 3-way).
+    const { data: cfg } = await supabaseAdmin
+      .from("tenant_config")
+      .select("handoff_binding, reopen_flow_id")
+      .eq("tenant_id", tenantId)
+      .maybeSingle()
+    const binding = (cfg?.handoff_binding as string | undefined) ?? "carteira"
+    const reopenFlowId = (cfg?.reopen_flow_id as string | undefined) ?? null
+    // Vínculo='ai' só devolve pra IA se ela está ATIVA (módulo + ai_enabled). Senão
+    // cai na FILA (humano) — nunca deixa órfão dependendo de uma IA desligada.
+    const aiReturn = binding === "ai" ? await tenantAiActive(tenantId) : false
+    const meta = ((resolved as { metadata?: Record<string, unknown> | null }).metadata) ?? {}
+
+    const policy: Record<string, unknown> = {}
+    if (aiReturn) {
+      // IA tria o retorno: solta o responsável + libera a IA (limpa o marcador).
+      // Se o tenant escolheu um fluxo de retorno, FIXA ele (o run.ts roda exatamente
+      // esse na próxima mensagem — sem passar pelo gatilho do fluxo de captação).
+      policy.assigned_to = null
+      policy.ai_handling = true
+      const m: Record<string, unknown> = { ...meta }
+      delete m.ai_routed
+      if (reopenFlowId) m.ai_pinned_flow = reopenFlowId
+      policy.metadata = m
+    } else if (binding === "pool" || binding === "ai") {
+      // Pool (ou 'ai' com IA inativa → fail-safe): cai na FILA do setor (humano).
+      // Solta o responsável + bloqueia a IA.
+      policy.assigned_to = null
+      policy.ai_handling = false
+      const via = binding === "ai" ? "ai_inactive_reopen" : "pool_reopen"
+      if (!meta.ai_routed) policy.metadata = { ...meta, ai_routed: { at: now, via } }
+    }
+    // carteira (default): nada — mantém assigned_to (sticky). Stage/lifecycle INTACTOS.
+
     const { data: reopened, error: reopenErr } = await supabaseAdmin
       .from("chat_conversations")
       .update({
         status:      "open",
-        updated_at:  new Date().toISOString(),
+        updated_at:  now,
         resolved_at: null,
         ...(wasArchived ? { archived_at: null } : {}),
+        ...policy,
       })
       .eq("id", resolved.id)
       .eq("tenant_id", tenantId)

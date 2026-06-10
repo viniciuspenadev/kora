@@ -50,6 +50,23 @@ export async function loadFlow(tenantId: string, flowId: string): Promise<FlowRo
   return (data as FlowRow | null) ?? null
 }
 
+/**
+ * Carrega um fluxo por id SÓ se estiver publicado + ativo (startable).
+ * Usado pelo "fluxo de retorno" fixado (vínculo='ai'): se o fluxo escolhido foi
+ * despublicado/arquivado, devolve null → o caller degrada (gatilho/agente).
+ */
+export async function loadStartableFlow(tenantId: string, flowId: string): Promise<FlowRow | null> {
+  const { data } = await supabaseAdmin
+    .from("studio_flows")
+    .select(FLOW_SELECT)
+    .eq("tenant_id", tenantId)
+    .eq("id", flowId)
+    .eq("status", "published")
+    .eq("active", true)
+    .maybeSingle()
+  return (data as FlowRow | null) ?? null
+}
+
 const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, variables, call_stack, status"
 
 /** Run ativo (active|waiting) da conversa, se houver. */
