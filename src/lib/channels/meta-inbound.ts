@@ -30,8 +30,10 @@ const MIME_EXT: Record<string, string> = {
   "video/mp4": "mp4", "video/3gpp": "3gp",
   "application/pdf": "pdf",
 }
-const MEDIA_LABEL: Record<string, string> = {
+const PREVIEW_LABEL: Record<string, string> = {
   image: "📷 Imagem", audio: "🎤 Áudio", video: "📹 Vídeo", document: "📎 Documento",
+  sticker: "Sticker", location: "📍 Localização", contact: "👤 Contato",
+  reaction: "Reação", poll: "📊 Enquete", interactive: "Resposta",
 }
 type MediaType = "image" | "audio" | "video" | "document"
 
@@ -82,12 +84,63 @@ interface MetaTemplateValue {
   new_category?:              string   // alias usado em algumas versões do payload
 }
 
+interface MetaMediaAudio extends MetaMedia { voice?: boolean }
+interface MetaLocation { latitude?: number; longitude?: number; name?: string; address?: string; url?: string }
+interface MetaContactPayload {
+  name?:   { formatted_name?: string; first_name?: string; last_name?: string }
+  phones?: { phone?: string; wa_id?: string; type?: string }[]
+  emails?: { email?: string; type?: string }[]
+  org?:    { company?: string }
+}
+interface MetaReaction { message_id?: string; emoji?: string }
+interface MetaInteractive {
+  type?:         string  // button_reply | list_reply | nfm_reply
+  button_reply?: { id?: string; title?: string }
+  list_reply?:   { id?: string; title?: string; description?: string }
+  nfm_reply?:    { name?: string; body?: string; response_json?: string }
+}
+interface MetaButton { text?: string; payload?: string }  // tap em quick-reply de template
+interface MetaOrder {
+  catalog_id?:    string
+  text?:          string
+  product_items?: { product_retailer_id?: string; quantity?: number; item_price?: number; currency?: string }[]
+}
+interface MetaSystem { body?: string; type?: string; wa_id?: string }
+/** Bloco de citação/encaminhamento que a Cloud API anexa a qualquer mensagem. */
+interface MetaContext {
+  from?:                 string
+  id?:                   string   // whatsapp_msg_id da mensagem citada
+  forwarded?:            boolean
+  frequently_forwarded?: boolean
+}
+interface MetaError { code?: number; title?: string; message?: string }
+
 interface MetaMessage {
   from: string; id: string; type: string
   timestamp?: string  // epoch (segundos) — relógio da Meta; âncora da janela de 24h
   text?: { body?: string }
-  image?: MetaMedia; audio?: MetaMedia; video?: MetaMedia; document?: MetaMedia
-  referral?: MetaReferral
+  image?: MetaMedia; audio?: MetaMediaAudio; video?: MetaMedia; document?: MetaMedia; sticker?: MetaMedia
+  location?:    MetaLocation
+  contacts?:    MetaContactPayload[]
+  reaction?:    MetaReaction
+  interactive?: MetaInteractive
+  button?:      MetaButton
+  order?:       MetaOrder
+  system?:      MetaSystem
+  context?:     MetaContext
+  errors?:      MetaError[]
+  referral?:    MetaReferral
+}
+
+/** Shape canônico do conteúdo extraído de um inbound da Cloud API (= contrato do inbox). */
+interface MetaExtract {
+  contentType:  string
+  content:      string | null
+  download?:    { obj: MetaMedia; storageType: MediaType }
+  fileName?:    string | null
+  metadata:     Record<string, unknown>
+  /** Texto que alimenta keyword/IA/menu (corpo do texto OU título do botão/lista). */
+  routableText: string | null
 }
 
 /**
@@ -127,6 +180,158 @@ function extractMetaReferral(msg: MetaMessage): ExternalAdReply | null {
 function metaTsToIso(ts?: string): string {
   const n = Number(ts)
   return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString() : new Date().toISOString()
+}
+
+/** Monta um vCard mínimo a partir do contato estruturado da Cloud API (o inbox lê `vcard`). */
+function buildVCard(c: MetaContactPayload): string {
+  const name  = c.name?.formatted_name || [c.name?.first_name, c.name?.last_name].filter(Boolean).join(" ") || "Contato"
+  const tel   = c.phones?.[0]?.phone
+  const email = c.emails?.[0]?.email
+  const org   = c.org?.company
+  return [
+    "BEGIN:VCARD", "VERSION:3.0", `FN:${name}`,
+    org ? `ORG:${org}` : null,
+    tel ? `TEL;type=CELL:${tel}` : null,
+    email ? `EMAIL:${email}` : null,
+    "END:VCARD",
+  ].filter(Boolean).join("\n")
+}
+
+/**
+ * Decodifica QUALQUER tipo de inbound da Cloud API pro shape canônico do inbox
+ * (espelha o `extractMessageContent` do webhook Evolution). O que não renderiza
+ * vira `unsupported` com `unsupported_type` — nunca quebra, nunca dump cru.
+ */
+function extractMetaContent(msg: MetaMessage): MetaExtract {
+  const meta: Record<string, unknown> = {}
+  // Citação / encaminhamento — vale pra qualquer tipo de mensagem.
+  if (msg.context?.id) {
+    meta.quoted = { msg_id: msg.context.id, participant: msg.context.from ?? null, kind: null, preview: null }
+  }
+  if (msg.context?.forwarded || msg.context?.frequently_forwarded) meta.forwarded = true
+  if (msg.errors?.length) meta.errors = msg.errors
+
+  switch (msg.type) {
+    case "text":
+      return { contentType: "text", content: msg.text?.body ?? "", metadata: meta, routableText: msg.text?.body ?? null }
+
+    case "image": case "video": case "document": {
+      const obj = msg[msg.type] as MetaMedia | undefined
+      return {
+        contentType: msg.type, content: obj?.caption ?? null,
+        download: obj ? { obj, storageType: msg.type } : undefined,
+        fileName: obj?.filename ?? null, metadata: meta, routableText: obj?.caption ?? null,
+      }
+    }
+    case "audio": {
+      const obj = msg.audio
+      if (obj?.voice) meta.voice = true
+      return {
+        contentType: "audio", content: null,
+        download: obj ? { obj, storageType: "audio" } : undefined,
+        metadata: meta, routableText: null,
+      }
+    }
+    case "sticker": {
+      const obj = msg.sticker
+      return {
+        contentType: "sticker", content: null,
+        download: obj ? { obj, storageType: "image" } : undefined,  // webp baixa como imagem
+        metadata: meta, routableText: null,
+      }
+    }
+
+    case "location": {
+      const l = msg.location
+      if (l) { meta.location_name = l.name ?? null; meta.location_address = l.address ?? null }
+      return {
+        contentType: "location",
+        content: l ? `${l.latitude ?? 0},${l.longitude ?? 0}` : null,
+        metadata: meta, routableText: null,
+      }
+    }
+
+    case "contacts": {
+      const list = msg.contacts ?? []
+      meta.contacts = list.map((c) => ({ name: c.name?.formatted_name ?? "Contato", vcard: buildVCard(c) }))
+      const content = list.length === 1 ? (list[0].name?.formatted_name ?? "Contato") : `${list.length} contatos`
+      return { contentType: "contact", content, metadata: meta, routableText: null }
+    }
+
+    case "reaction": {
+      meta.reacted_to_id = msg.reaction?.message_id ?? null
+      return { contentType: "reaction", content: msg.reaction?.emoji ?? "", metadata: meta, routableText: null }
+    }
+
+    case "interactive": {
+      const it = msg.interactive
+      if (it?.button_reply) {
+        meta.interactive_kind = "button"; meta.interactive_id = it.button_reply.id ?? null
+        const t = it.button_reply.title ?? null
+        return { contentType: "interactive", content: t, metadata: meta, routableText: t }
+      }
+      if (it?.list_reply) {
+        meta.interactive_kind = "list"; meta.interactive_id = it.list_reply.id ?? null
+        const t = it.list_reply.title ?? null
+        return { contentType: "interactive", content: t, metadata: meta, routableText: t }
+      }
+      if (it?.nfm_reply) {
+        meta.interactive_kind = "interactive"; meta.nfm_response = it.nfm_reply.response_json ?? null
+        return { contentType: "interactive", content: it.nfm_reply.body || it.nfm_reply.name || "Resposta de formulário", metadata: meta, routableText: null }
+      }
+      meta.interactive_kind = "interactive"
+      return { contentType: "interactive", content: "Resposta interativa", metadata: meta, routableText: null }
+    }
+
+    case "button": {  // tap num botão de QUICK_REPLY de template aprovado
+      meta.interactive_kind = "template_button"; meta.interactive_id = msg.button?.payload ?? null
+      const t = msg.button?.text ?? null
+      return { contentType: "interactive", content: t, metadata: meta, routableText: t }
+    }
+
+    case "order": {  // comércio — fora de escopo no Kora: marcador gracioso
+      meta.unsupported_type = "order"; meta.order = msg.order
+      const n = msg.order?.product_items?.length ?? 0
+      return {
+        contentType: "unsupported",
+        content: msg.order?.text || (n ? `🛒 Pedido com ${n} ${n === 1 ? "item" : "itens"}` : "🛒 Pedido recebido"),
+        metadata: meta, routableText: null,
+      }
+    }
+
+    case "system": {
+      meta.unsupported_type = "system"
+      return { contentType: "unsupported", content: msg.system?.body ?? "Evento do sistema", metadata: meta, routableText: null }
+    }
+
+    default: {  // unknown / unsupported / request_welcome / etc.
+      meta.unsupported_type = msg.type ?? "unknown"
+      const errTitle = msg.errors?.[0]?.title
+      return {
+        contentType: "unsupported",
+        content: errTitle ? `[${errTitle}]` : `[mensagem do tipo "${msg.type}" não suportada]`,
+        metadata: meta, routableText: null,
+      }
+    }
+  }
+}
+
+/**
+ * Resolve o preview da mensagem citada (a Cloud API só manda o id). Best-effort:
+ * procura pelo whatsapp_msg_id já gravado — assim o card "em resposta a" mostra texto.
+ */
+async function resolveQuotedPreview(
+  tenantId: string, quotedMsgId: string,
+): Promise<{ msg_id: string; preview: string; kind: string } | null> {
+  const { data } = await supabaseAdmin
+    .from("chat_messages")
+    .select("content, content_type")
+    .eq("tenant_id", tenantId).eq("whatsapp_msg_id", quotedMsgId)
+    .maybeSingle()
+  if (!data) return null
+  const kind    = (data.content_type as string) ?? "text"
+  const preview = ((data.content as string)?.trim()) || PREVIEW_LABEL[kind] || "Mensagem"
+  return { msg_id: quotedMsgId, preview: preview.slice(0, 200), kind }
 }
 
 export async function processMetaWebhook(body: unknown): Promise<void> {
@@ -189,46 +394,42 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   // CTWA — atribuição de anúncio (formato rico da Cloud API).
   const adReply = extractMetaReferral(msg)
 
-  // Conteúdo + mídia
-  let content: string | null = null
-  let contentType = "text"
-  let mediaUrl: string | null = null
-  let mediaMime: string | null = null
-  let mediaFileName: string | null = null
-  const metadata: Record<string, unknown> = {}
+  // Conteúdo — decodifica QUALQUER tipo pro shape canônico do inbox.
+  const ext = extractMetaContent(msg)
+  const contentType = ext.contentType
+  const content     = ext.content
+  const metadata: Record<string, unknown> = { ...ext.metadata }
   if (adReply) metadata.external_ad_reply = adReply
   // Rede de segurança temporária: guarda o referral CRU pra validar o mapeamento
   // contra o 1º lead de anúncio real no número oficial (campos da Meta não
   // diferenciados contra payload real ainda). Remover após confirmar o mapeamento.
   if (msg.referral) metadata.referral_raw = msg.referral
 
-  if (msg.type === "text") {
-    content = msg.text?.body ?? ""
-  } else if (msg.type === "image" || msg.type === "audio" || msg.type === "video" || msg.type === "document") {
-    const mt = msg.type as MediaType
-    const mediaObj = msg[mt] as MetaMedia | undefined
-    contentType = mt
-    content = mediaObj?.caption ?? null
-    mediaFileName = mediaObj?.filename ?? null
-    if (mediaObj) {
-      const stored = await storeMedia(instance, conv.id, mediaObj, mt, mediaFileName)
-      if ("error" in stored) {
-        metadata.media_error = stored.error
-        metadata.media_error_at = new Date().toISOString()
-      } else {
-        mediaUrl = stored.signedUrl
-        mediaMime = stored.mimeType ?? mediaObj.mime_type ?? null
-        metadata.storage_path = stored.storagePath
-      }
+  // Mídia (image/audio/video/document/sticker) → baixa da Meta + guarda no storage.
+  let mediaUrl: string | null = null
+  let mediaMime: string | null = null
+  const mediaFileName: string | null = ext.fileName ?? null
+  if (ext.download) {
+    const stored = await storeMedia(instance, conv.id, ext.download.obj, ext.download.storageType, mediaFileName)
+    if ("error" in stored) {
+      metadata.media_error = stored.error
+      metadata.media_error_at = new Date().toISOString()
+    } else {
+      mediaUrl = stored.signedUrl
+      mediaMime = stored.mimeType ?? ext.download.obj.mime_type ?? null
+      metadata.storage_path = stored.storagePath
     }
-  } else {
-    // location/contacts/sticker/reaction/etc — registra como texto informativo (v1)
-    content = `[mensagem do tipo "${msg.type}" não suportada]`
+  }
+
+  // Citação: a Cloud API só manda o id citado — resolvemos o preview pro card "em resposta a".
+  if (msg.context?.id) {
+    const q = await resolveQuotedPreview(instance.tenant_id, msg.context.id)
+    if (q) metadata.quoted = { ...(metadata.quoted as Record<string, unknown> ?? {}), ...q }
   }
 
   const preview = content && content.trim().length > 0
     ? content.substring(0, 100)
-    : (MEDIA_LABEL[contentType] ?? "Mensagem")
+    : (PREVIEW_LABEL[contentType] ?? "Mensagem")
 
   const { error: insErr } = await supabaseAdmin.from("chat_messages").insert({
     conversation_id: conv.id,
@@ -247,6 +448,9 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   })
   // 23505 = duplicata (Meta reenvia). Ignora silenciosamente.
   if (insErr) { if (insErr.code !== "23505") console.error("[meta-webhook] insert msg:", insErr.message); return }
+
+  // Read receipt (✓✓ azul pro cliente) — best-effort, nunca falha o webhook.
+  after(async () => { try { await getProvider(instance).markAsRead?.(msg.id) } catch { /* noop */ } })
 
   const wasResolved = conv.status === "resolved"
   await supabaseAdmin.from("chat_conversations").update({
@@ -308,22 +512,30 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     after(async () => { try { await assignNextAgent(instance.tenant_id, conv.id) } catch (e) { console.error("[meta auto-assign]", e) } })
   }
 
+  // Texto "roteável": corpo do texto OU o título do botão/lista tocado. É ele
+  // que acorda a cadeia (keyword/IA/menu) — uma resposta interativa precisa
+  // re-entrar no runtime do flow tanto quanto uma mensagem de texto.
+  const routable = ext.routableText
+
   // Cadeia: keyword (sync) → IA (debounce) → automações fixas (fallback)
   let kwMatched = false
-  if (content && msg.type === "text") {
+  if (routable && msg.type === "text") {  // keyword só em texto puro (paridade c/ Evolution)
     try {
-      kwMatched = await evaluateKeywordTriggers({ tenantId: instance.tenant_id, conversationId: conv.id, text: content, instance })
+      kwMatched = await evaluateKeywordTriggers({ tenantId: instance.tenant_id, conversationId: conv.id, text: routable, instance })
     } catch (e) { console.error("[meta keyword]", e) }
   }
   if (!kwMatched) {
     const convId = conv.id
-    const text = content
+    const text = routable
+    const msgId = msg.id
     after(async () => {
       try {
-        if (text && msg.type === "text") {
+        if (text) {
           const baseline = await latestInboundAt(convId)
           await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
           if ((await latestInboundAt(convId)) !== baseline) return
+          // "digitando…" honesto: só quando vamos de fato gerar resposta.
+          try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ }
           const ai = await routeAutomationTurn({ tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance })
           if (ai.status === "responded" || ai.status === "routed") return
           if (ai.status === "skipped" && ai.reason === "already_routed") return

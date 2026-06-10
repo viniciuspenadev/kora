@@ -145,40 +145,44 @@ export async function findOrReopenConversation(
     const now = new Date().toISOString()
 
     // ── Política de Atendimento — VÍNCULO no retorno (docs/politica-atendimento.md §7) ──
-    // Default (carteira) → `policy` vazio → update IDÊNTICO ao comportamento de hoje
-    // (sticky). Pool e IA são opt-in por tenant (vínculo 3-way).
+    // VÍNCULO (carteira|pool) e "IA atende o retorno" são ORTOGONAIS. Default
+    // (carteira + IA off) → `policy` vazio → update IDÊNTICO ao de hoje (sticky).
     const { data: cfg } = await supabaseAdmin
       .from("tenant_config")
-      .select("handoff_binding, reopen_flow_id")
+      .select("handoff_binding, reopen_to_ai, reopen_flow_id")
       .eq("tenant_id", tenantId)
       .maybeSingle()
-    const binding = (cfg?.handoff_binding as string | undefined) ?? "carteira"
+    const rawBinding = (cfg?.handoff_binding as string | undefined) ?? "carteira"
+    const legacyAi = rawBinding === "ai"                   // 3-way antigo = ownerless + IA-on
+    const binding = legacyAi ? "pool" : rawBinding         // carteira | pool
     const reopenFlowId = (cfg?.reopen_flow_id as string | undefined) ?? null
-    // Vínculo='ai' só devolve pra IA se ela está ATIVA (módulo + ai_enabled). Senão
-    // cai na FILA (humano) — nunca deixa órfão dependendo de uma IA desligada.
-    const aiReturn = binding === "ai" ? await tenantAiActive(tenantId) : false
+    // IA-no-retorno só vale se ela está ATIVA (módulo + ai_enabled). Senão cai no
+    // vínculo humano — nunca deixa órfão dependendo de uma IA desligada.
+    const aiFirst = (cfg?.reopen_to_ai || legacyAi) ? await tenantAiActive(tenantId) : false
+    const prevOwner = ((resolved as { assigned_to?: string | null }).assigned_to) ?? null
     const meta = ((resolved as { metadata?: Record<string, unknown> | null }).metadata) ?? {}
 
     const policy: Record<string, unknown> = {}
-    if (aiReturn) {
-      // IA tria o retorno: solta o responsável + libera a IA (limpa o marcador).
-      // Se o tenant escolheu um fluxo de retorno, FIXA ele (o run.ts roda exatamente
-      // esse na próxima mensagem — sem passar pelo gatilho do fluxo de captação).
+    if (aiFirst) {
+      // IA tria o retorno OWNERLESS (regra de ouro intacta — não fala por cima de
+      // humano ativo). Fixa o fluxo escolhido (run.ts roda esse, sem passar pelo
+      // gatilho do fluxo de captação). Carteira: LEMBRA o dono pra o runtime
+      // devolver ao fim do fluxo (finishRun → restoreReopenOwner).
       policy.assigned_to = null
       policy.ai_handling = true
       const m: Record<string, unknown> = { ...meta }
       delete m.ai_routed
       if (reopenFlowId) m.ai_pinned_flow = reopenFlowId
+      if (binding === "carteira" && prevOwner) m.reopen_owner = prevOwner
+      else delete m.reopen_owner
       policy.metadata = m
-    } else if (binding === "pool" || binding === "ai") {
-      // Pool (ou 'ai' com IA inativa → fail-safe): cai na FILA do setor (humano).
-      // Solta o responsável + bloqueia a IA.
+    } else if (binding === "pool") {
+      // Pool sem IA: cai na FILA do setor (humano). Solta o dono + bloqueia a IA.
       policy.assigned_to = null
       policy.ai_handling = false
-      const via = binding === "ai" ? "ai_inactive_reopen" : "pool_reopen"
-      if (!meta.ai_routed) policy.metadata = { ...meta, ai_routed: { at: now, via } }
+      if (!meta.ai_routed) policy.metadata = { ...meta, ai_routed: { at: now, via: "pool_reopen" } }
     }
-    // carteira (default): nada — mantém assigned_to (sticky). Stage/lifecycle INTACTOS.
+    // carteira sem IA: nada — mantém assigned_to (sticky). Stage/lifecycle INTACTOS.
 
     const { data: reopened, error: reopenErr } = await supabaseAdmin
       .from("chat_conversations")

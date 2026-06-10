@@ -169,6 +169,52 @@ async function finishRun(runId: string): Promise<void> {
     .eq("id", runId)
 }
 
+// Vínculo 'carteira' + IA-no-retorno: ao FIM REAL do fluxo (único ponto de término
+// — caminhos que encaminham retornam ANTES de chamar finishRun), devolve a conversa
+// ao MESMO atendente que era dono antes do retorno (lembrado em metadata.reopen_owner
+// pelo conversation-dedup). A IA atendeu OWNERLESS (regra de ouro intacta); aqui ela
+// sai de cena e o dono volta. Se um humano assumiu no meio, respeita (não sobrescreve).
+async function restoreReopenOwner(ctx: ExecCtx): Promise<void> {
+  if (ctx.dryRun) return
+  const snap = (ctx.conversationMetadata ?? {}) as Record<string, unknown>
+  if (typeof snap.reopen_owner !== "string") return
+
+  // Re-lê o estado atual pra não clobberar metadata escrita durante o fluxo.
+  const { data } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("assigned_to, metadata")
+    .eq("id", ctx.conversationId)
+    .eq("tenant_id", ctx.tenantId)
+    .maybeSingle()
+  const cur = (data?.metadata as Record<string, unknown> | null) ?? {}
+  const owner = typeof cur.reopen_owner === "string" ? cur.reopen_owner : snap.reopen_owner
+  const m: Record<string, unknown> = { ...cur }
+  delete m.reopen_owner
+  delete m.ai_pinned_flow
+
+  const upd: Record<string, unknown> = { metadata: m, updated_at: new Date().toISOString() }
+  const restore = !data?.assigned_to       // ninguém assumiu no meio
+  if (restore) { upd.assigned_to = owner; upd.ai_handling = false }
+
+  await supabaseAdmin
+    .from("chat_conversations")
+    .update(upd)
+    .eq("id", ctx.conversationId)
+    .eq("tenant_id", ctx.tenantId)
+
+  if (restore) {
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: ctx.conversationId,
+      tenant_id:       ctx.tenantId,
+      sender_type:     "system",
+      content_type:    "text",
+      content:         "🔁 IA concluiu o retorno — conversa devolvida ao atendente responsável.",
+      status:          "delivered",
+      is_private_note: true,
+    })
+  }
+}
+
 // ── execução ────────────────────────────────────────────────────
 export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunRow): Promise<FlowResult> {
   const { ctx } = input
@@ -435,6 +481,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           }
         }
         await finishRun(run.id)
+        await restoreReopenOwner(ctx)   // fim real do fluxo (raiz) → devolve o dono da carteira
         return done()
       }
       default: {
@@ -446,5 +493,6 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
 
   // Fim implícito (sem próximo nó ou estourou hops).
   await finishRun(run.id)
+  await restoreReopenOwner(ctx)   // fim real do fluxo → devolve o dono da carteira
   return done()
 }

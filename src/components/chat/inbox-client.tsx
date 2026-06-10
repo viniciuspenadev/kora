@@ -16,6 +16,10 @@ import {
   getUnreadTotal,
   sendMessage,
   sendChatMedia,
+  reactToMessage,
+  sendLocationMessage,
+  sendContactMessage,
+  sendStickerMessage,
   archiveConversation,
   unarchiveConversation,
   setConversationFlagged,
@@ -167,6 +171,8 @@ export function InboxClient({
   const [hasMoreOlder, setHasMoreOlder]         = useState(false)
   const [loadingOlder, setLoadingOlder]         = useState(false)
   const [loadingMsg, setLoadingMsg]             = useState(false)
+  // Responder/citar: mensagem-alvo (id = whatsapp_msg_id) que o composer exibe.
+  const [replyTarget, setReplyTarget]           = useState<{ id: string; preview: string; kind: string | null } | null>(null)
   const [, startTransition]                     = useTransition()
 
   // ── Refs ────────────────────────────────────────────────────
@@ -180,11 +186,22 @@ export function InboxClient({
   // sem entrar nas deps do effect (senão re-subscreveria a cada mudança de filtro).
   const pollFnRef       = useRef<() => void>(() => {})
   const wasDownRef      = useRef(false)
+  const replyTargetRef  = useRef<{ id: string; preview: string; kind: string | null } | null>(null)
   const searchParams    = useSearchParams()
   const router          = useRouter()
   const pathname        = usePathname()
 
   activeIdRef.current = activeId
+  replyTargetRef.current = replyTarget
+
+  // Trocar de conversa cancela qualquer citação pendente (padrão derived-state
+  // do React: ajusta o estado durante o render quando a conversa ativa muda —
+  // evita o setState-em-effect e o frame com a barra de citação da conversa errada).
+  const replyConvRef = useRef(activeId)
+  if (replyConvRef.current !== activeId) {
+    replyConvRef.current = activeId
+    if (replyTarget) setReplyTarget(null)
+  }
 
   // Snapshot dos filtros pro handler do Realtime (canal não re-subscreve a cada
   // mudança de filtro — lê daqui). Atualizado a cada render.
@@ -660,8 +677,12 @@ export function InboxClient({
     const convId = activeIdRef.current
     if (!convId) return
 
+    // Citação ativa (nota privada não cita pro WhatsApp).
+    const reply = isPrivate ? null : replyTargetRef.current
     const temp = makeTempMessage({ content, contentType: "text", isPrivateNote: isPrivate })
+    if (reply) temp.metadata = { quoted: { msg_id: reply.id, preview: reply.preview, kind: reply.kind, participant: null } }
     setActiveMessages((prev) => [...prev, temp])
+    if (reply) setReplyTarget(null)
 
     // Reordena lista: conv enviada vai pro topo
     setConversations((prev) => {
@@ -674,7 +695,7 @@ export function InboxClient({
     })
 
     try {
-      const result = await sendMessage(convId, content, isPrivate)
+      const result = await sendMessage(convId, content, isPrivate, reply?.id)
       setActiveMessages((prev) =>
         prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m)
       )
@@ -698,6 +719,7 @@ export function InboxClient({
       : mimeType.startsWith("video/") ? "video"
       : "document"
 
+    const reply = replyTargetRef.current
     const temp = makeTempMessage({
       content:       caption || null,
       contentType:   ctype,
@@ -706,7 +728,9 @@ export function InboxClient({
       mediaFileName: file.name,
     })
     if (isVoiceNote) temp.metadata = { ...temp.metadata, is_voice_note: true }
+    if (reply) temp.metadata = { ...temp.metadata, quoted: { msg_id: reply.id, preview: reply.preview, kind: reply.kind, participant: null } }
     setActiveMessages((prev) => [...prev, temp])
+    if (reply) setReplyTarget(null)
 
     setConversations((prev) => {
       const preview = caption || ({ image: "📷 Imagem", audio: isVoiceNote ? "🎤 Mensagem de voz" : "🎤 Áudio", video: "📹 Vídeo", document: "📎 Documento" } as Record<string, string>)[ctype]
@@ -723,6 +747,7 @@ export function InboxClient({
       fd.append("file", file)
       if (caption) fd.append("caption", caption)
       if (isVoiceNote) fd.append("ptt", "1")
+      if (reply) fd.append("replyTo", reply.id)
       const result = await sendChatMedia(convId, fd)
       if ("error" in result) {
         // Falha tratada (ex: formato não aceito pelo WhatsApp Oficial) — bolha
@@ -758,6 +783,100 @@ export function InboxClient({
     (file: File) => sendMediaInternal(file, "", true),
     [sendMediaInternal],
   )
+
+  // ── Citar / reagir / localização / contato ──────────────────
+  const PREVIEW_BY_KIND: Record<string, string> = {
+    image: "📷 Imagem", video: "🎥 Vídeo", audio: "🎧 Áudio", document: "📎 Documento",
+    sticker: "Sticker", location: "📍 Localização", contact: "👤 Contato",
+  }
+
+  const handleReply = useCallback((msg: ChatMessage) => {
+    if (!msg.whatsapp_msg_id) { toast.error("Aguarde a entrega da mensagem para responder."); return }
+    const kind = msg.content_type
+    const preview = (msg.content?.trim()) || PREVIEW_BY_KIND[kind] || "Mensagem"
+    setReplyTarget({ id: msg.whatsapp_msg_id, preview: preview.slice(0, 200), kind })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleReact = useCallback(async (msg: ChatMessage, emoji: string) => {
+    const convId = activeIdRef.current
+    if (!convId || !msg.whatsapp_msg_id) { toast.error("Não dá pra reagir a essa mensagem ainda."); return }
+    const fromMe = msg.sender_type !== "contact"
+    const temp = makeTempMessage({ content: emoji, contentType: "reaction" })
+    temp.metadata = { reacted_to_id: msg.whatsapp_msg_id }
+    setActiveMessages((prev) => [...prev, temp])
+    const result = await reactToMessage(convId, msg.whatsapp_msg_id, emoji, fromMe)
+    if ("error" in result) {
+      setActiveMessages((prev) => prev.filter((m) => m.id !== temp.id))
+      toast.error(result.error)
+      return
+    }
+    setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+  }, [makeTempMessage])
+
+  const handleSendLocation = useCallback(async (loc: { latitude: number; longitude: number; name?: string; address?: string }) => {
+    const convId = activeIdRef.current
+    if (!convId) return
+    const temp = makeTempMessage({ content: `${loc.latitude},${loc.longitude}`, contentType: "location" })
+    temp.metadata = { location_name: loc.name ?? null, location_address: loc.address ?? null }
+    setActiveMessages((prev) => [...prev, temp])
+    setConversations((prev) => prev.map((c) =>
+      c.id === convId ? { ...c, last_message_at: temp.created_at, last_message_preview: "📍 Localização", last_message_dir: "out" as const } : c,
+    ).sort(sortByLastMessage))
+    const result = await sendLocationMessage(convId, loc)
+    if ("error" in result) {
+      setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m))
+      toast.error(result.error)
+      return
+    }
+    setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+  }, [makeTempMessage])
+
+  const handleSendContact = useCallback(async (card: { name: string; phone: string }) => {
+    const convId = activeIdRef.current
+    if (!convId) return
+    const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${card.name}\nTEL;type=CELL:${card.phone}\nEND:VCARD`
+    const temp = makeTempMessage({ content: card.name, contentType: "contact" })
+    temp.metadata = { contacts: [{ name: card.name, vcard }] }
+    setActiveMessages((prev) => [...prev, temp])
+    setConversations((prev) => prev.map((c) =>
+      c.id === convId ? { ...c, last_message_at: temp.created_at, last_message_preview: "👤 Contato", last_message_dir: "out" as const } : c,
+    ).sort(sortByLastMessage))
+    const result = await sendContactMessage(convId, card)
+    if ("error" in result) {
+      setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m))
+      toast.error(result.error)
+      return
+    }
+    setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+  }, [makeTempMessage])
+
+  const handleSendSticker = useCallback(async (file: File) => {
+    const convId = activeIdRef.current
+    if (!convId) return
+    const blobUrl = URL.createObjectURL(file)
+    const temp = makeTempMessage({ content: null, contentType: "sticker", mediaUrl: blobUrl, mediaMime: "image/webp" })
+    setActiveMessages((prev) => [...prev, temp])
+    setConversations((prev) => prev.map((c) =>
+      c.id === convId ? { ...c, last_message_at: temp.created_at, last_message_preview: "Figurinha", last_message_dir: "out" as const } : c,
+    ).sort(sortByLastMessage))
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      const result = await sendStickerMessage(convId, fd)
+      if ("error" in result) {
+        URL.revokeObjectURL(blobUrl)
+        setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m))
+        toast.error(result.error)
+        return
+      }
+      setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+    } catch {
+      URL.revokeObjectURL(blobUrl)
+      setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m))
+      toast.error("Não consegui enviar a figurinha.")
+    }
+  }, [makeTempMessage])
 
   const handleStatusChange = useCallback((status: string) => {
     if (!activeId) return
@@ -1027,6 +1146,13 @@ export function InboxClient({
                   onSendText={handleSendText}
                   onSendMedia={handleSendMedia}
                   onSendVoice={handleSendVoice}
+                  onReply={handleReply}
+                  onReact={handleReact}
+                  onSendLocation={handleSendLocation}
+                  onSendContact={handleSendContact}
+                  onSendSticker={handleSendSticker}
+                  replyTarget={replyTarget}
+                  onCancelReply={() => setReplyTarget(null)}
                   onArchiveToggle={handleArchiveToggle}
                   onBack={() => { setActiveId(null); setActiveMessages([]); setContactSheetOpen(false) }}
                   onOpenContact={() => setContactSheetOpen(true)}

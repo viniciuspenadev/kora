@@ -1,11 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import {
   Check, CheckCheck, Clock, AlertCircle, Lock, FileText, MapPin, Mic, Video,
   Image as ImageIcon, Download, X, ImageOff, Reply, Smartphone,
   Megaphone, ExternalLink, Eye, EyeOff, Trash2, Pencil, MessageSquareWarning,
-  User as UserIcon, ListChecks, Square, Sparkles, ArrowRight,
+  User as UserIcon, ListChecks, Square, Sparkles, ArrowRight, Smile, Forward,
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
@@ -44,6 +44,9 @@ interface MessageMeta {
   interactive_id?:    string
   unsupported_type?:  string
   live_location?:     boolean
+  location_name?:     string | null
+  location_address?:  string | null
+  forwarded?:         boolean
   // IA / Flow Builder
   automation?:        "flow" | "ai" | "ai_note" | string
   ai_generated?:      boolean
@@ -57,6 +60,67 @@ interface Props {
   agentName?:   string | null
   /** Em conversas de grupo: nome ou número formatado do participante remetente. */
   senderLabel?: string | null
+  /** Responder/citar esta mensagem. */
+  onReply?:     (msg: ChatMessage) => void
+  /** Reagir a esta mensagem com um emoji. */
+  onReact?:     (msg: ChatMessage, emoji: string) => void
+  /** Reações que colam NESTA bolha (resolvidas pelo ChatPanel por whatsapp_msg_id). */
+  reactions?:   { emoji: string; fromAgent: boolean }[]
+}
+
+const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
+
+/** Toolbar que aparece no hover da bolha: reagir (popover rápido) + responder. */
+function HoverActions({ message, onReply, onReact }: {
+  message: ChatMessage
+  onReply?: (m: ChatMessage) => void
+  onReact?: (m: ChatMessage, e: string) => void
+}) {
+  const [showReact, setShowReact] = useState(false)
+  if (!onReply && !onReact) return null
+  return (
+    <div className="relative shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      {onReact && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowReact((v) => !v)}
+            title="Reagir"
+            className="size-7 rounded-full text-slate-400 hover:text-amber-500 hover:bg-slate-100 inline-flex items-center justify-center transition-colors"
+          >
+            <Smile className="size-4" />
+          </button>
+          {showReact && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setShowReact(false)} />
+              <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-20 flex items-center gap-0.5 rounded-full bg-white border border-slate-200 shadow-md px-1.5 py-1">
+                {QUICK_REACTIONS.map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    onClick={() => { onReact(message, e); setShowReact(false) }}
+                    className="size-7 rounded-full hover:bg-slate-100 text-lg leading-none inline-flex items-center justify-center transition-transform hover:scale-110"
+                  >
+                    {e}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+      {onReply && (
+        <button
+          type="button"
+          onClick={() => onReply(message)}
+          title="Responder"
+          className="size-7 rounded-full text-slate-400 hover:text-primary-600 hover:bg-slate-100 inline-flex items-center justify-center transition-colors"
+        >
+          <Reply className="size-4" />
+        </button>
+      )}
+    </div>
+  )
 }
 
 function scrollToQuoted(msgId: string) {
@@ -68,12 +132,20 @@ function scrollToQuoted(msgId: string) {
   setTimeout(() => el.classList.remove("ring-2", "ring-primary", "ring-offset-2"), 1600)
 }
 
-export function MessageBubble({ message, agentName, senderLabel }: Props) {
+export function MessageBubble({ message, agentName, senderLabel, onReply, onReact, reactions }: Props) {
   const isIncoming = message.sender_type === "contact"
   const isSystem   = message.sender_type === "system"
   const isNote     = message.is_private_note
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const [imageBroken, setImageBroken]   = useState(false)
+  // Mobile: long-press abre o menu de ações (toque não tem hover).
+  const [touchActions, setTouchActions] = useState(false)
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const startPress = (e: React.PointerEvent) => {
+    if (e.pointerType !== "touch" || (!onReply && !onReact)) return
+    pressTimer.current = setTimeout(() => setTouchActions(true), 450)
+  }
+  const endPress = () => { if (pressTimer.current) { clearTimeout(pressTimer.current); pressTimer.current = null } }
 
   const time = new Date(message.created_at).toLocaleTimeString("pt-BR", {
     hour: "2-digit",
@@ -228,6 +300,10 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
     )
   }
 
+  // Reações NÃO são entradas próprias da timeline — colam na bolha-alvo como
+  // overlay (resolvidas no ChatPanel). Aqui, defensivo: nunca renderiza solta.
+  if (message.content_type === "reaction") return null
+
   // ── Tipo não suportado (fallback robusto) ──────────────────
   if (message.content_type === "unsupported") {
     return (
@@ -252,16 +328,49 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
     )
   }
 
+  const hasReactions = !!reactions && reactions.length > 0
   return (
-    <div className={`flex px-4 py-0.5 ${isIncoming ? "justify-start" : "justify-end"}`}>
+    <div className={`group flex items-center gap-1 px-4 py-0.5 ${hasReactions ? "mb-3" : ""} ${isIncoming ? "justify-start" : "justify-end"}`}>
+      {!isIncoming && <HoverActions message={message} onReply={onReply} onReact={onReact} />}
       <div
         data-wa-id={message.whatsapp_msg_id ?? undefined}
-        className={`max-w-[75%] rounded-2xl px-4 py-2.5 transition-shadow ${
+        onPointerDown={startPress}
+        onPointerUp={endPress}
+        onPointerLeave={endPress}
+        onPointerCancel={endPress}
+        className={`relative max-w-[75%] rounded-2xl px-4 py-2.5 transition-shadow ${
           isIncoming
             ? "bg-white border border-slate-200 rounded-bl-md shadow-sm"
             : "bg-primary-100 text-slate-900 border border-primary-200/60 rounded-br-md shadow-sm"
         }`}
       >
+        {/* Long-press (mobile): mesmas ações do hover, com alvos de toque maiores. */}
+        {touchActions && (onReply || onReact) && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={() => setTouchActions(false)} />
+            <div className={`absolute -top-11 ${isIncoming ? "left-0" : "right-0"} z-40 flex items-center gap-1 rounded-full bg-white border border-slate-200 shadow-lg px-2 py-1.5`}>
+              {onReact && QUICK_REACTIONS.map((e) => (
+                <button
+                  key={e}
+                  type="button"
+                  onClick={() => { onReact(message, e); setTouchActions(false) }}
+                  className="size-8 rounded-full hover:bg-slate-100 text-lg leading-none inline-flex items-center justify-center"
+                >
+                  {e}
+                </button>
+              ))}
+              {onReply && (
+                <button
+                  type="button"
+                  onClick={() => { onReply(message); setTouchActions(false) }}
+                  className="size-8 rounded-full hover:bg-slate-100 text-slate-500 inline-flex items-center justify-center"
+                >
+                  <Reply className="size-4" />
+                </button>
+              )}
+            </div>
+          </>
+        )}
         {isIncoming && senderLabel && (
           <p className="text-[10px] font-semibold text-primary-600 mb-0.5 truncate">
             {senderLabel}
@@ -279,6 +388,12 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
                 <Smartphone className="size-2.5" /> via celular
               </span>
             )}
+          </p>
+        )}
+
+        {meta.forwarded && (
+          <p className="text-[10px] italic text-slate-400 mb-0.5 inline-flex items-center gap-1">
+            <Forward className="size-2.5" /> Encaminhada
           </p>
         )}
 
@@ -373,10 +488,23 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
             )
           }
 
+          if (message.content_type === "sticker") {
+            return (
+              <button
+                type="button"
+                onClick={() => setLightboxOpen(true)}
+                className="block mt-1 mb-1 hover:opacity-90 transition-opacity"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={mediaSrc} alt="Sticker" className="max-h-32 max-w-[128px] object-contain" />
+              </button>
+            )
+          }
+
           return null
         })()}
 
-        {mediaIcon && message.content_type !== "text" && !resolveMediaUrl(message) && (
+        {mediaIcon && message.content_type !== "text" && message.content_type !== "location" && !resolveMediaUrl(message) && (
           <div className={`flex items-center gap-1.5 mb-1 ${isIncoming ? "text-slate-500" : "text-slate-500"}`}>
             {mediaIcon}
             <span className="text-[11px] font-medium capitalize italic">
@@ -384,6 +512,32 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
             </span>
           </div>
         )}
+
+        {/* Localização — card com nome/endereço + link pro mapa */}
+        {message.content_type === "location" && message.content && (() => {
+          const [lat, lng] = message.content.split(",")
+          return (
+            <a
+              href={`https://www.google.com/maps?q=${lat},${lng}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`flex items-center gap-2.5 -mx-1 mb-1 p-2 rounded-lg transition-colors ${
+                isIncoming ? "bg-slate-50 hover:bg-slate-100" : "bg-primary-500/30 hover:bg-primary-500/50"
+              }`}
+            >
+              <div className={`size-9 rounded-md flex items-center justify-center shrink-0 ${
+                isIncoming ? "bg-white" : "bg-primary-200/40"
+              }`}>
+                <MapPin className={`size-4 ${isIncoming ? "text-primary-600" : "text-slate-900"}`} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-slate-900 truncate">{meta.location_name || "Localização"}</p>
+                <p className="text-[10px] text-slate-500 truncate">{meta.location_address || "Abrir no mapa"}</p>
+              </div>
+              <ExternalLink className="size-3.5 shrink-0 text-slate-400" />
+            </a>
+          )
+        })()}
 
         {/* View-once: foto/vídeo de visualização única (some após ver) */}
         {meta.view_once && message.content_type !== "image" && message.content_type !== "video" && (
@@ -511,7 +665,7 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
           </div>
         )}
 
-        {message.content && (
+        {message.content && message.content_type !== "location" && message.content_type !== "interactive" && (
           <p className={`text-sm whitespace-pre-wrap break-words leading-relaxed ${
             isIncoming ? "text-slate-800" : "text-slate-900"
           }`}>
@@ -550,7 +704,22 @@ export function MessageBubble({ message, agentName, senderLabel }: Props) {
           <span className="text-[10px]">{time}</span>
           {!isIncoming && <StatusIcon status={message.status} />}
         </div>
+
+        {/* Reações coladas na bolha (igual WhatsApp) — chip flutuante na borda inferior. */}
+        {hasReactions && (
+          <div className={`absolute -bottom-3 ${isIncoming ? "left-2" : "right-2"} flex items-center gap-0.5 rounded-full bg-white border border-slate-200 shadow-sm px-1.5 py-0.5`}>
+            {Array.from(
+              reactions!.reduce((map, r) => map.set(r.emoji, (map.get(r.emoji) ?? 0) + 1), new Map<string, number>()),
+            ).map(([emoji, n]) => (
+              <span key={emoji} className="inline-flex items-center text-xs leading-none">
+                {emoji}{n > 1 && <span className="ml-0.5 text-[9px] text-slate-500">{n}</span>}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
+
+      {isIncoming && <HoverActions message={message} onReply={onReply} onReact={onReact} />}
 
       {lightboxOpen && resolveMediaUrl(message) && (
         <div

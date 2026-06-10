@@ -1,14 +1,16 @@
 "use client"
 
 import { useState, useRef, useEffect, useTransition } from "react"
-import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2 } from "lucide-react"
+import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2, Plus, MapPin, User as UserIcon, Search, Reply, Sticker } from "lucide-react"
 import { EmojiPicker } from "./emoji-picker"
 import { VoiceRecorder } from "./voice-recorder"
 import { validateMediaFile, ACCEPT_ATTR } from "@/lib/chat/media-validation"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
-import { sendOfficialTemplate } from "@/lib/actions/chat"
+import { sendOfficialTemplate, searchContactsForShare } from "@/lib/actions/chat"
 import { nameVarKey, type TemplateVar } from "@/lib/whatsapp/template-vars"
 import type { ChatQuickReply } from "@/types/chat"
+
+export interface ReplyTargetInfo { id: string; preview: string; kind: string | null }
 
 interface Props {
   conversationId: string
@@ -25,6 +27,29 @@ interface Props {
   onSendMedia:    (file: File, caption: string) => Promise<void>
   /** Voice note (PTT). Cliente vê como nota de voz nativa do WhatsApp. */
   onSendVoice:    (file: File) => Promise<void>
+  /** Mensagem citada ativa (mostra a barra de citação acima do composer). */
+  replyTarget?:   ReplyTargetInfo | null
+  onCancelReply?: () => void
+  /** Menu "+": enviar localização / compartilhar contato / figurinha. */
+  onSendLocation?: (loc: { latitude: number; longitude: number; name?: string; address?: string }) => Promise<void>
+  onSendContact?:  (card: { name: string; phone: string }) => Promise<void>
+  onSendSticker?:  (file: File) => Promise<void>
+}
+
+/** Converte qualquer imagem numa figurinha webp 512² (contain, fundo transparente). */
+async function imageToStickerWebp(file: File): Promise<File> {
+  const bitmap = await createImageBitmap(file)
+  const size = 512
+  const canvas = document.createElement("canvas")
+  canvas.width = size; canvas.height = size
+  const ctx = canvas.getContext("2d")
+  if (!ctx) throw new Error("canvas indisponível")
+  const scale = Math.min(size / bitmap.width, size / bitmap.height)
+  const w = bitmap.width * scale, h = bitmap.height * scale
+  ctx.drawImage(bitmap, (size - w) / 2, (size - h) / 2, w, h)
+  const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/webp", 0.92))
+  if (!blob) throw new Error("falha ao gerar webp")
+  return new File([blob], "sticker.webp", { type: "image/webp" })
 }
 
 function fileIcon(mime: string) {
@@ -39,7 +64,7 @@ function formatBytes(b: number) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice }: Props) {
+export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
   void conversationId  // mantido na API por clareza; envio é orquestrado no parent
   const [text, setText]                = useState("")
   const [isPrivate, setIsPrivate]      = useState(false)
@@ -50,10 +75,30 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   const [filePreview, setFilePreview]  = useState<string | null>(null)
   const [sendError, setSendError]      = useState<string | null>(null)
   const [isRecording, setIsRecording]  = useState(false)
+  const [showAttachMenu, setAttachMenu] = useState(false)
+  const [attachMode, setAttachMode]     = useState<null | "location" | "contact">(null)
   // Sem useTransition / isPending: envio é optimistic — UI libera na hora.
   // Erros voltam via callback (onSendText/onSendMedia rejeitam).
   const inputRef                       = useRef<HTMLTextAreaElement>(null)
   const fileInputRef                   = useRef<HTMLInputElement>(null)
+  const stickerInputRef                = useRef<HTMLInputElement>(null)
+
+  // Citar → foca o campo de texto na hora.
+  useEffect(() => { if (replyTarget) inputRef.current?.focus() }, [replyTarget])
+
+  async function handleStickerSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    setSendError(null)
+    const f = e.target.files?.[0]
+    if (stickerInputRef.current) stickerInputRef.current.value = ""
+    if (!f || !onSendSticker) return
+    if (!f.type.startsWith("image/")) { setSendError("Escolha uma imagem para virar figurinha."); return }
+    try {
+      const webp = await imageToStickerWebp(f)
+      await onSendSticker(webp)
+    } catch {
+      setSendError("Não consegui converter a imagem em figurinha.")
+    }
+  }
 
   function handleInput(value: string) {
     setText(value)
@@ -261,6 +306,24 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
         </div>
       )}
 
+      {replyTarget && (
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50">
+          <Reply className="size-3.5 text-primary-600 shrink-0" />
+          <div className="flex-1 min-w-0 border-l-2 border-primary-300 pl-2">
+            <p className="text-[10px] font-semibold text-primary-600 uppercase tracking-wide">Respondendo</p>
+            <p className="text-xs text-slate-600 truncate">{replyTarget.preview}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelReply}
+            aria-label="Cancelar resposta"
+            className="size-6 rounded inline-flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
+
       {showEmoji && (
         <div className="absolute bottom-full mb-2 left-3 z-30">
           <EmojiPicker
@@ -268,6 +331,19 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
             onClose={() => setShowEmoji(false)}
           />
         </div>
+      )}
+
+      {attachMode === "location" && onSendLocation && (
+        <LocationDialog
+          onClose={() => setAttachMode(null)}
+          onSend={async (loc) => { await onSendLocation(loc); setAttachMode(null) }}
+        />
+      )}
+      {attachMode === "contact" && onSendContact && (
+        <ContactDialog
+          onClose={() => setAttachMode(null)}
+          onSend={async (card) => { await onSendContact(card); setAttachMode(null) }}
+        />
       )}
 
       {isRecording ? (
@@ -308,6 +384,63 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
               onChange={handleFileSelected}
               className="sr-only"
             />
+
+            {(onSendLocation || onSendContact || onSendSticker) && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setAttachMenu((v) => !v)}
+                  disabled={isPrivate}
+                  title="Enviar localização, contato ou figurinha"
+                  className={`size-10 flex items-center justify-center rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                    showAttachMenu ? "bg-slate-100 text-slate-700" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <Plus className="size-4" />
+                </button>
+                {showAttachMenu && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setAttachMenu(false)} />
+                    <div className="absolute bottom-full mb-2 left-0 z-20 w-44 rounded-lg border border-slate-200 bg-white shadow-lg py-1">
+                      {onSendLocation && (
+                        <button
+                          type="button"
+                          onClick={() => { setAttachMenu(false); setAttachMode("location") }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                        >
+                          <MapPin className="size-4 text-primary-600" /> Localização
+                        </button>
+                      )}
+                      {onSendContact && (
+                        <button
+                          type="button"
+                          onClick={() => { setAttachMenu(false); setAttachMode("contact") }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                        >
+                          <UserIcon className="size-4 text-primary-600" /> Contato
+                        </button>
+                      )}
+                      {onSendSticker && (
+                        <button
+                          type="button"
+                          onClick={() => { setAttachMenu(false); stickerInputRef.current?.click() }}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                        >
+                          <Sticker className="size-4 text-primary-600" /> Figurinha
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+                <input
+                  ref={stickerInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleStickerSelected}
+                  className="sr-only"
+                />
+              </div>
+            )}
 
             <button
               type="button"
@@ -375,6 +508,160 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
         </div>
       )}
     </div>
+  )
+}
+
+// ── Dialogs do menu "+" (localização / contato) ────────────────────────────
+
+const DLG_INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
+
+function DialogShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40" onClick={onClose}>
+      <div
+        className="w-full sm:max-w-sm bg-white rounded-t-2xl sm:rounded-2xl shadow-xl p-4 pb-[max(1rem,env(safe-area-inset-bottom))]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+          <button onClick={onClose} aria-label="Fechar" className="size-7 rounded-lg text-slate-400 hover:bg-slate-100 inline-flex items-center justify-center">
+            <X className="size-4" />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/** Extrai lat/long de um link do Google Maps OU de "lat, long" digitado. */
+function parseLatLng(input: string): { lat: number; lng: number } | null {
+  const m = input.match(/(-?\d{1,3}\.\d+)[,\s]+(-?\d{1,3}\.\d+)/)
+  if (!m) return null
+  const lat = parseFloat(m[1]), lng = parseFloat(m[2])
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null
+  return { lat, lng }
+}
+
+function LocationDialog({ onClose, onSend }: {
+  onClose: () => void
+  onSend:  (loc: { latitude: number; longitude: number; name?: string; address?: string }) => Promise<void>
+}) {
+  const [coords, setCoords]   = useState("")
+  const [name, setName]       = useState("")
+  const [address, setAddress] = useState("")
+  const [error, setError]     = useState<string | null>(null)
+  const [pending, setPending] = useState(false)
+
+  async function submit() {
+    const ll = parseLatLng(coords)
+    if (!ll) { setError("Cole um link do Google Maps ou as coordenadas (ex: -23.55, -46.63)."); return }
+    setError(null); setPending(true)
+    try {
+      await onSend({ latitude: ll.lat, longitude: ll.lng, name: name.trim() || undefined, address: address.trim() || undefined })
+    } catch { setError("Não consegui enviar a localização."); setPending(false) }
+  }
+
+  return (
+    <DialogShell title="Enviar localização" onClose={onClose}>
+      <div className="space-y-2.5">
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-600 mb-1">Link do Maps ou coordenadas</label>
+          <input value={coords} onChange={(e) => setCoords(e.target.value)} placeholder="https://maps.google.com/… ou -23.55, -46.63" className={DLG_INPUT} autoFocus />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Nome (opcional)</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nosso escritório" className={DLG_INPUT} />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Endereço (opcional)</label>
+            <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Rua, número" className={DLG_INPUT} />
+          </div>
+        </div>
+        {error && <div className="flex items-center gap-1.5 text-xs text-red-700"><AlertCircle className="size-4 shrink-0" />{error}</div>}
+        <div className="flex justify-end pt-1">
+          <button onClick={submit} disabled={pending} className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors">
+            {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MapPin className="size-3.5" />} Enviar
+          </button>
+        </div>
+      </div>
+    </DialogShell>
+  )
+}
+
+function ContactDialog({ onClose, onSend }: {
+  onClose: () => void
+  onSend:  (card: { name: string; phone: string }) => Promise<void>
+}) {
+  const [query, setQuery]     = useState("")
+  const [results, setResults] = useState<{ id: string; name: string; phone: string }[]>([])
+  const [name, setName]       = useState("")
+  const [phone, setPhone]     = useState("")
+  const [error, setError]     = useState<string | null>(null)
+  const [pending, setPending] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const t = setTimeout(async () => {
+      const r = await searchContactsForShare(query)
+      if (!cancelled) setResults(r)
+    }, 250)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [query])
+
+  async function submit() {
+    if (!name.trim() || !phone.trim()) { setError("Preencha nome e telefone."); return }
+    setError(null); setPending(true)
+    try { await onSend({ name: name.trim(), phone: phone.trim() }) }
+    catch { setError("Não consegui enviar o contato."); setPending(false) }
+  }
+
+  return (
+    <DialogShell title="Compartilhar contato" onClose={onClose}>
+      <div className="space-y-2.5">
+        <div className="relative">
+          <Search className="size-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar nos contatos…" className={`${DLG_INPUT} pl-8`} autoFocus />
+        </div>
+        {results.length > 0 && (
+          <div className="max-h-40 overflow-y-auto rounded-lg border border-slate-100 divide-y divide-slate-50">
+            {results.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => { setName(c.name); setPhone(c.phone); setError(null) }}
+                className="w-full flex items-center gap-2.5 px-2.5 py-2 text-left hover:bg-slate-50 transition-colors"
+              >
+                <div className="size-7 rounded-full bg-slate-100 text-slate-500 inline-flex items-center justify-center shrink-0">
+                  <UserIcon className="size-3.5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-slate-800 truncate">{c.name}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{c.phone}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Nome</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome do contato" className={DLG_INPUT} />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Telefone</label>
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+55…" className={DLG_INPUT} />
+          </div>
+        </div>
+        {error && <div className="flex items-center gap-1.5 text-xs text-red-700"><AlertCircle className="size-4 shrink-0" />{error}</div>}
+        <div className="flex justify-end pt-1">
+          <button onClick={submit} disabled={pending} className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors">
+            {pending ? <Loader2 className="size-3.5 animate-spin" /> : <UserIcon className="size-3.5" />} Enviar
+          </button>
+        </div>
+      </div>
+    </DialogShell>
   )
 }
 

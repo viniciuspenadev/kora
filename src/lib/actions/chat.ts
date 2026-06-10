@@ -29,6 +29,29 @@ async function getProviderForInstance(instanceId: string, tenantId: string): Pro
   return getProvider(data)
 }
 
+const QUOTED_LABEL: Record<string, string> = {
+  image: "📷 Imagem", video: "🎥 Vídeo", audio: "🎧 Áudio", document: "📎 Documento",
+  sticker: "Sticker", location: "📍 Localização", contact: "👤 Contato",
+}
+
+/**
+ * Monta o `metadata.quoted` de uma mensagem citada (replyTo = whatsapp_msg_id).
+ * Resolve o preview a partir da mensagem original já gravada — assim a bolha
+ * enviada mostra o card "em resposta a" igual ao recebido.
+ */
+async function buildQuotedMeta(tenantId: string, replyTo: string): Promise<Record<string, unknown> | null> {
+  const { data } = await supabaseAdmin
+    .from("chat_messages")
+    .select("content, content_type, sender_type")
+    .eq("tenant_id", tenantId)
+    .eq("whatsapp_msg_id", replyTo)
+    .maybeSingle()
+  if (!data) return { msg_id: replyTo, kind: null, preview: null, participant: null }
+  const kind    = (data.content_type as string) ?? "text"
+  const preview = ((data.content as string)?.trim()) || QUOTED_LABEL[kind] || "Mensagem"
+  return { msg_id: replyTo, kind, preview: preview.slice(0, 200), participant: null }
+}
+
 /**
  * Provider "default" do tenant — só pra operações de config/conexão que ainda
  * não escolhem instância (UI multi-instância vem na Fase M2). Pega a 1ª (mais
@@ -251,6 +274,7 @@ export async function sendMessage(
   conversationId: string,
   content:        string,
   isPrivateNote?: boolean,
+  replyTo?:       string,
 ) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
@@ -286,6 +310,9 @@ export async function sendMessage(
     whatsapp_id: string | null; phone_number: string | null; primary_channel: string | null
   }
 
+  // Citação (responder a uma mensagem). Notas privadas não citam pro WhatsApp.
+  const quotedMeta = !isPrivateNote && replyTo ? await buildQuotedMeta(tenantId, replyTo) : null
+
   const { data: msg, error } = await supabaseAdmin
     .from("chat_messages")
     .insert({
@@ -297,6 +324,7 @@ export async function sendMessage(
       content,
       status:          isPrivateNote ? "delivered" : "pending",
       is_private_note: isPrivateNote ?? false,
+      ...(quotedMeta ? { metadata: { quoted: quotedMeta } } : {}),
     })
     .select("id")
     .single()
@@ -308,7 +336,7 @@ export async function sendMessage(
     if (channel === "whatsapp") {
       try {
         const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
-        const result   = await provider.sendText(contact.phone_number ?? "", content)
+        const result   = await provider.sendText(contact.phone_number ?? "", content, replyTo)
 
         await supabaseAdmin
           .from("chat_messages")
@@ -488,6 +516,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   // Flag PTT — gravação de voice note nativa. Quando true e mediaType=audio,
   // usa endpoint sendWhatsAppAudio (cliente vê bolha de áudio nativa do WhatsApp).
   const isVoiceNote = formData.get("ptt") === "1"
+  const replyTo     = (formData.get("replyTo") as string) || undefined
 
   // Validação server-side (defesa em profundidade — client já valida)
   const validation = validateMediaFile(file)
@@ -579,6 +608,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   }
 
   const sendAsVoiceNote = isVoiceNote && mediaType === "audio"
+  const quotedMeta = replyTo ? await buildQuotedMeta(tenantId, replyTo) : null
 
   const { data: msg, error: dbErr } = await supabaseAdmin
     .from("chat_messages")
@@ -594,7 +624,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       media_file_name: uploadName,
       status:          "pending",
       is_private_note: false,
-      metadata:        { storage_path: storagePath, ...(sendAsVoiceNote ? { is_voice_note: true } : {}) },
+      metadata:        { storage_path: storagePath, ...(sendAsVoiceNote ? { is_voice_note: true } : {}), ...(quotedMeta ? { quoted: quotedMeta } : {}) },
     })
     .select("id")
     .single()
@@ -616,6 +646,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
           mediaType,
           caption || undefined,
           uploadName,
+          replyTo,
         )
 
     await supabaseAdmin
@@ -658,6 +689,179 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   revalidatePath("/inbox")
   return { id: msg.id }
+}
+
+// ── Mensagens ricas: reação / localização / contato ─────────
+// WhatsApp-only (não há equivalente em site-chat). Pattern espelha sendMessage:
+// permissão por visibilidade → (auto-assign) → provider → persiste → bump.
+
+interface SendContext { tenantId: string; userId: string; instanceId: string; phone: string }
+
+/** Resolve conversa + valida permissão + (auto-assign). WhatsApp-only. */
+async function resolveSendContext(
+  conversationId: string, opts?: { autoAssign?: boolean },
+): Promise<SendContext | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado." }
+  const tenantId = session.user.tenantId
+
+  const { data: conv } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel)")
+    .eq("id", conversationId).eq("tenant_id", tenantId).single()
+  if (!conv) return { error: "Conversa não encontrada." }
+
+  const assignedTo = (conv as { assigned_to: string | null }).assigned_to
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, {
+    assigned_to: assignedTo,
+    participants: (conv as { participants?: string[] | null }).participants,
+    department_id: (conv as { department_id?: string | null }).department_id,
+  })) return { error: "Sem permissão para esta conversa." }
+
+  const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null }
+  if ((contact.primary_channel ?? "whatsapp") !== "whatsapp") return { error: "Disponível apenas no WhatsApp." }
+
+  if (opts?.autoAssign && assignedTo === null) {
+    await supabaseAdmin.from("chat_conversations")
+      .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
+      .eq("id", conversationId)
+  }
+
+  return { tenantId, userId: session.user.id, instanceId: (conv as { instance_id: string }).instance_id, phone: contact.phone_number ?? "" }
+}
+
+async function bumpConv(conversationId: string, preview: string) {
+  await supabaseAdmin.from("chat_conversations").update({
+    last_message_at: new Date().toISOString(), last_message_preview: preview,
+    last_message_dir: "out", flagged_pending: false, updated_at: new Date().toISOString(),
+  }).eq("id", conversationId)
+}
+
+/** Reage a uma mensagem com um emoji ("" remove). Não bumpa a conversa (silencioso). */
+export async function reactToMessage(
+  conversationId: string, targetMessageId: string, emoji: string, targetFromMe?: boolean,
+): Promise<{ id: string } | { error: string }> {
+  const ctx = await resolveSendContext(conversationId)
+  if ("error" in ctx) return ctx
+  try {
+    const provider = await getProviderForInstance(ctx.instanceId, ctx.tenantId)
+    if (!provider.sendReaction) return { error: "Reação não suportada neste canal." }
+    const result = await provider.sendReaction(ctx.phone, targetMessageId, emoji, targetFromMe)
+    const { data: msg } = await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId, tenant_id: ctx.tenantId,
+      sender_type: "agent", sender_id: ctx.userId,
+      content_type: "reaction", content: emoji,
+      whatsapp_msg_id: result.messageId || null, status: "sent", is_private_note: false,
+      metadata: { reacted_to_id: targetMessageId },
+    }).select("id").single()
+    return { id: msg?.id ?? "" }
+  } catch (err) { return { error: `Não consegui reagir: ${(err as Error).message}` } }
+}
+
+/** Envia uma localização (pin no mapa). */
+export async function sendLocationMessage(
+  conversationId: string, loc: { latitude: number; longitude: number; name?: string; address?: string },
+): Promise<{ id: string } | { error: string }> {
+  if (!Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude)) return { error: "Coordenadas inválidas." }
+  const ctx = await resolveSendContext(conversationId, { autoAssign: true })
+  if ("error" in ctx) return ctx
+  try {
+    const provider = await getProviderForInstance(ctx.instanceId, ctx.tenantId)
+    if (!provider.sendLocation) return { error: "Localização não suportada neste canal." }
+    const result = await provider.sendLocation(ctx.phone, loc)
+    const { data: msg } = await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId, tenant_id: ctx.tenantId,
+      sender_type: "agent", sender_id: ctx.userId,
+      content_type: "location", content: `${loc.latitude},${loc.longitude}`,
+      whatsapp_msg_id: result.messageId || null, status: "sent", is_private_note: false,
+      metadata: { location_name: loc.name ?? null, location_address: loc.address ?? null },
+    }).select("id").single()
+    await bumpConv(conversationId, "📍 Localização")
+    return { id: msg?.id ?? "" }
+  } catch (err) { return { error: `Não consegui enviar a localização: ${(err as Error).message}` } }
+}
+
+/** Compartilha um contato (vCard). */
+export async function sendContactMessage(
+  conversationId: string, card: { name: string; phone: string },
+): Promise<{ id: string } | { error: string }> {
+  if (!card.name?.trim() || !card.phone?.trim()) return { error: "Informe nome e telefone do contato." }
+  const ctx = await resolveSendContext(conversationId, { autoAssign: true })
+  if ("error" in ctx) return ctx
+  const name = card.name.trim(), phone = card.phone.trim()
+  try {
+    const provider = await getProviderForInstance(ctx.instanceId, ctx.tenantId)
+    if (!provider.sendContacts) return { error: "Contato não suportado neste canal." }
+    const result = await provider.sendContacts(ctx.phone, [{ name, phones: [{ phone }] }])
+    const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${name}\nTEL;type=CELL:${phone}\nEND:VCARD`
+    const { data: msg } = await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId, tenant_id: ctx.tenantId,
+      sender_type: "agent", sender_id: ctx.userId,
+      content_type: "contact", content: name,
+      whatsapp_msg_id: result.messageId || null, status: "sent", is_private_note: false,
+      metadata: { contacts: [{ name, vcard }] },
+    }).select("id").single()
+    await bumpConv(conversationId, "👤 Contato")
+    return { id: msg?.id ?? "" }
+  } catch (err) { return { error: `Não consegui enviar o contato: ${(err as Error).message}` } }
+}
+
+/** Envia uma figurinha (webp). O cliente já manda o arquivo convertido pra webp 512². */
+export async function sendStickerMessage(
+  conversationId: string, formData: FormData,
+): Promise<{ id: string } | { error: string }> {
+  const file = formData.get("file") as File | null
+  if (!file) return { error: "Arquivo inválido." }
+  const ctx = await resolveSendContext(conversationId, { autoAssign: true })
+  if ("error" in ctx) return ctx
+  try {
+    const provider = await getProviderForInstance(ctx.instanceId, ctx.tenantId)
+    if (!provider.sendSticker) return { error: "Figurinha não suportada neste canal." }
+
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const storagePath = `${ctx.tenantId}/${conversationId}/${Date.now()}_sticker.webp`
+    const { error: upErr } = await supabaseAdmin.storage.from(CHAT_BUCKET)
+      .upload(storagePath, buffer, { contentType: "image/webp", upsert: false })
+    if (upErr) return { error: `Falha ao salvar a figurinha: ${upErr.message}` }
+    const { data: signed } = await supabaseAdmin.storage.from(CHAT_BUCKET).createSignedUrl(storagePath, 3600)
+    if (!signed?.signedUrl) {
+      await supabaseAdmin.storage.from(CHAT_BUCKET).remove([storagePath])
+      return { error: "Erro ao gerar a URL da figurinha." }
+    }
+
+    const result = await provider.sendSticker(ctx.phone, signed.signedUrl)
+    const { data: msg } = await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId, tenant_id: ctx.tenantId,
+      sender_type: "agent", sender_id: ctx.userId,
+      content_type: "sticker", content: null,
+      media_url: signed.signedUrl, media_mime_type: "image/webp",
+      whatsapp_msg_id: result.messageId || null, status: "sent", is_private_note: false,
+      metadata: { storage_path: storagePath },
+    }).select("id").single()
+    await bumpConv(conversationId, "Figurinha")
+    return { id: msg?.id ?? "" }
+  } catch (err) { return { error: `Não consegui enviar a figurinha: ${(err as Error).message}` } }
+}
+
+/** Busca contatos do tenant pro picker de "compartilhar contato" (nome/telefone). */
+export async function searchContactsForShare(query: string): Promise<{ id: string; name: string; phone: string }[]> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return []
+  // Sanitiza: vírgula/parênteses/% quebram o parser do .or() do PostgREST.
+  const q = query.trim().replace(/[,()%*]/g, "").slice(0, 60)
+  let req = supabaseAdmin.from("chat_contacts")
+    .select("id, custom_name, push_name, phone_number")
+    .eq("tenant_id", session.user.tenantId)
+    .order("updated_at", { ascending: false })
+    .limit(8)
+  if (q) req = req.or(`custom_name.ilike.%${q}%,push_name.ilike.%${q}%,phone_number.ilike.%${q}%`)
+  const { data } = await req
+  return (data ?? []).map((c) => ({
+    id:    c.id as string,
+    name:  (c.custom_name as string) || (c.push_name as string) || (c.phone_number as string),
+    phone: c.phone_number as string,
+  }))
 }
 
 // ── Gerenciamento de conversas ──────────────────────────────

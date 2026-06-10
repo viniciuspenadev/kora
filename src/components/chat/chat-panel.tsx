@@ -8,7 +8,7 @@ import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import {
   Phone, CheckCircle2, Clock, XCircle,
-  ChevronDown, Users, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore,
+  MoreVertical, RotateCcw, Moon, Users, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore,
   ArrowLeft, Info,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
@@ -38,6 +38,19 @@ interface Props {
   onSendText:     (content: string, isPrivate: boolean) => Promise<void>
   onSendMedia:    (file: File, caption: string) => Promise<void>
   onSendVoice:    (file: File) => Promise<void>
+  /** Responder/citar uma mensagem (define o alvo no composer). */
+  onReply?:        (msg: ChatMessage) => void
+  /** Reagir a uma mensagem com um emoji. */
+  onReact?:        (msg: ChatMessage, emoji: string) => void
+  /** Enviar localização (pin). */
+  onSendLocation?: (loc: { latitude: number; longitude: number; name?: string; address?: string }) => Promise<void>
+  /** Compartilhar contato (vCard). */
+  onSendContact?:  (card: { name: string; phone: string }) => Promise<void>
+  /** Enviar figurinha (webp). */
+  onSendSticker?:  (file: File) => Promise<void>
+  /** Mensagem citada ativa no composer (id = whatsapp_msg_id). */
+  replyTarget?:    { id: string; preview: string; kind: string | null } | null
+  onCancelReply?:  () => void
   onArchiveToggle: () => void
   /** Mobile (<md): volta pra lista de conversas. */
   onBack?:         () => void
@@ -90,12 +103,12 @@ export function ChatPanel({
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
   loadingMessages = false,
   onSendText, onSendMedia, onSendVoice, onArchiveToggle,
+  onReply, onReact, onSendLocation, onSendContact, onSendSticker, replyTarget, onCancelReply,
   onBack, onOpenContact,
 }: Props) {
   const isArchived = !!conversation.archived_at
-  // Dropdowns por clique (status/atribuir) — antes eram group-hover puro, que
-  // não abre no toque. Clique funciona em desktop e mobile.
-  const [statusOpen, setStatusOpen] = useState(false)
+  // Menu de ações (kebab) por clique — funciona em desktop e mobile (toque).
+  const [menuOpen, setMenuOpen] = useState(false)
   const [transferOpen, setTransferOpen] = useState(false)
   const messagesEndRef     = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -162,6 +175,36 @@ export function ChatPanel({
   // Prepend de msgs antigas no topo NÃO ativa esse effect (newest stays the same).
   // Se usuário estiver lendo histórico (scrolled up), também NÃO empurra pra baixo.
   const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null
+
+  // Reações NÃO são entradas da timeline — colam na bolha-alvo (igual WhatsApp).
+  // Separa as mensagens de reação, monta um mapa por whatsapp_msg_id-alvo e
+  // colapsa pra ÚLTIMA reação de cada lado (cliente vs nós); emoji vazio = removida.
+  const { timelineMessages, reactionsByTarget } = useMemo(() => {
+    const normal: ChatMessage[] = []
+    const latestPerSide = new Map<string, Map<"contact" | "agent", ChatMessage>>()
+    for (const m of messages) {
+      if (m.content_type !== "reaction") { normal.push(m); continue }
+      const target = (m.metadata as { reacted_to_id?: string } | null)?.reacted_to_id
+      if (!target) continue
+      const side: "contact" | "agent" = m.sender_type === "contact" ? "contact" : "agent"
+      const cur = latestPerSide.get(target)?.get(side)
+      if (!cur || new Date(m.created_at) >= new Date(cur.created_at)) {
+        if (!latestPerSide.has(target)) latestPerSide.set(target, new Map())
+        latestPerSide.get(target)!.set(side, m)
+      }
+    }
+    const map = new Map<string, { emoji: string; fromAgent: boolean }[]>()
+    for (const [target, sides] of latestPerSide) {
+      const arr: { emoji: string; fromAgent: boolean }[] = []
+      for (const [side, m] of sides) {
+        const emoji = (m.content ?? "").trim()
+        if (emoji) arr.push({ emoji, fromAgent: side === "agent" })
+      }
+      if (arr.length) map.set(target, arr)
+    }
+    return { timelineMessages: normal, reactionsByTarget: map }
+  }, [messages])
+
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container || !lastMessageId) return
@@ -288,8 +331,33 @@ export function ChatPanel({
                   {phone && (
                     <span className="text-[11px] text-slate-400 font-mono">{phone}</span>
                   )}
-                  {/* Badges secundárias: escondidas no mobile (estão na ficha "i") — evita
-                      quebra de linha que deixa o header alto. Reaparecem no desktop (md+). */}
+                  {/* Status atual — só aparece quando NÃO é "Aberto" (estado normal não polui). */}
+                  {conversation.status !== "open" && (
+                    <span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${currentStatus.color}`}>
+                      <currentStatus.icon className="size-2.5" /> {currentStatus.label}
+                    </span>
+                  )}
+                  {/* Janela de 24h (só oficial) — movida do cluster de ações pra cá, alivia a barra. */}
+                  {isOfficial && (windowOpen ? (
+                    <span
+                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${windowMsLeft! < 2 * 60 * 60 * 1000 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}`}
+                      title="Janela de atendimento de 24h (WhatsApp Oficial). Dentro dela você responde com texto livre."
+                    >
+                      <Clock className="size-2.5" /> {fmtWindowLeft(windowMsLeft!)}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500" title="Fora da janela de 24h — só dá pra enviar um template aprovado.">
+                      <Clock className="size-2.5" /> Janela fechada
+                    </span>
+                  ))}
+                  {/* Atribuída a (md+) — antes vinha do botão Transferir, que foi pro menu ⋮. */}
+                  {conversation.assigned_to && (
+                    <span className="hidden md:inline-flex items-center gap-1 text-[11px] text-slate-500">
+                      <AgentAvatar userId={conversation.assigned_to} name={conversation.profiles?.full_name} className="size-3.5" />
+                      <span className="truncate max-w-[110px]">{conversation.profiles?.full_name ?? "Atribuída"}</span>
+                    </span>
+                  )}
+                  {/* Secundárias (lifecycle + origem): só no desktop — no mobile estão na ficha "i". */}
                   <span
                     className={`hidden md:inline text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`}
                     title={lc.label}
@@ -307,96 +375,105 @@ export function ChatPanel({
           </div>
         </div>
 
-        <div className="flex items-center gap-1 md:gap-2 shrink-0">
-
-          {isOfficial && (
-            windowOpen ? (
-              <span
-                className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-lg ${
-                  windowMsLeft! < 2 * 60 * 60 * 1000 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"
-                }`}
-                title="Janela de atendimento de 24h (WhatsApp API Oficial). Dentro dela você responde com texto livre."
-              >
-                <Clock className="size-3" /> {fmtWindowLeft(windowMsLeft!)}
-              </span>
-            ) : (
-              <span
-                className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-lg bg-slate-100 text-slate-500"
-                title="Fora da janela de 24h — só dá pra enviar um template aprovado."
-              >
-                <Clock className="size-3" /> Janela fechada
-              </span>
-            )
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Ação primária — Concluir (encerra) ou Reabrir se já resolvida.
+              É o CTA que dispara o ciclo resolve→reopen→IA da Política de Atendimento. */}
+          {conversation.status === "resolved" ? (
+            <button
+              type="button"
+              onClick={() => onStatusChange("open")}
+              title="Reabrir o atendimento"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors"
+            >
+              <RotateCcw className="size-3.5" /> Reabrir
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onStatusChange("resolved")}
+              title="Concluir o atendimento (encerra a conversa)"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
+            >
+              <CheckCircle2 className="size-3.5" /> Concluir
+            </button>
           )}
 
+          {/* Menu de ações secundárias — acessível em QUALQUER tela (fim do buraco
+              de Transferir/Arquivar sumirem no mobile). */}
           <div className="relative">
             <button
               type="button"
-              onClick={() => { setStatusOpen((v) => !v) }}
-              className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 sm:px-3 py-1.5 rounded-lg transition-colors ${currentStatus.color}`}
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label="Mais ações"
+              className="size-8 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
             >
-              <currentStatus.icon className="size-3.5" />
-              <span className="hidden sm:inline">{currentStatus.label}</span>
-              <ChevronDown className="size-3" />
+              <MoreVertical className="size-4" />
             </button>
-            {statusOpen && (
+            {menuOpen && (
               <>
-                <div className="fixed inset-0 z-10" onClick={() => setStatusOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[140px] z-20">
-                  {STATUS_OPTIONS.map((opt) => (
+                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[188px] z-20">
+                  <button
+                    type="button"
+                    onClick={() => { setTransferOpen(true); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    <ArrowLeftRight className="size-3.5 shrink-0 text-slate-400" /> Transferir
+                  </button>
+
+                  {conversation.status !== "snoozed" && (
                     <button
-                      key={opt.key}
                       type="button"
-                      onClick={() => { onStatusChange(opt.key); setStatusOpen(false) }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-slate-50 transition-colors ${
-                        opt.key === conversation.status ? "text-primary-600" : "text-slate-700"
-                      }`}
+                      onClick={() => { onStatusChange("snoozed"); setMenuOpen(false) }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                     >
-                      <opt.icon className="size-3.5" />
-                      {opt.label}
+                      <Moon className="size-3.5 shrink-0 text-slate-400" /> Adiar
                     </button>
-                  ))}
+                  )}
+                  {conversation.status !== "pending" && (
+                    <button
+                      type="button"
+                      onClick={() => { onStatusChange("pending"); setMenuOpen(false) }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    >
+                      <Clock className="size-3.5 shrink-0 text-slate-400" /> Marcar pendente
+                    </button>
+                  )}
+                  {(conversation.status === "snoozed" || conversation.status === "pending") && (
+                    <button
+                      type="button"
+                      onClick={() => { onStatusChange("open"); setMenuOpen(false) }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    >
+                      <RotateCcw className="size-3.5 shrink-0 text-slate-400" /> Reabrir
+                    </button>
+                  )}
+
+                  <div className="my-1 border-t border-slate-100" />
+
+                  <button
+                    type="button"
+                    onClick={() => { onArchiveToggle(); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    {isArchived ? <ArchiveRestore className="size-3.5 shrink-0 text-amber-600" /> : <Archive className="size-3.5 shrink-0 text-slate-400" />}
+                    {isArchived ? "Restaurar" : "Arquivar"}
+                  </button>
+
+                  {/* Mobile: ver a ficha do contato (no desktop ela é coluna fixa). */}
+                  {onOpenContact && (
+                    <button
+                      type="button"
+                      onClick={() => { onOpenContact(); setMenuOpen(false) }}
+                      className="md:hidden w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                    >
+                      <Info className="size-3.5 shrink-0 text-slate-400" /> Ver contato
+                    </button>
+                  )}
                 </div>
               </>
             )}
           </div>
-
-          <button
-            type="button"
-            onClick={onArchiveToggle}
-            title={isArchived ? "Restaurar conversa (volta pro inbox + kanban)" : "Arquivar conversa (esconde do inbox e do kanban)"}
-            className={`hidden md:inline-flex size-8 items-center justify-center rounded-lg transition-colors ${
-              isArchived
-                ? "bg-amber-100 text-amber-700 hover:bg-amber-200"
-                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-            }`}
-          >
-            {isArchived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setTransferOpen(true)}
-            title="Transferir conversa"
-            className="hidden md:flex items-center gap-1.5 text-xs font-medium px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors max-w-[140px] sm:max-w-none"
-          >
-            {conversation.assigned_to
-              ? <AgentAvatar userId={conversation.assigned_to} name={conversation.profiles?.full_name} className="size-4" />
-              : <ArrowLeftRight className="size-3.5 shrink-0" />}
-            <span className="hidden sm:inline truncate">{conversation.profiles?.full_name ?? "Transferir"}</span>
-          </button>
-
-          {/* Mobile: abre a ficha do contato (no desktop ela é coluna fixa) */}
-          {onOpenContact && (
-            <button
-              type="button"
-              onClick={onOpenContact}
-              aria-label="Ver dados do contato"
-              className="md:hidden size-8 shrink-0 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
-            >
-              <Info className="size-4" />
-            </button>
-          )}
         </div>
       </div>
 
@@ -428,7 +505,7 @@ export function ChatPanel({
             <p className="text-xs text-slate-400">As mensagens aparecerão aqui quando o contato enviar algo.</p>
           </div>
         ) : (
-          buildTimelineGroups(messages).map((group) => (
+          buildTimelineGroups(timelineMessages).map((group) => (
             <section key={group.id} className="space-y-1">
               <DateDivider label={group.dateLabel} />
               {group.items.map((item) =>
@@ -439,6 +516,9 @@ export function ChatPanel({
                     key={item.id}
                     message={item.msg}
                     agentName={item.msg.sender_type === "agent" ? item.msg.profiles?.full_name : null}
+                    reactions={item.msg.whatsapp_msg_id ? reactionsByTarget.get(item.msg.whatsapp_msg_id) : undefined}
+                    onReply={onReply}
+                    onReact={onReact}
                     senderLabel={
                       item.msg.sender_type !== "contact"
                         ? null
@@ -465,6 +545,11 @@ export function ChatPanel({
         onSendText={onSendText}
         onSendMedia={onSendMedia}
         onSendVoice={onSendVoice}
+        onSendLocation={onSendLocation}
+        onSendContact={onSendContact}
+        onSendSticker={onSendSticker}
+        replyTarget={replyTarget}
+        onCancelReply={onCancelReply}
       />
 
       <TransferDialog

@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useRef, useEffect } from "react"
 import {
-  Search, MessageCircle, AlertCircle, Loader2, Filter,
+  Search, MessageCircle, AlertCircle, Loader2, Filter, CheckCircle2, Clock, Moon,
   Image as ImageIcon, Mic, Video, FileText, X, Plus, Users, ChevronDown,
   ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
   Pin, PinOff, Flag, FlagOff, UserPlus, Archive, ArchiveRestore,
@@ -68,10 +68,20 @@ interface Props {
 }
 
 const STATUS_TABS = [
+  { key: "all",      label: "Todos" },        // todos os status — exceto arquivadas (essas têm o seu próprio item)
   { key: "open",     label: "Abertos" },
   { key: "pending",  label: "Pendentes" },
+  { key: "snoozed",  label: "Adiados" },
   { key: "resolved", label: "Resolvidos" },
 ]
+
+// Ícone de status por card — mesma linguagem do menu ⋮ do header.
+// 'open' não tem ícone (estado normal não polui a lista).
+const STATUS_ICON: Record<string, { Icon: typeof Clock; className: string; label: string }> = {
+  pending:  { Icon: Clock,        className: "text-amber-500", label: "Pendente" },
+  snoozed:  { Icon: Moon,         className: "text-slate-400", label: "Adiado" },
+  resolved: { Icon: CheckCircle2, className: "text-green-600", label: "Resolvido" },
+}
 
 const STALE_HOURS_THRESHOLD = 24
 
@@ -395,6 +405,7 @@ export function ConversationList({
             // "Sem resposta há +24h" é sinal de SLA separado: só quando o contato falou por último.
             const isStale     = conv.last_message_dir === "in" && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD && conv.status !== "resolved"
             const isPinned    = !!conv.pinned_at
+            const statusMeta  = STATUS_ICON[conv.status] ?? null
             const timeLabel   = conv.last_message_at ? formatTimeAgo(conv.last_message_at) : ""
             const mediaIcon   = inferMediaIcon(conv.last_message_preview)
             const dirArrow    = !conv.last_message_preview
@@ -479,6 +490,9 @@ export function ConversationList({
                       )}
                     </span>
                     <span className="inline-flex items-center gap-1.5 shrink-0">
+                      {statusMeta && (
+                        <statusMeta.Icon className={`size-3.5 ${statusMeta.className}`} aria-label={statusMeta.label} />
+                      )}
                       {isStale && (
                         <AlertCircle className="size-3 text-red-500" />
                       )}

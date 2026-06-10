@@ -1,6 +1,7 @@
 import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
   GroupMetadata, MediaDownload, ContentType,
+  LocationPayload, ContactCard,
 } from "./types"
 
 interface EvolutionConfig {
@@ -97,13 +98,13 @@ export class EvolutionProvider implements WhatsAppProvider {
 
   // ── Messaging ───────────────────────────────────────────────
 
-  async sendText(phone: string, text: string): Promise<SendResult> {
+  async sendText(phone: string, text: string, replyTo?: string): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
     const r = await this.req<{ key?: { id?: string } }>(
       `/message/sendText/${this.instanceName}`,
       {
         method: "POST",
-        body: JSON.stringify({ number, text }),
+        body: JSON.stringify({ number, text, ...(replyTo ? { quoted: { key: { id: replyTo } } } : {}) }),
       },
     )
     return { messageId: r.key?.id ?? "" }
@@ -115,6 +116,7 @@ export class EvolutionProvider implements WhatsAppProvider {
     type:     ContentType,
     caption?: string,
     fileName?: string,
+    replyTo?: string,
   ): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
     const r = await this.req<{ key?: { id?: string } }>(
@@ -127,6 +129,73 @@ export class EvolutionProvider implements WhatsAppProvider {
           media:     mediaUrl,
           caption:   caption ?? "",
           fileName:  fileName ?? undefined,
+          ...(replyTo ? { quoted: { key: { id: replyTo } } } : {}),
+        }),
+      },
+    )
+    return { messageId: r.key?.id ?? "" }
+  }
+
+  /** Reage a uma mensagem. Baileys exige a key completa (remoteJid+fromMe+id). */
+  async sendReaction(phone: string, targetMessageId: string, emoji: string, fromMe?: boolean): Promise<SendResult> {
+    const number = phone.replace(/\D/g, "")
+    const r = await this.req<{ key?: { id?: string } }>(
+      `/message/sendReaction/${this.instanceName}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          key: { remoteJid: `${number}@s.whatsapp.net`, fromMe: fromMe ?? false, id: targetMessageId },
+          reaction: emoji,
+        }),
+      },
+    )
+    return { messageId: r.key?.id ?? "" }
+  }
+
+  async sendLocation(phone: string, loc: LocationPayload): Promise<SendResult> {
+    const number = phone.replace(/\D/g, "")
+    const r = await this.req<{ key?: { id?: string } }>(
+      `/message/sendLocation/${this.instanceName}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          number,
+          name:      loc.name ?? "",
+          address:   loc.address ?? "",
+          latitude:  loc.latitude,
+          longitude: loc.longitude,
+        }),
+      },
+    )
+    return { messageId: r.key?.id ?? "" }
+  }
+
+  async sendSticker(phone: string, stickerUrl: string): Promise<SendResult> {
+    const number = phone.replace(/\D/g, "")
+    const r = await this.req<{ key?: { id?: string } }>(
+      `/message/sendSticker/${this.instanceName}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ number, sticker: stickerUrl }),
+      },
+    )
+    return { messageId: r.key?.id ?? "" }
+  }
+
+  async sendContacts(phone: string, contacts: ContactCard[]): Promise<SendResult> {
+    const number = phone.replace(/\D/g, "")
+    const r = await this.req<{ key?: { id?: string } }>(
+      `/message/sendContact/${this.instanceName}`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          number,
+          contact: contacts.map((c) => ({
+            fullName:    c.name,
+            wuid:        (c.phones?.[0]?.phone ?? "").replace(/\D/g, ""),
+            phoneNumber: c.phones?.[0]?.phone ?? "",
+            ...(c.org ? { organization: c.org } : {}),
+          })),
         }),
       },
     )

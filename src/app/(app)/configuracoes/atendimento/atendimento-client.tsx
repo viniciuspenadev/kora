@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useState, useTransition } from "react"
 import {
-  Save, Loader2, AlertCircle, CheckCircle2, Sparkles,
+  Save, Loader2, AlertCircle, CheckCircle2, Check, Sparkles,
   Settings as SettingsIcon, Users, Pause, Play, UserCheck, Bell, Shuffle, Bot,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
@@ -18,7 +18,7 @@ import {
 import { updateAtendimentoPolicy } from "@/lib/actions/atendimento"
 
 type IAct = "notify" | "redistribute" | "ai"
-type Bind = "carteira" | "pool" | "ai"
+type Bind = "carteira" | "pool"
 type Tab  = "distribuicao" | "vinculo" | "inatividade"
 
 interface Props {
@@ -28,6 +28,7 @@ interface Props {
   hasStudio:         boolean
   flows:             { id: string; name: string }[]
   binding:           Bind
+  reopenToAi:        boolean
   reopenFlowId:      string | null
   inactivityEnabled: boolean
   inactivityHours:   number
@@ -42,15 +43,16 @@ export function AtendimentoClient(props: Props) {
   // ── Distribuição ──
   const [config, setConfig] = useState<AutoAssignConfig>(props.initialConfig)
   const [agents, setAgents] = useState<AgentInfo[]>(props.initialAgents)
-  // ── Política (vínculo + inatividade) ──
+  // ── Política (vínculo + IA-no-retorno + inatividade) ──
   const [bind, setBind]     = useState<Bind>(props.binding)
+  const [aiFirst, setAiFirst] = useState(props.reopenToAi)
   const [reopenFlow, setReopenFlow] = useState<string | null>(props.reopenFlowId)
   const [inact, setInact]   = useState(props.inactivityEnabled)
   const [hours, setHours]   = useState(props.inactivityHours)
   const [act, setAct]       = useState<IAct>(props.inactivityAction)
-  // Sem IA → opções de IA somem; um valor salvo "ai" cai no fallback humano na exibição.
-  const dispBind: Bind = props.hasAi || bind !== "ai" ? bind : "carteira"
-  const dispAct:  IAct = props.hasAi || act  !== "ai" ? act  : "notify"
+  // Sem IA → opções de IA somem; valores caem no fallback humano na exibição.
+  const aiOn  = props.hasAi && aiFirst
+  const dispAct: IAct = props.hasAi || act !== "ai" ? act : "notify"
 
   const [pending, startT]   = useTransition()
   const [fb, setFb]         = useState<{ ok: boolean; text: string } | null>(null)
@@ -62,12 +64,12 @@ export function AtendimentoClient(props: Props) {
     startT(async () => {
       const r1 = await updateAutoAssignConfig(config)
       if ("error" in r1) return flash(false, r1.error)
-      const effBind: Bind = (!props.hasAi && bind === "ai") ? "carteira" : bind
       const r2 = await updateAtendimentoPolicy({
-        // Sem IA no tenant → nunca grava opções de IA (coerção defensiva; espelha o gate do servidor).
-        handoff_binding: effBind,
-        // Fluxo de retorno só faz sentido com vínculo='ai' + Studio; senão null.
-        reopen_flow_id: (effBind === "ai" && props.hasStudio) ? reopenFlow : null,
+        handoff_binding: bind,
+        // "IA atende o retorno" só com IA no tenant; o fluxo só com Studio (coerção
+        // defensiva — espelha o gate do servidor).
+        reopen_to_ai: props.hasAi ? aiFirst : false,
+        reopen_flow_id: (props.hasAi && aiFirst && props.hasStudio) ? reopenFlow : null,
         inactivity_enabled: inact, inactivity_hours: hours,
         inactivity_action: (!props.hasAi && act === "ai") ? "notify" : act,
       })
@@ -182,46 +184,58 @@ export function AtendimentoClient(props: Props) {
       {tab === "vinculo" && (
         <SectionCard icon={UserCheck} title="Quando o cliente volta a falar" description="Depois que um atendimento é encerrado e o cliente manda mensagem de novo, ele cai com quem?">
           <div className="space-y-2">
-            <RadioCard active={dispBind === "carteira"} onClick={() => setBind("carteira")} icon={UserCheck} title="Volta pro mesmo atendente" description="Carteira — cada cliente fica com o atendente responsável. Bom pra vendas com vendedor dono." />
-            <RadioCard active={dispBind === "pool"} onClick={() => setBind("pool")} icon={Users} title="Cai na fila de novo" description="Pool — volta pra fila do setor; quem estiver livre atende. Bom pra suporte compartilhado." />
+            {/* Dono no retorno — escolha UM (radio) */}
+            <RadioCard active={bind === "carteira"} onClick={() => setBind("carteira")} icon={UserCheck} title="Volta pro mesmo atendente" description="Carteira — cada cliente fica com o atendente responsável. Bom pra vendas com vendedor dono." />
+            <RadioCard active={bind === "pool"} onClick={() => setBind("pool")} icon={Users} title="Cai na fila de novo" description="Pool — volta pra fila do setor; quem estiver livre atende. Bom pra suporte compartilhado." />
+
+            {/* IA atende o retorno — toggle INDEPENDENTE (combina com a opção acima) */}
             {props.hasAi && (
-              <RadioCard active={dispBind === "ai"} onClick={() => setBind("ai")} icon={Bot} title="A IA recebe primeiro" description="A IA tria o retorno (responde/qualifica) e passa pro humano quando precisar. Se a IA estiver desligada, cai na fila." />
+              <ToggleCard
+                active={aiFirst}
+                onClick={() => setAiFirst((v) => !v)}
+                icon={Bot}
+                title="Deixar a IA responder primeiro"
+                description={bind === "carteira"
+                  ? "A IA tria o retorno (responde/qualifica/vende) e, ao terminar o fluxo, devolve pro MESMO atendente. Se ela encaminhar, segue o encaminhamento."
+                  : "A IA tria o retorno antes de cair na fila. Se a IA estiver desligada, vai direto pra fila."}
+              />
+            )}
+
+            {/* Fluxo de retorno — habilita ABAIXO quando a IA-no-retorno está ligada (+ Studio) */}
+            {aiOn && props.hasStudio && (
+              <div className="ml-1 pl-4 border-l-2 border-primary-100 space-y-2 pb-1">
+                <label className="text-xs font-semibold text-slate-700 block">Qual fluxo a IA roda no retorno</label>
+                {props.flows.length === 0 ? (
+                  <p className="text-[11px] text-slate-500">
+                    Você ainda não tem fluxos publicados. A IA vai responder pela persona (Atendente de IA).{" "}
+                    <Link href="/studio/fluxos" className="font-semibold text-primary-700 hover:underline">Criar um fluxo</Link>.
+                  </p>
+                ) : (
+                  <>
+                    <select
+                      value={reopenFlow ?? ""}
+                      onChange={(e) => setReopenFlow(e.target.value || null)}
+                      className="h-9 w-full max-w-sm px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
+                      <option value="">A IA decide pelo gatilho da mensagem</option>
+                      {props.flows.map((f) => (
+                        <option key={f.id} value={f.id}>{f.name}</option>
+                      ))}
+                    </select>
+                    {reopenFlow && !props.flows.some((f) => f.id === reopenFlow) && (
+                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
+                        O fluxo escolhido não está mais publicado. Escolha outro — senão, no retorno, a IA cai na persona.
+                      </p>
+                    )}
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Dica: pra <b>devolver pro mesmo atendente</b> (carteira), o fluxo precisa <b>terminar</b> (nó Fim) —
+                      se ele encaminhar pra um setor, a IA fica sendo o encaminhamento. E crie um fluxo <b>dedicado ao retorno</b>,
+                      sem a condição de “é cliente?”, senão a etapa do funil desvia quem já é lead/cliente.
+                    </p>
+                  </>
+                )}
+              </div>
             )}
           </div>
-
-          {/* Picker do fluxo de retorno — só com vínculo='ai' + Studio */}
-          {props.hasAi && dispBind === "ai" && props.hasStudio && (
-            <div className="mt-3 ml-1 pl-4 border-l-2 border-primary-100 space-y-2">
-              <label className="text-xs font-semibold text-slate-700 block">Qual fluxo a IA roda no retorno</label>
-              {props.flows.length === 0 ? (
-                <p className="text-[11px] text-slate-500">
-                  Você ainda não tem fluxos publicados. A IA vai responder pela persona (Atendente de IA).{" "}
-                  <Link href="/studio/fluxos" className="font-semibold text-primary-700 hover:underline">Criar um fluxo</Link>.
-                </p>
-              ) : (
-                <>
-                  <select
-                    value={reopenFlow ?? ""}
-                    onChange={(e) => setReopenFlow(e.target.value || null)}
-                    className="h-9 w-full max-w-sm px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
-                    <option value="">A IA decide pelo gatilho da mensagem</option>
-                    {props.flows.map((f) => (
-                      <option key={f.id} value={f.id}>{f.name}</option>
-                    ))}
-                  </select>
-                  {reopenFlow && !props.flows.some((f) => f.id === reopenFlow) && (
-                    <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
-                      O fluxo escolhido não está mais publicado. Escolha outro — senão, no retorno, a IA cai na persona.
-                    </p>
-                  )}
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Dica: crie um fluxo <b>dedicado ao retorno</b>, sem a condição de “é cliente?”. Se mandar o cliente
-                    que volta pro fluxo de captação, a etapa do funil o desvia (ele já é lead/cliente) e a triagem não roda.
-                  </p>
-                </>
-              )}
-            </div>
-          )}
         </SectionCard>
       )}
 
@@ -282,6 +296,25 @@ function RadioCard({ active, onClick, title, description, icon: Icon }: { active
         {Icon && <Icon className="size-3.5" />} {title}
       </p>
       <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{description}</p>
+    </button>
+  )
+}
+
+// Mesmo visual do RadioCard, mas é um toggle INDEPENDENTE (checkbox à direita) —
+// combina com a escolha de radio acima (dá pra ver "dois selecionados").
+function ToggleCard({ active, onClick, title, description, icon: Icon }: { active: boolean; onClick: () => void; title: string; description: string; icon?: React.ComponentType<{ className?: string }> }) {
+  return (
+    <button type="button" onClick={onClick}
+      className={`w-full text-left p-3 rounded-lg border-2 transition-all flex items-start gap-2.5 ${active ? "border-primary bg-primary-50/50 ring-2 ring-primary/10" : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}`}>
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-semibold flex items-center gap-1.5 ${active ? "text-primary-700" : "text-slate-900"}`}>
+          {Icon && <Icon className="size-3.5" />} {title}
+        </p>
+        <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{description}</p>
+      </div>
+      <span className={`mt-0.5 size-4 rounded-md border flex items-center justify-center shrink-0 transition-colors ${active ? "bg-primary border-primary text-white" : "border-slate-300 bg-white"}`}>
+        {active && <Check className="size-3" strokeWidth={3} />}
+      </span>
     </button>
   )
 }

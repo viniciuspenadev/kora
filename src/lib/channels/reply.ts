@@ -11,7 +11,7 @@
 
 import "server-only"
 import { getProvider } from "@/lib/providers"
-import type { ContentType } from "@/lib/providers/types"
+import type { ContentType, InteractivePayload } from "@/lib/providers/types"
 
 type ProviderInstance = Parameters<typeof getProvider>[0]
 
@@ -31,12 +31,13 @@ export async function sendChannelText(
   target:   ReplyTarget,
   text:     string,
   instance: ProviderInstance,
+  replyTo?: string,
 ): Promise<{ messageId: string | null }> {
   const channel = target.channel ?? "whatsapp"
 
   switch (channel) {
     case "whatsapp": {
-      const r = await getProvider(instance).sendText(target.phoneNumber, text)
+      const r = await getProvider(instance).sendText(target.phoneNumber, text, replyTo)
       return { messageId: r.messageId ?? null }
     }
     case "site":
@@ -59,12 +60,13 @@ export async function sendChannelMedia(
   target:   ReplyTarget,
   media:    { url: string; mediaType: ContentType; caption?: string; fileName?: string },
   instance: ProviderInstance,
+  replyTo?: string,
 ): Promise<{ messageId: string | null }> {
   const channel = target.channel ?? "whatsapp"
 
   switch (channel) {
     case "whatsapp": {
-      const r = await getProvider(instance).sendMedia(target.phoneNumber, media.url, media.mediaType, media.caption, media.fileName)
+      const r = await getProvider(instance).sendMedia(target.phoneNumber, media.url, media.mediaType, media.caption, media.fileName, replyTo)
       return { messageId: r.messageId ?? null }
     }
     case "site":
@@ -72,4 +74,26 @@ export async function sendChannelMedia(
     default:
       throw new Error(`Mídia no canal '${channel}' ainda não suportada`)
   }
+}
+
+/**
+ * Tenta enviar uma mensagem INTERATIVA nativa (botões/lista/CTA) pelo canal.
+ * Diferente das irmãs: NÃO lança em canal/provider sem suporte — retorna `null`
+ * pra o chamador cair num fallback (ex: o nó Menu vira menu numerado no Baileys).
+ * Só o provider Oficial (Meta Cloud) implementa `sendInteractive`.
+ */
+export async function sendChannelInteractive(
+  target:   ReplyTarget,
+  payload:  InteractivePayload,
+  instance: ProviderInstance,
+  replyTo?: string,
+): Promise<{ messageId: string | null } | null> {
+  const channel = target.channel ?? "whatsapp"
+  if (channel !== "whatsapp") return null
+
+  const provider = getProvider(instance)
+  if (!provider.sendInteractive) return null
+
+  const r = await provider.sendInteractive(target.phoneNumber, payload, replyTo)
+  return { messageId: r.messageId ?? null }
 }

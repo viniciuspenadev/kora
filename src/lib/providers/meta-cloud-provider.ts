@@ -1,6 +1,7 @@
 import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
   GroupMetadata, MediaDownload, ContentType,
+  InteractivePayload, LocationPayload, ContactCard,
 } from "./types"
 import { parseVars } from "@/lib/whatsapp/template-vars"
 
@@ -150,23 +151,135 @@ export class MetaCloudProvider implements WhatsAppProvider {
   }
 
   // ── Messaging ───────────────────────────────────────────────
-  async sendText(phone: string, text: string): Promise<SendResult> {
+  async sendText(phone: string, text: string, replyTo?: string): Promise<SendResult> {
     return this.sendMessage({
       to: this.toWa(phone),
       type: "text",
       text: { preview_url: true, body: text },
+      ...(replyTo ? { context: { message_id: replyTo } } : {}),
     })
   }
 
   async sendMedia(
-    phone: string, mediaUrl: string, type: ContentType, caption?: string, fileName?: string,
+    phone: string, mediaUrl: string, type: ContentType, caption?: string, fileName?: string, replyTo?: string,
   ): Promise<SendResult> {
     const mediaId = await this.uploadMedia(mediaUrl, type, fileName)
     const media: Record<string, unknown> = { id: mediaId }
     // caption: válido em image/video/document; audio não tem caption.
     if (caption && type !== "audio") media.caption = caption
     if (type === "document" && fileName) media.filename = fileName
-    return this.sendMessage({ to: this.toWa(phone), type, [type]: media })
+    return this.sendMessage({
+      to: this.toWa(phone), type, [type]: media,
+      ...(replyTo ? { context: { message_id: replyTo } } : {}),
+    })
+  }
+
+  /**
+   * Mensagem interativa nativa. Deriva o `type` da Cloud API pela variante do
+   * payload: botões (≤3) · lista (≤10 linhas somadas) · CTA URL. `replyTo` cita
+   * a mensagem-alvo (quote). Trunca títulos pros limites da Meta pra não jogar 400.
+   */
+  async sendInteractive(phone: string, payload: InteractivePayload, replyTo?: string): Promise<SendResult> {
+    const action: Record<string, unknown> = {}
+    let type: "button" | "list" | "cta_url"
+
+    if (payload.cta) {
+      type = "cta_url"
+      action.name = "cta_url"
+      action.parameters = { display_text: payload.cta.displayText.slice(0, 20), url: payload.cta.url }
+    } else if (payload.list) {
+      type = "list"
+      action.button = payload.list.buttonText.slice(0, 20)
+      action.sections = payload.list.sections.map((s) => ({
+        ...(s.title ? { title: s.title.slice(0, 24) } : {}),
+        rows: s.rows.slice(0, 10).map((r) => ({
+          id:    r.id.slice(0, 200),
+          title: r.title.slice(0, 24),
+          ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+        })),
+      }))
+    } else {
+      type = "button"
+      action.buttons = (payload.buttons ?? []).slice(0, 3).map((b) => ({
+        type: "reply", reply: { id: b.id.slice(0, 256), title: b.title.slice(0, 20) },
+      }))
+    }
+
+    const interactive: Record<string, unknown> = {
+      type,
+      body:   { text: payload.body },
+      action,
+    }
+    if (payload.header) interactive.header = { type: "text", text: payload.header.slice(0, 60) }
+    if (payload.footer) interactive.footer = { text: payload.footer.slice(0, 60) }
+
+    return this.sendMessage({
+      to: this.toWa(phone),
+      type: "interactive",
+      interactive,
+      ...(replyTo ? { context: { message_id: replyTo } } : {}),
+    })
+  }
+
+  async sendLocation(phone: string, loc: LocationPayload): Promise<SendResult> {
+    return this.sendMessage({
+      to: this.toWa(phone),
+      type: "location",
+      location: {
+        latitude:  loc.latitude,
+        longitude: loc.longitude,
+        ...(loc.name ? { name: loc.name } : {}),
+        ...(loc.address ? { address: loc.address } : {}),
+      },
+    })
+  }
+
+  async sendContacts(phone: string, contacts: ContactCard[]): Promise<SendResult> {
+    return this.sendMessage({
+      to: this.toWa(phone),
+      type: "contacts",
+      contacts: contacts.map((c) => ({
+        name: { formatted_name: c.name, first_name: c.name },
+        ...(c.org ? { org: { company: c.org } } : {}),
+        ...(c.phones?.length ? { phones: c.phones.map((p) => ({ phone: p.phone, type: p.type ?? "CELL" })) } : {}),
+        ...(c.emails?.length ? { emails: c.emails.map((e) => ({ email: e.email, type: e.type ?? "WORK" })) } : {}),
+      })),
+    })
+  }
+
+  async sendReaction(phone: string, targetMessageId: string, emoji: string): Promise<SendResult> {
+    return this.sendMessage({
+      to: this.toWa(phone),
+      type: "reaction",
+      // emoji vazio = remove a reação (semântica da Meta).
+      reaction: { message_id: targetMessageId, emoji },
+    })
+  }
+
+  async sendSticker(phone: string, stickerUrl: string): Promise<SendResult> {
+    const mediaId = await this.uploadMedia(stickerUrl, "image")
+    return this.sendMessage({ to: this.toWa(phone), type: "sticker", sticker: { id: mediaId } })
+  }
+
+  /** Marca uma mensagem recebida como lida (✓✓ azul pro cliente). Best-effort. */
+  async markAsRead(messageId: string): Promise<void> {
+    await this.graph(`/${this.config.meta_phone_number_id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", status: "read", message_id: messageId }),
+    }).catch((e) => console.warn("[meta markAsRead]", (e as Error).message))
+  }
+
+  /** "Digitando…" pro cliente (já marca a msg como lida). Some sozinho (~25s). */
+  async sendTyping(messageId: string): Promise<void> {
+    await this.graph(`/${this.config.meta_phone_number_id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp", status: "read", message_id: messageId,
+        typing_indicator: { type: "text" },
+      }),
+    }).catch((e) => console.warn("[meta sendTyping]", (e as Error).message))
   }
 
   /**

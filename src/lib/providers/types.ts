@@ -31,6 +31,41 @@ export interface MediaDownload {
   fileName?: string
 }
 
+// ── Interativos / ricos (WhatsApp Oficial / Cloud API) ──────────
+/** Botão de resposta rápida (≤3 por mensagem). title ≤ 20 chars. */
+export interface InteractiveButton { id: string; title: string }
+/** Linha de uma lista interativa. title ≤ 24 chars, description ≤ 72. */
+export interface InteractiveRow { id: string; title: string; description?: string }
+export interface InteractiveSection { title?: string; rows: InteractiveRow[] }
+/**
+ * Payload de mensagem interativa nativa (botões / lista / CTA URL). Uma das
+ * três variantes por mensagem — o provider escolhe o `type` pela presença.
+ */
+export interface InteractivePayload {
+  body:     string
+  header?:  string
+  footer?:  string
+  /** type=button — até 3 botões de resposta. */
+  buttons?: InteractiveButton[]
+  /** type=list — menu de até 10 linhas (somadas as seções). */
+  list?:    { buttonText: string; sections: InteractiveSection[] }
+  /** type=cta_url — botão único que abre uma URL. */
+  cta?:     { displayText: string; url: string }
+}
+export interface LocationPayload {
+  latitude:  number
+  longitude: number
+  name?:     string
+  address?:  string
+}
+/** Contato compartilhável (subset dos campos da Cloud API). */
+export interface ContactCard {
+  name:    string
+  phones?: { phone: string; type?: string }[]
+  emails?: { email: string; type?: string }[]
+  org?:    string
+}
+
 export interface GroupParticipant {
   id:     string
   admin?: string | null
@@ -61,13 +96,15 @@ export interface WhatsAppProvider {
   setWebhook(webhookUrl: string): Promise<unknown>
 
   // ── Messaging ───────────────────────────────────────────────
-  sendText(phone: string, text: string): Promise<SendResult>
+  /** `replyTo` = whatsapp_msg_id da mensagem citada (quote). Opcional. */
+  sendText(phone: string, text: string, replyTo?: string): Promise<SendResult>
   sendMedia(
     phone:     string,
     mediaUrl:  string,
     type:      ContentType,
     caption?:  string,
     fileName?: string,
+    replyTo?:  string,
   ): Promise<SendResult>
   /**
    * Voice note (PTT — push-to-talk). Aparece no WhatsApp do destinatário
@@ -81,6 +118,27 @@ export interface WhatsAppProvider {
    * Baileys não implementa (não tem janela de 24h nem templates).
    */
   sendTemplate?(phone: string, name: string, langCode?: string, bodyParams?: Array<{ paramName?: string; text: string }>): Promise<SendResult>
+
+  // ── Mensagens ricas / interativas (Cloud API; Baileys não suporta nativo) ──
+  /**
+   * Mensagem interativa nativa: botões de resposta (≤3), lista (≤10) ou CTA URL.
+   * Só dentro da janela de 24h. `replyTo` = whatsapp_msg_id pra citar (quote).
+   * Ausente no Baileys → consumidores devem ter fallback (ex: menu numerado).
+   */
+  sendInteractive?(phone: string, payload: InteractivePayload, replyTo?: string): Promise<SendResult>
+  /** Envia uma localização (pin no mapa). */
+  sendLocation?(phone: string, loc: LocationPayload): Promise<SendResult>
+  /** Compartilha um ou mais contatos (cartão de visita). */
+  sendContacts?(phone: string, contacts: ContactCard[]): Promise<SendResult>
+  /** Reage a uma mensagem com um emoji ("" remove a reação). `fromMe` = a msg-alvo
+   *  foi enviada por nós (necessário p/ Baileys montar a key; Meta ignora). */
+  sendReaction?(phone: string, targetMessageId: string, emoji: string, fromMe?: boolean): Promise<SendResult>
+  /** Envia um sticker (webp) por URL. */
+  sendSticker?(phone: string, stickerUrl: string): Promise<SendResult>
+  /** Marca uma mensagem recebida como lida (✓✓ azul pro cliente). */
+  markAsRead?(messageId: string): Promise<void>
+  /** Mostra "digitando…" pro cliente (e marca lida). Expira sozinho (~25s). */
+  sendTyping?(messageId: string): Promise<void>
 
   /**
    * Sinaliza "digitando..." no chat do destinatário. Usado pelo humanizador
