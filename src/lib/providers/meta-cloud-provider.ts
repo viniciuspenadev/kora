@@ -1,7 +1,7 @@
 import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
   GroupMetadata, MediaDownload, ContentType,
-  InteractivePayload, LocationPayload, ContactCard,
+  InteractivePayload, LocationPayload, ContactCard, ReplyContext,
 } from "./types"
 import { parseVars } from "@/lib/whatsapp/template-vars"
 
@@ -151,17 +151,17 @@ export class MetaCloudProvider implements WhatsAppProvider {
   }
 
   // ── Messaging ───────────────────────────────────────────────
-  async sendText(phone: string, text: string, replyTo?: string): Promise<SendResult> {
+  async sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult> {
     return this.sendMessage({
       to: this.toWa(phone),
       type: "text",
       text: { preview_url: true, body: text },
-      ...(replyTo ? { context: { message_id: replyTo } } : {}),
+      ...(replyTo ? { context: { message_id: replyTo.id } } : {}),
     })
   }
 
   async sendMedia(
-    phone: string, mediaUrl: string, type: ContentType, caption?: string, fileName?: string, replyTo?: string,
+    phone: string, mediaUrl: string, type: ContentType, caption?: string, fileName?: string, replyTo?: ReplyContext,
   ): Promise<SendResult> {
     const mediaId = await this.uploadMedia(mediaUrl, type, fileName)
     const media: Record<string, unknown> = { id: mediaId }
@@ -170,7 +170,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     if (type === "document" && fileName) media.filename = fileName
     return this.sendMessage({
       to: this.toWa(phone), type, [type]: media,
-      ...(replyTo ? { context: { message_id: replyTo } } : {}),
+      ...(replyTo ? { context: { message_id: replyTo.id } } : {}),
     })
   }
 
@@ -179,7 +179,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
    * payload: botões (≤3) · lista (≤10 linhas somadas) · CTA URL. `replyTo` cita
    * a mensagem-alvo (quote). Trunca títulos pros limites da Meta pra não jogar 400.
    */
-  async sendInteractive(phone: string, payload: InteractivePayload, replyTo?: string): Promise<SendResult> {
+  async sendInteractive(phone: string, payload: InteractivePayload, replyTo?: ReplyContext): Promise<SendResult> {
     const action: Record<string, unknown> = {}
     let type: "button" | "list" | "cta_url"
 
@@ -217,7 +217,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
       to: this.toWa(phone),
       type: "interactive",
       interactive,
-      ...(replyTo ? { context: { message_id: replyTo } } : {}),
+      ...(replyTo ? { context: { message_id: replyTo.id } } : {}),
     })
   }
 

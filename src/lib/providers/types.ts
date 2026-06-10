@@ -31,6 +31,9 @@ export interface MediaDownload {
   fileName?: string
 }
 
+/** Mensagem citada (reply). Meta usa só `id`; Baileys/Evolution precisa do `text`. */
+export interface ReplyContext { id: string; text?: string }
+
 // ── Interativos / ricos (WhatsApp Oficial / Cloud API) ──────────
 /** Botão de resposta rápida (≤3 por mensagem). title ≤ 20 chars. */
 export interface InteractiveButton { id: string; title: string }
@@ -96,15 +99,16 @@ export interface WhatsAppProvider {
   setWebhook(webhookUrl: string): Promise<unknown>
 
   // ── Messaging ───────────────────────────────────────────────
-  /** `replyTo` = whatsapp_msg_id da mensagem citada (quote). Opcional. */
-  sendText(phone: string, text: string, replyTo?: string): Promise<SendResult>
+  /** Citação: `id` = whatsapp_msg_id da msg citada; `text` = prévia dela (Baileys
+   *  precisa do conteúdo pra renderizar o trecho citado; Meta usa só o id). */
+  sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult>
   sendMedia(
     phone:     string,
     mediaUrl:  string,
     type:      ContentType,
     caption?:  string,
     fileName?: string,
-    replyTo?:  string,
+    replyTo?:  ReplyContext,
   ): Promise<SendResult>
   /**
    * Voice note (PTT — push-to-talk). Aparece no WhatsApp do destinatário
@@ -125,7 +129,7 @@ export interface WhatsAppProvider {
    * Só dentro da janela de 24h. `replyTo` = whatsapp_msg_id pra citar (quote).
    * Ausente no Baileys → consumidores devem ter fallback (ex: menu numerado).
    */
-  sendInteractive?(phone: string, payload: InteractivePayload, replyTo?: string): Promise<SendResult>
+  sendInteractive?(phone: string, payload: InteractivePayload, replyTo?: ReplyContext): Promise<SendResult>
   /** Envia uma localização (pin no mapa). */
   sendLocation?(phone: string, loc: LocationPayload): Promise<SendResult>
   /** Compartilha um ou mais contatos (cartão de visita). */

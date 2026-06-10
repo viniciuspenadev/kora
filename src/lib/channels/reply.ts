@@ -11,7 +11,7 @@
 
 import "server-only"
 import { getProvider } from "@/lib/providers"
-import type { ContentType, InteractivePayload } from "@/lib/providers/types"
+import type { ContentType, InteractivePayload, ReplyContext } from "@/lib/providers/types"
 
 type ProviderInstance = Parameters<typeof getProvider>[0]
 
@@ -31,7 +31,7 @@ export async function sendChannelText(
   target:   ReplyTarget,
   text:     string,
   instance: ProviderInstance,
-  replyTo?: string,
+  replyTo?: ReplyContext,
 ): Promise<{ messageId: string | null }> {
   const channel = target.channel ?? "whatsapp"
 
@@ -60,7 +60,7 @@ export async function sendChannelMedia(
   target:   ReplyTarget,
   media:    { url: string; mediaType: ContentType; caption?: string; fileName?: string },
   instance: ProviderInstance,
-  replyTo?: string,
+  replyTo?: ReplyContext,
 ): Promise<{ messageId: string | null }> {
   const channel = target.channel ?? "whatsapp"
 
@@ -86,7 +86,7 @@ export async function sendChannelInteractive(
   target:   ReplyTarget,
   payload:  InteractivePayload,
   instance: ProviderInstance,
-  replyTo?: string,
+  replyTo?: ReplyContext,
 ): Promise<{ messageId: string | null } | null> {
   const channel = target.channel ?? "whatsapp"
   if (channel !== "whatsapp") return null

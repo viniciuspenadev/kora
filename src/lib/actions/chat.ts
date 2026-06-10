@@ -312,6 +312,9 @@ export async function sendMessage(
 
   // Citação (responder a uma mensagem). Notas privadas não citam pro WhatsApp.
   const quotedMeta = !isPrivateNote && replyTo ? await buildQuotedMeta(tenantId, replyTo) : null
+  const replyCtx = !isPrivateNote && replyTo
+    ? { id: replyTo, text: typeof quotedMeta?.preview === "string" ? quotedMeta.preview : undefined }
+    : undefined
 
   const { data: msg, error } = await supabaseAdmin
     .from("chat_messages")
@@ -336,7 +339,7 @@ export async function sendMessage(
     if (channel === "whatsapp") {
       try {
         const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
-        const result   = await provider.sendText(contact.phone_number ?? "", content, replyTo)
+        const result   = await provider.sendText(contact.phone_number ?? "", content, replyCtx)
 
         await supabaseAdmin
           .from("chat_messages")
@@ -609,6 +612,9 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const sendAsVoiceNote = isVoiceNote && mediaType === "audio"
   const quotedMeta = replyTo ? await buildQuotedMeta(tenantId, replyTo) : null
+  const replyCtx = replyTo
+    ? { id: replyTo, text: typeof quotedMeta?.preview === "string" ? quotedMeta.preview : undefined }
+    : undefined
 
   const { data: msg, error: dbErr } = await supabaseAdmin
     .from("chat_messages")
@@ -646,7 +652,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
           mediaType,
           caption || undefined,
           uploadName,
-          replyTo,
+          replyCtx,
         )
 
     await supabaseAdmin

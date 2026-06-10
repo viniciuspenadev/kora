@@ -1,8 +1,15 @@
 import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
   GroupMetadata, MediaDownload, ContentType,
-  LocationPayload, ContactCard,
+  LocationPayload, ContactCard, ReplyContext,
 } from "./types"
+
+/** Quote do Evolution: a doc exige `key.id` + `message.conversation` (o conteúdo
+ *  citado); sem o `message`, o Baileys envia a resposta SEM o trecho citado. */
+function evoQuoted(replyTo?: ReplyContext) {
+  if (!replyTo) return {}
+  return { quoted: { key: { id: replyTo.id }, message: { conversation: replyTo.text ?? "" } } }
+}
 
 interface EvolutionConfig {
   evolution_url:  string
@@ -98,13 +105,13 @@ export class EvolutionProvider implements WhatsAppProvider {
 
   // ── Messaging ───────────────────────────────────────────────
 
-  async sendText(phone: string, text: string, replyTo?: string): Promise<SendResult> {
+  async sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
     const r = await this.req<{ key?: { id?: string } }>(
       `/message/sendText/${this.instanceName}`,
       {
         method: "POST",
-        body: JSON.stringify({ number, text, ...(replyTo ? { quoted: { key: { id: replyTo } } } : {}) }),
+        body: JSON.stringify({ number, text, ...evoQuoted(replyTo) }),
       },
     )
     return { messageId: r.key?.id ?? "" }
@@ -116,7 +123,7 @@ export class EvolutionProvider implements WhatsAppProvider {
     type:     ContentType,
     caption?: string,
     fileName?: string,
-    replyTo?: string,
+    replyTo?: ReplyContext,
   ): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
     const r = await this.req<{ key?: { id?: string } }>(
@@ -129,7 +136,7 @@ export class EvolutionProvider implements WhatsAppProvider {
           media:     mediaUrl,
           caption:   caption ?? "",
           fileName:  fileName ?? undefined,
-          ...(replyTo ? { quoted: { key: { id: replyTo } } } : {}),
+          ...evoQuoted(replyTo),
         }),
       },
     )
