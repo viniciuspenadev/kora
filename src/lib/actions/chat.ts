@@ -1030,9 +1030,29 @@ export async function transferConversation(
   return {}
 }
 
+const VALID_CONVERSATION_STATUS = new Set(["open", "pending", "resolved", "snoozed"])
+
 export async function updateConversationStatus(conversationId: string, status: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
+  // Defesa em profundidade: status vem do client; só aceita valores conhecidos.
+  if (!VALID_CONVERSATION_STATUS.has(status)) throw new Error("Status inválido")
+
+  const tenantId = session.user.tenantId
+
+  // Visibilidade (anti-IDOR): só mexe no status de conversa que o atendente pode ATUAR.
+  // Concluir/Reabrir/Adiar/Pendente são ações principais do header → precisam do gate.
+  const { data: conv } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id, assigned_to, participants, department_id")
+    .eq("id", conversationId)
+    .eq("tenant_id", tenantId)
+    .single()
+  if (!conv) throw new Error("Conversa não encontrada")
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null })) {
+    throw new Error("Sem permissão para alterar esta conversa.")
+  }
 
   const now = new Date().toISOString()
   const updates: Record<string, unknown> = {
@@ -1053,7 +1073,7 @@ export async function updateConversationStatus(conversationId: string, status: s
     .from("chat_conversations")
     .update(updates)
     .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", tenantId)
 
   revalidatePath("/inbox")
 }
