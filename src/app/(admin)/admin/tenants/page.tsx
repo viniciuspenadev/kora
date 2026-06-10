@@ -15,7 +15,7 @@ export default async function TenantsPage() {
         .order("created_at", { ascending: false }),
       supabaseAdmin.from("tenant_billing_profile").select("tenant_id, person_type, tax_id"),
       supabaseAdmin.from("tenant_users").select("tenant_id"),
-      supabaseAdmin.from("whatsapp_instances").select("tenant_id, status"),
+      supabaseAdmin.from("whatsapp_instances").select("tenant_id, status, account_status, quality_rating"),
       supabaseAdmin.from("user_sessions").select("tenant_id, last_seen_at"),
     ])
 
@@ -25,11 +25,16 @@ export default async function TenantsPage() {
   const usersBy = new Map<string, number>()
   for (const m of members ?? []) usersBy.set(m.tenant_id, (usersBy.get(m.tenant_id) ?? 0) + 1)
 
-  const chBy = new Map<string, { total: number; connected: number }>()
+  const CRIT = new Set(["RESTRICTED", "BANNED", "FLAGGED", "REVIEW_REJECTED"])
+  const chBy = new Map<string, { total: number; connected: number; risk: "critical" | "warning" | null }>()
   for (const c of channels ?? []) {
-    const cur = chBy.get(c.tenant_id) ?? { total: 0, connected: 0 }
+    const cur = chBy.get(c.tenant_id) ?? { total: 0, connected: 0, risk: null }
     cur.total++
     if (c.status === "connected") cur.connected++
+    const acc = (c as { account_status?: string | null }).account_status
+    const q   = (c as { quality_rating?: string | null }).quality_rating
+    if ((acc && CRIT.has(acc)) || q === "RED") cur.risk = "critical"
+    else if (cur.risk == null && q === "YELLOW") cur.risk = "warning"
     chBy.set(c.tenant_id, cur)
   }
 
@@ -60,6 +65,7 @@ export default async function TenantsPage() {
       users:              usersBy.get(t.id) ?? 0,
       channels:           ch?.total ?? 0,
       channels_connected: ch?.connected ?? 0,
+      health_risk:        ch?.risk ?? null,
       last_active:        lastBy.get(t.id) ?? null,
     }
   })

@@ -47,6 +47,7 @@ interface MessageMeta {
   location_name?:     string | null
   location_address?:  string | null
   forwarded?:         boolean
+  error?:             { code?: number | null; title?: string | null; message?: string | null }
   // IA / Flow Builder
   automation?:        "flow" | "ai" | "ai_note" | string
   ai_generated?:      boolean
@@ -705,6 +706,13 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
           {!isIncoming && <StatusIcon status={message.status} />}
         </div>
 
+        {/* Falha de envio — mostra o motivo (do statuses[].errors da Meta). */}
+        {!isIncoming && message.status === "failed" && (
+          <p className="text-[10px] text-red-500 mt-0.5 text-right flex items-center justify-end gap-1">
+            <AlertCircle className="size-2.5 shrink-0" /> {failReason(meta)}
+          </p>
+        )}
+
         {/* Reações coladas na bolha (igual WhatsApp) — chip flutuante na borda inferior. */}
         {hasReactions && (
           <div className={`absolute -bottom-3 ${isIncoming ? "left-2" : "right-2"} flex items-center gap-0.5 rounded-full bg-white border border-slate-200 shadow-sm px-1.5 py-0.5`}>
@@ -776,6 +784,22 @@ function StatusIcon({ status }: { status: string }) {
     case "failed":    return <AlertCircle className="size-3 text-red-500" />
     default:          return null
   }
+}
+
+/** Motivo amigável da falha de envio (mapeia códigos da Meta; senão usa o título/mensagem). */
+const FAIL_CODE_LABEL: Record<number, string> = {
+  131047: "Janela de 24h fechada — envie um template",
+  131026: "Número não está no WhatsApp",
+  131051: "Tipo de mensagem não suportado",
+  131053: "Falha ao enviar a mídia",
+  130472: "Cliente em experiência limitada do WhatsApp",
+  131049: "Limite de marketing — a Meta segurou o envio",
+}
+function failReason(meta: MessageMeta): string {
+  const e = meta.error
+  if (!e) return "Não entregue"
+  if (e.code && FAIL_CODE_LABEL[e.code]) return FAIL_CODE_LABEL[e.code]
+  return e.title || e.message || "Não entregue"
 }
 
 function getMediaIcon(type: string) {

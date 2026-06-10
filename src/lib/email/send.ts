@@ -206,6 +206,76 @@ Kora
   return { subject, html, text }
 }
 
+// ── Alerta de saúde do número oficial (restrição / qualidade) ──────
+
+export interface HealthAlertEmailContext {
+  name:     string | null
+  status:   string        // RESTRICTED | BANNED | FLAGGED | Qualidade baixa | ...
+  reason:   string | null
+  critical: boolean
+}
+
+/** Aviso ao dono/admin quando o número oficial é restrito/banido ou a qualidade cai. */
+export function buildHealthAlertEmail(ctx: HealthAlertEmailContext): { subject: string; html: string; text: string } {
+  const headline = ctx.critical ? "Seu número oficial está em risco" : "A qualidade do seu número caiu"
+  const subject  = ctx.critical ? "🔴 WhatsApp oficial em risco — ação recomendada" : "🟡 Qualidade do WhatsApp oficial caiu"
+  const logoUrl  = `${getAppBaseUrl()}/logo_kora.png`
+  const link     = `${getAppBaseUrl()}/integracoes/whatsapp-oficial`
+  const accent   = ctx.critical ? "#dc2626" : "#d97706"
+  const greeting = ctx.name ? `Olá, ${ctx.name}!` : "Olá!"
+
+  const text = `${greeting}
+
+${headline}.
+
+Status: ${ctx.status}${ctx.reason ? `\nMotivo: ${ctx.reason}` : ""}
+
+${ctx.critical
+  ? "Seus envios podem estar limitados. Revise suas mensagens e templates para regularizar o número."
+  : "Revise seus envios (evite mensagens marcadas como spam) para não perder limite de envio."}
+
+Ver detalhes: ${link}
+
+—
+Kora
+`
+
+  const html = `<!doctype html>
+<html lang="pt-BR">
+<body style="margin:0;padding:0;background:#f8fafc;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 16px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:540px;background:#ffffff;border-radius:16px;border:1px solid #e2e8f0;overflow:hidden;">
+        <tr><td style="padding:32px 32px 24px 32px;">
+          <img src="${logoUrl}" alt="Kora" height="28" style="display:block;height:28px;width:auto;border:0;" />
+        </td></tr>
+        <tr><td style="padding:0 32px 8px 32px;">
+          <h1 style="margin:0 0 8px 0;font-size:22px;font-weight:700;line-height:1.3;">
+            <span style="color:${accent};">${escapeHtml(headline)}</span>
+          </h1>
+          <p style="margin:0 0 16px 0;font-size:14px;color:#475569;line-height:1.6;">
+            Status do número: <strong>${escapeHtml(ctx.status)}</strong>.${ctx.reason ? ` Motivo: ${escapeHtml(ctx.reason)}.` : ""}
+          </p>
+          <p style="margin:0 0 24px 0;font-size:14px;color:#475569;line-height:1.6;">
+            ${ctx.critical
+              ? "Seus envios podem estar limitados. Revise suas mensagens e templates para regularizar o número o quanto antes."
+              : "Revise seus envios (evite conteúdo marcado como spam) para não perder limite de envio."}
+          </p>
+        </td></tr>
+        <tr><td style="padding:0 32px 32px 32px;">
+          <a href="${link}" style="display:inline-block;background:#004add;color:#ffffff;font-size:14px;font-weight:600;padding:12px 24px;border-radius:10px;text-decoration:none;">
+            Ver saúde do número
+          </a>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`
+
+  return { subject, html, text }
+}
+
 // ── Verificação de cadastro (trial self-serve) ────────────────────
 
 export interface VerificationEmailContext {

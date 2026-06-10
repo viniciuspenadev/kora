@@ -28,6 +28,7 @@ export interface TenantRow {
   users:              number
   channels:           number
   channels_connected: number
+  health_risk:        "critical" | "warning" | null
   last_active:        string | null   // max(user_sessions.last_seen_at)
 }
 
@@ -180,6 +181,16 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
               <Smartphone className="size-3.5 text-slate-400" /> {r.channels}
               <span className={`size-1.5 rounded-full ${r.channels_connected > 0 ? "bg-emerald-500" : "bg-slate-300"}`}
                 title={r.channels_connected > 0 ? `${r.channels_connected} conectado(s)` : "nenhum conectado"} />
+              {r.health_risk && (
+                <span
+                  className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                    r.health_risk === "critical" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                  }`}
+                  title={r.health_risk === "critical" ? "Número oficial em risco (restrito ou qualidade baixa)" : "Qualidade do número média"}
+                >
+                  {r.health_risk === "critical" ? "risco" : "qualid."}
+                </span>
+              )}
             </span>
           )
       ),

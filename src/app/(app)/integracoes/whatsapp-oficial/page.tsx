@@ -11,9 +11,46 @@ import { getEnabledModuleSlugs } from "@/lib/modules"
 import { PageShell } from "@/components/ui/page-shell"
 import { OfficialDashboard } from "@/components/integrations/official/official-dashboard"
 import { EmbeddedSignupButton } from "@/components/integrations/official/embedded-signup-button"
-import { BadgeCheck, ArrowLeft, Lock } from "lucide-react"
+import { BadgeCheck, ArrowLeft, Lock, ShieldAlert, AlertTriangle } from "lucide-react"
 
 export const dynamic = "force-dynamic"
+
+/** Banner de saúde — só aparece quando há problema (restrição/ban/review ou qualidade baixa). */
+const CRITICAL_STATUS: Record<string, string> = {
+  RESTRICTED:      "Número restrito pela Meta",
+  BANNED:          "Conta desativada pela Meta",
+  FLAGGED:         "Número sinalizado pela Meta",
+  REVIEW_REJECTED: "Revisão da conta rejeitada",
+}
+function HealthBanner({ accountStatus, reason, quality }: { accountStatus: string | null; reason: string | null; quality: string | null }) {
+  const critical = accountStatus ? CRITICAL_STATUS[accountStatus] : null
+  if (critical) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex items-start gap-3">
+        <ShieldAlert className="size-5 text-red-600 shrink-0 mt-0.5" />
+        <div className="text-sm text-red-800">
+          <p className="font-semibold">{critical}.</p>
+          <p className="mt-0.5 text-red-700">
+            {reason ? <>Motivo: {reason}. </> : null}
+            Seus envios podem estar limitados — revise mensagens e templates para regularizar o número.
+          </p>
+        </div>
+      </div>
+    )
+  }
+  if (quality === "RED" || quality === "YELLOW") {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 flex items-start gap-3">
+        <AlertTriangle className="size-5 text-amber-600 shrink-0 mt-0.5" />
+        <div className="text-sm text-amber-800">
+          <p className="font-semibold">Qualidade do número {quality === "RED" ? "baixa" : "média"}.</p>
+          <p className="mt-0.5 text-amber-700">Revise seus envios (evite conteúdo marcado como spam) para não perder limite de envio.</p>
+        </div>
+      </div>
+    )
+  }
+  return null
+}
 
 export default async function WhatsappOficialPage() {
   const session = await auth()
@@ -23,7 +60,7 @@ export default async function WhatsappOficialPage() {
   const [{ data: inst }, modules] = await Promise.all([
     supabaseAdmin
       .from("whatsapp_instances")
-      .select("meta_phone_number_id, meta_business_account_id, meta_access_token, meta_app_secret, status")
+      .select("meta_phone_number_id, meta_business_account_id, meta_access_token, meta_app_secret, status, account_status, health_reason")
       .eq("tenant_id", session.user.tenantId)
       .eq("provider", "meta_cloud")
       .order("created_at", { ascending: true })
@@ -118,6 +155,12 @@ export default async function WhatsappOficialPage() {
     >
       <div className="space-y-5">
         {backLink}
+
+        <HealthBanner
+          accountStatus={inst!.account_status ?? null}
+          reason={inst!.health_reason ?? null}
+          quality={phone.quality_rating ?? null}
+        />
 
         {error && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">

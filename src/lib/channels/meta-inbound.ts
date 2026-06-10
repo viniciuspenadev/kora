@@ -10,6 +10,7 @@ import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { notifyInboundMessage } from "@/lib/push/send"
 import { upsertTemplateCache, logTemplateEvent } from "@/lib/channels/template-cache"
+import { HEALTH_FIELDS, processHealthWebhook } from "@/lib/channels/health"
 import { slimAdMeta } from "@/lib/ad-reply"
 import type { ExternalAdReply } from "@/types/chat"
 
@@ -348,6 +349,13 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
         continue
       }
 
+      // Saúde do número (restrição/ban/qualidade/tier) — também por WABA id.
+      if (HEALTH_FIELDS.has(c.field ?? "")) {
+        await processHealthWebhook((entry as { id?: string })?.id, c.field!, (c.value ?? {}) as Parameters<typeof processHealthWebhook>[2])
+          .catch((e) => console.error("[meta-webhook] health:", e))
+        continue
+      }
+
       if (c.field !== "messages") continue
       const value = c.value ?? {}
       const pnid = (value.metadata as { phone_number_id?: string } | undefined)?.phone_number_id
@@ -356,8 +364,8 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
       const instance = await findInstance(pnid)
       if (!instance) { console.warn("[meta-webhook] instância não achada p/ phone_number_id", pnid); continue }
 
-      // Status (delivered/read/failed)
-      for (const st of (value.statuses as Array<{ id: string; status: string }> | undefined) ?? []) {
+      // Status (delivered/read/failed + erro/cobrança)
+      for (const st of (value.statuses as MetaStatus[] | undefined) ?? []) {
         await processStatus(instance.tenant_id, st).catch((e) => console.error("[meta-webhook] status:", e))
       }
 
@@ -546,7 +554,14 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   }
 }
 
-async function processStatus(tenantId: string, st: { id: string; status: string }) {
+interface MetaStatus {
+  id: string; status: string
+  conversation?: { id?: string; origin?: { type?: string } }
+  pricing?:      { billable?: boolean; pricing_model?: string; category?: string }
+  errors?:       Array<{ code?: number; title?: string; message?: string }>
+}
+
+async function processStatus(tenantId: string, st: MetaStatus) {
   const map: Record<string, { status: string; field?: string }> = {
     sent:      { status: "sent" },
     delivered: { status: "delivered", field: "delivered_at" },
@@ -554,10 +569,33 @@ async function processStatus(tenantId: string, st: { id: string; status: string 
     failed:    { status: "failed" },
   }
   const m = map[st.status]
-  if (!m) return
-  const update: Record<string, unknown> = { status: m.status }
-  if (m.field) update[m.field] = new Date().toISOString()
-  await supabaseAdmin.from("chat_messages").update(update).eq("whatsapp_msg_id", st.id).eq("tenant_id", tenantId)
+  if (m) {
+    const update: Record<string, unknown> = { status: m.status }
+    if (m.field) update[m.field] = new Date().toISOString()
+    // Falha → guarda o MOTIVO no metadata (merge) pra bolha exibir "por que falhou".
+    if (st.status === "failed" && st.errors?.length) {
+      const e = st.errors[0]
+      const { data: row } = await supabaseAdmin
+        .from("chat_messages").select("metadata")
+        .eq("whatsapp_msg_id", st.id).eq("tenant_id", tenantId).maybeSingle()
+      const meta = (row?.metadata ?? {}) as Record<string, unknown>
+      update.metadata = { ...meta, error: { code: e.code ?? null, title: e.title ?? null, message: e.message ?? null } }
+    }
+    await supabaseAdmin.from("chat_messages").update(update).eq("whatsapp_msg_id", st.id).eq("tenant_id", tenantId)
+  }
+
+  // Fundação do financeiro: categoria/cobrança da conversa (dedup por conversation.id
+  // via índice único parcial → 23505 ignorado; a Meta reemite o mesmo id na janela).
+  if (st.conversation?.id) {
+    const { error } = await supabaseAdmin.from("wa_billing_events").insert({
+      tenant_id:          tenantId,
+      wa_conversation_id: st.conversation.id,
+      category:           st.pricing?.category ?? st.conversation.origin?.type ?? null,
+      pricing_model:      st.pricing?.pricing_model ?? null,
+      billable:           st.pricing?.billable ?? null,
+    })
+    if (error && error.code !== "23505") console.error("[meta-billing]", error.message)
+  }
 }
 
 // ── Ciclo de vida de templates (status/qualidade/categoria) ──

@@ -16,7 +16,7 @@
  *   3. Aparece automaticamente em /admin/emails
  */
 
-import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVerificationEmail } from "./send"
+import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVerificationEmail, buildHealthAlertEmail } from "./send"
 
 const WA = "https://wa.me/5511987253394"
 
@@ -61,6 +61,19 @@ export const EMAIL_CATALOG: EmailTemplateMeta[] = [
       inviterName:   "Vinicius Pena",
       expiresInDays: 7,
     }),
+  },
+  {
+    slug:        "whatsapp_health_alert",
+    name:        "Alerta de saúde do WhatsApp oficial",
+    description: "Aviso ao dono/admin quando o número oficial é restrito/banido pela Meta ou a qualidade cai (vermelho).",
+    trigger:     "Disparado pelo webhook da Meta (account_update/phone_number_quality_update) quando o número entra em risco.",
+    variables: [
+      { key: "name",     description: "Nome do destinatário (pode ser null)", example: "Vinicius" },
+      { key: "status",   description: "Status do número",                     example: "RESTRICTED" },
+      { key: "reason",   description: "Motivo informado pela Meta",           example: "RESTRICTED_CUSTOMER_INITIATED_MESSAGING" },
+      { key: "critical", description: "Crítico (restrição/ban) vs aviso",     example: "true" },
+    ],
+    build: () => buildHealthAlertEmail({ name: "Vinicius", status: "RESTRICTED", reason: "RESTRICTED_CUSTOMER_INITIATED_MESSAGING", critical: true }),
   },
   {
     slug:        "daily_report",
