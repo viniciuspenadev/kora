@@ -1,0 +1,144 @@
+import "server-only"
+import { supabaseAdmin } from "@/lib/supabase"
+import { getProvider } from "@/lib/providers"
+
+// ═══════════════════════════════════════════════════════════════
+// Consumidor BUILT-IN dos eventos da Agenda (doc §6.7-A)
+// ═══════════════════════════════════════════════════════════════
+// A Agenda emite eventos; aqui mora o consumidor "fácil" (template por
+// escopo). Fase 3b cobre o evento `created` → steps com offset ≤ 0
+// ("ao agendar"). Idempotente pelo log `appointment_reminders`.
+// Best-effort: NUNCA lança (não derruba a ação que originou o evento).
+//
+// 🔒 GATE DE SEGURANÇA — ENFORCADO NO BACKEND: o envio só acontece se o
+// tenant ligou `tenant_config.agenda_reminders_enabled` (default false). UI é
+// manipulável; a trava mora aqui, no servidor. Tudo o que não envia fica
+// logado em `appointment_reminders` com o motivo.
+
+const TZ = "America/Sao_Paulo"
+
+export type AgendaEvent = "created" | "confirmed" | "canceled" | "no_show"
+
+interface PolicyStep {
+  offset_minutes?: number
+  audience?: "customer" | "agent" | "both"
+  channel?: "whatsapp" | "inapp"
+  text?: string
+  template_name?: string
+  request_confirmation?: boolean
+}
+
+function render(text: string, vars: Record<string, string>): string {
+  return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "")
+}
+
+interface ApptForEvent {
+  id: string; tenant_id: string; conversation_id: string | null; starts_at: string; notify_customer: boolean
+  chat_contacts: { push_name: string | null; custom_name: string | null; phone_number: string | null } | null
+  tenant_services: { name: string | null; reminder_policy: { steps?: PolicyStep[] } | null } | null
+  tenant_resources: { name: string | null } | null
+}
+
+/**
+ * Processa um evento de agendamento pelo caminho built-in. Hoje só `created`
+ * (Fase 3b); os demais entram em 3c+. Chamado best-effort pós-ação.
+ */
+export async function runAppointmentEvent(appointmentId: string, event: AgendaEvent): Promise<void> {
+  try {
+    if (event !== "created") return
+
+    const { data } = await supabaseAdmin.from("appointments")
+      .select(`id, tenant_id, conversation_id, starts_at, notify_customer,
+               chat_contacts ( push_name, custom_name, phone_number ),
+               tenant_services ( name, reminder_policy ),
+               tenant_resources ( name )`)
+      .eq("id", appointmentId).maybeSingle()
+    const appt = data as unknown as ApptForEvent | null
+    if (!appt) return
+
+    // 3º gate (backend): este agendamento optou por NÃO avisar o cliente
+    // (follow-up interno). Nada sai; nem precisa logar (não havia intenção).
+    if (appt.notify_customer === false) return
+
+    const steps = (appt.tenant_services?.reminder_policy?.steps ?? [])
+      .filter((s) => (s.offset_minutes ?? 0) <= 0 && (s.audience ?? "customer") !== "agent")
+    if (steps.length === 0) return
+
+    // 🔒 Master switch do tenant (backend) — sem ligar, nada sai.
+    const { data: cfg } = await supabaseAdmin.from("tenant_config")
+      .select("agenda_reminders_enabled").eq("tenant_id", appt.tenant_id).maybeSingle()
+    const enabled = cfg?.agenda_reminders_enabled === true
+
+    const c = appt.chat_contacts
+    const vars: Record<string, string> = {
+      contato: c?.custom_name || c?.push_name || "",
+      data:    new Date(appt.starts_at).toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "long" }),
+      hora:    new Date(appt.starts_at).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }),
+      servico: appt.tenant_services?.name ?? "",
+      recurso: appt.tenant_resources?.name ?? "",
+    }
+
+    for (let i = 0; i < steps.length; i++) {
+      await dispatchCustomerStep(appt, steps[i], `created#${i}`, vars, enabled)
+    }
+  } catch (e) {
+    console.error("[agenda] runAppointmentEvent:", e instanceof Error ? e.message : e)
+  }
+}
+
+async function logReminder(appt: ApptForEvent, stepKey: string, channel: string, status: string, detail?: string) {
+  // unique(appointment_id, step_key, audience) → insert duplicado é no-op silencioso.
+  await supabaseAdmin.from("appointment_reminders").insert({
+    tenant_id: appt.tenant_id, appointment_id: appt.id,
+    step_key: stepKey, audience: "customer", channel, status, detail: detail ?? null,
+  })
+}
+
+async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKey: string, vars: Record<string, string>, enabled: boolean) {
+  // Idempotência: já registramos esse step pra esse agendamento?
+  const { data: done } = await supabaseAdmin.from("appointment_reminders")
+    .select("id").eq("appointment_id", appt.id).eq("step_key", stepKey).eq("audience", "customer").maybeSingle()
+  if (done) return
+
+  if (!enabled) return logReminder(appt, stepKey, "whatsapp", "skipped", "avisos desativados (tenant_config)")
+
+  const text = render(step.text ?? "", vars).trim()
+  const phone = appt.chat_contacts?.phone_number ?? ""
+  if (!text)  return logReminder(appt, stepKey, "whatsapp", "skipped", "step sem texto")
+  if (!phone) return logReminder(appt, stepKey, "whatsapp", "skipped", "contato sem telefone")
+  // 3b envia pela conversa existente (janela fresca). Sem conversa → 3c (cron/template).
+  if (!appt.conversation_id) return logReminder(appt, stepKey, "whatsapp", "skipped", "sem conversa (3b)")
+
+  // Resolve a instância da conversa (fallback: 1ª do tenant).
+  const { data: conv } = await supabaseAdmin.from("chat_conversations").select("instance_id").eq("id", appt.conversation_id).maybeSingle()
+  let instance: Record<string, unknown> | null = null
+  if (conv?.instance_id) {
+    const { data } = await supabaseAdmin.from("whatsapp_instances").select("*").eq("id", conv.instance_id).maybeSingle()
+    instance = data
+  }
+  if (!instance) {
+    const { data } = await supabaseAdmin.from("whatsapp_instances").select("*").eq("tenant_id", appt.tenant_id).limit(1).maybeSingle()
+    instance = data
+  }
+  if (!instance) return logReminder(appt, stepKey, "whatsapp", "failed", "tenant sem instância")
+
+  try {
+    const result = await getProvider(instance).sendText(phone, text)
+    // Persiste na thread (igual à automação welcome) → o atendente vê o aviso.
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: appt.conversation_id, tenant_id: appt.tenant_id,
+      sender_type: "agent", sender_id: null, content_type: "text", content: text,
+      whatsapp_msg_id: result.messageId || null, status: "sent", is_private_note: false,
+      metadata: { agenda_reminder: stepKey, automated: true },
+    })
+    await supabaseAdmin.from("chat_conversations").update({
+      last_message_at: new Date().toISOString(), last_message_preview: text.slice(0, 100),
+      last_message_dir: "out", updated_at: new Date().toISOString(),
+    }).eq("id", appt.conversation_id)
+    await logReminder(appt, stepKey, "whatsapp", "sent")
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    // #131047 = janela 24h fechada no Meta → precisa template (Fase 3c).
+    await logReminder(appt, stepKey, "whatsapp", "failed", /131047/.test(msg) ? "janela fechada (template = 3c)" : msg)
+  }
+}

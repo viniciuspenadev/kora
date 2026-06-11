@@ -75,6 +75,7 @@ interface Props {
   currentUserId:       string
   userDepartmentId?:   string | null
   supabaseToken:       string
+  agendaEnabled?:      boolean
 }
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -134,6 +135,7 @@ export function InboxClient({
   currentUserId,
   userDepartmentId = null,
   supabaseToken,
+  agendaEnabled = false,
 }: Props) {
   // ── State principal de listagem ─────────────────────────────
   const [conversations, setConversations] = useState(initialConversations)
@@ -1156,6 +1158,7 @@ export function InboxClient({
                   onArchiveToggle={handleArchiveToggle}
                   onBack={() => { setActiveId(null); setActiveMessages([]); setContactSheetOpen(false) }}
                   onOpenContact={() => setContactSheetOpen(true)}
+                  agendaEnabled={agendaEnabled}
                 />
               </div>
               {activeConv.chat_contacts && (

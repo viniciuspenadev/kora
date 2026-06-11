@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import { ChevronRight, Home, Menu } from "lucide-react"
 import { useAppShell } from "@/components/app/app-shell-context"
 import { MyAvatar } from "@/components/app/my-avatar"
+import { NotificationBell } from "@/components/app/notification-bell"
 
 const ROUTE_LABELS: Record<string, string> = {
   "/inbox":         "Inbox",
@@ -25,7 +26,12 @@ const ROLE_LABELS: Record<string, string> = {
   agent: "Atendente",
 }
 
-export function Topbar({ userName, userRole }: { userName: string; userRole: string }) {
+export function Topbar({
+  userName, userRole, userId, supabaseToken,
+}: {
+  userName: string; userRole: string
+  userId: string; supabaseToken: string
+}) {
   const pathname = usePathname()
   const label    = getLabel(pathname)
   const { setNavOpen } = useAppShell()
@@ -54,6 +60,7 @@ export function Topbar({ userName, userRole }: { userName: string; userRole: str
       </div>
 
       <div className="flex items-center gap-2.5">
+        <NotificationBell userId={userId} supabaseToken={supabaseToken} />
         <div className="text-right hidden sm:block">
           <p className="text-xs font-semibold text-slate-700 leading-none">{userName}</p>
           <p className="text-[11px] text-slate-400 leading-none mt-0.5">{ROLE_LABELS[userRole] ?? userRole}</p>

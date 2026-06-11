@@ -6,14 +6,17 @@ import { MessageInput } from "./message-input"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
+import { toast } from "sonner"
 import {
   Phone, CheckCircle2, Clock, XCircle,
   MoreVertical, RotateCcw, Moon, Users, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore,
-  ArrowLeft, Info,
+  ArrowLeft, Info, CalendarPlus,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { TransferDialog, type TransferOpts } from "@/components/chat/transfer-dialog"
+import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
+import { listResources, listServices, type ResourceRow, type ServiceRow } from "@/lib/actions/agenda"
 import { ArrowLeftRight } from "lucide-react"
 import { buildTimelineGroups, TimelineDivider, DateDivider } from "@/components/chat/timeline-divider"
 import type { ChatMessage, ChatConversation, ChatQuickReply, ExternalAdReply } from "@/types/chat"
@@ -56,6 +59,8 @@ interface Props {
   onBack?:         () => void
   /** Mobile (<md): abre a ficha do contato (sheet). */
   onOpenContact?:  () => void
+  /** Tenant tem o módulo agenda → habilita "Agendar" no menu da conversa. */
+  agendaEnabled?:  boolean
 }
 
 const STATUS_OPTIONS = [
@@ -104,12 +109,31 @@ export function ChatPanel({
   loadingMessages = false,
   onSendText, onSendMedia, onSendVoice, onArchiveToggle,
   onReply, onReact, onSendLocation, onSendContact, onSendSticker, replyTarget, onCancelReply,
-  onBack, onOpenContact,
+  onBack, onOpenContact, agendaEnabled = false,
 }: Props) {
   const isArchived = !!conversation.archived_at
   // Menu de ações (kebab) por clique — funciona em desktop e mobile (toque).
   const [menuOpen, setMenuOpen] = useState(false)
   const [transferOpen, setTransferOpen] = useState(false)
+  // Agendar pela conversa (módulo agenda) — carrega recursos/serviços on-demand.
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [agendaData, setAgendaData] = useState<{ resources: ResourceRow[]; services: ServiceRow[] } | null>(null)
+  const [agendaLoading, setAgendaLoading] = useState(false)
+
+  async function openSchedule() {
+    setMenuOpen(false)
+    if (!conversation.contact_id) return
+    let data = agendaData
+    if (!data) {
+      setAgendaLoading(true)
+      const [resources, services] = await Promise.all([listResources(), listServices()])
+      data = { resources, services }
+      setAgendaData(data)
+      setAgendaLoading(false)
+    }
+    if (data.resources.length === 0) { toast.error("Configure os recursos da agenda primeiro (em Agenda → Configurar)."); return }
+    setScheduleOpen(true)
+  }
   const messagesEndRef     = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const topSentinelRef     = useRef<HTMLDivElement>(null)
@@ -413,6 +437,16 @@ export function ChatPanel({
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
                 <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[188px] z-20">
+                  {agendaEnabled && conversation.contact_id && (
+                    <button
+                      type="button"
+                      onClick={openSchedule}
+                      disabled={agendaLoading}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
+                    >
+                      {agendaLoading ? <Loader2 className="size-3.5 shrink-0 text-slate-400 animate-spin" /> : <CalendarPlus className="size-3.5 shrink-0 text-slate-400" />} Agendar
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => { setTransferOpen(true); setMenuOpen(false) }}
@@ -560,6 +594,17 @@ export function ChatPanel({
         currentAssignedTo={conversation.assigned_to}
         onTransfer={onTransfer}
       />
+
+      {scheduleOpen && agendaData && conversation.contact_id && (
+        <NewAppointmentDialog
+          resources={agendaData.resources}
+          services={agendaData.services}
+          fixedContact={{ id: conversation.contact_id, name }}
+          conversationId={conversation.id}
+          onClose={() => setScheduleOpen(false)}
+          onCreated={() => { setScheduleOpen(false); toast.success("Agendamento criado") }}
+        />
+      )}
     </div>
   )
 }

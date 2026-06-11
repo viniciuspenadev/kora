@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { InboxClient } from "@/components/chat/inbox-client"
 import { getConversations } from "@/lib/actions/conversations"
 import { getUnreadTotal } from "@/lib/actions/chat"
+import { hasModule } from "@/lib/modules"
 import type { ChatMessage, ChatContact, ChatQuickReply } from "@/types/chat"
 
 const INITIAL_LIMIT       = 25
@@ -137,6 +138,8 @@ export default async function InboxPage() {
     tagsByContact[(t as { taggable_id: string }).taggable_id] = arr
   }
 
+  const agendaEnabled = await hasModule(tenantId, "agenda")
+
   return (
     <div className="h-[calc(100dvh-3.5rem)]">
       <InboxClient
@@ -161,6 +164,7 @@ export default async function InboxPage() {
         currentUserId={session.user.id}
         userDepartmentId={userDepartmentId}
         supabaseToken={session.user.supabaseToken}
+        agendaEnabled={agendaEnabled}
       />
     </div>
   )

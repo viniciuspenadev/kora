@@ -60,7 +60,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <MobileSidebar {...navProps} />
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           <UpdateBanner />
-          <Topbar userName={navProps.userName} userRole={session.user.role} />
+          <Topbar
+            userName={navProps.userName}
+            userRole={session.user.role}
+            userId={session.user.id}
+            supabaseToken={session.user.supabaseToken}
+          />
           <PushPrompt />
           {setup && !setup.allDone && <OnboardingBanner setup={setup} />}
           <main className="flex-1 overflow-y-auto">{children}</main>
