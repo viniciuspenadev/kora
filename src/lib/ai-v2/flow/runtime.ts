@@ -353,7 +353,18 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       case "http": {
         const cfg = node.config as unknown as HttpNodeConfig
         const cap = getCapability(HTTP_REQUEST)
-        const r = await cap?.run(ctx, node.config)
+        // Interpola {{variaveis}} do fluxo na URL/body/headers ANTES de chamar —
+        // destrava ENVIAR dado coletado pra a API externa. Genérico: vale pra
+        // qualquer integração (frete, CRM, estoque…), não só este caso.
+        const resolved = {
+          ...cfg,
+          url:  interpolate(cfg.url ?? "", variables),
+          body: typeof cfg.body === "string" ? interpolate(cfg.body, variables) : cfg.body,
+          headers: cfg.headers
+            ? Object.fromEntries(Object.entries(cfg.headers).map(([k, v]) => [k, interpolate(String(v), variables)]))
+            : cfg.headers,
+        }
+        const r = await cap?.run(ctx, resolved)
         const saveAs = cfg.saveAs?.trim() || "http_response"
         variables[saveAs] = r?.ok && r.data !== undefined ? r.data : { error: r?.error ?? "falha" }
         currentId = edgeTarget(graph, node.id)
