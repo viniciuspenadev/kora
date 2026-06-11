@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
-import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageSquare, ChevronRight } from "lucide-react"
+import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageSquare, ChevronRight, X } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -319,26 +319,29 @@ function ServiceDialog({ service, resources, onClose, onSaved }: {
   const [active, setActive] = useState(service?.active ?? true)
   const [saving, setSaving] = useState(false)
   const [notifyMsg, setNotifyMsg] = useState(service ? readNotifyStep(service) : DEFAULT_MSG)
-  const msgRef = useRef<HTMLTextAreaElement>(null)
+  const [reminders, setReminders] = useState<Reminder[]>(readReminders(service))
+  const [editing, setEditing] = useState<{ index: number | null; draft: Reminder } | null>(null)
 
   function toggleRes(id: string) {
     setResIds((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id])
   }
 
-  // Insere a variável na posição do cursor — o usuário nunca digita {{ }}.
-  function insertVar(token: string) {
-    const el = msgRef.current
-    if (!el) { setNotifyMsg((m) => (m ? m + " " : "") + token); return }
-    const start = el.selectionStart ?? notifyMsg.length
-    const end = el.selectionEnd ?? notifyMsg.length
-    setNotifyMsg(notifyMsg.slice(0, start) + token + notifyMsg.slice(end))
-    requestAnimationFrame(() => { el.focus(); const pos = start + token.length; el.setSelectionRange(pos, pos) })
-  }
-
-  const preview = renderTemplate(notifyMsg, {
+  // Dados de exemplo pra prévia das mensagens (ao agendar + lembretes).
+  const exampleVars = {
     contato: "Maria", servico: name.trim() || "Consulta", data: "15 de junho", hora: "14:30",
     recurso: resources.find((r) => resIds.includes(r.id))?.name ?? resources.find((r) => r.active)?.name ?? "—",
-  })
+  }
+
+  function saveReminder() {
+    if (!editing) return
+    setReminders((rs) => {
+      const next = [...rs]
+      if (editing.index === null) next.push(editing.draft)
+      else next[editing.index] = editing.draft
+      return next.sort((a, b) => a.offset_minutes - b.offset_minutes)
+    })
+    setEditing(null)
+  }
 
   async function save() {
     if (!name.trim()) { toast.error("Dê um nome ao serviço"); return }
@@ -347,7 +350,7 @@ function ServiceDialog({ service, resources, onClose, onSaved }: {
       name: name.trim(), duration_minutes: Math.max(1, Number(duration) || 30),
       buffer_before_minutes: Number(before) || 0, buffer_after_minutes: Number(after) || 0,
       resource_ids: resIds,
-      reminder_policy: buildPolicy(service, notifyMsg),
+      reminder_policy: buildPolicy(service, notifyMsg, reminders),
     }
     if (service) {
       const r = await updateService(service.id, { ...payload, active })
@@ -426,39 +429,49 @@ function ServiceDialog({ service, resources, onClose, onSaved }: {
             </div>
           </FormRow>
 
-          {/* Mensagem automática — construtor sem digitar {{}} */}
+          {/* Mensagem ao agendar — construtor sem digitar {{}} */}
           <div className="rounded-xl border border-slate-200 p-3 space-y-2">
             <div className="flex items-center gap-2">
               <MessageSquare className="size-4 text-primary-600" />
               <span className="text-sm font-semibold text-slate-800">Mensagem ao agendar</span>
               <span className="text-[11px] text-slate-400">WhatsApp · opcional</span>
             </div>
-            <textarea
-              ref={msgRef}
-              value={notifyMsg}
-              onChange={(e) => setNotifyMsg(e.target.value)}
-              rows={3}
-              placeholder="Escreva o que o cliente recebe ao marcar…"
-              className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-800 resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-300"
-            />
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] text-slate-400">Inserir:</span>
-              {MSG_VARS.map((v) => (
-                <button key={v.token} type="button" onClick={() => insertVar(v.token)}
-                  className="px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 text-[11px] font-medium border border-primary-100 hover:bg-primary-100 transition-colors">
-                  + {v.label}
-                </button>
-              ))}
+            <MessageBuilder value={notifyMsg} onChange={setNotifyMsg} vars={exampleVars}
+              placeholder="Escreva o que o cliente recebe ao marcar…" />
+            <p className="text-[11px] text-slate-400">Clique nos botões pra inserir o nome do cliente, data etc. Deixe vazio pra não avisar.</p>
+          </div>
+
+          {/* Lembretes antes do horário (Fase 3c) */}
+          <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <BellRing className="size-4 text-primary-600" />
+              <span className="text-sm font-semibold text-slate-800">Lembretes antes do horário</span>
+              <span className="text-[11px] text-slate-400">opcional</span>
             </div>
-            {notifyMsg.trim() && (
-              <div>
-                <span className="text-[11px] text-slate-400">Prévia (com dados de exemplo)</span>
-                <div className="mt-1 rounded-lg rounded-tl-sm bg-emerald-50 border border-emerald-100 px-3 py-2 max-w-[88%]">
-                  <p className="text-[12px] leading-snug text-slate-700 whitespace-pre-wrap">{preview}</p>
-                </div>
+            {reminders.length > 0 && (
+              <div className="space-y-1.5">
+                {reminders.map((r, i) => (
+                  <div key={i} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
+                    <span className="text-xs font-medium text-slate-700 shrink-0">{whenLabel(r.offset_minutes)}</span>
+                    <span className="flex items-center gap-1 shrink-0">
+                      {r.toCustomer && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">👤 Cliente</span>}
+                      {r.toAgent && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">🧑‍💼 Atendente</span>}
+                    </span>
+                    <span className="text-[11px] text-slate-400 truncate flex-1">{r.toCustomer ? (r.text || "—") : "aviso interno"}</span>
+                    <button type="button" onClick={() => setEditing({ index: i, draft: { ...r } })} className="size-6 grid place-items-center rounded hover:bg-slate-100 text-slate-400 shrink-0"><Pencil className="size-3.5" /></button>
+                    <button type="button" onClick={() => setReminders((rs) => rs.filter((_, j) => j !== i))} className="size-6 grid place-items-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 shrink-0"><X className="size-3.5" /></button>
+                  </div>
+                ))}
               </div>
             )}
-            <p className="text-[11px] text-slate-400">Clique nos botões pra inserir o nome do cliente, data etc. Deixe vazio pra não avisar.</p>
+            {editing ? (
+              <ReminderEditor draft={editing.draft} exampleVars={exampleVars}
+                onChange={(d) => setEditing({ ...editing, draft: d })}
+                onSave={saveReminder} onCancel={() => setEditing(null)} />
+            ) : (
+              <button type="button" onClick={() => setEditing({ index: null, draft: { offset_minutes: -1440, toCustomer: true, toAgent: false, text: "" } })}
+                className="text-xs font-medium text-primary-600 hover:text-primary-700">+ Adicionar lembrete</button>
+            )}
           </div>
 
           {service && (
@@ -494,20 +507,125 @@ function renderTemplate(text: string, vars: Record<string, string>): string {
   return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "")
 }
 
-// ── reminder_policy helpers (Fase 3a) ────────────────────────
+// Construtor de mensagem reusável: textarea + botões que inserem variável no
+// cursor (nunca digitar {{}}) + prévia ao vivo com dados de exemplo.
+function MessageBuilder({ value, onChange, vars, placeholder }: {
+  value: string; onChange: (v: string) => void; vars: Record<string, string>; placeholder?: string
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null)
+  function insert(token: string) {
+    const el = ref.current
+    if (!el) { onChange((value ? value + " " : "") + token); return }
+    const start = el.selectionStart ?? value.length
+    const end = el.selectionEnd ?? value.length
+    onChange(value.slice(0, start) + token + value.slice(end))
+    requestAnimationFrame(() => { el.focus(); const pos = start + token.length; el.setSelectionRange(pos, pos) })
+  }
+  return (
+    <div className="space-y-2">
+      <textarea ref={ref} value={value} onChange={(e) => onChange(e.target.value)} rows={3}
+        placeholder={placeholder ?? "Escreva a mensagem…"}
+        className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-sm text-slate-800 resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-300" />
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] text-slate-400">Inserir:</span>
+        {MSG_VARS.map((v) => (
+          <button key={v.token} type="button" onClick={() => insert(v.token)}
+            className="px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 text-[11px] font-medium border border-primary-100 hover:bg-primary-100 transition-colors">
+            + {v.label}
+          </button>
+        ))}
+      </div>
+      {value.trim() && (
+        <div className="rounded-lg rounded-tl-sm bg-emerald-50 border border-emerald-100 px-3 py-2 max-w-[88%]">
+          <p className="text-[12px] leading-snug text-slate-700 whitespace-pre-wrap">{renderTemplate(value, vars)}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Lembretes (Fase 3c) ──────────────────────────────────────
+const REMINDER_WHENS = [
+  { v: -1440, l: "1 dia antes" }, { v: -720, l: "12h antes" },
+  { v: -180, l: "3h antes" }, { v: -60, l: "1h antes" }, { v: -30, l: "30min antes" },
+]
+function whenLabel(off: number): string {
+  return REMINDER_WHENS.find((w) => w.v === off)?.l ?? `${Math.abs(off)} min antes`
+}
+interface Reminder { offset_minutes: number; toCustomer: boolean; toAgent: boolean; text: string }
+
+function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
+  draft: Reminder; exampleVars: Record<string, string>
+  onChange: (d: Reminder) => void; onSave: () => void; onCancel: () => void
+}) {
+  const invalid = (!draft.toCustomer && !draft.toAgent) || (draft.toCustomer && !draft.text.trim())
+  return (
+    <div className="rounded-lg border border-primary-200 bg-primary-50/30 p-2.5 space-y-2.5">
+      <div>
+        <span className="text-[11px] font-medium text-slate-500">Quando avisar</span>
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {REMINDER_WHENS.map((w) => (
+            <Chip key={w.v} active={draft.offset_minutes === w.v} onClick={() => onChange({ ...draft, offset_minutes: w.v })}>{w.l}</Chip>
+          ))}
+        </div>
+      </div>
+      <div>
+        <span className="text-[11px] font-medium text-slate-500">Pra quem <span className="text-slate-400 font-normal">(pode marcar os dois)</span></span>
+        <div className="mt-1 flex gap-1.5">
+          <Chip active={draft.toCustomer} onClick={() => onChange({ ...draft, toCustomer: !draft.toCustomer })}>👤 Cliente</Chip>
+          <Chip active={draft.toAgent} onClick={() => onChange({ ...draft, toAgent: !draft.toAgent })}>🧑‍💼 Atendente</Chip>
+        </div>
+      </div>
+      {draft.toCustomer && (
+        <div>
+          <span className="text-[11px] font-medium text-slate-500">Mensagem pro cliente</span>
+          <div className="mt-1">
+            <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={exampleVars}
+              placeholder="Ex: Oi {{contato}}, seu horário é {{data}} às {{hora}}!" />
+          </div>
+        </div>
+      )}
+      {draft.toAgent && (
+        <p className="text-[11px] text-slate-400">🧑‍💼 O atendente do recurso recebe um aviso interno (sininho).</p>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button>
+        <Button size="sm" onClick={onSave} disabled={invalid}>Salvar lembrete</Button>
+      </div>
+    </div>
+  )
+}
+
+// ── reminder_policy helpers ──────────────────────────────────
 interface PolicyStep { offset_minutes?: number; audience?: string; channel?: string; text?: string }
 function readNotifyStep(service: ServiceRow | null): string {
   const steps = (service?.reminder_policy as { steps?: PolicyStep[] } | undefined)?.steps ?? []
-  return steps.find((s) => (s.offset_minutes ?? 0) <= 0 && (s.audience ?? "customer") !== "agent")?.text ?? ""
+  return steps.find((s) => (s.offset_minutes ?? 0) === 0 && (s.audience ?? "customer") !== "agent")?.text ?? ""
 }
-/** Insere/atualiza o step "ao agendar" (offset 0, cliente) preservando os demais. */
-function buildPolicy(service: ServiceRow | null, msg: string): Record<string, unknown> {
+function readReminders(service: ServiceRow | null): Reminder[] {
+  const steps = (service?.reminder_policy as { steps?: PolicyStep[] } | undefined)?.steps ?? []
+  // Agrupa steps por antecedência → 1 "lembrete" pode avisar cliente E atendente.
+  const byOffset = new Map<number, Reminder>()
+  for (const s of steps) {
+    if ((s.offset_minutes ?? 0) >= 0) continue
+    const off = s.offset_minutes ?? -60
+    const r = byOffset.get(off) ?? { offset_minutes: off, toCustomer: false, toAgent: false, text: "" }
+    if ((s.audience ?? "customer") === "agent") r.toAgent = true
+    else { r.toCustomer = true; if (s.text) r.text = s.text }
+    byOffset.set(off, r)
+  }
+  return [...byOffset.values()].sort((a, b) => a.offset_minutes - b.offset_minutes)
+}
+/** Compõe a reminder_policy: "ao agendar" (offset 0) + lembretes (offset<0).
+ *  Cada lembrete vira 1-2 steps (cliente whatsapp + atendente in-app). */
+function buildPolicy(service: ServiceRow | null, msg: string, reminders: Reminder[]): Record<string, unknown> {
   const prev = (service?.reminder_policy as Record<string, unknown> | undefined) ?? {}
-  const prevSteps = ((prev.steps as PolicyStep[] | undefined) ?? [])
-    .filter((s) => (s.offset_minutes ?? 0) > 0 || (s.audience ?? "customer") === "agent")
-  const steps = msg.trim()
-    ? [{ offset_minutes: 0, audience: "customer", channel: "whatsapp", text: msg.trim() }, ...prevSteps]
-    : prevSteps
+  const steps: PolicyStep[] = []
+  if (msg.trim()) steps.push({ offset_minutes: 0, audience: "customer", channel: "whatsapp", text: msg.trim() })
+  for (const r of reminders) {
+    if (r.toCustomer) steps.push({ offset_minutes: r.offset_minutes, audience: "customer", channel: "whatsapp", text: r.text.trim() || undefined })
+    if (r.toAgent)    steps.push({ offset_minutes: r.offset_minutes, audience: "agent", channel: "inapp" })
+  }
   return { ...prev, steps }
 }
 
