@@ -12,10 +12,11 @@ export default async function AgendaConfigPage() {
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "agenda"))) redirect("/inbox")
 
-  const [resources, services, remindersEnabled, { data: agentsRaw }] = await Promise.all([
+  const [resources, services, remindersEnabled, remindersModule, { data: agentsRaw }] = await Promise.all([
     listResources(true),
     listServices(true),
     getAgendaRemindersEnabled(),
+    hasModule(tenantId, "agenda_reminders"),
     supabaseAdmin
       .from("tenant_users")
       .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
@@ -28,5 +29,13 @@ export default async function AgendaConfigPage() {
     name: (a.profiles as unknown as { full_name: string } | null)?.full_name ?? "Atendente",
   }))
 
-  return <AgendaConfigClient initialResources={resources} initialServices={services} agents={agents} remindersEnabled={remindersEnabled} />
+  return (
+    <AgendaConfigClient
+      initialResources={resources}
+      initialServices={services}
+      agents={agents}
+      remindersEnabled={remindersEnabled}
+      remindersModule={remindersModule}
+    />
+  )
 }

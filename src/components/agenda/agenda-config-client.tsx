@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { FormRow } from "@/components/ui/form-row"
+import { PremiumGate } from "@/components/ui/premium-gate"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
@@ -47,15 +48,18 @@ function workingHoursToDays(wh: WorkingHoursDay[]): Record<number, DayState> {
 }
 
 export function AgendaConfigClient({
-  initialResources, initialServices, agents, remindersEnabled,
+  initialResources, initialServices, agents, remindersEnabled, remindersModule,
 }: {
-  initialResources: ResourceRow[]; initialServices: ServiceRow[]; agents: Agent[]; remindersEnabled: boolean
+  initialResources: ResourceRow[]; initialServices: ServiceRow[]; agents: Agent[]
+  remindersEnabled: boolean; remindersModule: boolean
 }) {
   const [resources, setResources] = useState(initialResources)
   const [services, setServices]   = useState(initialServices)
   const [editRes, setEditRes] = useState<ResourceRow | "new" | null>(null)
   const [editSvc, setEditSvc] = useState<ServiceRow | "new" | null>(null)
   const [reminders, setReminders] = useState(remindersEnabled)
+
+  const premiumCta = () => toast("Lembretes automáticos é um add-on premium. Fale com a gente pra ativar.")
 
   async function toggleReminders(next: boolean) {
     setReminders(next) // otimista
@@ -72,20 +76,22 @@ export function AgendaConfigClient({
       actions={<Link href="/agenda"><Button variant="outline" size="sm"><ArrowLeft className="size-4" /> Voltar</Button></Link>}
     >
       <div className="max-w-3xl mx-auto space-y-6">
-        {/* AVISOS AUTOMÁTICOS — master switch (backend-enforced) */}
-        <section className="rounded-xl border border-slate-200 bg-white p-4">
-          <div className="flex items-start gap-3">
-            <div className="size-9 rounded-lg bg-primary-50 grid place-items-center shrink-0"><BellRing className="size-4 text-primary-600" /></div>
-            <div className="flex-1 min-w-0">
-              <Switch
-                checked={reminders}
-                onChange={toggleReminders}
-                label="Avisos automáticos por WhatsApp"
-                description="Quando ligado, ao criar um agendamento o cliente recebe a mensagem configurada no serviço. Desligado = nenhum aviso é enviado (controle aplicado no servidor)."
-              />
+        {/* AVISOS AUTOMÁTICOS — master switch (backend-enforced + entitlement premium) */}
+        <PremiumGate locked={!remindersModule} description="Avise, lembre e confirme com seus clientes automaticamente no WhatsApp." onCta={premiumCta}>
+          <section className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-start gap-3">
+              <div className="size-9 rounded-lg bg-primary-50 grid place-items-center shrink-0"><BellRing className="size-4 text-primary-600" /></div>
+              <div className="flex-1 min-w-0">
+                <Switch
+                  checked={reminders}
+                  onChange={toggleReminders}
+                  label="Avisos automáticos por WhatsApp"
+                  description="Quando ligado, ao criar um agendamento o cliente recebe a mensagem configurada no serviço. Desligado = nenhum aviso é enviado (controle aplicado no servidor)."
+                />
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        </PremiumGate>
 
         {/* RECURSOS */}
         <section className="rounded-xl border border-slate-200 bg-white">
@@ -108,7 +114,7 @@ export function AgendaConfigClient({
                     {r.capacity > 1 && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-100">capacidade {r.capacity}</span>}
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {r.kind ? `${r.kind} · ` : ""}slots de {r.slot_minutes}min · {(r.working_hours ?? []).length} dia(s) ativos
+                    {(r.working_hours ?? []).length} dia(s) por semana{r.capacity > 1 ? ` · até ${r.capacity} ao mesmo tempo` : ""}
                   </p>
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => setEditRes(r)}><Pencil className="size-4" /></Button>
@@ -137,8 +143,8 @@ export function AgendaConfigClient({
                     {!s.active && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">inativo</span>}
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    {s.duration_minutes}min{(s.buffer_before_minutes || s.buffer_after_minutes) ? ` · buffer ${s.buffer_before_minutes}/${s.buffer_after_minutes}` : ""}
-                    {s.resource_ids.length > 0 ? ` · ${s.resource_ids.length} recurso(s)` : " · todos os recursos"}
+                    {s.duration_minutes}min{(s.buffer_before_minutes || s.buffer_after_minutes) ? ` · folga ${s.buffer_before_minutes}/${s.buffer_after_minutes}min` : ""}
+                    {s.resource_ids.length > 0 ? ` · ${s.resource_ids.length} recurso(s)` : " · todos"}
                   </p>
                 </div>
                 <Button size="sm" variant="ghost" onClick={() => setEditSvc(s)}><Pencil className="size-4" /></Button>
@@ -167,6 +173,8 @@ export function AgendaConfigClient({
         <ServiceDialog
           service={editSvc === "new" ? null : editSvc}
           resources={resources}
+          remindersModule={remindersModule}
+          onPremiumCta={premiumCta}
           onClose={() => setEditSvc(null)}
           onSaved={(row) => {
             setServices((prev) => {
@@ -183,12 +191,16 @@ export function AgendaConfigClient({
 }
 
 // ── Dialog de recurso ────────────────────────────────────────
+const SLOT_OPTS = [15, 20, 30, 45, 60]
+const LEAD_OPTS = [{ v: 0, l: "Sem mínimo" }, { v: 30, l: "30 min antes" }, { v: 60, l: "1 hora antes" }, { v: 120, l: "2 horas antes" }, { v: 1440, l: "1 dia antes" }]
+const HORIZON_OPTS = [7, 15, 30, 60, 90, 180]
+
 function ResourceDialog({ resource, agents, onClose, onSaved }: {
   resource: ResourceRow | null; agents: Agent[]
   onClose: () => void; onSaved: (r: ResourceRow) => void
 }) {
   const [name, setName]       = useState(resource?.name ?? "")
-  const [kind, setKind]       = useState(resource?.kind ?? "")
+  const kind = resource?.kind ?? ""   // campo "Tipo" removido da UI; preserva o valor existente
   const [capacity, setCapacity] = useState(resource?.capacity ?? 1)
   const [slot, setSlot]       = useState(resource?.slot_minutes ?? 30)
   const [agentId, setAgentId] = useState(resource?.assigned_agent_id ?? "")
@@ -199,6 +211,9 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
     resource ? workingHoursToDays(resource.working_hours) : DEFAULT_DAYS,
   )
   const [saving, setSaving]   = useState(false)
+  const [showAdv, setShowAdv] = useState(
+    (resource?.capacity ?? 1) > 1 || (resource?.min_lead_minutes ?? 0) > 0 || (resource?.slot_minutes ?? 30) !== 30 || (resource?.max_horizon_days ?? 60) !== 60,
+  )
 
   async function save() {
     if (!name.trim()) { toast.error("Dê um nome ao recurso"); return }
@@ -227,34 +242,27 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{resource ? "Editar recurso" : "Novo recurso"}</DialogTitle>
           <DialogDescription>O que se agenda — profissional, sala, mesa… com horário e capacidade.</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Nome"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Dra. Ana / Sala 1 / Mesa 4" className="h-9" /></Field>
-            <Field label="Tipo (livre)"><Input value={kind} onChange={(e) => setKind(e.target.value)} placeholder="profissional, sala…" className="h-9" /></Field>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <Field label="Capacidade" hint="N>1 = grupo"><Input type="number" min={1} value={capacity} onChange={(e) => setCapacity(+e.target.value)} className="h-9" /></Field>
-            <Field label="Slot (min)"><Input type="number" min={5} step={5} value={slot} onChange={(e) => setSlot(+e.target.value)} className="h-9" /></Field>
-            <Field label="Atendente">
-              <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-                <option value="">—</option>
-                {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </Select>
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Antecedência mín. (min)"><Input type="number" min={0} value={minLead} onChange={(e) => setMinLead(+e.target.value)} className="h-9" /></Field>
-            <Field label="Horizonte (dias)"><Input type="number" min={1} value={horizon} onChange={(e) => setHorizon(+e.target.value)} className="h-9" /></Field>
-          </div>
+        <div className="space-y-4 max-h-[64vh] overflow-y-auto pr-1">
+          <FormRow label="Nome" hint="quem ou o que atende — você, um profissional, uma sala…">
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Você / Dra. Ana / Sala 1" className="h-9" />
+          </FormRow>
+
+          <FormRow label="Quem cuida dessa agenda?" hint="opcional — recebe os avisos no sininho">
+            <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+              <option value="">Qualquer atendente</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </Select>
+          </FormRow>
 
           <div>
-            <span className="text-xs font-medium text-slate-600">Horário de trabalho</span>
-            <div className="mt-1.5 space-y-1.5">
+            <span className="text-xs font-semibold text-slate-700">Horário de trabalho</span>
+            <p className="text-[11px] text-slate-400 mb-1.5">Quando aceita agendamento.</p>
+            <div className="space-y-1.5">
               {WEEKDAYS.map((d) => {
                 const v = days[d.n]
                 return (
@@ -272,6 +280,36 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
                 )
               })}
             </div>
+          </div>
+
+          {/* Opções avançadas — escondidas (defaults bons pra 90%) */}
+          <div>
+            <button type="button" onClick={() => setShowAdv((v) => !v)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-700">
+              <ChevronRight className={`size-3.5 transition-transform ${showAdv ? "rotate-90" : ""}`} /> Opções avançadas
+            </button>
+            {showAdv && (
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <FormRow label="Quantas pessoas ao mesmo tempo?" hint="1 = individual; mais = turma/grupo">
+                  <Input type="number" min={1} value={capacity} onChange={(e) => setCapacity(+e.target.value)} className="h-9" />
+                </FormRow>
+                <FormRow label="Intervalo entre horários" hint="de quanto em quanto aparece um horário">
+                  <Select value={slot} onChange={(e) => setSlot(+e.target.value)}>
+                    {SLOT_OPTS.map((s) => <option key={s} value={s}>{s} min</option>)}
+                  </Select>
+                </FormRow>
+                <FormRow label="Antecedência mínima pra marcar" hint="evita marcar em cima da hora">
+                  <Select value={minLead} onChange={(e) => setMinLead(+e.target.value)}>
+                    {LEAD_OPTS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+                  </Select>
+                </FormRow>
+                <FormRow label="Até quando dá pra marcar" hint="quão longe no futuro">
+                  <Select value={horizon} onChange={(e) => setHorizon(+e.target.value)}>
+                    {HORIZON_OPTS.map((d) => <option key={d} value={d}>{d} dias</option>)}
+                  </Select>
+                </FormRow>
+              </div>
+            )}
           </div>
 
           {resource && (
@@ -305,8 +343,9 @@ const MSG_VARS = [
 ]
 const DEFAULT_MSG = "Olá {{contato}}! Seu horário de {{servico}} está marcado para {{data}} às {{hora}}. Até lá 😊"
 
-function ServiceDialog({ service, resources, onClose, onSaved }: {
+function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onClose, onSaved }: {
   service: ServiceRow | null; resources: ResourceRow[]
+  remindersModule: boolean; onPremiumCta: () => void
   onClose: () => void; onSaved: (s: ServiceRow) => void
 }) {
   const [name, setName] = useState(service?.name ?? "")
@@ -369,7 +408,7 @@ function ServiceDialog({ service, resources, onClose, onSaved }: {
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{service ? "Editar serviço" : "Novo serviço"}</DialogTitle>
           <DialogDescription>O que o cliente marca — quanto dura e o aviso automático no WhatsApp.</DialogDescription>
@@ -429,50 +468,51 @@ function ServiceDialog({ service, resources, onClose, onSaved }: {
             </div>
           </FormRow>
 
-          {/* Mensagem ao agendar — construtor sem digitar {{}} */}
-          <div className="rounded-xl border border-slate-200 p-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <MessageSquare className="size-4 text-primary-600" />
-              <span className="text-sm font-semibold text-slate-800">Mensagem ao agendar</span>
-              <span className="text-[11px] text-slate-400">WhatsApp · opcional</span>
-            </div>
-            <MessageBuilder value={notifyMsg} onChange={setNotifyMsg} vars={exampleVars}
-              placeholder="Escreva o que o cliente recebe ao marcar…" />
-            <p className="text-[11px] text-slate-400">Clique nos botões pra inserir o nome do cliente, data etc. Deixe vazio pra não avisar.</p>
-          </div>
-
-          {/* Lembretes antes do horário (Fase 3c) */}
-          <div className="rounded-xl border border-slate-200 p-3 space-y-2">
-            <div className="flex items-center gap-2">
-              <BellRing className="size-4 text-primary-600" />
-              <span className="text-sm font-semibold text-slate-800">Lembretes antes do horário</span>
-              <span className="text-[11px] text-slate-400">opcional</span>
-            </div>
-            {reminders.length > 0 && (
-              <div className="space-y-1.5">
-                {reminders.map((r, i) => (
-                  <div key={i} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
-                    <span className="text-xs font-medium text-slate-700 shrink-0">{whenLabel(r.offset_minutes)}</span>
-                    <span className="flex items-center gap-1 shrink-0">
-                      {r.toCustomer && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">👤 Cliente</span>}
-                      {r.toAgent && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">🧑‍💼 Atendente</span>}
-                    </span>
-                    <span className="text-[11px] text-slate-400 truncate flex-1">{r.toCustomer ? (r.text || "—") : "aviso interno"}</span>
-                    <button type="button" onClick={() => setEditing({ index: i, draft: { ...r } })} className="size-6 grid place-items-center rounded hover:bg-slate-100 text-slate-400 shrink-0"><Pencil className="size-3.5" /></button>
-                    <button type="button" onClick={() => setReminders((rs) => rs.filter((_, j) => j !== i))} className="size-6 grid place-items-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 shrink-0"><X className="size-3.5" /></button>
-                  </div>
-                ))}
+          {/* Mensagens pro cliente (add-on premium) — travado sem o módulo */}
+          <PremiumGate locked={!remindersModule} description="Avise e lembre seus clientes automaticamente no WhatsApp." onCta={onPremiumCta}>
+            <div className="space-y-4">
+              {/* Mensagem ao agendar — construtor sem digitar {{}} */}
+              <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="size-4 text-primary-600" />
+                  <span className="text-sm font-semibold text-slate-800">Mensagem ao agendar</span>
+                  <span className="text-[11px] text-slate-400">WhatsApp · opcional</span>
+                </div>
+                <MessageBuilder value={notifyMsg} onChange={setNotifyMsg} vars={exampleVars}
+                  placeholder="Escreva o que o cliente recebe ao marcar…" />
+                <p className="text-[11px] text-slate-400">Clique nos botões pra inserir o nome do cliente, data etc. Deixe vazio pra não avisar.</p>
               </div>
-            )}
-            {editing ? (
-              <ReminderEditor draft={editing.draft} exampleVars={exampleVars}
-                onChange={(d) => setEditing({ ...editing, draft: d })}
-                onSave={saveReminder} onCancel={() => setEditing(null)} />
-            ) : (
-              <button type="button" onClick={() => setEditing({ index: null, draft: { offset_minutes: -1440, toCustomer: true, toAgent: false, text: "" } })}
-                className="text-xs font-medium text-primary-600 hover:text-primary-700">+ Adicionar lembrete</button>
-            )}
-          </div>
+
+              {/* Lembretes antes do horário (Fase 3c) */}
+              <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <BellRing className="size-4 text-primary-600" />
+                  <span className="text-sm font-semibold text-slate-800">Lembretes antes do horário</span>
+                  <span className="text-[11px] text-slate-400">opcional</span>
+                </div>
+                {reminders.length > 0 && (
+                  <div className="space-y-1.5">
+                    {reminders.map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
+                        <span className="text-xs font-medium text-slate-700 shrink-0">{whenLabel(r.offset_minutes)}</span>
+                        <span className="text-[11px] text-slate-400 truncate flex-1">{r.text || "—"}</span>
+                        <button type="button" onClick={() => setEditing({ index: i, draft: { ...r } })} className="size-6 grid place-items-center rounded hover:bg-slate-100 text-slate-400 shrink-0"><Pencil className="size-3.5" /></button>
+                        <button type="button" onClick={() => setReminders((rs) => rs.filter((_, j) => j !== i))} className="size-6 grid place-items-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 shrink-0"><X className="size-3.5" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {editing ? (
+                  <ReminderEditor draft={editing.draft} exampleVars={exampleVars}
+                    onChange={(d) => setEditing({ ...editing, draft: d })}
+                    onSave={saveReminder} onCancel={() => setEditing(null)} />
+                ) : (
+                  <button type="button" onClick={() => setEditing({ index: null, draft: { offset_minutes: -1440, text: "" } })}
+                    className="text-xs font-medium text-primary-600 hover:text-primary-700">+ Adicionar lembrete</button>
+                )}
+              </div>
+            </div>
+          </PremiumGate>
 
           {service && (
             <label className="flex items-center gap-2">
@@ -552,17 +592,16 @@ const REMINDER_WHENS = [
 function whenLabel(off: number): string {
   return REMINDER_WHENS.find((w) => w.v === off)?.l ?? `${Math.abs(off)} min antes`
 }
-interface Reminder { offset_minutes: number; toCustomer: boolean; toAgent: boolean; text: string }
+interface Reminder { offset_minutes: number; text: string }
 
 function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
   draft: Reminder; exampleVars: Record<string, string>
   onChange: (d: Reminder) => void; onSave: () => void; onCancel: () => void
 }) {
-  const invalid = (!draft.toCustomer && !draft.toAgent) || (draft.toCustomer && !draft.text.trim())
   return (
     <div className="rounded-lg border border-primary-200 bg-primary-50/30 p-2.5 space-y-2.5">
       <div>
-        <span className="text-[11px] font-medium text-slate-500">Quando avisar</span>
+        <span className="text-[11px] font-medium text-slate-500">Quando avisar o cliente</span>
         <div className="mt-1 flex flex-wrap gap-1.5">
           {REMINDER_WHENS.map((w) => (
             <Chip key={w.v} active={draft.offset_minutes === w.v} onClick={() => onChange({ ...draft, offset_minutes: w.v })}>{w.l}</Chip>
@@ -570,27 +609,15 @@ function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
         </div>
       </div>
       <div>
-        <span className="text-[11px] font-medium text-slate-500">Pra quem <span className="text-slate-400 font-normal">(pode marcar os dois)</span></span>
-        <div className="mt-1 flex gap-1.5">
-          <Chip active={draft.toCustomer} onClick={() => onChange({ ...draft, toCustomer: !draft.toCustomer })}>👤 Cliente</Chip>
-          <Chip active={draft.toAgent} onClick={() => onChange({ ...draft, toAgent: !draft.toAgent })}>🧑‍💼 Atendente</Chip>
+        <span className="text-[11px] font-medium text-slate-500">Mensagem</span>
+        <div className="mt-1">
+          <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={exampleVars}
+            placeholder="Ex: Oi {{contato}}, seu horário é {{data}} às {{hora}}!" />
         </div>
       </div>
-      {draft.toCustomer && (
-        <div>
-          <span className="text-[11px] font-medium text-slate-500">Mensagem pro cliente</span>
-          <div className="mt-1">
-            <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={exampleVars}
-              placeholder="Ex: Oi {{contato}}, seu horário é {{data}} às {{hora}}!" />
-          </div>
-        </div>
-      )}
-      {draft.toAgent && (
-        <p className="text-[11px] text-slate-400">🧑‍💼 O atendente do recurso recebe um aviso interno (sininho).</p>
-      )}
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button>
-        <Button size="sm" onClick={onSave} disabled={invalid}>Salvar lembrete</Button>
+        <Button size="sm" onClick={onSave} disabled={!draft.text.trim()}>Salvar lembrete</Button>
       </div>
     </div>
   )
@@ -604,32 +631,19 @@ function readNotifyStep(service: ServiceRow | null): string {
 }
 function readReminders(service: ServiceRow | null): Reminder[] {
   const steps = (service?.reminder_policy as { steps?: PolicyStep[] } | undefined)?.steps ?? []
-  // Agrupa steps por antecedência → 1 "lembrete" pode avisar cliente E atendente.
-  const byOffset = new Map<number, Reminder>()
-  for (const s of steps) {
-    if ((s.offset_minutes ?? 0) >= 0) continue
-    const off = s.offset_minutes ?? -60
-    const r = byOffset.get(off) ?? { offset_minutes: off, toCustomer: false, toAgent: false, text: "" }
-    if ((s.audience ?? "customer") === "agent") r.toAgent = true
-    else { r.toCustomer = true; if (s.text) r.text = s.text }
-    byOffset.set(off, r)
-  }
-  return [...byOffset.values()].sort((a, b) => a.offset_minutes - b.offset_minutes)
+  // Lembretes são só pro CLIENTE (a consciência do atendente é a tela "Hoje").
+  return steps.filter((s) => (s.offset_minutes ?? 0) < 0 && (s.audience ?? "customer") !== "agent")
+    .map((s) => ({ offset_minutes: s.offset_minutes ?? -60, text: s.text ?? "" }))
+    .sort((a, b) => a.offset_minutes - b.offset_minutes)
 }
-/** Compõe a reminder_policy: "ao agendar" (offset 0) + lembretes (offset<0).
- *  Cada lembrete vira 1-2 steps (cliente whatsapp + atendente in-app). */
+/** Compõe a reminder_policy: "ao agendar" (offset 0) + lembretes (offset<0), todos pro cliente. */
 function buildPolicy(service: ServiceRow | null, msg: string, reminders: Reminder[]): Record<string, unknown> {
   const prev = (service?.reminder_policy as Record<string, unknown> | undefined) ?? {}
   const steps: PolicyStep[] = []
   if (msg.trim()) steps.push({ offset_minutes: 0, audience: "customer", channel: "whatsapp", text: msg.trim() })
   for (const r of reminders) {
-    if (r.toCustomer) steps.push({ offset_minutes: r.offset_minutes, audience: "customer", channel: "whatsapp", text: r.text.trim() || undefined })
-    if (r.toAgent)    steps.push({ offset_minutes: r.offset_minutes, audience: "agent", channel: "inapp" })
+    steps.push({ offset_minutes: r.offset_minutes, audience: "customer", channel: "whatsapp", text: r.text.trim() || undefined })
   }
   return { ...prev, steps }
 }
 
-// Padroniza no FormRow do design system (hint = qualificador curto sob o campo).
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return <FormRow label={label} hint={hint}>{children}</FormRow>
-}

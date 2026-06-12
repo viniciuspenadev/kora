@@ -76,6 +76,7 @@ export async function getAgendaRemindersEnabled(): Promise<boolean> {
 
 export async function setAgendaRemindersEnabled(enabled: boolean): Promise<{ error?: string }> {
   const s = await adminScope()
+  await requireModule("agenda_reminders")   // entitlement: add-on premium (god mode)
   const { error } = await supabaseAdmin.from("tenant_config")
     .upsert({ tenant_id: s.tenantId, agenda_reminders_enabled: enabled }, { onConflict: "tenant_id" })
   if (error) return { error: error.message }

@@ -30,6 +30,14 @@ function serviceNotifyText(svc?: ServiceRow): string {
 function renderMsg(text: string, vars: Record<string, string>): string {
   return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "")
 }
+const WHEN_LABELS: Record<number, string> = { [-1440]: "1 dia antes", [-720]: "12h antes", [-180]: "3h antes", [-60]: "1h antes", [-30]: "30min antes" }
+function reminderWhenLabel(off: number): string {
+  return WHEN_LABELS[off] ?? `${Math.abs(off)} min antes`
+}
+function reminderTime(slotISO: string, offMinutes: number): string {
+  return new Date(new Date(slotISO).getTime() + offMinutes * 60_000)
+    .toLocaleString("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+}
 
 export function NewAppointmentDialog({
   resources, services, initialResourceId, initialDate, initialTime,
@@ -131,9 +139,15 @@ export function NewAppointmentDialog({
     recurso: resource?.name ?? "",
   }) : ""
 
+  // Lembretes do serviço (offset<0, cliente) → o switch "enviar lembrete?".
+  const serviceReminders = (((selectedService?.reminder_policy as { steps?: { offset_minutes?: number; audience?: string }[] } | undefined)?.steps) ?? [])
+    .filter((s) => (s.offset_minutes ?? 0) < 0 && (s.audience ?? "customer") !== "agent")
+    .map((s) => s.offset_minutes ?? -60)
+    .sort((a, b) => a - b)
+
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Novo agendamento</DialogTitle>
           <DialogDescription>Escolha o recurso, o horário disponível e o contato.</DialogDescription>
@@ -215,27 +229,41 @@ export function NewAppointmentDialog({
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Opcional" className="h-9" />
           </FormRow>
 
-          {/* Avisar o cliente — switch + prévia (gate por agendamento; backend confere) */}
-          {rawMsg ? (
-            <div className="rounded-lg border border-slate-200 p-3">
-              <Switch
-                checked={notify}
-                onChange={setNotify}
-                size="sm"
-                label="Avisar o cliente no WhatsApp"
-                description={notify ? undefined : "Follow-up interno — o cliente não recebe nada."}
-              />
-              {notify && (
-                <div className="mt-2 rounded-lg rounded-tl-sm bg-emerald-50 border border-emerald-100 px-3 py-2">
-                  <p className="text-[12px] leading-snug text-slate-700 whitespace-pre-wrap">{preview}</p>
+          {/* Comunicação com o cliente: confirmação (sempre) + lembrete (opção) */}
+          {(rawMsg || serviceReminders.length > 0) && (
+            <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+              {/* Confirmação ao agendar — sempre enviada */}
+              {rawMsg && (
+                <div>
+                  <span className="text-[11px] font-medium text-slate-500">📩 O cliente recebe ao agendar</span>
+                  <div className="mt-1 rounded-lg rounded-tl-sm bg-emerald-50 border border-emerald-100 px-3 py-2 max-w-[90%]">
+                    <p className="text-[12px] leading-snug text-slate-700 whitespace-pre-wrap">{preview}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Lembrete — decisão do atendente */}
+              {serviceReminders.length > 0 && (
+                <div className="pt-1 border-t border-slate-100">
+                  <Switch
+                    checked={notify}
+                    onChange={setNotify}
+                    size="sm"
+                    label="Deseja enviar um lembrete ao cliente?"
+                  />
+                  {notify && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {serviceReminders.map((off, i) => (
+                        <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 text-[11px] font-medium border border-primary-100">
+                          🔔 {reminderWhenLabel(off)}{slot ? ` · ${reminderTime(slot, off)}` : ""}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {!notify && <p className="text-[11px] text-slate-400 mt-1">Sem lembrete — o cliente só recebe a confirmação acima.</p>}
                 </div>
               )}
             </div>
-          ) : (
-            <p className="text-[11px] text-slate-400">
-              Este serviço não avisa o cliente ao agendar.{" "}
-              <span className="text-slate-500">Configure a mensagem em Configurar → Serviço.</span>
-            </p>
           )}
         </div>
 

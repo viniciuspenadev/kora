@@ -2,6 +2,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { createNotification } from "@/lib/notifications"
+import { hasModule } from "@/lib/modules"
 
 // ═══════════════════════════════════════════════════════════════
 // Consumidor BUILT-IN dos eventos da Agenda (doc §6.7-A)
@@ -69,14 +70,18 @@ export async function runAppointmentEvent(appointmentId: string, event: AgendaEv
     const appt = data as unknown as ApptForEvent | null
     if (!appt) return
 
-    // 3º gate (backend): este agendamento optou por NÃO avisar o cliente
-    // (follow-up interno). Nada sai; nem precisa logar (não havia intenção).
-    if (appt.notify_customer === false) return
+    // A CONFIRMAÇÃO "ao agendar" sempre dispara (você acabou de marcar) — não é
+    // gated por notify_customer. O switch do atendente controla só os LEMBRETES
+    // (offset<0), no sweep do cron.
 
+    // SÓ o step "ao agendar" (offset === 0). Os negativos são LEMBRETES, disparados
+    // pelo cron (sweep) — não na criação (senão duplicam: aqui + no cron).
     const steps = (appt.tenant_services?.reminder_policy?.steps ?? [])
-      .filter((s) => (s.offset_minutes ?? 0) <= 0 && (s.audience ?? "customer") !== "agent")
+      .filter((s) => (s.offset_minutes ?? 0) === 0 && (s.audience ?? "customer") !== "agent")
     if (steps.length === 0) return
 
+    // 🔒 Entitlement (god mode) — sem o módulo add-on, não dispara nem paralelo.
+    if (!(await hasModule(appt.tenant_id, "agenda_reminders"))) return
     // 🔒 Master switch do tenant (backend) — sem ligar, nada sai.
     const { data: cfg } = await supabaseAdmin.from("tenant_config")
       .select("agenda_reminders_enabled").eq("tenant_id", appt.tenant_id).maybeSingle()
@@ -166,8 +171,15 @@ export async function runAgendaReminderSweep(): Promise<{ tenants: number; proce
   const { data: tenants } = await supabaseAdmin.from("tenant_config")
     .select("tenant_id").eq("agenda_reminders_enabled", true)
   let processed = 0
-  for (const t of tenants ?? []) processed += await sweepTenant((t as { tenant_id: string }).tenant_id)
-  return { tenants: (tenants ?? []).length, processed }
+  let active = 0
+  for (const t of tenants ?? []) {
+    const tenantId = (t as { tenant_id: string }).tenant_id
+    // 🔒 Entitlement: tenant precisa do módulo add-on (god mode), senão pula.
+    if (!(await hasModule(tenantId, "agenda_reminders"))) continue
+    active++
+    processed += await sweepTenant(tenantId)
+  }
+  return { tenants: active, processed }
 }
 
 async function sweepTenant(tenantId: string): Promise<number> {
@@ -199,7 +211,7 @@ async function sweepTenant(tenantId: string): Promise<number> {
       if ((step.audience ?? "customer") === "agent") {
         await dispatchAgentStep(appt, step, stepKey, vars)
       } else {
-        if (appt.notify_customer === false) continue  // gate por agendamento
+        if (appt.notify_customer === false) continue  // switch "enviar lembrete?" por agendamento
         await dispatchCustomerStep(appt, step, stepKey, vars, true) // tenant já filtrado por enabled
       }
       processed++
