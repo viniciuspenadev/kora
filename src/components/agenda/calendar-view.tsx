@@ -34,7 +34,7 @@ const BLOCK: Record<string, string> = {
   canceled:  "bg-red-50 border-l-red-300 text-red-500 line-through opacity-70 hover:opacity-100",
 }
 
-function minutesInTz(d: Date): number {
+export function minutesInTz(d: Date): number {
   const p = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(d)
   const h = +(p.find((x) => x.type === "hour")?.value ?? "0") % 24
   const m = +(p.find((x) => x.type === "minute")?.value ?? "0")

@@ -34,6 +34,21 @@ function render(text: string, vars: Record<string, string>): string {
   return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => vars[k] ?? "")
 }
 
+const firstName = (full: string) => full.trim().split(/\s+/)[0]
+
+// Mensagem de confirmação: NÃO depende do texto livre do tenant — sempre PUXA os
+// dados do agendamento (serviço/data/hora/nome). O texto do tenant, se houver, vira
+// só a saudação de abertura. As 2 ações ficam uma embaixo da outra. Sem "cancelar":
+// cancelamento não é self-service (cliente que insiste cai pro atendente).
+function buildConfirmMessage(tenantText: string, vars: Record<string, string>): string {
+  const intro = tenantText || `Olá${vars.contato ? `, ${firstName(vars.contato)}` : ""}! Passando pra confirmar seu horário 👋`
+  const anchor = [
+    vars.servico ? `📅 *${vars.servico}*` : null,
+    `🗓️ ${vars.data} às ${vars.hora}`,
+  ].filter(Boolean).join("\n")
+  return `${intro}\n\n${anchor}\n\nPosso confirmar?\n1️⃣ Confirmar\n2️⃣ Remarcar`
+}
+
 interface ApptForEvent {
   id: string; tenant_id: string; conversation_id: string | null; starts_at: string; notify_customer: boolean
   created_at?: string; resource_id?: string
@@ -123,9 +138,7 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   // Round-trip (3d): se o step pede confirmação, anexa o menu numerado (Baileys)
   // e, após enviar, grava o pending_agenda pra o interceptor mapear a resposta.
   const isConfirm = step.request_confirmation === true
-  const outText = isConfirm
-    ? `${text}\n\nResponda:\n1️⃣ Confirmar   2️⃣ Remarcar   3️⃣ Cancelar`
-    : text
+  const outText = isConfirm ? buildConfirmMessage(text, vars) : text
 
   // Resolve a instância da conversa (fallback: 1ª do tenant).
   const { data: conv } = await supabaseAdmin.from("chat_conversations").select("instance_id").eq("id", appt.conversation_id).maybeSingle()

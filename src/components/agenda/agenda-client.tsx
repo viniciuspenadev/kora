@@ -18,7 +18,7 @@ import {
   type ResourceRow, type ServiceRow,
 } from "@/lib/actions/agenda"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
-import { CalendarView, type CalColumn, type CalEvent } from "@/components/agenda/calendar-view"
+import { CalendarView, minutesInTz, type CalColumn, type CalEvent } from "@/components/agenda/calendar-view"
 
 const TZ = "America/Sao_Paulo"
 
@@ -51,8 +51,10 @@ function startOfWeek(base: Date): Date {
   d.setDate(d.getDate() - day); d.setHours(0, 0, 0, 0); return d
 }
 
-// Faixa de horas da grade, derivada do horário de trabalho dos recursos.
-function gridHours(resources: ResourceRow[]): { startHour: number; endHour: number } {
+// Faixa de horas da grade: UNE o horário de trabalho dos recursos COM os horários
+// dos agendamentos visíveis — senão um agendamento fora do expediente (ex.: 21h, 02h)
+// fica invisível na grade. Sem trava artificial; o eixo rola.
+function gridHours(resources: ResourceRow[], events: CalEvent[]): { startHour: number; endHour: number } {
   let min = 24, max = 0
   for (const r of resources) for (const d of r.working_hours ?? []) for (const iv of d.intervals ?? []) {
     const o = parseInt(iv[0]?.slice(0, 2) || "0", 10)
@@ -61,8 +63,15 @@ function gridHours(resources: ResourceRow[]): { startHour: number; endHour: numb
     if (!isNaN(o)) min = Math.min(min, o)
     if (!isNaN(c)) max = Math.max(max, c)
   }
+  for (const e of events) {
+    const sH = Math.floor(minutesInTz(e.start) / 60)
+    let eH = Math.ceil(minutesInTz(e.end) / 60)
+    if (eH <= sH) eH = sH + 1                         // fim 00:00 / cruza meia-noite
+    min = Math.min(min, sH)
+    max = Math.max(max, eH)
+  }
   if (min >= max) { min = 8; max = 20 }
-  return { startHour: Math.max(5, min), endHour: Math.min(23, Math.max(max, min + 4)) }
+  return { startHour: Math.max(0, min), endHour: Math.min(24, Math.max(max, min + 4)) }
 }
 
 export function AgendaClient({
@@ -81,7 +90,6 @@ export function AgendaClient({
   const [detailId, setDetailId] = useState<string | null>(null)
 
   const activeResources = useMemo(() => resources.filter((r) => r.active), [resources])
-  const { startHour, endHour } = useMemo(() => gridHours(activeResources), [activeResources])
 
   const range = useCallback(() => {
     if (view === "semana") {
@@ -139,6 +147,8 @@ export function AgendaClient({
     title: contactName(a), subtitle: a.tenant_services?.name || a.tenant_resources?.name || undefined,
     resourceId: a.resource_id, conversationId: a.conversation_id,
   })), [visible])
+
+  const { startHour, endHour } = useMemo(() => gridHours(activeResources, events), [activeResources, events])
 
   async function act(fn: () => Promise<{ error?: string }>, okMsg: string) {
     const r = await fn()
