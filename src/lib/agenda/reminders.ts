@@ -120,6 +120,13 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   // 3b envia pela conversa existente (janela fresca). Sem conversa → 3c (cron/template).
   if (!appt.conversation_id) return logReminder(appt, stepKey, "whatsapp", "skipped", "sem conversa (3b)")
 
+  // Round-trip (3d): se o step pede confirmação, anexa o menu numerado (Baileys)
+  // e, após enviar, grava o pending_agenda pra o interceptor mapear a resposta.
+  const isConfirm = step.request_confirmation === true
+  const outText = isConfirm
+    ? `${text}\n\nResponda:\n1️⃣ Confirmar   2️⃣ Remarcar   3️⃣ Cancelar`
+    : text
+
   // Resolve a instância da conversa (fallback: 1ª do tenant).
   const { data: conv } = await supabaseAdmin.from("chat_conversations").select("instance_id").eq("id", appt.conversation_id).maybeSingle()
   let instance: Record<string, unknown> | null = null
@@ -134,17 +141,19 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   if (!instance) return logReminder(appt, stepKey, "whatsapp", "failed", "tenant sem instância")
 
   try {
-    const result = await getProvider(instance).sendText(phone, text)
+    const result = await getProvider(instance).sendText(phone, outText)
     // Persiste na thread (igual à automação welcome) → o atendente vê o aviso.
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: appt.conversation_id, tenant_id: appt.tenant_id,
-      sender_type: "agent", sender_id: null, content_type: "text", content: text,
+      sender_type: "agent", sender_id: null, content_type: "text", content: outText,
       whatsapp_msg_id: result.messageId || null, status: "sent", is_private_note: false,
       metadata: { agenda_reminder: stepKey, automated: true },
     })
     await supabaseAdmin.from("chat_conversations").update({
-      last_message_at: new Date().toISOString(), last_message_preview: text.slice(0, 100),
+      last_message_at: new Date().toISOString(), last_message_preview: outText.slice(0, 100),
       last_message_dir: "out", updated_at: new Date().toISOString(),
+      // Pede confirmação → arma o contexto pra o interceptor (3d.2).
+      ...(isConfirm ? { pending_agenda: { kind: "confirm", appointment_id: appt.id, expires_at: new Date(Date.now() + 48 * 3600_000).toISOString() } } : {}),
     }).eq("id", appt.conversation_id)
     await logReminder(appt, stepKey, "whatsapp", "sent")
   } catch (e) {

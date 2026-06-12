@@ -22,6 +22,7 @@ const ICONS: Record<string, React.ReactNode> = {
   appt_confirmed:   <CalendarCheck className="size-4 text-emerald-600" />,
   appt_canceled:    <CalendarX className="size-4 text-red-600" />,
   appt_rescheduled: <CalendarClock className="size-4 text-amber-600" />,
+  appt_reschedule_help: <CalendarClock className="size-4 text-amber-600" />,
   appt_no_show:     <CalendarX className="size-4 text-amber-600" />,
   daily_briefing:   <Sun className="size-4 text-amber-500" />,
   transfer_received: <UserCheck className="size-4 text-primary-600" />,

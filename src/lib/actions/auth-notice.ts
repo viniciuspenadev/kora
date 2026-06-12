@@ -5,6 +5,8 @@ import { rateLimit } from "@/lib/rate-limit"
 import bcrypt from "bcryptjs"
 
 const BLOCKED = new Set(["pending_approval", "suspended", "deactivated"])
+// Hash fixo pra igualar o tempo quando o email não existe (anti enumeração por timing).
+const DUMMY_HASH = "$2b$10$xr7Cmkh6uOtBxebNKDHUBO/XnyR/m9z.2mO6moQukhXusLjLm2XVm"
 
 /**
  * Após um login FALHO, informa se o motivo é a conta estar BLOQUEADA (e qual) —
@@ -24,8 +26,8 @@ export async function getSigninNotice(
   if (!rateLimit(`auth:notice:${e}`, 5, 15 * 60_000).ok) return {}
 
   const { data: profile } = await supabaseAdmin
-    .from("profiles").select("id, password_hash").eq("email", e).single()
-  if (!profile?.password_hash) return {}
+    .from("profiles").select("id, password_hash").eq("email", e).maybeSingle()
+  if (!profile?.password_hash) { await bcrypt.compare(password, DUMMY_HASH); return {} }
   if (!(await bcrypt.compare(password, profile.password_hash))) return {}
 
   const { data: memberships } = await supabaseAdmin

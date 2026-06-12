@@ -4,6 +4,7 @@ import { jidToPhone } from "@/lib/phone-utils"
 import { getProvider } from "@/lib/providers"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
+import { handleAgendaReply } from "@/lib/agenda/interceptor"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
@@ -568,10 +569,22 @@ async function handleMessageUpsert(
       }
     }
 
+    // Camada 0 — interceptor da Agenda (confirmação/remarcação, Fase 3d).
+    // Determinístico, CEDE ao humano (assigned_to), fail-safe (erro → fluxo normal).
+    // Se tratou (cliente respondeu "1"/"2"/"3"), bypassa keyword/IA/automação.
+    let agendaHandled = false
+    if (content) {
+      try {
+        agendaHandled = await handleAgendaReply({ tenantId, conversationId: conversation.id, text: content, instance })
+      } catch (err) {
+        console.error("[agenda-interceptor] failed:", err)
+      }
+    }
+
     // Camada 1 — keyword triggers (sempre avaliados, independente de AI estar ligada).
     // Determinísticos e baratos. Se um trigger casar e responder, evita custo de AI.
     let kwMatched = false
-    if (content) {
+    if (!agendaHandled && content) {
       try {
         kwMatched = await evaluateKeywordTriggers({
           tenantId,
@@ -589,7 +602,7 @@ async function handleMessageUpsert(
     //   2. Atendente IA — se habilitada e algum trigger casar (com debounce de rajada).
     //   3. Automações fixas (welcome / horário comercial) — fallback se a IA não atuou.
     // Guardas de takeover/grupo/disabled ficam dentro do motor (v1/v2).
-    if (!kwMatched) {
+    if (!agendaHandled && !kwMatched) {
       const convId = conversation.id
       after(async () => {
         try {

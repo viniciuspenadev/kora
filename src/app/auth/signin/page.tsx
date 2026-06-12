@@ -91,17 +91,9 @@ export default function SignInPage() {
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between ml-1">
-                <label htmlFor="password" className="text-xs font-medium text-slate-600">
-                  Senha
-                </label>
-                <button
-                  type="button"
-                  className="text-xs text-indigo-600 hover:text-indigo-700 transition-colors"
-                >
-                  Esqueci a senha
-                </button>
-              </div>
+              <label htmlFor="password" className="text-xs font-medium text-slate-600 ml-1">
+                Senha
+              </label>
               <div className="relative group/input">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                   <Lock className="size-4 text-slate-400 group-focus-within/input:text-indigo-600 transition-colors" />

@@ -8,6 +8,11 @@ import { randomUUID } from "crypto"
 
 const IS_PROD = process.env.NODE_ENV === "production"
 
+// Hash bcrypt fixo (de uma senha aleatória) usado SÓ pra igualar o tempo de
+// resposta quando o email não existe — senão "email inexistente" responde mais
+// rápido que "senha errada" e vira oráculo de enumeração por timing.
+const DUMMY_HASH = "$2b$10$xr7Cmkh6uOtBxebNKDHUBO/XnyR/m9z.2mO6moQukhXusLjLm2XVm"
+
 // Revogação de privilégio: a sessão JWT dura 30d, mas role/active (e o token RLS
 // derivado) não podem ficar 30d defasados. Revalidamos no banco no máximo 1×/REVALIDATE_S
 // por usuário — num único ponto (callback jwt), não por página. Lag de revogação ≈ 5min.
@@ -167,9 +172,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           .from("profiles")
           .select("id, email, full_name, password_hash")
           .eq("email", credentials.email)
-          .single()
+          .maybeSingle()
 
-        if (!profile?.password_hash) return null
+        // Email inexistente: roda um compare DUMMY pra igualar o tempo (anti
+        // enumeração por timing) e retorna como senha errada.
+        if (!profile?.password_hash) {
+          await bcrypt.compare(credentials.password as string, DUMMY_HASH)
+          return null
+        }
 
         const valid = await bcrypt.compare(
           credentials.password as string,
@@ -187,7 +197,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             .from("platform_admins")
             .select("id")
             .eq("user_id", profile.id)
-            .single(),
+            .maybeSingle(),
         ])
 
         const isPlatformAdmin = !!platformAdmin

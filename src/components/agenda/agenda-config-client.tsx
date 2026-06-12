@@ -530,6 +530,7 @@ function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onCl
                     {reminders.map((r, i) => (
                       <div key={i} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
                         <span className="text-xs font-medium text-slate-700 shrink-0">{whenLabel(r.offset_minutes)}</span>
+                        {r.requestConfirmation && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 shrink-0">confirmação</span>}
                         <span className="text-[11px] text-slate-400 truncate flex-1">{r.text || "—"}</span>
                         <button type="button" onClick={() => setEditing({ index: i, draft: { ...r } })} className="size-6 grid place-items-center rounded hover:bg-slate-100 text-slate-400 shrink-0"><Pencil className="size-3.5" /></button>
                         <button type="button" onClick={() => setReminders((rs) => rs.filter((_, j) => j !== i))} className="size-6 grid place-items-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 shrink-0"><X className="size-3.5" /></button>
@@ -627,7 +628,7 @@ const REMINDER_WHENS = [
 function whenLabel(off: number): string {
   return REMINDER_WHENS.find((w) => w.v === off)?.l ?? `${Math.abs(off)} min antes`
 }
-interface Reminder { offset_minutes: number; text: string }
+interface Reminder { offset_minutes: number; text: string; requestConfirmation?: boolean }
 
 function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
   draft: Reminder; exampleVars: Record<string, string>
@@ -650,6 +651,15 @@ function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
             placeholder="Ex: Oi {{contato}}, seu horário é {{data}} às {{hora}}!" />
         </div>
       </div>
+      <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+        <Switch
+          checked={draft.requestConfirmation ?? false}
+          onChange={(v) => onChange({ ...draft, requestConfirmation: v })}
+          size="sm"
+          label="Pedir confirmação ao cliente"
+          description="O cliente responde Confirmar / Remarcar / Cancelar — e o status muda sozinho (sem precisar de IA)."
+        />
+      </div>
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button>
         <Button size="sm" onClick={onSave} disabled={!draft.text.trim()}>Salvar lembrete</Button>
@@ -659,7 +669,7 @@ function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
 }
 
 // ── reminder_policy helpers ──────────────────────────────────
-interface PolicyStep { offset_minutes?: number; audience?: string; channel?: string; text?: string }
+interface PolicyStep { offset_minutes?: number; audience?: string; channel?: string; text?: string; request_confirmation?: boolean }
 function readNotifyStep(service: ServiceRow | null): string {
   const steps = (service?.reminder_policy as { steps?: PolicyStep[] } | undefined)?.steps ?? []
   return steps.find((s) => (s.offset_minutes ?? 0) === 0 && (s.audience ?? "customer") !== "agent")?.text ?? ""
@@ -668,7 +678,7 @@ function readReminders(service: ServiceRow | null): Reminder[] {
   const steps = (service?.reminder_policy as { steps?: PolicyStep[] } | undefined)?.steps ?? []
   // Lembretes são só pro CLIENTE (a consciência do atendente é a tela "Hoje").
   return steps.filter((s) => (s.offset_minutes ?? 0) < 0 && (s.audience ?? "customer") !== "agent")
-    .map((s) => ({ offset_minutes: s.offset_minutes ?? -60, text: s.text ?? "" }))
+    .map((s) => ({ offset_minutes: s.offset_minutes ?? -60, text: s.text ?? "", requestConfirmation: s.request_confirmation === true }))
     .sort((a, b) => a.offset_minutes - b.offset_minutes)
 }
 /** Compõe a reminder_policy: "ao agendar" (offset 0) + lembretes (offset<0), todos pro cliente. */
@@ -677,7 +687,7 @@ function buildPolicy(service: ServiceRow | null, msg: string, reminders: Reminde
   const steps: PolicyStep[] = []
   if (msg.trim()) steps.push({ offset_minutes: 0, audience: "customer", channel: "whatsapp", text: msg.trim() })
   for (const r of reminders) {
-    steps.push({ offset_minutes: r.offset_minutes, audience: "customer", channel: "whatsapp", text: r.text.trim() || undefined })
+    steps.push({ offset_minutes: r.offset_minutes, audience: "customer", channel: "whatsapp", text: r.text.trim() || undefined, request_confirmation: r.requestConfirmation || undefined })
   }
   return { ...prev, steps }
 }
