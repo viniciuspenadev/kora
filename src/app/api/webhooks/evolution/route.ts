@@ -504,17 +504,6 @@ async function handleMessageUpsert(
       })
       .eq("id", conversation.id)
 
-    // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o
-    // atendente atribuído (ou todo o pool se ninguém assumiu). Só inbound real
-    // de contato (este branch); fromMe/grupos sem nome caem no fallback de telefone.
-    {
-      const notifyTitle = (isGroup ? null : pushName) || `+${jidToPhone(jid)}`
-      const notifyPreview = preview
-      after(() => notifyInboundMessage({
-        tenantId, conversationId: conversation.id, title: notifyTitle, preview: notifyPreview,
-      }))
-    }
-
     // CTWA — registra atribuição no contato pra relatórios/segmentação futura.
     // Só guarda na 1ª vez (first-touch attribution). Se já existir, mantém.
     if (externalAdReply && contact) {
@@ -579,6 +568,17 @@ async function handleMessageUpsert(
       } catch (err) {
         console.error("[agenda-interceptor] failed:", err)
       }
+    }
+
+    // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o atendente
+    // atribuído (ou todo o pool se ninguém assumiu). NÃO empurra quando a Agenda consumiu
+    // a mensagem (resposta de menu "1"/"2" não é "nova mensagem" — o push relevante é o do
+    // sininho de agenda, evitando push dobrado). fromMe/grupos sem nome caem no fallback.
+    if (!agendaHandled) {
+      const notifyTitle = (isGroup ? null : pushName) || `+${jidToPhone(jid)}`
+      after(() => notifyInboundMessage({
+        tenantId, conversationId: conversation.id, title: notifyTitle, preview,
+      }))
     }
 
     // Camada 1 — keyword triggers (sempre avaliados, independente de AI estar ligada).

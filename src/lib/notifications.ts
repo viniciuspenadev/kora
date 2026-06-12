@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { sendPushToUsers } from "@/lib/push/send"
 
 // ═══════════════════════════════════════════════════════════════
 // Central de notificações (GENÉRICA) — o "plano do atendente" (sininho)
@@ -43,5 +44,22 @@ export async function createNotification(input: CreateNotificationInput): Promis
     payload:           input.payload ?? {},
   })
   // Notificação é best-effort: nunca derruba a ação de negócio que a originou.
-  if (error) console.error("[notifications] insert falhou:", error.message)
+  if (error) { console.error("[notifications] insert falhou:", error.message); return }
+
+  // Espelha no PWA: TODO evento do sininho vira web push pro destinatário, mesmo com
+  // o app fechado. Ponto único — agenda agora, transfer/lead/briefing depois, de graça.
+  // Reusa a mesma subscription/permissão das mensagens. No-op sem VAPID; nunca lança.
+  try {
+    const p = input.payload ?? {}
+    const convId = typeof p.conversation_id === "string" ? p.conversation_id : null
+    const apptId = typeof p.appointment_id === "string" ? p.appointment_id : null
+    await sendPushToUsers([input.recipientId], {
+      title: input.title,
+      body:  input.body ?? "",
+      url:   convId ? `/inbox?conversation=${convId}` : "/agenda",
+      tag:   `${input.type}:${apptId ?? convId ?? input.recipientId}`,
+    })
+  } catch (e) {
+    console.error("[notifications] push falhou:", e)
+  }
 }

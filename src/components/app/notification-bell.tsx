@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useRef, useState, useCallback } from "react"
+import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check } from "lucide-react"
+import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, type LucideIcon } from "lucide-react"
 import { getRealtimeClient } from "@/lib/realtime"
 import {
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,
@@ -12,20 +12,23 @@ import {
 // ═══════════════════════════════════════════════════════════════
 // Sininho — "plano do atendente" (docs/agenda-design.md §6.2)
 // ═══════════════════════════════════════════════════════════════
-// Feed in-app via Realtime (canal por destinatário). Badge = não-lidas
-// (mesma linguagem da bolinha do inbox: abrir/clicar zera). Genérico:
-// hoje só agenda produz, mas qualquer `type` futuro aparece aqui.
+// Feed in-app via Realtime (canal por destinatário). Visual editorial/monocromático
+// (design-system): o TIPO é comunicado pelo ícone, não pela cor; "não-lida" vira
+// CONTRASTE (chip escuro) em vez de tinta. Genérico — qualquer `type` futuro cai aqui.
 
-const ICONS: Record<string, React.ReactNode> = {
-  appt_created:     <CalendarClock className="size-4 text-primary-600" />,
-  appt_reminder:    <CalendarClock className="size-4 text-primary-600" />,
-  appt_confirmed:   <CalendarCheck className="size-4 text-emerald-600" />,
-  appt_canceled:    <CalendarX className="size-4 text-red-600" />,
-  appt_rescheduled: <CalendarClock className="size-4 text-amber-600" />,
-  appt_reschedule_help: <CalendarClock className="size-4 text-amber-600" />,
-  appt_no_show:     <CalendarX className="size-4 text-amber-600" />,
-  daily_briefing:   <Sun className="size-4 text-amber-500" />,
-  transfer_received: <UserCheck className="size-4 text-primary-600" />,
+const TZ = "America/Sao_Paulo"
+
+// Só a forma do ícone diferencia o tipo — a cor é monocromática (aplicada no chip).
+const ICONS: Record<string, LucideIcon> = {
+  appt_created:         CalendarClock,
+  appt_reminder:        CalendarClock,
+  appt_confirmed:       CalendarCheck,
+  appt_canceled:        CalendarX,
+  appt_rescheduled:     CalendarClock,
+  appt_reschedule_help: CalendarClock,
+  appt_no_show:         CalendarX,
+  daily_briefing:       Sun,
+  transfer_received:    UserCheck,
 }
 
 function timeAgo(iso: string): string {
@@ -40,10 +43,12 @@ function timeAgo(iso: string): string {
 
 function hrefFor(n: NotificationItem): string {
   const p = n.payload ?? {}
-  if (p.conversation_id) return `/inbox?c=${p.conversation_id}`
+  if (p.conversation_id) return `/inbox?conversation=${p.conversation_id}`
   if (p.appointment_id) return "/agenda"
   return "/agenda"
 }
+
+const dayKey = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ })
 
 export function NotificationBell({
   userId, supabaseToken,
@@ -122,6 +127,18 @@ export function NotificationBell({
     await markAllNotificationsRead().catch(() => {})
   }
 
+  // Agrupa em Hoje / Anteriores (estrutura sem poluir com cor).
+  const groups = useMemo(() => {
+    const today = dayKey(new Date().toISOString())
+    const hoje: NotificationItem[] = []
+    const antes: NotificationItem[] = []
+    for (const n of items) (dayKey(n.created_at) === today ? hoje : antes).push(n)
+    return [
+      { key: "hoje", label: "Hoje", rows: hoje },
+      { key: "antes", label: "Anteriores", rows: antes },
+    ].filter((g) => g.rows.length > 0)
+  }, [items])
+
   const badge = unread > 99 ? "99+" : String(unread)
 
   return (
@@ -134,45 +151,65 @@ export function NotificationBell({
       >
         <Bell className="size-5" strokeWidth={1.75} />
         {unread > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center ring-2 ring-white tabular-nums">
+          <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full bg-primary text-white text-[9px] font-semibold flex items-center justify-center ring-2 ring-white tabular-nums">
             {badge}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-[360px] max-w-[calc(100vw-1rem)] rounded-xl border border-slate-200 bg-white shadow-lg z-50 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+        <div className="absolute right-0 mt-2 w-[380px] max-w-[calc(100vw-1rem)] rounded-xl border border-slate-200 bg-white shadow-lg z-50 overflow-hidden">
+          <div className="flex items-center justify-between px-4 h-12 border-b border-slate-100">
             <span className="text-sm font-semibold text-slate-900">Notificações</span>
             {unread > 0 && (
-              <button onClick={onMarkAll} className="text-xs text-primary-600 hover:text-primary-700 font-medium inline-flex items-center gap-1">
-                <Check className="size-3.5" /> Marcar todas
+              <button onClick={onMarkAll} className="text-xs text-slate-400 hover:text-slate-900 font-medium inline-flex items-center gap-1 transition-colors">
+                <Check className="size-3.5" /> Marcar todas como lidas
               </button>
             )}
           </div>
 
-          <div className="max-h-[420px] overflow-y-auto">
+          <div className="max-h-[440px] overflow-y-auto">
             {items.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-slate-400">
-                {loaded ? "Nada por aqui ainda 🎉" : "Carregando…"}
+              <div className="px-4 py-12 flex flex-col items-center text-center">
+                <span className="size-10 rounded-full bg-slate-100 grid place-items-center mb-3">
+                  <Bell className="size-5 text-slate-300" strokeWidth={1.75} />
+                </span>
+                <p className="text-sm font-medium text-slate-500">{loaded ? "Tudo em dia" : "Carregando…"}</p>
+                {loaded && <p className="text-xs text-slate-400 mt-0.5">Avisos de agenda e atendimento aparecem aqui.</p>}
               </div>
             ) : (
-              items.map((n) => (
-                <button
-                  key={n.id}
-                  onClick={() => onItemClick(n)}
-                  className={`w-full text-left flex gap-3 px-4 py-3 border-b border-slate-50 hover:bg-slate-50 transition-colors ${n.read_at ? "" : "bg-primary-50/40"}`}
-                >
-                  <span className="mt-0.5 shrink-0">{ICONS[n.type] ?? <Bell className="size-4 text-slate-400" />}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-slate-800 truncate">{n.title}</span>
-                      {!n.read_at && <span className="size-1.5 rounded-full bg-primary-600 shrink-0" />}
-                    </span>
-                    {n.body && <span className="block text-xs text-slate-500 truncate mt-0.5">{n.body}</span>}
-                    <span className="block text-[11px] text-slate-400 mt-0.5">{timeAgo(n.created_at)}</span>
-                  </span>
-                </button>
+              groups.map((g) => (
+                <div key={g.key}>
+                  <p className="px-4 pt-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{g.label}</p>
+                  {g.rows.map((n) => {
+                    const Icon = ICONS[n.type] ?? Bell
+                    const isUnread = !n.read_at
+                    return (
+                      <button
+                        key={n.id}
+                        onClick={() => onItemClick(n)}
+                        className="w-full text-left flex gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors"
+                      >
+                        <span
+                          className={`mt-0.5 size-9 rounded-lg grid place-items-center shrink-0 ${
+                            isUnread ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-400"
+                          }`}
+                        >
+                          <Icon className="size-4" strokeWidth={2} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-baseline gap-2">
+                            <span className={`text-sm truncate ${isUnread ? "font-semibold text-slate-900" : "font-medium text-slate-500"}`}>
+                              {n.title}
+                            </span>
+                            <span className="ml-auto shrink-0 text-[11px] text-slate-400 tabular-nums">{timeAgo(n.created_at)}</span>
+                          </span>
+                          {n.body && <span className="block text-xs text-slate-400 truncate mt-0.5">{n.body}</span>}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
               ))
             )}
           </div>
