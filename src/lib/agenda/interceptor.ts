@@ -40,8 +40,13 @@ export async function handleAgendaReply(args: {
     .select("id, assigned_to, pending_agenda, contact_id, chat_contacts ( phone_number )")
     .eq("id", conversationId).eq("tenant_id", tenantId).maybeSingle()
   if (!conv) return false
-  if (conv.assigned_to) return false                       // humano no controle → cede
 
+  // SÓ agimos quando há uma pergunta pendente EXPLÍCITA (o menu que NÓS mandamos).
+  // Sem isso, a conversa é território do fluxo normal/humano — não tocamos.
+  // Diferente da IA, NÃO cedemos por `assigned_to`: o sistema fez a pergunta, a
+  // resposta do cliente ("3") tem que ser resolvida mesmo em conversa de carteira
+  // (senão o round-trip nunca funciona — toda conversa tem dono). As salvaguardas
+  // pra não atropelar o humano: keywords apertadas + não re-perguntar se atribuída.
   const pending = conv.pending_agenda as PendingAgenda | null
   if (!pending?.kind || !pending.appointment_id) return false
   if (pending.expires_at && new Date(pending.expires_at) < new Date()) {
@@ -55,24 +60,26 @@ export async function handleAgendaReply(args: {
   if (!appt || appt.contact_id !== conv.contact_id) { await clearPending(conversationId); return false }
 
   const phone = (conv.chat_contacts as unknown as { phone_number: string | null } | null)?.phone_number ?? ""
-  const ctx = { tenantId, convId: conversationId, instance, phone, appt, pending }
+  const ctx = { tenantId, convId: conversationId, instance, phone, appt, pending, assigned: !!conv.assigned_to }
   const t = text.toLowerCase()
   const digit = (text.replace(/[⃣️]/g, "").match(/\b(\d+)\b/)?.[1]) ?? null
 
+  // Keywords APERTADAS (dígito + verbo claro). Em conversa de carteira, bare
+  // "ok/pode/não/outro" são fala normal — exigimos a intenção inequívoca.
   if (pending.kind === "confirm") {
-    if (digit === "1" || /\b(confirm|sim|ok|isso|pode|positivo)\b/.test(t)) {
+    if (digit === "1" || /\b(confirmo|confirmar|confirmado|confirma)\b/.test(t) || /^\s*sim\b/.test(t)) {
       await setStatus(appt.id, "confirmed"); await clearPending(conversationId)
       await notifyAgent(ctx, "confirmed")
       await reply(ctx, "✅ Confirmado! Seu horário está garantido. Até lá 😊")
       return true
     }
-    if (digit === "3" || /\b(cancel|não|nao|negativo)\b/.test(t)) {
+    if (digit === "3" || /\b(cancelar|cancela|cancelo|cancelado)\b/.test(t)) {
       await setStatus(appt.id, "canceled"); await clearPending(conversationId)
       await notifyAgent(ctx, "canceled")
       await reply(ctx, "Tudo bem, cancelei seu horário. Se quiser remarcar, é só chamar 🙏")
       return true
     }
-    if (digit === "2" || /\b(remarc|outro|trocar|mudar)\b/.test(t)) {
+    if (digit === "2" || /\b(remarcar|remarca|reagendar|reagenda)\b/.test(t)) {
       return startReschedule(ctx)
     }
     return reprompt(ctx, "Responda com o número:\n1️⃣ Confirmar   2️⃣ Remarcar   3️⃣ Cancelar")
@@ -80,7 +87,7 @@ export async function handleAgendaReply(args: {
 
   if (pending.kind === "reschedule_pick") {
     const slots = pending.slots ?? []
-    if (digit === "0" || /\b(nenhum|outro dia|outra)\b/.test(t)) {
+    if (digit === "0" || /\b(nenhum|nenhuma)\b/.test(t)) {
       await clearPending(conversationId)
       await notifyAgent(ctx, "reschedule")
       await reply(ctx, "Sem problema! Um atendente vai te ajudar a achar o melhor horário 🙌")
@@ -106,6 +113,7 @@ type Ctx = {
   tenantId: string; convId: string; instance: ProviderInstance; phone: string
   appt: { id: string; tenant_id: string; resource_id: string; service_id: string | null; starts_at: string; ends_at: string; created_by: string | null }
   pending: PendingAgenda
+  assigned: boolean
 }
 
 async function clearPending(convId: string) {
@@ -133,6 +141,9 @@ async function reply(ctx: Ctx, text: string) {
 
 /** Re-pergunta 1× quando a resposta não casa; na 2ª, desiste e cede ao fluxo normal. */
 async function reprompt(ctx: Ctx, msg: string): Promise<boolean> {
+  // Conversa com humano: NÃO injetamos "responda com número" no meio do papo do
+  // atendente — cedemos em silêncio (a pendência fica viva pra um "3" claro depois).
+  if (ctx.assigned) return false
   const attempts = (ctx.pending.attempts ?? 0) + 1
   if (attempts >= 2) { await clearPending(ctx.convId); return false }
   await supabaseAdmin.from("chat_conversations").update({ pending_agenda: { ...ctx.pending, attempts } }).eq("id", ctx.convId)
