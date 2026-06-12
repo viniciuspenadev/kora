@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useTransition } from "react"
-import { Loader2, Power, RotateCcw } from "lucide-react"
+import { useState, useEffect, useTransition } from "react"
+import { Loader2, Power, RotateCcw, CalendarDays } from "lucide-react"
 import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
@@ -9,6 +9,10 @@ import {
   updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool, setMemberActive,
   type TeamMember, type Department, type TenantRole,
 } from "@/lib/actions/team"
+import {
+  listMemberAgendaAccess, setMemberAgendaAccess,
+  type MemberAgendaAccess, type ShareLevel,
+} from "@/lib/actions/agenda"
 
 const inputCls =
   "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
@@ -219,6 +223,8 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
             </label>
           </div>
 
+          {member.role === "agent" && <AgendaAccessSection memberUserId={member.user_id} onFeedback={onFeedback} />}
+
           {!isSelf && !isOwner && (
             <div className="pt-4 border-t border-slate-100">
               {member.active ? (
@@ -262,5 +268,72 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
         onClose={() => setConfirmDeactivate(false)}
       />
     </>
+  )
+}
+
+// ── Acesso a agendas (delegação estilo Outlook) — admin define pelo Sheet ──
+const AGENDA_LEVELS: { v: "none" | ShareLevel; l: string }[] = [
+  { v: "none",      l: "Nenhum" },
+  { v: "free_busy", l: "Restrita" },
+  { v: "details",   l: "Detalhada" },
+  { v: "manage",    l: "Gerenciar" },
+]
+
+function AgendaAccessSection({ memberUserId, onFeedback }: {
+  memberUserId: string
+  onFeedback: (kind: "ok" | "error", text: string) => void
+}) {
+  const [rows, setRows]       = useState<MemberAgendaAccess[]>([])
+  const [loading, setLoading] = useState(true)
+  const [savingId, setSaving] = useState<string | null>(null)
+
+  useEffect(() => {
+    let on = true
+    listMemberAgendaAccess(memberUserId)
+      .then((r) => { if (on) { setRows(r); setLoading(false) } })
+      .catch(() => { if (on) setLoading(false) })
+    return () => { on = false }
+  }, [memberUserId])
+
+  async function setLevel(resourceId: string, level: "none" | ShareLevel) {
+    setSaving(resourceId)
+    const r = await setMemberAgendaAccess(memberUserId, resourceId, level)
+    setSaving(null)
+    if (r?.error) { onFeedback("error", r.error); return }
+    setRows((prev) => prev.map((x) => (x.resource_id === resourceId ? { ...x, level: level === "none" ? null : level } : x)))
+  }
+
+  if (loading || rows.length === 0) return null   // sem agendas / não-admin → some
+
+  return (
+    <div className="pt-4 border-t border-slate-100">
+      <p className="text-sm font-medium text-slate-800 flex items-center gap-1.5"><CalendarDays className="size-4 text-slate-400" /> Acesso a agendas</p>
+      <p className="text-[11px] text-slate-500 mt-0.5 mb-3">
+        Libere a agenda de outros atendentes pra esta pessoa. <strong>Restrita</strong> = só os horários ocupados, sem dados do cliente; <strong>Detalhada</strong> = vê a reunião (leitura); <strong>Gerenciar</strong> = marca/cancela/remarca (não altera a configuração da agenda nem compartilha com terceiros).
+      </p>
+      <div className="space-y-2">
+        {rows.map((r) => (
+          <div key={r.resource_id} className="rounded-lg border border-slate-200 p-2">
+            <p className="text-sm text-slate-700 mb-1.5 truncate">{r.name}</p>
+            <div className="inline-flex w-full rounded-lg border border-slate-200 bg-white p-0.5">
+              {AGENDA_LEVELS.map((opt) => {
+                const active = (r.level ?? "none") === opt.v
+                return (
+                  <button
+                    key={opt.v} type="button" disabled={savingId === r.resource_id}
+                    onClick={() => setLevel(r.resource_id, opt.v)}
+                    className={`flex-1 px-1 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 ${
+                      active ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    {opt.l}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }

@@ -16,5 +16,5 @@ export default async function AgendaPage() {
 
   const [resources, services] = await Promise.all([listResources(), listServices()])
 
-  return <AgendaClient resources={resources} services={services} isAdmin={isAdmin} />
+  return <AgendaClient resources={resources} services={services} isAdmin={isAdmin} userId={session.user.id} />
 }

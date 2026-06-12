@@ -185,7 +185,7 @@ export function SidebarBody({
   return (
     <>
       <div className="flex items-center h-14 border-b border-slate-200 px-2.5 shrink-0 overflow-hidden">
-        <div className="flex size-11 items-center justify-center shrink-0">
+        <div className="flex size-9 items-center justify-center shrink-0">
           <Image
             src="/logo_kora_curto.png"
             alt="Kora"
@@ -217,9 +217,9 @@ export function SidebarBody({
                 className={`group/item relative flex items-center gap-3 rounded-xl py-1.5 pr-3 ${item.soon ? "cursor-default" : ""}`}
               >
                 <span className={`
-                  relative flex size-11 items-center justify-center rounded-xl shrink-0 transition-all duration-150
+                  relative flex size-9 items-center justify-center rounded-xl shrink-0 transition-all duration-150
                   ${active
-                    ? "bg-primary-50 text-primary-700"
+                    ? "bg-primary text-white shadow-sm shadow-primary/25"
                     : item.soon
                     ? "text-slate-300"
                     : "text-slate-500 group-hover/item:bg-slate-100 group-hover/item:text-slate-900"
@@ -268,9 +268,9 @@ export function SidebarBody({
                 className="group/item relative w-full flex items-center gap-3 rounded-xl py-1.5 pr-3"
               >
                 <span className={`
-                  flex size-11 items-center justify-center rounded-xl shrink-0 transition-all duration-150
+                  flex size-9 items-center justify-center rounded-xl shrink-0 transition-all duration-150
                   ${groupActive
-                    ? "bg-primary-50 text-primary-600 ring-1 ring-primary-100"
+                    ? "bg-primary text-white shadow-sm shadow-primary/25"
                     : "text-slate-500 group-hover/item:bg-slate-100 group-hover/item:text-slate-900"
                   }
                 `}>
@@ -342,7 +342,7 @@ export function SidebarBody({
             title="Meu perfil"
             className="group/profile flex items-center gap-2 min-w-0 flex-1 overflow-hidden rounded-lg hover:bg-slate-50 transition-colors"
           >
-            <div className="flex size-11 items-center justify-center shrink-0">
+            <div className="flex size-9 items-center justify-center shrink-0">
               <ProfileAvatar name={userName} />
             </div>
             <div className={`min-w-0 flex-1 overflow-hidden ${reveal}`}>

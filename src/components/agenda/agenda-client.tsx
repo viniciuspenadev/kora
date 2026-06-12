@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import {
   CalendarDays, Plus, Settings2, ChevronLeft, ChevronRight,
   Check, CheckCheck, X, UserX, MessageSquare, CalendarClock, Clock, CircleCheck, CircleDashed,
+  Users, UserPlus, Loader2, Share2,
 } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { Button } from "@/components/ui/button"
@@ -15,10 +16,13 @@ import {
 } from "@/components/ui/dialog"
 import {
   listAppointments, setAppointmentStatus, cancelAppointment, rescheduleAppointment,
-  type ResourceRow, type ServiceRow,
+  listAppointmentParticipants, listAppointmentAgents, addAppointmentParticipant, removeAppointmentParticipant,
+  type ResourceRow, type ServiceRow, type AppointmentParticipant,
 } from "@/lib/actions/agenda"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
 import { CalendarView, minutesInTz, type CalColumn, type CalEvent } from "@/components/agenda/calendar-view"
+import { AgendaOverview } from "@/components/agenda/agenda-overview"
+import { ShareAgendaDialog } from "@/components/agenda/share-agenda-dialog"
 
 const TZ = "America/Sao_Paulo"
 
@@ -26,12 +30,14 @@ export interface AgendaAppointment {
   id: string; contact_id: string; conversation_id: string | null
   resource_id: string; service_id: string | null
   starts_at: string; ends_at: string; status: string; source: string; notes: string | null
+  created_by?:       string | null
+  busy_only?:        boolean   // nível livre/ocupado: renderiza "Ocupado", sem PII nem ações
   chat_contacts?:    { push_name: string | null; custom_name: string | null; phone_number: string | null } | null
   tenant_services?:  { name: string } | null
   tenant_resources?: { name: string } | null
 }
 
-type View = "dia" | "semana" | "lista"
+type View = "overview" | "dia" | "semana" | "lista"
 
 const STATUS: Record<string, { label: string; chip: string; dot: string }> = {
   scheduled: { label: "Agendado",  chip: "bg-primary-50 text-primary-700 border-primary-100", dot: "bg-primary-500" },
@@ -42,6 +48,7 @@ const STATUS: Record<string, { label: string; chip: string; dot: string }> = {
 }
 
 function contactName(a: AgendaAppointment): string {
+  if (a.busy_only) return "Ocupado"
   return a.chat_contacts?.custom_name || a.chat_contacts?.push_name || a.chat_contacts?.phone_number || "Contato"
 }
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" })
@@ -75,21 +82,24 @@ function gridHours(resources: ResourceRow[], events: CalEvent[]): { startHour: n
 }
 
 export function AgendaClient({
-  resources, services, isAdmin,
+  resources, services, isAdmin, userId,
 }: {
-  resources: ResourceRow[]; services: ServiceRow[]; isAdmin: boolean
+  resources: ResourceRow[]; services: ServiceRow[]; isAdmin: boolean; userId: string
 }) {
   const router = useRouter()
-  const [view, setView] = useState<View>("dia")
+  const [view, setView] = useState<View>("overview")
   const [anchor, setAnchor] = useState(() => new Date())
   const [items, setItems] = useState<AgendaAppointment[]>([])
   const [loading, setLoading] = useState(true)
   const [resourceFilter, setResourceFilter] = useState<string>("")
+  const [scope, setScope] = useState<"mine" | "all">("all")
   const [reloadKey, setReloadKey] = useState(0)
   const [prefill, setPrefill] = useState<{ resourceId?: string; date?: string; time?: string } | null>(null)
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [shareOpen, setShareOpen] = useState(false)
 
   const activeResources = useMemo(() => resources.filter((r) => r.active), [resources])
+  const myResources = useMemo(() => activeResources.filter((r) => r.assigned_agent_id === userId), [activeResources, userId])
 
   const range = useCallback(() => {
     if (view === "semana") {
@@ -104,6 +114,7 @@ export function AgendaClient({
   const reload = () => setReloadKey((k) => k + 1)
 
   useEffect(() => {
+    if (view === "overview") return   // a Visão geral busca os próprios dados
     let on = true
     void (async () => {
       setLoading(true)
@@ -112,12 +123,21 @@ export function AgendaClient({
       if (on) { setItems(data as unknown as AgendaAppointment[]); setLoading(false) }
     })()
     return () => { on = false }
-  }, [range, reloadKey])
+  }, [range, reloadKey, view])
 
-  const visible = useMemo(
-    () => (resourceFilter ? items.filter((a) => a.resource_id === resourceFilter) : items),
-    [items, resourceFilter],
-  )
+  // Recurso → agente dono (pra o filtro "Minha agenda").
+  const resourceAgent = useMemo(() => {
+    const m = new Map<string, string | null>()
+    for (const r of resources) m.set(r.id, r.assigned_agent_id)
+    return m
+  }, [resources])
+
+  const visible = useMemo(() => {
+    let list = resourceFilter ? items.filter((a) => a.resource_id === resourceFilter) : items
+    // "Minha agenda": só onde sou o agente do recurso OU quem agendou (foco do admin/supervisor).
+    if (scope === "mine") list = list.filter((a) => resourceAgent.get(a.resource_id) === userId || a.created_by === userId)
+    return list
+  }, [items, resourceFilter, scope, resourceAgent, userId])
 
   // KPIs do range carregado.
   const kpis = useMemo(() => {
@@ -179,6 +199,9 @@ export function AgendaClient({
       bodyClass="px-4 sm:px-6 py-5"
       actions={
         <>
+          {myResources.length > 0 && (
+            <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}><Share2 className="size-4" /> Compartilhar minha agenda</Button>
+          )}
           {isAdmin && (
             <Link href="/agenda/configuracao">
               <Button variant="outline" size="sm"><Settings2 className="size-4" /> Configurar</Button>
@@ -194,27 +217,43 @@ export function AgendaClient({
         <EmptyConfig isAdmin={isAdmin} />
       ) : (
         <div className="space-y-4">
-          {/* Faixa de KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Kpi icon={CalendarClock} tone="primary"  label="Agendamentos" value={kpis.total} />
-            <Kpi icon={CircleCheck}   tone="emerald"  label="Confirmados"  value={kpis.confirmed} />
-            <Kpi icon={CircleDashed}  tone="amber"    label="Aguardando"   value={kpis.waiting} />
-            <Kpi icon={Clock}         tone="slate"    label="Concluídos"   value={kpis.done} />
-          </div>
+          {/* Faixa de KPIs (some na Visão geral, que tem os seus) */}
+          {view !== "overview" && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <Kpi icon={CalendarClock} tone="primary"  label="Agendamentos" value={kpis.total} />
+              <Kpi icon={CircleCheck}   tone="emerald"  label="Confirmados"  value={kpis.confirmed} />
+              <Kpi icon={CircleDashed}  tone="amber"    label="Aguardando"   value={kpis.waiting} />
+              <Kpi icon={Clock}         tone="slate"    label="Concluídos"   value={kpis.done} />
+            </div>
+          )}
 
-          {/* Barra de controle */}
+          {/* Barra de controle — abas sempre; navegação de data/filtro só fora da Visão geral */}
           <div className="flex flex-wrap items-center gap-2 justify-between">
             <div className="flex items-center gap-2">
-              <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white">
-                <button onClick={() => shift(-1)} className="size-8 grid place-items-center text-slate-500 hover:bg-slate-50 rounded-l-lg"><ChevronLeft className="size-4" /></button>
-                <button onClick={() => setAnchor(new Date())} className="px-2.5 h-8 text-xs font-medium text-slate-600 hover:bg-slate-50 border-x border-slate-200">Hoje</button>
-                <button onClick={() => shift(1)} className="size-8 grid place-items-center text-slate-500 hover:bg-slate-50 rounded-r-lg"><ChevronRight className="size-4" /></button>
-              </div>
-              <span className="text-sm font-semibold text-slate-800 capitalize hidden sm:inline">{dateLabel}</span>
+              {view !== "overview" && (
+                <>
+                  <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white">
+                    <button onClick={() => shift(-1)} className="size-8 grid place-items-center text-slate-500 hover:bg-slate-50 rounded-l-lg"><ChevronLeft className="size-4" /></button>
+                    <button onClick={() => setAnchor(new Date())} className="px-2.5 h-8 text-xs font-medium text-slate-600 hover:bg-slate-50 border-x border-slate-200">Hoje</button>
+                    <button onClick={() => shift(1)} className="size-8 grid place-items-center text-slate-500 hover:bg-slate-50 rounded-r-lg"><ChevronRight className="size-4" /></button>
+                  </div>
+                  <span className="text-sm font-semibold text-slate-800 capitalize hidden sm:inline">{dateLabel}</span>
+                </>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
-              {activeResources.length > 1 && (
+              {view !== "overview" && (
+                <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+                  {([["mine", "Minha"], ["all", "Todas"]] as const).map(([v, label]) => (
+                    <button key={v} onClick={() => setScope(v)}
+                      className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${scope === v ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:text-slate-800"}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {view !== "overview" && activeResources.length > 1 && (
                 <select value={resourceFilter} onChange={(e) => setResourceFilter(e.target.value)}
                   className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-700">
                   <option value="">Todos os recursos</option>
@@ -222,10 +261,10 @@ export function AgendaClient({
                 </select>
               )}
               <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
-                {(["dia", "semana", "lista"] as const).map((v) => (
+                {([["overview", "Visão geral"], ["dia", "Dia"], ["semana", "Semana"], ["lista", "Lista"]] as const).map(([v, label]) => (
                   <button key={v} onClick={() => setView(v)}
-                    className={`px-3 py-1 text-sm font-medium rounded-md capitalize transition-colors ${view === v ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:text-slate-800"}`}>
-                    {v}
+                    className={`px-3 py-1 text-sm font-medium rounded-md transition-colors ${view === v ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:text-slate-800"}`}>
+                    {label}
                   </button>
                 ))}
               </div>
@@ -233,7 +272,9 @@ export function AgendaClient({
           </div>
 
           {/* Conteúdo */}
-          {loading ? (
+          {view === "overview" ? (
+            <AgendaOverview onSeeAll={() => setView("lista")} reloadSignal={reloadKey} />
+          ) : loading ? (
             <div className="py-24 text-center text-sm text-slate-400">Carregando…</div>
           ) : view === "lista" ? (
             <ListaView items={visible} onAct={act} router={router} onOpen={setDetailId} />
@@ -274,6 +315,8 @@ export function AgendaClient({
           router={router}
         />
       )}
+
+      {shareOpen && <ShareAgendaDialog resources={myResources} onClose={() => setShareOpen(false)} />}
     </PageShell>
   )
 }
@@ -317,20 +360,29 @@ function ListaView({ items, onAct, router, onOpen }: {
               <span className="text-[11px] text-slate-400 tabular-nums">{hhmm(a.ends_at)}</span>
             </button>
             <div className={`w-1 self-stretch rounded-full ${st.dot}`} />
-            <button onClick={() => onOpen(a.id)} className="min-w-0 flex-1 text-left">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold text-slate-800 truncate">{contactName(a)}</span>
-                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${st.chip}`}>{st.label}</span>
+            {a.busy_only ? (
+              <div className="min-w-0 flex-1">
+                <span className="text-sm font-medium text-slate-500">Ocupado</span>
+                <p className="text-xs text-slate-400 truncate mt-0.5">{a.tenant_resources?.name}</p>
               </div>
-              <p className="text-xs text-slate-500 truncate mt-0.5">{a.tenant_resources?.name}{a.tenant_services?.name ? ` · ${a.tenant_services.name}` : ""}</p>
-            </button>
-            <div className="flex items-center gap-1 shrink-0">
-              {!closed && a.status !== "confirmed" && <IconBtn title="Confirmar" onClick={() => onAct(() => setAppointmentStatus(a.id, "confirmed"), "Confirmado")}><Check className="size-4 text-emerald-600" /></IconBtn>}
-              {!closed && <IconBtn title="Concluir" onClick={() => onAct(() => setAppointmentStatus(a.id, "done"), "Concluído")}><CheckCheck className="size-4 text-slate-500" /></IconBtn>}
-              {!closed && <IconBtn title="Faltou" onClick={() => onAct(() => setAppointmentStatus(a.id, "no_show"), "Marcado como falta")}><UserX className="size-4 text-amber-600" /></IconBtn>}
-              {!closed && <IconBtn title="Cancelar" onClick={() => onAct(() => cancelAppointment(a.id), "Cancelado")}><X className="size-4 text-red-500" /></IconBtn>}
-              {a.conversation_id && <IconBtn title="Abrir conversa" onClick={() => router.push(`/inbox?c=${a.conversation_id}`)}><MessageSquare className="size-4 text-primary-600" /></IconBtn>}
-            </div>
+            ) : (
+              <>
+                <button onClick={() => onOpen(a.id)} className="min-w-0 flex-1 text-left">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-800 truncate">{contactName(a)}</span>
+                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${st.chip}`}>{st.label}</span>
+                  </div>
+                  <p className="text-xs text-slate-500 truncate mt-0.5">{a.tenant_resources?.name}{a.tenant_services?.name ? ` · ${a.tenant_services.name}` : ""}</p>
+                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  {!closed && a.status !== "confirmed" && <IconBtn title="Confirmar" onClick={() => onAct(() => setAppointmentStatus(a.id, "confirmed"), "Confirmado")}><Check className="size-4 text-emerald-600" /></IconBtn>}
+                  {!closed && <IconBtn title="Concluir" onClick={() => onAct(() => setAppointmentStatus(a.id, "done"), "Concluído")}><CheckCheck className="size-4 text-slate-500" /></IconBtn>}
+                  {!closed && <IconBtn title="Faltou" onClick={() => onAct(() => setAppointmentStatus(a.id, "no_show"), "Marcado como falta")}><UserX className="size-4 text-amber-600" /></IconBtn>}
+                  {!closed && <IconBtn title="Cancelar" onClick={() => onAct(() => cancelAppointment(a.id), "Cancelado")}><X className="size-4 text-red-500" /></IconBtn>}
+                  {a.conversation_id && <IconBtn title="Abrir conversa" onClick={() => router.push(`/inbox?conversation=${a.conversation_id}`)}><MessageSquare className="size-4 text-primary-600" /></IconBtn>}
+                </div>
+              </>
+            )}
           </div>
         )
       })}
@@ -352,6 +404,22 @@ function AppointmentDetail({ a, onClose, onAct, onReschedule, router }: {
   const localISO = new Date(new Date(a.starts_at).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
   const [when, setWhen] = useState(localISO)
 
+  // Nível livre/ocupado: só horário, sem PII nem ações.
+  if (a.busy_only) {
+    return (
+      <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader><DialogTitle>Horário ocupado</DialogTitle></DialogHeader>
+          <div className="space-y-2 text-sm">
+            <Row icon={CalendarClock} text={`${new Date(a.starts_at).toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "2-digit", month: "long" })} · ${hhmm(a.starts_at)}–${hhmm(a.ends_at)}`} />
+            <Row icon={CalendarDays} text={a.tenant_resources?.name ?? "Recurso"} />
+          </div>
+          <p className="text-xs text-slate-400">Você tem acesso apenas a livre/ocupado nesta agenda.</p>
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="sm:max-w-md">
@@ -369,6 +437,8 @@ function AppointmentDetail({ a, onClose, onAct, onReschedule, router }: {
           {a.notes && <p className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 border border-slate-100">{a.notes}</p>}
         </div>
 
+        <ParticipantsSection appointmentId={a.id} conversationId={a.conversation_id} canEdit={!closed} />
+
         {resc ? (
           <div className="flex items-center gap-2 pt-1">
             <input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="h-9 flex-1 rounded-lg border border-slate-200 px-2 text-sm" />
@@ -382,7 +452,7 @@ function AppointmentDetail({ a, onClose, onAct, onReschedule, router }: {
             {!closed && <Button size="sm" variant="outline" onClick={() => setResc(true)}><CalendarClock className="size-4" /> Remarcar</Button>}
             {!closed && <Button size="sm" variant="outline" onClick={() => onAct(() => setAppointmentStatus(a.id, "no_show"), "Faltou")}><UserX className="size-4 text-amber-600" /> Faltou</Button>}
             {!closed && <Button size="sm" variant="outline" onClick={() => onAct(() => cancelAppointment(a.id), "Cancelado")}><X className="size-4 text-red-500" /> Cancelar</Button>}
-            {a.conversation_id && <Button size="sm" onClick={() => router.push(`/inbox?c=${a.conversation_id}`)}><MessageSquare className="size-4" /> Abrir conversa</Button>}
+            {a.conversation_id && <Button size="sm" onClick={() => router.push(`/inbox?conversation=${a.conversation_id}`)}><MessageSquare className="size-4" /> Abrir conversa</Button>}
           </div>
         )}
       </DialogContent>
@@ -392,6 +462,82 @@ function AppointmentDetail({ a, onClose, onAct, onReschedule, router }: {
 
 function Row({ icon: Icon, text }: { icon: typeof Clock; text: string }) {
   return <div className="flex items-center gap-2 text-slate-600"><Icon className="size-4 text-slate-400 shrink-0" /><span className="truncate">{text}</span></div>
+}
+
+// ── Participantes do compromisso (co-host) ───────────────────
+function ParticipantsSection({ appointmentId, conversationId, canEdit }: {
+  appointmentId: string; conversationId: string | null; canEdit: boolean
+}) {
+  const [parts, setParts]     = useState<AppointmentParticipant[]>([])
+  const [agents, setAgents]   = useState<{ user_id: string; full_name: string | null }[]>([])
+  const [loading, setLoading] = useState(true)
+  const [pick, setPick]       = useState("")
+  const [bridge, setBridge]   = useState(false)
+  const [busy, setBusy]       = useState(false)
+
+  const load = useCallback(async () => {
+    const [p, ag] = await Promise.all([listAppointmentParticipants(appointmentId), listAppointmentAgents()])
+    setParts(p); setAgents(ag); setLoading(false)
+  }, [appointmentId])
+  useEffect(() => { void load() }, [load])
+
+  const partIds = new Set(parts.map((p) => p.user_id))
+  const available = agents.filter((a) => !partIds.has(a.user_id))
+
+  async function add() {
+    if (!pick) return
+    setBusy(true)
+    const r = await addAppointmentParticipant(appointmentId, pick, bridge)
+    setBusy(false)
+    if (r?.error) { toast.error(r.error); return }
+    setPick(""); setBridge(false); toast.success("Participante incluído"); void load()
+  }
+  async function remove(userId: string) {
+    const r = await removeAppointmentParticipant(appointmentId, userId)
+    if (r?.error) { toast.error(r.error); return }
+    void load()
+  }
+
+  return (
+    <div className="pt-2 border-t border-slate-100">
+      <p className="text-xs font-semibold text-slate-500 mb-1.5 flex items-center gap-1.5"><Users className="size-3.5" /> Participantes do compromisso</p>
+      {loading ? (
+        <p className="text-xs text-slate-400">Carregando…</p>
+      ) : (
+        <>
+          {parts.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {parts.map((p) => (
+                <span key={p.user_id} className="inline-flex items-center gap-1 rounded-full bg-primary-50 text-primary-700 border border-primary-100 pl-2 pr-1 py-0.5 text-xs">
+                  {p.full_name ?? "—"}
+                  {canEdit && <button onClick={() => remove(p.user_id)} title="Remover" className="size-4 grid place-items-center rounded-full hover:bg-primary-100"><X className="size-3" /></button>}
+                </span>
+              ))}
+            </div>
+          )}
+          {canEdit && available.length > 0 ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <select value={pick} onChange={(e) => setPick(e.target.value)} className="h-8 flex-1 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-700">
+                  <option value="">Incluir um colega…</option>
+                  {available.map((a) => <option key={a.user_id} value={a.user_id}>{a.full_name ?? "—"}</option>)}
+                </select>
+                <Button size="sm" onClick={add} disabled={!pick || busy}>{busy ? <Loader2 className="size-4 animate-spin" /> : <UserPlus className="size-4" />}</Button>
+              </div>
+              {conversationId && pick && (
+                <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
+                  <input type="checkbox" checked={bridge} onChange={(e) => setBridge(e.target.checked)} className="rounded border-slate-300" />
+                  Incluir também na conversa do cliente
+                </label>
+              )}
+            </div>
+          ) : parts.length === 0 ? (
+            <p className="text-xs text-slate-400">Ninguém incluído ainda.</p>
+          ) : null}
+        </>
+      )}
+    </div>
+  )
 }
 
 function IconBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {

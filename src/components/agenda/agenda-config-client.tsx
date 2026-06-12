@@ -353,6 +353,7 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
               <span className="text-sm text-slate-600">Ativo</span>
             </label>
           )}
+
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={saving}>Cancelar</Button>

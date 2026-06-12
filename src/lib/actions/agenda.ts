@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
-import { getViewerScope } from "@/lib/visibility"
+import { getViewerScope, canViewConversation, type ViewerScope } from "@/lib/visibility"
 import { requireModule } from "@/lib/modules"
 import { createNotification } from "@/lib/notifications"
+import { logAudit } from "@/lib/audit"
 import { runAppointmentEvent } from "@/lib/agenda/reminders"
 import { getAvailability, type WorkingHoursDay, type Slot } from "@/lib/agenda/availability"
 
@@ -14,8 +15,15 @@ import { getAvailability, type WorkingHoursDay, type Slot } from "@/lib/agenda/a
 // Padrão do projeto: supabaseAdmin (service-role) + tenant_id imposto na
 // app; config (recursos/serviços/bloqueios) é território de owner/admin;
 // agendamento qualquer membro autenticado cria. Mutações retornam
-// { error?: string } / { id }. Visibilidade de agendamento = tenant-wide
-// read (coordenação de agenda exige enxergar), conforme decisão §8.
+// { error?: string } / { id }.
+//
+// VISIBILIDADE POR-ATENDENTE (Fase 1 — segurança): a agenda NÃO é mais tenant-wide.
+// Um membro vê/atua num compromisso se é admin/supervisor (view_all), OU é o host
+// (agente do recurso), OU quem agendou (created_by), OU enxerga a conversa vinculada
+// (herda a regra do inbox). `canSeeAppointment` é a fonte única — usada na listagem
+// E nas mutações (fail-closed; o id sozinho não basta). Co-host (participantes do
+// compromisso) e delegação de agenda (níveis livre/ocupado · detalhes · gerenciar)
+// entram nas fases seguintes plugando aqui.
 
 const ACTIVE_STATUSES = ["scheduled", "confirmed", "done"] as const
 const ROUTE = "/agenda"
@@ -25,6 +33,7 @@ export interface ResourceRow {
   capacity: number; working_hours: WorkingHoursDay[]; slot_minutes: number
   timezone: string; assigned_agent_id: string | null
   min_lead_minutes: number; max_horizon_days: number; active: boolean
+  share_everyone_level: ShareLevel | null   // "todos" — piso de acesso da equipe inteira
 }
 export interface ServiceRow {
   id: string; tenant_id: string; name: string; duration_minutes: number
@@ -37,6 +46,7 @@ export interface AppointmentRow {
   resource_id: string; service_id: string | null
   starts_at: string; ends_at: string; status: string; source: string
   blocks_overlap: boolean; notes: string | null; created_by: string | null
+  busy_only?: boolean   // nível "livre/ocupado": só horário, PII removida no servidor
 }
 
 // ── helpers: escopo + gating de módulo (entitlement, fail-closed) ──
@@ -60,6 +70,80 @@ async function assertAgentInTenant(tenantId: string, agentId: string | null | un
   const { data } = await supabaseAdmin.from("tenant_users")
     .select("user_id").eq("tenant_id", tenantId).eq("user_id", agentId).maybeSingle()
   return !!data
+}
+
+// ── Visibilidade de compromisso — "ESCADA" de níveis (fonte ÚNICA, leitura E escrita) ──
+// none < free_busy < details < manage. "A maior permissão vence" (união de fontes:
+// papel + host + criador + supervisor + co-host + conversa + delegação de agenda).
+export type AccessLevel = "none" | "free_busy" | "details" | "manage"
+const LEVEL_RANK: Record<AccessLevel, number> = { none: 0, free_busy: 1, details: 2, manage: 3 }
+export type ShareLevel = "free_busy" | "details" | "manage"
+
+// Campos mínimos pra decidir acesso. Embeds via PostgREST nas queries.
+type ApptVisibility = {
+  created_by:         string | null
+  tenant_resources:   { assigned_agent_id: string | null; share_everyone_level: ShareLevel | null } | null
+  chat_conversations: { assigned_to: string | null; participants: string[] | null; department_id: string | null } | null
+}
+
+/** Nível efetivo do viewer sobre um compromisso. Fail-closed = none. */
+function appointmentLevel(s: ViewerScope, a: ApptVisibility, shareLevel: ShareLevel | undefined, isCoHost: boolean): AccessLevel {
+  if (s.isAdmin) return "manage"
+  let best: AccessLevel = "none"
+  const bump = (l: AccessLevel) => { if (LEVEL_RANK[l] > LEVEL_RANK[best]) best = l }
+  if (a.tenant_resources?.assigned_agent_id === s.userId) bump("manage")          // host (dono do recurso)
+  if (a.created_by === s.userId) bump("manage")                                   // quem agendou
+  if (s.viewAll) bump("details")                                                  // supervisor
+  if (isCoHost) bump("details")                                                   // co-host
+  if (a.chat_conversations && canViewConversation(s, a.chat_conversations)) bump("details")  // herda o inbox
+  if (a.tenant_resources?.share_everyone_level) bump(a.tenant_resources.share_everyone_level) // "todos" (piso da equipe)
+  if (shareLevel) bump(shareLevel)                                                // delegação específica
+  return best
+}
+
+const APPT_VISIBILITY_SELECT = "created_by, tenant_resources(assigned_agent_id, share_everyone_level), chat_conversations(assigned_to, participants, department_id)"
+
+/** Co-host: o viewer é participante explícito deste compromisso? */
+async function isAppointmentParticipant(s: ViewerScope, appointmentId: string): Promise<boolean> {
+  const { data } = await supabaseAdmin.from("appointment_participants")
+    .select("user_id").eq("tenant_id", s.tenantId).eq("appointment_id", appointmentId).eq("user_id", s.userId).maybeSingle()
+  return !!data
+}
+
+/** Nível de delegação do viewer sobre UM recurso (defensivo: tabela pode não existir ainda). */
+async function viewerShareLevel(s: ViewerScope, resourceId: string): Promise<ShareLevel | undefined> {
+  try {
+    const { data } = await supabaseAdmin.from("resource_shares")
+      .select("level").eq("tenant_id", s.tenantId).eq("resource_id", resourceId).eq("grantee_user_id", s.userId).maybeSingle()
+    return (data?.level as ShareLevel | undefined) ?? undefined
+  } catch { return undefined }
+}
+
+/** Mapa recurso→nível de TODAS as agendas compartilhadas com o viewer (1 query; defensivo). */
+async function viewerShareMap(s: ViewerScope): Promise<Map<string, ShareLevel>> {
+  try {
+    const { data } = await supabaseAdmin.from("resource_shares")
+      .select("resource_id, level").eq("tenant_id", s.tenantId).eq("grantee_user_id", s.userId)
+    return new Map((data ?? []).map((r) => [r.resource_id as string, r.level as ShareLevel]))
+  } catch { return new Map() }
+}
+
+/**
+ * Carrega um compromisso por id E gateia o ator pra MUTAÇÃO (exige nível ≥ details —
+ * "livre/ocupado" é só leitura). O id sozinho nunca basta (defesa em profundidade vs IDOR).
+ */
+async function gateAppointment(s: ViewerScope, id: string): Promise<{ appt?: { starts_at: string; ends_at: string; resource_id: string }; error?: string }> {
+  const { data } = await supabaseAdmin.from("appointments")
+    .select(`starts_at, ends_at, resource_id, ${APPT_VISIBILITY_SELECT}`)
+    .eq("tenant_id", s.tenantId).eq("id", id).maybeSingle()
+  if (!data) return { error: "Agendamento não encontrado" }
+  const resourceId = (data as { resource_id: string }).resource_id
+  const [isCo, share] = await Promise.all([isAppointmentParticipant(s, id), viewerShareLevel(s, resourceId)])
+  const level = appointmentLevel(s, data as unknown as ApptVisibility, share, isCo)
+  if (LEVEL_RANK[level] < LEVEL_RANK.details) {
+    return { error: level === "free_busy" ? "Você só tem acesso de leitura (livre/ocupado) a esta agenda" : "Você não tem acesso a este agendamento" }
+  }
+  return { appt: data as unknown as { starts_at: string; ends_at: string; resource_id: string } }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -290,13 +374,44 @@ async function loadResourceState(tenantId: string, resourceId: string, rangeStar
 export async function listAppointments(input: { rangeStart: string; rangeEnd: string; resourceId?: string }): Promise<AppointmentRow[]> {
   const s = await getViewerScope()
   let q = supabaseAdmin.from("appointments")
-    .select("*, chat_contacts(push_name, custom_name, phone_number), tenant_services(name), tenant_resources(name)")
+    .select(`*, chat_contacts(push_name, custom_name, phone_number), tenant_services(name), tenant_resources(name, assigned_agent_id, share_everyone_level), chat_conversations(assigned_to, participants, department_id)`)
     .eq("tenant_id", s.tenantId)
     .lt("starts_at", input.rangeEnd).gt("ends_at", input.rangeStart)
     .order("starts_at")
   if (input.resourceId) q = q.eq("resource_id", input.resourceId)
   const { data } = await q
-  return (data ?? []) as unknown as AppointmentRow[]
+  const rows = (data ?? []) as unknown as (AppointmentRow & ApptVisibility)[]
+  // Admin → manage tudo, sem strip (fast path).
+  if (s.isAdmin) return rows as unknown as AppointmentRow[]
+
+  // Co-host (range) + delegação de agenda (shares do viewer) — 1 query cada.
+  const ids = rows.map((r) => r.id)
+  let partSet = new Set<string>()
+  if (ids.length) {
+    const { data: parts } = await supabaseAdmin.from("appointment_participants")
+      .select("appointment_id").eq("tenant_id", s.tenantId).eq("user_id", s.userId).in("appointment_id", ids)
+    partSet = new Set((parts ?? []).map((p) => p.appointment_id as string))
+  }
+  const shareMap = await viewerShareMap(s)
+
+  // Nível por compromisso: `none` cai fora; `free_busy` vira "Ocupado" (PII removida
+  // AQUI, no servidor — não é esconder no front). Fecha o vazamento entre agentes.
+  const out: AppointmentRow[] = []
+  for (const a of rows) {
+    const level = appointmentLevel(s, a, shareMap.get(a.resource_id), partSet.has(a.id))
+    if (level === "none") continue
+    out.push(level === "free_busy" ? redactBusy(a) : (a as unknown as AppointmentRow))
+  }
+  return out
+}
+
+/** Redige um compromisso pro nível "livre/ocupado": mantém só o horário, zera a PII. */
+function redactBusy(a: AppointmentRow & ApptVisibility): AppointmentRow {
+  const r = { ...(a as unknown as Record<string, unknown>) }
+  r.contact_id = ""; r.conversation_id = null; r.service_id = null; r.notes = null
+  r.chat_contacts = null; r.tenant_services = null
+  r.busy_only = true
+  return r as unknown as AppointmentRow
 }
 
 /**
@@ -411,9 +526,8 @@ export async function rescheduleAppointment(id: string, newStartsAt: string): Pr
   const s = await agendaScope()
   const start = new Date(newStartsAt)
   if (isNaN(start.getTime())) return { error: "Data/hora inválida" }
-  const { data: appt } = await supabaseAdmin.from("appointments")
-    .select("starts_at, ends_at, resource_id").eq("tenant_id", s.tenantId).eq("id", id).maybeSingle()
-  if (!appt) return { error: "Agendamento não encontrado" }
+  const { appt, error: gErr } = await gateAppointment(s, id)
+  if (gErr || !appt) return { error: gErr ?? "Agendamento não encontrado" }
   const duration = new Date(appt.ends_at).getTime() - new Date(appt.starts_at).getTime()
   const end = new Date(start.getTime() + duration)
   const { error } = await supabaseAdmin.from("appointments")
@@ -429,6 +543,8 @@ export async function rescheduleAppointment(id: string, newStartsAt: string): Pr
 
 export async function setAppointmentStatus(id: string, status: "scheduled" | "confirmed" | "done" | "no_show" | "canceled"): Promise<{ error?: string }> {
   const s = await agendaScope()
+  const { error: gErr } = await gateAppointment(s, id)
+  if (gErr) return { error: gErr }
   const { error } = await supabaseAdmin.from("appointments")
     .update({ status, updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
@@ -439,10 +555,185 @@ export async function setAppointmentStatus(id: string, status: "scheduled" | "co
 
 export async function cancelAppointment(id: string, reason?: string): Promise<{ error?: string }> {
   const s = await agendaScope()
+  const { error: gErr } = await gateAppointment(s, id)
+  if (gErr) return { error: gErr }
   const { error } = await supabaseAdmin.from("appointments")
     .update({ status: "canceled", notes: reason?.trim() || undefined, updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
   if (error) return { error: error.message }
   revalidatePath(ROUTE)
   return {}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PARTICIPANTES DO COMPROMISSO (co-host) — Fase 1 do controle de acesso
+// ═══════════════════════════════════════════════════════════════
+export interface AppointmentParticipant { user_id: string; full_name: string | null; role: string }
+
+/** Lista de membros ativos pro seletor de co-host (acessível a qualquer atendente). */
+export async function listAppointmentAgents(): Promise<{ user_id: string; full_name: string | null }[]> {
+  const s = await agendaScope()
+  const { data } = await supabaseAdmin.from("tenant_users")
+    .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
+    .eq("tenant_id", s.tenantId).eq("active", true)
+  return (data ?? []).map((r) => ({
+    user_id: r.user_id,
+    full_name: (r.profiles as unknown as { full_name: string | null } | null)?.full_name ?? null,
+  }))
+}
+
+/** Participantes de um compromisso (gated: o ator precisa enxergar o compromisso). */
+export async function listAppointmentParticipants(appointmentId: string): Promise<AppointmentParticipant[]> {
+  const s = await agendaScope()
+  if ((await gateAppointment(s, appointmentId)).error) return []
+  const { data } = await supabaseAdmin.from("appointment_participants")
+    .select("user_id, role, profiles!appointment_participants_user_id_fkey ( full_name )")
+    .eq("tenant_id", s.tenantId).eq("appointment_id", appointmentId)
+  return (data ?? []).map((r) => ({
+    user_id: r.user_id, role: r.role as string,
+    full_name: (r.profiles as unknown as { full_name: string | null } | null)?.full_name ?? null,
+  }))
+}
+
+/** Inclui um colega no compromisso. Notifica o incluído; ponte opt-in pra conversa. */
+export async function addAppointmentParticipant(appointmentId: string, userId: string, alsoConversation?: boolean): Promise<{ error?: string }> {
+  const s = await agendaScope()
+  const { error: gErr } = await gateAppointment(s, appointmentId)
+  if (gErr) return { error: gErr }
+  if (!(await assertAgentInTenant(s.tenantId, userId))) return { error: "Atendente inválido" }
+
+  const { error: insErr } = await supabaseAdmin.from("appointment_participants").upsert(
+    { appointment_id: appointmentId, tenant_id: s.tenantId, user_id: userId, role: "cohost", added_by: s.userId },
+    { onConflict: "appointment_id,user_id" },
+  )
+  if (insErr) return { error: insErr.message }
+
+  // Contexto pra notificação + ponte.
+  const { data: full } = await supabaseAdmin.from("appointments")
+    .select("conversation_id, tenant_resources ( name ), chat_contacts ( custom_name, push_name )")
+    .eq("id", appointmentId).maybeSingle()
+  const resName = (full?.tenant_resources as unknown as { name: string } | null)?.name ?? "Recurso"
+  const contact = full?.chat_contacts as unknown as { custom_name: string | null; push_name: string | null } | null
+  const who = contact?.custom_name || contact?.push_name || "Contato"
+
+  // Avisa o incluído (sininho + push, via createNotification).
+  await createNotification({
+    tenantId: s.tenantId, recipientId: userId, type: "appt_created",
+    title: "Você foi incluído num compromisso",
+    body: `${who} · ${resName}`,
+    payload: { appointment_id: appointmentId, conversation_id: full?.conversation_id ?? undefined },
+  })
+
+  // Ponte opt-in: também dar acesso à conversa do cliente (participants do chat).
+  if (alsoConversation && full?.conversation_id) {
+    const { data: conv } = await supabaseAdmin.from("chat_conversations").select("participants").eq("id", full.conversation_id).maybeSingle()
+    const cur = (conv?.participants ?? []) as string[]
+    if (!cur.includes(userId)) {
+      await supabaseAdmin.from("chat_conversations").update({ participants: [...cur, userId] }).eq("id", full.conversation_id)
+    }
+  }
+
+  revalidatePath(ROUTE)
+  return {}
+}
+
+/** Remove um participante. (Não mexe na conversa — desfazer a ponte é ação separada.) */
+export async function removeAppointmentParticipant(appointmentId: string, userId: string): Promise<{ error?: string }> {
+  const s = await agendaScope()
+  const { error: gErr } = await gateAppointment(s, appointmentId)
+  if (gErr) return { error: gErr }
+  await supabaseAdmin.from("appointment_participants").delete()
+    .eq("tenant_id", s.tenantId).eq("appointment_id", appointmentId).eq("user_id", userId)
+  revalidatePath(ROUTE)
+  return {}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// COMPARTILHAMENTO DE AGENDA (delegação) — Fase 2 do controle de acesso
+// ═══════════════════════════════════════════════════════════════
+export interface ResourceShareRow { grantee_user_id: string; full_name: string | null; level: ShareLevel }
+
+/** Só o DONO da agenda (recurso) ou um admin pode compartilhá-la. */
+async function assertCanShareResource(s: ViewerScope, resourceId: string): Promise<{ error?: string }> {
+  if (s.isAdmin) return {}
+  const { data } = await supabaseAdmin.from("tenant_resources")
+    .select("assigned_agent_id").eq("tenant_id", s.tenantId).eq("id", resourceId).maybeSingle()
+  if (!data) return { error: "Agenda não encontrada" }
+  if (data.assigned_agent_id !== s.userId) return { error: "Só o dono da agenda (ou um admin) pode compartilhá-la" }
+  return {}
+}
+
+export async function listResourceShares(resourceId: string): Promise<ResourceShareRow[]> {
+  const s = await agendaScope()
+  if ((await assertCanShareResource(s, resourceId)).error) return []
+  const { data } = await supabaseAdmin.from("resource_shares")
+    .select("grantee_user_id, level, profiles!resource_shares_grantee_user_id_fkey ( full_name )")
+    .eq("tenant_id", s.tenantId).eq("resource_id", resourceId)
+  return (data ?? []).map((r) => ({
+    grantee_user_id: r.grantee_user_id, level: r.level as ShareLevel,
+    full_name: (r.profiles as unknown as { full_name: string | null } | null)?.full_name ?? null,
+  }))
+}
+
+/** Compartilha (ou muda o nível) da agenda com um colega. Gated pelo dono/admin. */
+export async function upsertResourceShare(resourceId: string, userId: string, level: ShareLevel): Promise<{ error?: string }> {
+  const s = await agendaScope()
+  const g = await assertCanShareResource(s, resourceId); if (g.error) return g
+  if (!(["free_busy", "details", "manage"] as ShareLevel[]).includes(level)) return { error: "Nível inválido" }
+  if (!(await assertAgentInTenant(s.tenantId, userId))) return { error: "Atendente inválido" }
+  const { error } = await supabaseAdmin.from("resource_shares").upsert(
+    { resource_id: resourceId, tenant_id: s.tenantId, grantee_user_id: userId, level, granted_by: s.userId },
+    { onConflict: "resource_id,grantee_user_id" },
+  )
+  if (error) return { error: error.message }
+  await logAudit({ tenantId: s.tenantId, actorId: s.userId, action: "agenda.share.set", targetType: "tenant_resources", targetId: resourceId, metadata: { grantee_user_id: userId, level } })
+  revalidatePath(ROUTE)
+  return {}
+}
+
+export async function removeResourceShare(resourceId: string, userId: string): Promise<{ error?: string }> {
+  const s = await agendaScope()
+  const g = await assertCanShareResource(s, resourceId); if (g.error) return g
+  await supabaseAdmin.from("resource_shares").delete()
+    .eq("tenant_id", s.tenantId).eq("resource_id", resourceId).eq("grantee_user_id", userId)
+  await logAudit({ tenantId: s.tenantId, actorId: s.userId, action: "agenda.share.remove", targetType: "tenant_resources", targetId: resourceId, metadata: { grantee_user_id: userId } })
+  revalidatePath(ROUTE)
+  return {}
+}
+
+/** Define (ou tira com "none") o nível de acesso da EQUIPE INTEIRA ("todos") a uma agenda. Dono/admin. */
+export async function setResourceEveryoneLevel(resourceId: string, level: ShareLevel | "none"): Promise<{ error?: string }> {
+  const s = await agendaScope()
+  const g = await assertCanShareResource(s, resourceId); if (g.error) return g
+  const value = level === "none" ? null : level
+  const { error } = await supabaseAdmin.from("tenant_resources")
+    .update({ share_everyone_level: value }).eq("tenant_id", s.tenantId).eq("id", resourceId)
+  if (error) return { error: error.message }
+  await logAudit({ tenantId: s.tenantId, actorId: s.userId, action: "agenda.share.everyone", targetType: "tenant_resources", targetId: resourceId, metadata: { level: value } })
+  revalidatePath(ROUTE)
+  return {}
+}
+
+// ── Visão POR-PESSOA (pro Sheet de Equipe): "quais agendas esta pessoa acessa" ──
+export interface MemberAgendaAccess { resource_id: string; name: string; level: ShareLevel | null }
+
+/** Admin: agendas do tenant + o nível que ESTE membro tem em cada. Vazio se não-admin / sem agendas. */
+export async function listMemberAgendaAccess(memberUserId: string): Promise<MemberAgendaAccess[]> {
+  const s = await getViewerScope()   // leitura: não exige o módulo (tenant sem agenda → sem recursos → [])
+  if (!s.isAdmin) return []
+  const [resR, shR] = await Promise.all([
+    supabaseAdmin.from("tenant_resources").select("id, name, assigned_agent_id").eq("tenant_id", s.tenantId).eq("active", true).order("name"),
+    supabaseAdmin.from("resource_shares").select("resource_id, level").eq("tenant_id", s.tenantId).eq("grantee_user_id", memberUserId),
+  ])
+  const lvl = new Map((shR.data ?? []).map((r) => [r.resource_id as string, r.level as ShareLevel]))
+  return (resR.data ?? [])
+    .filter((r) => r.assigned_agent_id !== memberUserId)   // não lista a própria agenda do membro
+    .map((r) => ({ resource_id: r.id as string, name: r.name as string, level: lvl.get(r.id as string) ?? null }))
+}
+
+/** Admin: define (ou remove com "none") o nível de acesso do membro a uma agenda. Reusa o CRUD gated. */
+export async function setMemberAgendaAccess(memberUserId: string, resourceId: string, level: ShareLevel | "none"): Promise<{ error?: string }> {
+  return level === "none"
+    ? removeResourceShare(resourceId, memberUserId)
+    : upsertResourceShare(resourceId, memberUserId, level)
 }

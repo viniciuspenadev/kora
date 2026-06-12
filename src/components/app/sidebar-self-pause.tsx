@@ -67,9 +67,9 @@ export function SidebarSelfPause({ initialPaused, initialPausedUntil }: Props) {
     <div className="px-2.5 pt-2 pb-2 border-t border-slate-200 shrink-0 relative">
       <div className="flex items-center gap-3 py-1 overflow-hidden">
         {/* Ícone (visível mesmo colapsado) */}
-        <div className="flex size-11 items-center justify-center shrink-0">
+        <div className="flex size-9 items-center justify-center shrink-0">
           <div
-            className={`size-8 rounded-full border-2 flex items-center justify-center transition-colors ${
+            className={`size-7 rounded-full border-2 flex items-center justify-center transition-colors ${
               effectivelyPaused
                 ? "bg-amber-50 border-amber-300"
                 : "bg-emerald-50 border-emerald-300"

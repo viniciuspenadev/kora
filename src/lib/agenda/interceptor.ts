@@ -237,9 +237,9 @@ async function nextSlots(appt: Ctx["appt"], fromMs?: number): Promise<{ slots: s
   return { slots: all.slice(0, 4), nextFrom }
 }
 
-// Cada desfecho do cliente (confirmar/remarcar/cancelar) vira 1 aviso pro DONO
-// do agendamento. Destinatário resolvido em cascata (nunca cai no vazio):
-//   agente do recurso → quem agendou (created_by) → owner do tenant.
+// Cada desfecho do cliente (confirmar/remarcar/cancelar) avisa o DONO do agendamento
+// E os CO-HOSTS (participantes da reunião). Dono resolvido em cascata (nunca cai no
+// vazio): agente do recurso → quem agendou (created_by) → owner do tenant.
 const NOTIFY_META = {
   canceled:    { type: "appt_canceled",        title: "Cliente cancelou" },
   reschedule:  { type: "appt_reschedule_help", title: "Cliente quer remarcar" },
@@ -249,18 +249,22 @@ const NOTIFY_META = {
 
 async function notifyAgent(ctx: Ctx, kind: keyof typeof NOTIFY_META, whenIso?: string) {
   const { data: res } = await supabaseAdmin.from("tenant_resources").select("assigned_agent_id, name").eq("id", ctx.appt.resource_id).maybeSingle()
-  let recipientId = res?.assigned_agent_id ?? ctx.appt.created_by ?? null
-  if (!recipientId) {
+  let primary = res?.assigned_agent_id ?? ctx.appt.created_by ?? null
+  if (!primary) {
     const { data: owner } = await supabaseAdmin.from("tenant_users")
       .select("user_id").eq("tenant_id", ctx.tenantId).eq("role", "owner").limit(1).maybeSingle()
-    recipientId = owner?.user_id ?? null
+    primary = owner?.user_id ?? null
   }
-  if (!recipientId) return
+  // Fan-out: dono + co-hosts (participantes do compromisso), sem duplicar.
+  const { data: parts } = await supabaseAdmin.from("appointment_participants")
+    .select("user_id").eq("tenant_id", ctx.tenantId).eq("appointment_id", ctx.appt.id)
+  const recipients = new Set<string>([...(primary ? [primary] : []), ...(parts ?? []).map((p) => p.user_id as string)])
+  if (recipients.size === 0) return
   const m = NOTIFY_META[kind]
-  await createNotification({
+  const body = [ctx.contato, res?.name, fmt(whenIso ?? ctx.appt.starts_at)].filter(Boolean).join(" · ")
+  await Promise.all([...recipients].map((recipientId) => createNotification({
     tenantId: ctx.tenantId, recipientId,
-    type: m.type, title: m.title,
-    body: [ctx.contato, res?.name, fmt(whenIso ?? ctx.appt.starts_at)].filter(Boolean).join(" · "),
+    type: m.type, title: m.title, body,
     payload: { appointment_id: ctx.appt.id, conversation_id: ctx.convId },
-  })
+  })))
 }

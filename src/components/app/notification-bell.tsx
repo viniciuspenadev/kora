@@ -180,7 +180,7 @@ export function NotificationBell({
             ) : (
               groups.map((g) => (
                 <div key={g.key}>
-                  <p className="px-4 pt-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{g.label}</p>
+                  <p className="px-4 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{g.label}</p>
                   {g.rows.map((n) => {
                     const Icon = ICONS[n.type] ?? Bell
                     const isUnread = !n.read_at
@@ -188,24 +188,19 @@ export function NotificationBell({
                       <button
                         key={n.id}
                         onClick={() => onItemClick(n)}
-                        className="w-full text-left flex gap-3 px-4 py-2.5 hover:bg-slate-50 transition-colors"
+                        className={`w-full text-left px-4 py-2.5 border-b border-slate-100 last:border-b-0 transition-colors ${
+                          isUnread ? "bg-primary-50/50 hover:bg-primary-50" : "hover:bg-slate-50"
+                        }`}
                       >
-                        <span
-                          className={`mt-0.5 size-9 rounded-lg grid place-items-center shrink-0 ${
-                            isUnread ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-400"
-                          }`}
-                        >
-                          <Icon className="size-4" strokeWidth={2} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-baseline gap-2">
-                            <span className={`text-sm truncate ${isUnread ? "font-semibold text-slate-900" : "font-medium text-slate-500"}`}>
-                              {n.title}
-                            </span>
-                            <span className="ml-auto shrink-0 text-[11px] text-slate-400 tabular-nums">{timeAgo(n.created_at)}</span>
+                        <span className="flex items-center gap-2">
+                          <Icon className={`size-4 shrink-0 ${isUnread ? "text-primary-600" : "text-slate-300"}`} strokeWidth={2.25} />
+                          <span className={`text-sm truncate ${isUnread ? "font-semibold text-slate-900" : "font-medium text-slate-500"}`}>
+                            {n.title}
                           </span>
-                          {n.body && <span className="block text-xs text-slate-400 truncate mt-0.5">{n.body}</span>}
+                          {isUnread && <span className="size-1.5 rounded-full bg-primary shrink-0" />}
+                          <span className="ml-auto shrink-0 text-[11px] text-slate-400 tabular-nums">{timeAgo(n.created_at)}</span>
                         </span>
+                        {n.body && <span className="block text-xs text-slate-400 truncate mt-0.5 pl-6">{n.body}</span>}
                       </button>
                     )
                   })}
