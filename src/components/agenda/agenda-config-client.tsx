@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
-import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageSquare, ChevronRight, X } from "lucide-react"
+import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageSquare, ChevronRight, X, Loader2, Sparkles } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -59,7 +59,23 @@ export function AgendaConfigClient({
   const [editSvc, setEditSvc] = useState<ServiceRow | "new" | null>(null)
   const [reminders, setReminders] = useState(remindersEnabled)
 
+  const [creatingAgenda, setCreatingAgenda] = useState(false)
   const premiumCta = () => toast("Lembretes automáticos é um add-on premium. Fale com a gente pra ativar.")
+
+  // "Criar minha agenda" — 1 clique pra quem atende sozinho (não vê "recurso").
+  async function createMyAgenda() {
+    setCreatingAgenda(true)
+    const wh = daysToWorkingHours(DEFAULT_DAYS)
+    const r = await createResource({ name: "Minha agenda", working_hours: wh })
+    setCreatingAgenda(false)
+    if (r?.error || !r.id) { toast.error(r.error ?? "Falha ao criar"); return }
+    setResources((prev) => [...prev, {
+      id: r.id, tenant_id: "", name: "Minha agenda", kind: null, capacity: 1, working_hours: wh,
+      slot_minutes: 30, timezone: "America/Sao_Paulo", assigned_agent_id: null,
+      min_lead_minutes: 0, max_horizon_days: 60, active: true,
+    } as ResourceRow])
+    toast.success("Agenda criada! Agora é só criar um serviço.")
+  }
 
   async function toggleReminders(next: boolean) {
     setReminders(next) // otimista
@@ -75,7 +91,7 @@ export function AgendaConfigClient({
       icon={CalendarCog}
       actions={<Link href="/agenda"><Button variant="outline" size="sm"><ArrowLeft className="size-4" /> Voltar</Button></Link>}
     >
-      <div className="max-w-3xl mx-auto space-y-6">
+      <div className="space-y-6">
         {/* AVISOS AUTOMÁTICOS — master switch (backend-enforced + entitlement premium) */}
         <PremiumGate locked={!remindersModule} description="Avise, lembre e confirme com seus clientes automaticamente no WhatsApp." onCta={premiumCta}>
           <section className="rounded-xl border border-slate-200 bg-white p-4">
@@ -93,65 +109,84 @@ export function AgendaConfigClient({
           </section>
         </PremiumGate>
 
-        {/* RECURSOS */}
-        <section className="rounded-xl border border-slate-200 bg-white">
-          <header className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-            <div className="flex items-center gap-2">
-              <Users2 className="size-4 text-primary-600" />
-              <h2 className="text-sm font-semibold text-slate-900">Recursos</h2>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setEditRes("new")}><Plus className="size-4" /> Recurso</Button>
-          </header>
-          <div className="divide-y divide-slate-50">
-            {resources.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-slate-400">Nenhum recurso. Crie o primeiro (profissional, sala, mesa…).</p>
-            ) : resources.map((r) => (
-              <div key={r.id} className="flex items-center gap-3 px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-slate-800">{r.name}</span>
-                    {!r.active && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">inativo</span>}
-                    {r.capacity > 1 && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-100">capacidade {r.capacity}</span>}
-                  </div>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {(r.working_hours ?? []).length} dia(s) por semana{r.capacity > 1 ? ` · até ${r.capacity} ao mesmo tempo` : ""}
-                  </p>
+        {/* RECURSOS | SERVIÇOS — lado a lado (largura cheia) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          {/* RECURSOS — quem atende */}
+          <section className="rounded-xl border border-slate-200 bg-white">
+            <header className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-100">
+              <div className="flex items-start gap-2 min-w-0">
+                <Users2 className="size-4 text-primary-600 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-slate-900">Recursos</h2>
+                  <p className="text-[11px] text-slate-400">Quem ou o que atende — você, profissionais, salas.</p>
                 </div>
-                <Button size="sm" variant="ghost" onClick={() => setEditRes(r)}><Pencil className="size-4" /></Button>
               </div>
-            ))}
-          </div>
-        </section>
+              <Button size="sm" variant="outline" onClick={() => setEditRes("new")} className="shrink-0"><Plus className="size-4" /> Recurso</Button>
+            </header>
+            <div className="divide-y divide-slate-50">
+              {resources.length === 0 ? (
+                <div className="px-4 py-8 text-center">
+                  <p className="text-sm text-slate-500">Comece criando quem atende.</p>
+                  <div className="mt-3 flex flex-col items-center gap-2">
+                    <Button size="sm" onClick={createMyAgenda} disabled={creatingAgenda}>
+                      {creatingAgenda ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Criar minha agenda
+                    </Button>
+                    <button type="button" onClick={() => setEditRes("new")} className="text-xs text-slate-400 hover:text-slate-600 underline">ou criar manualmente</button>
+                  </div>
+                </div>
+              ) : resources.map((r) => (
+                <div key={r.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-slate-800">{r.name}</span>
+                      {!r.active && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">inativo</span>}
+                      {r.capacity > 1 && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-100">grupo</span>}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {(r.working_hours ?? []).length} dia(s) por semana{r.capacity > 1 ? ` · até ${r.capacity} ao mesmo tempo` : ""}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setEditRes(r)}><Pencil className="size-4" /></Button>
+                </div>
+              ))}
+            </div>
+          </section>
 
-        {/* SERVIÇOS */}
-        <section className="rounded-xl border border-slate-200 bg-white">
-          <header className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-            <div className="flex items-center gap-2">
-              <Clock className="size-4 text-primary-600" />
-              <h2 className="text-sm font-semibold text-slate-900">Serviços <span className="font-normal text-slate-400">(opcional)</span></h2>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setEditSvc("new")}><Plus className="size-4" /> Serviço</Button>
-          </header>
-          <div className="divide-y divide-slate-50">
-            {services.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-slate-400">Sem serviços. Você pode agendar usando o slot padrão do recurso.</p>
-            ) : services.map((s) => (
-              <div key={s.id} className="flex items-center gap-3 px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-slate-800">{s.name}</span>
-                    {!s.active && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">inativo</span>}
-                  </div>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {s.duration_minutes}min{(s.buffer_before_minutes || s.buffer_after_minutes) ? ` · folga ${s.buffer_before_minutes}/${s.buffer_after_minutes}min` : ""}
-                    {s.resource_ids.length > 0 ? ` · ${s.resource_ids.length} recurso(s)` : " · todos"}
-                  </p>
+          {/* SERVIÇOS — o que o cliente marca */}
+          <section className="rounded-xl border border-slate-200 bg-white">
+            <header className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-100">
+              <div className="flex items-start gap-2 min-w-0">
+                <Clock className="size-4 text-primary-600 mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-slate-900">Serviços <span className="font-normal text-slate-400">(opcional)</span></h2>
+                  <p className="text-[11px] text-slate-400">O que o cliente marca — consulta, demo, corte…</p>
                 </div>
-                <Button size="sm" variant="ghost" onClick={() => setEditSvc(s)}><Pencil className="size-4" /></Button>
               </div>
-            ))}
-          </div>
-        </section>
+              <Button size="sm" variant="outline" onClick={() => setEditSvc("new")} disabled={resources.length === 0} className="shrink-0"><Plus className="size-4" /> Serviço</Button>
+            </header>
+            <div className="divide-y divide-slate-50">
+              {services.length === 0 ? (
+                <p className="px-4 py-8 text-center text-sm text-slate-400">
+                  {resources.length === 0 ? "Crie um recurso primeiro." : "Sem serviços ainda — crie um (ex: Demonstração · 30min)."}
+                </p>
+              ) : services.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-slate-800">{s.name}</span>
+                      {!s.active && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">inativo</span>}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {s.duration_minutes}min{(s.buffer_before_minutes || s.buffer_after_minutes) ? ` · folga ${s.buffer_before_minutes}/${s.buffer_after_minutes}min` : ""}
+                      {s.resource_ids.length > 0 ? ` · ${s.resource_ids.length} recurso(s)` : " · todos"}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="ghost" onClick={() => setEditSvc(s)}><Pencil className="size-4" /></Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
       </div>
 
       {editRes && (
