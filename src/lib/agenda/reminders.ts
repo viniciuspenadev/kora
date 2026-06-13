@@ -43,7 +43,7 @@ const firstName = (full: string) => full.trim().split(/\s+/)[0]
 // só a saudação de abertura. As 2 ações ficam uma embaixo da outra. Sem "cancelar":
 // cancelamento não é self-service (cliente que insiste cai pro atendente).
 function buildConfirmAnchor(tenantText: string, vars: Record<string, string>): string {
-  const intro = tenantText || `Olá${vars.contato ? `, ${firstName(vars.contato)}` : ""}! Passando pra confirmar seu horário 👋`
+  const intro = tenantText || `Olá${vars.nome ? `, ${firstName(vars.nome)}` : ""}! Passando pra confirmar seu horário 👋`
   const anchor = [
     vars.servico ? `📅 *${vars.servico}*` : null,
     `🗓️ ${vars.data} às ${vars.hora}`,
@@ -227,7 +227,7 @@ async function notifyConfirmFallback(appt: ApptForEvent, vars: Record<string, st
   await createNotification({
     tenantId: appt.tenant_id, recipientId: recipient, type: "appt_reminder",
     title: "Confirme com o cliente (modelo em análise)",
-    body: [vars.contato, `${vars.data} às ${vars.hora}`].filter(Boolean).join(" · "),
+    body: [vars.nome, `${vars.data} às ${vars.hora}`].filter(Boolean).join(" · "),
     payload: { appointment_id: appt.id, conversation_id: appt.conversation_id },
   })
 }
@@ -304,7 +304,7 @@ async function dispatchAgentStep(appt: ApptForEvent, step: PolicyStep, stepKey: 
   if (done) return
   const agentId = appt.tenant_resources?.assigned_agent_id ?? null
   if (!agentId) return logReminder(appt, stepKey, "inapp", "skipped", "recurso sem atendente", "agent")
-  const title = step.text ? render(step.text, vars) : `Lembrete: ${vars.contato || "agendamento"} às ${vars.hora}`
+  const title = step.text ? render(step.text, vars) : `Lembrete: ${vars.nome || "agendamento"} às ${vars.hora}`
   await createNotification({
     tenantId: appt.tenant_id, recipientId: agentId, type: "appt_reminder",
     title, body: [vars.servico, vars.recurso].filter(Boolean).join(" · "),
