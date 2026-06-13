@@ -4,6 +4,7 @@ import { getProvider } from "@/lib/providers"
 import { createNotification } from "@/lib/notifications"
 import { hasModule } from "@/lib/modules"
 import { sendAgendaConfirm } from "./official-template"
+import { withAliases } from "@/lib/variables/registry"
 
 // ═══════════════════════════════════════════════════════════════
 // Consumidor BUILT-IN dos eventos da Agenda (doc §6.7-A)
@@ -65,13 +66,14 @@ interface ApptForEvent {
 
 function buildVars(appt: ApptForEvent): Record<string, string> {
   const c = appt.chat_contacts
-  return {
-    contato: c?.custom_name || c?.push_name || "",
+  // Canônico (registry) + aliases → {{nome}} e {{contato}} resolvem igual.
+  return withAliases({
+    nome:    c?.custom_name || c?.push_name || "",
     data:    new Date(appt.starts_at).toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "long" }),
     hora:    new Date(appt.starts_at).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }),
     servico: appt.tenant_services?.name ?? "",
     recurso: appt.tenant_resources?.name ?? "",
-  }
+  })
 }
 
 /**

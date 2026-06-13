@@ -217,10 +217,11 @@ function validateTemplateInput(input: TemplateInput): { error: string } | { buil
     : input.parameterFormat ?? (vars.some((v) => v.named) ? "NAMED" : "POSITIONAL")
 
   // Conteúdo precisa bater com o formato — a Meta rejeita divergência ("Invalid parameter").
+  // Não misturar nomeada ({{nome}}) com numerada ({{1}}) no mesmo template.
   if (parameterFormat === "NAMED" && vars.some((v) => !v.named))
-    return { error: "Tipo Nome selecionado, mas há variável numerada ({{1}}). Use nomes (ex: {{nome}})." }
+    return { error: "Não misture variáveis: troque as numeradas ({{1}}) por nomeadas (ex: {{nome}})." }
   if (parameterFormat === "POSITIONAL" && vars.some((v) => v.named))
-    return { error: "Tipo Número selecionado, mas há variável nomeada ({{nome}}). Use {{1}}, {{2}}…" }
+    return { error: "Não misture variáveis: use só nomeadas (ex: {{nome}}) ou só numeradas ({{1}}, {{2}}…)." }
 
   // Validação por tipo (nomeado: nomes válidos; posicional: sequência/posição).
   const varErr = parameterFormat === "NAMED" ? validateNamedVars(vars) : validateTemplateVars(body)

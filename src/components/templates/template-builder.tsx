@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useRef } from "react"
 import { Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply, Save, Lock } from "lucide-react"
 import { createOfficialTemplate, editOfficialTemplate, type TemplateButton } from "@/lib/actions/whatsapp-official"
 import type { MetaTemplate, MetaTemplateComponent } from "@/lib/providers/meta-cloud-provider"
 import { parseVars, isNamed } from "@/lib/whatsapp/template-vars"
+import { varsForContext } from "@/lib/variables/registry"
 import { TemplatePreview } from "./template-preview"
 
 const INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
@@ -12,6 +13,9 @@ const SELECT = INPUT.replace("px-3", "px-2")
 
 type BtnType = "QUICK_REPLY" | "URL" | "PHONE_NUMBER"
 const BTN_LABEL: Record<BtnType, string> = { QUICK_REPLY: "Resposta rápida", URL: "Link (URL)", PHONE_NUMBER: "Ligar" }
+
+// Variáveis sugeridas no corpo — do cérebro único (registry), contexto genérico.
+const COMMON_VARS = varsForContext("generic").map((v) => ({ token: v.token, label: v.label }))
 
 /**
  * Estado serializável do builder — usado pra pré-carregar a edição.
@@ -47,7 +51,10 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   const [headerText, setHeaderText] = useState(initial?.headerText ?? "")
   const [headerExample, setHeaderExample] = useState(initial?.headerExample ?? "")
   const [body, setBody]           = useState(initial?.body ?? "")
-  const [varMode, setVarMode]     = useState<"number" | "name">(initial?.varMode ?? "number")
+  const [varMode]                 = useState<"number" | "name">(initial?.varMode ?? "name")
+  const bodyRef                   = useRef<HTMLTextAreaElement>(null)
+  const [addingVar, setAddingVar] = useState(false)
+  const [customVar, setCustomVar] = useState("")
   const [examples, setExamples]   = useState<Record<string, string>>(initial?.examples ?? {})
   const [footer, setFooter]       = useState(initial?.footer ?? "")
   const [buttons, setButtons]     = useState<TemplateButton[]>(initial?.buttons ?? [])
@@ -57,16 +64,28 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   const bodyVars     = parseVars(body)
   const headerVars   = parseVars(headerText)
   const headerHasVar = headerVars.length > 0
-  // O tipo selecionado é a fonte da verdade. Qualquer variável do outro tipo é divergência.
-  const isOffMode    = (v: { named: boolean }) => (varMode === "name" ? !v.named : v.named)
-  const modeMismatch = bodyVars.some(isOffMode) || headerVars.some(isOffMode)
+  // Só nomeadas: qualquer {{1}} posicional no texto vira divergência (guia o usuário).
+  const modeMismatch = varMode === "name" && (bodyVars.some((v) => !v.named) || headerVars.some((v) => !v.named))
 
-  function insertBodyVar() {
-    if (varMode === "name") {
-      setBody((b) => `${b}{{variavel_${bodyVars.length + 1}}}`)
-    } else {
-      setBody((b) => `${b}{{${bodyVars.filter((v) => !v.named).length + 1}}}`)
-    }
+  // Insere {{token}} na posição do cursor (nunca digitar chaves).
+  function insertVar(token: string) {
+    const placeholder = `{{${token}}}`
+    const ta = bodyRef.current
+    if (!ta) { setBody((b) => (b + placeholder).slice(0, 1024)); return }
+    const start = ta.selectionStart ?? body.length
+    const end   = ta.selectionEnd ?? body.length
+    const next  = (body.slice(0, start) + placeholder + body.slice(end)).slice(0, 1024)
+    setBody(next)
+    requestAnimationFrame(() => {
+      ta.focus()
+      const pos = Math.min(start + placeholder.length, next.length)
+      ta.setSelectionRange(pos, pos)
+    })
+  }
+  function commitCustomVar() {
+    const raw = customVar.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "")
+    if (raw) insertVar(raw)
+    setAddingVar(false); setCustomVar("")
   }
   function addButton(type: BtnType) { if (buttons.length < 10) setButtons((b) => [...b, { type, text: "" }]) }
   function patchButton(i: number, patch: Partial<TemplateButton>) { setButtons((b) => b.map((x, j) => (j === i ? { ...x, ...patch } : x))) }
@@ -75,9 +94,7 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   function submit() {
     setErr(null)
     if (modeMismatch) {
-      setErr(varMode === "name"
-        ? "Tipo selecionado: Nome — mas há variável numerada ({{1}}) no texto. Troque para {{nome}} ou mude o tipo para Número."
-        : "Tipo selecionado: Número — mas há variável nomeada ({{nome}}) no texto. Use {{1}}, {{2}}… ou mude o tipo para Nome.")
+      setErr("Use variáveis nomeadas (ex: {{nome}}) — evite {{1}}, {{2}}.")
       return
     }
     startT(async () => {
@@ -156,47 +173,57 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
                   <input value={headerExample} onChange={(e) => setHeaderExample(e.target.value)} placeholder="Bernardo" className={INPUT} />
                 </Field>
               )}
-              <Hint>Opcional. Até 60 caracteres, no máximo 1 variável {`{{1}}`}.</Hint>
+              <Hint>Opcional. Até 60 caracteres, no máximo 1 variável (ex: {`{{nome}}`}).</Hint>
             </Section>
 
             <Section title="Corpo" required>
               <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
-                <div className="inline-flex items-center gap-1.5">
-                  <span className="text-[11px] text-slate-500">Tipo de variável:</span>
-                  <select value={varMode} onChange={(e) => setVarMode(e.target.value as "number" | "name")}
-                    className="h-7 pl-2 pr-7 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40">
-                    <option value="number">{"Número — {{1}}, {{2}}"}</option>
-                    <option value="name">{"Nome — {{nome}}"}</option>
-                  </select>
-                </div>
-                <div className="inline-flex items-center gap-2">
-                  <span className="text-[11px] text-slate-400">{body.length}/1024</span>
-                  <button onClick={insertBodyVar} className="text-[11px] font-semibold text-primary-700 hover:text-primary-800">+ inserir variável</button>
-                </div>
+                <span className="text-[11px] text-slate-500">Toque pra inserir uma variável no texto:</span>
+                <span className="text-[11px] text-slate-400">{body.length}/1024</span>
               </div>
-              <textarea value={body} onChange={(e) => setBody(e.target.value.slice(0, 1024))} rows={4}
-                placeholder={varMode === "name" ? "Olá {{nome}}, seu pedido {{numero_pedido}} foi confirmado!" : "Olá {{1}}, seu pedido {{2}} foi confirmado!"}
+              {/* Chips de variável — inserem {{nome}} no cursor (nunca digitar chaves) */}
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {COMMON_VARS.map((v) => (
+                  <button key={v.token} type="button" onClick={() => insertVar(v.token)} title={`{{${v.token}}}`}
+                    className="h-7 px-2.5 text-[11px] font-medium rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50/50 inline-flex items-center gap-1 transition-colors">
+                    <Plus className="size-2.5" />{v.label}
+                  </button>
+                ))}
+                {addingVar ? (
+                  <span className="inline-flex items-center gap-1">
+                    <input autoFocus value={customVar} onChange={(e) => setCustomVar(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitCustomVar() } if (e.key === "Escape") setAddingVar(false) }}
+                      placeholder="minha_variavel" className="h-7 w-36 px-2 text-[11px] rounded-lg border border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                    <button type="button" onClick={commitCustomVar} className="h-7 px-2 text-[11px] font-semibold rounded-lg bg-primary text-white">ok</button>
+                  </span>
+                ) : (
+                  <button type="button" onClick={() => { setAddingVar(true); setCustomVar("") }}
+                    className="h-7 px-2.5 text-[11px] font-medium rounded-lg border border-dashed border-slate-300 text-slate-500 hover:border-primary-300 hover:text-primary-700 inline-flex items-center gap-1 transition-colors">
+                    <Plus className="size-2.5" /> outra…
+                  </button>
+                )}
+              </div>
+              <textarea ref={bodyRef} value={body} onChange={(e) => setBody(e.target.value.slice(0, 1024))} rows={4}
+                placeholder="Olá {{nome}}, seu horário é {{data}} às {{hora}}!"
                 className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 resize-none" />
               {bodyVars.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
                   {bodyVars.map((v) => (
                     <Field key={v.key} label={`Exemplo {{${v.key}}}`}>
                       <input value={examples[v.key] ?? ""} onChange={(e) => setExamples((ex) => ({ ...ex, [v.key]: e.target.value }))}
-                        placeholder={/nome|name|cliente/.test(v.key) ? "Bernardo" : ""} className={INPUT} />
+                        placeholder={/nome|name|cliente|agente/.test(v.key) ? "Bernardo" : ""} className={INPUT} />
                     </Field>
                   ))}
                 </div>
               )}
               {modeMismatch && (
                 <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-                  {varMode === "name"
-                    ? "⚠️ Tipo selecionado: Nome — mas há variável numerada {{1}} no texto. Troque para {{nome}} ou mude o tipo acima."
-                    : "⚠️ Tipo selecionado: Número — mas há variável nomeada {{nome}} no texto. Use {{1}}, {{2}}… ou mude o tipo acima."}
+                  ⚠️ Use variáveis nomeadas como {`{{nome}}`} — evite {`{{1}}`}, {`{{2}}`} (troque no texto).
                 </p>
               )}
               <Hint>
-                {varMode === "name" && "Variáveis nomeadas se auto-documentam (ex: nome, numero_pedido). "}
-                Use *negrito*, _itálico_, ~tachado~. Não comece/termine com variável, nem use duas seguidas.
+                Variáveis nomeadas se auto-documentam (ex: nome, valor). Use *negrito*, _itálico_, ~tachado~.
+                Não comece/termine com variável, nem use duas seguidas.
               </Hint>
             </Section>
 

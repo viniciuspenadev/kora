@@ -11,6 +11,7 @@ import { Select } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { FormRow } from "@/components/ui/form-row"
 import { PremiumGate } from "@/components/ui/premium-gate"
+import { varsForContext, withAliases } from "@/lib/variables/registry"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
@@ -370,14 +371,9 @@ const DUR_PRESETS = [
   { v: 60, l: "1h" }, { v: 90, l: "1h30" }, { v: 120, l: "2h" },
 ]
 const BUFFERS = [0, 5, 10, 15, 20, 30, 45, 60]
-const MSG_VARS = [
-  { token: "{{contato}}", label: "Nome do cliente" },
-  { token: "{{servico}}", label: "Serviço" },
-  { token: "{{data}}",    label: "Data" },
-  { token: "{{hora}}",    label: "Hora" },
-  { token: "{{recurso}}", label: "Agenda" },
-]
-const DEFAULT_MSG = "Olá {{contato}}! Seu horário de {{servico}} está marcado para {{data}} às {{hora}}. Até lá 😊"
+// Chips do construtor de mensagem — do cérebro único (registry), contexto agenda.
+const MSG_VARS = varsForContext("agenda").map((v) => ({ token: `{{${v.token}}}`, label: v.label }))
+const DEFAULT_MSG = "Olá {{nome}}! Seu horário de {{servico}} está marcado para {{data}} às {{hora}}. Até lá 😊"
 
 function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onClose, onSaved }: {
   service: ServiceRow | null; resources: ResourceRow[]
@@ -401,11 +397,12 @@ function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onCl
     setResIds((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id])
   }
 
-  // Dados de exemplo pra prévia das mensagens (ao agendar + lembretes).
-  const exampleVars = {
-    contato: "Maria", servico: name.trim() || "Consulta", data: "15 de junho", hora: "14:30",
+  // Dados de exemplo pra prévia das mensagens (ao agendar + lembretes). Canônico
+  // `nome` + aliases (contato) via cérebro → a prévia resolve {{nome}} E {{contato}}.
+  const exampleVars = withAliases({
+    nome: "Maria", servico: name.trim() || "Consulta", data: "15 de junho", hora: "14:30",
     recurso: resources.find((r) => resIds.includes(r.id))?.name ?? resources.find((r) => r.active)?.name ?? "—",
-  }
+  })
 
   function saveReminder() {
     if (!editing) return
@@ -649,7 +646,7 @@ function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
         <span className="text-[11px] font-medium text-slate-500">Mensagem</span>
         <div className="mt-1">
           <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={exampleVars}
-            placeholder="Ex: Oi {{contato}}, seu horário é {{data}} às {{hora}}!" />
+            placeholder="Ex: Oi {{nome}}, seu horário é {{data}} às {{hora}}!" />
         </div>
       </div>
       <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">

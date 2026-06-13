@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown,
   Bot, Bell, MessageSquare, Layers, CalendarDays,
-  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset,
+  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -30,6 +30,8 @@ interface NavGroup {
   label:      string
   icon:       React.ReactNode
   adminOnly?: boolean
+  /** Só aparece se o tenant tem instância WhatsApp API Oficial (meta_cloud). */
+  officialOnly?: boolean
   children:   NavLeaf[]
 }
 
@@ -60,7 +62,17 @@ const NAV: NavItem[] = [
     ],
   },
   { href: "/integracoes", label: "Integrações", icon: <Blocks className="w-5 h-5 shrink-0" strokeWidth={1.75} />, adminOnly: true },
-  { href: "/templates", label: "Templates", icon: <FileText className="w-5 h-5 shrink-0" strokeWidth={1.75} />, adminOnly: true, officialOnly: true },
+  {
+    key:          "templates",
+    label:        "Templates",
+    icon:         <FileText className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    adminOnly:    true,
+    officialOnly: true,
+    children: [
+      { href: "/templates",            label: "Meus templates", icon: <FileText   className={subIcon} strokeWidth={1.75} /> },
+      { href: "/templates/biblioteca", label: "Biblioteca",     icon: <BookMarked className={subIcon} strokeWidth={1.75} /> },
+    ],
+  },
   {
     key:       "config",
     label:     "Configurações",
@@ -115,6 +127,7 @@ export function SidebarBody({
   const filteredNav = useMemo(() => {
     return NAV.flatMap<NavItem>((item) => {
       if (isGroup(item)) {
+        if (item.officialOnly && !hasOfficial) return []
         const visibleChildren = item.children.filter((c) => !c.module || modulesSet.has(c.module))
         if (visibleChildren.length === 0) return []
         return [{ ...item, children: visibleChildren }]

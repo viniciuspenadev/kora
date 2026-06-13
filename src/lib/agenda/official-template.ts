@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { MetaCloudProvider } from "@/lib/providers/meta-cloud-provider"
 import { decryptSecret } from "@/lib/crypto/secrets"
+import { getBlueprintByName } from "@/lib/templates/library"
 
 // ═══════════════════════════════════════════════════════════════
 // Canal OFICIAL (Meta) da confirmação da Agenda — Fase 3d.4 (§6.10)
@@ -24,12 +25,6 @@ export const AGENDA_CONFIRM_TEMPLATE = "kora_agenda_confirmacao"
 export const AGENDA_TEMPLATE_LANG    = "pt_BR"
 
 type ProviderInstance = Parameters<typeof getProvider>[0]
-
-// Corpo do template (posicional): {{1}} contato · {{2}} serviço · {{3}} data · {{4}} hora.
-// Fixo de propósito — corpo previsível reduz reprovação na Meta (§6.10).
-const TEMPLATE_BODY =
-  "Olá, {{1}}! Passando pra confirmar seu horário 👋\n\n📅 {{2}}\n🗓️ {{3}} às {{4}}\n\nPosso confirmar?"
-const TEMPLATE_EXAMPLES: Record<string, string> = { "1": "Maria", "2": "Consulta", "3": "12 de junho", "4": "14:00" }
 
 // ── instância oficial do tenant (ou null = só-Baileys) ───────────────
 async function metaInstanceRow(tenantId: string): Promise<Record<string, unknown> | null> {
@@ -69,12 +64,15 @@ export async function ensureAgendaConfirmTemplate(tenantId: string): Promise<voi
     const provider = buildMetaProvider(inst)
     if (!provider) return
 
+    // Fonte única do conteúdo = o blueprint da Biblioteca.
+    const bp = getBlueprintByName(AGENDA_CONFIRM_TEMPLATE)
+    if (!bp) return
+
     let status = "PENDING"
     try {
       const r = await provider.createTemplate({
-        name: AGENDA_CONFIRM_TEMPLATE, category: "UTILITY", language: AGENDA_TEMPLATE_LANG,
-        body: TEMPLATE_BODY, bodyExamples: TEMPLATE_EXAMPLES,
-        buttons: [{ type: "QUICK_REPLY", text: "Confirmar" }, { type: "QUICK_REPLY", text: "Remarcar" }],
+        name: bp.name, category: bp.metaCategory, language: bp.language,
+        body: bp.body, bodyExamples: bp.bodyExamples, buttons: bp.buttons,
       })
       status = r.status || "PENDING"
     } catch (e) {
@@ -160,10 +158,10 @@ export async function sendAgendaConfirm(args: ConfirmSendArgs): Promise<ConfirmS
   const r = await provider.sendTemplate(
     args.phone, name, AGENDA_TEMPLATE_LANG,
     [
-      { text: args.vars.contato || "você" },
-      { text: args.vars.servico || "seu atendimento" },
-      { text: args.vars.data || "—" },
-      { text: args.vars.hora || "—" },
+      { paramName: "nome",    text: args.vars.nome || "você" },
+      { paramName: "servico", text: args.vars.servico || "seu atendimento" },
+      { paramName: "data",    text: args.vars.data || "—" },
+      { paramName: "hora",    text: args.vars.hora || "—" },
     ],
     [
       { subType: "quick_reply", index: 0, payload: `agenda:confirm:${args.apptId}` },

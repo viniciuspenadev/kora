@@ -4,7 +4,7 @@ import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import {
   Plus, CheckCircle2, FileText,
-  Search, LayoutGrid, List as ListIcon, Gauge,
+  Search, LayoutGrid, List as ListIcon, Gauge, BookMarked,
 } from "lucide-react"
 import type { MetaTemplate } from "@/lib/providers/meta-cloud-provider"
 import { StatusDot } from "@/components/ui/status-dot"
@@ -81,6 +81,10 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
           <button onClick={() => setView("grid")} className={`size-7 inline-flex items-center justify-center rounded-md ${view === "grid" ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`} title="Grade"><LayoutGrid className="size-4" /></button>
           <button onClick={() => setView("list")} className={`size-7 inline-flex items-center justify-center rounded-md ${view === "list" ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`} title="Lista"><ListIcon className="size-4" /></button>
         </div>
+        <button onClick={() => router.push("/templates/biblioteca")}
+          className="h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5 transition-colors">
+          <BookMarked className="size-3.5" /> Biblioteca
+        </button>
         <button onClick={() => router.push("/templates/novo")}
           className="h-9 px-3 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 transition-colors">
           <Plus className="size-3.5" /> Criar template
