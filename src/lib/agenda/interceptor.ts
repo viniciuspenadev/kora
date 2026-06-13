@@ -42,8 +42,9 @@ const fmt = (iso: string): string => {
 /** Retorna true se TRATOU a mensagem (não deve seguir pra IA/automação). */
 export async function handleAgendaReply(args: {
   tenantId: string; conversationId: string; text: string; instance: ProviderInstance
+  interactiveId?: string   // Meta: id do botão/row tocado (`agenda:*`) → roteio determinístico
 }): Promise<boolean> {
-  const { tenantId, conversationId, text, instance } = args
+  const { tenantId, conversationId, text, instance, interactiveId } = args
 
   const { data: conv } = await supabaseAdmin.from("chat_conversations")
     .select("id, assigned_to, pending_agenda, contact_id, chat_contacts ( phone_number, custom_name, push_name )")
@@ -75,16 +76,25 @@ export async function handleAgendaReply(args: {
   const t = text.toLowerCase()
   const digit = (text.replace(/[⃣️]/g, "").match(/\b(\d+)\b/)?.[1]) ?? null
 
+  // Roteio determinístico (Meta): o id do botão/lista carrega a ação — tem prioridade
+  // sobre o texto. Formatos: agenda:confirm:<id> · agenda:resched:<id> · agenda:slot:<i>
+  // · agenda:more · agenda:none.
+  const tok = interactiveId?.startsWith("agenda:") ? interactiveId.split(":") : null
+  // Tap numa confirmação ANTIGA (apptId do payload ≠ pendência atual) → stale, consome em silêncio.
+  if (tok && (tok[1] === "confirm" || tok[1] === "resched") && tok[2] && tok[2] !== pending.appointment_id) return true
+  const act = tok?.[1] ?? null
+  const slotIdx = act === "slot" ? parseInt(tok?.[2] ?? "", 10) : null
+
   // Keywords APERTADAS (dígito + verbo claro). Em conversa de carteira, bare
   // "ok/pode/não/outro" são fala normal — exigimos a intenção inequívoca.
   if (pending.kind === "confirm") {
-    if (digit === "1" || /\b(confirmo|confirmar|confirmado|confirma)\b/.test(t) || /^\s*sim\b/.test(t)) {
+    if (act === "confirm" || digit === "1" || /\b(confirmo|confirmar|confirmado|confirma)\b/.test(t) || /^\s*sim\b/.test(t)) {
       await setStatus(appt.id, "confirmed"); await clearPending(conversationId)
       await notifyAgent(ctx, "confirmed")
       await reply(ctx, "✅ Tudo certo, seu horário está confirmado! Até lá 😊")
       return true
     }
-    if (digit === "2" || /\b(remarcar|remarca|reagendar|reagenda)\b/.test(t)) {
+    if (act === "resched" || digit === "2" || /\b(remarcar|remarca|reagendar|reagenda)\b/.test(t)) {
       return startReschedule(ctx)
     }
     return reprompt(ctx, "É só responder com o número:\n1️⃣ Confirmar\n2️⃣ Remarcar")
@@ -92,21 +102,23 @@ export async function handleAgendaReply(args: {
 
   if (pending.kind === "reschedule_pick") {
     const slots = pending.slots ?? []
-    if (digit === "0" || /\b(nenhum|nenhuma|outro dia|outros dias|mais)\b/.test(t)) {
-      // Tem mais horizonte → mostra os próximos dias (self-service). Esgotou → atendente.
-      if (pending.next_from) return startReschedule(ctx, pending.next_from)
+    // "Ver outros dias" / "Nenhum desses" — ids agenda:more/none, "0" do Baileys, ou keyword.
+    if (act === "more" || act === "none" || digit === "0" || /\b(nenhum|nenhuma|outro dia|outros dias|mais)\b/.test(t)) {
+      // Tem horizonte (e não foi "nenhum") → próximos dias (self-service). Senão → atendente.
+      if (pending.next_from && act !== "none") return startReschedule(ctx, pending.next_from)
       await clearPending(conversationId)
       await notifyAgent(ctx, "reschedule")
       await reply(ctx, "Sem problema! Um atendente vai te ajudar a achar o melhor horário 🙌")
       return true
     }
-    const n = digit ? parseInt(digit, 10) : NaN
-    if (n >= 1 && n <= slots.length) {
-      const ok = await doReschedule(appt, slots[n - 1])
+    // Escolha do horário: índice 0-based via lista interativa, OU número (1-based) via texto.
+    const idx = slotIdx !== null && !Number.isNaN(slotIdx) ? slotIdx : (digit ? parseInt(digit, 10) - 1 : NaN)
+    if (idx >= 0 && idx < slots.length) {
+      const ok = await doReschedule(appt, slots[idx])
       if (!ok) { await reply(ctx, "Opa, esse horário acabou de ser preenchido 😕"); return startReschedule(ctx) }
       await clearPending(conversationId)
-      await notifyAgent(ctx, "rescheduled", slots[n - 1])
-      await reply(ctx, `✅ Remarcado! Novo horário: ${fmt(slots[n - 1])}. Até lá 😊`)
+      await notifyAgent(ctx, "rescheduled", slots[idx])
+      await reply(ctx, `✅ Remarcado! Novo horário: ${fmt(slots[idx])}. Até lá 😊`)
       return true
     }
     return reprompt(ctx, "Responda com o *número* do horário (ou 0 se nenhum servir).")
@@ -130,20 +142,57 @@ async function setStatus(apptId: string, status: string) {
   await supabaseAdmin.from("appointments").update({ status, updated_at: new Date().toISOString() }).eq("id", apptId)
 }
 
-/** Envia a resposta do robô + persiste na thread (o atendente vê). Best-effort. */
+/** Persiste a saída na thread (o atendente vê). `text` = representação legível. */
+async function persistOutbound(ctx: Ctx, text: string, messageId: string | null) {
+  await supabaseAdmin.from("chat_messages").insert({
+    conversation_id: ctx.convId, tenant_id: ctx.tenantId, sender_type: "agent", sender_id: null,
+    content_type: "text", content: text, whatsapp_msg_id: messageId, status: "sent",
+    is_private_note: false, metadata: { agenda_interceptor: true, automated: true },
+  })
+  await supabaseAdmin.from("chat_conversations").update({
+    last_message_at: new Date().toISOString(), last_message_preview: text.slice(0, 100), last_message_dir: "out", updated_at: new Date().toISOString(),
+  }).eq("id", ctx.convId)
+}
+
+/** Envia a resposta do robô (texto) + persiste. Best-effort. */
 async function reply(ctx: Ctx, text: string) {
   if (!ctx.phone) return
   try {
     const r = await getProvider(ctx.instance).sendText(ctx.phone, text)
-    await supabaseAdmin.from("chat_messages").insert({
-      conversation_id: ctx.convId, tenant_id: ctx.tenantId, sender_type: "agent", sender_id: null,
-      content_type: "text", content: text, whatsapp_msg_id: r.messageId || null, status: "sent",
-      is_private_note: false, metadata: { agenda_interceptor: true, automated: true },
-    })
-    await supabaseAdmin.from("chat_conversations").update({
-      last_message_at: new Date().toISOString(), last_message_preview: text.slice(0, 100), last_message_dir: "out", updated_at: new Date().toISOString(),
-    }).eq("id", ctx.convId)
+    await persistOutbound(ctx, text, r.messageId || null)
   } catch (e) { console.error("[agenda-interceptor] reply falhou:", e instanceof Error ? e.message : e) }
+}
+
+/**
+ * Menu de remarcação pelo veículo certo do canal (§6.10): Meta → lista interativa
+ * nativa (rows carregam `agenda:slot:<i>`, parseadas no G4); Baileys → texto numerado.
+ * Persiste sempre a versão de texto (legível pro atendente). Fallback p/ texto se a
+ * lista falhar. A janela já está aberta aqui (o tap "Remarcar" reabriu) → nativo, sem template.
+ */
+async function sendRescheduleMenu(ctx: Ctx, slots: string[], nextFrom: number | null) {
+  if (!ctx.phone) return
+  const lastOption = nextFrom ? "Ver outros dias" : "Nenhum desses"
+  const numbered = "Estes são os próximos horários livres:\n\n"
+    + slots.map((s, i) => `${EMOJI[i]} ${fmt(s)}`).join("\n")
+    + `\n\n0️⃣ ${lastOption}`
+
+  const provider = getProvider(ctx.instance)
+  const isMeta = (ctx.instance as { provider?: string }).provider === "meta_cloud"
+  if (isMeta && provider.sendInteractive) {
+    const rows = slots.map((s, i) => ({ id: `agenda:slot:${i}`, title: fmt(s) }))
+    rows.push({ id: nextFrom ? "agenda:more" : "agenda:none", title: lastOption })
+    try {
+      const r = await provider.sendInteractive(ctx.phone, {
+        body: "Estes são os próximos horários livres:",
+        list: { buttonText: "Ver horários", sections: [{ rows }] },
+      })
+      await persistOutbound(ctx, numbered, r.messageId || null)
+      return
+    } catch (e) {
+      console.error("[agenda-interceptor] lista falhou, caindo p/ texto:", e instanceof Error ? e.message : e)
+    }
+  }
+  await reply(ctx, numbered)
 }
 
 /** Re-pergunta 1× quando a resposta não casa; na 2ª, desiste e cede ao fluxo normal. */
@@ -169,15 +218,10 @@ async function startReschedule(ctx: Ctx, fromMs?: number): Promise<boolean> {
       : "No momento não achei horários livres por aqui. Um atendente vai te ajudar 🙌")
     return true
   }
-  // O "0" muda de papel: há mais horizonte → "Ver outros dias"; esgotou → "Nenhum desses".
-  const lastOption = nextFrom ? "0️⃣ Ver outros dias" : "0️⃣ Nenhum desses"
-  const menu = "Estes são os próximos horários livres:\n\n"
-    + slots.map((s, i) => `${EMOJI[i]} ${fmt(s)}`).join("\n")
-    + `\n\n${lastOption}`
   await supabaseAdmin.from("chat_conversations").update({
     pending_agenda: { kind: "reschedule_pick", appointment_id: ctx.appt.id, slots, next_from: nextFrom ?? undefined, expires_at: new Date(Date.now() + 48 * 3600_000).toISOString() },
   }).eq("id", ctx.convId)
-  await reply(ctx, menu)
+  await sendRescheduleMenu(ctx, slots, nextFrom)
   return true
 }
 
@@ -255,10 +299,17 @@ async function notifyAgent(ctx: Ctx, kind: keyof typeof NOTIFY_META, whenIso?: s
       .select("user_id").eq("tenant_id", ctx.tenantId).eq("role", "owner").limit(1).maybeSingle()
     primary = owner?.user_id ?? null
   }
-  // Fan-out: dono + co-hosts (participantes do compromisso), sem duplicar.
-  const { data: parts } = await supabaseAdmin.from("appointment_participants")
-    .select("user_id").eq("tenant_id", ctx.tenantId).eq("appointment_id", ctx.appt.id)
-  const recipients = new Set<string>([...(primary ? [primary] : []), ...(parts ?? []).map((p) => p.user_id as string)])
+  // Fan-out: dono + co-hosts (participantes) + quem tem "Gerenciar" na agenda
+  // (delegação — opera a agenda, então recebe os avisos). "Restrita"/"Detalhada" não.
+  const [partsR, mgrsR] = await Promise.all([
+    supabaseAdmin.from("appointment_participants").select("user_id").eq("tenant_id", ctx.tenantId).eq("appointment_id", ctx.appt.id),
+    supabaseAdmin.from("resource_shares").select("grantee_user_id").eq("tenant_id", ctx.tenantId).eq("resource_id", ctx.appt.resource_id).eq("level", "manage"),
+  ])
+  const recipients = new Set<string>([
+    ...(primary ? [primary] : []),
+    ...(partsR.data ?? []).map((p) => p.user_id as string),
+    ...(mgrsR.data ?? []).map((m) => m.grantee_user_id as string),
+  ])
   if (recipients.size === 0) return
   const m = NOTIFY_META[kind]
   const body = [ctx.contato, res?.name, fmt(whenIso ?? ctx.appt.starts_at)].filter(Boolean).join(" · ")

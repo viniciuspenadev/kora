@@ -360,6 +360,20 @@ export async function setMemberActive(userId: string, active: boolean): Promise<
 
   if (error) return { error: error.message }
 
+  // Agenda do agente acompanha o status: desativado → fora do ar (não roda paralelo);
+  // reativado → volta. Best-effort (não derruba a desativação).
+  await supabaseAdmin
+    .from("tenant_resources")
+    .update({ active })
+    .eq("tenant_id", tenantId)
+    .eq("assigned_agent_id", userId)
+
+  // Desativado não recebe mais push: limpa as subscriptions DELE NESTE tenant
+  // (escopado — não afeta o mesmo usuário em outros tenants).
+  if (!active) {
+    await supabaseAdmin.from("push_subscriptions").delete().eq("tenant_id", tenantId).eq("user_id", userId)
+  }
+
   revalidatePath("/configuracoes/equipe")
   return {}
 }

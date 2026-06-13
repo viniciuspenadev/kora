@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { createNotification } from "@/lib/notifications"
 import { hasModule } from "@/lib/modules"
+import { sendAgendaConfirm } from "./official-template"
 
 // ═══════════════════════════════════════════════════════════════
 // Consumidor BUILT-IN dos eventos da Agenda (doc §6.7-A)
@@ -40,13 +41,18 @@ const firstName = (full: string) => full.trim().split(/\s+/)[0]
 // dados do agendamento (serviço/data/hora/nome). O texto do tenant, se houver, vira
 // só a saudação de abertura. As 2 ações ficam uma embaixo da outra. Sem "cancelar":
 // cancelamento não é self-service (cliente que insiste cai pro atendente).
-function buildConfirmMessage(tenantText: string, vars: Record<string, string>): string {
+function buildConfirmAnchor(tenantText: string, vars: Record<string, string>): string {
   const intro = tenantText || `Olá${vars.contato ? `, ${firstName(vars.contato)}` : ""}! Passando pra confirmar seu horário 👋`
   const anchor = [
     vars.servico ? `📅 *${vars.servico}*` : null,
     `🗓️ ${vars.data} às ${vars.hora}`,
   ].filter(Boolean).join("\n")
-  return `${intro}\n\n${anchor}\n\nPosso confirmar?\n1️⃣ Confirmar\n2️⃣ Remarcar`
+  return `${intro}\n\n${anchor}\n\nPosso confirmar?`
+}
+// Baileys: a âncora + menu numerado. No Meta o veículo é botão (nativo/template) —
+// ver official-template.ts; lá a âncora vira o corpo do botão.
+function buildConfirmMessage(tenantText: string, vars: Record<string, string>): string {
+  return `${buildConfirmAnchor(tenantText, vars)}\n1️⃣ Confirmar\n2️⃣ Remarcar`
 }
 
 interface ApptForEvent {
@@ -135,13 +141,14 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   // 3b envia pela conversa existente (janela fresca). Sem conversa → 3c (cron/template).
   if (!appt.conversation_id) return logReminder(appt, stepKey, "whatsapp", "skipped", "sem conversa (3b)")
 
-  // Round-trip (3d): se o step pede confirmação, anexa o menu numerado (Baileys)
-  // e, após enviar, grava o pending_agenda pra o interceptor mapear a resposta.
+  // Round-trip (3d.4): se o step pede confirmação, vai pelo veículo certo do canal —
+  // Baileys texto numerado · Meta botão nativo (dentro da janela) · template (fora) —
+  // e grava o pending_agenda pra o interceptor mapear a resposta (§6.10).
   const isConfirm = step.request_confirmation === true
-  const outText = isConfirm ? buildConfirmMessage(text, vars) : text
 
-  // Resolve a instância da conversa (fallback: 1ª do tenant).
-  const { data: conv } = await supabaseAdmin.from("chat_conversations").select("instance_id").eq("id", appt.conversation_id).maybeSingle()
+  // Resolve a instância da conversa (fallback: 1ª do tenant) + a janela 24h.
+  const { data: conv } = await supabaseAdmin.from("chat_conversations")
+    .select("instance_id, last_inbound_at").eq("id", appt.conversation_id).maybeSingle()
   let instance: Record<string, unknown> | null = null
   if (conv?.instance_id) {
     const { data } = await supabaseAdmin.from("whatsapp_instances").select("*").eq("id", conv.instance_id).maybeSingle()
@@ -153,17 +160,39 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   }
   if (!instance) return logReminder(appt, stepKey, "whatsapp", "failed", "tenant sem instância")
 
+  const inWindow = conv?.last_inbound_at
+    ? Date.now() - new Date(conv.last_inbound_at as string).getTime() < 24 * 3600_000
+    : false
+
   try {
-    const result = await getProvider(instance).sendText(phone, outText)
+    let messageId: string | null
+    let displayText: string
+    if (isConfirm) {
+      const send = await sendAgendaConfirm({
+        tenantId: appt.tenant_id, instance, phone, apptId: appt.id, vars, inWindow,
+        anchorText: buildConfirmAnchor(text, vars), numberedText: buildConfirmMessage(text, vars),
+      })
+      if ("degraded" in send) {
+        // Gate fail-closed: não saiu (sem template aprovado) → loga + avisa o atendente.
+        await logReminder(appt, stepKey, "whatsapp", "skipped", send.degraded)
+        await notifyConfirmFallback(appt, vars)
+        return true
+      }
+      messageId = send.messageId; displayText = send.displayText
+    } else {
+      const r = await getProvider(instance).sendText(phone, text)
+      messageId = r.messageId || null; displayText = text
+    }
+
     // Persiste na thread (igual à automação welcome) → o atendente vê o aviso.
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: appt.conversation_id, tenant_id: appt.tenant_id,
-      sender_type: "agent", sender_id: null, content_type: "text", content: outText,
-      whatsapp_msg_id: result.messageId || null, status: "sent", is_private_note: false,
+      sender_type: "agent", sender_id: null, content_type: "text", content: displayText,
+      whatsapp_msg_id: messageId, status: "sent", is_private_note: false,
       metadata: { agenda_reminder: stepKey, automated: true },
     })
     await supabaseAdmin.from("chat_conversations").update({
-      last_message_at: new Date().toISOString(), last_message_preview: outText.slice(0, 100),
+      last_message_at: new Date().toISOString(), last_message_preview: displayText.slice(0, 100),
       last_message_dir: "out", updated_at: new Date().toISOString(),
       // Pede confirmação → arma o contexto pra o interceptor (3d.2).
       ...(isConfirm ? { pending_agenda: { kind: "confirm", appointment_id: appt.id, expires_at: new Date(Date.now() + 48 * 3600_000).toISOString() } } : {}),
@@ -175,6 +204,30 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
     await logReminder(appt, stepKey, "whatsapp", "failed", /131047/.test(msg) ? "janela fechada (template = 3d.4)" : msg)
   }
   return true
+}
+
+/** Degradação fail-closed: confirmação não saiu (template em análise) → avisa o DONO da agenda. */
+async function notifyConfirmFallback(appt: ApptForEvent, vars: Record<string, string>) {
+  const { data: a } = await supabaseAdmin.from("appointments")
+    .select("resource_id, created_by").eq("id", appt.id).maybeSingle()
+  let recipient: string | null = (a?.created_by as string | null) ?? null
+  if (a?.resource_id) {
+    const { data: r } = await supabaseAdmin.from("tenant_resources")
+      .select("assigned_agent_id").eq("id", a.resource_id as string).maybeSingle()
+    recipient = (r?.assigned_agent_id as string | null) ?? recipient
+  }
+  if (!recipient) {
+    const { data: o } = await supabaseAdmin.from("tenant_users")
+      .select("user_id").eq("tenant_id", appt.tenant_id).eq("role", "owner").limit(1).maybeSingle()
+    recipient = (o?.user_id as string | null) ?? null
+  }
+  if (!recipient) return
+  await createNotification({
+    tenantId: appt.tenant_id, recipientId: recipient, type: "appt_reminder",
+    title: "Confirme com o cliente (modelo em análise)",
+    body: [vars.contato, `${vars.data} às ${vars.hora}`].filter(Boolean).join(" · "),
+    payload: { appointment_id: appt.id, conversation_id: appt.conversation_id },
+  })
 }
 
 // ═══════════════════════════════════════════════════════════════

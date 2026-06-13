@@ -5,8 +5,10 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, MoreHorizontal, Ban, Archive,
   Users, Tag as TagIcon, FileText, Sparkles, Megaphone,
   Plus, X, Loader2, Trophy, Check, UserPlus, Target,
-  Pencil, Mail, Building2, IdCard, CalendarDays, User as UserIcon,
+  Pencil, Mail, Building2, IdCard, CalendarDays, CalendarClock, Flag, User as UserIcon,
 } from "lucide-react"
+import { getContactAppointments, type ContactAppt } from "@/lib/actions/agenda"
+import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
 import { SourceLogo } from "@/components/chat/source-logo"
@@ -96,6 +98,7 @@ export function ContactSidebar(props: Props) {
           <ChevronLeft className="size-4" />
         </button>
         <Hint icon={Target}        label="Pipeline" />
+        <Hint icon={CalendarClock} label="Agendamentos" />
         <Hint icon={Users}         label="Participantes" />
         <Hint icon={TagIcon}       label="Tags" />
         <Hint icon={FileText}      label="Notas" />
@@ -127,6 +130,11 @@ export function ContactSidebar(props: Props) {
         pipelines={props.pipelines}
         stages={props.stages}
       />
+      <ContactAgendaCard
+        contactId={props.contact.id}
+        contactName={displayContactName(props.contact)}
+        conversationId={props.conversation.id}
+      />
       <ParticipantsCard conversation={props.conversation} agents={props.agents} />
       <TagsCard
         contactId={props.contact.id}
@@ -138,6 +146,42 @@ export function ContactSidebar(props: Props) {
       <SiteLeadCard conversation={props.conversation} contact={props.contact} />
       <NotesCard contactId={props.contact.id} initialNotes={props.contact.notes} />
     </aside>
+  )
+}
+
+// Seção colapsável padronizada — header (ícone + título + chevron) + ação opcional.
+function Section({
+  icon: Icon, title, action, defaultOpen = true, children,
+}: {
+  icon: typeof Target; title: string; action?: React.ReactNode
+  defaultOpen?: boolean; children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="border-b border-slate-100">
+      <div className="group/sec flex items-center gap-2.5 px-3.5 h-11">
+        <span className="size-6 rounded-lg bg-slate-100 grid place-items-center shrink-0 transition-colors group-hover/sec:bg-primary-50">
+          <Icon className="size-3.5 text-slate-500 transition-colors group-hover/sec:text-primary-600" strokeWidth={2} />
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex-1 text-left text-[13px] font-semibold text-slate-700 hover:text-slate-900 transition-colors"
+        >
+          {title}
+        </button>
+        {action}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-label={open ? "Recolher" : "Expandir"}
+          className="size-6 grid place-items-center rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+        >
+          <ChevronDown className={`size-4 transition-transform duration-200 ${open ? "" : "-rotate-90"}`} />
+        </button>
+      </div>
+      {open && <div className="px-4 pb-4 pt-0.5">{children}</div>}
+    </div>
   )
 }
 
@@ -193,7 +237,7 @@ function HeaderCard({
 
   return (
     <>
-    <header className="flex flex-col items-center px-4 pt-4 pb-3 border-b border-slate-100 relative">
+    <header className="flex flex-col items-center px-4 pt-5 pb-4 border-b border-slate-100 relative bg-gradient-to-b from-slate-50 to-white">
       <button
         type="button"
         onClick={sheetMode ? onClose : onCollapse}
@@ -233,15 +277,15 @@ function HeaderCard({
         </div>
       )}
 
-      <div className="size-14 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center mb-2 overflow-hidden mt-1">
+      <div className="size-16 rounded-full bg-gradient-to-br from-primary-50 to-slate-200 ring-2 ring-white shadow-sm shadow-slate-300/50 flex items-center justify-center mb-2.5 overflow-hidden mt-1">
         {contact.profile_pic_url ? (
           /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={contact.profile_pic_url} alt="" className="size-14 object-cover" />
+          <img src={contact.profile_pic_url} alt="" className="size-16 object-cover" />
         ) : (
-          <span className="text-lg font-bold text-slate-400">{initial}</span>
+          <span className="text-xl font-bold text-primary-300">{initial}</span>
         )}
       </div>
-      <p className="text-sm font-semibold text-slate-900 text-center truncate max-w-full">
+      <p className="text-[15px] font-semibold text-slate-900 text-center truncate max-w-full">
         {displayName}
       </p>
       {contact.phone_number ? (
@@ -352,22 +396,16 @@ function ContactInfoCard({ contact }: { contact: ChatContact }) {
   const isEmpty = !contact.custom_name && !contact.email && !contact.company && !contact.doc_id && !contact.birth_date
 
   return (
-    <div className="px-4 py-3 border-b border-slate-100">
-      <div className="flex items-center gap-2 mb-2">
-        <UserIcon className="size-3.5 text-slate-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex-1">Informações</h3>
-        {!editing && (
-          <button
-            type="button"
-            onClick={startEdit}
-            aria-label="Editar informações"
-            className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
-          >
-            <Pencil className="size-3" />
-          </button>
-        )}
-      </div>
-
+    <Section icon={UserIcon} title="Informações" action={!editing && (
+      <button
+        type="button"
+        onClick={startEdit}
+        aria-label="Editar informações"
+        className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
+      >
+        <Pencil className="size-3" />
+      </button>
+    )}>
       {editing ? (
         <div className="space-y-2">
           <Field icon={UserIcon} label="Nome">
@@ -463,7 +501,7 @@ function ContactInfoCard({ contact }: { contact: ChatContact }) {
           )}
         </dl>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -521,9 +559,7 @@ function LifecycleCard({
   }
 
   return (
-    <div className="px-4 py-3 border-b border-slate-100">
-      <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Ciclo de vida</h3>
-
+    <Section icon={Flag} title="Ciclo de vida">
       <div className={`inline-flex items-center gap-1.5 ${lc.bg} ${lc.text} text-xs font-semibold px-2.5 py-1 rounded-md`}>
         <span>{lc.icon}</span> {lc.label}
       </div>
@@ -575,7 +611,7 @@ function LifecycleCard({
           </div>
         </div>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -625,16 +661,12 @@ function PipelineCard({
   }
 
   return (
-    <div className="px-4 py-3 border-b border-slate-100">
-      <div className="flex items-center gap-2 mb-2">
-        <Target className="size-3.5 text-slate-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex-1">Pipeline</h3>
-        <span className="text-[10px] text-slate-500 flex items-center gap-1">
-          <span className="size-1.5 rounded-full" style={{ backgroundColor: currentPipeline.color }} />
-          {currentPipeline.name}
-        </span>
-      </div>
-
+    <Section icon={Target} title="Pipeline" action={
+      <span className="text-[10px] text-slate-500 flex items-center gap-1">
+        <span className="size-1.5 rounded-full" style={{ backgroundColor: currentPipeline.color }} />
+        {currentPipeline.name}
+      </span>
+    }>
       {currentStage ? (
         <div
           className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg mb-2"
@@ -705,7 +737,7 @@ function PipelineCard({
           </div>
         </div>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -746,22 +778,16 @@ function ParticipantsCard({
   }
 
   return (
-    <div className="px-4 py-3 border-b border-slate-100">
-      <div className="flex items-center gap-2 mb-2">
-        <Users className="size-3.5 text-slate-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex-1">Atendentes</h3>
-        {available.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowAdd((v) => !v)}
-            aria-label="Adicionar"
-            className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
-          >
-            <UserPlus className="size-3.5" />
-          </button>
-        )}
-      </div>
-
+    <Section icon={Users} title="Atendentes" action={available.length > 0 && (
+      <button
+        type="button"
+        onClick={() => setShowAdd((v) => !v)}
+        aria-label="Adicionar"
+        className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
+      >
+        <UserPlus className="size-3.5" />
+      </button>
+    )}>
       {owner ? (
         <div className="flex items-center gap-2 mb-1.5">
           <AgentAvatar userId={owner.id} name={owner.full_name} className="size-6" />
@@ -802,7 +828,7 @@ function ParticipantsCard({
           ))}
         </div>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -853,20 +879,16 @@ function TagsCard({
   }
 
   return (
-    <div className="px-4 py-3 border-b border-slate-100">
-      <div className="flex items-center gap-2 mb-2">
-        <TagIcon className="size-3.5 text-slate-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex-1">Tags</h3>
-        <button
-          type="button"
-          onClick={() => setShowPicker((v) => !v)}
-          aria-label="Adicionar tag"
-          className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
-        >
-          <Plus className="size-3.5" />
-        </button>
-      </div>
-
+    <Section icon={TagIcon} title="Tags" action={
+      <button
+        type="button"
+        onClick={() => setShowPicker((v) => !v)}
+        aria-label="Adicionar tag"
+        className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
+      >
+        <Plus className="size-3.5" />
+      </button>
+    }>
       {applied.length > 0 ? (
         <div className="flex flex-wrap gap-1 mb-2">
           {applied.map((t) => (
@@ -957,7 +979,7 @@ function TagsCard({
           )}
         </div>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -976,12 +998,7 @@ function LeadSourceCard({
   const [thumbBroken, setThumbBroken] = useState(false)
 
   return (
-    <div className="px-4 py-3 border-b border-slate-100">
-      <div className="flex items-center gap-2 mb-2">
-        <Megaphone className="size-3.5 text-slate-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Origem do contato</h3>
-      </div>
-
+    <Section icon={Megaphone} title="Origem do contato" defaultOpen={false}>
       <div className="flex items-center gap-2 mb-1">
         <SourceLogo source={contact.source} size={14} />
         <span className="text-xs font-medium text-slate-700">{src.label}</span>
@@ -1036,7 +1053,7 @@ function LeadSourceCard({
           )}
         </div>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -1071,17 +1088,16 @@ function NotesCard({ contactId, initialNotes }: { contactId: string; initialNote
   }, [notes, dirty, contactId])
 
   return (
-    <div className="px-4 py-3 border-b border-slate-100">
-      <div className="flex items-center gap-2 mb-2">
-        <FileText className="size-3.5 text-slate-400" />
-        <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex-1">Notas internas</h3>
+    <Section icon={FileText} title="Notas internas" defaultOpen={false} action={
+      <>
         {pending && <Loader2 className="size-3 animate-spin text-slate-400" />}
         {!pending && savedAt && !dirty && (
           <span className="text-[9px] text-emerald-600 flex items-center gap-0.5">
             <Check className="size-2.5" /> salvo
           </span>
         )}
-      </div>
+      </>
+    }>
       <textarea
         value={notes}
         onChange={(e) => { setNotes(e.target.value); setDirty(true); setSavedAt(null) }}
@@ -1089,7 +1105,7 @@ function NotesCard({ contactId, initialNotes }: { contactId: string; initialNote
         placeholder="Anotações sobre esse contato — só o time vê."
         className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 resize-none"
       />
-    </div>
+    </Section>
   )
 }
 
@@ -1203,5 +1219,113 @@ function trimUrl(url: string, max = 60): string {
   } catch {
     return url.length > max ? url.slice(0, max - 1) + "…" : url
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Agendamentos do contato (módulo agenda) — lista + modal de novo
+// ═══════════════════════════════════════════════════════════════
+
+const APPT_TZ = "America/Sao_Paulo"
+const APPT_CHIP: Record<string, string> = {
+  scheduled: "bg-primary-50 text-primary-700 border-primary-100",
+  confirmed: "bg-emerald-50 text-emerald-700 border-emerald-100",
+  done:      "bg-slate-100 text-slate-600 border-slate-200",
+  no_show:   "bg-amber-50 text-amber-700 border-amber-100",
+  canceled:  "bg-red-50 text-red-700 border-red-100",
+}
+const APPT_LABEL: Record<string, string> = {
+  scheduled: "Agendado", confirmed: "Confirmado", done: "Concluído", no_show: "Faltou", canceled: "Cancelado",
+}
+function apptWhen(iso: string): string {
+  const d = new Date(iso)
+  const wd = d.toLocaleDateString("pt-BR", { timeZone: APPT_TZ, weekday: "short" }).replace(".", "")
+  const dm = d.toLocaleDateString("pt-BR", { timeZone: APPT_TZ, day: "2-digit", month: "2-digit" })
+  const hm = d.toLocaleTimeString("pt-BR", { timeZone: APPT_TZ, hour: "2-digit", minute: "2-digit" }).replace(":", "h")
+  return `${wd} ${dm} · ${hm}`
+}
+
+function ContactAgendaCard({ contactId, contactName, conversationId }: {
+  contactId: string; contactName: string; conversationId: string
+}) {
+  const [data, setData] = useState<Awaited<ReturnType<typeof getContactAppointments>> | null>(null)
+  const [showModal, setShowModal]     = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+
+  const load = useCallback(() => { getContactAppointments(contactId).then(setData).catch(() => {}) }, [contactId])
+  useEffect(() => { load() }, [load])
+
+  if (!data || !data.enabled) return null
+
+  const now = Date.now()
+  const upcoming = data.items
+    .filter((a) => new Date(a.starts_at).getTime() >= now && a.status !== "canceled")
+    .sort((a, b) => +new Date(a.starts_at) - +new Date(b.starts_at))
+  const past = data.items.filter((a) => !(new Date(a.starts_at).getTime() >= now && a.status !== "canceled"))
+
+  return (
+    <Section icon={CalendarClock} title="Agendamentos" action={data.resources.length > 0 && (
+      <button
+        type="button"
+        onClick={() => setShowModal(true)}
+        className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 transition-colors"
+      >
+        <Plus className="size-3" /> Novo
+      </button>
+    )}>
+      {upcoming.length === 0 ? (
+        <p className="text-[11px] text-slate-400 italic">Nenhum agendamento futuro.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {upcoming.map((a) => <ApptRow key={a.id} a={a} />)}
+        </div>
+      )}
+
+      {past.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowHistory((v) => !v)}
+            className="mt-2 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-600"
+          >
+            <ChevronDown className={`size-3 transition-transform ${showHistory ? "rotate-180" : ""}`} />
+            Histórico ({past.length})
+          </button>
+          {showHistory && (
+            <div className="mt-1.5 space-y-1.5 opacity-80">
+              {past.map((a) => <ApptRow key={a.id} a={a} />)}
+            </div>
+          )}
+        </>
+      )}
+
+      {showModal && (
+        <NewAppointmentDialog
+          resources={data.resources}
+          services={data.services}
+          fixedContact={{ id: contactId, name: contactName }}
+          conversationId={conversationId}
+          onClose={() => setShowModal(false)}
+          onCreated={() => { setShowModal(false); load() }}
+        />
+      )}
+    </Section>
+  )
+}
+
+function ApptRow({ a }: { a: ContactAppt }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="size-1.5 rounded-full bg-primary-400 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] font-semibold text-slate-700 tabular-nums">{apptWhen(a.starts_at)}</p>
+        {(a.service_name || a.resource_name) && (
+          <p className="text-[10px] text-slate-400 truncate">{a.service_name ?? a.resource_name}</p>
+        )}
+      </div>
+      <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full border shrink-0 ${APPT_CHIP[a.status] ?? APPT_CHIP.scheduled}`}>
+        {APPT_LABEL[a.status] ?? a.status}
+      </span>
+    </div>
+  )
 }
 

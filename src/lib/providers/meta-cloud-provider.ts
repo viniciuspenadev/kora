@@ -286,22 +286,41 @@ export class MetaCloudProvider implements WhatsAppProvider {
    * Envia um template aprovado. `bodyParams` preenche as variáveis do corpo, na
    * ordem. Cada param com `paramName` → variável NOMEADA ({{nome}}); sem `paramName`
    * → posicional ({{1}}). Único jeito de iniciar conversa fora da janela de 24h.
+   *
+   * `buttonParams` injeta o PAYLOAD de retorno por botão no momento do envio (o
+   * texto do botão é fixo na aprovação; o payload é por-envio). Usado pelo round-
+   * trip da Agenda: o quick-reply volta no webhook como `agenda:confirm:<apptId>`,
+   * roteado determinístico (sem depender do texto do botão). `index` = posição do
+   * botão no template (0-based). `url` carrega o sufixo dinâmico de botões URL.
    */
   async sendTemplate(
     phone: string, name: string, langCode = "en_US",
     bodyParams?: Array<{ paramName?: string; text: string }>,
+    buttonParams?: Array<{ subType: "quick_reply" | "url"; index: number; payload?: string; url?: string }>,
   ): Promise<SendResult> {
     const template: Record<string, unknown> = { name, language: { code: langCode } }
+    const components: Array<Record<string, unknown>> = []
     if (bodyParams && bodyParams.length > 0) {
-      template.components = [{
+      components.push({
         type: "body",
         parameters: bodyParams.map((p) =>
           p.paramName
             ? { type: "text", parameter_name: p.paramName, text: p.text }
             : { type: "text", text: p.text },
         ),
-      }]
+      })
     }
+    for (const b of buttonParams ?? []) {
+      components.push({
+        type:     "button",
+        sub_type: b.subType,
+        index:    String(b.index),
+        parameters: b.subType === "quick_reply"
+          ? [{ type: "payload", payload: b.payload ?? "" }]
+          : [{ type: "text",    text:    b.url ?? "" }],
+      })
+    }
+    if (components.length > 0) template.components = components
     return this.sendMessage({ to: this.toWa(phone), type: "template", template })
   }
 

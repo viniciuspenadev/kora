@@ -121,7 +121,11 @@ export interface WhatsAppProvider {
    * Envia um template aprovado (só WhatsApp Oficial / Cloud API). Opcional —
    * Baileys não implementa (não tem janela de 24h nem templates).
    */
-  sendTemplate?(phone: string, name: string, langCode?: string, bodyParams?: Array<{ paramName?: string; text: string }>): Promise<SendResult>
+  sendTemplate?(
+    phone: string, name: string, langCode?: string,
+    bodyParams?: Array<{ paramName?: string; text: string }>,
+    buttonParams?: Array<{ subType: "quick_reply" | "url"; index: number; payload?: string; url?: string }>,
+  ): Promise<SendResult>
 
   // ── Mensagens ricas / interativas (Cloud API; Baileys não suporta nativo) ──
   /**

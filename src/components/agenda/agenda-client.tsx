@@ -256,7 +256,7 @@ export function AgendaClient({
               {view !== "overview" && activeResources.length > 1 && (
                 <select value={resourceFilter} onChange={(e) => setResourceFilter(e.target.value)}
                   className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-700">
-                  <option value="">Todos os recursos</option>
+                  <option value="">Todas as agendas</option>
                   {activeResources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                 </select>
               )}
@@ -412,7 +412,7 @@ function AppointmentDetail({ a, onClose, onAct, onReschedule, router }: {
           <DialogHeader><DialogTitle>Horário ocupado</DialogTitle></DialogHeader>
           <div className="space-y-2 text-sm">
             <Row icon={CalendarClock} text={`${new Date(a.starts_at).toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "2-digit", month: "long" })} · ${hhmm(a.starts_at)}–${hhmm(a.ends_at)}`} />
-            <Row icon={CalendarDays} text={a.tenant_resources?.name ?? "Recurso"} />
+            <Row icon={CalendarDays} text={a.tenant_resources?.name ?? "Agenda"} />
           </div>
           <p className="text-xs text-slate-400">Você tem acesso apenas a livre/ocupado nesta agenda.</p>
         </DialogContent>
@@ -432,7 +432,7 @@ function AppointmentDetail({ a, onClose, onAct, onReschedule, router }: {
 
         <div className="space-y-2 text-sm">
           <Row icon={CalendarClock} text={`${new Date(a.starts_at).toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "2-digit", month: "long" })} · ${hhmm(a.starts_at)}–${hhmm(a.ends_at)}`} />
-          <Row icon={CalendarDays} text={`${a.tenant_resources?.name ?? "Recurso"}${a.tenant_services?.name ? ` · ${a.tenant_services.name}` : ""}`} />
+          <Row icon={CalendarDays} text={`${a.tenant_resources?.name ?? "Agenda"}${a.tenant_services?.name ? ` · ${a.tenant_services.name}` : ""}`} />
           {a.chat_contacts?.phone_number && <Row icon={MessageSquare} text={a.chat_contacts.phone_number} />}
           {a.notes && <p className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 border border-slate-100">{a.notes}</p>}
         </div>
@@ -550,7 +550,7 @@ function EmptyConfig({ isAdmin }: { isAdmin: boolean }) {
       <div className="size-12 rounded-xl bg-primary-50 grid place-items-center mx-auto mb-4"><CalendarDays className="size-6 text-primary-600" /></div>
       <h2 className="text-base font-semibold text-slate-900">Sua agenda está vazia</h2>
       <p className="text-sm text-slate-500 mt-1">
-        {isAdmin ? "Crie um recurso (profissional, sala, mesa…) pra começar a agendar." : "Peça a um administrador pra configurar os recursos da agenda."}
+        {isAdmin ? "Crie uma agenda (de um profissional, uma sala, uma mesa…) pra começar a agendar." : "Peça a um administrador pra configurar as agendas."}
       </p>
       {isAdmin && <Link href="/agenda/configuracao" className="inline-block mt-4"><Button size="sm"><Settings2 className="size-4" /> Configurar agenda</Button></Link>}
     </div>

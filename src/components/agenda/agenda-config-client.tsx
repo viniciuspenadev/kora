@@ -87,7 +87,7 @@ export function AgendaConfigClient({
   return (
     <PageShell
       title="Configurar agenda"
-      description="Recursos (o que se agenda) e serviços (o que se marca)"
+      description="Agendas (de quem ou do que atende) e serviços (o que se marca)"
       icon={CalendarCog}
       actions={<Link href="/agenda"><Button variant="outline" size="sm"><ArrowLeft className="size-4" /> Voltar</Button></Link>}
     >
@@ -117,11 +117,11 @@ export function AgendaConfigClient({
               <div className="flex items-start gap-2 min-w-0">
                 <Users2 className="size-4 text-primary-600 mt-0.5 shrink-0" />
                 <div className="min-w-0">
-                  <h2 className="text-sm font-semibold text-slate-900">Recursos</h2>
-                  <p className="text-[11px] text-slate-400">Quem ou o que atende — você, profissionais, salas.</p>
+                  <h2 className="text-sm font-semibold text-slate-900">Agendas</h2>
+                  <p className="text-[11px] text-slate-400">De quem ou do que — você, profissionais, salas.</p>
                 </div>
               </div>
-              <Button size="sm" variant="outline" onClick={() => setEditRes("new")} className="shrink-0"><Plus className="size-4" /> Recurso</Button>
+              <Button size="sm" variant="outline" onClick={() => setEditRes("new")} className="shrink-0"><Plus className="size-4" /> Agenda</Button>
             </header>
             <div className="divide-y divide-slate-50">
               {resources.length === 0 ? (
@@ -167,7 +167,7 @@ export function AgendaConfigClient({
             <div className="divide-y divide-slate-50">
               {services.length === 0 ? (
                 <p className="px-4 py-8 text-center text-sm text-slate-400">
-                  {resources.length === 0 ? "Crie um recurso primeiro." : "Sem serviços ainda — crie um (ex: Demonstração · 30min)."}
+                  {resources.length === 0 ? "Crie uma agenda primeiro." : "Sem serviços ainda — crie um (ex: Demonstração · 30min)."}
                 </p>
               ) : services.map((s) => (
                 <div key={s.id} className="flex items-center gap-3 px-4 py-3">
@@ -178,7 +178,7 @@ export function AgendaConfigClient({
                     </div>
                     <p className="text-xs text-slate-400 mt-0.5">
                       {s.duration_minutes}min{(s.buffer_before_minutes || s.buffer_after_minutes) ? ` · folga ${s.buffer_before_minutes}/${s.buffer_after_minutes}min` : ""}
-                      {s.resource_ids.length > 0 ? ` · ${s.resource_ids.length} recurso(s)` : " · todos"}
+                      {s.resource_ids.length > 0 ? ` · ${s.resource_ids.length} agenda(s)` : " · todas"}
                     </p>
                   </div>
                   <Button size="sm" variant="ghost" onClick={() => setEditSvc(s)}><Pencil className="size-4" /></Button>
@@ -251,7 +251,7 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
   )
 
   async function save() {
-    if (!name.trim()) { toast.error("Dê um nome ao recurso"); return }
+    if (!name.trim()) { toast.error("Dê um nome à agenda"); return }
     setSaving(true)
     const payload = {
       name: name.trim(), kind: kind.trim() || null, capacity: Math.max(1, Number(capacity) || 1),
@@ -264,13 +264,13 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
       const r = await updateResource(resource.id, { ...payload, active })
       setSaving(false)
       if (r?.error) { toast.error(r.error); return }
-      toast.success("Recurso atualizado")
+      toast.success("Agenda atualizada")
       onSaved({ ...resource, ...payload, active } as ResourceRow)
     } else {
       const r = await createResource(payload)
       setSaving(false)
       if (r?.error || !r.id) { toast.error(r.error ?? "Falha ao criar"); return }
-      toast.success("Recurso criado")
+      toast.success("Agenda criada")
       onSaved({ id: r.id, tenant_id: "", ...payload, active: true } as ResourceRow)
     }
   }
@@ -279,17 +279,17 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{resource ? "Editar recurso" : "Novo recurso"}</DialogTitle>
-          <DialogDescription>O que se agenda — profissional, sala, mesa… com horário e capacidade.</DialogDescription>
+          <DialogTitle>{resource ? "Editar agenda" : "Nova agenda"}</DialogTitle>
+          <DialogDescription>De quem ou do que é a agenda — um profissional, uma sala, uma mesa… com horário e capacidade.</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 max-h-[64vh] overflow-y-auto pr-1">
-          <FormRow label="Nome" hint="quem ou o que atende — você, um profissional, uma sala…">
+          <FormRow label="Nome da agenda" hint="ex: Você · Dra. Ana · Sala 1">
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Você / Dra. Ana / Sala 1" className="h-9" />
           </FormRow>
 
-          <FormRow label="Quem cuida dessa agenda?" hint="opcional — recebe os avisos no sininho">
+          <FormRow label="De quem é esta agenda?" hint="o atendente DONO pode compartilhá-la e recebe os avisos. Vazio = agenda compartilhada (sala, equipamento).">
             <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-              <option value="">Qualquer atendente</option>
+              <option value="">Compartilhada (sala, equipamento)</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
           </FormRow>
@@ -375,7 +375,7 @@ const MSG_VARS = [
   { token: "{{servico}}", label: "Serviço" },
   { token: "{{data}}",    label: "Data" },
   { token: "{{hora}}",    label: "Hora" },
-  { token: "{{recurso}}", label: "Recurso" },
+  { token: "{{recurso}}", label: "Agenda" },
 ]
 const DEFAULT_MSG = "Olá {{contato}}! Seu horário de {{servico}} está marcado para {{data}} às {{hora}}. Até lá 😊"
 
@@ -495,8 +495,8 @@ function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onCl
             )}
           </div>
 
-          {/* Recursos */}
-          <FormRow label="Quais recursos atendem?" hint="nenhum selecionado = todos">
+          {/* Agendas */}
+          <FormRow label="Em quais agendas?" hint="nenhuma selecionada = todas">
             <div className="flex flex-wrap gap-1.5">
               {resources.filter((r) => r.active).map((r) => (
                 <Chip key={r.id} active={resIds.includes(r.id)} onClick={() => toggleRes(r.id)}>{r.name}</Chip>

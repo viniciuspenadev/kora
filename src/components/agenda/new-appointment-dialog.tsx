@@ -150,13 +150,13 @@ export function NewAppointmentDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Novo agendamento</DialogTitle>
-          <DialogDescription>Escolha o recurso, o horário disponível e o contato.</DialogDescription>
+          <DialogDescription>Escolha a agenda, o horário disponível e o contato.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           {/* Recurso + serviço */}
           <div className="grid grid-cols-2 gap-3">
-            <FormRow label="Recurso">
+            <FormRow label="Agenda">
               <Select value={resourceId} onChange={(e) => { setResourceId(e.target.value); setServiceId("") }}>
                 {resources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
               </Select>

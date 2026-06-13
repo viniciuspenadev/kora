@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import bcrypt from "bcryptjs"
 import { checkLimit } from "@/lib/limits"
 import { validatePassword } from "@/lib/password"
+import { provisionAgentAgenda } from "@/lib/actions/agenda"
 
 export async function acceptInvite(
   token: string,
@@ -82,6 +83,9 @@ export async function acceptInvite(
     .from("invites")
     .update({ accepted_at: new Date().toISOString(), accepted_by: profileId })
     .eq("id", invite.id)
+
+  // Auto-provisão: agente novo já entra com a agenda dele (se o tenant usa agenda).
+  await provisionAgentAgenda(invite.tenant_id, profileId)
 
   return { isNewUser, email: invite.email }
 }

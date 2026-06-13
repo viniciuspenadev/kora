@@ -3,11 +3,13 @@
 import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, canViewConversation, type ViewerScope } from "@/lib/visibility"
-import { requireModule } from "@/lib/modules"
+import { requireModule, hasModule } from "@/lib/modules"
 import { createNotification } from "@/lib/notifications"
 import { logAudit } from "@/lib/audit"
 import { runAppointmentEvent } from "@/lib/agenda/reminders"
+import { ensureAgendaConfirmTemplate } from "@/lib/agenda/official-template"
 import { getAvailability, type WorkingHoursDay, type Slot } from "@/lib/agenda/availability"
+import { after } from "next/server"
 
 // ═══════════════════════════════════════════════════════════════
 // Server actions da Agenda (Fase 1) — doc: docs/agenda-design.md
@@ -164,6 +166,9 @@ export async function setAgendaRemindersEnabled(enabled: boolean): Promise<{ err
   const { error } = await supabaseAdmin.from("tenant_config")
     .upsert({ tenant_id: s.tenantId, agenda_reminders_enabled: enabled }, { onConflict: "tenant_id" })
   if (error) return { error: error.message }
+  // Auto-semeia o template oficial de confirmação (§6.10) — idempotente, best-effort,
+  // no-op em tenant só-Baileys. Em background pra não atrasar o toggle.
+  if (enabled) after(() => ensureAgendaConfirmTemplate(s.tenantId))
   revalidatePath(ROUTE)
   return {}
 }
@@ -714,6 +719,30 @@ export async function setResourceEveryoneLevel(resourceId: string, level: ShareL
   return {}
 }
 
+// ── Auto-provisão: agenda pessoal de cada agente novo ────────
+// Padrão: nome = nome do usuário · seg–sex 07–20 · capacidade 1 · horizonte 60 ·
+// a equipe vê "Restrita" (livre/ocupado). Idempotente; só roda com o módulo agenda
+// ligado; best-effort (não derruba o cadastro). NÃO faz backfill (só agentes novos).
+const DEFAULT_AGENDA_HOURS: WorkingHoursDay[] = [1, 2, 3, 4, 5].map((day) => ({ day, intervals: [["07:00", "20:00"]] as [string, string][] }))
+
+export async function provisionAgentAgenda(tenantId: string, userId: string): Promise<void> {
+  try {
+    if (!(await hasModule(tenantId, "agenda"))) return
+    const { data: existing } = await supabaseAdmin.from("tenant_resources")
+      .select("id").eq("tenant_id", tenantId).eq("assigned_agent_id", userId).maybeSingle()
+    if (existing) return   // já tem agenda
+    const { data: profile } = await supabaseAdmin.from("profiles").select("full_name").eq("id", userId).maybeSingle()
+    await supabaseAdmin.from("tenant_resources").insert({
+      tenant_id: tenantId, name: profile?.full_name?.trim() || "Minha agenda", kind: null, capacity: 1,
+      working_hours: DEFAULT_AGENDA_HOURS, slot_minutes: 30, timezone: "America/Sao_Paulo",
+      assigned_agent_id: userId, min_lead_minutes: 0, max_horizon_days: 60,
+      share_everyone_level: "free_busy", active: true,
+    })
+  } catch (err) {
+    console.error("[provisionAgentAgenda]", err)
+  }
+}
+
 // ── Visão POR-PESSOA (pro Sheet de Equipe): "quais agendas esta pessoa acessa" ──
 export interface MemberAgendaAccess { resource_id: string; name: string; level: ShareLevel | null }
 
@@ -736,4 +765,57 @@ export async function setMemberAgendaAccess(memberUserId: string, resourceId: st
   return level === "none"
     ? removeResourceShare(resourceId, memberUserId)
     : upsertResourceShare(resourceId, memberUserId, level)
+}
+
+// ── Agendamentos de um CONTATO (pra a sidebar do chat) ───────
+export interface ContactAppt {
+  id: string; starts_at: string; ends_at: string; status: string
+  service_name: string | null; resource_name: string | null
+}
+
+/**
+ * Compromissos de um contato (visíveis ao viewer, nível ≥ detalhes) + as agendas/
+ * serviços ativos (pro modal de novo agendamento). `enabled=false` se o tenant não
+ * tem o módulo agenda → a sidebar esconde o bloco.
+ */
+export async function getContactAppointments(contactId: string): Promise<{
+  enabled: boolean; items: ContactAppt[]; resources: ResourceRow[]; services: ServiceRow[]
+}> {
+  const s = await getViewerScope()
+  if (!(await hasModule(s.tenantId, "agenda"))) return { enabled: false, items: [], resources: [], services: [] }
+
+  const { data: rows } = await supabaseAdmin.from("appointments")
+    .select(`id, resource_id, starts_at, ends_at, status, tenant_services(name), tenant_resources(name, assigned_agent_id, share_everyone_level), created_by, chat_conversations(assigned_to, participants, department_id)`)
+    .eq("tenant_id", s.tenantId).eq("contact_id", contactId).order("starts_at", { ascending: false })
+
+  type Row = ApptVisibility & { id: string; resource_id: string; starts_at: string; ends_at: string; status: string; tenant_services: { name: string | null } | null; tenant_resources: { name: string | null; assigned_agent_id: string | null; share_everyone_level: ShareLevel | null } | null }
+  const all = (rows ?? []) as unknown as Row[]
+
+  let visible = all
+  if (!s.isAdmin) {
+    const shareMap = await viewerShareMap(s)
+    const ids = all.map((a) => a.id)
+    let coSet = new Set<string>()
+    if (ids.length) {
+      const { data: parts } = await supabaseAdmin.from("appointment_participants")
+        .select("appointment_id").eq("tenant_id", s.tenantId).eq("user_id", s.userId).in("appointment_id", ids)
+      coSet = new Set((parts ?? []).map((p) => p.appointment_id as string))
+    }
+    visible = all.filter((a) => LEVEL_RANK[appointmentLevel(s, a, shareMap.get(a.resource_id), coSet.has(a.id))] >= LEVEL_RANK.details)
+  }
+
+  const items: ContactAppt[] = visible.map((a) => ({
+    id: a.id, starts_at: a.starts_at, ends_at: a.ends_at, status: a.status,
+    service_name: a.tenant_services?.name ?? null, resource_name: a.tenant_resources?.name ?? null,
+  }))
+
+  const [resR, svcR] = await Promise.all([
+    supabaseAdmin.from("tenant_resources").select("*").eq("tenant_id", s.tenantId).eq("active", true).order("name"),
+    supabaseAdmin.from("tenant_services").select("*").eq("tenant_id", s.tenantId).eq("active", true).order("name"),
+  ])
+  return {
+    enabled: true, items,
+    resources: (resR.data ?? []) as unknown as ResourceRow[],
+    services: (svcR.data ?? []) as unknown as ServiceRow[],
+  }
 }

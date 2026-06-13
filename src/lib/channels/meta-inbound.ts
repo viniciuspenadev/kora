@@ -8,6 +8,7 @@ import { latestInboundAt } from "@/lib/ai/context"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
+import { handleAgendaReply } from "@/lib/agenda/interceptor"
 import { notifyInboundMessage } from "@/lib/push/send"
 import { upsertTemplateCache, logTemplateEvent } from "@/lib/channels/template-cache"
 import { HEALTH_FIELDS, processHealthWebhook } from "@/lib/channels/health"
@@ -473,9 +474,24 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     ...(wasResolved ? { resolved_at: null } : {}),
   }).eq("id", conv.id)
 
+  // Texto "roteável": corpo do texto OU o título do botão/lista tocado. É ele que
+  // acorda a cadeia (keyword/IA/menu) e o interceptor da Agenda.
+  const routable = ext.routableText
+
+  // Camada 0 — interceptor da Agenda (round-trip oficial, §6.10). Determinístico,
+  // fail-safe; roteia pelo id do botão/lista (`agenda:*`) ou pelo texto. Se tratou
+  // (confirmar/remarcar), bypassa push + keyword + IA (não é "mensagem nova").
+  let agendaHandled = false
+  try {
+    agendaHandled = await handleAgendaReply({
+      tenantId: instance.tenant_id, conversationId: conv.id, text: routable ?? "", instance,
+      interactiveId: (ext.metadata as { interactive_id?: string })?.interactive_id ?? undefined,
+    })
+  } catch (e) { console.error("[meta agenda-interceptor]", e) }
+
   // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o
   // atendente atribuído (ou todo o pool se ninguém assumiu ainda).
-  {
+  if (!agendaHandled) {
     const notifyTitle = pushName || `+${phone}`
     const notifyPreview = preview
     after(() => notifyInboundMessage({
@@ -520,37 +536,35 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     after(async () => { try { await assignNextAgent(instance.tenant_id, conv.id) } catch (e) { console.error("[meta auto-assign]", e) } })
   }
 
-  // Texto "roteável": corpo do texto OU o título do botão/lista tocado. É ele
-  // que acorda a cadeia (keyword/IA/menu) — uma resposta interativa precisa
-  // re-entrar no runtime do flow tanto quanto uma mensagem de texto.
-  const routable = ext.routableText
-
-  // Cadeia: keyword (sync) → IA (debounce) → automações fixas (fallback)
-  let kwMatched = false
-  if (routable && msg.type === "text") {  // keyword só em texto puro (paridade c/ Evolution)
-    try {
-      kwMatched = await evaluateKeywordTriggers({ tenantId: instance.tenant_id, conversationId: conv.id, text: routable, instance })
-    } catch (e) { console.error("[meta keyword]", e) }
-  }
-  if (!kwMatched) {
-    const convId = conv.id
-    const text = routable
-    const msgId = msg.id
-    after(async () => {
+  // Cadeia: keyword (sync) → IA (debounce) → automações fixas (fallback). Pulada
+  // quando a Agenda já consumiu a resposta (Camada 0 acima).
+  if (!agendaHandled) {
+    let kwMatched = false
+    if (routable && msg.type === "text") {  // keyword só em texto puro (paridade c/ Evolution)
       try {
-        if (text) {
-          const baseline = await latestInboundAt(convId)
-          await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
-          if ((await latestInboundAt(convId)) !== baseline) return
-          // "digitando…" honesto: só quando vamos de fato gerar resposta.
-          try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ }
-          const ai = await routeAutomationTurn({ tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance })
-          if (ai.status === "responded" || ai.status === "routed") return
-          if (ai.status === "skipped" && ai.reason === "already_routed") return
-        }
-        await dispatchAutomations({ tenantId: instance.tenant_id, conversationId: convId, instance })
-      } catch (e) { console.error("[meta ai+automation]", e) }
-    })
+        kwMatched = await evaluateKeywordTriggers({ tenantId: instance.tenant_id, conversationId: conv.id, text: routable, instance })
+      } catch (e) { console.error("[meta keyword]", e) }
+    }
+    if (!kwMatched) {
+      const convId = conv.id
+      const text = routable
+      const msgId = msg.id
+      after(async () => {
+        try {
+          if (text) {
+            const baseline = await latestInboundAt(convId)
+            await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
+            if ((await latestInboundAt(convId)) !== baseline) return
+            // "digitando…" honesto: só quando vamos de fato gerar resposta.
+            try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ }
+            const ai = await routeAutomationTurn({ tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance })
+            if (ai.status === "responded" || ai.status === "routed") return
+            if (ai.status === "skipped" && ai.reason === "already_routed") return
+          }
+          await dispatchAutomations({ tenantId: instance.tenant_id, conversationId: convId, instance })
+        } catch (e) { console.error("[meta ai+automation]", e) }
+      })
+    }
   }
 }
 
