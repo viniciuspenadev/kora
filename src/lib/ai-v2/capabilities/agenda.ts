@@ -30,6 +30,39 @@ function fmtSlot(iso: string): string {
   return `${wd} ${dm} às ${hm}`
 }
 
+// ── targeting de DIA/PERÍODO (alavanca 1: honrar "sexta à tarde") ─────────
+const PERIODS = new Set(["manha", "tarde", "noite"])
+
+/** Hora (0–23) de um instante no fuso da agenda. */
+function hourInTZ(iso: string): number {
+  return Number(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).format(new Date(iso)))
+}
+function inPeriod(iso: string, period: string): boolean {
+  const h = hourInTZ(iso)
+  if (period === "manha") return h < 12
+  if (period === "tarde") return h >= 12 && h < 18
+  if (period === "noite") return h >= 18
+  return true
+}
+/** Offset (ms) tal que wall-clock(TZ) = utc + offset (Brasil sem DST → -3h exato). */
+function tzOffsetMs(instant: number): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(instant))
+  const p: Record<string, number> = {}
+  for (const x of parts) if (x.type !== "literal") p[x.type] = Number(x.value)
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - instant
+}
+/** Intervalo UTC [00:00, 24:00) do dia local YYYY-MM-DD no fuso da agenda. null = inválido. */
+function localDayRange(dateStr: string): { start: number; end: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim())
+  if (!m) return null
+  const guess = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0)
+  const start = guess - tzOffsetMs(guess)
+  return { start, end: start + 24 * 3600_000 }
+}
+
 // `pool` = agendas candidatas (1 ou N). "Qualquer disponível" = união do pool
 // (docs/agenda-routing.md §1–2). `resourceId` = pool[0] (fallback/back-compat).
 /** Monta o spec de destino a partir do ctx (binding do nó) + os nomes que a IA passou. */
@@ -46,7 +79,7 @@ function targetSpec(ctx: ExecCtx, service: string, resource: string): AgendaTarg
 }
 
 // ── check_availability (retrieval) ───────────────────────────────────────
-interface CheckArgs { service: string; resource: string }
+interface CheckArgs { service: string; resource: string; from_date: string; period: string }
 
 export const checkAvailabilityCapability = defineCapability<CheckArgs>({
   id:           CHECK_AVAILABILITY,
@@ -60,12 +93,15 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
       name: CHECK_AVAILABILITY,
       description:
         "Consulta os horários REAIS livres na agenda do negócio. Chame ANTES de oferecer qualquer horário — " +
-        "NUNCA invente horário, ofereça SOMENTE os que esta ferramenta retornar. Informe serviço/agenda quando souber.",
+        "NUNCA invente horário, ofereça SOMENTE os que esta ferramenta retornar. Se o cliente citar um dia ou " +
+        "período, passe from_date/period — NUNCA diga que não tem sem consultar aquele dia.",
       parameters: {
         type: "object",
         properties: {
-          service:  { type: "string", description: "Nome do serviço (ex: Corte). Opcional." },
-          resource: { type: "string", description: "Nome da agenda/profissional (ex: João). Opcional." },
+          service:   { type: "string", description: "Nome do serviço (ex: Corte). Opcional." },
+          resource:  { type: "string", description: "Nome da agenda/profissional (ex: João). Opcional." },
+          from_date: { type: "string", description: "Dia desejado pelo cliente em YYYY-MM-DD (ex: a próxima sexta). Opcional — sem ele, busca a partir de hoje." },
+          period:    { type: "string", enum: ["manha", "tarde", "noite"], description: "Período do dia se o cliente pedir (manhã/tarde/noite). Opcional." },
         },
         additionalProperties: false,
       },
@@ -73,9 +109,12 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
   },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
+    const period = typeof p.period === "string" ? p.period.trim().toLowerCase() : ""
     return {
-      service:  typeof p.service === "string"  ? p.service.trim()  : "",
-      resource: typeof p.resource === "string" ? p.resource.trim() : "",
+      service:   typeof p.service === "string"   ? p.service.trim()   : "",
+      resource:  typeof p.resource === "string"  ? p.resource.trim()  : "",
+      from_date: typeof p.from_date === "string" ? p.from_date.trim() : "",
+      period:    PERIODS.has(period) ? period : "",
     }
   },
   execute: async (ctx, args) => {
@@ -84,14 +123,17 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
     const { serviceId, pool } = res
 
     const now = Date.now()
-    const merged = await availabilityPool(ctx.tenantId, {
-      pool, serviceId,
-      rangeStart: new Date(now).toISOString(),
-      rangeEnd:   new Date(now + HORIZON_DAYS * 86_400_000).toISOString(),
-    })
+    const day = args.from_date ? localDayRange(args.from_date) : null
+    const rangeStart = day ? new Date(Math.max(now, day.start)).toISOString() : new Date(now).toISOString()
+    const rangeEnd   = day ? new Date(day.end).toISOString()                  : new Date(now + HORIZON_DAYS * 86_400_000).toISOString()
+
+    let merged = await availabilityPool(ctx.tenantId, { pool, serviceId, rangeStart, rangeEnd })
+    if (args.period) merged = merged.filter((s) => inPeriod(s.start, args.period))
 
     if (merged.length === 0) {
-      return { ok: true, toolMessage: "Sem horários livres nos próximos dias — diga ao cliente que um atendente vai ajudar a encontrar." }
+      const onde = day ? "nesse dia" : "nos próximos dias"
+      const qual = args.period ? ` de ${args.period}` : ""
+      return { ok: true, toolMessage: `Sem horários livres${qual} ${onde}. Diga ao cliente e ofereça outro dia/período (ou um atendente ajuda a encontrar).` }
     }
     const list = merged.slice(0, MAX_SLOTS).map((s) => `${fmtSlot(s.start)} [${s.start}]`).join(" · ")
     return {

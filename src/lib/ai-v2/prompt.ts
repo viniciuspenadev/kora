@@ -110,13 +110,27 @@ export function compileStudioPrompt(args: {
     for (const s of availableStages) lines.push(`- ${s.name}`)
   }
   if (availableServices && availableServices.length > 0) {
+    // Playbook da AGENDA — a craft mora aqui (no sistema), não no prompt do cliente.
+    const now = new Date()
+    const hoje    = now.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" })
+    const hojeIso = now.toLocaleDateString("en-CA",  { timeZone: "America/Sao_Paulo" })   // YYYY-MM-DD
     lines.push(``, `# AGENDA — você PODE marcar horário`)
-    lines.push(`Serviços (use check_availability/schedule_appointment com o nome exato):`)
-    for (const s of availableServices) lines.push(`- ${s.name}`)
+    lines.push(`Hoje é ${hoje} (${hojeIso}). Use isto pra resolver datas que o cliente citar ("sexta" = a próxima sexta-feira).`)
+    lines.push(`Serviços (use o nome exato): ${availableServices.map((s) => s.name).join(", ")}.`)
     if (availableResources && availableResources.length > 0) {
       lines.push(`Agendas/profissionais: ${availableResources.map((r) => r.name).join(", ")}.`)
     }
-    lines.push(`REGRA: NUNCA invente horário. Sempre chame check_availability ANTES de oferecer, e ofereça SOMENTE os horários retornados.`)
+    lines.push(
+      `COMO AGENDAR — siga à risca:`,
+      `1. NUNCA invente horário. Chame check_availability ANTES de oferecer e ofereça SOMENTE o que ela retornar (o valor em [ ] é o starts_at exato).`,
+      `2. Recomende o horário mais próximo E pergunte se prefere outro dia/horário. Ex: "Tenho terça às 09h — esse serve, ou prefere outro dia?".`,
+      `3. Se o cliente citar um dia ou período, chame check_availability com from_date (YYYY-MM-DD daquele dia) e/ou period (manha/tarde/noite). NUNCA diga que não tem sem consultar aquele dia.`,
+      `4. Se não houver no dia/período pedido, diga e ofereça o mais próximo OU pergunte outro dia — nunca empurre só o mais cedo.`,
+      `5. ANTES de marcar (schedule_appointment), confirme o horário exato ("Fecho terça às 09h, ok?") e só marque após o "sim".`,
+      `6. Você NÃO tem lista de espera — não prometa "te aviso quando abrir". Se nada servir, transfira pro time (ou diga que o time entra em contato).`,
+      `7. Reaproveite os horários que já consultou neste papo; só chame check_availability de novo se o cliente mudar o dia/período.`,
+      `8. Pegue o NOME da pessoa (update_contact) antes de marcar, pra a confirmação sair personalizada.`,
+    )
   }
 
   return lines.join("\n")
