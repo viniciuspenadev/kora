@@ -4,6 +4,7 @@
 import { Trash2, Plus, Settings2 } from "lucide-react"
 import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig } from "@/lib/ai-v2/flow/types"
+import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
@@ -12,13 +13,16 @@ const LABEL = "block text-[11px] font-semibold text-slate-600 mb-1"
 interface Opt { id: string; label: string }
 
 export function ConfigPanel({
-  node, departments, flows, stages, tags, onChange, onDelete,
+  node, departments, flows, stages, tags, services, resources, ownerRouting, onChange, onDelete,
 }: {
   node: RFNode
   departments: { id: string; name: string }[]
   flows: { id: string; name: string }[]
   stages: { id: string; name: string }[]
   tags: { id: string; name: string }[]
+  services: { id: string; name: string }[]
+  resources: { id: string; name: string }[]
+  ownerRouting: boolean
   onChange: (config: Record<string, unknown>) => void
   onDelete: () => void
 }) {
@@ -131,7 +135,9 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} />}
+      {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />}
+
+      {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />}
 
       {type === "ai_router" && <RouterConfig cfg={cfg} set={set} />}
 
@@ -504,11 +510,19 @@ const AGENT_TOOLS: { key: string; ids: string[]; label: string; hint: string }[]
   { key: "move_stage", ids: ["move_stage"], label: "Mover no pipeline",   hint: "move a conversa de etapa" },
   { key: "agenda",     ids: ["check_availability", "schedule_appointment", "reschedule_appointment"], label: "Agendar e remarcar", hint: "consulta horários reais, marca e remarca na agenda" },
 ]
-function AgentToolsConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void }) {
+function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
+  cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
+  services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
+}) {
   const tools = (cfg.tools as string[] | undefined) ?? []
   const isOn = (ids: string[]) => ids.every((id) => tools.includes(id))
   const toggle = (ids: string[]) =>
     set({ tools: isOn(ids) ? tools.filter((t) => !ids.includes(t)) : [...new Set([...tools, ...ids])] })
+
+  const agendaOn  = isOn(["check_availability", "schedule_appointment", "reschedule_appointment"])
+  const target    = (cfg.agenda_target as AgendaBinding | undefined) ?? { mode: "fixed" }
+  const setTarget = (patch: Partial<AgendaBinding>) => set({ agenda_target: { ...target, ...patch } })
+
   return (
     <div>
       <label className={LABEL}>A IA pode <span className="text-slate-400 font-normal">(ações)</span></label>
@@ -520,12 +534,101 @@ function AgentToolsConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (pa
           </label>
         ))}
       </div>
+
+      {agendaOn && (
+        <div className="mt-2 rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
+          <label className={LABEL}>Em qual agenda cai?</label>
+          <select className={INPUT} value={target.mode} onChange={(e) => setTarget({ mode: e.target.value as AgendaBinding["mode"] })}>
+            <option value="fixed">Agenda/serviço específico</option>
+            <option value="owner" disabled={!ownerRouting}>Dono da conversa (carteira){ownerRouting ? "" : " — em breve"}</option>
+            <option value="ai">Deixar a IA decidir</option>
+          </select>
+          {target.mode === "fixed" && (
+            <div className="space-y-1.5">
+              <select className={INPUT} value={target.resourceId ?? ""} onChange={(e) => setTarget({ resourceId: e.target.value || null })}>
+                <option value="">— Agenda: qualquer do serviço —</option>
+                {resources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+              <select className={INPUT} value={target.serviceId ?? ""} onChange={(e) => setTarget({ serviceId: e.target.value || null })}>
+                <option value="">— Serviço: (opcional) —</option>
+                {services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              <p className="text-[11px] text-slate-400">Escolha a <b>agenda</b> (cai sempre nela) ou só o <b>serviço</b> (cai em qualquer profissional dele).</p>
+            </div>
+          )}
+          {target.mode === "owner" && <p className="text-[11px] text-slate-400">Cai na agenda de quem já atende este cliente. Sem dono ainda → qualquer disponível até alguém assumir.</p>}
+          {target.mode === "ai"    && <p className="text-[11px] text-slate-400">A IA escolhe serviço/agenda pela conversa. Use só quando o fluxo não precisa de destino fixo.</p>}
+        </div>
+      )}
+
       <p className="text-[11px] text-slate-400 mt-1">A IA usa só as etiquetas/etapas/serviços que já existem no sistema.</p>
     </div>
   )
 }
 
-function AgentConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void }) {
+function ScheduleConfig({ cfg, set, services, resources, ownerRouting }: {
+  cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
+  services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
+}) {
+  const target    = (cfg.target as AgendaBinding | undefined) ?? { mode: "fixed" }
+  const setTarget = (patch: Partial<AgendaBinding>) => set({ target: { ...target, ...patch } })
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">Oferece os horários <b>reais</b> da agenda, o cliente escolhe e o sistema <b>marca</b> — tudo por regra, <b>sem consumir IA</b>.</p>
+
+      <div className="rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
+        <label className={LABEL}>Em qual agenda cai?</label>
+        <select className={INPUT} value={target.mode === "owner" ? "owner" : "fixed"} onChange={(e) => setTarget({ mode: e.target.value as AgendaBinding["mode"] })}>
+          <option value="fixed">Agenda/serviço específico</option>
+          <option value="owner" disabled={!ownerRouting}>Dono da conversa (carteira){ownerRouting ? "" : " — em breve"}</option>
+        </select>
+        {target.mode !== "owner" && (
+          <div className="space-y-1.5">
+            <select className={INPUT} value={target.resourceId ?? ""} onChange={(e) => setTarget({ resourceId: e.target.value || null })}>
+              <option value="">— Agenda: qualquer do serviço —</option>
+              {resources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            <select className={INPUT} value={target.serviceId ?? ""} onChange={(e) => setTarget({ serviceId: e.target.value || null })}>
+              <option value="">— Serviço: (opcional) —</option>
+              {services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <p className="text-[11px] text-slate-400">Escolha a <b>agenda</b> (cai sempre nela) ou só o <b>serviço</b> (cai em qualquer profissional dele).</p>
+          </div>
+        )}
+        {target.mode === "owner" && <p className="text-[11px] text-slate-400">Cai na agenda de quem já atende este cliente. Sem dono ainda → qualquer disponível.</p>}
+      </div>
+
+      <div>
+        <label className={LABEL}>Texto de abertura</label>
+        <input className={INPUT} value={String(cfg.intro ?? "")} onChange={(e) => set({ intro: e.target.value })} placeholder="Escolha o melhor horário:" />
+      </div>
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <label className={LABEL}>Quantos horários</label>
+          <input type="number" min={1} max={9} className={INPUT} value={Number.isFinite(cfg.maxSlots) ? Number(cfg.maxSlots) : 6}
+            onChange={(e) => set({ maxSlots: Math.min(9, Math.max(1, Math.floor(Number(e.target.value) || 6))) })} />
+        </div>
+        <div className="flex-1">
+          <label className={LABEL}>Horizonte (dias)</label>
+          <input type="number" min={1} className={INPUT} value={Number.isFinite(cfg.horizonDays) ? Number(cfg.horizonDays) : 21}
+            onChange={(e) => set({ horizonDays: Math.max(1, Math.floor(Number(e.target.value) || 21)) })} />
+        </div>
+      </div>
+      <div>
+        <label className={LABEL}>Mensagem ao agendar <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <input className={INPUT} value={String(cfg.successText ?? "")} onChange={(e) => set({ successText: e.target.value })} placeholder="✅ Agendado! Seu horário: {{horario}}. Até lá 😊" />
+        <p className="text-[11px] text-slate-400 mt-1">Use <code className="bg-slate-100 px-1 rounded">{"{{horario}}"}</code> pro horário marcado.</p>
+      </div>
+
+      <p className="text-[11px] text-slate-400 border-t border-slate-100 pt-2">Saídas: <b className="text-emerald-600">Agendado</b> (marcou) e <b className="text-slate-500">Sem horário</b> (sem vaga ou desistiu — ligue num atendente).</p>
+    </div>
+  )
+}
+
+function AgentConfig({ cfg, set, services, resources, ownerRouting }: {
+  cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
+  services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
+}) {
   const outcomes = (cfg.outcomes as Opt[] | undefined) ?? []
   const collect  = (cfg.collect as CollectField[] | undefined) ?? []
   const setCollect = (next: CollectField[]) => set({ collect: next })
@@ -543,7 +646,7 @@ function AgentConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: 
         <p className="text-[11px] text-slate-400 mt-1">É assim que a mesma IA vira &quot;Vendas&quot; num ramo e &quot;Suporte&quot; em outro.</p>
       </div>
 
-      <AgentToolsConfig cfg={cfg} set={set} />
+      <AgentToolsConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />
 
       <div>
         <label className={LABEL}>Dados a coletar <span className="text-slate-400 font-normal">(opcional)</span></label>
@@ -675,7 +778,7 @@ const TITLE: Record<string, string> = {
   start: "Início", message: "Mensagem", send_media: "Enviar mídia", menu: "Menu", condition: "Condição",
   set_variable: "Definir variável", switch: "Desviar (switch)", business_hours: "Horário comercial",
   wait: "Esperar",
-  http: "Requisição HTTP", collect: "Coletar dado", ai_agent: "Agente IA",
+  http: "Requisição HTTP", collect: "Coletar dado", schedule: "Agendar", ai_agent: "Agente IA",
   ai_router: "Roteador IA", call_flow: "Executar fluxo",
   tag: "Etiquetar", move_stage: "Mover etapa", assign: "Distribuir",
   transfer: "Transferir", return: "Voltar", end: "Encerrar",

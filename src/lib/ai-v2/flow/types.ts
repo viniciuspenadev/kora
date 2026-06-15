@@ -5,6 +5,8 @@
 // propósito (doc §3). O runtime caminha do `start` até esperar input
 // (menu), encaminhar, ou terminar. Estado por conversa em studio_flow_runs.
 
+import type { AgendaBinding } from "../capabilities/types"
+
 export type FlowNodeType =
   | "start"      // entrada
   | "message"    // envia texto e avança (suporta {{variavel}})
@@ -17,6 +19,7 @@ export type FlowNodeType =
   | "wait"           // pausa o fluxo por um tempo — acordado por cron (resume_at)
   | "http"       // chama uma API externa, guarda a resposta numa variável
   | "collect"    // pergunta, ESPERA a resposta, guarda numa variável (tipado)
+  | "schedule"   // AGENDAR determinístico (zero token): oferta → ESPERA → marca; ramifica agendado/sem_horario
   | "ai_agent"   // a IA conduz a etapa, extrai dados e DEVOLVE o controle (§11.3)
   | "ai_router"  // a IA classifica a intenção e ramifica (§11.4)
   | "call_flow"  // chama outro fluxo (sub-fluxo que volta, ou "ir para") (§11.2)
@@ -114,6 +117,19 @@ export interface CollectNodeConfig {
   validate?: "text" | "email" | "phone" | "number"
   retry?:    string
 }
+export interface ScheduleNodeConfig {
+  /** Destino (binding): fixed (agenda/serviço) · owner (carteira). Sem "ai" (não há IA aqui). */
+  target?:      AgendaBinding
+  /** Texto de abertura acima dos horários. */
+  intro?:       string
+  /** Quantos horários oferecer (default 6, máx 9 — +"nenhum" ≤ 10 rows da lista Meta). */
+  maxSlots?:    number
+  /** Horizonte de busca em dias (default 21). */
+  horizonDays?: number
+  /** Mensagem ao concluir (suporta {{horario}}); default amigável. */
+  successText?: string
+}
+
 export interface AiAgentNodeConfig {
   /** Missão deste passo (Vendas ≠ Suporte). Vira "# SUA MISSÃO". */
   instruction?: string
@@ -125,6 +141,9 @@ export interface AiAgentNodeConfig {
   /** Ferramentas EXTRA que a IA pode usar neste nó (além das core):
    *  "tag" (etiquetar/qualificar) · "move_stage" (mover no pipeline). */
   tools?:       string[]
+  /** Destino da agenda FIXADO por este nó (sobrepõe a escolha livre da IA).
+   *  Só relevante quando as tools de agenda estão ligadas. Ausente = IA decide. */
+  agenda_target?: AgendaBinding
 }
 export interface AiRouterNodeConfig {
   instruction?: string

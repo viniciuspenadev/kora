@@ -19,6 +19,7 @@ import {
   ArrowLeft, Loader2, CheckCircle2, AlertCircle,
   MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag,
   GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon,
+  CalendarPlus, Sparkles,
 } from "lucide-react"
 import { nodeTypes } from "./flow-nodes"
 import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
@@ -33,9 +34,12 @@ interface Props {
   flows:       { id: string; name: string }[]
   stages:      { id: string; name: string }[]
   tags:        { id: string; name: string }[]
+  services:    { id: string; name: string }[]
+  resources:   { id: string; name: string }[]
+  ownerRouting: boolean
 }
 
-const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ className?: string }>; ai?: boolean }[] = [
   { type: "message",   label: "Mensagem",   icon: MessageSquare },
   { type: "send_media", label: "Enviar mídia", icon: ImageIcon },
   { type: "menu",      label: "Menu",       icon: ListChecks },
@@ -45,8 +49,9 @@ const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ 
   { type: "business_hours", label: "Horário comercial", icon: Clock },
   { type: "wait",      label: "Esperar",     icon: Timer },
   { type: "collect",   label: "Coletar dado", icon: ClipboardList },
-  { type: "ai_agent",  label: "Agente IA",  icon: Bot },
-  { type: "ai_router", label: "Roteador IA", icon: GitFork },
+  { type: "schedule",  label: "Agendar",    icon: CalendarPlus },
+  { type: "ai_agent",  label: "Agente IA",  icon: Bot,     ai: true },
+  { type: "ai_router", label: "Roteador IA", icon: GitFork, ai: true },
   { type: "http",      label: "Requisição HTTP", icon: Globe },
   { type: "call_flow", label: "Executar fluxo", icon: Workflow },
   { type: "tag",        label: "Etiquetar",   icon: Tag },
@@ -65,7 +70,7 @@ export function FlowEditorCanvas(props: Props) {
   )
 }
 
-function EditorInner({ flow, departments, flows, stages, tags }: Props) {
+function EditorInner({ flow, departments, flows, stages, tags, services, resources, ownerRouting }: Props) {
   const router = useRouter()
   const initial = toRF(flow.graph)
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(
@@ -167,14 +172,22 @@ function EditorInner({ flow, departments, flows, stages, tags }: Props) {
       {/* Body */}
       <div className="flex-1 flex min-h-0">
         {/* Paleta */}
-        <div className="w-40 shrink-0 border-r border-slate-200 bg-white p-2 space-y-0.5 overflow-y-auto hidden sm:block">
+        <div className="w-48 shrink-0 border-r border-slate-200 bg-white p-2 space-y-0.5 overflow-y-auto hidden sm:block">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Adicionar passo</p>
           {PALETTE.map((p) => (
             <button key={p.type} type="button" onClick={() => addNode(p.type)}
               className="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50 rounded-lg transition-colors">
-              <p.icon className="size-4 text-slate-400" /> {p.label}
+              <p.icon className={`size-4 ${p.ai ? "text-violet-500" : "text-slate-400"}`} /> {p.label}
+              {p.ai && (
+                <span className="ml-auto inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-px text-[9px] font-semibold text-violet-600 ring-1 ring-violet-100">
+                  <Sparkles className="size-2.5" /> IA
+                </span>
+              )}
             </button>
           ))}
+          <p className="flex items-center gap-1 text-[10px] text-slate-400 px-2 pt-2 mt-1 border-t border-slate-100">
+            <Sparkles className="size-2.5 text-violet-400" /> usa IA (consome tokens)
+          </p>
         </div>
 
         {/* Canvas */}
@@ -200,7 +213,7 @@ function EditorInner({ flow, departments, flows, stages, tags }: Props) {
         {/* Painel direito */}
         <div className="w-80 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
           {selectedNode
-            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel triggerType={triggerType} keywords={keywords} onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords} />}
         </div>
       </div>

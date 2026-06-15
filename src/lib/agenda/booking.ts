@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { getAvailability, type Slot } from "@/lib/agenda/availability"
 import { runAppointmentEvent } from "@/lib/agenda/reminders"
 import { createNotification } from "@/lib/notifications"
+import { hasModule } from "@/lib/modules"
 
 // ═══════════════════════════════════════════════════════════════
 // Núcleo server-less da Agenda (disponibilidade) — SEM sessão
@@ -158,6 +159,132 @@ export async function bookAppointment(tenantId: string, input: {
   // Evento `created` → consumidor built-in (confirmação/lembrete do 3d).
   await runAppointmentEvent(data.id, "created")
   return { id: data.id, conversationId }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Resolução de DESTINO + POOL — fonte ÚNICA (IA E determinístico)
+// ═══════════════════════════════════════════════════════════════
+// Decide EM QUE agenda(s) o agendamento pode cair. `binding` é o input do
+// autor do fluxo (fixed/owner) e SOBREPÕE a escolha livre por nome (IA).
+// docs/agenda-routing.md §1–2 + §1.1. Tanto a capability da IA quanto o nó
+// "Agendar" chamam isto → roteamento NUNCA diverge entre os dois caminhos.
+
+const normName = (s: string) => s.trim().toLowerCase()
+
+export interface AgendaTargetSpec {
+  /** input do nó: fixed (resourceId/serviceId) · owner (carteira) · ai/null (livre). */
+  mode?:           "fixed" | "owner" | "ai" | null
+  serviceId?:      string | null
+  resourceId?:     string | null
+  /** caminho livre (IA por nome) — só usado quando não há binding fixo/owner. */
+  serviceName?:    string
+  resourceName?:   string
+  /** pra resolver o dono (owner mode). */
+  conversationId?: string | null
+}
+
+/** Agenda do DONO atual da conversa (carteira) — usada no binding `owner`. */
+async function ownerResource(tenantId: string, conversationId: string): Promise<string | null> {
+  const { data: conv } = await supabaseAdmin.from("chat_conversations")
+    .select("assigned_to").eq("tenant_id", tenantId).eq("id", conversationId).maybeSingle()
+  const agentId = conv?.assigned_to ?? null
+  if (!agentId) return null
+  const { data: res } = await supabaseAdmin.from("tenant_resources")
+    .select("id").eq("tenant_id", tenantId).eq("assigned_agent_id", agentId).eq("active", true)
+    .limit(1).maybeSingle()
+  return res?.id ?? null
+}
+
+/**
+ * Resolve `{ serviceId, pool }`. Binding fixo/owner sobrepõe a IA (fail-closed:
+ * alvo fixado que sumiu → erro, NÃO cai no livre). Sem binding / modo `ai` →
+ * resolve por nome (serviço → todas ativas do serviço · senão → todas do tenant).
+ */
+export async function resolveAgendaTargets(
+  tenantId: string, spec: AgendaTargetSpec,
+): Promise<{ error?: string; serviceId: string | null; pool: string[] }> {
+  const { data: services } = await supabaseAdmin.from("tenant_services")
+    .select("id, name, resource_ids").eq("tenant_id", tenantId).eq("active", true)
+  const { data: resources } = await supabaseAdmin.from("tenant_resources")
+    .select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name")
+  const activeIds = new Set((resources ?? []).map((r) => r.id))
+  const svcByName = spec.serviceName ? (services ?? []).find((s) => normName(s.name) === normName(spec.serviceName!)) : null
+
+  // 1. BINDING FIXO (sobrepõe a IA).
+  if (spec.mode === "fixed") {
+    if (spec.resourceId) {
+      if (!activeIds.has(spec.resourceId)) return { error: "A agenda fixada neste passo não está mais ativa. Avise um atendente.", serviceId: null, pool: [] }
+      const svcId = spec.serviceId && (services ?? []).some((s) => s.id === spec.serviceId) ? spec.serviceId : (svcByName?.id ?? null)
+      return { serviceId: svcId, pool: [spec.resourceId] }
+    }
+    if (spec.serviceId) {
+      const svc = (services ?? []).find((s) => s.id === spec.serviceId)
+      if (!svc) return { error: "O serviço fixado neste passo não está mais ativo. Avise um atendente.", serviceId: null, pool: [] }
+      const pool = Array.isArray(svc.resource_ids) ? (svc.resource_ids as string[]).filter((id) => activeIds.has(id)) : []
+      if (pool.length === 0) return { error: "O serviço fixado não tem agenda ativa. Avise um atendente.", serviceId: null, pool: [] }
+      return { serviceId: svc.id, pool }
+    }
+    // fixed sem nada escolhido → cai no livre abaixo.
+  }
+
+  // 2. BINDING "dono da conversa" (carteira) — GATED no god mode (`agenda_owner_routing`,
+  // beta/default-off). Gate OFF → NÃO resolve por dono (fail-closed) → degrada pro livre.
+  if (spec.mode === "owner" && spec.conversationId && await hasModule(tenantId, "agenda_owner_routing")) {
+    const owned = await ownerResource(tenantId, spec.conversationId)
+    if (owned && activeIds.has(owned)) return { serviceId: svcByName?.id ?? null, pool: [owned] }
+  }
+
+  // 3. LIVRE (ai / sem binding): por nome.
+  if (spec.serviceName && !svcByName) {
+    const opts = (services ?? []).map((s) => s.name).join(", ") || "(nenhum)"
+    return { error: `Serviço "${spec.serviceName}" não existe. Serviços disponíveis: ${opts}.`, serviceId: null, pool: [] }
+  }
+  let pool: string[] = []
+  if (spec.resourceName) {
+    const r = (resources ?? []).find((r) => normName(r.name) === normName(spec.resourceName!))
+    if (!r) {
+      const opts = (resources ?? []).map((r) => r.name).join(", ") || "(nenhuma)"
+      return { error: `Agenda "${spec.resourceName}" não existe. Agendas: ${opts}.`, serviceId: null, pool: [] }
+    }
+    pool = [r.id]
+  } else if (svcByName && Array.isArray(svcByName.resource_ids) && svcByName.resource_ids.length > 0) {
+    pool = (svcByName.resource_ids as string[]).filter((id) => activeIds.has(id))
+  }
+  if (pool.length === 0) pool = (resources ?? []).map((r) => r.id)   // fallback: tudo ativo
+  if (pool.length === 0) return { error: "Nenhuma agenda configurada — não há como marcar horário.", serviceId: null, pool: [] }
+  return { serviceId: svcByName?.id ?? null, pool }
+}
+
+/** UNIÃO de horários livres de um pool ("qualquer disponível") — dedup por start, ordenado. */
+export async function availabilityPool(tenantId: string, input: {
+  pool: string[]; serviceId?: string | null; rangeStart: string; rangeEnd: string; partySize?: number
+}): Promise<{ start: string; end: string }[]> {
+  const seen = new Set<string>()
+  const merged: { start: string; end: string }[] = []
+  for (const resourceId of input.pool) {
+    const slots = await availabilitySlots(tenantId, {
+      resourceId, serviceId: input.serviceId, rangeStart: input.rangeStart, rangeEnd: input.rangeEnd, partySize: input.partySize,
+    })
+    for (const s of slots) { if (!seen.has(s.start)) { seen.add(s.start); merged.push(s) } }
+  }
+  merged.sort((a, b) => a.start.localeCompare(b.start))
+  return merged
+}
+
+/** 1ª agenda do pool com `startsAt` REALMENTE livre (resolução do pool no momento do book). */
+export async function pickFreeInPool(tenantId: string, input: {
+  pool: string[]; serviceId?: string | null; startsAt: string
+}): Promise<string | null> {
+  const start = new Date(input.startsAt).getTime()
+  for (const resourceId of input.pool) {
+    const slots = await availabilitySlots(tenantId, {
+      resourceId, serviceId: input.serviceId,
+      rangeStart: new Date(start - 60_000).toISOString(),
+      rangeEnd:   new Date(start + 86_400_000).toISOString(),
+    })
+    if (slots.some((s) => Math.abs(new Date(s.start).getTime() - start) < 1000)) return resourceId
+  }
+  return null
 }
 
 /**

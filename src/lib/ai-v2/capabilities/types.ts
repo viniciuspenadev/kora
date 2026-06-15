@@ -26,6 +26,18 @@ export type CapabilityCategory =
   | "commerce"   // catálogo, pagamento
 
 /**
+ * Destino da agenda fixado por um nó do fluxo (input do autor):
+ *  • `fixed` → cai na agenda (`resourceId`) ou no pool do serviço (`serviceId`).
+ *  • `owner` → cai na agenda do DONO atual da conversa (carteira); sem dono → livre.
+ *  • `ai`    → a IA escolhe (comportamento livre). Ausência do binding = `ai`.
+ */
+export interface AgendaBinding {
+  mode:        "fixed" | "owner" | "ai"
+  serviceId?:  string | null
+  resourceId?: string | null
+}
+
+/**
  * Contexto de execução entregue a toda capacidade. Tudo que um executor
  * precisa pra agir (enviar pelo canal, encaminhar, gravar). Tipos reusam
  * shapes estáveis do v1 (ContactRow / instance) — não a lógica.
@@ -47,6 +59,9 @@ export interface ExecCtx {
   services?:            { id: string; name: string }[]
   /** Agendas/recursos ativos da Agenda. */
   resources?:           { id: string; name: string }[]
+  /** Destino da agenda FIXADO pelo nó do fluxo (input do autor) — sobrepõe a
+   *  escolha livre da IA (docs/agenda-routing.md). Ausente = IA decide. */
+  agendaBinding?:       AgendaBinding | null
   /** metadata atual da conversa (pra preservar no update de roteamento). */
   conversationMetadata: Record<string, unknown>
   /** Modo SIMULADOR: não transmite ao WhatsApp; ainda persiste (sandbox). */

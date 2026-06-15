@@ -6,8 +6,12 @@
 // reserva atômica). A IA nunca inventa horário. Server-less: reusa o núcleo
 // `availabilitySlots`/`bookAppointment`. Doc: docs/agenda-design.md §5.
 import { defineCapability } from "./registry"
+import type { ExecCtx } from "./types"
 import { supabaseAdmin } from "@/lib/supabase"
-import { availabilitySlots, bookAppointment, moveAppointment } from "@/lib/agenda/booking"
+import {
+  availabilitySlots, bookAppointment, moveAppointment,
+  resolveAgendaTargets, availabilityPool, pickFreeInPool, type AgendaTargetSpec,
+} from "@/lib/agenda/booking"
 
 export const CHECK_AVAILABILITY      = "check_availability"
 export const SCHEDULE_APPOINTMENT     = "schedule_appointment"
@@ -16,8 +20,6 @@ export const RESCHEDULE_APPOINTMENT   = "reschedule_appointment"
 const TZ = "America/Sao_Paulo"
 const HORIZON_DAYS = 21
 const MAX_SLOTS = 6
-
-const norm = (s: string) => s.trim().toLowerCase()
 
 // "qua 09/06 às 14h00" — legível; o ISO cru vai entre [ ] pra a IA reusar no schedule.
 function fmtSlot(iso: string): string {
@@ -28,34 +30,19 @@ function fmtSlot(iso: string): string {
   return `${wd} ${dm} às ${hm}`
 }
 
-interface Targets { serviceId: string | null; resourceId: string }
-
-/** Resolve serviço (por nome) + agenda (nome → do serviço → 1ª ativa). Compartilhado pelas 2 tools. */
-async function resolveTargets(tenantId: string, service: string, resource: string): Promise<{ error?: string; targets?: Targets }> {
-  const { data: services } = await supabaseAdmin.from("tenant_services")
-    .select("id, name, resource_ids").eq("tenant_id", tenantId).eq("active", true)
-  const svc = service ? (services ?? []).find((s) => norm(s.name) === norm(service)) : null
-  if (service && !svc) {
-    const opts = (services ?? []).map((s) => s.name).join(", ") || "(nenhum)"
-    return { error: `Serviço "${service}" não existe. Serviços disponíveis: ${opts}.` }
+// `pool` = agendas candidatas (1 ou N). "Qualquer disponível" = união do pool
+// (docs/agenda-routing.md §1–2). `resourceId` = pool[0] (fallback/back-compat).
+/** Monta o spec de destino a partir do ctx (binding do nó) + os nomes que a IA passou. */
+function targetSpec(ctx: ExecCtx, service: string, resource: string): AgendaTargetSpec {
+  const b = ctx.agendaBinding ?? null
+  return {
+    mode:           b?.mode ?? "ai",
+    serviceId:      b?.serviceId ?? null,
+    resourceId:     b?.resourceId ?? null,
+    serviceName:    service || undefined,
+    resourceName:   resource || undefined,
+    conversationId: ctx.conversationId,
   }
-
-  const { data: resources } = await supabaseAdmin.from("tenant_resources")
-    .select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name")
-  let resourceId: string | null = null
-  if (resource) {
-    const r = (resources ?? []).find((r) => norm(r.name) === norm(resource))
-    if (!r) {
-      const opts = (resources ?? []).map((r) => r.name).join(", ") || "(nenhuma)"
-      return { error: `Agenda "${resource}" não existe. Agendas: ${opts}.` }
-    }
-    resourceId = r.id
-  } else if (svc && Array.isArray(svc.resource_ids)) {
-    resourceId = (svc.resource_ids as string[]).find((id) => (resources ?? []).some((r) => r.id === id)) ?? null
-  }
-  if (!resourceId) resourceId = (resources ?? [])[0]?.id ?? null
-  if (!resourceId) return { error: "Nenhuma agenda configurada — não há como marcar horário." }
-  return { targets: { serviceId: svc?.id ?? null, resourceId } }
 }
 
 // ── check_availability (retrieval) ───────────────────────────────────────
@@ -92,24 +79,25 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
     }
   },
   execute: async (ctx, args) => {
-    const res = await resolveTargets(ctx.tenantId, args.service, args.resource)
-    if (res.error || !res.targets) return { ok: false, toolMessage: res.error ?? "Agenda indisponível." }
-    const { serviceId, resourceId } = res.targets
+    const res = await resolveAgendaTargets(ctx.tenantId, targetSpec(ctx, args.service, args.resource))
+    if (res.error) return { ok: false, toolMessage: res.error }
+    const { serviceId, pool } = res
 
     const now = Date.now()
-    const slots = await availabilitySlots(ctx.tenantId, {
-      resourceId, serviceId,
+    const merged = await availabilityPool(ctx.tenantId, {
+      pool, serviceId,
       rangeStart: new Date(now).toISOString(),
       rangeEnd:   new Date(now + HORIZON_DAYS * 86_400_000).toISOString(),
     })
-    if (slots.length === 0) {
+
+    if (merged.length === 0) {
       return { ok: true, toolMessage: "Sem horários livres nos próximos dias — diga ao cliente que um atendente vai ajudar a encontrar." }
     }
-    const list = slots.slice(0, MAX_SLOTS).map((s) => `${fmtSlot(s.start)} [${s.start}]`).join(" · ")
+    const list = merged.slice(0, MAX_SLOTS).map((s) => `${fmtSlot(s.start)} [${s.start}]`).join(" · ")
     return {
       ok: true,
       toolMessage: `Horários LIVRES (ofereça SOMENTE estes; o valor em [ ] é o starts_at exato pra agendar): ${list}`,
-      data: { slots: slots.slice(0, MAX_SLOTS), resourceId, serviceId },
+      data: { slots: merged.slice(0, MAX_SLOTS), serviceId },
     }
   },
 })
@@ -155,26 +143,21 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
     const start = new Date(args.starts_at)
     if (isNaN(start.getTime())) return { ok: false, toolMessage: "Horário inválido. Use um starts_at EXATO vindo de check_availability." }
 
-    const res = await resolveTargets(ctx.tenantId, args.service, args.resource)
-    if (res.error || !res.targets) return { ok: false, toolMessage: res.error ?? "Agenda indisponível." }
-    const { serviceId, resourceId } = res.targets
+    const res = await resolveAgendaTargets(ctx.tenantId, targetSpec(ctx, args.service, args.resource))
+    if (res.error) return { ok: false, toolMessage: res.error }
+    const { serviceId, pool } = res
 
-    // 🔒 ANTI-ALUCINAÇÃO: o starts_at TEM que ser um slot livre REAL do motor.
-    // Se a IA inventou um horário, isto rejeita — fail-closed.
-    const slots = await availabilitySlots(ctx.tenantId, {
-      resourceId, serviceId,
-      rangeStart: new Date(start.getTime() - 60_000).toISOString(),
-      rangeEnd:   new Date(start.getTime() + 86_400_000).toISOString(),
-    })
-    const real = slots.some((s) => Math.abs(new Date(s.start).getTime() - start.getTime()) < 1000)
-    if (!real) return { ok: false, toolMessage: "Esse horário não está livre. Chame check_availability de novo e ofereça SOMENTE os horários retornados." }
+    // 🔒 ANTI-ALUCINAÇÃO + RESOLUÇÃO DO POOL: acha a 1ª agenda do pool com ESTE
+    // horário REALMENTE livre. Se a IA inventou (ou o pool todo encheu) → rejeita.
+    const chosen = await pickFreeInPool(ctx.tenantId, { pool, serviceId, startsAt: start.toISOString() })
+    if (!chosen) return { ok: false, toolMessage: "Esse horário não está livre. Chame check_availability de novo e ofereça SOMENTE os horários retornados." }
 
     // Simulador: valida tudo, mas não escreve.
     if (ctx.dryRun) return { ok: true, toolMessage: `[simulação] Agendaria para ${fmtSlot(start.toISOString())}.` }
 
     const r = await bookAppointment(ctx.tenantId, {
       contactId: ctx.contact.id, conversationId: ctx.conversationId,
-      resourceId, serviceId, startsAt: start.toISOString(),
+      resourceId: chosen, serviceId, startsAt: start.toISOString(),
       source: "ai", createdBy: null,
     })
     if (r.error) return { ok: false, toolMessage: `Não consegui marcar: ${r.error}. Ofereça outro horário (check_availability).` }

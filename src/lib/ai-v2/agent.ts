@@ -20,7 +20,7 @@ import {
   ensureCapabilitiesRegistered, getCapability, toolsForAgent,
   SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE, TAG, MOVE_STAGE,
   CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
-  type ExecCtx,
+  type ExecCtx, type AgendaBinding,
 } from "./capabilities"
 
 const MAX_STEPS    = 4
@@ -52,6 +52,8 @@ export interface AgentTurnInput {
   flowControl?: FlowControl | null
   /** Ferramentas extra liberadas por este nó (filtradas por GRANTABLE_EXTRA). */
   extraTools?:  string[]
+  /** Destino da agenda fixado pelo nó (input do autor) → entra no ctx das caps. */
+  agendaBinding?: AgendaBinding | null
 }
 
 export interface AgentTurnResult {
@@ -101,7 +103,9 @@ type Msg = OpenAI.Chat.Completions.ChatCompletionMessageParam
 
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
   ensureCapabilitiesRegistered()
-  const { ctx, model, persona, history, incomingText, instruction, variables, flowControl, extraTools } = input
+  const { model, persona, history, incomingText, instruction, variables, flowControl, extraTools, agendaBinding } = input
+  // Binding de agenda fixado pelo nó vai no ctx → as caps de agenda o honram.
+  const ctx: ExecCtx = agendaBinding ? { ...input.ctx, agendaBinding } : input.ctx
 
   // Ferramentas do turno:
   //  • core — mas tira `transfer` quando o nó tem SAÍDAS (grafo é dono do

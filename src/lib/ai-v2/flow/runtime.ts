@@ -20,13 +20,17 @@ import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
 import { classifyIntent } from "./router"
 import { sendMenu, parseMenuReply } from "./menu"
+import { sendScheduleOffer, parseSchedulePick, prepareScheduleOffer, bookSchedulePick, fmtSlot } from "./schedule"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
   HttpNodeConfig, CollectNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
   SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
-  WaitNodeConfig, SendMediaNodeConfig,
+  WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig,
 } from "./types"
+
+/** Stash do nó schedule entre a oferta e o pick (mapeia "opção N" → ISO exato). */
+interface ScheduleStash { slots: string[]; serviceId: string | null; pool: string[] }
 
 function validateInput(v: string, type: string): boolean {
   const s = v.trim()
@@ -254,6 +258,42 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       variables[cfg.saveAs?.trim() || "resposta"] = reply
       currentId = edgeTarget(graph, node.id)
+    } else if (node?.type === "schedule") {
+      const cfg   = node.config as unknown as ScheduleNodeConfig
+      const stash = (variables[`schedule:${node.id}`] ?? { slots: [], serviceId: null, pool: [] }) as ScheduleStash
+      const pick  = parseSchedulePick(input.incomingText, stash.slots)
+      if (!pick) {
+        await sendBotText(ctx, "É só responder com o *número* do horário (ou 0 se nenhum servir).")
+        await sendScheduleOffer(ctx, cfg.intro, stash.slots)
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: null }
+      }
+      if (pick.kind === "none") {
+        currentId = edgeTarget(graph, node.id, "sem_horario")
+      } else {
+        const iso = stash.slots[pick.index]
+        const r   = await bookSchedulePick(ctx, { iso, serviceId: stash.serviceId, pool: stash.pool })
+        if (r.taken) {
+          // Encheu agora → re-oferece o conjunto fresco; se zerou, ramo "sem_horario".
+          await sendBotText(ctx, "Opa, esse horário acabou de ser preenchido 😕")
+          const fresh = await prepareScheduleOffer(ctx, cfg)
+          if (!fresh || fresh.slots.length === 0) { currentId = edgeTarget(graph, node.id, "sem_horario") }
+          else {
+            await sendScheduleOffer(ctx, cfg.intro, fresh.slots)
+            variables[`schedule:${node.id}`] = fresh
+            await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+            return { status: "responded", departmentId: null, error: null, agent: null }
+          }
+        } else if (r.error) {
+          currentId = edgeTarget(graph, node.id, "sem_horario")
+        } else {
+          const conf = (cfg.successText?.trim() || "✅ Agendado! Seu horário: {{horario}}. Até lá 😊").replace(/\{\{\s*horario\s*\}\}/g, fmtSlot(iso))
+          await sendBotText(ctx, conf, { studio_schedule: true })
+          responded = true
+          variables["agendamento"] = fmtSlot(iso)
+          currentId = edgeTarget(graph, node.id, "agendado")
+        }
+      }
     }
   }
 
@@ -382,6 +422,17 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }
+      case "schedule": {
+        const cfg   = node.config as unknown as ScheduleNodeConfig
+        const offer = await prepareScheduleOffer(ctx, cfg)
+        // Sem destino/horário → ramo "sem_horario" (o autor liga num atendente). Fail-closed.
+        if (!offer || offer.slots.length === 0) { currentId = edgeTarget(graph, node.id, "sem_horario"); break }
+        await sendScheduleOffer(ctx, cfg.intro, offer.slots)
+        responded = true
+        variables[`schedule:${node.id}`] = offer
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+      }
       case "ai_router": {
         const cfg = node.config as unknown as AiRouterNodeConfig
         const routes = cfg.routes ?? []
@@ -404,6 +455,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           variables,
           flowControl: { outcomes: cfg.outcomes ?? [], collect: cfg.collect ?? [] },
           extraTools:  cfg.tools,
+          agendaBinding: cfg.agenda_target ?? null,
         })
         lastAgent = turn
         if (turn.sentMessage) responded = true

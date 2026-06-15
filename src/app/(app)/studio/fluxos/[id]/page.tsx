@@ -15,7 +15,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }, { data: tagList }] = await Promise.all([
+  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }, { data: tagList }, { data: svcList }, { data: resList }] = await Promise.all([
     supabaseAdmin.from("studio_flows")
       .select("id, name, status, active, version, trigger, graph")
       .eq("tenant_id", tenantId).eq("id", id).maybeSingle(),
@@ -29,8 +29,14 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     supabaseAdmin.from("pipeline_stages").select("id, name, position").eq("tenant_id", tenantId).order("position"),
     // Etiquetas existentes pro nó "Etiquetar" (seletor, não texto livre).
     supabaseAdmin.from("tags").select("id, name").eq("tenant_id", tenantId).order("name"),
+    // Serviços + agendas pro destino da agenda no nó de IA ("em qual agenda cai").
+    supabaseAdmin.from("tenant_services").select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name"),
+    supabaseAdmin.from("tenant_resources").select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name"),
   ])
   if (!flow) redirect("/studio/fluxos")
+
+  // Gate (god mode): binding "Dono da conversa" nos nós de agendamento (beta).
+  const ownerRouting = await hasModule(tenantId, "agenda_owner_routing")
 
   return (
     <FlowEditorCanvas
@@ -39,6 +45,9 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
       flows={(flowList ?? []) as { id: string; name: string }[]}
       stages={(stageList ?? []) as { id: string; name: string }[]}
       tags={(tagList ?? []) as { id: string; name: string }[]}
+      services={(svcList ?? []) as { id: string; name: string }[]}
+      resources={(resList ?? []) as { id: string; name: string }[]}
+      ownerRouting={ownerRouting}
     />
   )
 }

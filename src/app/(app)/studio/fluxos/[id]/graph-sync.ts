@@ -29,6 +29,7 @@ const DEFAULT_CONFIG: Record<FlowNodeType, () => Record<string, unknown>> = {
   wait:           () => ({ amount: 1, unit: "hours" }),
   http:      () => ({ url: "", method: "GET", headers: {}, body: "", saveAs: "http_response" }),
   collect:   () => ({ question: "Qual o seu nome?", saveAs: "resposta", validate: "text" }),
+  schedule:  () => ({ target: { mode: "fixed" }, intro: "Escolha o melhor horário:", maxSlots: 6, horizonDays: 21 }),
   ai_agent:  () => ({ instruction: "", collect: [], outcomes: [] }),
   ai_router: () => ({ instruction: "", routes: [{ id: genId(), label: "Vendas", description: "quer comprar / contratar" }], fallback: "" }),
   call_flow: () => ({ flowId: "", mode: "subflow" }),

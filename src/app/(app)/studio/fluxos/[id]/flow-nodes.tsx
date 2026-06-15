@@ -8,8 +8,8 @@
 // o controle. transfer/return/end são terminais. start não tem entrada.
 
 import { Handle, Position, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon } from "lucide-react"
-import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig } from "@/lib/ai-v2/flow/types"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles } from "lucide-react"
+import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig } from "@/lib/ai-v2/flow/types"
 
 const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
 const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
@@ -38,12 +38,13 @@ function cfgOf(p: NodeProps): Record<string, unknown> {
 }
 
 function Card({
-  icon: Icon, accent, title, selected, children,
+  icon: Icon, accent, title, selected, ai, children,
 }: {
   icon: React.ComponentType<{ className?: string }>
   accent: string
   title: string
   selected?: boolean
+  ai?: boolean
   children?: React.ReactNode
 }) {
   return (
@@ -53,6 +54,11 @@ function Card({
           <Icon className="size-3.5" />
         </div>
         <span className="text-xs font-semibold text-slate-800">{title}</span>
+        {ai && (
+          <span className="ml-auto inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-px text-[9px] font-semibold text-violet-600 ring-1 ring-violet-100">
+            <Sparkles className="size-2.5" /> IA
+          </span>
+        )}
       </div>
       <div className="px-3 py-2 text-[11px] text-slate-500 leading-snug min-h-[1.75rem]">{children}</div>
     </div>
@@ -240,6 +246,27 @@ function CollectNode(p: NodeProps) {
   )
 }
 
+function ScheduleNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as ScheduleNodeConfig
+  const t = cfg.target
+  const dest = t?.mode === "owner" ? "dono da conversa" : (t?.resourceId || t?.serviceId) ? "agenda fixada" : "configure o destino"
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={HS_T} />
+      <Card icon={CalendarPlus} accent="bg-primary-100 text-primary-700" title="Agendar" selected={p.selected}>
+        oferece horários reais e marca
+        <span className="block text-[10px] text-slate-400 mt-0.5">→ {dest}</span>
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-emerald-600">agendado</span>
+          <span className="text-slate-400">sem horário</span>
+        </div>
+      </Card>
+      <Handle id="agendado" type="source" position={Position.Bottom} style={{ ...HS, left: "28%", background: "#059669" }} />
+      <Handle id="sem_horario" type="source" position={Position.Bottom} style={{ ...HS, left: "72%", background: "#94a3b8" }} />
+    </>
+  )
+}
+
 function AgentNode(p: NodeProps) {
   const cfg = cfgOf(p) as unknown as AiAgentNodeConfig
   const outcomes = cfg.outcomes ?? []
@@ -247,7 +274,7 @@ function AgentNode(p: NodeProps) {
   return (
     <>
       <Handle type="target" position={Position.Top} style={HS_T} />
-      <Card icon={Bot} accent="bg-gradient-to-br from-violet-500 to-blue-600 text-white" title="Agente IA" selected={p.selected}>
+      <Card icon={Bot} accent="bg-gradient-to-br from-violet-500 to-blue-600 text-white" title="Agente IA" selected={p.selected} ai>
         {instr ? instr.slice(0, 60) : "a IA conduz e devolve o controle"}
         {outcomes.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
@@ -274,7 +301,7 @@ function AiRouterNode(p: NodeProps) {
   return (
     <>
       <Handle type="target" position={Position.Top} style={HS_T} />
-      <Card icon={GitFork} accent="bg-fuchsia-100 text-fuchsia-700" title="Roteador IA" selected={p.selected}>
+      <Card icon={GitFork} accent="bg-fuchsia-100 text-fuchsia-700" title="Roteador IA" selected={p.selected} ai>
         <p className="font-medium text-slate-700">classifica a intenção e ramifica</p>
         <div className="mt-1.5 space-y-1">
           {routes.length === 0 && <span className="text-slate-400">sem rotas</span>}
@@ -397,6 +424,7 @@ export const nodeTypes = {
   wait:           WaitNode,
   http:      HttpNode,
   collect:   CollectNode,
+  schedule:  ScheduleNode,
   ai_agent:  AgentNode,
   ai_router: AiRouterNode,
   call_flow: CallFlowNode,
