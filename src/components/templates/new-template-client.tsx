@@ -12,7 +12,7 @@ function blueprintInitial(id: string): BuilderInitial | undefined {
     name:          bp.name,
     category:      bp.metaCategory === "MARKETING" ? "MARKETING" : "UTILITY",
     language:      bp.language,
-    varMode:       "number",
+    varMode:       "name",   // blueprints usam variáveis nomeadas ({{nome}})
     headerText:    "",
     headerExample: "",
     body:          bp.body,

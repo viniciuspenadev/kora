@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
-import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageSquare, ChevronRight, X, Loader2, Sparkles } from "lucide-react"
+import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageSquare, ChevronRight, X, Loader2, Sparkles, CheckCircle2 } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,8 +17,10 @@ import {
 } from "@/components/ui/dialog"
 import {
   createResource, updateResource, createService, updateService, setAgendaRemindersEnabled,
+  activateAgendaConfirmTemplate,
   type ResourceRow, type ServiceRow,
 } from "@/lib/actions/agenda"
+import type { AgendaTemplateStatus } from "@/lib/agenda/official-template"
 import type { WorkingHoursDay } from "@/lib/agenda/availability"
 
 interface Agent { id: string; name: string }
@@ -49,10 +51,11 @@ function workingHoursToDays(wh: WorkingHoursDay[]): Record<number, DayState> {
 }
 
 export function AgendaConfigClient({
-  initialResources, initialServices, agents, remindersEnabled, remindersModule,
+  initialResources, initialServices, agents, remindersEnabled, remindersModule, isMeta, confirmStatus,
 }: {
   initialResources: ResourceRow[]; initialServices: ServiceRow[]; agents: Agent[]
   remindersEnabled: boolean; remindersModule: boolean
+  isMeta: boolean; confirmStatus: AgendaTemplateStatus
 }) {
   const [resources, setResources] = useState(initialResources)
   const [services, setServices]   = useState(initialServices)
@@ -210,6 +213,8 @@ export function AgendaConfigClient({
           service={editSvc === "new" ? null : editSvc}
           resources={resources}
           remindersModule={remindersModule}
+          isMeta={isMeta}
+          confirmStatus={confirmStatus}
           onPremiumCta={premiumCta}
           onClose={() => setEditSvc(null)}
           onSaved={(row) => {
@@ -375,9 +380,9 @@ const BUFFERS = [0, 5, 10, 15, 20, 30, 45, 60]
 const MSG_VARS = varsForContext("agenda").map((v) => ({ token: `{{${v.token}}}`, label: v.label }))
 const DEFAULT_MSG = "Olá {{nome}}! Seu horário de {{servico}} está marcado para {{data}} às {{hora}}. Até lá 😊"
 
-function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onClose, onSaved }: {
+function ServiceDialog({ service, resources, remindersModule, isMeta, confirmStatus, onPremiumCta, onClose, onSaved }: {
   service: ServiceRow | null; resources: ResourceRow[]
-  remindersModule: boolean; onPremiumCta: () => void
+  remindersModule: boolean; isMeta: boolean; confirmStatus: AgendaTemplateStatus; onPremiumCta: () => void
   onClose: () => void; onSaved: (s: ServiceRow) => void
 }) {
   const [name, setName] = useState(service?.name ?? "")
@@ -529,7 +534,7 @@ function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onCl
                       <div key={i} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
                         <span className="text-xs font-medium text-slate-700 shrink-0">{whenLabel(r.offset_minutes)}</span>
                         {r.requestConfirmation && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 shrink-0">confirmação</span>}
-                        <span className="text-[11px] text-slate-400 truncate flex-1">{r.text || "—"}</span>
+                        <span className="text-[11px] text-slate-400 truncate flex-1">{r.text || (r.requestConfirmation ? "Pedido de confirmação" : "—")}</span>
                         <button type="button" onClick={() => setEditing({ index: i, draft: { ...r } })} className="size-6 grid place-items-center rounded hover:bg-slate-100 text-slate-400 shrink-0"><Pencil className="size-3.5" /></button>
                         <button type="button" onClick={() => setReminders((rs) => rs.filter((_, j) => j !== i))} className="size-6 grid place-items-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 shrink-0"><X className="size-3.5" /></button>
                       </div>
@@ -537,11 +542,11 @@ function ServiceDialog({ service, resources, remindersModule, onPremiumCta, onCl
                   </div>
                 )}
                 {editing ? (
-                  <ReminderEditor draft={editing.draft} exampleVars={exampleVars}
+                  <ReminderEditor draft={editing.draft} exampleVars={exampleVars} isMeta={isMeta} confirmStatus={confirmStatus}
                     onChange={(d) => setEditing({ ...editing, draft: d })}
                     onSave={saveReminder} onCancel={() => setEditing(null)} />
                 ) : (
-                  <button type="button" onClick={() => setEditing({ index: null, draft: { offset_minutes: -1440, text: "" } })}
+                  <button type="button" onClick={() => setEditing({ index: null, draft: { offset_minutes: -1440, text: "", requestConfirmation: isMeta || undefined } })}
                     className="text-xs font-medium text-primary-600 hover:text-primary-700">+ Adicionar lembrete</button>
                 )}
               </div>
@@ -628,8 +633,9 @@ function whenLabel(off: number): string {
 }
 interface Reminder { offset_minutes: number; text: string; requestConfirmation?: boolean }
 
-function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
+function ReminderEditor({ draft, exampleVars, isMeta, confirmStatus, onChange, onSave, onCancel }: {
   draft: Reminder; exampleVars: Record<string, string>
+  isMeta: boolean; confirmStatus: AgendaTemplateStatus
   onChange: (d: Reminder) => void; onSave: () => void; onCancel: () => void
 }) {
   return (
@@ -642,26 +648,98 @@ function ReminderEditor({ draft, exampleVars, onChange, onSave, onCancel }: {
           ))}
         </div>
       </div>
-      <div>
-        <span className="text-[11px] font-medium text-slate-500">Mensagem</span>
-        <div className="mt-1">
-          <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={exampleVars}
-            placeholder="Ex: Oi {{nome}}, seu horário é {{data}} às {{hora}}!" />
-        </div>
-      </div>
-      <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
-        <Switch
-          checked={draft.requestConfirmation ?? false}
-          onChange={(v) => onChange({ ...draft, requestConfirmation: v })}
-          size="sm"
-          label="Pedir confirmação ao cliente"
-          description="O cliente responde Confirmar / Remarcar / Cancelar — e o status muda sozinho (sem precisar de IA)."
-        />
-      </div>
+
+      {isMeta ? (
+        // Canal oficial: o lembrete sai fora da janela 24h → SÓ via template aprovado.
+        // Sem texto livre (falharia calado); o veículo é o modelo de confirmação.
+        <MetaReminderTemplate confirmStatus={confirmStatus} />
+      ) : (
+        <>
+          <div>
+            <span className="text-[11px] font-medium text-slate-500">Mensagem</span>
+            <div className="mt-1">
+              <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={exampleVars}
+                placeholder="Ex: Oi {{nome}}, seu horário é {{data}} às {{hora}}!" />
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+            <Switch
+              checked={draft.requestConfirmation ?? false}
+              onChange={(v) => onChange({ ...draft, requestConfirmation: v })}
+              size="sm"
+              label="Pedir confirmação ao cliente"
+              description="O cliente responde Confirmar / Remarcar — e o status muda sozinho (sem precisar de IA)."
+            />
+          </div>
+        </>
+      )}
+
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button>
-        <Button size="sm" onClick={onSave} disabled={!draft.text.trim()}>Salvar lembrete</Button>
+        <Button size="sm" onClick={onSave} disabled={isMeta ? false : !draft.text.trim()}>Salvar lembrete</Button>
       </div>
+    </div>
+  )
+}
+
+// Card do modelo de confirmação no canal oficial — status + "Ativar modelo".
+function MetaReminderTemplate({ confirmStatus }: { confirmStatus: AgendaTemplateStatus }) {
+  const [status, setStatus] = useState(confirmStatus)
+  const [activating, setActivating] = useState(false)
+
+  async function activate() {
+    setActivating(true)
+    try {
+      const r = await activateAgendaConfirmTemplate()
+      if (r.error) toast.error(r.error)
+      else { setStatus(r.status); toast.success("Modelo enviado para aprovação da Meta.") }
+    } finally { setActivating(false) }
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2.5 space-y-2">
+      <div className="flex items-center gap-1.5">
+        <Sparkles className="size-3.5 text-primary-600" />
+        <span className="text-[11px] font-semibold text-slate-700">Modelo de confirmação (canal oficial)</span>
+      </div>
+      <p className="text-[11px] text-slate-500 leading-relaxed">
+        No número oficial o lembrete sai dias antes — fora da janela de 24h — então usa um <strong>modelo aprovado</strong> pela Meta, com botões <em>Confirmar / Remarcar</em>.
+      </p>
+
+      {status === "approved" && (
+        <div className="flex items-center gap-2 rounded-md bg-emerald-50 border border-emerald-100 px-2 py-1.5">
+          <CheckCircle2 className="size-3.5 text-emerald-600 shrink-0" />
+          <span className="text-[11px] text-emerald-800">Modelo <strong>aprovado</strong> — o lembrete vai funcionar.</span>
+        </div>
+      )}
+      {status === "pending" && (
+        <div className="flex items-center gap-2 rounded-md bg-amber-50 border border-amber-100 px-2 py-1.5">
+          <Clock className="size-3.5 text-amber-600 shrink-0" />
+          <span className="text-[11px] text-amber-800"><strong>Em análise</strong> pela Meta — costuma levar de minutos a algumas horas.</span>
+        </div>
+      )}
+      {status === "rejected" && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 rounded-md bg-red-50 border border-red-100 px-2 py-1.5">
+            <X className="size-3.5 text-red-600 shrink-0" />
+            <span className="text-[11px] text-red-800">Modelo <strong>reprovado</strong> pela Meta.</span>
+          </div>
+          <Button size="sm" variant="outline" onClick={activate} disabled={activating}>
+            {activating && <Loader2 className="size-3 animate-spin" />} Reenviar
+          </Button>
+        </div>
+      )}
+      {status === "none" && (
+        <>
+          <Button size="sm" onClick={activate} disabled={activating}>
+            {activating ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />} Ativar modelo da Biblioteca
+          </Button>
+          <p className="text-[10px] text-amber-600">⚠️ Sem modelo aprovado, o lembrete não envia no canal oficial.</p>
+        </>
+      )}
+      {status === "pending" && (
+        <p className="text-[10px] text-slate-400">Enquanto não aprova, o lembrete não sai — você é avisado pra confirmar manualmente.</p>
+      )}
     </div>
   )
 }

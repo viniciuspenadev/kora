@@ -3,6 +3,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { listResources, listServices, getAgendaRemindersEnabled } from "@/lib/actions/agenda"
+import { agendaConfirmStatus } from "@/lib/agenda/official-template"
 import { AgendaConfigClient } from "@/components/agenda/agenda-config-client"
 
 export default async function AgendaConfigPage() {
@@ -29,6 +30,13 @@ export default async function AgendaConfigPage() {
     name: (a.profiles as unknown as { full_name: string } | null)?.full_name ?? "Atendente",
   }))
 
+  // Canal oficial? → o lembrete vira template (obrigatório fora da janela 24h).
+  const { data: metaInst } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("id").eq("tenant_id", tenantId).eq("provider", "meta_cloud").limit(1).maybeSingle()
+  const isMeta = !!metaInst
+  const confirmStatus = isMeta ? await agendaConfirmStatus(tenantId) : "none"
+
   return (
     <AgendaConfigClient
       initialResources={resources}
@@ -36,6 +44,8 @@ export default async function AgendaConfigPage() {
       agents={agents}
       remindersEnabled={remindersEnabled}
       remindersModule={remindersModule}
+      isMeta={isMeta}
+      confirmStatus={confirmStatus}
     />
   )
 }

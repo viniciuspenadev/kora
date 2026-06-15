@@ -43,6 +43,10 @@ export interface ExecCtx {
   tags?:                { id: string; name: string }[]
   /** Etapas do pipeline (valores válidos pra ferramenta move_stage da IA). */
   stages?:              { id: string; name: string }[]
+  /** Serviços ativos da Agenda (valores válidos pra check_availability/schedule). */
+  services?:            { id: string; name: string }[]
+  /** Agendas/recursos ativos da Agenda. */
+  resources?:           { id: string; name: string }[]
   /** metadata atual da conversa (pra preservar no update de roteamento). */
   conversationMetadata: Record<string, unknown>
   /** Modo SIMULADOR: não transmite ao WhatsApp; ainda persiste (sandbox). */

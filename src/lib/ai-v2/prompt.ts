@@ -36,8 +36,11 @@ export function compileStudioPrompt(args: {
   availableTags?:   { id: string; name: string }[]
   /** Etapas que a IA pode usar (só quando a tool `move_stage` está liberada). */
   availableStages?: { id: string; name: string }[]
+  /** Serviços/agendas que a IA pode marcar (só quando a tool de agenda está liberada). */
+  availableServices?:  { id: string; name: string }[]
+  availableResources?: { id: string; name: string }[]
 }): string {
-  const { persona, departments, contactName, instruction, variables, flowControl, availableTags, availableStages } = args
+  const { persona, departments, contactName, instruction, variables, flowControl, availableTags, availableStages, availableServices, availableResources } = args
   const name = persona.name?.trim() || "Assistente"
   const tone = persona.tone ? (TONE_PT[persona.tone] ?? persona.tone) : "amigável e acolhedor"
 
@@ -105,6 +108,15 @@ export function compileStudioPrompt(args: {
   if (availableStages && availableStages.length > 0) {
     lines.push(``, `# ETAPAS DO PIPELINE (use a ferramenta move_stage — nome exato)`)
     for (const s of availableStages) lines.push(`- ${s.name}`)
+  }
+  if (availableServices && availableServices.length > 0) {
+    lines.push(``, `# AGENDA — você PODE marcar horário`)
+    lines.push(`Serviços (use check_availability/schedule_appointment com o nome exato):`)
+    for (const s of availableServices) lines.push(`- ${s.name}`)
+    if (availableResources && availableResources.length > 0) {
+      lines.push(`Agendas/profissionais: ${availableResources.map((r) => r.name).join(", ")}.`)
+    }
+    lines.push(`REGRA: NUNCA invente horário. Sempre chame check_availability ANTES de oferecer, e ofereça SOMENTE os horários retornados.`)
   }
 
   return lines.join("\n")

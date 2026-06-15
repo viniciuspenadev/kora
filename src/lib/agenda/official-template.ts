@@ -96,6 +96,20 @@ export async function ensureAgendaConfirmTemplate(tenantId: string): Promise<voi
   }
 }
 
+export type AgendaTemplateStatus = "none" | "pending" | "approved" | "rejected"
+
+/** Status do template de confirmação na WABA do tenant (pro picker do lembrete). */
+export async function agendaConfirmStatus(tenantId: string): Promise<AgendaTemplateStatus> {
+  const { data: tpl } = await supabaseAdmin.from("wa_templates")
+    .select("status").eq("tenant_id", tenantId)
+    .eq("name", AGENDA_CONFIRM_TEMPLATE).eq("language", AGENDA_TEMPLATE_LANG).maybeSingle()
+  if (!tpl) return "none"
+  const s = (tpl.status || "").toUpperCase()
+  if (s === "APPROVED") return "approved"
+  if (s === "REJECTED") return "rejected"
+  return "pending"   // PENDING / PAUSED / IN_APPEAL / etc.
+}
+
 /** Nome do template SE aprovado, senão null (gate fail-closed). */
 export async function approvedConfirmTemplate(tenantId: string): Promise<string | null> {
   const { data: cfg } = await supabaseAdmin.from("tenant_config")
@@ -106,8 +120,6 @@ export async function approvedConfirmTemplate(tenantId: string): Promise<string 
     .select("status").eq("tenant_id", tenantId).eq("name", name).eq("language", AGENDA_TEMPLATE_LANG).maybeSingle()
   return tpl?.status === "APPROVED" ? name : null
 }
-
-const WINDOW_MS = 24 * 3600_000
 
 interface ConfirmSendArgs {
   tenantId: string

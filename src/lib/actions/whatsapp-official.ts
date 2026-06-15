@@ -210,18 +210,14 @@ function validateTemplateInput(input: TemplateInput): { error: string } | { buil
 
   const vars = parseVars(body)
 
-  // O formato é a SELEÇÃO do usuário, enviada à Meta como `parameter_format` (o
-  // default da API é POSITIONAL). Fallback infere do conteúdo p/ chamadas legadas.
-  const parameterFormat: "NAMED" | "POSITIONAL" =
-    vars.length === 0 ? "POSITIONAL"
-    : input.parameterFormat ?? (vars.some((v) => v.named) ? "NAMED" : "POSITIONAL")
-
-  // Conteúdo precisa bater com o formato — a Meta rejeita divergência ("Invalid parameter").
-  // Não misturar nomeada ({{nome}}) com numerada ({{1}}) no mesmo template.
-  if (parameterFormat === "NAMED" && vars.some((v) => !v.named))
-    return { error: "Não misture variáveis: troque as numeradas ({{1}}) por nomeadas (ex: {{nome}})." }
-  if (parameterFormat === "POSITIONAL" && vars.some((v) => v.named))
-    return { error: "Não misture variáveis: use só nomeadas (ex: {{nome}}) ou só numeradas ({{1}}, {{2}}…)." }
+  // Formato DERIVADO do conteúdo (não da flag do cliente) — assim o que vai pra Meta
+  // sempre bate com o texto e uma flag errada nunca dá falso "mistura". O toggle do
+  // editor é só UX (decide os botões de inserir). Erro só em mistura REAL.
+  const hasNamed      = vars.some((v) => v.named)
+  const hasPositional = vars.some((v) => !v.named)
+  if (hasNamed && hasPositional)
+    return { error: "Não misture variáveis nomeadas ({{nome}}) com numeradas ({{1}}) no mesmo template." }
+  const parameterFormat: "NAMED" | "POSITIONAL" = hasNamed ? "NAMED" : "POSITIONAL"
 
   // Validação por tipo (nomeado: nomes válidos; posicional: sequência/posição).
   const varErr = parameterFormat === "NAMED" ? validateNamedVars(vars) : validateTemplateVars(body)

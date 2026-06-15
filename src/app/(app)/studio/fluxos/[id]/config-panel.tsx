@@ -498,25 +498,29 @@ function WaitConfig({ cfg, set }: { cfg: WaitNodeConfig; set: (patch: Record<str
 interface Route { id: string; label: string; description?: string }
 interface CollectField { key: string; description?: string }
 
-const AGENT_TOOLS: { id: string; label: string; hint: string }[] = [
-  { id: "tag", label: "Etiquetar o contato", hint: "aplica/remove etiquetas pra qualificar" },
-  { id: "move_stage", label: "Mover no pipeline", hint: "move a conversa de etapa" },
+// Cada toggle concede 1+ capabilities (agendar = consultar + marcar, andam juntas).
+const AGENT_TOOLS: { key: string; ids: string[]; label: string; hint: string }[] = [
+  { key: "tag",        ids: ["tag"],        label: "Etiquetar o contato", hint: "aplica/remove etiquetas pra qualificar" },
+  { key: "move_stage", ids: ["move_stage"], label: "Mover no pipeline",   hint: "move a conversa de etapa" },
+  { key: "agenda",     ids: ["check_availability", "schedule_appointment", "reschedule_appointment"], label: "Agendar e remarcar", hint: "consulta horários reais, marca e remarca na agenda" },
 ]
 function AgentToolsConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void }) {
   const tools = (cfg.tools as string[] | undefined) ?? []
-  const toggle = (id: string) => set({ tools: tools.includes(id) ? tools.filter((t) => t !== id) : [...tools, id] })
+  const isOn = (ids: string[]) => ids.every((id) => tools.includes(id))
+  const toggle = (ids: string[]) =>
+    set({ tools: isOn(ids) ? tools.filter((t) => !ids.includes(t)) : [...new Set([...tools, ...ids])] })
   return (
     <div>
-      <label className={LABEL}>A IA pode <span className="text-slate-400 font-normal">(qualificação)</span></label>
+      <label className={LABEL}>A IA pode <span className="text-slate-400 font-normal">(ações)</span></label>
       <div className="space-y-1.5">
         {AGENT_TOOLS.map((t) => (
-          <label key={t.id} className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={tools.includes(t.id)} onChange={() => toggle(t.id)} />
+          <label key={t.key} className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={isOn(t.ids)} onChange={() => toggle(t.ids)} />
             <span><b className="font-medium text-slate-700">{t.label}</b> <span className="text-slate-400">— {t.hint}</span></span>
           </label>
         ))}
       </div>
-      <p className="text-[11px] text-slate-400 mt-1">A IA usa só as etiquetas/etapas que já existem no sistema.</p>
+      <p className="text-[11px] text-slate-400 mt-1">A IA usa só as etiquetas/etapas/serviços que já existem no sistema.</p>
     </div>
   )
 }

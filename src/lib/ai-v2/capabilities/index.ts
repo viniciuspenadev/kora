@@ -14,6 +14,7 @@ import { httpRequestCapability } from "./http-request"
 import { tagCapability } from "./tag"
 import { moveStageCapability } from "./move-stage"
 import { assignCapability } from "./assign"
+import { checkAvailabilityCapability, scheduleAppointmentCapability, rescheduleAppointmentCapability } from "./agenda"
 
 let _registered = false
 
@@ -29,6 +30,9 @@ export function ensureCapabilitiesRegistered(): void {
     tagCapability,
     moveStageCapability,
     assignCapability,
+    checkAvailabilityCapability,
+    scheduleAppointmentCapability,
+    rescheduleAppointmentCapability,
   ])
   _registered = true
 }
@@ -41,5 +45,6 @@ export { HTTP_REQUEST } from "./http-request"
 export { TAG } from "./tag"
 export { MOVE_STAGE } from "./move-stage"
 export { ASSIGN } from "./assign"
+export { CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT } from "./agenda"
 export * from "./registry"
 export type { Capability, CapabilitySpec, ExecCtx, CapabilityResult, CapabilityCategory } from "./types"

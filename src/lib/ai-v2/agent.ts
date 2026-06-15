@@ -19,6 +19,7 @@ import { compileStudioPrompt, type PersonaInput } from "./prompt"
 import {
   ensureCapabilitiesRegistered, getCapability, toolsForAgent,
   SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE, TAG, MOVE_STAGE,
+  CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
   type ExecCtx,
 } from "./capabilities"
 
@@ -26,7 +27,7 @@ const MAX_STEPS    = 4
 const PLAN_LEVEL   = 99   // agente core usa só caps nível 0; gating real vem no flow (Fatia 4+)
 const GRANTED_TOOLS = [SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE]
 // Ferramentas extra que um nó de IA PODE liberar (least-privilege: só estas).
-const GRANTABLE_EXTRA = new Set([TAG, MOVE_STAGE])
+const GRANTABLE_EXTRA = new Set([TAG, MOVE_STAGE, CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT])
 
 const FINISH_STEP = "finish_step"
 
@@ -120,6 +121,8 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     flowControl: flowControl ?? null,
     availableTags:   extras.includes(TAG) ? ctx.tags : undefined,
     availableStages: extras.includes(MOVE_STAGE) ? ctx.stages : undefined,
+    availableServices:  extras.some((id) => id === CHECK_AVAILABILITY || id === SCHEDULE_APPOINTMENT || id === RESCHEDULE_APPOINTMENT) ? ctx.services : undefined,
+    availableResources: extras.some((id) => id === CHECK_AVAILABILITY || id === SCHEDULE_APPOINTMENT || id === RESCHEDULE_APPOINTMENT) ? ctx.resources : undefined,
   })
 
   const messages: Msg[] = [{ role: "system", content: systemPrompt }]

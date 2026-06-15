@@ -51,7 +51,7 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   const [headerText, setHeaderText] = useState(initial?.headerText ?? "")
   const [headerExample, setHeaderExample] = useState(initial?.headerExample ?? "")
   const [body, setBody]           = useState(initial?.body ?? "")
-  const [varMode]                 = useState<"number" | "name">(initial?.varMode ?? "name")
+  const [varMode, setVarMode]     = useState<"number" | "name">(initial?.varMode ?? "name")
   const bodyRef                   = useRef<HTMLTextAreaElement>(null)
   const [addingVar, setAddingVar] = useState(false)
   const [customVar, setCustomVar] = useState("")
@@ -64,8 +64,11 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   const bodyVars     = parseVars(body)
   const headerVars   = parseVars(headerText)
   const headerHasVar = headerVars.length > 0
-  // Só nomeadas: qualquer {{1}} posicional no texto vira divergência (guia o usuário).
-  const modeMismatch = varMode === "name" && (bodyVars.some((v) => !v.named) || headerVars.some((v) => !v.named))
+  // Erro REAL = misturar nomeada ({{nome}}) com numerada ({{1}}) no mesmo template
+  // (regra da Meta). O FORMATO o servidor deriva do conteúdo — o toggle é só UX.
+  const hasNamed      = bodyVars.some((v) => v.named) || headerVars.some((v) => v.named)
+  const hasPositional = bodyVars.some((v) => !v.named) || headerVars.some((v) => !v.named)
+  const mixedVars     = hasNamed && hasPositional
 
   // Insere {{token}} na posição do cursor (nunca digitar chaves).
   function insertVar(token: string) {
@@ -87,14 +90,16 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
     if (raw) insertVar(raw)
     setAddingVar(false); setCustomVar("")
   }
+  // Modo Número: insere o próximo {{N}} posicional no cursor.
+  function insertNumberedVar() { insertVar(String(bodyVars.filter((v) => !v.named).length + 1)) }
   function addButton(type: BtnType) { if (buttons.length < 10) setButtons((b) => [...b, { type, text: "" }]) }
   function patchButton(i: number, patch: Partial<TemplateButton>) { setButtons((b) => b.map((x, j) => (j === i ? { ...x, ...patch } : x))) }
   function removeButton(i: number) { setButtons((b) => b.filter((_, j) => j !== i)) }
 
   function submit() {
     setErr(null)
-    if (modeMismatch) {
-      setErr("Use variáveis nomeadas (ex: {{nome}}) — evite {{1}}, {{2}}.")
+    if (mixedVars) {
+      setErr("Não misture variáveis nomeadas ({{nome}}) com numeradas ({{1}}) no mesmo template.")
       return
     }
     startT(async () => {
@@ -178,33 +183,47 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
 
             <Section title="Corpo" required>
               <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
-                <span className="text-[11px] text-slate-500">Toque pra inserir uma variável no texto:</span>
-                <span className="text-[11px] text-slate-400">{body.length}/1024</span>
+                <div className="inline-flex items-center gap-1.5">
+                  <span className="text-[11px] text-slate-500">Variáveis:</span>
+                  <select value={varMode} onChange={(e) => setVarMode(e.target.value as "number" | "name")}
+                    className="h-7 pl-2 pr-7 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40">
+                    <option value="name">{"Nome — {{nome}}"}</option>
+                    <option value="number">{"Número — {{1}}, {{2}}"}</option>
+                  </select>
+                </div>
+                <div className="inline-flex items-center gap-2">
+                  <span className="text-[11px] text-slate-400">{body.length}/1024</span>
+                  {varMode === "number" && (
+                    <button type="button" onClick={insertNumberedVar} className="text-[11px] font-semibold text-primary-700 hover:text-primary-800">+ inserir variável</button>
+                  )}
+                </div>
               </div>
-              {/* Chips de variável — inserem {{nome}} no cursor (nunca digitar chaves) */}
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {COMMON_VARS.map((v) => (
-                  <button key={v.token} type="button" onClick={() => insertVar(v.token)} title={`{{${v.token}}}`}
-                    className="h-7 px-2.5 text-[11px] font-medium rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50/50 inline-flex items-center gap-1 transition-colors">
-                    <Plus className="size-2.5" />{v.label}
-                  </button>
-                ))}
-                {addingVar ? (
-                  <span className="inline-flex items-center gap-1">
-                    <input autoFocus value={customVar} onChange={(e) => setCustomVar(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitCustomVar() } if (e.key === "Escape") setAddingVar(false) }}
-                      placeholder="minha_variavel" className="h-7 w-36 px-2 text-[11px] rounded-lg border border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary/20" />
-                    <button type="button" onClick={commitCustomVar} className="h-7 px-2 text-[11px] font-semibold rounded-lg bg-primary text-white">ok</button>
-                  </span>
-                ) : (
-                  <button type="button" onClick={() => { setAddingVar(true); setCustomVar("") }}
-                    className="h-7 px-2.5 text-[11px] font-medium rounded-lg border border-dashed border-slate-300 text-slate-500 hover:border-primary-300 hover:text-primary-700 inline-flex items-center gap-1 transition-colors">
-                    <Plus className="size-2.5" /> outra…
-                  </button>
-                )}
-              </div>
+              {/* Modo Nome: chips que inserem {{nome}} no cursor (nunca digitar chaves) */}
+              {varMode === "name" && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {COMMON_VARS.map((v) => (
+                    <button key={v.token} type="button" onClick={() => insertVar(v.token)} title={`{{${v.token}}}`}
+                      className="h-7 px-2.5 text-[11px] font-medium rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50/50 inline-flex items-center gap-1 transition-colors">
+                      <Plus className="size-2.5" />{v.label}
+                    </button>
+                  ))}
+                  {addingVar ? (
+                    <span className="inline-flex items-center gap-1">
+                      <input autoFocus value={customVar} onChange={(e) => setCustomVar(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitCustomVar() } if (e.key === "Escape") setAddingVar(false) }}
+                        placeholder="minha_variavel" className="h-7 w-36 px-2 text-[11px] rounded-lg border border-primary-300 focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                      <button type="button" onClick={commitCustomVar} className="h-7 px-2 text-[11px] font-semibold rounded-lg bg-primary text-white">ok</button>
+                    </span>
+                  ) : (
+                    <button type="button" onClick={() => { setAddingVar(true); setCustomVar("") }}
+                      className="h-7 px-2.5 text-[11px] font-medium rounded-lg border border-dashed border-slate-300 text-slate-500 hover:border-primary-300 hover:text-primary-700 inline-flex items-center gap-1 transition-colors">
+                      <Plus className="size-2.5" /> outra…
+                    </button>
+                  )}
+                </div>
+              )}
               <textarea ref={bodyRef} value={body} onChange={(e) => setBody(e.target.value.slice(0, 1024))} rows={4}
-                placeholder="Olá {{nome}}, seu horário é {{data}} às {{hora}}!"
+                placeholder={varMode === "name" ? "Olá {{nome}}, seu horário é {{data}} às {{hora}}!" : "Olá {{1}}, seu horário é {{2}} às {{3}}!"}
                 className="w-full px-3 py-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 resize-none" />
               {bodyVars.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
@@ -216,14 +235,14 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
                   ))}
                 </div>
               )}
-              {modeMismatch && (
+              {mixedVars && (
                 <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-                  ⚠️ Use variáveis nomeadas como {`{{nome}}`} — evite {`{{1}}`}, {`{{2}}`} (troque no texto).
+                  ⚠️ Não misture {`{{nome}}`} com {`{{1}}`} no mesmo template — escolha um tipo só.
                 </p>
               )}
               <Hint>
-                Variáveis nomeadas se auto-documentam (ex: nome, valor). Use *negrito*, _itálico_, ~tachado~.
-                Não comece/termine com variável, nem use duas seguidas.
+                {varMode === "name" ? "Variáveis nomeadas se auto-documentam (ex: nome, valor). " : "Variáveis numeradas: {{1}}, {{2}}… na ordem em que aparecem. "}
+                Use *negrito*, _itálico_, ~tachado~. Não comece/termine com variável, nem use duas seguidas.
               </Hint>
             </Section>
 
@@ -284,7 +303,7 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
       {err && <div className="mt-4 flex items-start gap-2 p-2.5 rounded-lg text-xs bg-red-50 border border-red-200 text-red-800"><AlertCircle className="size-4 shrink-0 mt-0.5" /><span>{err}</span></div>}
       <div className="sticky bottom-0 z-10 mt-4 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/90 supports-backdrop-filter:backdrop-blur px-1 py-3">
         <button onClick={onClose} className="h-9 px-3 text-xs font-medium rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">{isEdit ? "Cancelar" : "Descartar"}</button>
-        <button onClick={submit} disabled={pending || !name.trim() || !body.trim() || modeMismatch}
+        <button onClick={submit} disabled={pending || !name.trim() || !body.trim() || mixedVars}
           className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 disabled:opacity-50 transition-colors">
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : isEdit ? <Save className="size-3.5" /> : <Plus className="size-3.5" />}
           {isEdit ? "Salvar alterações" : "Enviar para análise"}

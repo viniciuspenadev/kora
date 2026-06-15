@@ -6,9 +6,9 @@ import { getViewerScope, canViewConversation, type ViewerScope } from "@/lib/vis
 import { requireModule, hasModule } from "@/lib/modules"
 import { createNotification } from "@/lib/notifications"
 import { logAudit } from "@/lib/audit"
-import { runAppointmentEvent } from "@/lib/agenda/reminders"
-import { ensureAgendaConfirmTemplate } from "@/lib/agenda/official-template"
-import { getAvailability, type WorkingHoursDay, type Slot } from "@/lib/agenda/availability"
+import { ensureAgendaConfirmTemplate, agendaConfirmStatus, type AgendaTemplateStatus } from "@/lib/agenda/official-template"
+import type { WorkingHoursDay } from "@/lib/agenda/availability"
+import { availabilitySlots, bookAppointment } from "@/lib/agenda/booking"
 import { after } from "next/server"
 
 // ═══════════════════════════════════════════════════════════════
@@ -27,7 +27,6 @@ import { after } from "next/server"
 // compromisso) e delegação de agenda (níveis livre/ocupado · detalhes · gerenciar)
 // entram nas fases seguintes plugando aqui.
 
-const ACTIVE_STATUSES = ["scheduled", "confirmed", "done"] as const
 const ROUTE = "/agenda"
 
 export interface ResourceRow {
@@ -171,6 +170,18 @@ export async function setAgendaRemindersEnabled(enabled: boolean): Promise<{ err
   if (enabled) after(() => ensureAgendaConfirmTemplate(s.tenantId))
   revalidatePath(ROUTE)
   return {}
+}
+
+/**
+ * "Ativar modelo" do picker de lembrete (canal oficial): cria o template de
+ * confirmação na WABA do tenant (idempotente) e devolve o status atual. A
+ * aprovação é assíncrona na Meta — o cliente acompanha o status no picker.
+ */
+export async function activateAgendaConfirmTemplate(): Promise<{ status: AgendaTemplateStatus; error?: string }> {
+  const s = await adminScope()
+  await requireModule("agenda_reminders")
+  await ensureAgendaConfirmTemplate(s.tenantId)
+  return { status: await agendaConfirmStatus(s.tenantId) }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -331,46 +342,9 @@ export async function getAvailableSlots(input: {
   resourceId: string; serviceId?: string; rangeStart: string; rangeEnd: string; partySize?: number
 }): Promise<{ error?: string; slots?: { start: string; end: string }[] }> {
   const s = await agendaScope()
-  const { data: resource } = await supabaseAdmin.from("tenant_resources")
-    .select("*").eq("tenant_id", s.tenantId).eq("id", input.resourceId).maybeSingle()
-  if (!resource) return { error: "Recurso não encontrado" }
-
-  let durationMinutes = resource.slot_minutes
-  let bufferBefore = 0, bufferAfter = 0
-  if (input.serviceId) {
-    const { data: svc } = await supabaseAdmin.from("tenant_services")
-      .select("duration_minutes, buffer_before_minutes, buffer_after_minutes")
-      .eq("tenant_id", s.tenantId).eq("id", input.serviceId).maybeSingle()
-    if (svc) { durationMinutes = svc.duration_minutes; bufferBefore = svc.buffer_before_minutes; bufferAfter = svc.buffer_after_minutes }
-  }
-
-  const { busy, blackouts } = await loadResourceState(s.tenantId, input.resourceId, input.rangeStart, input.rangeEnd)
-  const slots: Slot[] = getAvailability({
-    resource: resource as never,
-    durationMinutes, bufferBeforeMinutes: bufferBefore, bufferAfterMinutes: bufferAfter,
-    busy, blackouts,
-    rangeStart: new Date(input.rangeStart), rangeEnd: new Date(input.rangeEnd),
-    partySize: input.partySize ?? 1,
-  })
-  return { slots: slots.map((sl) => ({ start: sl.start.toISOString(), end: sl.end.toISOString() })) }
-}
-
-/** Carrega reservas ativas + bloqueios de um recurso num intervalo (pro motor). */
-async function loadResourceState(tenantId: string, resourceId: string, rangeStart: string, rangeEnd: string) {
-  const [appts, blocks] = await Promise.all([
-    supabaseAdmin.from("appointments")
-      .select("starts_at, ends_at")
-      .eq("tenant_id", tenantId).eq("resource_id", resourceId)
-      .in("status", ACTIVE_STATUSES as unknown as string[])
-      .lt("starts_at", rangeEnd).gt("ends_at", rangeStart),
-    supabaseAdmin.from("tenant_blackouts")
-      .select("starts_at, ends_at")
-      .eq("tenant_id", tenantId)
-      .or(`resource_id.eq.${resourceId},resource_id.is.null`)
-      .lt("starts_at", rangeEnd).gt("ends_at", rangeStart),
-  ])
-  const toInt = (r: { starts_at: string; ends_at: string }) => ({ start: new Date(r.starts_at), end: new Date(r.ends_at) })
-  return { busy: (appts.data ?? []).map(toInt), blackouts: (blocks.data ?? []).map(toInt) }
+  // Núcleo server-less (compartilhado com as capabilities do Studio — F2).
+  const slots = await availabilitySlots(s.tenantId, input)
+  return { slots }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -432,99 +406,11 @@ export async function createAppointment(input: {
   notifyCustomer?: boolean
 }): Promise<{ error?: string; id?: string }> {
   const s = await agendaScope()
-
-  // Anti-IDOR: recurso, contato e conversa precisam ser DO tenant. Sem isso,
-  // um membro poderia linkar um contact_id/conversation_id de OUTRO tenant
-  // (FK é global) e depois ler o nome/telefone via o embed de listAppointments.
-  const { data: resource } = await supabaseAdmin.from("tenant_resources")
-    .select("id, capacity").eq("tenant_id", s.tenantId).eq("id", input.resourceId).maybeSingle()
-  if (!resource) return { error: "Recurso não encontrado" }
-
-  const { data: contact } = await supabaseAdmin.from("chat_contacts")
-    .select("id").eq("tenant_id", s.tenantId).eq("id", input.contactId).maybeSingle()
-  if (!contact) return { error: "Contato não encontrado" }
-
-  let conversationId = input.conversationId ?? null
-  if (conversationId) {
-    const { data: conv } = await supabaseAdmin.from("chat_conversations")
-      .select("id").eq("tenant_id", s.tenantId).eq("id", conversationId).maybeSingle()
-    if (!conv) return { error: "Conversa inválida" }
-  } else {
-    // Liga ao chat mais recente do contato (se houver) → o aviso "ao agendar"
-    // tem por onde sair e o agendamento aparece no contexto da conversa.
-    const { data: last } = await supabaseAdmin.from("chat_conversations")
-      .select("id").eq("tenant_id", s.tenantId).eq("contact_id", input.contactId)
-      .order("last_message_at", { ascending: false }).limit(1).maybeSingle()
-    conversationId = last?.id ?? null
-  }
-
-  let duration = input.durationMinutes ?? 30
-  let agentId: string | null = null
-  if (input.serviceId) {
-    const { data: svc } = await supabaseAdmin.from("tenant_services")
-      .select("duration_minutes").eq("tenant_id", s.tenantId).eq("id", input.serviceId).maybeSingle()
-    if (!svc) return { error: "Serviço não encontrado" }
-    duration = svc.duration_minutes
-  }
-  const startsAt = new Date(input.startsAt)
-  if (isNaN(startsAt.getTime())) return { error: "Data/hora inválida" }
-  const endsAt = new Date(startsAt.getTime() + duration * 60_000)
-  const partySize = Math.max(1, input.partySize ?? 1)
-
-  // Bloqueios sempre barram.
-  const { count: blocked } = await supabaseAdmin.from("tenant_blackouts")
-    .select("id", { count: "exact", head: true })
-    .eq("tenant_id", s.tenantId)
-    .or(`resource_id.eq.${input.resourceId},resource_id.is.null`)
-    .lt("starts_at", endsAt.toISOString()).gt("ends_at", startsAt.toISOString())
-  if (blocked && blocked > 0) return { error: "Esse horário está bloqueado (folga/feriado)" }
-
-  // Capacidade N: contagem (capacidade 1 fica a cargo do EXCLUDE).
-  if (resource.capacity > 1) {
-    const { count: taken } = await supabaseAdmin.from("appointments")
-      .select("id", { count: "exact", head: true })
-      .eq("tenant_id", s.tenantId).eq("resource_id", input.resourceId)
-      .in("status", ACTIVE_STATUSES as unknown as string[])
-      .lt("starts_at", endsAt.toISOString()).gt("ends_at", startsAt.toISOString())
-    if ((taken ?? 0) + partySize > resource.capacity) return { error: "Esse horário está lotado" }
-  }
-
-  const { data, error } = await supabaseAdmin.from("appointments").insert({
-    tenant_id: s.tenantId, contact_id: input.contactId, conversation_id: conversationId,
-    resource_id: input.resourceId, service_id: input.serviceId ?? null,
-    starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString(),
-    status: "scheduled", source: input.source ?? "manual",
-    blocks_overlap: resource.capacity === 1,
-    notify_customer: input.notifyCustomer ?? true,
-    notes: input.notes?.trim() || null, created_by: s.userId,
-  }).select("id, resource_id").single()
-
-  if (error) {
-    // 23P01 = exclusion_violation (EXCLUDE de sobreposição pra capacidade 1).
-    if (error.code === "23P01" || /exclusion|overlap/i.test(error.message)) {
-      return { error: "Esse horário acabou de ser preenchido" }
-    }
-    return { error: error.message }
-  }
-
-  // Plano do atendente: notifica o dono do recurso (se houver e não for quem agendou).
-  const { data: res2 } = await supabaseAdmin.from("tenant_resources")
-    .select("assigned_agent_id, name").eq("id", input.resourceId).maybeSingle()
-  agentId = res2?.assigned_agent_id ?? null
-  if (agentId && agentId !== s.userId) {
-    await createNotification({
-      tenantId: s.tenantId, recipientId: agentId, type: "appt_created",
-      title: "Novo agendamento", body: `${res2?.name ?? "Recurso"} · ${startsAt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`,
-      payload: { appointment_id: data.id, conversation_id: conversationId },
-    })
-  }
-
-  // Evento `created` → consumidor built-in (avisa o cliente "ao agendar", §6.7-A).
-  // Best-effort + gated por allowlist: não envia nada a cliente real sem AGENDA_REMINDER_ALLOWLIST.
-  await runAppointmentEvent(data.id, "created")
-
+  // Delega ao núcleo server-less (DRY — mesmo motor que a capability do Studio usa).
+  const r = await bookAppointment(s.tenantId, { ...input, createdBy: s.userId })
+  if (r.error) return { error: r.error }
   revalidatePath(ROUTE)
-  return { id: data.id }
+  return { id: r.id }
 }
 
 export async function rescheduleAppointment(id: string, newStartsAt: string): Promise<{ error?: string }> {
