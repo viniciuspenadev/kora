@@ -33,6 +33,13 @@ export const moveStageCapability = defineCapability<MoveStageArgs>({
       },
     },
   },
+  playbook: (ctx) => {
+    const stages = (ctx.stages ?? []).map((s) => s.name)
+    const base = "QUALIFICAR (pipeline): mova a conversa para a etapa certa do funil com move_stage conforme o avanço do lead."
+    return stages.length > 0
+      ? `${base} Use SOMENTE estas etapas (nome exato): ${stages.join(", ")}.`
+      : `${base}`
+  },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     return { stage: typeof p.stage === "string" ? p.stage.trim() : "" }

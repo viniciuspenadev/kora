@@ -34,6 +34,9 @@ export const searchKnowledgeCapability = defineCapability<{ query: string }>({
       },
     },
   },
+  playbook: () =>
+    "BASE DE CONHECIMENTO: para qualquer informação factual do negócio (preço, produto, política, horário, prazo), " +
+    "consulte com search_knowledge ANTES de responder. Nunca invente — se a base não tiver, diga que vai confirmar ou encaminhe a um humano.",
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     return { query: typeof p.query === "string" ? p.query : "" }

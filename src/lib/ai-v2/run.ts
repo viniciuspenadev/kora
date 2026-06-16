@@ -125,6 +125,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     departments, tags, stages, services, resources,
     channel: convData.channel,
     conversationMetadata: convMeta,
+    history, model: config.ai_model,
     dryRun:   opts?.dryRun,
     captured: opts?.dryRun ? [] : undefined,
   }
@@ -318,7 +319,7 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
     name: config.ai_name, tone: config.ai_tone, language: config.ai_language,
     identityText: config.identity_text, communicationStyle: config.communication_style_text, antiPatterns: config.anti_patterns_text,
   }
-  const ctx: ExecCtx = { tenantId, conversationId, contact, instance, departments, tags, stages, services, resources, channel: convData.channel, conversationMetadata: convMeta }
+  const ctx: ExecCtx = { tenantId, conversationId, contact, instance, departments, tags, stages, services, resources, channel: convData.channel, conversationMetadata: convMeta, history, model: config.ai_model }
   const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText: "" }
 
   // Acorda: status active + limpa resume_at; runFlow continua do nó já pré-avançado.

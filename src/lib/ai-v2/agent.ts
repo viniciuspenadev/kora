@@ -17,7 +17,7 @@ import { runChat } from "@/lib/ai/openai"
 import { sendBotText } from "./outbound"
 import { compileStudioPrompt, type PersonaInput } from "./prompt"
 import {
-  ensureCapabilitiesRegistered, getCapability, toolsForAgent,
+  ensureCapabilitiesRegistered, getCapability, toolsForAgent, assemblePlaybooks,
   SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE, TAG, MOVE_STAGE,
   CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
   type ExecCtx, type AgendaBinding,
@@ -116,17 +116,24 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   const extras = (extraTools ?? []).filter((id) => GRANTABLE_EXTRA.has(id))
   const granted = [...core, ...extras]
 
+  // Studio Engine §Pilar 1 — o prompt = persona/intenção (cliente) + os PLAYBOOKS
+  // das capacidades CONCEDIDAS (craft do sistema). assemblePlaybooks só monta o
+  // playbook das caps em `granted` → tag/move_stage/agenda só entram quando ligadas.
+  const contactName = ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || "o cliente"
+  const playbooks = assemblePlaybooks(granted, {
+    contactName,
+    departments: ctx.departments,
+    tags:        ctx.tags,
+    stages:      ctx.stages,
+    services:    ctx.services,
+    resources:   ctx.resources,
+  })
   const systemPrompt = compileStudioPrompt({
     persona,
-    departments: ctx.departments,
-    contactName: ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || "o cliente",
     instruction,
     variables,
     flowControl: flowControl ?? null,
-    availableTags:   extras.includes(TAG) ? ctx.tags : undefined,
-    availableStages: extras.includes(MOVE_STAGE) ? ctx.stages : undefined,
-    availableServices:  extras.some((id) => id === CHECK_AVAILABILITY || id === SCHEDULE_APPOINTMENT || id === RESCHEDULE_APPOINTMENT) ? ctx.services : undefined,
-    availableResources: extras.some((id) => id === CHECK_AVAILABILITY || id === SCHEDULE_APPOINTMENT || id === RESCHEDULE_APPOINTMENT) ? ctx.resources : undefined,
+    playbooks,
   })
 
   const messages: Msg[] = [{ role: "system", content: systemPrompt }]

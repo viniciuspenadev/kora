@@ -32,23 +32,6 @@ import type {
 /** Stash do nó schedule entre a oferta e o pick (mapeia "opção N" → ISO exato). */
 interface ScheduleStash { slots: string[]; serviceId: string | null; pool: string[] }
 
-// Chaves de IDENTIDADE — já vão pras COLUNAS reais via update_contact; o dossiê
-// não as repete (fica só o contexto de negócio do `collect`). docs: dois destinos.
-const DOSSIER_IDENTITY = new Set([
-  "nome", "name", "email", "e-mail", "telefone", "phone", "celular", "whatsapp",
-  "cpf", "cnpj", "documento", "document", "doc", "empresa", "company",
-  "nascimento", "birthdate", "data_nascimento", "aniversario",
-])
-
-/** Monta o dossiê de NEGÓCIO (finish_step.fields, guiado pelo `collect` do cliente)
- *  como pares label/value — vai pro card "Dossiê da IA" (metadata.collected) na
- *  transferência. Exclui identidade (já vai pras colunas via update_contact). */
-function buildDossier(fields: Record<string, unknown>): { label: string; value: string }[] {
-  return Object.entries(fields)
-    .filter(([k, v]) => !DOSSIER_IDENTITY.has(k.trim().toLowerCase()) && v != null && String(v).trim() !== "")
-    .map(([k, v]) => ({ label: k, value: typeof v === "string" ? v : JSON.stringify(v) }))
-}
-
 function validateInput(v: string, type: string): boolean {
   const s = v.trim()
   switch (type) {
@@ -464,6 +447,13 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "ai_agent": {
         const cfg = node.config as unknown as AiAgentNodeConfig
+        // Guarda os campos do `collect` (do nó) pra GUIAR a extração do dossiê no
+        // handoff (§Pilar 2): o que o cliente declarou aqui é GARANTIDO no dossiê.
+        if (cfg.collect?.length) {
+          variables["__collect"] = cfg.collect
+            .map((c) => (c.key?.trim() ? (c.description?.trim() ? `${c.key.trim()} (${c.description.trim()})` : c.key.trim()) : ""))
+            .filter(Boolean)
+        }
         // ai_agent SEMPRE pode devolver o controle (finish_step). Sem outcomes,
         // a saída é única (aresta default).
         const turn = await runAgentTurn({
@@ -485,11 +475,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           return { status: "error", departmentId: null, error: turn.error, agent: turn }
         }
         if (turn.status === "step_done") {
-          if (turn.fields) {
-            for (const [k, v] of Object.entries(turn.fields)) variables[k] = v
-            const dossier = buildDossier(turn.fields)   // → card "Dossiê da IA" na transferência
-            if (dossier.length > 0) variables["__dossier"] = dossier
-          }
+          if (turn.fields) for (const [k, v] of Object.entries(turn.fields)) variables[k] = v
           currentId = edgeTarget(graph, node.id, turn.outcome ?? undefined)
           break   // continua avançando o grafo NESTE turno
         }
@@ -540,14 +526,15 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       case "transfer": {
         const cfg = node.config as unknown as TransferNodeConfig
         const cap = getCapability(TRANSFER)
-        // Dossiê coletado pela IA (finish_step) → vai no card "Dossiê da IA"; summary do autor interpola {{vars}}.
-        const collected = Array.isArray(variables["__dossier"]) ? variables["__dossier"] : []
-        const summary   = interpolate((cfg.summary ?? "").trim(), variables)
+        // O dossiê é EXTRAÍDO dentro da capability (§Pilar 2, captura confiável —
+        // cobre nó E tool). Aqui só passamos o summary do autor (interpola {{vars}}).
+        const summary = interpolate((cfg.summary ?? "").trim(), variables)
         const r = await cap?.run(ctx, {
           department:      cfg.department,
           summary:         summary || undefined,
-          collected,
           handoff_message: cfg.handoff ?? null,
+          // Campos do `collect` (definidos PELO CLIENTE no nó de IA) guiam a extração.
+          collect_hint:    Array.isArray(variables["__collect"]) ? variables["__collect"] : [],
         })
         await finishRun(run.id)
         if (r?.routedDepartmentId) return { status: "routed", departmentId: r.routedDepartmentId, error: null, agent: lastAgent }

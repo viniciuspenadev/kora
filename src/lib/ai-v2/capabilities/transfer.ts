@@ -9,6 +9,7 @@
 import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
 import { sendBotText } from "../outbound"
+import { extractDossier } from "../flow/dossier"
 
 export const TRANSFER = "transfer"
 
@@ -18,6 +19,8 @@ interface TransferArgs {
   handoffMessage:   string | null
   /** Dossiê coletado (pares label/value) — renderiza no card "Dossiê da IA". */
   collected:        { label: string; value: string }[]
+  /** Campos-alvo (do `collect` do nó) — guiam a extração do dossiê. */
+  collectHint:      string[]
 }
 
 export const transferCapability = defineCapability<TransferArgs>({
@@ -45,6 +48,12 @@ export const transferCapability = defineCapability<TransferArgs>({
       },
     },
   },
+  playbook: (ctx) => {
+    const depts = (ctx.departments ?? []).map((d) => d.name)
+    if (depts.length === 0) return "TRANSFERIR: nenhum departamento configurado — não use transfer."
+    return "TRANSFERIR: quando o cliente quiser falar com uma pessoa OU a intenção estiver clara, encaminhe com transfer " +
+      `(não fique só prometendo). Resuma o que entendeu no campo summary. Departamentos (use o nome EXATO): ${depts.join(", ")}.`
+  },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     const collected = Array.isArray(p.collected)
@@ -54,11 +63,15 @@ export const transferCapability = defineCapability<TransferArgs>({
             ? [{ label: o.label, value: String(o.value) }] : []
         })
       : []
+    const collectHint = Array.isArray(p.collect_hint)
+      ? (p.collect_hint as unknown[]).filter((x): x is string => typeof x === "string")
+      : []
     return {
       department:     typeof p.department === "string" ? p.department : "",
       summary:        typeof p.summary === "string" ? p.summary : "",
       handoffMessage: typeof p.handoff_message === "string" && p.handoff_message.trim() ? p.handoff_message.trim() : null,
       collected,
+      collectHint,
     }
   },
   execute: async (ctx, args) => {
@@ -73,10 +86,17 @@ export const transferCapability = defineCapability<TransferArgs>({
       return { ok: false, toolMessage: `Departamento "${args.department}" não existe. Opções válidas: ${opts}.` }
     }
 
+    // Captura confiável (§Pilar 2): o dossiê não depende do finish_step da IA. Se o
+    // chamador não trouxe `collected`, EXTRAI da conversa (passo determinístico do
+    // handoff, sempre roda). Cobre os DOIS caminhos: nó Transfer E tool da IA.
+    const collected = args.collected.length > 0
+      ? args.collected
+      : await extractDossier(ctx.model ?? "gpt-4.1", ctx.history ?? [], args.collectHint)
+
     // 1) Dossiê factual como NOTA INTERNA (equipe vê; cliente não). O card "Dossiê
     //    da IA" renderiza `summary` + `collected` (dados coletados pela IA).
-    const collectedLine = args.collected.length > 0
-      ? `\nColetado: ${args.collected.map((c) => `${c.label}: ${c.value}`).join(" · ")}` : ""
+    const collectedLine = collected.length > 0
+      ? `\nColetado: ${collected.map((c) => `${c.label}: ${c.value}`).join(" · ")}` : ""
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: conversationId,
       tenant_id:       tenantId,
@@ -85,7 +105,7 @@ export const transferCapability = defineCapability<TransferArgs>({
       content:         `🤖 Encaminhado pela IA → ${dept.name}${args.summary ? `\nResumo: ${args.summary}` : ""}${collectedLine}`,
       status:          "sent",
       is_private_note: true,
-      metadata: { ai_routed: true, studio: true, department_id: dept.id, department_name: dept.name, summary: args.summary, collected: args.collected },
+      metadata: { ai_routed: true, studio: true, department_id: dept.id, department_name: dept.name, summary: args.summary, collected },
     })
 
     // 2) Mensagem de transição pro cliente (se houver).

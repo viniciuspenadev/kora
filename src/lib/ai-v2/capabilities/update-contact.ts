@@ -56,6 +56,9 @@ export const updateContactCapability = defineCapability<UpdateArgs>({
       },
     },
   },
+  playbook: () =>
+    "DADOS DO CONTATO: assim que o cliente informar nome, telefone, e-mail, CPF/CNPJ, empresa ou nascimento, " +
+    "registre na hora com update_contact. Não pergunte de novo o que já está salvo.",
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)

@@ -23,6 +23,9 @@ export const sendMessageCapability = defineCapability<{ text: string }>({
       },
     },
   },
+  playbook: (ctx) =>
+    `CONVERSA: você fala com ${ctx.contactName?.trim() || "o cliente"} pela ferramenta send_message. ` +
+    "Seja conciso e natural, UMA pergunta/resposta por vez. Se faltar algo que você precisa descobrir, pergunte o que falta.",
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     return { text: typeof p.text === "string" ? p.text : "" }

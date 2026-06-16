@@ -8,7 +8,7 @@
 // vazio, validado por typecheck.
 
 import type {
-  Capability, CapabilitySpec, ExecCtx, CapabilityResult,
+  Capability, CapabilitySpec, ExecCtx, CapabilityResult, PlaybookCtx,
 } from "./types"
 import type OpenAI from "openai"
 
@@ -26,6 +26,7 @@ export function defineCapability<Args>(spec: CapabilitySpec<Args>): Capability {
     minPlanLevel: spec.minPlanLevel,
     isNode:       spec.isNode,
     toolSchema:   spec.toolSchema,
+    playbook:     spec.playbook,
     run: async (ctx: ExecCtx, rawArgs: unknown): Promise<CapabilityResult> => {
       // parseArgs nunca lança (padrão v1). execute é protegido aqui pra
       // garantir que nenhuma capacidade derrube o turno.
@@ -84,4 +85,22 @@ export function toolsForAgent(
     if (cap?.toolSchema && cap.minPlanLevel <= planLevel) tools.push(cap.toolSchema)
   }
   return tools
+}
+
+/**
+ * Studio Engine §Pilar 1 — monta a guidance ("COMO AGIR") das capacidades
+ * CONCEDIDAS ao nó: o craft mora na capability, não no prompt do cliente. Cada
+ * id concedido (na ordem) contribui seu `playbook(ctx)`; vazios/null são
+ * ignorados; dedupe por id (agenda tem 3 caps, 1 só carrega o playbook).
+ */
+export function assemblePlaybooks(grantedIds: string[], ctx: PlaybookCtx): string {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const id of grantedIds) {
+    if (seen.has(id)) continue
+    seen.add(id)
+    const text = REGISTRY.get(id)?.playbook?.(ctx)?.trim()
+    if (text) out.push(text)
+  }
+  return out.join("\n\n")
 }

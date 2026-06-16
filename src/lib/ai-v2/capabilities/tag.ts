@@ -35,6 +35,13 @@ export const tagCapability = defineCapability<TagArgs>({
       },
     },
   },
+  playbook: (ctx) => {
+    const tags = (ctx.tags ?? []).map((t) => t.name)
+    const base = "QUALIFICAR (etiquetas): conforme entender o perfil do cliente, aplique a etiqueta certa com a ferramenta tag."
+    return tags.length > 0
+      ? `${base} Use SOMENTE estas etiquetas (nome exato): ${tags.join(", ")}.`
+      : `${base}`
+  },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     return {

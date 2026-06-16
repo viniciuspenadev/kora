@@ -107,6 +107,32 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
       },
     },
   },
+  // Playbook da AGENDA (Studio Engine §Pilar 1) — o craft de agendamento mora aqui,
+  // não no prompt do cliente. Injeta data de hoje + serviços/agendas + as 8 regras.
+  playbook: (ctx) => {
+    const now = new Date()
+    const hoje    = now.toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" })
+    const hojeIso = now.toLocaleDateString("en-CA",  { timeZone: TZ })   // YYYY-MM-DD
+    const services  = (ctx.services ?? []).map((s) => s.name)
+    const resources = (ctx.resources ?? []).map((r) => r.name)
+    const L = [
+      `AGENDA — você PODE marcar horário. Hoje é ${hoje} (${hojeIso}); use isto pra resolver datas que o cliente citar ("sexta" = a próxima sexta-feira).`,
+    ]
+    if (services.length > 0)  L.push(`Serviços (use o nome exato): ${services.join(", ")}.`)
+    if (resources.length > 0) L.push(`Agendas/profissionais: ${resources.join(", ")}.`)
+    L.push(
+      "COMO AGENDAR — siga à risca:",
+      "1. NUNCA invente horário. Chame check_availability ANTES de oferecer e ofereça SOMENTE o que ela retornar. Pra marcar, passe em \"slot\" o CÓDIGO numérico entre [# ] daquele horário (ex: 1750359600000) — copie o número inteiro, NUNCA escreva a data/hora.",
+      "2. Recomende o horário mais próximo E pergunte se prefere outro dia/horário. Ex: \"Tenho terça às 09h — esse serve, ou prefere outro dia?\".",
+      "3. Se o cliente citar um dia/período, chame check_availability com from_date (YYYY-MM-DD) e/ou period (manha/tarde/noite). NUNCA diga que não tem sem consultar aquele dia.",
+      "4. Se não houver no dia/período pedido, diga e ofereça o mais próximo OU pergunte outro dia — nunca empurre só o mais cedo.",
+      "5. ANTES de marcar, confirme o horário exato (\"Fecho terça às 09h, ok?\") e só marque após o \"sim\".",
+      "6. Você NÃO tem lista de espera — não prometa \"te aviso quando abrir\". Se nada servir, transfira pro time.",
+      "7. Reaproveite os horários que já consultou neste papo; só chame check_availability de novo se o cliente mudar o dia/período.",
+      "8. Pegue o NOME da pessoa (update_contact) antes de marcar, pra a confirmação sair personalizada.",
+    )
+    return L.join("\n")
+  },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     const period = typeof p.period === "string" ? p.period.trim().toLowerCase() : ""

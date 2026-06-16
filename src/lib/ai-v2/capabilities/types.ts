@@ -64,6 +64,9 @@ export interface ExecCtx {
   agendaBinding?:       AgendaBinding | null
   /** metadata atual da conversa (pra preservar no update de roteamento). */
   conversationMetadata: Record<string, unknown>
+  /** Histórico da conversa + modelo — usados na extração do dossiê no handoff. */
+  history?:             { role: "user" | "assistant"; content: string }[]
+  model?:               string
   /** Modo SIMULADOR: não transmite ao WhatsApp; ainda persiste (sandbox). */
   dryRun?:              boolean
   /** Saídas capturadas no dry-run (pra UI do simulador exibir). */
@@ -90,6 +93,26 @@ export interface CapabilityResult {
   error?:              string | null
 }
 
+/**
+ * Contexto entregue ao `playbook` de uma capacidade pra montar a guidance
+ * (os dados REAIS do tenant — a IA usa só o que existe). Studio Engine §Pilar 1.
+ */
+export interface PlaybookCtx {
+  contactName?: string
+  departments?: { id: string; name: string }[]
+  tags?:        { id: string; name: string }[]
+  stages?:      { id: string; name: string }[]
+  services?:    { id: string; name: string }[]
+  resources?:   { id: string; name: string }[]
+}
+
+/**
+ * Playbook = o "COMO AGIR" daquela capacidade, injetado no prompt quando ela é
+ * CONCEDIDA ao nó. O craft mora aqui (no sistema), não no prompt do cliente.
+ * Recebe os dados reais (PlaybookCtx); devolve a guidance ou null (sem guidance).
+ */
+export type Playbook = (ctx: PlaybookCtx) => string | null
+
 /** Capacidade "apagada" (generic erased) — a forma guardada no registro. */
 export interface Capability {
   id:           string
@@ -98,6 +121,7 @@ export interface Capability {
   minPlanLevel: number
   isNode:       boolean
   toolSchema?:  OpenAI.Chat.Completions.ChatCompletionTool
+  playbook?:    Playbook
   run:          (ctx: ExecCtx, rawArgs: unknown) => Promise<CapabilityResult>
 }
 
@@ -109,6 +133,7 @@ export interface CapabilitySpec<Args> {
   minPlanLevel: number
   isNode:       boolean
   toolSchema?:  OpenAI.Chat.Completions.ChatCompletionTool
+  playbook?:    Playbook
   parseArgs:    (raw: unknown) => Args
   execute:      (ctx: ExecCtx, args: Args) => Promise<CapabilityResult>
 }

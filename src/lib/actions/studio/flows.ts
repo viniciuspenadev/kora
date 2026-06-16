@@ -69,6 +69,35 @@ export async function createFlow(name: string): Promise<{ id?: string; error?: s
   return { id: data?.id }
 }
 
+/**
+ * Copilot (Engine §Pilar 3): gera um fluxo a partir de uma descrição em linguagem
+ * natural → cria como RASCUNHO pro cliente revisar (nunca auto-publica).
+ */
+export async function createFlowWithAI(description: string): Promise<{ id?: string; error?: string }> {
+  const session = await requireAdmin()
+  const { generateFlow } = await import("@/lib/ai-v2/copilot")
+  const gen = await generateFlow(session.user.tenantId, description)
+  if (gen.error || !gen.flow) return { error: gen.error ?? "Falha ao gerar o fluxo." }
+
+  const { data, error } = await supabaseAdmin
+    .from("studio_flows")
+    .insert({
+      tenant_id: session.user.tenantId,
+      name:      gen.flow.name,
+      status:    "draft",
+      version:   1,
+      active:    false,
+      trigger:   gen.flow.trigger,
+      graph:     gen.flow.graph,
+    })
+    .select("id")
+    .maybeSingle()
+
+  if (error) return { error: error.message }
+  revalidatePath("/studio/fluxos")
+  return { id: data?.id }
+}
+
 export async function saveFlow(
   id: string,
   patch: { name: string; trigger: FlowTrigger; graph: FlowGraph },
