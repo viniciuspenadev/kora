@@ -19,7 +19,15 @@ function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boole
   }
 }
 
-/** Primeiro fluxo publicado+ativo cujo trigger casa. Null = nenhum (→ agente). */
+// Especificidade do gatilho — o MAIS específico vence quando vários casam. O
+// `any_message` (catch-all) é o ÚLTIMO recurso, não compete de igual com keyword.
+const TRIGGER_RANK: Record<string, number> = { keyword: 3, new_contact: 2, any_message: 1 }
+
+/**
+ * Fluxo publicado+ativo que inicia pra esta mensagem. Entre vários que casam,
+ * vence o de gatilho MAIS ESPECÍFICO (keyword > new_contact > any_message);
+ * empate de rank → o mais antigo (updated_at asc). Null = nenhum (→ agente).
+ */
 export async function findFlowToStart(
   tenantId: string,
   incomingText: string,
@@ -33,10 +41,14 @@ export async function findFlowToStart(
     .eq("active", true)
     .order("updated_at", { ascending: true })
 
+  let best: FlowRow | null = null
+  let bestRank = 0
   for (const f of (data ?? []) as FlowRow[]) {
-    if (matchesTrigger(f.trigger, incomingText, isNewContact)) return f
+    if (!matchesTrigger(f.trigger, incomingText, isNewContact)) continue
+    const rank = TRIGGER_RANK[f.trigger?.type ?? ""] ?? 0
+    if (rank > bestRank) { best = f; bestRank = rank }   // empate mantém o 1º (mais antigo)
   }
-  return null
+  return best
 }
 
 /** Carrega um fluxo por id (pra retomar um run ativo). */
