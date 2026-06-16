@@ -3,17 +3,18 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { Plus, Loader2, Network, Pencil, Archive, Sparkles, X } from "lucide-react"
+import { Plus, Loader2, Network, Pencil, Archive, Sparkles, X, Pause, Play } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state"
 import { StatusDot } from "@/components/ui/status-dot"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
-import { createFlow, createFlowWithAI, deleteFlow } from "@/lib/actions/studio/flows"
+import { createFlow, createFlowWithAI, deleteFlow, setFlowActive } from "@/lib/actions/studio/flows"
 import type { StudioFlowSummary } from "@/types/studio"
 
 export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [archiving, setArchiving] = useState<string | null>(null)
+  const [togglingId, setTogglingId] = useState<string | null>(null)
   const [aiOpen, setAiOpen]   = useState(false)
   const [aiDesc, setAiDesc]   = useState("")
   const [aiError, setAiError] = useState<string | null>(null)
@@ -39,6 +40,15 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
     startTransition(async () => {
       await deleteFlow(id)
       setArchiving(null)
+      router.refresh()
+    })
+  }
+
+  function handleToggleActive(id: string, active: boolean) {
+    setTogglingId(id)
+    startTransition(async () => {
+      await setFlowActive(id, active)
+      setTogglingId(null)
       router.refresh()
     })
   }
@@ -100,6 +110,18 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
                   <span className="text-[10px] text-slate-400 tabular-nums">v{f.version}</span>
                 </div>
               </div>
+              {f.status === "published" && (
+                <button
+                  type="button"
+                  onClick={() => handleToggleActive(f.id, !f.active)}
+                  disabled={togglingId === f.id}
+                  className={`inline-flex items-center justify-center size-8 rounded-lg transition-colors hover:bg-slate-100 disabled:opacity-50 ${f.active ? "text-slate-400 hover:text-amber-600" : "text-slate-400 hover:text-emerald-600"}`}
+                  aria-label={f.active ? "Pausar" : "Ativar"}
+                  title={f.active ? "Pausar (para de rodar, sem arquivar)" : "Ativar"}
+                >
+                  {togglingId === f.id ? <Loader2 className="size-4 animate-spin" /> : f.active ? <Pause className="size-4" /> : <Play className="size-4" />}
+                </button>
+              )}
               <Link
                 href={`/studio/fluxos/${f.id}`}
                 className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded-lg transition-colors"
