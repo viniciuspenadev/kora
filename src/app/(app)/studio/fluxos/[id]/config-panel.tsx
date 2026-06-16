@@ -1,7 +1,7 @@
 "use client"
 
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
-import { Trash2, Plus, Settings2 } from "lucide-react"
+import { Trash2, Plus, Settings2, Sparkles } from "lucide-react"
 import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
@@ -137,7 +137,7 @@ export function ConfigPanel({
 
       {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />}
 
-      {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />}
+      {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} tags={tags} stages={stages} services={services} resources={resources} ownerRouting={ownerRouting} />}
 
       {type === "ai_router" && <RouterConfig cfg={cfg} set={set} />}
 
@@ -625,8 +625,68 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting }: {
   )
 }
 
-function AgentConfig({ cfg, set, services, resources, ownerRouting }: {
+// Painel de TRANSPARÊNCIA: mostra ao cliente, em linguagem clara, o que a IA faz
+// sozinha neste passo (o craft dos playbooks ganha um gêmeo legível). Tira a engine
+// do escuro: o cliente não escreve o craft, mas VÊ tudo que acontece.
+function AgentSummary({ cfg, tags, stages, services, resources }: {
+  cfg: Record<string, unknown>
+  tags: { id: string; name: string }[]; stages: { id: string; name: string }[]
+  services: { id: string; name: string }[]; resources: { id: string; name: string }[]
+}) {
+  const tools   = (cfg.tools as string[] | undefined) ?? []
+  const collect = ((cfg.collect as CollectField[] | undefined) ?? []).filter((c) => c.key?.trim())
+  const tagOn    = tools.includes("tag")
+  const stageOn  = tools.includes("move_stage")
+  const agendaOn = tools.includes("check_availability")
+  const target   = cfg.agenda_target as AgendaBinding | undefined
+  const agendaWhere = target?.mode === "owner"
+    ? "na agenda do dono da conversa"
+    : target?.resourceId ? `na agenda: ${resources.find((r) => r.id === target.resourceId)?.name ?? "fixada"}`
+    : target?.serviceId  ? `no serviço: ${services.find((s) => s.id === target.serviceId)?.name ?? "fixado"}`
+    : "a agenda que fizer sentido"
+  const names = (arr: { name: string }[], n = 6) =>
+    arr.slice(0, n).map((x) => x.name).join(", ") + (arr.length > n ? "…" : "")
+  const Section = ({ title }: { title: string }) =>
+    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{title}</p>
+
+  return (
+    <div className="rounded-lg border border-violet-100 bg-gradient-to-br from-violet-50/70 to-blue-50/40 p-3 space-y-2.5">
+      <div className="flex items-center gap-1.5">
+        <Sparkles className="size-3.5 text-violet-500" />
+        <span className="text-[11px] font-bold uppercase tracking-wide text-violet-700">O que a IA faz neste passo</span>
+      </div>
+
+      <div>
+        <Section title="Sempre" />
+        <ul className="space-y-1 text-[11px] text-slate-600 leading-snug">
+          <li>• Responde e <b>consulta sua base de conhecimento</b> antes de afirmar</li>
+          <li>• <b>Registra no contato:</b> nome, empresa, e-mail, CPF/CNPJ, telefone</li>
+          <li>• <b>Transfere</b> pro setor certo com um resumo (dossiê)</li>
+        </ul>
+      </div>
+
+      {(tagOn || stageOn || agendaOn) && (
+        <div>
+          <Section title="Você ligou" />
+          <ul className="space-y-1 text-[11px] text-slate-600 leading-snug">
+            {tagOn   && <li>🏷️ <b>Etiqueta e qualifica</b>{tags.length   ? <> — usando: <span className="text-slate-500">{names(tags)}</span></>   : ""}</li>}
+            {stageOn && <li>📊 <b>Move no funil</b>{stages.length        ? <> — usando: <span className="text-slate-500">{names(stages)}</span></> : ""}</li>}
+            {agendaOn && <li>📅 <b>Agenda horários reais</b> — {agendaWhere}</li>}
+          </ul>
+        </div>
+      )}
+
+      <div>
+        <Section title="Você pediu pra coletar" />
+        <p className="text-[11px] text-slate-600">{collect.length > 0 ? collect.map((c) => c.key).join(" · ") : <span className="text-slate-400">nada ainda — adicione abaixo o que quer no dossiê</span>}</p>
+      </div>
+    </div>
+  )
+}
+
+function AgentConfig({ cfg, set, tags, stages, services, resources, ownerRouting }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
+  tags: { id: string; name: string }[]; stages: { id: string; name: string }[]
   services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
 }) {
   const outcomes = (cfg.outcomes as Opt[] | undefined) ?? []
@@ -647,6 +707,8 @@ function AgentConfig({ cfg, set, services, resources, ownerRouting }: {
       </div>
 
       <AgentToolsConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />
+
+      <AgentSummary cfg={cfg} tags={tags} stages={stages} services={services} resources={resources} />
 
       <div>
         <label className={LABEL}>Dados a coletar <span className="text-slate-400 font-normal">(vão pro dossiê)</span></label>
