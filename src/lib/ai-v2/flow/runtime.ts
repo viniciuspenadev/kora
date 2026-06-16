@@ -40,26 +40,13 @@ const DOSSIER_IDENTITY = new Set([
   "nascimento", "birthdate", "data_nascimento", "aniversario",
 ])
 
-/** Auto-dossiê: despeja os dados de NEGÓCIO coletados (finish_step.fields, guiado pelo
- *  `collect` do cliente) numa nota interna — automático, com ou sem transfer. */
-async function writeDossier(ctx: ExecCtx, fields: Record<string, unknown>): Promise<void> {
-  try {
-    const entries = Object.entries(fields).filter(([k, v]) =>
-      !DOSSIER_IDENTITY.has(k.trim().toLowerCase()) && v != null && String(v).trim() !== "",
-    )
-    if (entries.length === 0) return
-    const body = entries.map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · ")
-    await supabaseAdmin.from("chat_messages").insert({
-      conversation_id: ctx.conversationId, tenant_id: ctx.tenantId,
-      sender_type: "system", content_type: "text",
-      content: `📋 Dados coletados pela IA — ${body}`,
-      status: "sent", is_private_note: true,
-      metadata: { ai_dossier: true, studio: true, fields },
-    })
-  } catch (e) {
-    // Best-effort: a nota do dossiê NUNCA derruba o turno/fluxo.
-    console.error("[studio/dossier] falha ao gravar nota:", e instanceof Error ? e.message : e)
-  }
+/** Monta o dossiê de NEGÓCIO (finish_step.fields, guiado pelo `collect` do cliente)
+ *  como pares label/value — vai pro card "Dossiê da IA" (metadata.collected) na
+ *  transferência. Exclui identidade (já vai pras colunas via update_contact). */
+function buildDossier(fields: Record<string, unknown>): { label: string; value: string }[] {
+  return Object.entries(fields)
+    .filter(([k, v]) => !DOSSIER_IDENTITY.has(k.trim().toLowerCase()) && v != null && String(v).trim() !== "")
+    .map(([k, v]) => ({ label: k, value: typeof v === "string" ? v : JSON.stringify(v) }))
 }
 
 function validateInput(v: string, type: string): boolean {
@@ -500,7 +487,8 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         if (turn.status === "step_done") {
           if (turn.fields) {
             for (const [k, v] of Object.entries(turn.fields)) variables[k] = v
-            await writeDossier(ctx, turn.fields)   // despeja o dossiê (negócio) na conversa
+            const dossier = buildDossier(turn.fields)   // → card "Dossiê da IA" na transferência
+            if (dossier.length > 0) variables["__dossier"] = dossier
           }
           currentId = edgeTarget(graph, node.id, turn.outcome ?? undefined)
           break   // continua avançando o grafo NESTE turno
@@ -552,9 +540,13 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       case "transfer": {
         const cfg = node.config as unknown as TransferNodeConfig
         const cap = getCapability(TRANSFER)
+        // Dossiê coletado pela IA (finish_step) → vai no card "Dossiê da IA"; summary do autor interpola {{vars}}.
+        const collected = Array.isArray(variables["__dossier"]) ? variables["__dossier"] : []
+        const summary   = interpolate((cfg.summary ?? "").trim(), variables)
         const r = await cap?.run(ctx, {
           department:      cfg.department,
-          summary:         cfg.summary ?? "Encaminhado pelo fluxo.",
+          summary:         summary || undefined,
+          collected,
           handoff_message: cfg.handoff ?? null,
         })
         await finishRun(run.id)

@@ -16,6 +16,8 @@ interface TransferArgs {
   department:       string
   summary:          string
   handoffMessage:   string | null
+  /** Dossiê coletado (pares label/value) — renderiza no card "Dossiê da IA". */
+  collected:        { label: string; value: string }[]
 }
 
 export const transferCapability = defineCapability<TransferArgs>({
@@ -45,10 +47,18 @@ export const transferCapability = defineCapability<TransferArgs>({
   },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
+    const collected = Array.isArray(p.collected)
+      ? (p.collected as unknown[]).flatMap((c) => {
+          const o = c as { label?: unknown; value?: unknown }
+          return typeof o?.label === "string" && o?.value != null
+            ? [{ label: o.label, value: String(o.value) }] : []
+        })
+      : []
     return {
       department:     typeof p.department === "string" ? p.department : "",
       summary:        typeof p.summary === "string" ? p.summary : "",
       handoffMessage: typeof p.handoff_message === "string" && p.handoff_message.trim() ? p.handoff_message.trim() : null,
+      collected,
     }
   },
   execute: async (ctx, args) => {
@@ -63,16 +73,19 @@ export const transferCapability = defineCapability<TransferArgs>({
       return { ok: false, toolMessage: `Departamento "${args.department}" não existe. Opções válidas: ${opts}.` }
     }
 
-    // 1) Dossiê factual como NOTA INTERNA (equipe vê; cliente não).
+    // 1) Dossiê factual como NOTA INTERNA (equipe vê; cliente não). O card "Dossiê
+    //    da IA" renderiza `summary` + `collected` (dados coletados pela IA).
+    const collectedLine = args.collected.length > 0
+      ? `\nColetado: ${args.collected.map((c) => `${c.label}: ${c.value}`).join(" · ")}` : ""
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: conversationId,
       tenant_id:       tenantId,
       sender_type:     "system",
       content_type:    "text",
-      content:         `🤖 Encaminhado pela IA → ${dept.name}${args.summary ? `\nResumo: ${args.summary}` : ""}`,
+      content:         `🤖 Encaminhado pela IA → ${dept.name}${args.summary ? `\nResumo: ${args.summary}` : ""}${collectedLine}`,
       status:          "sent",
       is_private_note: true,
-      metadata: { ai_routed: true, studio: true, department_id: dept.id, department_name: dept.name, summary: args.summary },
+      metadata: { ai_routed: true, studio: true, department_id: dept.id, department_name: dept.name, summary: args.summary, collected: args.collected },
     })
 
     // 2) Mensagem de transição pro cliente (se houver).

@@ -135,24 +135,31 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
       const qual = args.period ? ` de ${args.period}` : ""
       return { ok: true, toolMessage: `Sem horários livres${qual} ${onde}. Diga ao cliente e ofereça outro dia/período (ou um atendente ajuda a encontrar).` }
     }
-    const list = merged.slice(0, MAX_SLOTS).map((s) => `${fmtSlot(s.start)} [${s.start}]`).join(" · ")
+    const list = merged.slice(0, MAX_SLOTS).map((s) => `${fmtSlot(s.start)} [#${new Date(s.start).getTime()}]`).join(" · ")
     return {
       ok: true,
-      toolMessage: `Horários LIVRES (ofereça SOMENTE estes; o valor em [ ] é o starts_at exato pra agendar): ${list}`,
+      toolMessage: `Horários LIVRES (ofereça SOMENTE estes; o número após # em [ ] é o CÓDIGO pra agendar — copie inteiro, não escreva a hora): ${list}`,
       data: { slots: merged.slice(0, MAX_SLOTS), serviceId },
     }
   },
 })
 
-// 🔒 TRAVA DE FUSO: o starts_at TEM que carregar o fuso (Z ou ±HH:MM). Sem isso,
-// `new Date("2026-06-19T16:00:00")` é interpretado no fuso do SERVIDOR (UTC) →
-// 16h vira 13h BRT (deslocamento silencioso de -3h). O valor em [ ] do
-// check_availability já vem com Z — a IA TEM que copiá-lo, não reescrever a hora.
-const hasTZ = (s: string) => /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s.trim())
-const TZ_HINT = "Use o valor EXATO entre [ ] do check_availability (com o fuso, ex: 2026-06-19T19:00:00.000Z) — NÃO digite/reescreva a hora você mesmo."
+// 🔒 CÓDIGO DE HORÁRIO (anti-fuso, à prova de IA): o check_availability entrega cada
+// horário como um CÓDIGO numérico (epoch ms) entre [# ]. A IA COPIA o código — não
+// escreve data/hora (escrever "17:00Z" virava 17:00 UTC = 14h BRT → marcava 3h errado,
+// e como 14h também é slot livre a trava de disponibilidade não pegava). O código é o
+// instante absoluto, sem ambiguidade de fuso; o servidor decodifica e revalida.
+const SLOT_HINT = "Passe o CÓDIGO numérico entre [# ] do check_availability (ex: 1750359600000) — copie o número inteiro, NUNCA escreva a data/hora."
+function parseSlotCode(raw: string): Date | null {
+  const m = raw.trim().match(/^#?(\d{10,14})$/)
+  if (!m) return null
+  const n = Number(m[1])
+  const d = new Date(n < 1e12 ? n * 1000 : n)   // tolera epoch em segundos
+  return isNaN(d.getTime()) ? null : d
+}
 
 // ── schedule_appointment (ação) ──────────────────────────────────────────
-interface ScheduleArgs { service: string; resource: string; starts_at: string }
+interface ScheduleArgs { service: string; resource: string; slot: string }
 
 export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
   id:           SCHEDULE_APPOINTMENT,
@@ -165,16 +172,16 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
     function: {
       name: SCHEDULE_APPOINTMENT,
       description:
-        "Marca um horário pro cliente. Use SOMENTE o starts_at EXATO que veio entre [ ] do check_availability " +
-        "(copie inteiro, COM o fuso/Z — não reescreva a hora). NUNCA invente horário. Se der erro/indisponível, chame check_availability de novo.",
+        "Marca um horário pro cliente. Use SOMENTE o CÓDIGO numérico que veio entre [# ] do check_availability " +
+        "(copie o número inteiro — NÃO escreva data/hora). NUNCA invente. Se der erro/indisponível, chame check_availability de novo.",
       parameters: {
         type: "object",
         properties: {
-          service:   { type: "string", description: "Nome do serviço. Opcional (use o mesmo do check_availability)." },
-          resource:  { type: "string", description: "Nome da agenda. Opcional." },
-          starts_at: { type: "string", description: "O valor EXATO entre [ ] do check_availability, COM o fuso (ex: 2026-06-19T19:00:00.000Z). Copie inteiro." },
+          service:  { type: "string", description: "Nome do serviço. Opcional (use o mesmo do check_availability)." },
+          resource: { type: "string", description: "Nome da agenda. Opcional." },
+          slot:     { type: "string", description: "O CÓDIGO numérico do horário escolhido, copiado de [# ] do check_availability (ex: 1750359600000)." },
         },
-        required: ["starts_at"],
+        required: ["slot"],
         additionalProperties: false,
       },
     },
@@ -182,16 +189,15 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
     return {
-      service:   typeof p.service === "string"   ? p.service.trim()   : "",
-      resource:  typeof p.resource === "string"  ? p.resource.trim()  : "",
-      starts_at: typeof p.starts_at === "string" ? p.starts_at.trim() : "",
+      service:  typeof p.service === "string"  ? p.service.trim()  : "",
+      resource: typeof p.resource === "string" ? p.resource.trim() : "",
+      slot:     typeof p.slot === "string"     ? p.slot.trim()     : "",
     }
   },
   execute: async (ctx, args) => {
-    if (!args.starts_at) return { ok: false, toolMessage: `Falta o horário. ${TZ_HINT}` }
-    if (!hasTZ(args.starts_at)) return { ok: false, toolMessage: `Horário sem fuso (isso desloca a hora). ${TZ_HINT}` }
-    const start = new Date(args.starts_at)
-    if (isNaN(start.getTime())) return { ok: false, toolMessage: `Horário inválido. ${TZ_HINT}` }
+    if (!args.slot) return { ok: false, toolMessage: `Falta o horário. ${SLOT_HINT}` }
+    const start = parseSlotCode(args.slot)
+    if (!start) return { ok: false, toolMessage: `Código de horário inválido. ${SLOT_HINT}` }
 
     const res = await resolveAgendaTargets(ctx.tenantId, targetSpec(ctx, args.service, args.resource))
     if (res.error) return { ok: false, toolMessage: res.error }
@@ -216,7 +222,7 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
 })
 
 // ── reschedule_appointment (ação) ────────────────────────────────────────
-interface RescheduleArgs { new_starts_at: string }
+interface RescheduleArgs { new_slot: string }
 
 export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>({
   id:           RESCHEDULE_APPOINTMENT,
@@ -229,27 +235,26 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
     function: {
       name: RESCHEDULE_APPOINTMENT,
       description:
-        "Remarca o PRÓXIMO agendamento do cliente pra um novo horário. Use SOMENTE o valor EXATO entre [ ] do " +
-        "check_availability (copie inteiro, COM o fuso/Z — não reescreva a hora). NUNCA invente horário.",
+        "Remarca o PRÓXIMO agendamento do cliente pra um novo horário. Use SOMENTE o CÓDIGO numérico entre [# ] do " +
+        "check_availability (copie o número inteiro — não escreva data/hora). NUNCA invente horário.",
       parameters: {
         type: "object",
         properties: {
-          new_starts_at: { type: "string", description: "O valor EXATO entre [ ] do check_availability, COM o fuso (ex: 2026-06-19T19:00:00.000Z). Copie inteiro." },
+          new_slot: { type: "string", description: "O CÓDIGO numérico do novo horário, copiado de [# ] do check_availability (ex: 1750359600000)." },
         },
-        required: ["new_starts_at"],
+        required: ["new_slot"],
         additionalProperties: false,
       },
     },
   },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
-    return { new_starts_at: typeof p.new_starts_at === "string" ? p.new_starts_at.trim() : "" }
+    return { new_slot: typeof p.new_slot === "string" ? p.new_slot.trim() : "" }
   },
   execute: async (ctx, args) => {
-    if (!args.new_starts_at) return { ok: false, toolMessage: `Falta o novo horário. ${TZ_HINT}` }
-    if (!hasTZ(args.new_starts_at)) return { ok: false, toolMessage: `Horário sem fuso (isso desloca a hora). ${TZ_HINT}` }
-    const start = new Date(args.new_starts_at)
-    if (isNaN(start.getTime())) return { ok: false, toolMessage: `Horário inválido. ${TZ_HINT}` }
+    if (!args.new_slot) return { ok: false, toolMessage: `Falta o novo horário. ${SLOT_HINT}` }
+    const start = parseSlotCode(args.new_slot)
+    if (!start) return { ok: false, toolMessage: `Código de horário inválido. ${SLOT_HINT}` }
 
     // Resolve o PRÓXIMO agendamento DESTE contato (anti-IDOR: filtra por contact_id).
     const { data: appt } = await supabaseAdmin.from("appointments")
