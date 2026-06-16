@@ -77,6 +77,9 @@ export async function bookAppointment(tenantId: string, input: {
   contactId: string; conversationId?: string | null; resourceId: string; serviceId?: string | null
   startsAt: string; durationMinutes?: number; source?: "ai" | "agent" | "manual"; notes?: string
   partySize?: number; notifyCustomer?: boolean; createdBy?: string | null
+  /** Marcado numa conversa ao vivo (IA/nó já confirmou) → não manda o aviso plano
+   *  da agenda (evita confirmação dupla); o round-trip de confirmação continua. */
+  conversationalConfirm?: boolean
 }): Promise<{ error?: string; id?: string; conversationId?: string | null }> {
   // Anti-IDOR: recurso, contato e conversa precisam ser DO tenant.
   const { data: resource } = await supabaseAdmin.from("tenant_resources")
@@ -157,7 +160,8 @@ export async function bookAppointment(tenantId: string, input: {
   }
 
   // Evento `created` → consumidor built-in (confirmação/lembrete do 3d).
-  await runAppointmentEvent(data.id, "created")
+  // Conversa ao vivo (IA/nó) → pula o aviso plano (round-trip preservado).
+  await runAppointmentEvent(data.id, "created", { skipPlainNotify: input.conversationalConfirm === true })
   return { id: data.id, conversationId }
 }
 

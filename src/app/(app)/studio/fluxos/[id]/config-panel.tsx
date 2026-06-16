@@ -649,7 +649,7 @@ function AgentConfig({ cfg, set, services, resources, ownerRouting }: {
       <AgentToolsConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />
 
       <div>
-        <label className={LABEL}>Dados a coletar <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <label className={LABEL}>Dados a coletar <span className="text-slate-400 font-normal">(vão pro dossiê)</span></label>
         <div className="space-y-1.5">
           {collect.map((c, i) => (
             <div key={i} className="flex items-center gap-1.5">
@@ -668,7 +668,7 @@ function AgentConfig({ cfg, set, services, resources, ownerRouting }: {
           className="mt-1.5 inline-flex items-center gap-1 h-7 px-2 text-[11px] font-medium text-primary-600 hover:bg-primary-50 rounded-md">
           <Plus className="size-3" /> Campo
         </button>
-        <p className="text-[11px] text-slate-400 mt-1">A IA preenche e vira variável — use <code className="bg-slate-100 px-1 rounded">{"{{segmento}}"}</code> adiante.</p>
+        <p className="text-[11px] text-slate-400 mt-1">A IA coleta esses dados → entram no <b>dossiê</b> da conversa e viram variável (use <code className="bg-slate-100 px-1 rounded">{"{{segmento}}"}</code> adiante). Identidade (e-mail, CPF/CNPJ…) já é salva no cadastro automaticamente.</p>
       </div>
 
       <div>

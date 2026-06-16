@@ -144,6 +144,13 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
   },
 })
 
+// 🔒 TRAVA DE FUSO: o starts_at TEM que carregar o fuso (Z ou ±HH:MM). Sem isso,
+// `new Date("2026-06-19T16:00:00")` é interpretado no fuso do SERVIDOR (UTC) →
+// 16h vira 13h BRT (deslocamento silencioso de -3h). O valor em [ ] do
+// check_availability já vem com Z — a IA TEM que copiá-lo, não reescrever a hora.
+const hasTZ = (s: string) => /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s.trim())
+const TZ_HINT = "Use o valor EXATO entre [ ] do check_availability (com o fuso, ex: 2026-06-19T19:00:00.000Z) — NÃO digite/reescreva a hora você mesmo."
+
 // ── schedule_appointment (ação) ──────────────────────────────────────────
 interface ScheduleArgs { service: string; resource: string; starts_at: string }
 
@@ -158,14 +165,14 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
     function: {
       name: SCHEDULE_APPOINTMENT,
       description:
-        "Marca um horário pro cliente. Use SOMENTE um starts_at que veio de check_availability (o valor EXATO em [ ]). " +
-        "NUNCA invente horário. Se der erro/indisponível, chame check_availability de novo e ofereça outro.",
+        "Marca um horário pro cliente. Use SOMENTE o starts_at EXATO que veio entre [ ] do check_availability " +
+        "(copie inteiro, COM o fuso/Z — não reescreva a hora). NUNCA invente horário. Se der erro/indisponível, chame check_availability de novo.",
       parameters: {
         type: "object",
         properties: {
           service:   { type: "string", description: "Nome do serviço. Opcional (use o mesmo do check_availability)." },
           resource:  { type: "string", description: "Nome da agenda. Opcional." },
-          starts_at: { type: "string", description: "starts_at ISO EXATO vindo de check_availability (o valor em [ ])." },
+          starts_at: { type: "string", description: "O valor EXATO entre [ ] do check_availability, COM o fuso (ex: 2026-06-19T19:00:00.000Z). Copie inteiro." },
         },
         required: ["starts_at"],
         additionalProperties: false,
@@ -181,9 +188,10 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
     }
   },
   execute: async (ctx, args) => {
-    if (!args.starts_at) return { ok: false, toolMessage: "Falta o horário. Chame check_availability e use um dos slots (o valor em [ ])." }
+    if (!args.starts_at) return { ok: false, toolMessage: `Falta o horário. ${TZ_HINT}` }
+    if (!hasTZ(args.starts_at)) return { ok: false, toolMessage: `Horário sem fuso (isso desloca a hora). ${TZ_HINT}` }
     const start = new Date(args.starts_at)
-    if (isNaN(start.getTime())) return { ok: false, toolMessage: "Horário inválido. Use um starts_at EXATO vindo de check_availability." }
+    if (isNaN(start.getTime())) return { ok: false, toolMessage: `Horário inválido. ${TZ_HINT}` }
 
     const res = await resolveAgendaTargets(ctx.tenantId, targetSpec(ctx, args.service, args.resource))
     if (res.error) return { ok: false, toolMessage: res.error }
@@ -200,7 +208,7 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
     const r = await bookAppointment(ctx.tenantId, {
       contactId: ctx.contact.id, conversationId: ctx.conversationId,
       resourceId: chosen, serviceId, startsAt: start.toISOString(),
-      source: "ai", createdBy: null,
+      source: "ai", createdBy: null, conversationalConfirm: true,
     })
     if (r.error) return { ok: false, toolMessage: `Não consegui marcar: ${r.error}. Ofereça outro horário (check_availability).` }
     return { ok: true, toolMessage: `Agendado com sucesso para ${fmtSlot(start.toISOString())}. ✅`, data: { appointmentId: r.id } }
@@ -221,12 +229,12 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
     function: {
       name: RESCHEDULE_APPOINTMENT,
       description:
-        "Remarca o PRÓXIMO agendamento do cliente pra um novo horário. Use SOMENTE um new_starts_at vindo de " +
-        "check_availability (o valor EXATO em [ ]). NUNCA invente horário.",
+        "Remarca o PRÓXIMO agendamento do cliente pra um novo horário. Use SOMENTE o valor EXATO entre [ ] do " +
+        "check_availability (copie inteiro, COM o fuso/Z — não reescreva a hora). NUNCA invente horário.",
       parameters: {
         type: "object",
         properties: {
-          new_starts_at: { type: "string", description: "novo starts_at ISO EXATO vindo de check_availability." },
+          new_starts_at: { type: "string", description: "O valor EXATO entre [ ] do check_availability, COM o fuso (ex: 2026-06-19T19:00:00.000Z). Copie inteiro." },
         },
         required: ["new_starts_at"],
         additionalProperties: false,
@@ -238,9 +246,10 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
     return { new_starts_at: typeof p.new_starts_at === "string" ? p.new_starts_at.trim() : "" }
   },
   execute: async (ctx, args) => {
-    if (!args.new_starts_at) return { ok: false, toolMessage: "Falta o novo horário. Chame check_availability e use um dos slots." }
+    if (!args.new_starts_at) return { ok: false, toolMessage: `Falta o novo horário. ${TZ_HINT}` }
+    if (!hasTZ(args.new_starts_at)) return { ok: false, toolMessage: `Horário sem fuso (isso desloca a hora). ${TZ_HINT}` }
     const start = new Date(args.new_starts_at)
-    if (isNaN(start.getTime())) return { ok: false, toolMessage: "Horário inválido. Use um starts_at EXATO vindo de check_availability." }
+    if (isNaN(start.getTime())) return { ok: false, toolMessage: `Horário inválido. ${TZ_HINT}` }
 
     // Resolve o PRÓXIMO agendamento DESTE contato (anti-IDOR: filtra por contact_id).
     const { data: appt } = await supabaseAdmin.from("appointments")

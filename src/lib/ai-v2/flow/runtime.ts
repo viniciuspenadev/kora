@@ -32,6 +32,36 @@ import type {
 /** Stash do nó schedule entre a oferta e o pick (mapeia "opção N" → ISO exato). */
 interface ScheduleStash { slots: string[]; serviceId: string | null; pool: string[] }
 
+// Chaves de IDENTIDADE — já vão pras COLUNAS reais via update_contact; o dossiê
+// não as repete (fica só o contexto de negócio do `collect`). docs: dois destinos.
+const DOSSIER_IDENTITY = new Set([
+  "nome", "name", "email", "e-mail", "telefone", "phone", "celular", "whatsapp",
+  "cpf", "cnpj", "documento", "document", "doc", "empresa", "company",
+  "nascimento", "birthdate", "data_nascimento", "aniversario",
+])
+
+/** Auto-dossiê: despeja os dados de NEGÓCIO coletados (finish_step.fields, guiado pelo
+ *  `collect` do cliente) numa nota interna — automático, com ou sem transfer. */
+async function writeDossier(ctx: ExecCtx, fields: Record<string, unknown>): Promise<void> {
+  try {
+    const entries = Object.entries(fields).filter(([k, v]) =>
+      !DOSSIER_IDENTITY.has(k.trim().toLowerCase()) && v != null && String(v).trim() !== "",
+    )
+    if (entries.length === 0) return
+    const body = entries.map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(" · ")
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: ctx.conversationId, tenant_id: ctx.tenantId,
+      sender_type: "system", content_type: "text",
+      content: `📋 Dados coletados pela IA — ${body}`,
+      status: "sent", is_private_note: true,
+      metadata: { ai_dossier: true, studio: true, fields },
+    })
+  } catch (e) {
+    // Best-effort: a nota do dossiê NUNCA derruba o turno/fluxo.
+    console.error("[studio/dossier] falha ao gravar nota:", e instanceof Error ? e.message : e)
+  }
+}
+
 function validateInput(v: string, type: string): boolean {
   const s = v.trim()
   switch (type) {
@@ -468,7 +498,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           return { status: "error", departmentId: null, error: turn.error, agent: turn }
         }
         if (turn.status === "step_done") {
-          if (turn.fields) for (const [k, v] of Object.entries(turn.fields)) variables[k] = v
+          if (turn.fields) {
+            for (const [k, v] of Object.entries(turn.fields)) variables[k] = v
+            await writeDossier(ctx, turn.fields)   // despeja o dossiê (negócio) na conversa
+          }
           currentId = edgeTarget(graph, node.id, turn.outcome ?? undefined)
           break   // continua avançando o grafo NESTE turno
         }

@@ -122,7 +122,7 @@ export function compileStudioPrompt(args: {
     }
     lines.push(
       `COMO AGENDAR — siga à risca:`,
-      `1. NUNCA invente horário. Chame check_availability ANTES de oferecer e ofereça SOMENTE o que ela retornar (o valor em [ ] é o starts_at exato).`,
+      `1. NUNCA invente horário. Chame check_availability ANTES de oferecer e ofereça SOMENTE o que ela retornar. Pra marcar, COPIE o valor EXATO entre [ ] (com o fuso/Z, ex: ...T19:00:00.000Z) — nunca digite/reescreva a hora você mesmo (isso desloca o horário).`,
       `2. Recomende o horário mais próximo E pergunte se prefere outro dia/horário. Ex: "Tenho terça às 09h — esse serve, ou prefere outro dia?".`,
       `3. Se o cliente citar um dia ou período, chame check_availability com from_date (YYYY-MM-DD daquele dia) e/ou period (manha/tarde/noite). NUNCA diga que não tem sem consultar aquele dia.`,
       `4. Se não houver no dia/período pedido, diga e ofereça o mais próximo OU pergunte outro dia — nunca empurre só o mais cedo.`,

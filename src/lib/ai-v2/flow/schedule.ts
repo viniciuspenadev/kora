@@ -105,7 +105,7 @@ export async function bookSchedulePick(
   const r = await bookAppointment(ctx.tenantId, {
     contactId: ctx.contact.id, conversationId: ctx.conversationId,
     resourceId, serviceId: input.serviceId, startsAt: input.iso,
-    source: "manual", createdBy: null,
+    source: "manual", createdBy: null, conversationalConfirm: true,
   })
   if (r.error) return /preenchido|lotado|bloqueado/i.test(r.error) ? { taken: true } : { error: r.error }
   return { id: r.id }

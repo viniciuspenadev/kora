@@ -80,7 +80,7 @@ function buildVars(appt: ApptForEvent): Record<string, string> {
  * Processa um evento de agendamento pelo caminho built-in. Hoje só `created`
  * (Fase 3b); os demais entram em 3c+. Chamado best-effort pós-ação.
  */
-export async function runAppointmentEvent(appointmentId: string, event: AgendaEvent): Promise<void> {
+export async function runAppointmentEvent(appointmentId: string, event: AgendaEvent, opts?: { skipPlainNotify?: boolean }): Promise<void> {
   try {
     if (event !== "created") return
 
@@ -99,8 +99,12 @@ export async function runAppointmentEvent(appointmentId: string, event: AgendaEv
 
     // SÓ o step "ao agendar" (offset === 0). Os negativos são LEMBRETES, disparados
     // pelo cron (sweep) — não na criação (senão duplicam: aqui + no cron).
-    const steps = (appt.tenant_services?.reminder_policy?.steps ?? [])
+    let steps = (appt.tenant_services?.reminder_policy?.steps ?? [])
       .filter((s) => (s.offset_minutes ?? 0) === 0 && (s.audience ?? "customer") !== "agent")
+    // Marcado numa conversa AO VIVO (IA/nó já confirmou conversando) → pula só o
+    // AVISO PLANO ("está marcado", redundante). O round-trip de confirmação
+    // (request_confirmation=true, botões + pending_agenda) é NECESSÁRIO → SEMPRE fica.
+    if (opts?.skipPlainNotify) steps = steps.filter((s) => s.request_confirmation === true)
     if (steps.length === 0) return
 
     // 🔒 Entitlement (god mode) — sem o módulo add-on, não dispara nem paralelo.
