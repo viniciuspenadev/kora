@@ -155,15 +155,24 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     // (De propósito NÃO re-tenta o gatilho aqui pra não cair no fluxo de captação
     //  com filtro de lifecycle, que é justamente o que o pin existe pra evitar.)
   } else if (existingRun) {
-    const flow = await loadFlow(tenantId, existingRun.flow_id)
+    // Resume SÓ se o fluxo ainda está PUBLICADO + ATIVO (loadStartableFlow filtra).
+    // Pausado/arquivado/sumido → o run NÃO pode sequestrar a conversa.
+    const flow = await loadStartableFlow(tenantId, existingRun.flow_id)
     if (flow) {
       activeFlowId = flow.id
       flowResult   = await runFlow(flowInput, flow, existingRun)
     } else {
-      // Fluxo publicado sumiu — encerra o run órfão e cai no agente.
+      // Abandona o run obsoleto e tenta começar um fluxo VÁLIDO (ou cai no agente).
       await supabaseAdmin.from("studio_flow_runs")
         .update({ status: "done", updated_at: new Date().toISOString() })
         .eq("id", existingRun.id)
+      const isNewContact = history.length <= 1
+      const fresh = await findFlowToStart(tenantId, incomingText, isNewContact)
+      if (fresh) {
+        const run    = await startFlowRun(tenantId, conversationId, fresh)
+        activeFlowId = fresh.id
+        flowResult   = await runFlow(flowInput, fresh, run)
+      }
     }
   } else {
     // "Contato novo" = é a 1ª mensagem da conversa. O histórico JÁ inclui a
