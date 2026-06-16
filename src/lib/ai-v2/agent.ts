@@ -77,21 +77,23 @@ function finishStepTool(fc: FlowControl): OpenAI.Chat.Completions.ChatCompletion
   const outcome: Record<string, unknown> = fc.outcomes.length > 0
     ? { type: "string", enum: fc.outcomes.map((o) => o.id), description: "Qual saída do fluxo seguir." }
     : { type: "string", description: "(opcional) rótulo da saída." }
-  const collectHint = fc.collect.length > 0
-    ? ` Colete e devolva em fields: ${fc.collect.map((c) => `${c.key}${c.description ? ` (${c.description})` : ""}`).join(", ")}.`
-    : ""
+  // NÃO acoplar coletar com concluir: o `collect` é "o que descobrir AO LONGO da
+  // conversa" (vai no prompt), não "colete e CONCLUA". Acoplar fazia a IA finish_step
+  // assim que tinha os dados — antes de agendar. O dossiê usa extração, não estes fields.
   return {
     type: "function",
     function: {
       name: FINISH_STEP,
       description:
-        "Conclui ESTA etapa e DEVOLVE o controle ao fluxo (os próximos nós continuam). " +
-        "Chame assim que tiver cumprido o objetivo desta etapa." + collectHint,
+        "Conclui ESTA etapa e DEVOLVE o controle ao fluxo (os próximos nós continuam — pode encaminhar/encerrar). " +
+        "Chame APENAS quando NÃO houver mais nada a fazer com o cliente neste passo. " +
+        "NÃO conclua numa resposta que faz uma PERGUNTA ao cliente (espere a resposta antes). " +
+        "NÃO conclua se ofereceu/mencionou um agendamento ou demonstração e ainda não marcou (marque o horário ou o cliente recusar primeiro).",
       parameters: {
         type: "object",
         properties: {
           outcome,
-          fields:  { type: "object", description: "Dados estruturados coletados nesta etapa.", additionalProperties: true },
+          fields:  { type: "object", description: "(opcional) dados estruturados coletados, se houver.", additionalProperties: true },
           message: { type: "string", description: "(opcional) mensagem final ao cliente antes de seguir." },
         },
       },
@@ -134,6 +136,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     variables,
     flowControl: flowControl ?? null,
     playbooks,
+    collectFields: flowControl?.collect,
   })
 
   const messages: Msg[] = [{ role: "system", content: systemPrompt }]
@@ -186,6 +189,17 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
         // finish_step: a IA devolve o controle ao fluxo (§11.3) — terminal.
         if (tc.name === FINISH_STEP) {
           const msg = typeof raw.message === "string" ? raw.message.trim() : ""
+          // 🔒 TRAVA DETERMINÍSTICA: não dá pra concluir FAZENDO uma pergunta. Se a
+          // IA tentou finish_step com uma pergunta (e o nó não é de roteamento), ENVIA
+          // a pergunta e ESPERA a resposta — o passo NÃO avança (a conversa continua).
+          // Mata o "perguntei 'quer agendar?' e transferi na mesma resposta".
+          const routing = !!flowControl && flowControl.outcomes.length > 0
+          if (msg && !routing && /\?[\s\p{Extended_Pictographic}️]*$/u.test(msg)) {
+            await sendBotText(ctx, msg)
+            status = "responded"; sentMessage = true; terminal = true
+            messages.push({ role: "tool", tool_call_id: tc.id, content: "Você fez uma pergunta ao cliente — espere a resposta. NÃO conclua o passo ainda." })
+            continue
+          }
           if (msg) { await sendBotText(ctx, msg); sentMessage = true }
           stepOutcome = typeof raw.outcome === "string" && raw.outcome.trim() ? raw.outcome.trim() : null
           stepFields  = raw.fields && typeof raw.fields === "object" ? (raw.fields as Record<string, unknown>) : null

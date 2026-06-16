@@ -33,8 +33,11 @@ export function compileStudioPrompt(args: {
   /** Playbooks das capacidades CONCEDIDAS (Studio Engine §Pilar 1) — o craft de
    *  CADA ferramenta, montado pelo registro. O cliente não escreve isto. */
   playbooks?:   string
+  /** Campos do `collect` do nó — "o que descobrir AO LONGO da conversa" (NÃO
+   *  acoplado a concluir o passo). */
+  collectFields?: { key: string; description?: string }[]
 }): string {
-  const { persona, instruction, variables, flowControl, playbooks } = args
+  const { persona, instruction, variables, flowControl, playbooks, collectFields } = args
   const name = persona.name?.trim() || "Assistente"
   const tone = persona.tone ? (TONE_PT[persona.tone] ?? persona.tone) : "amigável e acolhedor"
 
@@ -74,6 +77,14 @@ export function compileStudioPrompt(args: {
   }
   if (persona.antiPatterns?.trim()) {
     lines.push(``, `# O QUE EVITAR`, persona.antiPatterns.trim())
+  }
+
+  // Dados a descobrir — o `collect` do cliente. É "vá descobrindo ao longo da
+  // conversa", NÃO "colete e conclua" (esse acoplamento fazia a IA encerrar cedo).
+  const cf = (collectFields ?? []).filter((c) => c.key?.trim())
+  if (cf.length > 0) {
+    lines.push(``, `# DADOS A DESCOBRIR (pergunte naturalmente ao longo da conversa; não precisa todos de uma vez, e isto NÃO é motivo pra encerrar o passo)`)
+    for (const c of cf) lines.push(`- ${c.key.trim()}${c.description?.trim() ? `: ${c.description.trim()}` : ""}`)
   }
 
   // Studio Engine §Pilar 1 — o "COMO AGIR" de cada ferramenta vem dos PLAYBOOKS das

@@ -130,7 +130,7 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
       "6. Você NÃO tem lista de espera — não prometa \"te aviso quando abrir\". Se nada servir, transfira pro time.",
       "7. Reaproveite os horários que já consultou neste papo; só chame check_availability de novo se o cliente mudar o dia/período.",
       "8. Pegue o NOME da pessoa (update_contact) antes de marcar, pra a confirmação sair personalizada.",
-      "9. ⚠️ Está agendando? NÃO conclua o passo (finish_step) nem transfira até MARCAR o horário (ou o cliente desistir). Ofereça os horários numa mensagem normal, ESPERE a escolha e marque — NUNCA ofereça horário e encerre/transfira na mesma resposta (senão o cliente fica sem ninguém pra marcar).",
+      "9. ⚠️ DEMO/AGENDAMENTO trava a conclusão: se você ofereceu, mencionou OU o cliente topou uma demonstração/horário, NÃO chame finish_step (não conclua/transfira) até MARCAR o horário OU o cliente recusar claramente. NUNCA pergunte 'tem interesse em agendar?' e conclua na mesma resposta — se ele topar, chame check_availability, ofereça os horários, ESPERE a escolha e MARQUE primeiro. Só depois de marcar (ou recusa) você segue.",
     )
     return L.join("\n")
   },
