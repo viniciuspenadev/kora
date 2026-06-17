@@ -25,12 +25,21 @@ const SUPABASE_HTTPS = SUPABASE_HOST ? `https://${SUPABASE_HOST}` : ""
 // challenges.cloudflare.com. Liberado SÓ na rota /signup (blast radius mínimo).
 const TURNSTILE = "https://challenges.cloudflare.com"
 
-function buildCsp(turnstile: boolean): string {
-  const cf = turnstile ? ` ${TURNSTILE}` : ""
+// Embedded Signup do WhatsApp (Meta): carrega o FB SDK (connect.facebook.net) e
+// usa um iframe de comunicação + XHR de www.facebook.com. Liberado SÓ na página da
+// integração oficial (mesmo padrão do Turnstile — não afrouxa a CSP do resto do app).
+const META_SCRIPT = "https://connect.facebook.net"
+const META_FRAME  = "https://www.facebook.com"
+
+function buildCsp(opts: { turnstile?: boolean; meta?: boolean } = {}): string {
+  const cf = opts.turnstile ? ` ${TURNSTILE}` : ""
+  const mS = opts.meta ? ` ${META_SCRIPT}` : ""                       // script-src
+  const mF = opts.meta ? ` ${META_FRAME}` : ""                        // frame-src
+  const mC = opts.meta ? ` ${META_SCRIPT} ${META_FRAME}` : ""         // connect-src (XHR do SDK)
   return [
     "default-src 'self'",
     // 'unsafe-eval' temporariamente por Next 16 + React 19 dev/hydration; remover em S2.1
-    `script-src 'self' 'unsafe-inline' 'unsafe-eval'${cf}`,
+    `script-src 'self' 'unsafe-inline' 'unsafe-eval'${cf}${mS}`,
     // 'unsafe-inline' style por styled-jsx + Tailwind runtime; remover em S2.1
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
@@ -38,9 +47,9 @@ function buildCsp(turnstile: boolean): string {
     // Áudio/vídeo do Supabase Storage (signed URLs) — sem media-src cai em default-src e bloqueia
     `media-src 'self' blob: ${SUPABASE_HTTPS}`.trim(),
     // Supabase REST + Realtime + Storage; OpenAI direto não chamamos do client
-    `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}`.trim(),
-    // iframe do widget Turnstile (só no /signup); 'self' p/ preview de email no admin
-    `frame-src 'self'${cf}`,
+    `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}${mC}`.trim(),
+    // iframe do widget Turnstile (/signup) ou do FB SDK (integração oficial); 'self' p/ preview de email no admin
+    `frame-src 'self'${cf}${mF}`,
     // 'self' permite iframes da própria app (ex: preview de email em /admin/emails).
     // Mantém proteção anti-clickjacking de origens externas.
     "frame-ancestors 'self'",
@@ -50,8 +59,9 @@ function buildCsp(turnstile: boolean): string {
   ].join("; ")
 }
 
-const CSP_APP    = buildCsp(false)
-const CSP_SIGNUP = buildCsp(true)
+const CSP_APP    = buildCsp()
+const CSP_SIGNUP = buildCsp({ turnstile: true })
+const CSP_META   = buildCsp({ meta: true })
 
 const PERMISSIONS_POLICY = [
   "camera=()",
@@ -90,8 +100,10 @@ export function middleware(req: NextRequest) {
   // é fallback pra browsers antigos.
   res.headers.set("X-Frame-Options",      "SAMEORIGIN")
   res.headers.set("Permissions-Policy",   PERMISSIONS_POLICY)
-  const isSignup = path === "/signup" || path.startsWith("/signup/")
-  res.headers.set("Content-Security-Policy", isSignup ? CSP_SIGNUP : CSP_APP)
+  const isSignup   = path === "/signup" || path.startsWith("/signup/")
+  // Página da integração oficial carrega o FB SDK do Embedded Signup → CSP com Meta.
+  const isOfficial = path.startsWith("/integracoes/whatsapp-oficial")
+  res.headers.set("Content-Security-Policy", isSignup ? CSP_SIGNUP : isOfficial ? CSP_META : CSP_APP)
 
   return res
 }
