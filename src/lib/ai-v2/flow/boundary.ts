@@ -74,7 +74,7 @@ const DEFERRAL_TEXT: Record<DeferralConcept, string> = {
 `Você NÃO agenda, marca, remarca nem reserva horários — quem faz isso é a etapa de AGENDAMENTO logo a seguir. Não existe "agendar conversando": se você não tem uma ferramenta de agenda nesta mensagem, agendar não é função sua.
 Quando o cliente quiser marcar/agendar (mesmo vago: "quero marcar", "como agendo", "pode ser sexta?", "tem horário amanhã?"):
 - NÃO pergunte qual serviço, nem dia, nem horário; NÃO sugira nem cite horários; NÃO diga que vai confirmar nem dê a entender que marcou.
-- Responda em UMA frase curta de transição e CONCLUA o passo (finish_step). Ex.: "Perfeito! Vou te levar pro agendamento agora pra você escolher certinho." Depois disso, PARE — a próxima etapa coleta serviço e horário do zero, e isso é o correto.
+- CONCLUA o passo chamando finish_step com a frase de transição NO CAMPO "message" (ex.: message="Perfeito! Vou te levar pro agendamento agora"). NUNCA mande essa frase como texto e pare — isso TRAVA a conversa esperando o cliente. A próxima etapa coleta serviço e horário do zero, e isso é o correto.
 DÚVIDA vs. AGENDAR: se a pergunta se resolve com INFORMAÇÃO (o que é o serviço, preço, duração, se atendem tal dia da semana) → RESPONDA, não conclua. Se só se resolve mexendo na agenda (escolher/reservar um horário real) → CONCLUA o passo. "pode ser sexta?" / "tem às 17h?" NÃO é dúvida, é tentativa de marcar → conclua.
 Se você se pegar prestes a perguntar serviço/dia/hora ou a citar um horário, esse é o sinal exato de CONCLUIR o passo com a frase-ponte.`,
 }

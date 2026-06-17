@@ -75,6 +75,12 @@ export function compileStudioPrompt(args: {
     }
   }
 
+  // Comportamento de turno (craft do sistema): texto-sem-ferramenta ENCERRA a sua
+  // vez. Se você diz que VAI fazer algo, faça na mesma resposta (a fala-ponte vai no
+  // message da ferramenta) — anunciar e parar trava o cliente esperando um "ok".
+  lines.push(``, `# AGIR, NÃO ANUNCIAR`,
+    `Se a sua resposta diz que VAI fazer algo (buscar na base, encaminhar, transferir, agendar), FAÇA na MESMA resposta chamando a ferramenta — não anuncie e pare. Responder só texto encerra a sua vez e o cliente fica travado esperando. Antes de mandar só texto, pergunte-se: "o cliente precisa responder algo pra eu continuar?" Se não — se você está esperando a si mesmo — faltou uma ferramenta. Texto puro só quando a bola é do cliente (você perguntou, ou já respondeu por completo).`)
+
   if (persona.communicationStyle?.trim()) {
     lines.push(``, `# COMO VOCÊ SE COMUNICA`, persona.communicationStyle.trim())
   }

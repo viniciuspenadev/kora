@@ -122,7 +122,7 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
     if (resources.length > 0) L.push(`Agendas/profissionais: ${resources.join(", ")}.`)
     L.push(
       "COMO AGENDAR — siga à risca:",
-      "1. NUNCA invente horário. Chame check_availability ANTES de oferecer e ofereça SOMENTE o que ela retornar. Pra marcar, passe em \"slot\" o CÓDIGO numérico entre [# ] daquele horário (ex: 1750359600000) — copie o número inteiro, NUNCA escreva a data/hora.",
+      "1. NUNCA invente horário. Chame check_availability ANTES de oferecer e ofereça SOMENTE o que ela retornar. Pra marcar, passe em \"slot\" a LETRA daquele horário (A, B, C…) — copie a letra exata, NUNCA invente uma letra fora da lista nem escreva a data/hora.",
       "2. Recomende o horário mais próximo E pergunte se prefere outro dia/horário. Ex: \"Tenho terça às 09h — esse serve, ou prefere outro dia?\".",
       "3. Se o cliente citar um dia/período, chame check_availability com from_date (YYYY-MM-DD) e/ou period (manha/tarde/noite). NUNCA diga que não tem sem consultar aquele dia.",
       "4. Se não houver no dia/período pedido, diga e ofereça o mais próximo OU pergunte outro dia — nunca empurre só o mais cedo.",
@@ -162,31 +162,63 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
       const qual = args.period ? ` de ${args.period}` : ""
       return { ok: true, toolMessage: `Sem horários livres${qual} ${onde}. Diga ao cliente e ofereça outro dia/período (ou um atendente ajuda a encontrar).` }
     }
-    const list = merged.slice(0, MAX_SLOTS).map((s) => `${fmtSlot(s.start)} [#${new Date(s.start).getTime()}]`).join(" · ")
+    // Rotula cada horário com uma LETRA e guarda o mapa letra→ISO (+ pool/serviço) no
+    // estado da conversa. A IA oferta as letras; pra marcar, COPIA a letra (não inventa).
+    const top = merged.slice(0, Math.min(MAX_SLOTS, LETTERS.length))
+    const slots: Record<string, string> = {}
+    top.forEach((s, i) => { slots[LETTERS[i]] = s.start })
+    await saveOffer(ctx, { at: Date.now(), serviceId, pool, slots })
+    const list = top.map((s, i) => `${LETTERS[i]}) ${fmtSlot(s.start)}`).join(" · ")
     return {
       ok: true,
-      toolMessage: `Horários LIVRES (ofereça SOMENTE estes; o número após # em [ ] é o CÓDIGO pra agendar — copie inteiro, não escreva a hora): ${list}`,
-      data: { slots: merged.slice(0, MAX_SLOTS), serviceId },
+      toolMessage: `Horários LIVRES (ofereça SOMENTE estes; pra marcar, passe em "slot" a LETRA exata — NUNCA invente uma letra fora da lista): ${list}`,
+      data: { slots: top, serviceId },
     }
   },
 })
 
-// 🔒 CÓDIGO DE HORÁRIO (anti-fuso, à prova de IA): o check_availability entrega cada
-// horário como um CÓDIGO numérico (epoch ms) entre [# ]. A IA COPIA o código — não
-// escreve data/hora (escrever "17:00Z" virava 17:00 UTC = 14h BRT → marcava 3h errado,
-// e como 14h também é slot livre a trava de disponibilidade não pegava). O código é o
-// instante absoluto, sem ambiguidade de fuso; o servidor decodifica e revalida.
-const SLOT_HINT = "Passe o CÓDIGO numérico entre [# ] do check_availability (ex: 1750359600000) — copie o número inteiro, NUNCA escreva a data/hora."
-function parseSlotCode(raw: string): Date | null {
-  const m = raw.trim().match(/^#?(\d{10,14})$/)
-  if (!m) return null
-  const n = Number(m[1])
-  const d = new Date(n < 1e12 ? n * 1000 : n)   // tolera epoch em segundos
-  return isNaN(d.getTime()) ? null : d
+// 🔡 TOKEN DE HORÁRIO (anti-fuso E anti-fabricação): o check_availability rotula cada
+// horário com uma LETRA (A, B, C…) e guarda o mapa letra→instante no estado da conversa
+// (metadata.ai_slot_offer). A IA COPIA a letra — 1 char de um alfabeto FECHADO, que ela
+// não tem como fabricar (e se inventar, o erro devolve as letras válidas → corrige em 1
+// turno, SEM re-listar). Substitui o epoch de 13 dígitos, que o LLM "chutava" (passava um
+// 1750…=2025 em vez de copiar o 1781…=2026 → a trava rejeitava e ela re-ofertava em loop).
+// O servidor resolve letra→ISO exato (segue anti-fuso) e `pickFreeInPool` revalida (corrida).
+const LETTERS = "ABCDEFGH"
+const SLOT_TTL_MS = 20 * 60_000
+const SLOT_HINT = "Passe a LETRA (A, B, C…) do horário escolhido, exatamente como na lista do check_availability."
+
+interface SlotOffer { at: number; serviceId: string | null; pool: string[]; slots: Record<string, string> }
+
+async function writeMeta(ctx: ExecCtx): Promise<void> {
+  const meta = { ...(ctx.conversationMetadata ?? {}) }
+  try {
+    await supabaseAdmin.from("chat_conversations").update({ metadata: meta }).eq("id", ctx.conversationId).eq("tenant_id", ctx.tenantId)
+  } catch (e) { console.error("[agenda] writeMeta:", e instanceof Error ? e.message : e) }
+}
+/** Guarda a oferta no estado (in-memory pro mesmo turno + DB pro próximo). */
+async function saveOffer(ctx: ExecCtx, offer: SlotOffer): Promise<void> {
+  ctx.conversationMetadata.ai_slot_offer = offer
+  await writeMeta(ctx)
+}
+function readOffer(ctx: ExecCtx): SlotOffer | null {
+  const o = (ctx.conversationMetadata?.ai_slot_offer ?? null) as SlotOffer | null
+  if (!o || typeof o.at !== "number" || !o.slots) return null
+  if (Date.now() - o.at > SLOT_TTL_MS) return null   // expirou → re-consultar
+  return o
+}
+async function clearOffer(ctx: ExecCtx): Promise<void> {
+  if (ctx.conversationMetadata) delete ctx.conversationMetadata.ai_slot_offer
+  await writeMeta(ctx)
+}
+/** Extrai a letra A–H que a IA passou (tolerante a "B", "b", "letra B"). */
+function parseSlotLetter(raw: string): string | null {
+  const m = raw.trim().toUpperCase().match(/[A-H]/)
+  return m ? m[0] : null
 }
 
 // ── schedule_appointment (ação) ──────────────────────────────────────────
-interface ScheduleArgs { service: string; resource: string; slot: string }
+interface ScheduleArgs { slot: string }
 
 export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
   id:           SCHEDULE_APPOINTMENT,
@@ -199,14 +231,12 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
     function: {
       name: SCHEDULE_APPOINTMENT,
       description:
-        "Marca um horário pro cliente. Use SOMENTE o CÓDIGO numérico que veio entre [# ] do check_availability " +
-        "(copie o número inteiro — NÃO escreva data/hora). NUNCA invente. Se der erro/indisponível, chame check_availability de novo.",
+        "Marca um horário pro cliente. Use SOMENTE a LETRA (A, B, C…) do horário que veio do check_availability — " +
+        "copie a letra exata, NÃO escreva data/hora nem invente uma letra fora da lista. Se der erro/indisponível, chame check_availability de novo.",
       parameters: {
         type: "object",
         properties: {
-          service:  { type: "string", description: "Nome do serviço. Opcional (use o mesmo do check_availability)." },
-          resource: { type: "string", description: "Nome da agenda. Opcional." },
-          slot:     { type: "string", description: "O CÓDIGO numérico do horário escolhido, copiado de [# ] do check_availability (ex: 1750359600000)." },
+          slot: { type: "string", description: "A LETRA do horário escolhido (A, B, C…), exatamente como apareceu na lista do check_availability." },
         },
         required: ["slot"],
         additionalProperties: false,
@@ -215,36 +245,34 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
   },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
-    return {
-      service:  typeof p.service === "string"  ? p.service.trim()  : "",
-      resource: typeof p.resource === "string" ? p.resource.trim() : "",
-      slot:     typeof p.slot === "string"     ? p.slot.trim()     : "",
-    }
+    return { slot: typeof p.slot === "string" ? p.slot.trim() : "" }
   },
   execute: async (ctx, args) => {
-    if (!args.slot) return { ok: false, toolMessage: `Falta o horário. ${SLOT_HINT}` }
-    const start = parseSlotCode(args.slot)
-    if (!start) return { ok: false, toolMessage: `Código de horário inválido. ${SLOT_HINT}` }
+    // Resolve a LETRA contra a oferta guardada (serviço/pool já vêm dela → fonte única).
+    const offer = readOffer(ctx)
+    if (!offer) return { ok: false, toolMessage: `Não há lista de horários ativa (ou expirou). Chame check_availability primeiro e ofereça os horários. ${SLOT_HINT}` }
+    const letter = parseSlotLetter(args.slot)
+    if (!letter || !offer.slots[letter]) {
+      const valid = Object.keys(offer.slots).join(", ")
+      return { ok: false, toolMessage: `A letra "${args.slot}" não está na lista atual. Letras válidas: ${valid}. NÃO invente — confirme com o cliente qual dessas, ou chame check_availability de novo.` }
+    }
+    const iso = offer.slots[letter]
 
-    const res = await resolveAgendaTargets(ctx.tenantId, targetSpec(ctx, args.service, args.resource))
-    if (res.error) return { ok: false, toolMessage: res.error }
-    const { serviceId, pool } = res
+    // 🔒 ANTI-CORRIDA + RESOLUÇÃO DO POOL: acha a 1ª agenda do pool com ESTE horário
+    // REALMENTE livre (o slot pode ter enchido entre a oferta e a marca).
+    const chosen = await pickFreeInPool(ctx.tenantId, { pool: offer.pool, serviceId: offer.serviceId, startsAt: iso })
+    if (!chosen) return { ok: false, toolMessage: `O horário ${fmtSlot(iso)} (${letter}) acabou de ser ocupado. Chame check_availability de novo e ofereça SOMENTE os retornados.` }
 
-    // 🔒 ANTI-ALUCINAÇÃO + RESOLUÇÃO DO POOL: acha a 1ª agenda do pool com ESTE
-    // horário REALMENTE livre. Se a IA inventou (ou o pool todo encheu) → rejeita.
-    const chosen = await pickFreeInPool(ctx.tenantId, { pool, serviceId, startsAt: start.toISOString() })
-    if (!chosen) return { ok: false, toolMessage: "Esse horário não está livre. Chame check_availability de novo e ofereça SOMENTE os horários retornados." }
-
-    // Simulador: valida tudo, mas não escreve.
-    if (ctx.dryRun) return { ok: true, toolMessage: `[simulação] Agendaria para ${fmtSlot(start.toISOString())}.` }
+    if (ctx.dryRun) return { ok: true, toolMessage: `[simulação] Agendaria para ${fmtSlot(iso)}.` }
 
     const r = await bookAppointment(ctx.tenantId, {
       contactId: ctx.contact.id, conversationId: ctx.conversationId,
-      resourceId: chosen, serviceId, startsAt: start.toISOString(),
+      resourceId: chosen, serviceId: offer.serviceId, startsAt: iso,
       source: "ai", createdBy: null, conversationalConfirm: true,
     })
     if (r.error) return { ok: false, toolMessage: `Não consegui marcar: ${r.error}. Ofereça outro horário (check_availability).` }
-    return { ok: true, toolMessage: `Agendado com sucesso para ${fmtSlot(start.toISOString())}. ✅`, data: { appointmentId: r.id } }
+    await clearOffer(ctx)
+    return { ok: true, toolMessage: `Agendado com sucesso para ${fmtSlot(iso)}. ✅`, data: { appointmentId: r.id } }
   },
 })
 
@@ -262,12 +290,12 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
     function: {
       name: RESCHEDULE_APPOINTMENT,
       description:
-        "Remarca o PRÓXIMO agendamento do cliente pra um novo horário. Use SOMENTE o CÓDIGO numérico entre [# ] do " +
-        "check_availability (copie o número inteiro — não escreva data/hora). NUNCA invente horário.",
+        "Remarca o PRÓXIMO agendamento do cliente pra um novo horário. Use SOMENTE a LETRA (A, B, C…) do horário que " +
+        "veio do check_availability — copie a letra exata, não escreva data/hora nem invente. NUNCA invente horário.",
       parameters: {
         type: "object",
         properties: {
-          new_slot: { type: "string", description: "O CÓDIGO numérico do novo horário, copiado de [# ] do check_availability (ex: 1750359600000)." },
+          new_slot: { type: "string", description: "A LETRA do novo horário (A, B, C…), exatamente como na lista do check_availability." },
         },
         required: ["new_slot"],
         additionalProperties: false,
@@ -279,9 +307,14 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
     return { new_slot: typeof p.new_slot === "string" ? p.new_slot.trim() : "" }
   },
   execute: async (ctx, args) => {
-    if (!args.new_slot) return { ok: false, toolMessage: `Falta o novo horário. ${SLOT_HINT}` }
-    const start = parseSlotCode(args.new_slot)
-    if (!start) return { ok: false, toolMessage: `Código de horário inválido. ${SLOT_HINT}` }
+    const offer = readOffer(ctx)
+    if (!offer) return { ok: false, toolMessage: `Não há lista de horários ativa (ou expirou). Chame check_availability primeiro. ${SLOT_HINT}` }
+    const letter = parseSlotLetter(args.new_slot)
+    if (!letter || !offer.slots[letter]) {
+      const valid = Object.keys(offer.slots).join(", ")
+      return { ok: false, toolMessage: `A letra "${args.new_slot}" não está na lista atual. Letras válidas: ${valid}. NÃO invente.` }
+    }
+    const start = new Date(offer.slots[letter])
 
     // Resolve o PRÓXIMO agendamento DESTE contato (anti-IDOR: filtra por contact_id).
     const { data: appt } = await supabaseAdmin.from("appointments")
@@ -303,6 +336,7 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
 
     const r = await moveAppointment(ctx.tenantId, appt.id, start.toISOString())
     if (r.error) return { ok: false, toolMessage: `Não consegui remarcar: ${r.error}. Ofereça outro horário (check_availability).` }
+    await clearOffer(ctx)
     return { ok: true, toolMessage: `Remarcado para ${fmtSlot(start.toISOString())}. ✅`, data: { appointmentId: appt.id } }
   },
 })

@@ -91,6 +91,7 @@ function finishStepTool(fc: FlowControl): OpenAI.Chat.Completions.ChatCompletion
       description:
         "Conclui ESTA etapa e DEVOLVE o controle ao fluxo (os próximos nós continuam — pode encaminhar/encerrar). " +
         "Chame APENAS quando NÃO houver mais nada a fazer com o cliente neste passo. " +
+        "Se a sua conclusão acompanha uma fala de transição ('vou te encaminhar', 'vou te abrir as opções', 'vou te passar pro time'), ponha essa fala no campo \"message\" desta ferramenta — NUNCA a mande como texto e pare (isso trava a conversa esperando o cliente). " +
         "NÃO conclua numa resposta que faz uma PERGUNTA ao cliente (espere a resposta antes). " +
         "NÃO conclua se ofereceu/mencionou um agendamento ou demonstração e ainda não marcou (marque o horário ou o cliente recusar primeiro).",
       parameters: {
