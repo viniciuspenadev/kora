@@ -17,6 +17,7 @@
 import "server-only"
 import { sendBotText } from "../outbound"
 import { sendOptions } from "./interactive"
+import { parseScheduleRequest, localDayRange, inPeriod } from "./ai-schedule"
 import type { ExecCtx } from "../capabilities/types"
 import type { ScheduleNodeConfig } from "./types"
 import { resolveAgendaTargets, availabilityPool, pickFreeInPool, bookAppointment } from "@/lib/agenda/booking"
@@ -26,6 +27,10 @@ const TZ = "America/Sao_Paulo"
 const NONE_ID = "schedule:none", NONE_LABEL = "Nenhum desses"
 const MORE_ID = "schedule:more", MORE_LABEL = "Ver mais dias"
 const BACK_ID = "schedule:back", BACK_LABEL = "Outro dia"
+// No by_day o passo de DATA tem pergunta própria de DIA (o `intro` do autor é
+// sobre HORÁRIO → fica pro passo de horário; senão "Escolha o horário" apareceria
+// em cima de uma lista de dias).
+const DATE_PROMPT = "Qual dia fica melhor pra você?"
 
 const HORIZON_DEFAULT = 21
 const MAXSLOTS_DEFAULT = 6
@@ -67,6 +72,9 @@ export type ScheduleStash =
   | { mode: "slots"; serviceId: string | null; pool: string[]; slots: string[] }
   | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "date"; pageStart: number }
   | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "time"; pageStart: number; chosenDay: string; slots: string[] }
+  // aiParse: a IA não identificou o serviço → o cliente escolhe (picker determinístico);
+  // dia/período já interpretados ficam guardados pra estreitar a oferta depois.
+  | { mode: "pick_service"; services: { id: string; name: string }[]; fromDate: string; period: string }
 
 // ── núcleo: resolve destino + disponibilidade ──────────────────
 export interface ScheduleOffer { slots: string[]; serviceId: string | null; pool: string[] }
@@ -81,31 +89,44 @@ async function resolvePool(ctx: ExecCtx, cfg: ScheduleNodeConfig) {
   })
 }
 
+/** Destino já resolvido (aiParse: serviço escolhido pela IA/picker) — pula resolvePool. */
+type Resolved = { serviceId: string | null; pool: string[] }
+
 /** Modo "slots": resolve destino + UNIÃO de horários do pool (null = sem destino). */
-export async function prepareScheduleOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig): Promise<ScheduleOffer | null> {
-  const res = await resolvePool(ctx, cfg)
-  if (res.error || res.pool.length === 0) return null   // fail-closed → ramo "sem_horario"
+export async function prepareScheduleOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Resolved): Promise<ScheduleOffer | null> {
+  let serviceId: string | null, pool: string[]
+  if (resolved) { serviceId = resolved.serviceId; pool = resolved.pool }
+  else {
+    const res = await resolvePool(ctx, cfg)
+    if (res.error || res.pool.length === 0) return null   // fail-closed → ramo "sem_horario"
+    serviceId = res.serviceId; pool = res.pool
+  }
   const now = Date.now()
   const horizon = Math.max(1, cfg.horizonDays ?? HORIZON_DEFAULT)
   const merged = await availabilityPool(ctx.tenantId, {
-    pool: res.pool, serviceId: res.serviceId,
+    pool, serviceId,
     rangeStart: new Date(now).toISOString(),
     rangeEnd:   new Date(now + horizon * 86_400_000).toISOString(),
   })
   const max = Math.min(Math.max(1, cfg.maxSlots ?? MAXSLOTS_DEFAULT), MAXSLOTS_CAP)
-  return { slots: merged.slice(0, max).map((s) => s.start), serviceId: res.serviceId, pool: res.pool }
+  return { slots: merged.slice(0, max).map((s) => s.start), serviceId, pool }
 }
 
 export interface DayOffer { serviceId: string | null; pool: string[]; dayKeys: string[]; byDay: Record<string, string[]> }
 
 /** Modo "by_day": disponibilidade do horizonte agrupada por DIA (null = sem vaga). */
-export async function prepareDayOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig): Promise<DayOffer | null> {
-  const res = await resolvePool(ctx, cfg)
-  if (res.error || res.pool.length === 0) return null
+export async function prepareDayOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Resolved): Promise<DayOffer | null> {
+  let serviceId: string | null, pool: string[]
+  if (resolved) { serviceId = resolved.serviceId; pool = resolved.pool }
+  else {
+    const res = await resolvePool(ctx, cfg)
+    if (res.error || res.pool.length === 0) return null
+    serviceId = res.serviceId; pool = res.pool
+  }
   const now = Date.now()
   const horizon = Math.max(1, cfg.horizonDays ?? HORIZON_DEFAULT)
   const merged = await availabilityPool(ctx.tenantId, {
-    pool: res.pool, serviceId: res.serviceId,
+    pool, serviceId,
     rangeStart: new Date(now).toISOString(),
     rangeEnd:   new Date(now + horizon * 86_400_000).toISOString(),
   })
@@ -117,7 +138,7 @@ export async function prepareDayOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig): Pr
   }
   const dayKeys = Object.keys(byDay).sort()
   if (dayKeys.length === 0) return null
-  return { serviceId: res.serviceId, pool: res.pool, dayKeys, byDay }
+  return { serviceId, pool, dayKeys, byDay }
 }
 
 /** Re-valida o slot no pool e MARCA. `taken` = encheu agora; `id` = sucesso. */
@@ -157,7 +178,7 @@ async function sendDateOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extra
   const hasMore = stash.pageStart + DATE_PAGE < stash.dayKeys.length
   await sendOptions(ctx, {
     render:     cfg.render,
-    body:       cfg.intro?.trim() || "Qual dia fica melhor pra você?",
+    body:       DATE_PROMPT,
     items:      page.map((k, i) => ({ id: `schedule:day:${i}`, title: fmtDay(stash.byDay[k][0]) })),
     last:       hasMore ? { id: MORE_ID, title: MORE_LABEL } : { id: NONE_ID, title: NONE_LABEL },
     listButton: "Ver dias",
@@ -167,9 +188,10 @@ async function sendDateOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extra
 
 /** Oferta de HORÁRIOS de um dia (by_day, fase time): horários + "Outro dia". */
 async function sendTimeOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extract<ScheduleStash, { phase: "time" }>): Promise<void> {
+  const day = fmtDay(stash.slots[0])
   await sendOptions(ctx, {
     render:     cfg.render,
-    body:       `Horários pra ${fmtDay(stash.slots[0])}:`,
+    body:       cfg.intro?.trim() ? `${cfg.intro.trim()} (${day})` : `Horários pra ${day}:`,
     items:      stash.slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s) })),
     last:       { id: BACK_ID, title: BACK_LABEL },
     listButton: "Ver horários",
@@ -237,6 +259,19 @@ async function book(ctx: ExecCtx, cfg: ScheduleNodeConfig, iso: string, serviceI
 export async function resumeSchedule(
   ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: ScheduleStash | undefined, reply: string,
 ): Promise<ScheduleResume> {
+  // ── aiParse: cliente escolheu o serviço no picker → resolve + oferta ──
+  if (stash?.mode === "pick_service") {
+    const idx = pickServiceIndex(reply, stash.services)
+    if (idx == null) {
+      await sendBotText(ctx, "É só escolher um dos serviços 👇", SCHED_META)
+      await sendServicePicker(ctx, cfg, stash.services)
+      return { kind: "wait", stash }
+    }
+    const r = await resolveServiceId(ctx, cfg, stash.services[idx].id)
+    if (!r) return { kind: "branch", branch: "sem_horario", responded: false }
+    return offerForResolved(ctx, cfg, r, stash.fromDate, stash.period)
+  }
+
   // ── modo slots (default; cobre stash antigo sem `mode`) ──
   if (!stash || stash.mode === "slots") {
     const s = (stash as Extract<ScheduleStash, { mode: "slots" }> | undefined) ?? { mode: "slots", slots: [], serviceId: null, pool: [] }
@@ -315,18 +350,112 @@ export async function resumeSchedule(
   return out
 }
 
-// ── ADVANCE: primeira oferta do nó (slots OU by_day) ───────────
-// Retorna { wait, stash } se ofereceu (esperando), ou { branch } se não há vaga.
-export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Promise<ScheduleResume> {
+// ── aiParse: a IA INTERPRETA (serviço/dia/período); o motor oferta/marca ──
+// A IA só preenche {serviço, dia, período} — não oferta, não marca, não confirma
+// (impossível alucinar/cravar). Serviço casa contra a lista REAL; não casou → picker.
+function matchService(name: string, services: { id: string; name: string }[]): string | null {
+  const n = name.trim().toLowerCase()
+  if (!n) return null
+  const exact = services.find((s) => s.name.trim().toLowerCase() === n)
+  if (exact) return exact.id
+  const partial = services.find((s) => { const sn = s.name.trim().toLowerCase(); return sn && (n.includes(sn) || sn.includes(n)) })
+  return partial?.id ?? null
+}
+
+async function resolveServiceId(ctx: ExecCtx, cfg: ScheduleNodeConfig, serviceId: string): Promise<Resolved | null> {
+  const t = cfg.target
+  const res = await resolveAgendaTargets(ctx.tenantId, {
+    mode:           t?.mode === "owner" ? "owner" : "fixed",
+    serviceId,
+    resourceId:     t?.resourceId ?? null,
+    conversationId: ctx.conversationId,
+  })
+  if (res.error || res.pool.length === 0) return null
+  return { serviceId: res.serviceId, pool: res.pool }
+}
+
+/** Horários de UM dia (filtrado por período) — a alavanca "sexta à tarde". */
+async function daySlots(ctx: ExecCtx, cfg: ScheduleNodeConfig, r: Resolved, fromDate: string, period: string): Promise<string[]> {
+  const range = localDayRange(fromDate)
+  if (!range) return []
+  const now = Date.now()
+  if (range.end <= now) return []
+  const merged = await availabilityPool(ctx.tenantId, {
+    pool: r.pool, serviceId: r.serviceId,
+    rangeStart: new Date(Math.max(now, range.start)).toISOString(),
+    rangeEnd:   new Date(range.end).toISOString(),
+  })
+  let slots = merged.map((s) => s.start)
+  if (period) slots = slots.filter((s) => inPeriod(s, period))
+  const max = Math.min(Math.max(1, cfg.maxSlots ?? MAXSLOTS_DEFAULT), MAXSLOTS_CAP)
+  return slots.slice(0, max)
+}
+
+async function sendServicePicker(ctx: ExecCtx, cfg: ScheduleNodeConfig, services: { id: string; name: string }[]): Promise<void> {
+  await sendOptions(ctx, {
+    render:     cfg.render,
+    body:       "Qual serviço você quer agendar?",
+    items:      services.slice(0, 10).map((s, i) => ({ id: `schedule:svc:${i}`, title: s.name })),
+    listButton: "Ver serviços",
+    meta:       SCHED_META,
+  })
+}
+function pickServiceIndex(reply: string, services: { id: string; name: string }[]): number | null {
+  const r = reply.trim().toLowerCase()
+  if (!r) return null
+  for (let i = 0; i < services.length; i++) {
+    const sn = services[i].name.trim().toLowerCase()
+    if (sn && (r === sn || r.includes(sn))) return i
+  }
+  const num = r.match(/\d+/)
+  if (num) { const idx = parseInt(num[0], 10) - 1; if (idx >= 0 && idx < services.length) return idx }
+  return null
+}
+
+/** Serviço resolvido → oferta (estreitada pro dia/período se a IA captou). */
+async function offerForResolved(ctx: ExecCtx, cfg: ScheduleNodeConfig, r: Resolved, fromDate: string, period: string): Promise<ScheduleResume> {
+  if (fromDate) {
+    const slots = await daySlots(ctx, cfg, r, fromDate, period)
+    if (slots.length > 0) {
+      await sendScheduleOffer(ctx, cfg, slots)
+      return { kind: "wait", stash: { mode: "slots", serviceId: r.serviceId, pool: r.pool, slots } }
+    }
+    await sendBotText(ctx, "Nesse dia não achei horário livre — veja as próximas opções 👇", SCHED_META)
+  }
+  return startNormal(ctx, cfg, r)
+}
+
+// ── ADVANCE: primeira oferta do nó ─────────────────────────────
+/** Oferta normal (by_day/slots), opcionalmente com destino já resolvido (aiParse). */
+async function startNormal(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Resolved): Promise<ScheduleResume> {
   if (cfg.offerMode === "by_day") {
-    const offer = await prepareDayOffer(ctx, cfg)
+    const offer = await prepareDayOffer(ctx, cfg, resolved)
     if (!offer) return { kind: "branch", branch: "sem_horario", responded: false }
     const stash: ScheduleStash = { mode: "by_day", serviceId: offer.serviceId, pool: offer.pool, byDay: offer.byDay, dayKeys: offer.dayKeys, phase: "date", pageStart: 0 }
     await sendDateOffer(ctx, cfg, stash)
     return { kind: "wait", stash }
   }
-  const offer = await prepareScheduleOffer(ctx, cfg)
+  const offer = await prepareScheduleOffer(ctx, cfg, resolved)
   if (!offer || offer.slots.length === 0) return { kind: "branch", branch: "sem_horario", responded: false }
   await sendScheduleOffer(ctx, cfg, offer.slots)
   return { kind: "wait", stash: { mode: "slots", slots: offer.slots, serviceId: offer.serviceId, pool: offer.pool } }
+}
+
+/** Entrada do nó. aiParse: a IA interpreta serviço+dia → motor oferta/marca. */
+export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Promise<ScheduleResume> {
+  if (!cfg.aiParse) return startNormal(ctx, cfg)
+
+  const services = ctx.services ?? []
+  const parsed = await parseScheduleRequest(ctx.model ?? "gpt-4.1", ctx.history ?? [], services.map((s) => s.name))
+  const matchedId = matchService(parsed.service, services) ?? (services.length === 1 ? services[0].id : null)
+
+  if (matchedId) {
+    const r = await resolveServiceId(ctx, cfg, matchedId)
+    if (!r) return { kind: "branch", branch: "sem_horario", responded: false }
+    return offerForResolved(ctx, cfg, r, parsed.fromDate, parsed.period)
+  }
+  // serviço não identificado → picker determinístico (sem serviços cadastrados → oferta normal).
+  if (services.length === 0) return startNormal(ctx, cfg)
+  await sendServicePicker(ctx, cfg, services)
+  return { kind: "wait", stash: { mode: "pick_service", services, fromDate: parsed.fromDate, period: parsed.period } }
 }

@@ -658,9 +658,18 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
   const target    = (cfg.target as AgendaBinding | undefined) ?? { mode: "fixed" }
   const setTarget = (patch: Partial<AgendaBinding>) => set({ target: { ...target, ...patch } })
   const offerMode = String(cfg.offerMode ?? "slots")
+  const aiParse   = !!cfg.aiParse
   return (
     <div className="space-y-3">
-      <p className="text-xs text-slate-400">Oferece os horários <b>reais</b> da agenda, o cliente escolhe e o sistema <b>marca</b> — tudo por regra, <b>sem consumir IA</b>.</p>
+      <p className="text-xs text-slate-400">Oferece os horários <b>reais</b> da agenda, o cliente escolhe e o sistema <b>marca</b> — sempre por regra (à prova de alucinação).</p>
+
+      <label className="flex items-start gap-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5 cursor-pointer">
+        <input type="checkbox" checked={aiParse} onChange={(e) => set({ aiParse: e.target.checked })} className="mt-0.5 accent-violet-600" />
+        <div>
+          <span className="text-xs font-semibold text-violet-700 inline-flex items-center gap-1"><Sparkles className="size-3" /> Entender o pedido com IA</span>
+          <p className="text-[11px] text-slate-500 mt-0.5">A IA lê a conversa e já identifica o <b>serviço</b> e o <b>dia/período</b> (ex: &ldquo;drenagem sexta à tarde&rdquo;) → o sistema oferta os horários <b>reais</b> e marca. Não identificou o serviço? mostra a lista. A IA só <b>interpreta</b> — nunca inventa horário nem confirma. <b>Consome IA.</b></p>
+        </div>
+      </label>
 
       <div className="rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
         <label className={LABEL}>Em qual agenda cai?</label>
@@ -678,7 +687,11 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
               <option value="">— Serviço: (opcional) —</option>
               {services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-            <p className="text-[11px] text-slate-400">Escolha a <b>agenda</b> (cai sempre nela) ou só o <b>serviço</b> (cai em qualquer profissional dele).</p>
+            <p className="text-[11px] text-slate-400">
+              {aiParse
+                ? <>Com <b>Entender com IA</b>, o <b>serviço vem da conversa</b> — deixe o serviço aberto aqui (a <b>agenda/profissional</b> ainda vale como restrição).</>
+                : <>Escolha a <b>agenda</b> (cai sempre nela) ou só o <b>serviço</b> (cai em qualquer profissional dele).</>}
+            </p>
           </div>
         )}
         {target.mode === "owner" && <p className="text-[11px] text-slate-400">Cai na agenda de quem já atende este cliente. Sem dono ainda → qualquer disponível.</p>}
@@ -700,7 +713,8 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
       <div>
         <label className={LABEL}>Texto de abertura</label>
         <VarField value={String(cfg.intro ?? "")} onChange={(v) => set({ intro: v })}
-          placeholder={offerMode === "by_day" ? "Qual dia fica melhor pra você?" : "Escolha o melhor horário:"} flowVars={flowVars} />
+          placeholder="Escolha o melhor horário:" flowVars={flowVars} />
+        {offerMode === "by_day" && <p className="text-[11px] text-slate-400 mt-1">No modo &ldquo;escolher o dia&rdquo;, a pergunta do dia é automática; este texto aparece na escolha do <b>horário</b>.</p>}
       </div>
       <div className="flex gap-2">
         {offerMode === "slots" && (
@@ -725,11 +739,11 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
       <RenderSelect value={(cfg.render as RenderMode) ?? "auto"} onChange={(v) => set({ render: v })} />
       <WhatsAppPreview
         render={(cfg.render as RenderMode) ?? "auto"}
-        body={String(cfg.intro ?? "").trim() || (offerMode === "by_day" ? "Qual dia fica melhor pra você?" : "Escolha o melhor horário:")}
+        body={offerMode === "by_day" ? "Qual dia fica melhor pra você?" : (String(cfg.intro ?? "").trim() || "Escolha o melhor horário:")}
         items={offerMode === "by_day" ? ["Hoje 16/06", "Amanhã 17/06", "qua 18/06"] : ["seg 16/06 às 09h00", "seg 16/06 às 10h30", "ter 17/06 às 14h00"]}
         last={offerMode === "by_day" ? "Ver mais dias" : "Nenhum desses"}
         listButton={offerMode === "by_day" ? "Ver dias" : "Ver horários"}
-        note="Os horários acima são exemplos — no envio real vêm da sua agenda."
+        note={offerMode === "by_day" ? "Passo 1 (dias) — depois o cliente escolhe o horário do dia. Exemplos; no envio real vêm da agenda." : "Os horários acima são exemplos — no envio real vêm da sua agenda."}
       />
 
       <p className="text-[11px] text-slate-400 border-t border-slate-100 pt-2">Saídas: <b className="text-emerald-600">Agendado</b> (marcou) e <b className="text-slate-500">Sem horário</b> (sem vaga ou desistiu — ligue num atendente).</p>

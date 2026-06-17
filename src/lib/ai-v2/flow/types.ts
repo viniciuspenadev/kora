@@ -128,6 +128,10 @@ export interface CollectNodeConfig {
 export interface ScheduleNodeConfig {
   /** Destino (binding): fixed (agenda/serviço) · owner (carteira). Sem "ai" (não há IA aqui). */
   target?:      AgendaBinding
+  /** Entender o pedido com IA: a IA INTERPRETA serviço + dia/período da conversa
+   *  (tool forçada, não oferta nem marca) → o motor oferta os horários reais e marca.
+   *  Conversacional ("drenagem sexta tarde") e à prova de alucinação. Consome token. */
+  aiParse?:     boolean
   /** Como oferecer: "slots" (lista plana dos próximos horários, default) ·
    *  "by_day" (cliente escolhe o DIA primeiro → depois o horário do dia). */
   offerMode?:   "slots" | "by_day"

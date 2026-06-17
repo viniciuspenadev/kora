@@ -21,6 +21,7 @@ import { loadFlow } from "./triggers"
 import { classifyIntent } from "./router"
 import { sendMenu, parseMenuReply } from "./menu"
 import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
+import { deferralConcepts } from "./boundary"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
@@ -447,6 +448,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           flowControl: { outcomes: cfg.outcomes ?? [], collect: cfg.collect ?? [] },
           extraTools:  cfg.tools,
           agendaBinding: cfg.agenda_target ?? null,
+          // Contrato de fronteira: ação determinística logo à frente que este nó
+          // não tem como tool → injeta o "defira, não conduza" (boundary.ts).
+          deferral:    deferralConcepts(graph, node.id, cfg.tools ?? []),
         })
         lastAgent = turn
         if (turn.sentMessage) responded = true

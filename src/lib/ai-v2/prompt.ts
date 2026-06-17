@@ -36,8 +36,11 @@ export function compileStudioPrompt(args: {
   /** Campos do `collect` do nó — "o que descobrir AO LONGO da conversa" (NÃO
    *  acoplado a concluir o passo). */
   collectFields?: { key: string; description?: string }[]
+  /** Contrato de fronteira (deferral): o que este nó NÃO pode fazer mas existe
+   *  logo à frente (ex: agenda). Injetado como REGRA DURA pós-persona. */
+  deferral?:    string
 }): string {
-  const { persona, instruction, variables, flowControl, playbooks, collectFields } = args
+  const { persona, instruction, variables, flowControl, playbooks, collectFields, deferral } = args
   const name = persona.name?.trim() || "Assistente"
   const tone = persona.tone ? (TONE_PT[persona.tone] ?? persona.tone) : "amigável e acolhedor"
 
@@ -92,6 +95,13 @@ export function compileStudioPrompt(args: {
   // O cliente escreve só a intenção (acima); o craft é do sistema.
   if (playbooks?.trim()) {
     lines.push(``, `# SUAS FERRAMENTAS E COMO USÁ-LAS`, playbooks.trim())
+  }
+
+  // Contrato de fronteira — REGRA DURA, deliberadamente a ÚLTIMA seção (primazia
+  // sobre persona/missão). Diz o que este nó NÃO executa mas existe à frente, e
+  // manda DEFERIR (concluir o passo) em vez de conduzir/cravar. Ver flow/boundary.ts.
+  if (deferral?.trim()) {
+    lines.push(``, `# LIMITES DESTE PASSO (prioridade máxima — valem mesmo que a persona ou a missão sugiram o contrário)`, deferral.trim())
   }
 
   return lines.join("\n")

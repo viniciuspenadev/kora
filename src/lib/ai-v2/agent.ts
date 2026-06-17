@@ -22,6 +22,7 @@ import {
   CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
   type ExecCtx, type AgendaBinding,
 } from "./capabilities"
+import { deferralContract, type DeferralConcept } from "./flow/boundary"
 
 const MAX_STEPS    = 4
 const PLAN_LEVEL   = 99   // agente core usa só caps nível 0; gating real vem no flow (Fatia 4+)
@@ -54,6 +55,9 @@ export interface AgentTurnInput {
   extraTools?:  string[]
   /** Destino da agenda fixado pelo nó (input do autor) → entra no ctx das caps. */
   agendaBinding?: AgendaBinding | null
+  /** Conceitos a DEFERIR: ações que um nó determinístico à frente provê e este nó
+   *  NÃO tem como tool (derivados do grafo). Injeta o contrato de fronteira. */
+  deferral?:    DeferralConcept[]
 }
 
 export interface AgentTurnResult {
@@ -130,6 +134,9 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     services:    ctx.services,
     resources:   ctx.resources,
   })
+  // Contrato de fronteira: ações que um nó determinístico à frente provê e ESTE
+  // nó não tem como tool → a IA deve DEFERIR (concluir), não conduzir/cravar.
+  const deferral = input.deferral?.length ? deferralContract(input.deferral) : undefined
   const systemPrompt = compileStudioPrompt({
     persona,
     instruction,
@@ -137,6 +144,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     flowControl: flowControl ?? null,
     playbooks,
     collectFields: flowControl?.collect,
+    deferral,
   })
 
   const messages: Msg[] = [{ role: "system", content: systemPrompt }]
