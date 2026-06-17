@@ -1,10 +1,13 @@
 "use client"
 
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
+import { useRef } from "react"
 import { Trash2, Plus, Settings2, Sparkles } from "lucide-react"
 import { genId, type RFNode } from "./graph-sync"
-import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig } from "@/lib/ai-v2/flow/types"
+import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
+import { WhatsAppPreview } from "@/components/studio/whatsapp-preview"
+import { varsForContext } from "@/lib/variables/registry"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
@@ -12,8 +15,78 @@ const LABEL = "block text-[11px] font-semibold text-slate-600 mb-1"
 
 interface Opt { id: string; label: string }
 
+// Variáveis de contato sempre disponíveis no fluxo (cérebro único: registry "flow").
+const CONTACT_VARS = varsForContext("flow").map((v) => ({ token: v.token, label: v.label }))
+
+// Campo de texto COM guia de variáveis: chips que inserem {{token}} no cursor (o
+// cliente nunca digita chaves). Mostra os campos de contato + as variáveis que ele
+// criou no fluxo (Coletar/Definir/HTTP/Agendar). Espelha o editor de Templates.
+function VarField({
+  value, onChange, multiline = false, rows = 3, placeholder, flowVars = [],
+}: {
+  value: string
+  onChange: (v: string) => void
+  multiline?: boolean
+  rows?: number
+  placeholder?: string
+  flowVars?: string[]
+}) {
+  const ref = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null)
+  function insertVar(token: string) {
+    const ph = `{{${token}}}`
+    const el = ref.current
+    if (!el) { onChange(value + ph); return }
+    const start = el.selectionStart ?? value.length
+    const end   = el.selectionEnd ?? value.length
+    const next  = value.slice(0, start) + ph + value.slice(end)
+    onChange(next)
+    requestAnimationFrame(() => { el.focus(); const pos = start + ph.length; el.setSelectionRange(pos, pos) })
+  }
+  return (
+    <div>
+      {multiline
+        ? <textarea ref={(el) => { ref.current = el }} className={AREA} rows={rows} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
+        : <input ref={(el) => { ref.current = el }} className={INPUT} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />}
+      <div className="flex flex-wrap items-center gap-1 mt-1.5">
+        <span className="text-[10px] text-slate-400">Inserir:</span>
+        {CONTACT_VARS.map((v) => (
+          <button key={v.token} type="button" onClick={() => insertVar(v.token)} title={v.label}
+            className="px-1.5 py-0.5 text-[10px] font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 rounded transition-colors">
+            {`{{${v.token}}}`}
+          </button>
+        ))}
+        {flowVars.map((t) => (
+          <button key={t} type="button" onClick={() => insertVar(t)} title="Variável criada no fluxo"
+            className="px-1.5 py-0.5 text-[10px] font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded transition-colors">
+            {`{{${t}}}`}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Seletor de estilo de exibição (numerado vs botões/lista) — compartilhado Menu/Agendar.
+function RenderSelect({ value, onChange }: { value: RenderMode; onChange: (v: RenderMode) => void }) {
+  return (
+    <div>
+      <label className={LABEL}>Estilo das opções</label>
+      <select className={INPUT} value={value} onChange={(e) => onChange(e.target.value as RenderMode)}>
+        <option value="auto">Automático (recomendado)</option>
+        <option value="interactive">Botões / lista nativa</option>
+        <option value="numbered">Lista numerada (texto)</option>
+      </select>
+      <p className="text-[11px] text-slate-400 mt-1">
+        {value === "numbered"
+          ? "Sempre texto numerado — o cliente responde com o número, em qualquer canal."
+          : "Botões/lista nativa no WhatsApp oficial (Meta); no não-oficial (QR), cai pro numerado."}
+      </p>
+    </div>
+  )
+}
+
 export function ConfigPanel({
-  node, departments, flows, stages, tags, services, resources, ownerRouting, onChange, onDelete,
+  node, departments, flows, stages, tags, services, resources, ownerRouting, flowVars = [], onChange, onDelete,
 }: {
   node: RFNode
   departments: { id: string; name: string }[]
@@ -23,6 +96,8 @@ export function ConfigPanel({
   services: { id: string; name: string }[]
   resources: { id: string; name: string }[]
   ownerRouting: boolean
+  /** Variáveis que o cliente criou no fluxo (Coletar/Definir/HTTP/Agendar) — chips extras. */
+  flowVars?: string[]
   onChange: (config: Record<string, unknown>) => void
   onDelete: () => void
 }) {
@@ -46,7 +121,7 @@ export function ConfigPanel({
       {type === "message" && (
         <div>
           <label className={LABEL}>Mensagem</label>
-          <textarea className={AREA} rows={4} value={String(cfg.text ?? "")} onChange={(e) => set({ text: e.target.value })} placeholder="Texto enviado ao cliente" />
+          <VarField multiline rows={4} value={String(cfg.text ?? "")} onChange={(v) => set({ text: v })} placeholder="Texto enviado ao cliente" flowVars={flowVars} />
         </div>
       )}
 
@@ -68,12 +143,12 @@ export function ConfigPanel({
           </div>
           <div>
             <label className={LABEL}>Legenda <span className="text-slate-400 font-normal">(opcional)</span></label>
-            <input className={INPUT} value={String(cfg.caption ?? "")} onChange={(e) => set({ caption: e.target.value })} placeholder="Texto junto da mídia" />
+            <VarField value={String(cfg.caption ?? "")} onChange={(v) => set({ caption: v })} placeholder="Texto junto da mídia" flowVars={flowVars} />
           </div>
         </div>
       )}
 
-      {type === "menu" && <MenuConfig cfg={cfg as unknown as MenuNodeConfig} set={set} />}
+      {type === "menu" && <MenuConfig cfg={cfg as unknown as MenuNodeConfig} set={set} flowVars={flowVars} />}
 
       {type === "condition" && <ConditionConfig cfg={cfg} set={set} tags={tags} />}
 
@@ -116,7 +191,7 @@ export function ConfigPanel({
         <div className="space-y-3">
           <div>
             <label className={LABEL}>Pergunta ao cliente</label>
-            <textarea className={AREA} rows={2} value={String(cfg.question ?? "")} onChange={(e) => set({ question: e.target.value })} placeholder="Qual o seu nome?" />
+            <VarField multiline rows={2} value={String(cfg.question ?? "")} onChange={(v) => set({ question: v })} placeholder="Qual o seu nome?" flowVars={flowVars} />
           </div>
           <div>
             <label className={LABEL}>Guardar resposta como</label>
@@ -135,7 +210,7 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} />}
+      {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} />}
 
       {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} tags={tags} stages={stages} services={services} resources={resources} ownerRouting={ownerRouting} />}
 
@@ -238,13 +313,13 @@ export function ConfigPanel({
   )
 }
 
-function MenuConfig({ cfg, set }: { cfg: MenuNodeConfig; set: (patch: Record<string, unknown>) => void }) {
+function MenuConfig({ cfg, set, flowVars }: { cfg: MenuNodeConfig; set: (patch: Record<string, unknown>) => void; flowVars: string[] }) {
   const options: Opt[] = cfg.options ?? []
   return (
     <div className="space-y-3">
       <div>
         <label className={LABEL}>Pergunta</label>
-        <textarea className={AREA} rows={2} value={cfg.text ?? ""} onChange={(e) => set({ text: e.target.value })} placeholder="Como posso ajudar?" />
+        <VarField multiline rows={2} value={cfg.text ?? ""} onChange={(v) => set({ text: v })} placeholder="Como posso ajudar?" flowVars={flowVars} />
       </div>
       <div>
         <label className={LABEL}>Opções</label>
@@ -282,6 +357,15 @@ function MenuConfig({ cfg, set }: { cfg: MenuNodeConfig; set: (patch: Record<str
         <label className={LABEL}>Se não entender <span className="text-slate-400 font-normal">(opcional)</span></label>
         <input className={INPUT} value={cfg.noMatch ?? ""} onChange={(e) => set({ noMatch: e.target.value })} placeholder="Não entendi. Responda com o número." />
       </div>
+      <RenderSelect value={cfg.render ?? "auto"} onChange={(v) => set({ render: v })} />
+      {options.some((o) => o.label.trim()) && (
+        <WhatsAppPreview
+          render={cfg.render ?? "auto"}
+          body={cfg.text?.trim() || "Como posso ajudar?"}
+          items={options.filter((o) => o.label.trim()).map((o) => o.label)}
+          listButton="Ver opções"
+        />
+      )}
     </div>
   )
 }
@@ -566,12 +650,14 @@ function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
   )
 }
 
-function ScheduleConfig({ cfg, set, services, resources, ownerRouting }: {
+function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
   services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
+  flowVars: string[]
 }) {
   const target    = (cfg.target as AgendaBinding | undefined) ?? { mode: "fixed" }
   const setTarget = (patch: Partial<AgendaBinding>) => set({ target: { ...target, ...patch } })
+  const offerMode = String(cfg.offerMode ?? "slots")
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-400">Oferece os horários <b>reais</b> da agenda, o cliente escolhe e o sistema <b>marca</b> — tudo por regra, <b>sem consumir IA</b>.</p>
@@ -599,15 +685,31 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting }: {
       </div>
 
       <div>
+        <label className={LABEL}>Como oferecer</label>
+        <select className={INPUT} value={offerMode} onChange={(e) => set({ offerMode: e.target.value })}>
+          <option value="slots">Próximos horários (lista direta)</option>
+          <option value="by_day">Escolher o dia primeiro</option>
+        </select>
+        <p className="text-[11px] text-slate-400 mt-1">
+          {offerMode === "by_day"
+            ? "Mostra os próximos dias com vaga → o cliente escolhe o dia e depois o horário (com \"ver mais dias\"). Bom pra agenda cheia."
+            : "Lista direta dos próximos horários livres, cruzando os dias. Bom pra agenda enxuta."}
+        </p>
+      </div>
+
+      <div>
         <label className={LABEL}>Texto de abertura</label>
-        <input className={INPUT} value={String(cfg.intro ?? "")} onChange={(e) => set({ intro: e.target.value })} placeholder="Escolha o melhor horário:" />
+        <VarField value={String(cfg.intro ?? "")} onChange={(v) => set({ intro: v })}
+          placeholder={offerMode === "by_day" ? "Qual dia fica melhor pra você?" : "Escolha o melhor horário:"} flowVars={flowVars} />
       </div>
       <div className="flex gap-2">
-        <div className="flex-1">
-          <label className={LABEL}>Quantos horários</label>
-          <input type="number" min={1} max={9} className={INPUT} value={Number.isFinite(cfg.maxSlots) ? Number(cfg.maxSlots) : 6}
-            onChange={(e) => set({ maxSlots: Math.min(9, Math.max(1, Math.floor(Number(e.target.value) || 6))) })} />
-        </div>
+        {offerMode === "slots" && (
+          <div className="flex-1">
+            <label className={LABEL}>Quantos horários</label>
+            <input type="number" min={1} max={9} className={INPUT} value={Number.isFinite(cfg.maxSlots) ? Number(cfg.maxSlots) : 6}
+              onChange={(e) => set({ maxSlots: Math.min(9, Math.max(1, Math.floor(Number(e.target.value) || 6))) })} />
+          </div>
+        )}
         <div className="flex-1">
           <label className={LABEL}>Horizonte (dias)</label>
           <input type="number" min={1} className={INPUT} value={Number.isFinite(cfg.horizonDays) ? Number(cfg.horizonDays) : 21}
@@ -619,6 +721,16 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting }: {
         <input className={INPUT} value={String(cfg.successText ?? "")} onChange={(e) => set({ successText: e.target.value })} placeholder="✅ Agendado! Seu horário: {{horario}}. Até lá 😊" />
         <p className="text-[11px] text-slate-400 mt-1">Use <code className="bg-slate-100 px-1 rounded">{"{{horario}}"}</code> pro horário marcado.</p>
       </div>
+
+      <RenderSelect value={(cfg.render as RenderMode) ?? "auto"} onChange={(v) => set({ render: v })} />
+      <WhatsAppPreview
+        render={(cfg.render as RenderMode) ?? "auto"}
+        body={String(cfg.intro ?? "").trim() || (offerMode === "by_day" ? "Qual dia fica melhor pra você?" : "Escolha o melhor horário:")}
+        items={offerMode === "by_day" ? ["Hoje 16/06", "Amanhã 17/06", "qua 18/06"] : ["seg 16/06 às 09h00", "seg 16/06 às 10h30", "ter 17/06 às 14h00"]}
+        last={offerMode === "by_day" ? "Ver mais dias" : "Nenhum desses"}
+        listButton={offerMode === "by_day" ? "Ver dias" : "Ver horários"}
+        note="Os horários acima são exemplos — no envio real vêm da sua agenda."
+      />
 
       <p className="text-[11px] text-slate-400 border-t border-slate-100 pt-2">Saídas: <b className="text-emerald-600">Agendado</b> (marcou) e <b className="text-slate-500">Sem horário</b> (sem vaga ou desistiu — ligue num atendente).</p>
     </div>

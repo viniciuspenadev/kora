@@ -12,45 +12,26 @@
 // inbound, tanto o número/label digitado quanto o id do botão tocado casam
 // em parseMenuReply (o botão nativo carrega id=option.id e title=label).
 
-import { sendBotText, sendBotInteractive } from "../outbound"
+import { sendBotText } from "../outbound"
+import { sendOptions } from "./interactive"
 import type { ExecCtx } from "../capabilities/types"
 import type { MenuNodeConfig } from "./types"
 
-const NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-
-/** Representação numerada (texto) — fallback universal e o que persiste no inbox. */
-function numberedText(cfg: MenuNodeConfig, opts: MenuNodeConfig["options"]): string {
-  return [
-    cfg.text.trim(),
-    "",
-    ...opts.map((o, i) => `${NUM_EMOJI[i] ?? `${i + 1}.`} ${o.label}`),
-  ].join("\n")
-}
-
 /**
- * Renderiza e envia o menu. Tenta interativo nativo (Oficial); se o provider
- * não suportar, cai pro menu numerado. Persiste sempre a versão legível, pro
- * atendente ver no inbox exatamente as opções oferecidas.
+ * Renderiza e envia o menu pelo veículo certo do canal (respeita cfg.render:
+ * auto/interactive/numbered). Persiste sempre a versão legível, pro atendente ver
+ * no inbox exatamente as opções oferecidas. Delega o craft de render a sendOptions.
  */
 export async function sendMenu(ctx: ExecCtx, cfg: MenuNodeConfig): Promise<void> {
-  const opts = cfg.options.slice(0, 10)
-  const text = numberedText(cfg, opts)
-  if (opts.length === 0) { await sendBotText(ctx, text, { studio_menu: true }); return }
-
-  // ≤3 opções → botões de resposta; 4..10 → lista. (≥1 garantido acima.)
-  const payload =
-    opts.length <= 3
-      ? { body: cfg.text.trim(), buttons: opts.map((o) => ({ id: o.id, title: o.label })) }
-      : { body: cfg.text.trim(), list: {
-          buttonText: "Ver opções",
-          sections:  [{ rows: opts.map((o) => ({ id: o.id, title: o.label })) }],
-        } }
-
-  const sentNative = await sendBotInteractive(ctx, payload, text, {
-    studio_menu:      true,
-    interactive_kind: opts.length <= 3 ? "button" : "list",
+  const opts = (cfg.options ?? []).slice(0, 10)
+  if (opts.length === 0) { await sendBotText(ctx, (cfg.text ?? "").trim(), { studio_menu: true }); return }
+  await sendOptions(ctx, {
+    render:     cfg.render,
+    body:       cfg.text ?? "",
+    items:      opts.map((o) => ({ id: o.id, title: o.label })),
+    listButton: "Ver opções",
+    meta:       { studio_menu: true },
   })
-  if (!sentNative) await sendBotText(ctx, text, { studio_menu: true })
 }
 
 /**

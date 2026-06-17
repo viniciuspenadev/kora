@@ -7,7 +7,7 @@
 // abre o painel de config; arrastar de um handle a outro liga os passos.
 // Salvar/Publicar converte o canvas → FlowGraph (o runtime executa).
 
-import { useState, useCallback, useTransition } from "react"
+import { useState, useCallback, useTransition, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
@@ -62,6 +62,27 @@ const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ 
   { type: "end",       label: "Encerrar",   icon: Flag },
 ]
 
+// Variáveis CRIADAS pelo cliente ao longo do fluxo (saída de Coletar/HTTP/Definir/
+// Agendar/IA) — viram chips no editor, ao lado dos campos de contato.
+function collectFlowVars(nodes: RFNode[]): string[] {
+  const out = new Set<string>()
+  for (const n of nodes) {
+    const c = (n.data?.config ?? {}) as Record<string, unknown>
+    switch (n.type) {
+      case "collect":  if (typeof c.saveAs === "string" && c.saveAs.trim()) out.add(c.saveAs.trim()); break
+      case "http":     out.add(typeof c.saveAs === "string" && c.saveAs.trim() ? c.saveAs.trim() : "http_response"); break
+      case "schedule": out.add("agendamento"); break
+      case "set_variable":
+        for (const a of (c.assignments as { key?: string }[] | undefined) ?? []) if (a.key?.trim()) out.add(a.key.trim())
+        break
+      case "ai_agent":
+        for (const f of (c.collect as { key?: string }[] | undefined) ?? []) if (f.key?.trim()) out.add(f.key.trim())
+        break
+    }
+  }
+  return [...out]
+}
+
 export function FlowEditorCanvas(props: Props) {
   return (
     <ReactFlowProvider>
@@ -86,6 +107,9 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
   const [feedback, setFeedback]     = useState<{ kind: "ok" | "error"; text: string } | null>(null)
 
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
+  // Variáveis que o cliente CRIOU no fluxo (Coletar/Definir/HTTP/Agendar/IA) → viram
+  // chips no editor, junto dos campos de contato. Atualiza ao vivo conforme monta.
+  const flowVars = useMemo(() => collectFlowVars(nodes), [nodes])
 
   const onConnect: OnConnect = useCallback((conn) => {
     setEdges((eds) =>
@@ -213,7 +237,7 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
         {/* Painel direito */}
         <div className="w-80 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
           {selectedNode
-            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel triggerType={triggerType} keywords={keywords} onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords} />}
         </div>
       </div>

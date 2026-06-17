@@ -57,10 +57,18 @@ export interface SendMediaNodeConfig {
   mediaType: "image" | "audio" | "video" | "document"
   caption?:  string
 }
+/** Como renderizar as opções de um nó interativo (Menu/Agendar):
+ *  • auto (default): botões nativos (≤3) / lista (4+) no Meta; numerado no Baileys.
+ *  • interactive: força o interativo nativo (no Baileys, sem suporte, cai p/ numerado).
+ *  • numbered: SEMPRE texto numerado, inclusive no Meta ("digite o número"). */
+export type RenderMode = "auto" | "interactive" | "numbered"
+
 export interface MenuNodeConfig {
   text:     string
   options:  { id: string; label: string }[]
   noMatch?: string
+  /** Estilo de exibição das opções (default auto). */
+  render?:  RenderMode
 }
 export type ConditionCheck =
   | "has_email" | "has_phone" | "has_name" | "has_document" | "has_company"
@@ -120,9 +128,14 @@ export interface CollectNodeConfig {
 export interface ScheduleNodeConfig {
   /** Destino (binding): fixed (agenda/serviço) · owner (carteira). Sem "ai" (não há IA aqui). */
   target?:      AgendaBinding
-  /** Texto de abertura acima dos horários. */
+  /** Como oferecer: "slots" (lista plana dos próximos horários, default) ·
+   *  "by_day" (cliente escolhe o DIA primeiro → depois o horário do dia). */
+  offerMode?:   "slots" | "by_day"
+  /** Estilo de exibição das opções (default auto). */
+  render?:      RenderMode
+  /** Texto de abertura acima dos horários/dias. */
   intro?:       string
-  /** Quantos horários oferecer (default 6, máx 9 — +"nenhum" ≤ 10 rows da lista Meta). */
+  /** Quantos horários oferecer no modo slots (default 6, máx 9 — +"nenhum" ≤ 10 rows). */
   maxSlots?:    number
   /** Horizonte de busca em dias (default 21). */
   horizonDays?: number

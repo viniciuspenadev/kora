@@ -13,7 +13,10 @@
 // resolver emite os dois com o mesmo valor, então os {{contato}} que JÁ existem
 // nas configs de produção continuam resolvendo. Migração sem quebra.
 
-export type VarContext = "agenda" | "generic"
+// "flow" = editor de fluxo do Studio: SÓ os campos que o runtime semeia do contato
+// (resolvem de fato em qualquer texto interpolado do fluxo). NÃO inclui data/hora/
+// agente — esses só existem no contexto de template/agenda (renderiam em branco aqui).
+export type VarContext = "agenda" | "generic" | "flow"
 
 export interface SystemVariable {
   token:    string
@@ -26,7 +29,10 @@ export interface SystemVariable {
 }
 
 export const SYSTEM_VARIABLES: SystemVariable[] = [
-  { token: "nome",    label: "Nome do cliente",   group: "Contato",     example: "Maria",       contexts: ["agenda", "generic"], aliases: ["contato"] },
+  { token: "nome",     label: "Nome do cliente",  group: "Contato",     example: "Maria",            contexts: ["agenda", "generic", "flow"], aliases: ["contato", "cliente"] },
+  { token: "empresa",  label: "Empresa",          group: "Contato",     example: "Acme",             contexts: ["flow"] },
+  { token: "email",    label: "E-mail",           group: "Contato",     example: "maria@email.com",  contexts: ["flow"] },
+  { token: "telefone", label: "Telefone",         group: "Contato",     example: "(11) 99999-9999",  contexts: ["flow"] },
   { token: "agente",  label: "Nome do atendente", group: "Atendimento", example: "Bernardo",    contexts: ["generic"] },
   { token: "servico", label: "Serviço",           group: "Agendamento", example: "Consulta",    contexts: ["agenda"] },
   { token: "data",    label: "Data",              group: "Agendamento", example: "15 de junho", contexts: ["agenda", "generic"] },

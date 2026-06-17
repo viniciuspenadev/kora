@@ -20,7 +20,7 @@ import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
 import { classifyIntent } from "./router"
 import { sendMenu, parseMenuReply } from "./menu"
-import { sendScheduleOffer, parseSchedulePick, prepareScheduleOffer, bookSchedulePick, fmtSlot } from "./schedule"
+import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
@@ -28,9 +28,6 @@ import type {
   SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
   WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig,
 } from "./types"
-
-/** Stash do nó schedule entre a oferta e o pick (mapeia "opção N" → ISO exato). */
-interface ScheduleStash { slots: string[]; serviceId: string | null; pool: string[] }
 
 function validateInput(v: string, type: string): boolean {
   const s = v.trim()
@@ -225,6 +222,16 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
   let activeFlow = flow
   let graph      = activeFlow.graph
   const variables = { ...run.variables }
+  // {{nome}}/{{empresa}}/... resolvem pros campos do CONTATO (seed-if-vazio — uma
+  // variável do fluxo com o mesmo nome ainda vence). Resolve "Olá {{nome}}" em branco.
+  const cName = ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || ""
+  const contactVars: Record<string, string> = {
+    nome: cName, contato: cName, cliente: cName,
+    empresa:  ctx.contact.company ?? "",
+    email:    ctx.contact.email ?? "",
+    telefone: ctx.contact.phone_number ?? "",
+  }
+  for (const [k, v] of Object.entries(contactVars)) if (v && !variables[k]) variables[k] = v
   const callStack: CallFrame[] = [...(run.call_stack ?? [])]
   let currentId: string | null = run.current_node_id
   let responded = false
@@ -242,7 +249,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       const picked = parseMenuReply(cfg, input.incomingText)
       if (!picked) {
         await sendBotText(ctx, cfg.noMatch?.trim() || "Não entendi 🤔 Responda com o número da opção:")
-        await sendMenu(ctx, cfg)
+        await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
@@ -259,41 +266,18 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       variables[cfg.saveAs?.trim() || "resposta"] = reply
       currentId = edgeTarget(graph, node.id)
     } else if (node?.type === "schedule") {
-      const cfg   = node.config as unknown as ScheduleNodeConfig
-      const stash = (variables[`schedule:${node.id}`] ?? { slots: [], serviceId: null, pool: [] }) as ScheduleStash
-      const pick  = parseSchedulePick(input.incomingText, stash.slots)
-      if (!pick) {
-        await sendBotText(ctx, "É só responder com o *número* do horário (ou 0 se nenhum servir).")
-        await sendScheduleOffer(ctx, cfg.intro, stash.slots)
+      const cfg   = { ...(node.config as unknown as ScheduleNodeConfig) }
+      cfg.intro   = interpolate(cfg.intro ?? "", variables)
+      const stash = variables[`schedule:${node.id}`] as ScheduleStash | undefined
+      const out   = await resumeSchedule(ctx, cfg, stash, input.incomingText)
+      if (out.kind === "wait") {
+        variables[`schedule:${node.id}`] = out.stash
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
-      if (pick.kind === "none") {
-        currentId = edgeTarget(graph, node.id, "sem_horario")
-      } else {
-        const iso = stash.slots[pick.index]
-        const r   = await bookSchedulePick(ctx, { iso, serviceId: stash.serviceId, pool: stash.pool })
-        if (r.taken) {
-          // Encheu agora → re-oferece o conjunto fresco; se zerou, ramo "sem_horario".
-          await sendBotText(ctx, "Opa, esse horário acabou de ser preenchido 😕")
-          const fresh = await prepareScheduleOffer(ctx, cfg)
-          if (!fresh || fresh.slots.length === 0) { currentId = edgeTarget(graph, node.id, "sem_horario") }
-          else {
-            await sendScheduleOffer(ctx, cfg.intro, fresh.slots)
-            variables[`schedule:${node.id}`] = fresh
-            await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
-            return { status: "responded", departmentId: null, error: null, agent: null }
-          }
-        } else if (r.error) {
-          currentId = edgeTarget(graph, node.id, "sem_horario")
-        } else {
-          const conf = (cfg.successText?.trim() || "✅ Agendado! Seu horário: {{horario}}. Até lá 😊").replace(/\{\{\s*horario\s*\}\}/g, fmtSlot(iso))
-          await sendBotText(ctx, conf, { studio_schedule: true })
-          responded = true
-          variables["agendamento"] = fmtSlot(iso)
-          currentId = edgeTarget(graph, node.id, "agendado")
-        }
-      }
+      if (out.responded) responded = true
+      if (out.agendamento) variables["agendamento"] = out.agendamento
+      currentId = edgeTarget(graph, node.id, out.branch)
     }
   }
 
@@ -418,18 +402,18 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "menu": {
         const cfg = node.config as unknown as MenuNodeConfig
-        await sendMenu(ctx, cfg)
+        await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }
       case "schedule": {
-        const cfg   = node.config as unknown as ScheduleNodeConfig
-        const offer = await prepareScheduleOffer(ctx, cfg)
+        const cfg = { ...(node.config as unknown as ScheduleNodeConfig) }
+        cfg.intro = interpolate(cfg.intro ?? "", variables)
+        const out = await startSchedule(ctx, cfg)
         // Sem destino/horário → ramo "sem_horario" (o autor liga num atendente). Fail-closed.
-        if (!offer || offer.slots.length === 0) { currentId = edgeTarget(graph, node.id, "sem_horario"); break }
-        await sendScheduleOffer(ctx, cfg.intro, offer.slots)
+        if (out.kind === "branch") { currentId = edgeTarget(graph, node.id, out.branch); break }
         responded = true
-        variables[`schedule:${node.id}`] = offer
+        variables[`schedule:${node.id}`] = out.stash
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }
