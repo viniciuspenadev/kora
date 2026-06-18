@@ -32,12 +32,13 @@ export interface ContactRow {
   notes:           string | null
   source:          string
   primary_channel: string | null
+  bsuid:           string | null   // BSUID (Meta) — alvo de envio quando não há telefone
 }
 
 const HISTORY_LIMIT = 20
 
 export function displayName(c: ContactRow): string {
-  return c.custom_name?.trim() || c.push_name?.trim() || c.phone_number
+  return c.custom_name?.trim() || c.push_name?.trim() || c.phone_number || "Cliente"
 }
 
 /**

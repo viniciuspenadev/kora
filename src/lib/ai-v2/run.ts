@@ -73,7 +73,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     .from("chat_conversations")
     .select(`
       id, contact_id, stage_id, channel, from_ad_meta, is_group, assigned_to, ai_handling, metadata, department_id,
-      chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel )
+      chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel, bsuid )
     `)
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
@@ -284,7 +284,7 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
     .from("chat_conversations")
     .select(`
       id, contact_id, stage_id, channel, from_ad_meta, is_group, assigned_to, ai_handling, metadata, department_id, instance_id,
-      chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel )
+      chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel, bsuid )
     `)
     .eq("id", conversationId).eq("tenant_id", tenantId).maybeSingle()
   if (!convData || convData.is_group || !convData.contact_id) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "not_eligible" } }

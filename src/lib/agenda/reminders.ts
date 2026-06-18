@@ -59,7 +59,7 @@ function buildConfirmMessage(tenantText: string, vars: Record<string, string>): 
 interface ApptForEvent {
   id: string; tenant_id: string; conversation_id: string | null; starts_at: string; notify_customer: boolean
   created_at?: string; resource_id?: string
-  chat_contacts: { push_name: string | null; custom_name: string | null; phone_number: string | null } | null
+  chat_contacts: { push_name: string | null; custom_name: string | null; phone_number: string | null; bsuid: string | null } | null
   tenant_services: { name: string | null; reminder_policy: { steps?: PolicyStep[] } | null } | null
   tenant_resources: { name: string | null; assigned_agent_id?: string | null } | null
 }
@@ -86,7 +86,7 @@ export async function runAppointmentEvent(appointmentId: string, event: AgendaEv
 
     const { data } = await supabaseAdmin.from("appointments")
       .select(`id, tenant_id, conversation_id, starts_at, notify_customer,
-               chat_contacts ( push_name, custom_name, phone_number ),
+               chat_contacts ( push_name, custom_name, phone_number, bsuid ),
                tenant_services ( name, reminder_policy ),
                tenant_resources ( name )`)
       .eq("id", appointmentId).maybeSingle()
@@ -141,9 +141,9 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   if (!enabled) return logReminder(appt, stepKey, "whatsapp", "skipped", "avisos desativados (tenant_config)")
 
   const text = render(step.text ?? "", vars).trim()
-  const phone = appt.chat_contacts?.phone_number ?? ""
+  const phone = appt.chat_contacts?.phone_number ?? appt.chat_contacts?.bsuid ?? ""
   if (!text)  return logReminder(appt, stepKey, "whatsapp", "skipped", "step sem texto")
-  if (!phone) return logReminder(appt, stepKey, "whatsapp", "skipped", "contato sem telefone")
+  if (!phone) return logReminder(appt, stepKey, "whatsapp", "skipped", "contato sem telefone nem BSUID")
   // 3b envia pela conversa existente (janela fresca). Sem conversa → 3c (cron/template).
   if (!appt.conversation_id) return logReminder(appt, stepKey, "whatsapp", "skipped", "sem conversa (3b)")
 
@@ -267,7 +267,7 @@ async function sweepTenant(tenantId: string): Promise<number> {
   const now = Date.now()
   const { data } = await supabaseAdmin.from("appointments")
     .select(`id, tenant_id, conversation_id, starts_at, created_at, notify_customer, resource_id,
-             chat_contacts ( push_name, custom_name, phone_number ),
+             chat_contacts ( push_name, custom_name, phone_number, bsuid ),
              tenant_services ( name, reminder_policy ),
              tenant_resources ( name, assigned_agent_id )`)
     .eq("tenant_id", tenantId)

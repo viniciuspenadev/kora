@@ -39,6 +39,7 @@ interface Props {
   tagsByContact:   Record<string, string[]>
   showChannel?:    boolean         // mostra badge de canal (Baileys/Oficial) — só com 2+ instâncias
   officialChannel?: boolean        // canal default é oficial → nova conversa exige template
+  channelReady?:   boolean         // false = nenhum canal conectado → "nova conversa" desabilitada
   agents:          AgentMini[]
   unreadTotal:     number          // Total de não-lidas (tenant inteiro, não só carregadas)
 
@@ -130,7 +131,7 @@ export function ConversationList({
   conversations, activeId, onSelect,
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
   statusFilter, onStatusChange,
-  pipelines, stages, tags, departments, tagsByContact, showChannel = false, officialChannel = false, agents,
+  pipelines, stages, tags, departments, tagsByContact, showChannel = false, officialChannel = false, channelReady = true, agents,
   unreadTotal,
   searchValue, onSearchChange,
   pipelineFilter, onPipelineFilterChange,
@@ -210,9 +211,12 @@ export function ConversationList({
           )}
           <button
             type="button"
-            title="Nova conversa"
-            onClick={() => setShowNewModal(true)}
-            className="ml-auto size-7 rounded-lg bg-primary-50 hover:bg-primary-100 text-primary-600 flex items-center justify-center transition-colors"
+            title={channelReady ? "Nova conversa" : "Conecte um canal de WhatsApp primeiro"}
+            onClick={() => { if (channelReady) setShowNewModal(true) }}
+            disabled={!channelReady}
+            className={`ml-auto size-7 rounded-lg flex items-center justify-center transition-colors ${
+              channelReady ? "bg-primary-50 hover:bg-primary-100 text-primary-600" : "bg-slate-100 text-slate-300 cursor-not-allowed"
+            }`}
           >
             <Plus className="size-3.5" />
           </button>

@@ -80,10 +80,10 @@ export async function getSetupState(tenantId: string): Promise<SetupState> {
       id:          "whatsapp",
       label:       "Conectar WhatsApp",
       description: whatsappConnected
-        ? (instance?.phone_number ? `Conectado: +${instance.phone_number}` : "Conectado")
-        : "Escaneie o QR code pra começar a receber mensagens",
+        ? (instance?.phone_number ? `Conectado: ${instance.phone_number.startsWith("+") ? instance.phone_number : "+" + instance.phone_number}` : "Conectado")
+        : "Conecte seu WhatsApp — número oficial ou QR Code",
       done:        whatsappConnected,
-      href:        "/configuracoes/whatsapp",
+      href:        "/integracoes",
     },
     {
       id:          "team",

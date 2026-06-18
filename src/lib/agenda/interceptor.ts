@@ -47,7 +47,7 @@ export async function handleAgendaReply(args: {
   const { tenantId, conversationId, text, instance, interactiveId } = args
 
   const { data: conv } = await supabaseAdmin.from("chat_conversations")
-    .select("id, assigned_to, pending_agenda, contact_id, chat_contacts ( phone_number, custom_name, push_name )")
+    .select("id, assigned_to, pending_agenda, contact_id, chat_contacts ( phone_number, custom_name, push_name, bsuid )")
     .eq("id", conversationId).eq("tenant_id", tenantId).maybeSingle()
   if (!conv) return false
 
@@ -69,8 +69,8 @@ export async function handleAgendaReply(args: {
     .eq("id", pending.appointment_id).eq("tenant_id", tenantId).maybeSingle()
   if (!appt || appt.contact_id !== conv.contact_id) { await clearPending(conversationId); return false }
 
-  const cc = conv.chat_contacts as unknown as { phone_number: string | null; custom_name: string | null; push_name: string | null } | null
-  const phone = cc?.phone_number ?? ""
+  const cc = conv.chat_contacts as unknown as { phone_number: string | null; custom_name: string | null; push_name: string | null; bsuid: string | null } | null
+  const phone = cc?.phone_number ?? cc?.bsuid ?? ""
   const contato = cc?.custom_name || cc?.push_name || ""
   const ctx = { tenantId, convId: conversationId, instance, phone, contato, appt, pending, assigned: !!conv.assigned_to }
   const t = text.toLowerCase()

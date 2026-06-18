@@ -118,7 +118,9 @@ interface MetaContext {
 interface MetaError { code?: number; title?: string; message?: string }
 
 interface MetaMessage {
-  from: string; id: string; type: string
+  // BSUID: `from_user_id` (BSUID) é SEMPRE presente daqui pra frente; `from` (telefone)
+  // PODE faltar quando o cliente usa username. Ver docs/BUSID/bsuid-adaptation-plan.md.
+  from?: string; from_user_id?: string; id: string; type: string
   timestamp?: string  // epoch (segundos) — relógio da Meta; âncora da janela de 24h
   text?: { body?: string }
   image?: MetaMedia; audio?: MetaMediaAudio; video?: MetaMedia; document?: MetaMedia; sticker?: MetaMedia
@@ -357,6 +359,15 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
         continue
       }
 
+      // BSUID — monitoramento (TEMPORÁRIO): o webhook `user_id_update` traz o par
+      // previous→current do BSUID na troca de número. Handler ainda não implementado —
+      // só logamos o payload cru pra destravar (docs/BUSID/bsuid-adaptation-plan.md §6.4).
+      // Exige subscrever o field no app Meta. Remover após capturar 1 evento real.
+      if (c.field === "user_id_update") {
+        console.log(JSON.stringify({ event: "bsuid_user_id_update", waba: (entry as { id?: string })?.id ?? null, value: c.value ?? null }))
+        continue
+      }
+
       if (c.field !== "messages") continue
       const value = c.value ?? {}
       const pnid = (value.metadata as { phone_number_id?: string } | undefined)?.phone_number_id
@@ -370,14 +381,18 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
         await processStatus(instance.tenant_id, st).catch((e) => console.error("[meta-webhook] status:", e))
       }
 
-      // Nome do contato (vem em contacts[])
-      const nameByWa = new Map<string, string>()
-      for (const ct of (value.contacts as Array<{ wa_id?: string; profile?: { name?: string } }> | undefined) ?? []) {
-        if (ct.wa_id) nameByWa.set(ct.wa_id, ct.profile?.name ?? "")
+      // Nome do contato (vem em contacts[]) — indexado por telefone (wa_id) E BSUID
+      // (user_id), porque o telefone pode faltar quando o cliente usa username.
+      const nameById = new Map<string, string>()
+      for (const ct of (value.contacts as Array<{ wa_id?: string; user_id?: string; profile?: { name?: string } }> | undefined) ?? []) {
+        const nm = ct.profile?.name ?? ""
+        if (ct.wa_id)   nameById.set(ct.wa_id, nm)
+        if (ct.user_id) nameById.set(ct.user_id, nm)
       }
 
       for (const msg of (value.messages as MetaMessage[] | undefined) ?? []) {
-        await processMessage(instance, msg, nameByWa.get(msg.from) ?? null)
+        const nm = (msg.from && nameById.get(msg.from)) || (msg.from_user_id && nameById.get(msg.from_user_id)) || null
+        await processMessage(instance, msg, nm)
           .catch((e) => console.error("[meta-webhook] message:", e))
       }
     }
@@ -394,10 +409,24 @@ async function findInstance(phoneNumberId: string): Promise<InstanceRow | null> 
 }
 
 async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName: string | null) {
-  const phone = msg.from.replace(/\D/g, "")
-  const jid   = `${phone}@s.whatsapp.net`   // mesma identidade do Evolution (mesmo contato se vier dos dois)
+  // BSUID — monitoramento (TEMPORÁRIO): captura o payload REAL da troca-de-número
+  // (system `user_changed_user_id`) pra destravar o handler (docs/BUSID §6.4). O bloco
+  // `system` traz `user_id` (novo BSUID) + `body` ("changed from OLD to NEW"). Remover após capturar.
+  if (msg.type === "system") {
+    console.log(JSON.stringify({ event: "bsuid_system_message", system: msg.system ?? null, from: msg.from ?? null, from_user_id: msg.from_user_id ?? null, id: msg.id }))
+  }
+  // BSUID: `from_user_id` é SEMPRE presente; `from` (telefone) PODE faltar (username).
+  // Identidade = telefone quando há (unifica com Evolution), senão o BSUID. Nunca estoura.
+  const bsuid = msg.from_user_id?.trim() || null
+  const phone = msg.from ? msg.from.replace(/\D/g, "") : null
+  const jid   = phone ? `${phone}@s.whatsapp.net` : null
 
-  const contact = await upsertContact(instance.tenant_id, jid, phone, pushName)
+  if (!jid && !bsuid) {
+    console.warn("[meta-webhook] inbound sem telefone nem BSUID — ignorado:", msg.id)
+    return
+  }
+
+  const contact = await upsertContact(instance.tenant_id, { jid, phone, bsuid, pushName })
   const conv    = await findOrCreateConversation(instance.tenant_id, contact.id, instance.id)
 
   // CTWA — atribuição de anúncio (formato rico da Cloud API).
@@ -492,7 +521,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o
   // atendente atribuído (ou todo o pool se ninguém assumiu ainda).
   if (!agendaHandled) {
-    const notifyTitle = pushName || `+${phone}`
+    const notifyTitle = pushName || (phone ? `+${phone}` : "Novo contato")
     const notifyPreview = preview
     after(() => notifyInboundMessage({
       tenantId: instance.tenant_id, conversationId: conv.id, title: notifyTitle, preview: notifyPreview,
@@ -676,14 +705,64 @@ async function processTemplateChange(wabaId: string | undefined, field: string, 
 }
 
 // ── Contato/conversa slim (próprios — não tocam no Evolution) ──
-async function upsertContact(tenantId: string, jid: string, phone: string, pushName: string | null) {
-  const { data, error } = await supabaseAdmin
-    .from("chat_contacts")
-    .upsert({
-      tenant_id: tenantId, whatsapp_id: jid, phone_number: phone, push_name: pushName,
-      primary_channel: "whatsapp", primary_external_id: jid, updated_at: new Date().toISOString(),
-    }, { onConflict: "tenant_id,whatsapp_id", ignoreDuplicates: false })
-    .select("id").single()
+/**
+ * Contato Meta com identidade DUPLA: telefone (jid) e/ou BSUID. Acha por QUALQUER
+ * uma das chaves e faz MERGE (anexa só o que faltava). Como hoje telefone+BSUID
+ * co-ocorrem, o BSUID gruda no contato existente → quando no futuro vier só-BSUID,
+ * acha o MESMO contato (não fragmenta). Doc: docs/BUSID/bsuid-adaptation-plan.md §2.2.
+ */
+async function upsertContact(
+  tenantId: string,
+  { jid, phone, bsuid, pushName }: { jid: string | null; phone: string | null; bsuid: string | null; pushName: string | null },
+): Promise<{ id: string }> {
+  const COLS = "id, whatsapp_id, phone_number, bsuid, primary_external_id"
+
+  // 1) Acha por jid (telefone) OU por BSUID — a primeira chave que casar.
+  let existing: Record<string, unknown> | null = null
+  if (jid) {
+    const { data } = await supabaseAdmin.from("chat_contacts").select(COLS)
+      .eq("tenant_id", tenantId).eq("whatsapp_id", jid).maybeSingle()
+    existing = data ?? null
+  }
+  if (!existing && bsuid) {
+    const { data } = await supabaseAdmin.from("chat_contacts").select(COLS)
+      .eq("tenant_id", tenantId).eq("bsuid", bsuid).maybeSingle()
+    existing = data ?? null
+  }
+
+  // 2) Achou → MERGE: só backfill do que falta; nunca apaga dado bom.
+  if (existing) {
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    if (bsuid && !existing.bsuid)        patch.bsuid = bsuid
+    if (jid   && !existing.whatsapp_id)  patch.whatsapp_id = jid
+    if (phone && !existing.phone_number) patch.phone_number = phone
+    if (pushName)                        patch.push_name = pushName
+    // primary_external_id converge pro jid quando o telefone aparece (era "bsuid:…").
+    if (jid && String(existing.primary_external_id ?? "").startsWith("bsuid:")) patch.primary_external_id = jid
+    await supabaseAdmin.from("chat_contacts").update(patch).eq("id", existing.id as string)
+    return { id: existing.id as string }
+  }
+
+  // 3) Não achou → cria. primary_external_id = jid quando há, senão "bsuid:<BSUID>".
+  const { data, error } = await supabaseAdmin.from("chat_contacts").insert({
+    tenant_id: tenantId, whatsapp_id: jid, phone_number: phone, bsuid, push_name: pushName,
+    primary_channel: "whatsapp", primary_external_id: jid ?? (bsuid ? `bsuid:${bsuid}` : null),
+    updated_at: new Date().toISOString(),
+  }).select("id").single()
+
+  // Corrida: outro webhook criou o mesmo contato no meio → re-acha pela chave que colidiu.
+  if (error?.code === "23505") {
+    if (jid) {
+      const { data: r } = await supabaseAdmin.from("chat_contacts").select("id")
+        .eq("tenant_id", tenantId).eq("whatsapp_id", jid).maybeSingle()
+      if (r) return { id: r.id as string }
+    }
+    if (bsuid) {
+      const { data: r } = await supabaseAdmin.from("chat_contacts").select("id")
+        .eq("tenant_id", tenantId).eq("bsuid", bsuid).maybeSingle()
+      if (r) return { id: r.id as string }
+    }
+  }
   if (error || !data) throw new Error(`meta upsertContact: ${error?.message}`)
   return { id: data.id as string }
 }

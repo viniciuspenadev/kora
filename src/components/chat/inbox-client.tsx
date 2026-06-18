@@ -6,7 +6,7 @@ import { ConversationList } from "@/components/chat/conversation-list"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { ContactSidebar } from "@/components/chat/contact-sidebar"
 import { PendingGroupsBanner } from "@/components/chat/pending-groups-banner"
-import { MessageCircle, WifiOff, Settings } from "lucide-react"
+import { MessageCircle } from "lucide-react"
 import { toast } from "sonner"
 import Link from "next/link"
 import {
@@ -1011,52 +1011,10 @@ export function InboxClient({
     })
   }, [conversations])
 
-  // ── Telas de erro ───────────────────────────────────────────
-  if (instanceStatus === "not_configured") {
-    return (
-      <div className="flex flex-col items-center justify-center h-full bg-slate-50 px-4">
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-8 max-w-md text-center">
-          <div className="size-16 rounded-2xl bg-green-50 flex items-center justify-center mx-auto mb-5">
-            <MessageCircle className="size-8 text-green-500" />
-          </div>
-          <h2 className="text-lg font-bold text-slate-900 mb-2">Configure o WhatsApp</h2>
-          <p className="text-sm text-slate-500 mb-6">
-            Para começar a usar o inbox, configure sua conexão com a Evolution API e conecte seu número de WhatsApp.
-          </p>
-          <Link
-            href="/configuracoes/whatsapp"
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-700 text-white text-sm font-semibold rounded-xl shadow-sm shadow-primary/30 transition-colors"
-          >
-            <Settings className="size-4" />
-            Ir para Configuração
-          </Link>
-        </div>
-      </div>
-    )
-  }
-
-  if (instanceStatus === "disconnected") {
-    return (
-      <div className="flex flex-col items-center justify-center h-full bg-slate-50 px-4">
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-card p-8 max-w-md text-center">
-          <div className="size-16 rounded-2xl bg-red-50 flex items-center justify-center mx-auto mb-5">
-            <WifiOff className="size-8 text-red-400" />
-          </div>
-          <h2 className="text-lg font-bold text-slate-900 mb-2">WhatsApp desconectado</h2>
-          <p className="text-sm text-slate-500 mb-6">
-            Seu WhatsApp perdeu a conexão. Reconecte escaneando o QR Code novamente.
-          </p>
-          <Link
-            href="/configuracoes/whatsapp"
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-xl shadow-sm transition-colors"
-          >
-            <Settings className="size-4" />
-            Reconectar
-          </Link>
-        </div>
-      </div>
-    )
-  }
+  // Sem canal conectado → NÃO bloqueia o inbox: mostra a tela normal (lista vazia),
+  // só desabilita "nova conversa" + um hint no topo. O Wizard "Vamos configurar seu
+  // Kora" (modal de onboarding) é quem guia a conexão do canal.
+  const channelReady = instanceStatus === "connected"
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -1065,6 +1023,17 @@ export function InboxClient({
         <div className="px-4 py-1.5 text-[11px] font-medium flex items-center gap-2 bg-amber-50 text-amber-700 border-b border-amber-200">
           <span className="size-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
           Reconectando ao tempo real… as mensagens continuam chegando normalmente.
+        </div>
+      )}
+      {!channelReady && (
+        <div className="px-4 py-2 text-xs font-medium flex items-center justify-between gap-2 bg-primary-50 text-primary-800 border-b border-primary-200">
+          <span className="flex items-center gap-2 min-w-0">
+            <span className="size-1.5 rounded-full bg-primary-500 shrink-0" />
+            <span className="truncate">{instanceStatus === "disconnected" ? "Seu WhatsApp está desconectado — reconecte pra voltar a atender." : "Conecte um canal de WhatsApp pra começar a atender."}</span>
+          </span>
+          <Link href="/integracoes" className="font-semibold text-primary-700 hover:text-primary-800 underline underline-offset-2 shrink-0">
+            {instanceStatus === "disconnected" ? "Reconectar" : "Conectar"}
+          </Link>
         </div>
       )}
       {dedupNotice && (
@@ -1100,6 +1069,7 @@ export function InboxClient({
             tagsByContact={tagsByContact}
             showChannel={showChannel}
             officialChannel={officialChannel}
+            channelReady={channelReady}
             agents={agents}
             unreadTotal={unreadTotal}
             // Filter state (lifted)

@@ -231,6 +231,8 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
     empresa:  ctx.contact.company ?? "",
     email:    ctx.contact.email ?? "",
     telefone: ctx.contact.phone_number ?? "",
+    bsuid: ctx.contact.bsuid ?? "",
+    id_contato: ctx.contact.id ?? "",
   }
   for (const [k, v] of Object.entries(contactVars)) if (v && !variables[k]) variables[k] = v
   const callStack: CallFrame[] = [...(run.call_stack ?? [])]

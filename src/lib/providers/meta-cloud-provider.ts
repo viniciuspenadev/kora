@@ -98,6 +98,21 @@ export class MetaCloudProvider implements WhatsAppProvider {
     return phone.replace(/\D/g, "")
   }
 
+  /** BSUID tem formato `XX.<alfanumérico>` (ISO-3166 + ponto); telefone é só dígitos. */
+  private isBsuid(target: string): boolean {
+    return /^[A-Z]{2}\./.test(target.trim())
+  }
+
+  /**
+   * Resolve o destinatário pro payload da Cloud API. BSUID vai em `recipient`
+   * (omitindo `to`); telefone vai em `to` normalizado. Doc BSUID §"Mensagens":
+   * `to` e `recipient` são mutuamente exclusivos (se ambos, `to` vence).
+   * Ver docs/BUSID/bsuid-adaptation-plan.md §2.3.
+   */
+  private recipientFields(target: string): Record<string, string> {
+    return this.isBsuid(target) ? { recipient: target.trim() } : { to: this.toWa(target) }
+  }
+
   private async graph<T = Record<string, unknown>>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${BASE}${path}`, {
       ...init,
@@ -153,7 +168,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
   // ── Messaging ───────────────────────────────────────────────
   async sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult> {
     return this.sendMessage({
-      to: this.toWa(phone),
+      ...this.recipientFields(phone),
       type: "text",
       text: { preview_url: true, body: text },
       ...(replyTo ? { context: { message_id: replyTo.id } } : {}),
@@ -169,7 +184,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     if (caption && type !== "audio") media.caption = caption
     if (type === "document" && fileName) media.filename = fileName
     return this.sendMessage({
-      to: this.toWa(phone), type, [type]: media,
+      ...this.recipientFields(phone), type, [type]: media,
       ...(replyTo ? { context: { message_id: replyTo.id } } : {}),
     })
   }
@@ -214,7 +229,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     if (payload.footer) interactive.footer = { text: payload.footer.slice(0, 60) }
 
     return this.sendMessage({
-      to: this.toWa(phone),
+      ...this.recipientFields(phone),
       type: "interactive",
       interactive,
       ...(replyTo ? { context: { message_id: replyTo.id } } : {}),
@@ -223,7 +238,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
 
   async sendLocation(phone: string, loc: LocationPayload): Promise<SendResult> {
     return this.sendMessage({
-      to: this.toWa(phone),
+      ...this.recipientFields(phone),
       type: "location",
       location: {
         latitude:  loc.latitude,
@@ -236,7 +251,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
 
   async sendContacts(phone: string, contacts: ContactCard[]): Promise<SendResult> {
     return this.sendMessage({
-      to: this.toWa(phone),
+      ...this.recipientFields(phone),
       type: "contacts",
       contacts: contacts.map((c) => ({
         name: { formatted_name: c.name, first_name: c.name },
@@ -249,7 +264,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
 
   async sendReaction(phone: string, targetMessageId: string, emoji: string): Promise<SendResult> {
     return this.sendMessage({
-      to: this.toWa(phone),
+      ...this.recipientFields(phone),
       type: "reaction",
       // emoji vazio = remove a reação (semântica da Meta).
       reaction: { message_id: targetMessageId, emoji },
@@ -258,7 +273,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
 
   async sendSticker(phone: string, stickerUrl: string): Promise<SendResult> {
     const mediaId = await this.uploadMedia(stickerUrl, "image")
-    return this.sendMessage({ to: this.toWa(phone), type: "sticker", sticker: { id: mediaId } })
+    return this.sendMessage({ ...this.recipientFields(phone), type: "sticker", sticker: { id: mediaId } })
   }
 
   /** Marca uma mensagem recebida como lida (✓✓ azul pro cliente). Best-effort. */
@@ -321,7 +336,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
       })
     }
     if (components.length > 0) template.components = components
-    return this.sendMessage({ to: this.toWa(phone), type: "template", template })
+    return this.sendMessage({ ...this.recipientFields(phone), type: "template", template })
   }
 
   /**
@@ -561,7 +576,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     // Sem ele, a Meta trata como anexo de áudio e o iOS nativo NÃO toca ogg ("não
     // disponível"). Exige ogg/opus MONO (garantido pelo transcode no canal oficial).
     const mediaId = await this.uploadMedia(audioUrl, "audio")
-    return this.sendMessage({ to: this.toWa(phone), type: "audio", audio: { id: mediaId, voice: true } })
+    return this.sendMessage({ ...this.recipientFields(phone), type: "audio", audio: { id: mediaId, voice: true } })
   }
 
   async sendPresence(_phone: string, _state: "typing" | "paused"): Promise<void> {

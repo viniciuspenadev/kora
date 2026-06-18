@@ -33,6 +33,8 @@ export const SYSTEM_VARIABLES: SystemVariable[] = [
   { token: "empresa",  label: "Empresa",          group: "Contato",     example: "Acme",             contexts: ["flow"] },
   { token: "email",    label: "E-mail",           group: "Contato",     example: "maria@email.com",  contexts: ["flow"] },
   { token: "telefone", label: "Telefone",         group: "Contato",     example: "(11) 99999-9999",  contexts: ["flow"] },
+  { token: "id_contato", label: "ID do contato",  group: "Contato",     example: "a1b2c3d4-…",       contexts: ["flow"] },
+  { token: "bsuid",    label: "BSUID (Meta)",      group: "Contato",     example: "US.13491208655…",  contexts: ["flow"] },
   { token: "agente",  label: "Nome do atendente", group: "Atendimento", example: "Bernardo",    contexts: ["generic"] },
   { token: "servico", label: "Serviço",           group: "Agendamento", example: "Consulta",    contexts: ["agenda"] },
   { token: "data",    label: "Data",              group: "Agendamento", example: "15 de junho", contexts: ["agenda", "generic"] },

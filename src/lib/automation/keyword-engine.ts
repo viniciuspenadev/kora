@@ -89,7 +89,7 @@ export async function evaluateKeywordTriggers(input: EvaluateInput): Promise<boo
     .from("chat_conversations")
     .select(`
       id, contact_id, assigned_to, is_group,
-      chat_contacts ( id, push_name, phone_number )
+      chat_contacts ( id, push_name, phone_number, bsuid )
     `)
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
@@ -100,7 +100,8 @@ export async function evaluateKeywordTriggers(input: EvaluateInput): Promise<boo
   const contact = conv.chat_contacts as unknown as {
     id:           string
     push_name:    string | null
-    phone_number: string
+    phone_number: string | null
+    bsuid:        string | null
   } | null
   if (!contact) return false
 
@@ -158,7 +159,7 @@ export async function evaluateKeywordTriggers(input: EvaluateInput): Promise<boo
 
       try {
         const provider = getProvider(instance)
-        const result   = await provider.sendText(contact.phone_number, rendered)
+        const result   = await provider.sendText(contact.phone_number ?? contact.bsuid ?? "", rendered)
 
         await supabaseAdmin.from("chat_messages").insert({
           conversation_id: conversationId,

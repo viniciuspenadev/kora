@@ -51,7 +51,7 @@ export async function dispatchAutomations(input: DispatchInput): Promise<void> {
     .from("chat_conversations")
     .select(`
       id, metadata, assigned_to, is_group, contact_id,
-      chat_contacts ( id, push_name, phone_number, created_at )
+      chat_contacts ( id, push_name, phone_number, bsuid, created_at )
     `)
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
@@ -64,7 +64,8 @@ export async function dispatchAutomations(input: DispatchInput): Promise<void> {
   const contact = convRow.chat_contacts as unknown as {
     id:           string
     push_name:    string | null
-    phone_number: string
+    phone_number: string | null
+    bsuid:        string | null
     created_at:   string | null
   } | null
   if (!contact) return
@@ -189,7 +190,7 @@ async function evaluateWelcomeTrigger(
 async function sendAutomationReply(args: {
   tenantId:       string
   conversationId: string
-  contact:        { push_name: string | null; phone_number: string }
+  contact:        { push_name: string | null; phone_number: string | null; bsuid: string | null }
   provider:       WhatsAppProvider
   template:       string
   tenantName:     string | null
@@ -203,7 +204,7 @@ async function sendAutomationReply(args: {
   if (!text.trim()) return false
 
   try {
-    const result = await args.provider.sendText(args.contact.phone_number, text)
+    const result = await args.provider.sendText(args.contact.phone_number ?? args.contact.bsuid ?? "", text)
 
     await supabaseAdmin.from("chat_messages").insert({
       conversation_id: args.conversationId,

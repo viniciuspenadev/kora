@@ -283,7 +283,7 @@ export async function sendMessage(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(whatsapp_id, phone_number, primary_channel)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -307,7 +307,7 @@ export async function sendMessage(
   }
 
   const contact = conv.chat_contacts as unknown as {
-    whatsapp_id: string | null; phone_number: string | null; primary_channel: string | null
+    whatsapp_id: string | null; phone_number: string | null; primary_channel: string | null; bsuid: string | null
   }
 
   // Citação (responder a uma mensagem). Notas privadas não citam pro WhatsApp.
@@ -339,7 +339,7 @@ export async function sendMessage(
     if (channel === "whatsapp") {
       try {
         const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
-        const result   = await provider.sendText(contact.phone_number ?? "", content, replyCtx)
+        const result   = await provider.sendText(contact.phone_number ?? contact.bsuid ?? "", content, replyCtx)
 
         await supabaseAdmin
           .from("chat_messages")
@@ -414,7 +414,7 @@ export async function sendOfficialTemplate(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel)")
+    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -432,7 +432,7 @@ export async function sendOfficialTemplate(
       .eq("id", conversationId)
   }
 
-  const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null }
+  const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
 
   const { data: msg, error } = await supabaseAdmin
     .from("chat_messages")
@@ -454,7 +454,7 @@ export async function sendOfficialTemplate(
   try {
     const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
     if (!provider.sendTemplate) throw new Error("Esta instância não suporta templates (use o canal oficial).")
-    const result   = await provider.sendTemplate(contact.phone_number ?? "", templateName, language, params.length > 0 ? params : undefined)
+    const result   = await provider.sendTemplate(contact.phone_number ?? contact.bsuid ?? "", templateName, language, params.length > 0 ? params : undefined)
     await supabaseAdmin.from("chat_messages")
       .update({ whatsapp_msg_id: result.messageId || null, status: "sent" })
       .eq("id", msg.id)
@@ -530,7 +530,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -592,7 +592,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       .eq("id", conversationId)
   }
 
-  const contact = conv.chat_contacts as unknown as { phone_number: string }
+  const contact = conv.chat_contacts as unknown as { phone_number: string | null; bsuid: string | null }
 
   const safeName    = uploadName.replace(/[^a-zA-Z0-9.\-_]/g, "_")
   const storagePath = `${tenantId}/${conversationId}/${Date.now()}_${safeName}`
@@ -645,9 +645,9 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
     providerName = provider.providerName
     const result   = sendAsVoiceNote
-      ? await provider.sendVoiceNote(contact.phone_number, signed.signedUrl)
+      ? await provider.sendVoiceNote(contact.phone_number ?? contact.bsuid ?? "", signed.signedUrl)
       : await provider.sendMedia(
-          contact.phone_number,
+          contact.phone_number ?? contact.bsuid ?? "",
           signed.signedUrl,
           mediaType,
           caption || undefined,
@@ -713,7 +713,7 @@ async function resolveSendContext(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel)")
+    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId).eq("tenant_id", tenantId).single()
   if (!conv) return { error: "Conversa não encontrada." }
 
@@ -725,7 +725,7 @@ async function resolveSendContext(
     department_id: (conv as { department_id?: string | null }).department_id,
   })) return { error: "Sem permissão para esta conversa." }
 
-  const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null }
+  const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
   if ((contact.primary_channel ?? "whatsapp") !== "whatsapp") return { error: "Disponível apenas no WhatsApp." }
 
   if (opts?.autoAssign && assignedTo === null) {
@@ -734,7 +734,7 @@ async function resolveSendContext(
       .eq("id", conversationId)
   }
 
-  return { tenantId, userId: session.user.id, instanceId: (conv as { instance_id: string }).instance_id, phone: contact.phone_number ?? "" }
+  return { tenantId, userId: session.user.id, instanceId: (conv as { instance_id: string }).instance_id, phone: contact.phone_number ?? contact.bsuid ?? "" }
 }
 
 async function bumpConv(conversationId: string, preview: string) {

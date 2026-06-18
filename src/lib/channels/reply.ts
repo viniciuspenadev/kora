@@ -20,6 +20,13 @@ export interface ReplyTarget {
   channel:     string | null
   /** Número do WhatsApp. Canais futuros passam a usar o id externo próprio. */
   phoneNumber: string
+  /** BSUID (Meta) — endereço quando o telefone não está disponível. Doc BSUID §2.3. */
+  bsuid?:      string | null
+}
+
+/** Endereço WhatsApp do alvo: telefone quando há, senão o BSUID (Meta). */
+function waAddress(t: ReplyTarget): string {
+  return t.phoneNumber || t.bsuid || ""
 }
 
 /**
@@ -37,7 +44,7 @@ export async function sendChannelText(
 
   switch (channel) {
     case "whatsapp": {
-      const r = await getProvider(instance).sendText(target.phoneNumber, text, replyTo)
+      const r = await getProvider(instance).sendText(waAddress(target), text, replyTo)
       return { messageId: r.messageId ?? null }
     }
     case "site":
@@ -66,7 +73,7 @@ export async function sendChannelMedia(
 
   switch (channel) {
     case "whatsapp": {
-      const r = await getProvider(instance).sendMedia(target.phoneNumber, media.url, media.mediaType, media.caption, media.fileName, replyTo)
+      const r = await getProvider(instance).sendMedia(waAddress(target), media.url, media.mediaType, media.caption, media.fileName, replyTo)
       return { messageId: r.messageId ?? null }
     }
     case "site":
@@ -94,6 +101,6 @@ export async function sendChannelInteractive(
   const provider = getProvider(instance)
   if (!provider.sendInteractive) return null
 
-  const r = await provider.sendInteractive(target.phoneNumber, payload, replyTo)
+  const r = await provider.sendInteractive(waAddress(target), payload, replyTo)
   return { messageId: r.messageId ?? null }
 }
