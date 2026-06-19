@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { getProvider, type WhatsAppProvider } from "@/lib/providers"
+import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
@@ -53,22 +54,16 @@ async function buildQuotedMeta(tenantId: string, replyTo: string): Promise<Recor
 }
 
 /**
- * Provider "default" do tenant — só pra operações de config/conexão que ainda
- * não escolhem instância (UI multi-instância vem na Fase M2). Pega a 1ª (mais
- * antiga) pra NÃO quebrar quando o tenant tem 2+ instâncias.
+ * Resolve a instância-alvo Baileys: a passada (UI multi-número) ou a 1ª baileys
+ * (default/back-compat). Retorna a ROW (pra escopar o update por `id`, não por
+ * tenant — senão mexer numa instância afetava TODAS do tenant).
  */
-async function getInstanceProvider(tenantId: string): Promise<WhatsAppProvider> {
-  const { data } = await supabaseAdmin
-    .from("whatsapp_instances")
-    .select("*")
-    .eq("tenant_id", tenantId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (!data) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
-
-  return getProvider(data)
+async function resolveBaileysInstance(tenantId: string, instanceId?: string) {
+  const base = supabaseAdmin.from("whatsapp_instances").select("*").eq("tenant_id", tenantId)
+  const { data } = instanceId
+    ? await base.eq("id", instanceId).maybeSingle()
+    : await base.eq("provider", "baileys").order("created_at", { ascending: true }).limit(1).maybeSingle()
+  return data
 }
 
 // ── Configuração ────────────────────────────────────────────
@@ -85,13 +80,13 @@ export async function saveWhatsAppConfig(formData: {
 
   const tenantId = session.user.tenantId
 
+  // Multi-número: dedup pelo instance_name (UNIQUE por tenant), NÃO por "a 1ª baileys".
+  // Nome existente → edita aquela instância; nome novo → cria um número novo.
   const { data: existing } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("id")
     .eq("tenant_id", tenantId)
-    .eq("provider", "baileys")
-    .order("created_at", { ascending: true })
-    .limit(1)
+    .eq("instance_name", formData.instance_name)
     .maybeSingle()
 
   if (existing) {
@@ -106,10 +101,14 @@ export async function saveWhatsAppConfig(formData: {
       })
       .eq("id", existing.id)
   } else {
+    // Gate de plano (fail-closed): número QR novo conta na cota. requireLimit lança
+    // "Limite atingido" — propaga pro cliente (mesmo estilo dos throws desta action).
+    await requireLimit(tenantId, "whatsapp_qr")
     await supabaseAdmin
       .from("whatsapp_instances")
       .insert({
         tenant_id:      tenantId,
+        provider:       "baileys",
         evolution_url:  formData.evolution_url.replace(/\/$/, ""),
         evolution_key:  encryptSecret(formData.evolution_key),
         instance_name:  formData.instance_name,
@@ -122,11 +121,70 @@ export async function saveWhatsAppConfig(formData: {
   return { success: true }
 }
 
-export async function connectWhatsApp() {
+/**
+ * Adiciona um número QR (Baileys) NOVO — provisiona uma instância na Evolution com um
+ * nome amigável (display_name). Gated pelo limite `whatsapp_qr` do plano (fail-closed).
+ * owner/admin. Retorna o id da instância criada (pra UI abrir a tela de QR dela).
+ */
+export async function addQrNumber(displayName: string): Promise<{ id?: string; error?: string }> {
+  const session = await auth()
+  if (!session) return { error: "Não autenticado" }
+  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
+  const tenantId = session.user.tenantId
+
+  const name = displayName.trim()
+  if (!name) return { error: "Dê um nome ao número (ex: Clínica Lotus II)." }
+
+  // Gate de plano (fail-closed): número QR novo conta na cota.
+  try { await requireLimit(tenantId, "whatsapp_qr") }
+  catch (e) { return { error: (e as Error).message } }
+
+  const { data: t } = await supabaseAdmin.from("tenants").select("slug").eq("id", tenantId).maybeSingle()
+  const slug = (t?.slug as string | undefined)?.trim() || tenantId.slice(0, 8)
+
+  const res = await autoProvisionWhatsApp(tenantId, slug, name, { ignoreFeatureFlag: true })
+  if (!res.ok || !res.instanceId) return { error: res.error ?? "Falha ao criar o número." }
+
+  revalidatePath("/configuracoes/whatsapp")
+  revalidatePath("/integracoes/whatsapp")
+  return { id: res.instanceId }
+}
+
+/**
+ * Renomeia um número (display_name) — Meta ou QR. owner/admin; anti-IDOR via tenant_id
+ * (só renomeia instância DO tenant). Nome vazio → volta pro default (display_name null).
+ */
+export async function renameNumber(instanceId: string, displayName: string): Promise<{ error?: string }> {
+  const session = await auth()
+  if (!session) return { error: "Não autenticado" }
+  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
+
+  const { error } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .update({ display_name: displayName.trim() || null, updated_at: new Date().toISOString() })
+    .eq("id", instanceId)
+    .eq("tenant_id", session.user.tenantId)
+  if (error) return { error: error.message }
+
+  revalidatePath("/integracoes/whatsapp")
+  revalidatePath("/configuracoes/whatsapp")
+  return {}
+}
+
+export async function connectWhatsApp(instanceId?: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
+  const tenantId = session.user.tenantId
 
-  const provider = await getInstanceProvider(session.user.tenantId)
+  // Multi-número: alvo = a instância passada (UI multi-número) OU a 1ª baileys
+  // (default/back-compat). Atualiza o status SÓ dessa instância — não de todas do
+  // tenant (senão conectar o Baileys marcava a Oficial como qr_pending).
+  const base = supabaseAdmin.from("whatsapp_instances").select("*").eq("tenant_id", tenantId)
+  const { data: instance } = instanceId
+    ? await base.eq("id", instanceId).maybeSingle()
+    : await base.eq("provider", "baileys").order("created_at", { ascending: true }).limit(1).maybeSingle()
+  if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
+  const provider = getProvider(instance)
   const now      = new Date().toISOString()
 
   try {
@@ -142,7 +200,7 @@ export async function connectWhatsApp() {
           last_error:         null,
           updated_at:         now,
         })
-        .eq("tenant_id", session.user.tenantId)
+        .eq("id", instance.id)
 
       return { status: "connected" as const, qrCode: null }
     }
@@ -167,7 +225,7 @@ export async function connectWhatsApp() {
         last_error:         null,
         updated_at:         now,
       })
-      .eq("tenant_id", session.user.tenantId)
+      .eq("id", instance.id)
 
     return {
       status: "qr_pending" as const,
@@ -179,11 +237,13 @@ export async function connectWhatsApp() {
   }
 }
 
-export async function checkConnectionStatus() {
+export async function checkConnectionStatus(instanceId?: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
 
-  const provider = await getInstanceProvider(session.user.tenantId)
+  const instance = await resolveBaileysInstance(session.user.tenantId, instanceId)
+  if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
+  const provider = getProvider(instance)
   const now      = new Date().toISOString()
 
   try {
@@ -210,7 +270,7 @@ export async function checkConnectionStatus() {
     await supabaseAdmin
       .from("whatsapp_instances")
       .update(update)
-      .eq("tenant_id", session.user.tenantId)
+      .eq("id", instance.id)
 
     return { status }
   } catch (err) {
@@ -221,17 +281,19 @@ export async function checkConnectionStatus() {
         last_error:        `Health check falhou: ${(err as Error).message}`,
         updated_at:        now,
       })
-      .eq("tenant_id", session.user.tenantId)
+      .eq("id", instance.id)
 
     return { status: "disconnected" }
   }
 }
 
-export async function disconnectWhatsApp() {
+export async function disconnectWhatsApp(instanceId?: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
 
-  const provider = await getInstanceProvider(session.user.tenantId)
+  const instance = await resolveBaileysInstance(session.user.tenantId, instanceId)
+  if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
+  const provider = getProvider(instance)
 
   await provider.logout()
 
@@ -247,23 +309,25 @@ export async function disconnectWhatsApp() {
       last_error:         null,
       updated_at:         now,
     })
-    .eq("tenant_id", session.user.tenantId)
+    .eq("id", instance.id)
 
   revalidatePath("/configuracoes/whatsapp")
   return { success: true }
 }
 
-export async function configureWebhook(webhookUrl: string) {
+export async function configureWebhook(webhookUrl: string, instanceId?: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
 
-  const provider = await getInstanceProvider(session.user.tenantId)
+  const instance = await resolveBaileysInstance(session.user.tenantId, instanceId)
+  if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
+  const provider = getProvider(instance)
   await provider.setWebhook(webhookUrl)
 
   await supabaseAdmin
     .from("whatsapp_instances")
     .update({ webhook_url: webhookUrl, updated_at: new Date().toISOString() })
-    .eq("tenant_id", session.user.tenantId)
+    .eq("id", instance.id)
 
   return { success: true }
 }
@@ -350,7 +414,7 @@ export async function sendMessage(
         await supabaseAdmin
           .from("whatsapp_instances")
           .update({ last_outbound_message_at: new Date().toISOString() })
-          .eq("tenant_id", tenantId)
+          .eq("id", (conv as { instance_id: string }).instance_id)
       } catch (err) {
         await supabaseAdmin
           .from("chat_messages")
@@ -460,7 +524,7 @@ export async function sendOfficialTemplate(
       .eq("id", msg.id)
     await supabaseAdmin.from("whatsapp_instances")
       .update({ last_outbound_message_at: new Date().toISOString() })
-      .eq("tenant_id", tenantId)
+      .eq("id", (conv as { instance_id: string }).instance_id)
   } catch (err) {
     await supabaseAdmin.from("chat_messages").update({ status: "failed" }).eq("id", msg.id)
     throw new Error(`Erro ao enviar template: ${(err as Error).message}`)
@@ -663,7 +727,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     await supabaseAdmin
       .from("whatsapp_instances")
       .update({ last_outbound_message_at: new Date().toISOString() })
-      .eq("tenant_id", tenantId)
+      .eq("id", (conv as { instance_id: string }).instance_id)
   } catch (err) {
     await supabaseAdmin
       .from("chat_messages")

@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import {
-  Gauge, Users, Server, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact,
+  Gauge, Users, Server, QrCode, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact,
   Loader2, CheckCircle2, AlertCircle, X, Infinity as InfinityIcon, Edit3,
   RotateCcw, Clock,
 } from "lucide-react"
@@ -27,7 +27,8 @@ interface Props {
 
 const RESOURCE_ICONS: Record<LimitResource, typeof Users> = {
   users:                Users,
-  whatsapp_instances:   Server,
+  whatsapp_official:    Server,
+  whatsapp_qr:          QrCode,
   contacts:             Contact,
   conversations_per_month: MessagesSquare,
   messages_per_month:   MessageCircle,
@@ -37,7 +38,8 @@ const RESOURCE_ICONS: Record<LimitResource, typeof Users> = {
 
 const RESOURCE_TONE: Record<LimitResource, { ok: string; warning: string; danger: string }> = {
   users:                { ok: "text-slate-700",   warning: "text-amber-700",  danger: "text-red-700" },
-  whatsapp_instances:   { ok: "text-emerald-700", warning: "text-amber-700",  danger: "text-red-700" },
+  whatsapp_official:    { ok: "text-emerald-700", warning: "text-amber-700",  danger: "text-red-700" },
+  whatsapp_qr:          { ok: "text-emerald-700", warning: "text-amber-700",  danger: "text-red-700" },
   contacts:             { ok: "text-blue-700",    warning: "text-amber-700",  danger: "text-red-700" },
   conversations_per_month: { ok: "text-indigo-700", warning: "text-amber-700", danger: "text-red-700" },
   messages_per_month:   { ok: "text-cyan-700",    warning: "text-amber-700",  danger: "text-red-700" },

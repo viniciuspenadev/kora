@@ -28,7 +28,7 @@ const VERTICALS: Array<{ value: string; label: string }> = [
   { value: "OTHER", label: "Outro" },
 ]
 
-export function ProfileForm({ profile }: { profile: MetaBusinessProfile }) {
+export function ProfileForm({ profile, instanceId }: { profile: MetaBusinessProfile; instanceId: string }) {
   const [about, setAbout] = useState(profile.about ?? "")
   const [description, setDescription] = useState(profile.description ?? "")
   const [address, setAddress] = useState(profile.address ?? "")
@@ -45,7 +45,7 @@ export function ProfileForm({ profile }: { profile: MetaBusinessProfile }) {
       const r = await updateOfficialProfile({
         about, description, address, email, vertical,
         websites: [web1, web2].filter((w) => w.trim()),
-      })
+      }, instanceId)
       if (r.ok) setFb({ ok: true, msg: "Perfil atualizado!" })
       else setFb({ ok: false, msg: r.error ?? "Falha ao salvar." })
     })

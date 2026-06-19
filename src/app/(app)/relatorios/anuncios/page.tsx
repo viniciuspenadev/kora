@@ -2,7 +2,7 @@ import { auth } from "@/auth"
 import { hasModule } from "@/lib/modules"
 import { getAdsReportData, listAdPlatforms } from "@/lib/actions/ads"
 import { listAgentsForFilter } from "@/lib/actions/reports"
-import { parseFilters, formatNumber } from "../_helpers"
+import { parseFilters, getTenantInstances, formatNumber } from "../_helpers"
 import { PeriodPicker } from "@/components/relatorios/period-picker"
 import { Filters } from "@/components/relatorios/filters"
 import { KpiCard } from "@/components/relatorios/kpi-card"
@@ -23,15 +23,17 @@ export default async function AnunciosReportPage({
   const session  = await auth()
   const tenantId = session?.user?.tenantId
 
-  const [data, agents, platforms, hasKanban, hasAi] = await Promise.all([
+  const [data, agents, platforms, availableInstances, hasKanban, hasAi] = await Promise.all([
     getAdsReportData({
-      from:     baseFilters.from,
-      to:       baseFilters.to,
-      platform: sp.platform || undefined,
-      agentId:  baseFilters.agentId,
+      from:       baseFilters.from,
+      to:         baseFilters.to,
+      platform:   sp.platform || undefined,
+      agentId:    baseFilters.agentId,
+      instanceId: baseFilters.instanceId,
     }),
     listAgentsForFilter(),
     listAdPlatforms(),
+    tenantId ? getTenantInstances(tenantId) : Promise.resolve([]),
     tenantId ? hasModule(tenantId, "kanban")       : Promise.resolve(false),
     tenantId ? hasModule(tenantId, "ai_atendente") : Promise.resolve(false),
   ])
@@ -48,7 +50,7 @@ export default async function AnunciosReportPage({
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             <PlatformFilter available={platforms} />
-            <Filters agents={agents} availableChannels={[]} />
+            <Filters agents={agents} availableChannels={[]} availableInstances={availableInstances} />
             <PeriodPicker />
           </div>
         </div>

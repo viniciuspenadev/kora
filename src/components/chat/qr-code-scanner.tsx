@@ -6,9 +6,10 @@ import { connectWhatsApp, checkConnectionStatus } from "@/lib/actions/chat"
 
 interface Props {
   initialStatus: string
+  instanceId:    string   // multi-número: conecta/checa ESTA instância (não "a 1ª baileys")
 }
 
-export function QrCodeScanner({ initialStatus }: Props) {
+export function QrCodeScanner({ initialStatus, instanceId }: Props) {
   const [status, setStatus]      = useState(initialStatus)
   const [qrCode, setQrCode]      = useState<string | null>(null)
   const [pairingCode, setPairing] = useState<string | null>(null)
@@ -20,7 +21,7 @@ export function QrCodeScanner({ initialStatus }: Props) {
 
     const interval = setInterval(async () => {
       try {
-        const result = await checkConnectionStatus()
+        const result = await checkConnectionStatus(instanceId)
         if (result.status === "connected") {
           setStatus("connected")
           setQrCode(null)
@@ -32,13 +33,13 @@ export function QrCodeScanner({ initialStatus }: Props) {
     }, 3000)
 
     return () => clearInterval(interval)
-  }, [status])
+  }, [status, instanceId])
 
   const handleConnect = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const result = await connectWhatsApp()
+      const result = await connectWhatsApp(instanceId)
       setStatus(result.status)
       if (result.status === "qr_pending") {
         setQrCode(result.qrCode ?? null)
@@ -49,7 +50,7 @@ export function QrCodeScanner({ initialStatus }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [instanceId])
 
   if (status === "connected") {
     return (

@@ -4,7 +4,7 @@ import { Filters } from "@/components/relatorios/filters"
 import { KpiCard } from "@/components/relatorios/kpi-card"
 import { ReportsTabs } from "../tabs"
 import { AtendimentoCharts } from "./charts"
-import { parseFilters, getTenantChannels, formatSec, formatNumber } from "../_helpers"
+import { parseFilters, getTenantChannels, getTenantInstances, formatSec, formatNumber } from "../_helpers"
 import { auth } from "@/auth"
 import { Clock, CheckCircle2, Timer, Zap } from "lucide-react"
 import { hasModule } from "@/lib/modules"
@@ -19,10 +19,11 @@ export default async function AtendimentoReportPage({
   const session  = await auth()
   const tenantId = session?.user?.tenantId
 
-  const [data, agents, availableChannels, hasKanban, hasAi] = await Promise.all([
+  const [data, agents, availableChannels, availableInstances, hasKanban, hasAi] = await Promise.all([
     getAtendimentoMetrics(filters),
     listAgentsForFilter(),
     tenantId ? getTenantChannels(tenantId) : Promise.resolve([]),
+    tenantId ? getTenantInstances(tenantId) : Promise.resolve([]),
     tenantId ? hasModule(tenantId, "kanban")       : Promise.resolve(false),
     tenantId ? hasModule(tenantId, "ai_atendente") : Promise.resolve(false),
   ])
@@ -38,7 +39,7 @@ export default async function AtendimentoReportPage({
             </p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <Filters agents={agents} availableChannels={availableChannels} />
+            <Filters agents={agents} availableChannels={availableChannels} availableInstances={availableInstances} />
             <PeriodPicker />
           </div>
         </div>

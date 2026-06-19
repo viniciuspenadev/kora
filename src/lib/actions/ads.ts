@@ -17,10 +17,11 @@ import type { ExternalAdReply } from "@/types/chat"
  */
 
 export interface AdsFilters {
-  from:      string  // ISO date YYYY-MM-DD
-  to:        string  // ISO date YYYY-MM-DD
-  platform?: string  // "instagram" | "facebook" | "messenger" | "whatsapp" | null
-  agentId?:  string | null
+  from:        string  // ISO date YYYY-MM-DD
+  to:          string  // ISO date YYYY-MM-DD
+  platform?:   string  // "instagram" | "facebook" | "messenger" | "whatsapp" | null
+  agentId?:    string | null
+  instanceId?: string | null  // número (whatsapp_instances.id)
 }
 
 export interface AdConversationRow {
@@ -142,6 +143,9 @@ async function fetchAdConversations(
   }
   if (filters.agentId) {
     q = q.eq("assigned_to", filters.agentId)
+  }
+  if (filters.instanceId) {
+    q = q.eq("instance_id", filters.instanceId)
   }
 
   const { data, error } = await q

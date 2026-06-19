@@ -22,7 +22,7 @@ const TIER: Record<string, string> = {
 type Tab = "overview" | "profile"
 
 export function OfficialDashboard({
-  phone, templates, profile, status, wabaId, webhookOk,
+  phone, templates, profile, status, wabaId, webhookOk, instanceId,
 }: {
   phone: MetaPhoneInfo
   templates: MetaTemplate[]
@@ -30,6 +30,7 @@ export function OfficialDashboard({
   status: string | null
   wabaId: string | null
   webhookOk: boolean
+  instanceId: string
 }) {
   const [tab, setTab] = useState<Tab>("overview")
   const qTone = Q_TONE[phone.quality_rating ?? "UNKNOWN"] ?? "neutral"
@@ -46,7 +47,7 @@ export function OfficialDashboard({
   function doDisconnect() {
     setDisErr(null)
     startTransition(async () => {
-      const res = await disconnectWhatsAppOfficial()
+      const res = await disconnectWhatsAppOfficial(instanceId)
       if (res.error) { setDisErr(res.error); return }
       setConfirmOpen(false)
       router.refresh()
@@ -120,7 +121,7 @@ export function OfficialDashboard({
             <p className="text-xs text-slate-500">Acesse <strong>Templates</strong> no menu para criar modelos, filtrar, ver o preview e acompanhar a qualidade de cada um.</p>
           </SectionCard>
 
-          <OfficialTestSend templates={templates} />
+          <OfficialTestSend templates={templates} instanceId={instanceId} />
 
           <SectionCard title="Desconectar" description="Encerra a conexão deste número com a Kora." icon={Unplug}>
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -140,7 +141,7 @@ export function OfficialDashboard({
         </div>
       )}
 
-      {tab === "profile" && <ProfileForm profile={profile} />}
+      {tab === "profile" && <ProfileForm profile={profile} instanceId={instanceId} />}
 
       {confirmOpen && (
         <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-4" onClick={() => !pending && setConfirmOpen(false)}>

@@ -4,7 +4,7 @@ import { Filters } from "@/components/relatorios/filters"
 import { KpiCard } from "@/components/relatorios/kpi-card"
 import { OverviewCharts } from "./charts"
 import { ReportsTabs } from "./tabs"
-import { parseFilters, getTenantChannels, formatSec, formatMoneyBRL, formatNumber } from "./_helpers"
+import { parseFilters, getTenantChannels, getTenantInstances, formatSec, formatMoneyBRL, formatNumber } from "./_helpers"
 import { auth } from "@/auth"
 import { MessageSquare, Inbox, UserPlus, CheckCircle2, Clock, TrendingUp } from "lucide-react"
 import { hasModule } from "@/lib/modules"
@@ -19,10 +19,11 @@ export default async function RelatoriosPage({
   const session = await auth()
   const tenantId = session?.user?.tenantId
 
-  const [data, agents, availableChannels, hasKanban, hasAi] = await Promise.all([
+  const [data, agents, availableChannels, availableInstances, hasKanban, hasAi] = await Promise.all([
     getOverviewMetrics(filters),
     listAgentsForFilter(),
     tenantId ? getTenantChannels(tenantId) : Promise.resolve([]),
+    tenantId ? getTenantInstances(tenantId) : Promise.resolve([]),
     tenantId ? hasModule(tenantId, "kanban")       : Promise.resolve(false),
     tenantId ? hasModule(tenantId, "ai_atendente") : Promise.resolve(false),
   ])
@@ -38,7 +39,7 @@ export default async function RelatoriosPage({
             </p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <Filters agents={agents} availableChannels={availableChannels} />
+            <Filters agents={agents} availableChannels={availableChannels} availableInstances={availableInstances} />
             <PeriodPicker />
           </div>
         </div>

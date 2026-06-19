@@ -21,7 +21,7 @@ export type { LimitResource, LimitInfo } from "@/lib/limits-shared"
 // ── Resolver max (override do tenant → limite do PLANO → fallback) ──
 
 const ALL_RESOURCES: LimitResource[] = [
-  "users", "whatsapp_instances", "messages_per_month",
+  "users", "whatsapp_official", "whatsapp_qr", "messages_per_month",
   "conversations_per_month", "broadcasts_per_month", "storage_mb", "contacts",
 ]
 
@@ -102,11 +102,22 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
       return (active ?? 0) + (pending ?? 0)
     }
 
-    case "whatsapp_instances": {
+    case "whatsapp_official": {
       const { count } = await supabaseAdmin
         .from("whatsapp_instances")
         .select("id", { count: "exact", head: true })
         .eq("tenant_id", tenantId)
+        .eq("provider", "meta_cloud")
+      return count ?? 0
+    }
+
+    case "whatsapp_qr": {
+      // QR = tudo que NÃO é oficial (inclui provider NULL de instâncias antigas).
+      const { count } = await supabaseAdmin
+        .from("whatsapp_instances")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId)
+        .or("provider.is.null,provider.neq.meta_cloud")
       return count ?? 0
     }
 
@@ -192,7 +203,7 @@ export async function requireLimit(tenantId: string, resource: LimitResource): P
 
 export async function listAllLimits(tenantId: string): Promise<LimitInfo[]> {
   const resources: LimitResource[] = [
-    "users", "whatsapp_instances", "contacts",
+    "users", "whatsapp_official", "whatsapp_qr", "contacts",
     "conversations_per_month", "messages_per_month",
     "broadcasts_per_month", "storage_mb",
   ]

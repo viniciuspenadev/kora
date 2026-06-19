@@ -31,11 +31,14 @@ export interface ProvisionResult {
 }
 
 export async function autoProvisionWhatsApp(
-  tenantId:   string,
-  tenantSlug: string,
+  tenantId:     string,
+  tenantSlug:   string,
+  displayName?: string,
+  opts?:        { ignoreFeatureFlag?: boolean },
 ): Promise<ProvisionResult> {
-  // Feature flag
-  if (process.env.AUTO_PROVISION_ON_TENANT_CREATE === "false") {
+  // Feature flag — só vale pro auto-provision DO ONBOARDING. Um add manual (ignoreFeatureFlag)
+  // é ação deliberada do owner e não pode ser barrada por essa env.
+  if (!opts?.ignoreFeatureFlag && process.env.AUTO_PROVISION_ON_TENANT_CREATE === "false") {
     return { ok: false, skipped: true, error: "Auto-provisioning desativado por env" }
   }
 
@@ -60,6 +63,7 @@ export async function autoProvisionWhatsApp(
       evolution_url:  url,
       evolution_key:  encryptSecret(apiKey),
       instance_name:  instanceName,
+      display_name:   displayName?.trim() || null,
       webhook_secret: webhookSecret,
       status:         "disconnected",
     })

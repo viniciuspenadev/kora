@@ -9,7 +9,7 @@ import { FormRow } from "@/components/ui/form-row"
 
 const INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
 
-export function OfficialTestSend({ templates }: { templates: MetaTemplate[] }) {
+export function OfficialTestSend({ templates, instanceId }: { templates: MetaTemplate[]; instanceId: string }) {
   const approved = templates.filter((t) => t.status === "APPROVED")
   const [mode, setMode] = useState<"text" | "template">(approved.length > 0 ? "template" : "text")
   const [phone, setPhone] = useState("")
@@ -24,7 +24,7 @@ export function OfficialTestSend({ templates }: { templates: MetaTemplate[] }) {
     setFb(null)
     startT(async () => {
       const lang = approved.find((t) => t.name === tpl)?.language ?? "pt_BR"
-      const r = await sendOfficialTest({ phone, mode, text, template: tpl, language: lang })
+      const r = await sendOfficialTest({ phone, mode, text, template: tpl, language: lang, instanceId })
       if (r.ok) setFb({ ok: true, msg: `Enviado! (id ${r.id})` })
       else setFb({ ok: false, msg: r.error ?? "Falha no envio." })
     })

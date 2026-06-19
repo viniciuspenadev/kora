@@ -10,6 +10,7 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { parseVars, type TemplateVar } from "@/lib/whatsapp/template-vars"
 import { upsertTemplateCache } from "@/lib/channels/template-cache"
+import { requireLimit } from "@/lib/limits"
 import { revalidatePath } from "next/cache"
 
 const PAGE = "/integracoes/whatsapp-oficial"
@@ -42,6 +43,16 @@ export async function connectWhatsAppOfficial(input: {
   const appSecret = process.env.META_APP_SECRET
   if (!appId || !appSecret) return { ok: false, error: "Integração Meta não configurada no servidor." }
   if (!input.code || !input.wabaId || !input.phoneNumberId) return { ok: false, error: "Dados do cadastro incompletos." }
+
+  // Gate de plano (fail-closed): número OFICIAL novo conta na cota; reconectar o MESMO
+  // número (mesmo phone_number_id) não conta. Checa ANTES de tocar a Meta.
+  const { data: alreadyHave } = await supabaseAdmin
+    .from("whatsapp_instances").select("id")
+    .eq("tenant_id", tenantId).eq("meta_phone_number_id", input.phoneNumberId).maybeSingle()
+  if (!alreadyHave) {
+    try { await requireLimit(tenantId, "whatsapp_official") }
+    catch (e) { return { ok: false, error: (e as Error).message } }
+  }
 
   try {
     // 1. code → access_token (token de usuário de sistema da integração)
@@ -88,11 +99,14 @@ export async function connectWhatsAppOfficial(input: {
       updated_at:               new Date().toISOString(),
     }
 
+    // Multi-número: dedup pelo NÚMERO (meta_phone_number_id, único), NÃO por "a oficial
+    // do tenant". Reconectar o MESMO número → UPDATE; número NOVO → INSERT (não sobrescreve
+    // o que já existe). Sem isso, conectar o 2º número apagava o 1º.
     const { data: existing } = await supabaseAdmin
       .from("whatsapp_instances")
       .select("id")
       .eq("tenant_id", tenantId)
-      .eq("provider", "meta_cloud")
+      .eq("meta_phone_number_id", input.phoneNumberId)
       .maybeSingle()
 
     const { error } = existing
@@ -109,19 +123,20 @@ export async function connectWhatsAppOfficial(input: {
 }
 
 /** Resolve o provider Meta da instância oficial do tenant logado (owner/admin). */
-async function tenantMetaProvider(): Promise<{ provider: MetaCloudProvider } | { error: string }> {
+async function tenantMetaProvider(instanceId?: string): Promise<{ provider: MetaCloudProvider } | { error: string }> {
   const session = await auth()
   if (!session) return { error: "Não autenticado." }
   if (!["owner", "admin"].includes(session.user.role)) return { error: "Acesso restrito a administradores." }
 
-  const { data: inst } = await supabaseAdmin
+  // Multi-número: escopa pela instância pedida (UI por-número); sem id → a 1ª oficial.
+  const base = supabaseAdmin
     .from("whatsapp_instances")
     .select("meta_phone_number_id, meta_business_account_id, meta_access_token, meta_app_secret")
     .eq("tenant_id", session.user.tenantId)
     .eq("provider", "meta_cloud")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle()
+  const { data: inst } = instanceId
+    ? await base.eq("id", instanceId).maybeSingle()
+    : await base.order("created_at", { ascending: true }).limit(1).maybeSingle()
 
   if (!inst?.meta_phone_number_id || !inst.meta_access_token) {
     return { error: "Instância oficial não configurada." }
@@ -406,17 +421,20 @@ export async function syncTemplatesCacheFor(tenantId: string): Promise<Result> {
  * desconectado. NÃO deleta a linha — preserva o histórico de conversas; reconectar
  * pelo Embedded Signup atualiza a mesma instância. owner/admin.
  */
-export async function disconnectWhatsAppOfficial(): Promise<Result> {
+export async function disconnectWhatsAppOfficial(instanceId?: string): Promise<Result> {
   const session = await auth()
   if (!session) return { ok: false, error: "Não autenticado." }
   if (!["owner", "admin"].includes(session.user.role)) return { ok: false, error: "Acesso restrito a administradores." }
 
-  const { data: inst } = await supabaseAdmin
+  // Multi-número: desconecta a instância pedida (UI por-número); sem id → a 1ª oficial.
+  const base = supabaseAdmin
     .from("whatsapp_instances")
     .select("id, meta_business_account_id, meta_access_token")
     .eq("tenant_id", session.user.tenantId)
     .eq("provider", "meta_cloud")
-    .maybeSingle()
+  const { data: inst } = instanceId
+    ? await base.eq("id", instanceId).maybeSingle()
+    : await base.order("created_at", { ascending: true }).limit(1).maybeSingle()
   if (!inst) return { ok: false, error: "Nenhum número oficial conectado." }
 
   // Best-effort: remove a assinatura do app na WABA (decifra o token pra usar).
@@ -453,8 +471,8 @@ export async function deleteOfficialTemplate(name: string): Promise<Result> {
   }
 }
 
-export async function updateOfficialProfile(profile: Partial<MetaBusinessProfile>): Promise<Result> {
-  const r = await tenantMetaProvider()
+export async function updateOfficialProfile(profile: Partial<MetaBusinessProfile>, instanceId?: string): Promise<Result> {
+  const r = await tenantMetaProvider(instanceId)
   if ("error" in r) return { ok: false, error: r.error }
 
   // Só manda campos editáveis e não-vazios (a foto é tratada à parte no futuro).
@@ -506,8 +524,9 @@ export async function sendOfficialTest(input: {
   text?: string
   template?: string
   language?: string
+  instanceId?: string
 }): Promise<Result> {
-  const r = await tenantMetaProvider()
+  const r = await tenantMetaProvider(input.instanceId)
   if ("error" in r) return { ok: false, error: r.error }
 
   const phone = input.phone.replace(/\D/g, "")

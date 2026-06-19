@@ -16,6 +16,7 @@ export interface WhatsAppInstance {
   id:                  string
   tenant_id:           string
   instance_name:       string
+  display_name:        string | null
   instance_token:      string | null
   phone_number:        string | null
   status:              WhatsAppInstanceStatus
@@ -127,7 +128,7 @@ export interface ChatConversation {
   profiles?:        { full_name: string | null } | null
   pipeline_stages?: { id: string; name: string; color: string; is_won: boolean; is_lost: boolean } | null
   // Instância dona da conversa (canal) — pra badge multi-instância (Baileys vs Oficial)
-  whatsapp_instances?: { provider: string | null; instance_name: string | null } | null
+  whatsapp_instances?: { provider: string | null; instance_name: string | null; display_name: string | null; phone_number: string | null } | null
 }
 
 export interface ChatMessage {

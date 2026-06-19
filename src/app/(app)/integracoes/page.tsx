@@ -29,46 +29,31 @@ export default async function IntegracoesPage() {
 
   const tenantId = session.user.tenantId
 
-  const [{ data: instances }, { data: tenantRow }, modules] = await Promise.all([
+  const [{ data: instances }, modules] = await Promise.all([
     supabaseAdmin
       .from("whatsapp_instances")
       .select("provider, status")
       .eq("tenant_id", tenantId),
-    supabaseAdmin
-      .from("tenants")
-      .select("hide_qr_channel")
-      .eq("id", tenantId)
-      .maybeSingle(),
     getEnabledModuleSlugs(tenantId),
   ])
 
-  const hideQr = (tenantRow as { hide_qr_channel?: boolean } | null)?.hide_qr_channel ?? false
   const list = instances ?? []
-  const baileysConnected = list.some((i) => i.provider !== "meta_cloud" && CONNECTED_STATES.has(i.status ?? ""))
-  const metaInstance     = list.find((i) => i.provider === "meta_cloud")
-  const metaConnected    = !!metaInstance && CONNECTED_STATES.has(metaInstance.status ?? "")
-  const hasOfficialModule = modules.has("whatsapp_official")
+  const waTotal     = list.length
+  const waConnected = list.filter((i) => CONNECTED_STATES.has(i.status ?? "")).length
+  const whatsappDesc = waTotal === 0
+    ? "Conecte seu primeiro número — oficial pela Meta ou via QR Code."
+    : `${waTotal} ${waTotal === 1 ? "número" : "números"} · ${waConnected} conectado${waConnected === 1 ? "" : "s"}`
 
   const integrations: IntegrationCard[] = [
     {
       slug:        "whatsapp",
-      name:        "WhatsApp (QR)",
-      description: "Conecte um número via QR Code. Rápido pra começar, ideal pra PMEs.",
+      name:        "WhatsApp",
+      description: whatsappDesc,
       source:      "whatsapp_inbound",
       category:    "Canais",
-      href:        "/configuracoes/whatsapp",
-      status:      baileysConnected ? "connected" : "available",
-    },
-    {
-      slug:        "whatsapp_official",
-      name:        "WhatsApp API Oficial",
-      description: "Número oficial via Meta Cloud API — templates, escala e confiabilidade.",
-      source:      "whatsapp_inbound",
-      category:    "Canais",
-      // Self-service (Embedded Signup): com o módulo ligado, abre a página pra CONECTAR.
-      // Sem módulo e sem instância → "em breve" (gate por tenant_modules).
-      href:        (metaInstance || hasOfficialModule) ? "/integracoes/whatsapp-oficial" : null,
-      status:      metaConnected ? "connected" : (metaInstance || hasOfficialModule) ? "available" : "soon",
+      // Página dedicada de gestão dos números (oficiais + QR).
+      href:        "/integracoes/whatsapp",
+      status:      waConnected > 0 ? "connected" : "available",
     },
     {
       slug:        "widget_site",
@@ -99,8 +84,7 @@ export default async function IntegracoesPage() {
     },
   ]
 
-  // Esconde o canal QR/Baileys pra tenants "só-oficial" (flag por-tenant).
-  const visibleIntegrations = hideQr ? integrations.filter((it) => it.slug !== "whatsapp") : integrations
+  const visibleIntegrations = integrations
 
   // Agrupa por categoria (hoje só "Canais", mas já preparado pra crescer)
   const byCategory = new Map<string, IntegrationCard[]>()

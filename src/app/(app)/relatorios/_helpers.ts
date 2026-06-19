@@ -16,14 +16,29 @@ export function defaultRange(): { from: string; to: string } {
   return { from: isoDate(from), to: isoDate(to) }
 }
 
-export function parseFilters(sp: { from?: string; to?: string; agent?: string; channel?: string }): ReportFilters {
+export function parseFilters(sp: { from?: string; to?: string; agent?: string; channel?: string; instance?: string }): ReportFilters {
   const range = (sp.from && sp.to) ? { from: sp.from, to: sp.to } : defaultRange()
   return {
-    from:    range.from,
-    to:      range.to,
-    agentId: sp.agent || null,
-    channel: sp.channel || null,
+    from:       range.from,
+    to:         range.to,
+    agentId:    sp.agent || null,
+    channel:    sp.channel || null,
+    instanceId: sp.instance || null,
   }
+}
+
+/** Instâncias (números) do tenant pra popular o dropdown de filtro. Label = nome custom. */
+export async function getTenantInstances(tenantId: string): Promise<{ id: string; label: string; provider: string | null }[]> {
+  const { data } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("id, display_name, instance_name, phone_number, provider")
+    .eq("tenant_id", tenantId)
+    .order("created_at", { ascending: true })
+  return ((data ?? []) as Array<{ id: string; display_name: string | null; instance_name: string | null; phone_number: string | null; provider: string | null }>).map((i) => ({
+    id:       i.id,
+    label:    i.display_name?.trim() || i.phone_number || i.instance_name || "Número",
+    provider: i.provider,
+  }))
 }
 
 export function formatSec(s: number): string {

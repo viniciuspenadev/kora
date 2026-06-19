@@ -52,7 +52,7 @@ const CONVERSATION_SELECT = `
   ),
   profiles ( full_name ),
   pipeline_stages ( id, name, color, is_won, is_lost ),
-  whatsapp_instances!instance_id ( provider, instance_name )
+  whatsapp_instances!instance_id ( provider, instance_name, display_name, phone_number )
 `
 
 // ── Helpers ─────────────────────────────────────────────────

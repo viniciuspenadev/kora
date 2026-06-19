@@ -297,6 +297,10 @@ export function ChatPanel({
     return () => obs.disconnect()
   }, [hasMoreOlder, loadingOlder, onLoadOlder])
 
+  // Nome do número que está atendendo esta conversa (B1) — só aparece se o tenant
+  // deu um nome (display_name); número sem nome não polui o header.
+  const numberName = conversation.whatsapp_instances?.display_name?.trim() || null
+
   return (
     <div className="flex flex-col h-full bg-slate-50">
       <div className="flex items-center justify-between px-3 sm:px-5 py-3 bg-white border-b border-slate-200 shrink-0">
@@ -352,6 +356,14 @@ export function ChatPanel({
                 </span>
               ) : (
                 <>
+                  {numberName && (
+                    <span
+                      className="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-primary-50 text-primary-700"
+                      title="Você está atendendo por este número"
+                    >
+                      {numberName}
+                    </span>
+                  )}
                   {phone && (
                     <span className="text-[11px] text-slate-400 font-mono">{phone}</span>
                   )}

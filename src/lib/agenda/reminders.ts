@@ -160,11 +160,9 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
     const { data } = await supabaseAdmin.from("whatsapp_instances").select("*").eq("id", conv.instance_id).maybeSingle()
     instance = data
   }
-  if (!instance) {
-    const { data } = await supabaseAdmin.from("whatsapp_instances").select("*").eq("tenant_id", appt.tenant_id).limit(1).maybeSingle()
-    instance = data
-  }
-  if (!instance) return logReminder(appt, stepKey, "whatsapp", "failed", "tenant sem instância")
+  // Multi-número: SEM fallback "1ª do tenant" — mandaria o lembrete pro número ERRADO.
+  // Sem a instância da conversa, não dá pra saber qual número usar → pula com log (fail-safe).
+  if (!instance) return logReminder(appt, stepKey, "whatsapp", "failed", "conversa sem instância resolvível")
 
   const inWindow = conv?.last_inbound_at
     ? Date.now() - new Date(conv.last_inbound_at as string).getTime() < 24 * 3600_000

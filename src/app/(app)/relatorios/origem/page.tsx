@@ -4,7 +4,7 @@ import { Filters } from "@/components/relatorios/filters"
 import { KpiCard } from "@/components/relatorios/kpi-card"
 import { ReportsTabs } from "../tabs"
 import { OrigemCharts } from "./charts"
-import { parseFilters, getTenantChannels, formatMoneyBRL, formatNumber } from "../_helpers"
+import { parseFilters, getTenantChannels, getTenantInstances, formatMoneyBRL, formatNumber } from "../_helpers"
 import { auth } from "@/auth"
 import { hasModule } from "@/lib/modules"
 import { Globe, Megaphone, Users } from "lucide-react"
@@ -19,10 +19,11 @@ export default async function OrigemReportPage({
   const session  = await auth()
   const tenantId = session?.user?.tenantId
 
-  const [data, agents, availableChannels, hasKanban, hasAi] = await Promise.all([
+  const [data, agents, availableChannels, availableInstances, hasKanban, hasAi] = await Promise.all([
     getOrigemMetrics(filters),
     listAgentsForFilter(),
     tenantId ? getTenantChannels(tenantId) : Promise.resolve([]),
+    tenantId ? getTenantInstances(tenantId) : Promise.resolve([]),
     tenantId ? hasModule(tenantId, "kanban")       : Promise.resolve(false),
     tenantId ? hasModule(tenantId, "ai_atendente") : Promise.resolve(false),
   ])
@@ -41,7 +42,7 @@ export default async function OrigemReportPage({
             </p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <Filters agents={agents} availableChannels={availableChannels} />
+            <Filters agents={agents} availableChannels={availableChannels} availableInstances={availableInstances} />
             <PeriodPicker />
           </div>
         </div>

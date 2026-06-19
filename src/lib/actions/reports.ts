@@ -17,10 +17,11 @@ import { SOURCE_META } from "@/lib/lifecycle"
  */
 
 export interface ReportFilters {
-  from:      string
-  to:        string
-  agentId?:  string | null
-  channel?:  string | null  // source em chat_contacts
+  from:        string
+  to:          string
+  agentId?:    string | null
+  channel?:    string | null  // source em chat_contacts
+  instanceId?: string | null  // número (whatsapp_instances.id) — conversas desse número
 }
 
 export type DailyPoint = { date: string; conversas: number; contatos: number }
@@ -132,6 +133,17 @@ async function resolveFilters(t: string, f: ReportFilters): Promise<HelperFilter
       .from("chat_contacts")
       .select("id").eq("tenant_id", t).eq("source", f.channel)
     contactIds = (data ?? []).map((r) => (r as { id: string }).id)
+  }
+
+  // Número (instância): contatos que têm conversa nesse número. Intersecta com o canal
+  // (se houver) e flui pela plumbing de `contactIds` → aplica em TODAS as métricas sem
+  // editar cada sub-query. (Aprox.: contato com conversas em 2 números entra nos dois.)
+  if (f.instanceId) {
+    const { data } = await supabaseAdmin
+      .from("chat_conversations")
+      .select("contact_id").eq("tenant_id", t).eq("instance_id", f.instanceId).not("contact_id", "is", null)
+    const instContacts = Array.from(new Set((data ?? []).map((r) => (r as { contact_id: string }).contact_id)))
+    contactIds = contactIds === null ? instContacts : contactIds.filter((id) => instContacts.includes(id))
   }
 
   let conversationIds: string[] | null = null
