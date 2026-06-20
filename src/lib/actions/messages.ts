@@ -41,12 +41,12 @@ async function assertCanView(conversationId: string): Promise<string> {
   const scope = await getViewerScope()
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("assigned_to, participants, department_id")
+    .select("instance_id, assigned_to, participants, department_id")
     .eq("id", conversationId)
     .eq("tenant_id", scope.tenantId)
     .maybeSingle()
   if (!conv) throw new Error("Conversa não encontrada")
-  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null })) {
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null })) {
     throw new Error("Sem permissão para ver esta conversa.")
   }
   return scope.tenantId

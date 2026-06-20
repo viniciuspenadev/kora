@@ -1,12 +1,12 @@
 "use client"
 
 import { useState, useEffect, useTransition } from "react"
-import { Loader2, Power, RotateCcw, CalendarDays } from "lucide-react"
+import { Loader2, Power, RotateCcw, CalendarDays, BadgeCheck, Smartphone } from "lucide-react"
 import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
-  updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool, setMemberActive,
+  updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool, updateMemberInstances, setMemberActive,
   type TeamMember, type Department, type TenantRole,
 } from "@/lib/actions/team"
 import {
@@ -20,17 +20,19 @@ const inputCls =
 interface Props {
   member:          TeamMember
   departments:     Department[]
+  numbers:         { id: string; label: string; provider: string | null }[]
   currentUserId:   string
   currentUserRole: string
   onClose:         () => void
   onFeedback:      (kind: "ok" | "error", text: string) => void
 }
 
-export function MemberSheet({ member, departments, currentUserId, currentUserRole, onClose, onFeedback }: Props) {
+export function MemberSheet({ member, departments, numbers, currentUserId, currentUserRole, onClose, onFeedback }: Props) {
   const [role, setRole]               = useState<TenantRole>(member.role)
   const [departmentId, setDepartment] = useState<string>(member.department_id ?? "")
   const [viewAll, setViewAll]         = useState(member.view_all)
   const [seePool, setSeePool]         = useState(member.see_pool)
+  const [instanceIds, setInstanceIds] = useState<string[]>(member.instance_ids ?? [])
 
   const [savePending, startSave]     = useTransition()
   const [statusPending, startStatus] = useTransition()
@@ -73,6 +75,15 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
       if (seePool !== member.see_pool) {
         anyChange = true
         const r = await toggleMemberSeePool(member.user_id, seePool)
+        if (r.error) anyError = r.error
+      }
+
+      // instance_ids (Fase D) — números que atende
+      const curIds = member.instance_ids ?? []
+      const sameIds = curIds.length === instanceIds.length && curIds.every((id) => instanceIds.includes(id))
+      if (!sameIds) {
+        anyChange = true
+        const r = await updateMemberInstances(member.user_id, instanceIds)
         if (r.error) anyError = r.error
       }
 
@@ -222,6 +233,38 @@ export function MemberSheet({ member, departments, currentUserId, currentUserRol
               </div>
             </label>
           </div>
+
+          {role === "agent" && numbers.length > 1 && (
+            <div className="pt-4 border-t border-slate-100">
+              <p className="text-sm font-medium text-slate-800">Números que atende</p>
+              <p className="text-[11px] text-slate-500 mt-0.5 mb-2">
+                Marque os números cujas conversas esta pessoa atende. <strong>Nenhum marcado = todos</strong>. O número limita o que ela descobre (pool e fila do setor); conversas atribuídas a ela ou que ela participa seguem visíveis mesmo de outro número.
+              </p>
+              <div className="space-y-1.5">
+                {numbers.map((n) => {
+                  const checked = instanceIds.includes(n.id)
+                  return (
+                    <label key={n.id} className={`flex items-center gap-2.5 rounded-lg border border-slate-200 px-2.5 py-2 ${canEditOther ? "cursor-pointer hover:bg-slate-50" : "cursor-not-allowed opacity-60"}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => setInstanceIds((prev) => e.target.checked ? [...prev, n.id] : prev.filter((x) => x !== n.id))}
+                        disabled={!canEditOther}
+                        className="size-4 rounded border-slate-300 text-primary focus:ring-primary/30 disabled:opacity-50"
+                      />
+                      <span className={`inline-flex size-5 shrink-0 items-center justify-center rounded ${n.provider === "meta_cloud" ? "bg-primary-50 text-primary-700" : "bg-slate-100 text-slate-500"}`}>
+                        {n.provider === "meta_cloud" ? <BadgeCheck className="size-3" /> : <Smartphone className="size-3" />}
+                      </span>
+                      <span className="text-sm text-slate-700">{n.label}</span>
+                    </label>
+                  )
+                })}
+              </div>
+              {instanceIds.length === 0 && (
+                <p className="text-[11px] text-slate-400 mt-1.5">Atendendo <strong>todos</strong> os números.</p>
+              )}
+            </div>
+          )}
 
           {member.role === "agent" && <AgendaAccessSection memberUserId={member.user_id} onFeedback={onFeedback} />}
 

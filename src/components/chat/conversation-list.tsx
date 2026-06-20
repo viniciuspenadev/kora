@@ -87,17 +87,19 @@ const STATUS_ICON: Record<string, { Icon: typeof Clock; className: string; label
 const STALE_HOURS_THRESHOLD = 24
 
 /** Badge de canal por conversa (só aparece com 2+ instâncias no tenant). */
-function ChannelBadge({ provider }: { provider: string | null }) {
+function ChannelBadge({ provider, name }: { provider: string | null; name?: string | null }) {
   const isMeta = provider === "meta_cloud"
+  // Mostra o NOME do número (display_name) quando o tenant nomeou; senão Oficial/QR.
+  const label = name?.trim() || (isMeta ? "Oficial" : "QR")
   return (
     <span
-      className={`inline-flex items-center gap-0.5 text-[9px] font-semibold px-1 py-0.5 rounded shrink-0 ${
+      className={`inline-flex items-center gap-0.5 text-[9px] font-semibold px-1 py-0.5 rounded shrink-0 max-w-[120px] ${
         isMeta ? "bg-primary-50 text-primary-700" : "bg-slate-100 text-slate-500"
       }`}
       title={isMeta ? "WhatsApp API Oficial" : "WhatsApp (QR)"}
     >
-      {isMeta ? <BadgeCheck className="size-2.5" /> : <Smartphone className="size-2.5" />}
-      {isMeta ? "Oficial" : "QR"}
+      {isMeta ? <BadgeCheck className="size-2.5 shrink-0" /> : <Smartphone className="size-2.5 shrink-0" />}
+      <span className="truncate">{label}</span>
     </span>
   )
 }
@@ -518,7 +520,7 @@ export function ConversationList({
                     <p className={`text-xs truncate flex-1 ${hasUnread ? "font-medium text-slate-700" : "text-slate-500"}`}>
                       {conv.last_message_preview ?? "Nova conversa"}
                     </p>
-                    {showChannel && <ChannelBadge provider={conv.whatsapp_instances?.provider ?? null} />}
+                    {showChannel && <ChannelBadge provider={conv.whatsapp_instances?.provider ?? null} name={conv.whatsapp_instances?.display_name} />}
                   </div>
 
                   {isWaiting && (

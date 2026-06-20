@@ -4,6 +4,7 @@ import { Filters } from "@/components/relatorios/filters"
 import { KpiCard } from "@/components/relatorios/kpi-card"
 import { ReportsTabs } from "../tabs"
 import { OrigemCharts } from "./charts"
+import { InstanceBreakdown } from "@/components/relatorios/instance-breakdown"
 import { parseFilters, getTenantChannels, getTenantInstances, formatMoneyBRL, formatNumber } from "../_helpers"
 import { auth } from "@/auth"
 import { hasModule } from "@/lib/modules"
@@ -89,6 +90,10 @@ export default async function OrigemReportPage({
           topCampaigns={data.topCampaigns}
           totalContacts={totalContacts}
         />
+
+        {availableInstances.length > 1 && (
+          <InstanceBreakdown rows={data.byInstance} instances={availableInstances} subtitle="Contatos e conversas por número de WhatsApp" />
+        )}
       </div>
     </div>
   )

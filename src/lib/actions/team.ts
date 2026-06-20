@@ -18,6 +18,7 @@ export interface TeamMember {
   active:        boolean
   view_all:      boolean
   see_pool:      boolean
+  instance_ids:  string[] | null   // números que atende (Fase D); null/[] = todos
   department_id: string | null
   department:    { id: string; name: string; color: string } | null
   joined_at:     string
@@ -64,7 +65,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, department_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color )
     `)
@@ -85,6 +86,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       active:        row.active,
       view_all:      row.view_all,
       see_pool:      row.see_pool ?? true,
+      instance_ids:  (row.instance_ids as string[] | null) ?? null,
       department_id: row.department_id,
       department:    dept,
       joined_at:     row.joined_at,
@@ -335,6 +337,53 @@ export async function toggleMemberSeePool(userId: string, seePool: boolean): Pro
 
   revalidatePath("/configuracoes/equipe")
   return {}
+}
+
+/**
+ * Define os números (whatsapp_instances) que o atendente atende (Fase D).
+ * Vazio = todos (sem restrição). Valida que cada id é instância DO tenant (anti-IDOR)
+ * — id de outro tenant é rejeitado, nunca persistido.
+ */
+export async function updateMemberInstances(userId: string, instanceIds: string[]): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  const tenantId = session.user.tenantId
+
+  let valid: string[] = []
+  if (instanceIds.length > 0) {
+    const { data: rows } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .in("id", instanceIds)
+    const ok = new Set((rows ?? []).map((r) => (r as { id: string }).id))
+    valid = instanceIds.filter((id) => ok.has(id))
+    if (valid.length !== instanceIds.length) return { error: "Número inválido para este tenant" }
+  }
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ instance_ids: valid.length > 0 ? valid : null })   // [] → null (= todos)
+    .eq("tenant_id", tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/** Números do tenant pra o seletor "Números que atende" (Fase D). */
+export async function listTeamNumbers(): Promise<{ id: string; label: string; provider: string | null }[]> {
+  const session = await requireTenantAdmin()
+  const { data } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("id, display_name, phone_number, instance_name, provider, created_at")
+    .eq("tenant_id", session.user.tenantId)
+    .order("created_at", { ascending: true })
+  return (data ?? []).map((r) => {
+    const row = r as { id: string; display_name: string | null; phone_number: string | null; instance_name: string | null; provider: string | null }
+    return { id: row.id, label: row.display_name || row.phone_number || row.instance_name || "Número", provider: row.provider }
+  })
 }
 
 export async function setMemberActive(userId: string, active: boolean): Promise<{ error?: string }> {

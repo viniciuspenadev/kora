@@ -44,6 +44,7 @@ export interface OverviewMetrics {
   resolvedCount:       DeltaNumber
   daily:               DailyPoint[]
   channels:            ChannelSlice[]
+  byInstance:          InstanceSlice[]
 }
 
 export interface AtendimentoMetrics {
@@ -56,6 +57,7 @@ export interface AtendimentoMetrics {
   resolutionDaily:     { date: string; avgSec: number }[]
   heatmap:             { dow: number; hour: number; count: number }[]
   agentLoad:           AgentLoad[]
+  byInstance:          InstanceSlice[]
 }
 
 // ─── Funil ──────────────────────────────────────────────────
@@ -98,6 +100,16 @@ export interface OrigemMetrics {
   topCampaigns: { headline: string; count: number }[]
   // Stacked area de contatos por canal por dia
   dailyByChannel: { date: string; [source: string]: number | string }[]
+  byInstance: InstanceSlice[]
+}
+
+// ─── Breakdown por número (multi-número) ────────────────────
+export interface InstanceSlice {
+  instanceId:    string
+  conversations: number
+  contacts:      number
+  resolved:      number
+  valueCents:    number
 }
 
 // ─── Utilitários ────────────────────────────────────────────
@@ -142,8 +154,8 @@ async function resolveFilters(t: string, f: ReportFilters): Promise<HelperFilter
     const { data } = await supabaseAdmin
       .from("chat_conversations")
       .select("contact_id").eq("tenant_id", t).eq("instance_id", f.instanceId).not("contact_id", "is", null)
-    const instContacts = Array.from(new Set((data ?? []).map((r) => (r as { contact_id: string }).contact_id)))
-    contactIds = contactIds === null ? instContacts : contactIds.filter((id) => instContacts.includes(id))
+    const instContacts = new Set((data ?? []).map((r) => (r as { contact_id: string }).contact_id))
+    contactIds = contactIds === null ? Array.from(instContacts) : contactIds.filter((id) => instContacts.has(id))
   }
 
   let conversationIds: string[] | null = null
@@ -156,6 +168,44 @@ async function resolveFilters(t: string, f: ReportFilters): Promise<HelperFilter
   }
 
   return { contactIds, conversationIds, agentId: f.agentId ?? null }
+}
+
+/**
+ * Breakdown por número (multi-número): conversas/contatos/resolvidos/valor
+ * agrupados por `instance_id`, numa query só. Respeita os filtros resolvidos
+ * (canal/agente/número) via `hf`. Labels (display_name) resolvidos na página.
+ */
+async function instanceBreakdown(t: string, r: RangeOpts, f: HelperFilters, instanceId?: string | null): Promise<InstanceSlice[]> {
+  let q = supabaseAdmin.from("chat_conversations")
+    .select("instance_id, contact_id, status, estimated_value")
+    .eq("tenant_id", t)
+    .not("instance_id", "is", null)
+    .gte("created_at", r.from.toISOString()).lt("created_at", r.to.toISOString())
+  // Quando o filtro de número está ativo, restringe à CONVERSA daquele número (não à
+  // aproximação-por-contactIds) → o breakdown fica coerente com o filtro (só mostra X).
+  if (instanceId)             q = q.eq("instance_id", instanceId)
+  if (f.agentId)              q = q.eq("assigned_to", f.agentId)
+  if (f.contactIds !== null && f.contactIds !== undefined) q = q.in("contact_id", f.contactIds)
+  const { data } = await q
+
+  type Row = { instance_id: string; contact_id: string | null; status: string; estimated_value: number | null }
+  type Acc = { conversations: number; contacts: Set<string>; resolved: number; valueSum: number }
+  const map = new Map<string, Acc>()
+  for (const c of (data ?? []) as Row[]) {
+    const acc = map.get(c.instance_id) ?? { conversations: 0, contacts: new Set<string>(), resolved: 0, valueSum: 0 }
+    acc.conversations++
+    if (c.contact_id) acc.contacts.add(c.contact_id)
+    if (c.status === "resolved") acc.resolved++
+    acc.valueSum += Number(c.estimated_value ?? 0)
+    map.set(c.instance_id, acc)
+  }
+  return Array.from(map.entries()).map(([instanceId, acc]) => ({
+    instanceId,
+    conversations: acc.conversations,
+    contacts:      acc.contacts.size,
+    resolved:      acc.resolved,
+    valueCents:    Math.round(acc.valueSum * 100),
+  })).sort((a, b) => b.conversations - a.conversations)
 }
 
 // ─── Sub-queries ────────────────────────────────────────────
@@ -324,6 +374,7 @@ export async function getOverviewMetrics(filters: ReportFilters): Promise<Overvi
     pvCur, pvPrev,
     daily,
     channels,
+    byInst,
   ] = await Promise.all([
     countActiveConversations(t, range, hf), countActiveConversations(t, prev, hf),
     countMessages(t, range, hf),            countMessages(t, prev, hf),
@@ -334,6 +385,7 @@ export async function getOverviewMetrics(filters: ReportFilters): Promise<Overvi
     pipelineValueCents(t, hf),              pipelineValueCents(t, hf),
     dailySeries(t, range, hf),
     channelDistribution(t, range, hf),
+    instanceBreakdown(t, range, hf, filters.instanceId),
   ])
 
   const ratePct = (resolved: number, total: number) => total === 0 ? 0 : Math.round((resolved / total) * 1000) / 10
@@ -349,6 +401,7 @@ export async function getOverviewMetrics(filters: ReportFilters): Promise<Overvi
     pipelineValueCents:  { current: pvCur,    previous: pvPrev },
     daily,
     channels,
+    byInstance: byInst,
   }
 }
 
@@ -569,6 +622,7 @@ export async function getAtendimentoMetrics(filters: ReportFilters): Promise<Ate
     resDaily,
     heat,
     agents,
+    byInst,
   ] = await Promise.all([
     avgFirstResponseSec(t, range, hf),  avgFirstResponseSec(t, prev, hf),
     avgResolutionSec(t, range, hf),     avgResolutionSec(t, prev, hf),
@@ -578,6 +632,7 @@ export async function getAtendimentoMetrics(filters: ReportFilters): Promise<Ate
     dailyAvgResolution(t, range, hf),
     heatmapData(t, range, hf),
     agentLoad(t, range, hf),
+    instanceBreakdown(t, range, hf, filters.instanceId),
   ])
 
   return {
@@ -590,6 +645,7 @@ export async function getAtendimentoMetrics(filters: ReportFilters): Promise<Ate
     resolutionDaily:     resDaily,
     heatmap:             heat,
     agentLoad:           agents,
+    byInstance:          byInst,
   }
 }
 
@@ -917,9 +973,12 @@ export async function getOrigemMetrics(filters: ReportFilters): Promise<OrigemMe
     return row
   })
 
+  const byInst = await instanceBreakdown(t, range, hf, filters.instanceId)
+
   return {
     range: { from: filters.from, to: filters.to },
     byChannel,
+    byInstance: byInst,
     ctwaCount:      { current: ctwaContactsList.length, previous: ctwaPrev },
     ctwaContacts:   ctwaContactsList.length,
     topCampaigns,

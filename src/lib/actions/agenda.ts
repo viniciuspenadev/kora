@@ -84,7 +84,7 @@ export type ShareLevel = "free_busy" | "details" | "manage"
 type ApptVisibility = {
   created_by:         string | null
   tenant_resources:   { assigned_agent_id: string | null; share_everyone_level: ShareLevel | null } | null
-  chat_conversations: { assigned_to: string | null; participants: string[] | null; department_id: string | null } | null
+  chat_conversations: { assigned_to: string | null; participants: string[] | null; department_id: string | null; instance_id: string | null } | null
 }
 
 /** Nível efetivo do viewer sobre um compromisso. Fail-closed = none. */
@@ -102,7 +102,7 @@ function appointmentLevel(s: ViewerScope, a: ApptVisibility, shareLevel: ShareLe
   return best
 }
 
-const APPT_VISIBILITY_SELECT = "created_by, tenant_resources(assigned_agent_id, share_everyone_level), chat_conversations(assigned_to, participants, department_id)"
+const APPT_VISIBILITY_SELECT = "created_by, tenant_resources(assigned_agent_id, share_everyone_level), chat_conversations(instance_id, assigned_to, participants, department_id)"
 
 /** Co-host: o viewer é participante explícito deste compromisso? */
 async function isAppointmentParticipant(s: ViewerScope, appointmentId: string): Promise<boolean> {
@@ -353,7 +353,7 @@ export async function getAvailableSlots(input: {
 export async function listAppointments(input: { rangeStart: string; rangeEnd: string; resourceId?: string }): Promise<AppointmentRow[]> {
   const s = await getViewerScope()
   let q = supabaseAdmin.from("appointments")
-    .select(`*, chat_contacts(push_name, custom_name, phone_number), tenant_services(name), tenant_resources(name, assigned_agent_id, share_everyone_level), chat_conversations(assigned_to, participants, department_id)`)
+    .select(`*, chat_contacts(push_name, custom_name, phone_number), tenant_services(name), tenant_resources(name, assigned_agent_id, share_everyone_level), chat_conversations(instance_id, assigned_to, participants, department_id)`)
     .eq("tenant_id", s.tenantId)
     .lt("starts_at", input.rangeEnd).gt("ends_at", input.rangeStart)
     .order("starts_at")
@@ -671,7 +671,7 @@ export async function getContactAppointments(contactId: string): Promise<{
   if (!(await hasModule(s.tenantId, "agenda"))) return { enabled: false, items: [], resources: [], services: [] }
 
   const { data: rows } = await supabaseAdmin.from("appointments")
-    .select(`id, resource_id, starts_at, ends_at, status, tenant_services(name), tenant_resources(name, assigned_agent_id, share_everyone_level), created_by, chat_conversations(assigned_to, participants, department_id)`)
+    .select(`id, resource_id, starts_at, ends_at, status, tenant_services(name), tenant_resources(name, assigned_agent_id, share_everyone_level), created_by, chat_conversations(instance_id, assigned_to, participants, department_id)`)
     .eq("tenant_id", s.tenantId).eq("contact_id", contactId).order("starts_at", { ascending: false })
 
   type Row = ApptVisibility & { id: string; resource_id: string; starts_at: string; ends_at: string; status: string; tenant_services: { name: string | null } | null; tenant_resources: { name: string | null; assigned_agent_id: string | null; share_everyone_level: ShareLevel | null } | null }

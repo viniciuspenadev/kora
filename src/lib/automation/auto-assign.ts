@@ -63,7 +63,7 @@ export async function assignNextAgent(
       .maybeSingle(),
     supabaseAdmin
       .from("chat_conversations")
-      .select("id, channel, is_group, assigned_to")
+      .select("id, channel, is_group, assigned_to, instance_id")
       .eq("id", conversationId)
       .eq("tenant_id", tenantId)
       .maybeSingle(),
@@ -99,7 +99,7 @@ export async function assignNextAgent(
   const { data: members } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role,
+      user_id, role, instance_ids,
       auto_assign_paused, auto_assign_paused_until,
       profiles!tenant_users_user_id_fkey ( id, full_name, email )
     `)
@@ -110,13 +110,19 @@ export async function assignNextAgent(
   type MemberRow = {
     user_id:                  string
     role:                     string
+    instance_ids:             string[] | null
     auto_assign_paused:       boolean
     auto_assign_paused_until: string | null
     profiles:                 { id: string; full_name: string | null; email: string } | null
   }
 
+  // Número da conversa (Fase D): só entra no rodízio quem atende esse número (ou todos).
+  const convInstanceId = (conv as { instance_id: string | null }).instance_id
   const memberList = (members ?? []) as unknown as MemberRow[]
   const eligible = memberList.filter((m) => {
+    // Restrição de número: instance_ids vazio/null = todos; senão precisa incluir o número.
+    const ids = m.instance_ids
+    if (Array.isArray(ids) && ids.length > 0 && (!convInstanceId || !ids.includes(convInstanceId))) return false
     // Pause manual ativo?
     if (m.auto_assign_paused) {
       if (!m.auto_assign_paused_until) return false

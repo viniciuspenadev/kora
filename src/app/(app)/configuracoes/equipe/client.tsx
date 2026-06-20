@@ -29,6 +29,7 @@ interface Props {
   members:         TeamMember[]
   invites:         TeamInvite[]
   departments:     Department[]
+  numbers:         { id: string; label: string; provider: string | null }[]
   currentUserId:   string
   currentUserRole: string
   userLimit:       UserLimit
@@ -46,7 +47,7 @@ const ROLE_BADGE: Record<TenantRole, string> = {
   agent: "bg-slate-50 text-slate-600 border-slate-200",
 }
 
-export function EquipeClient({ members, invites, departments, currentUserId, currentUserRole, userLimit }: Props) {
+export function EquipeClient({ members, invites, departments, numbers, currentUserId, currentUserRole, userLimit }: Props) {
   const [editing, setEditing]       = useState<TeamMember | null>(null)
   const [inviting, setInviting]     = useState(false)
   const [editingDept, setEditingDept] = useState<Department | null>(null)
@@ -301,6 +302,7 @@ export function EquipeClient({ members, invites, departments, currentUserId, cur
         <MemberSheet
           member={editing}
           departments={departments}
+          numbers={numbers}
           currentUserId={currentUserId}
           currentUserRole={currentUserRole}
           onClose={() => setEditing(null)}

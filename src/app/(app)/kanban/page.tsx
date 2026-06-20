@@ -84,7 +84,7 @@ export default async function KanbanPage({
     .select(`
       id, status, priority, subject, channel,
       last_message_at, last_message_preview, last_message_dir, unread_count,
-      pipeline_id, stage_id, card_position,
+      pipeline_id, stage_id, card_position, stage_entered_at,
       estimated_value, expected_close_date, lost_reason,
       won_at, lost_at,
       assigned_to, instance_id,
@@ -92,7 +92,7 @@ export default async function KanbanPage({
         id, push_name, custom_name, phone_number, profile_pic_url, source, lifecycle_stage
       ),
       profiles ( full_name, email ),
-      whatsapp_instances!instance_id ( provider )
+      whatsapp_instances!instance_id ( provider, display_name )
     `)
     .eq("tenant_id", tenantId)
     .eq("pipeline_id", currentPipeline.id)

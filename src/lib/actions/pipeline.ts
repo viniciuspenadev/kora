@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope } from "@/lib/visibility"
 import { resolveLifecycle } from "@/lib/lifecycle-stage"
+import { syncActiveDeal } from "@/lib/crm/deals"
 import { revalidatePath } from "next/cache"
 
 // Select dos cards do kanban (espelha o da página). Inclui department_id pro
@@ -11,12 +12,12 @@ import { revalidatePath } from "next/cache"
 const KANBAN_CARD_SELECT = `
   id, status, priority, subject, channel,
   last_message_at, last_message_preview, last_message_dir, unread_count,
-  pipeline_id, stage_id, card_position, department_id,
+  pipeline_id, stage_id, card_position, department_id, stage_entered_at,
   estimated_value, expected_close_date, lost_reason, won_at, lost_at,
   assigned_to, instance_id,
   chat_contacts ( id, push_name, custom_name, phone_number, profile_pic_url, source, lifecycle_stage ),
   profiles ( full_name, email ),
-  whatsapp_instances!instance_id ( provider )
+  whatsapp_instances!instance_id ( provider, display_name )
 `
 
 /**
@@ -354,6 +355,12 @@ export async function moveConversation(
     updated_at:    new Date().toISOString(),
   }
 
+  // Aging (Tier 0): marca quando entrou na etapa — só na troca REAL de etapa
+  // (reordenar dentro da mesma coluna não reseta o relógio).
+  if (conv.stage_id !== newStageId) {
+    updates.stage_entered_at = new Date().toISOString()
+  }
+
   if (newStage.is_won) {
     updates.won_at  = new Date().toISOString()
     updates.lost_at = null
@@ -398,7 +405,18 @@ export async function moveConversation(
         .eq("id", convWithContact.contact_id)
         .eq("tenant_id", session.user.tenantId)
     }
+
   }
+
+  // CRM Negócios — Fase 0 (shadow): se a conversa TEM negócio ativo, sincroniza com a
+  // nova etapa. NÃO cria negócio (nasce só por "abrir negócio"). Best-effort.
+  await syncActiveDeal({
+    tenantId:       session.user.tenantId,
+    conversationId,
+    stage:          { id: newStage.id, pipeline_id: newStage.pipeline_id, is_won: newStage.is_won, is_lost: newStage.is_lost },
+    movedStage:     conv.stage_id !== newStageId,
+    by:             session.user.id,
+  })
 
   if (conv.stage_id !== newStageId) {
     await supabaseAdmin.from("chat_messages").insert({

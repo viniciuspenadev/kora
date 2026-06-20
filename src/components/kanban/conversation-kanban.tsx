@@ -52,6 +52,7 @@ interface Conversation {
   pipeline_id:          string | null
   stage_id:             string | null
   card_position:        number
+  stage_entered_at:     string | null
   estimated_value:      number | null
   expected_close_date:  string | null
   lost_reason:          string | null
@@ -59,9 +60,10 @@ interface Conversation {
   lost_at:              string | null
   assigned_to:          string | null
   department_id:        string | null
+  instance_id:          string | null
   chat_contacts:        ChatContact | null
   profiles:             { full_name: string | null; email: string } | null
-  whatsapp_instances:   { provider: string | null } | null
+  whatsapp_instances:   { provider: string | null; display_name: string | null } | null
 }
 
 interface AgentMini { id: string; full_name: string | null; department_id?: string | null }
@@ -78,6 +80,9 @@ interface Props {
   showChannel?:  boolean
   /** Lente de agrupamento — controlada pelo header (KanbanView). */
   groupBy:       GroupBy
+  /** Busca/filtro/ordenação — controlados pela toolbar (KanbanView). */
+  filters?:      KanbanFilters
+  sort?:         SortKey
   agents?:       AgentMini[]
   departments?:  DeptMini[]
   tenantId:      string
@@ -98,6 +103,7 @@ function mergeCardScalars(existing: Conversation, row: Conversation): Conversati
     last_message_dir:     row.last_message_dir,
     unread_count:         row.unread_count,
     card_position:        row.card_position,
+    stage_entered_at:     row.stage_entered_at,
     won_at:               row.won_at,
     lost_at:              row.lost_at,
     estimated_value:      row.estimated_value,
@@ -127,7 +133,52 @@ function relativeTime(date: string): { label: string; hot: boolean } {
   return { label: `${days}d`, hot: true }
 }
 
-export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false, groupBy, agents = [], departments = [], tenantId, supabaseToken }: Props) {
+// Aging "dias na etapa" (Tier 0). Base = stage_entered_at; fallback p/ última
+// atividade (cards legados sem a coluna preenchida). Só sinaliza quando estagnado.
+const AGING_AMBER_DAYS = 3
+const AGING_RED_DAYS   = 7
+function stageAging(conv: Conversation): { days: number; tone: "amber" | "red"; inStage: boolean } | null {
+  if (conv.won_at || conv.lost_at) return null
+  const base = conv.stage_entered_at ?? conv.last_message_at
+  if (!base) return null
+  const days = Math.floor((Date.now() - new Date(base).getTime()) / 86_400_000)
+  if (days < AGING_AMBER_DAYS) return null
+  return { days, tone: days >= AGING_RED_DAYS ? "red" : "amber", inStage: conv.stage_entered_at != null }
+}
+
+// ── Filtro + ordenação do board (Tier 0) ────────────────────────
+export interface KanbanFilters { search: string; agentId: string | null; instanceId: string | null }
+export type SortKey = "recent" | "value" | "stale"
+
+export function cardMatchesFilters(c: Conversation, f: KanbanFilters): boolean {
+  if (f.agentId && c.assigned_to !== f.agentId) return false
+  if (f.instanceId && c.instance_id !== f.instanceId) return false
+  const q = f.search.trim().toLowerCase()
+  if (q) {
+    const name  = c.chat_contacts ? displayContactName(c.chat_contacts).toLowerCase() : ""
+    const phone = c.chat_contacts?.phone_number ?? ""
+    const prev  = (c.last_message_preview ?? "").toLowerCase()
+    if (!name.includes(q) && !phone.includes(q) && !prev.includes(q)) return false
+  }
+  return true
+}
+
+function sortCards(list: Conversation[], sort: SortKey): Conversation[] {
+  const arr = [...list]
+  if (sort === "value") return arr.sort((a, b) => Number(b.estimated_value ?? 0) - Number(a.estimated_value ?? 0))
+  if (sort === "stale") {
+    const t = (c: Conversation) => new Date(c.stage_entered_at ?? c.last_message_at ?? 0).getTime()
+    return arr.sort((a, b) => t(a) - t(b))   // mais antigo primeiro = parado há mais tempo
+  }
+  return arr.sort((a, b) => {                 // recent (default)
+    const at = a.last_message_at ? new Date(a.last_message_at).getTime() : 0
+    const bt = b.last_message_at ? new Date(b.last_message_at).getTime() : 0
+    if (at !== bt) return bt - at
+    return (a.card_position ?? 0) - (b.card_position ?? 0)
+  })
+}
+
+export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false, groupBy, filters = { search: "", agentId: null, instanceId: null }, sort = "recent", agents = [], departments = [], tenantId, supabaseToken }: Props) {
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
   const [activeId, setActiveId]       = useState<string | null>(null)
@@ -230,6 +281,10 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
   const readOnly    = groupBy !== "stage"
   const loadingMgmt = readOnly && mgmtCards === null
   const dataset     = groupBy === "stage" ? convs : (mgmtCards ?? [])
+  const filtered    = useMemo(
+    () => dataset.filter((c) => cardMatchesFilters(c, filters)),
+    [dataset, filters.search, filters.agentId, filters.instanceId],
+  )
 
   const columns = useMemo<Column[]>(() => {
     if (groupBy === "agent") return [
@@ -245,15 +300,10 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
 
   function cardsFor(key: string): Conversation[] {
     const list =
-        groupBy === "stage" ? dataset.filter((c) => c.stage_id === key)
-      : groupBy === "agent" ? dataset.filter((c) => (c.assigned_to ?? "__pool__") === key)
-      :                       dataset.filter((c) => (c.department_id ?? "__none__") === key)
-    return list.sort((a, b) => {
-      const at = a.last_message_at ? new Date(a.last_message_at).getTime() : 0
-      const bt = b.last_message_at ? new Date(b.last_message_at).getTime() : 0
-      if (at !== bt) return bt - at
-      return (a.card_position ?? 0) - (b.card_position ?? 0)
-    })
+        groupBy === "stage" ? filtered.filter((c) => c.stage_id === key)
+      : groupBy === "agent" ? filtered.filter((c) => (c.assigned_to ?? "__pool__") === key)
+      :                       filtered.filter((c) => (c.department_id ?? "__none__") === key)
+    return sortCards(list, sort)
   }
 
   // ── Drag-and-drop (dnd-kit) ─────────────────────────────────
@@ -409,12 +459,18 @@ function ConversationCard({
     :                                       <ArrowDownLeft className="size-3 text-sky-400 shrink-0 mt-0.5" />
   const today        = new Date().toISOString().split("T")[0]
   const overdueDate  = conv.expected_close_date && conv.expected_close_date < today && !conv.won_at && !conv.lost_at
+  const aging        = stageAging(conv)
+  const prio         = conv.priority === "urgent" ? { dot: "bg-red-500",   label: "Urgente" }
+                     : conv.priority === "high"   ? { dot: "bg-amber-500", label: "Alta prioridade" }
+                     : null
 
   const cardCls = `block group bg-white rounded-lg border shadow-sm transition-all ${
     overlay
       ? "border-primary-300 shadow-2xl rotate-2 cursor-grabbing"
       : `border-slate-200 hover:shadow-md hover:border-primary-200 ${readOnly ? "cursor-pointer" : "cursor-grab"}`
-  } ${isDragging ? "opacity-40 scale-[0.97]" : ""}`
+  } ${isDragging ? "opacity-40 scale-[0.97]" : ""} ${
+    aging && !overlay ? (aging.tone === "red" ? "border-l-[3px] border-l-red-400" : "border-l-[3px] border-l-amber-400") : ""
+  }`
 
   const body = (
     <div className="p-3 space-y-2">
@@ -430,6 +486,7 @@ function ConversationCard({
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-xs font-semibold text-slate-900 truncate flex items-center gap-1">
+              {prio && <span className={`size-1.5 rounded-full shrink-0 ${prio.dot}`} title={prio.label} />}
               {conv.channel === "site" && (
                 <span className="inline-flex items-center justify-center size-4 rounded-full bg-sky-50 border border-sky-200 shrink-0" title="Lead via site">
                   <SourceLogo source="webform" size={9} />
@@ -469,6 +526,14 @@ function ConversationCard({
               <SourceLogo source={contact.source} size={11} />
             </span>
           )}
+          {aging && (
+            <span
+              className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${aging.tone === "red" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-700"}`}
+              title={aging.inStage ? `${aging.days} dias nesta etapa` : `${aging.days} dias desde a última atividade`}
+            >
+              <Clock className="size-2.5" /> {aging.days}d
+            </span>
+          )}
         </div>
 
         {(conv.estimated_value || conv.expected_close_date) && (
@@ -490,24 +555,26 @@ function ConversationCard({
         )}
 
         <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
-          {time && (
-            <span className={`inline-flex items-center gap-1 text-[10px] ${overdueReply ? "text-red-600 font-semibold" : "text-slate-400"}`}>
-              {overdueReply ? <AlertCircle className="size-2.5" /> : <Clock className="size-2.5" />}
-              {time.label}{overdueReply && " sem resposta"}
-            </span>
-          )}
-          <div className="flex items-center gap-1.5">
-            {showChannel && (
-              conv.whatsapp_instances?.provider === "meta_cloud" ? (
-                <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold px-1 py-0.5 rounded bg-primary-50 text-primary-700" title="WhatsApp API Oficial">
-                  <BadgeCheck className="size-2.5" /> Oficial
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-0.5 text-[8px] font-semibold px-1 py-0.5 rounded bg-slate-100 text-slate-500" title="WhatsApp (QR)">
-                  <Smartphone className="size-2.5" /> QR
-                </span>
-              )
+          <div className="flex items-center gap-1.5 min-w-0">
+            {time && (
+              <span className={`inline-flex items-center gap-1 text-[10px] shrink-0 ${overdueReply ? "text-red-600 font-semibold" : "text-slate-400"}`}>
+                {overdueReply ? <AlertCircle className="size-2.5" /> : <Clock className="size-2.5" />}
+                {time.label}{overdueReply && " sem resposta"}
+              </span>
             )}
+            {conv.whatsapp_instances && (showChannel || conv.whatsapp_instances.display_name?.trim()) && (
+              <span
+                className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full max-w-[120px] min-w-0 ${
+                  conv.whatsapp_instances.provider === "meta_cloud" ? "bg-primary-50 text-primary-700" : "bg-slate-100 text-slate-600"
+                }`}
+                title={`Atendido pelo número ${conv.whatsapp_instances.display_name?.trim() || (conv.whatsapp_instances.provider === "meta_cloud" ? "Oficial" : "QR")}`}
+              >
+                {conv.whatsapp_instances.provider === "meta_cloud" ? <BadgeCheck className="size-2.5 shrink-0" /> : <Smartphone className="size-2.5 shrink-0" />}
+                <span className="truncate">{conv.whatsapp_instances.display_name?.trim() || (conv.whatsapp_instances.provider === "meta_cloud" ? "Oficial" : "QR")}</span>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
             {conv.unread_count > 0 && (
               <span className="size-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center">
                 {conv.unread_count}

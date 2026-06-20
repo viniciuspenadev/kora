@@ -356,7 +356,7 @@ export async function sendMessage(
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
     throw new Error("Sem permissão para responder nesta conversa. Peça para o atendente atribuído te adicionar como participante.")
   }
   const isPool = assignedTo === null
@@ -486,7 +486,7 @@ export async function sendOfficialTemplate(
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
     throw new Error("Sem permissão para responder nesta conversa.")
   }
   const isPool = assignedTo === null
@@ -643,7 +643,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
     return { error: "Sem permissão para enviar mídia nesta conversa." }
   }
   const isPool = assignedTo === null
@@ -787,6 +787,7 @@ async function resolveSendContext(
     assigned_to: assignedTo,
     participants: (conv as { participants?: string[] | null }).participants,
     department_id: (conv as { department_id?: string | null }).department_id,
+    instance_id: (conv as { instance_id?: string | null }).instance_id,
   })) return { error: "Sem permissão para esta conversa." }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
@@ -989,7 +990,7 @@ export async function transferConversation(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, assigned_to, participants, department_id, metadata")
+    .select("id, instance_id, assigned_to, participants, department_id, metadata")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -997,7 +998,7 @@ export async function transferConversation(
 
   // Só transfere quem pode ATUAR na conversa (gate de visibilidade único).
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null })) {
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null })) {
     return { error: "Sem permissão para transferir esta conversa." }
   }
 
@@ -1114,13 +1115,13 @@ export async function updateConversationStatus(conversationId: string, status: s
   // Concluir/Reabrir/Adiar/Pendente são ações principais do header → precisam do gate.
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, assigned_to, participants, department_id")
+    .select("id, instance_id, assigned_to, participants, department_id")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
   if (!conv) throw new Error("Conversa não encontrada")
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null })) {
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null })) {
     throw new Error("Sem permissão para alterar esta conversa.")
   }
 

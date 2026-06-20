@@ -4,6 +4,7 @@ import { Filters } from "@/components/relatorios/filters"
 import { KpiCard } from "@/components/relatorios/kpi-card"
 import { ReportsTabs } from "../tabs"
 import { AtendimentoCharts } from "./charts"
+import { InstanceBreakdown } from "@/components/relatorios/instance-breakdown"
 import { parseFilters, getTenantChannels, getTenantInstances, formatSec, formatNumber } from "../_helpers"
 import { auth } from "@/auth"
 import { Clock, CheckCircle2, Timer, Zap } from "lucide-react"
@@ -85,6 +86,10 @@ export default async function AtendimentoReportPage({
           heatmap={data.heatmap}
           agentLoad={data.agentLoad}
         />
+
+        {availableInstances.length > 1 && (
+          <InstanceBreakdown rows={data.byInstance} instances={availableInstances} subtitle="Volume e resolução por número de WhatsApp" />
+        )}
       </div>
     </div>
   )

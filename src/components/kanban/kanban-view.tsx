@@ -1,13 +1,15 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import Link from "next/link"
 import { ChevronDown, Plus, Settings, ZoomIn, ZoomOut } from "lucide-react"
-import { ConversationKanban, type GroupBy } from "@/components/kanban/conversation-kanban"
+import { ConversationKanban, cardMatchesFilters, type GroupBy, type SortKey, type KanbanFilters } from "@/components/kanban/conversation-kanban"
+import { KanbanToolbar } from "@/components/kanban/kanban-toolbar"
 
 const ZOOM_MIN = 0.5
 const ZOOM_MAX = 1.1
 const ZOOM_KEY = "kora.kanban.zoom"
+const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
 
 interface PipelineMini { id: string; name: string; color: string }
 interface AgentMini    { id: string; full_name: string | null; department_id?: string | null }
@@ -43,7 +45,28 @@ export function KanbanView({
   const [groupBy, setGroupBy] = useState<GroupBy>("stage")
   const [pipeOpen, setPipeOpen] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const [search, setSearch]             = useState("")
+  const [filterAgent, setFilterAgent]   = useState<string | null>(null)
+  const [filterInstance, setFilterInst] = useState<string | null>(null)
+  const [sort, setSort]                 = useState<SortKey>("recent")
   const readOnly = groupBy !== "stage"
+
+  const filters = useMemo<KanbanFilters>(
+    () => ({ search, agentId: filterAgent, instanceId: filterInstance }),
+    [search, filterAgent, filterInstance],
+  )
+  // Cards visíveis após filtro → header (contagem + total aberto) reflete o filtro.
+  const visible      = useMemo(() => conversations.filter((c) => cardMatchesFilters(c, filters)), [conversations, filters])
+  const openValue    = visible.reduce((s, c) => s + Number(c.estimated_value ?? 0), 0)
+  const agentOpts    = useMemo(() => agents.map((a) => ({ value: a.id, label: a.full_name ?? "—" })), [agents])
+  const instanceOpts = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of conversations) {
+      const id = c.instance_id
+      if (id && !m.has(id)) m.set(id, c.whatsapp_instances?.display_name?.trim() || (c.whatsapp_instances?.provider === "meta_cloud" ? "Oficial" : "QR"))
+    }
+    return Array.from(m, ([value, label]) => ({ value, label }))
+  }, [conversations])
 
   // Zoom do board (encolhe colunas+cards proporcionalmente → cabe mais funil).
   // Persiste por atendente. Carrega no mount pra evitar mismatch de hidratação.
@@ -101,7 +124,12 @@ export function KanbanView({
             </span>
           )}
 
-          <span className="text-xs text-slate-400 shrink-0">· {convCount} conversas</span>
+          <span className="text-xs text-slate-400 shrink-0">· {visible.length}{visible.length !== convCount ? ` de ${convCount}` : ""} conversas</span>
+          {openValue > 0 && (
+            <span className="text-xs font-semibold text-slate-600 tabular-nums shrink-0" title="Valor estimado em aberto no funil">
+              · {brl(openValue)} aberto
+            </span>
+          )}
 
           {isManager && (
             <div className="inline-flex items-center gap-1 bg-slate-100 rounded-lg p-1 ml-1 shrink-0">
@@ -157,6 +185,15 @@ export function KanbanView({
         </div>
       </header>
 
+      <div className="bg-white border-b border-slate-200 px-6 py-2">
+        <KanbanToolbar
+          search={search} onSearch={setSearch}
+          agentId={filterAgent} onAgent={setFilterAgent} agents={agentOpts}
+          instanceId={filterInstance} onInstance={setFilterInst} instances={instanceOpts}
+          sort={sort} onSort={setSort}
+        />
+      </div>
+
       <div className="p-4 flex-1 min-h-0">
         {/* zoom encolhe colunas+cards proporcionalmente E reflui (cabe mais funil).
             height compensa o zoom: pré-zoom = 100/zoom% → escalado bate 100% (sem buraco). */}
@@ -167,6 +204,8 @@ export function KanbanView({
             tintColumns={tintColumns}
             showChannel={showChannel}
             groupBy={groupBy}
+            filters={filters}
+            sort={sort}
             agents={agents}
             departments={departments}
             tenantId={tenantId}

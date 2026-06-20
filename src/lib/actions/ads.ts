@@ -64,10 +64,18 @@ export interface AdsKpis {
   topPlatform:      { label: string; current: number; previous: number }
 }
 
+export interface AdInstanceSlice {
+  instanceId:    string
+  leads:         number
+  won:           number
+  conversionPct: number
+}
+
 export interface AdsReportData {
   kpis:       AdsKpis
   byAd:       AdAggregateRow[]
   byContact:  AdConversationRow[]
+  byInstance: AdInstanceSlice[]
   top10:      AdAggregateRow[]
 }
 
@@ -81,6 +89,7 @@ interface ConversationRecord {
   won_at:          string | null
   lost_at:         string | null
   from_ad_meta:    ExternalAdReply | null
+  instance_id:     string | null
   chat_contacts:   {
     id:               string
     push_name:        string | null
@@ -128,7 +137,7 @@ async function fetchAdConversations(
     .select(`
       id, status, assigned_to, estimated_value, last_message_at, created_at,
       won_at, lost_at,
-      from_ad_meta,
+      from_ad_meta, instance_id,
       chat_contacts ( id, push_name, custom_name, phone_number, profile_pic_url, lifecycle_stage ),
       profiles ( full_name )
     `)
@@ -264,6 +273,19 @@ export async function getAdsReportData(filters: AdsFilters): Promise<AdsReportDa
 
   const top10 = byAd.slice(0, 10)
 
+  // ── byInstance (leads por número) ─────────────────────────────
+  const instMap = new Map<string, { leads: number; won: number }>()
+  for (const c of current) {
+    if (!c.instance_id) continue
+    const acc = instMap.get(c.instance_id) ?? { leads: 0, won: 0 }
+    acc.leads++
+    if (c.won_at) acc.won++
+    instMap.set(c.instance_id, acc)
+  }
+  const byInstance: AdInstanceSlice[] = Array.from(instMap.entries())
+    .map(([instanceId, a]) => ({ instanceId, leads: a.leads, won: a.won, conversionPct: a.leads > 0 ? Math.round((a.won / a.leads) * 100) : 0 }))
+    .sort((a, b) => b.leads - a.leads)
+
   return {
     kpis: {
       totalLeads:     { current: totalCurrent,     previous: totalPrevious },
@@ -281,6 +303,7 @@ export async function getAdsReportData(filters: AdsFilters): Promise<AdsReportDa
     },
     byAd,
     byContact,
+    byInstance,
     top10,
   }
 }

@@ -11,6 +11,7 @@ import { ReportsTabs } from "../tabs"
 import { PlatformFilter } from "./platform-filter"
 import { TopAdsChart } from "./top-ads-chart"
 import { AdsTables } from "./ads-tables"
+import { AdsInstanceBreakdown } from "@/components/relatorios/instance-breakdown"
 import { Megaphone, Trophy, Target, Layers } from "lucide-react"
 
 export default async function AnunciosReportPage({
@@ -104,6 +105,10 @@ export default async function AnunciosReportPage({
 
         {/* Tabelas: toggle entre Por anúncio (default) e Por contato */}
         <AdsTables byAd={data.byAd} byContact={data.byContact} />
+
+        {availableInstances.length > 1 && (
+          <AdsInstanceBreakdown rows={data.byInstance} instances={availableInstances} />
+        )}
 
         <p className="mt-4 text-[11px] text-slate-400">
           Atribuição vinda do bloco <code className="font-mono">externalAdReply</code> da 1ª mensagem do cliente. Apenas anúncios Click-to-WhatsApp aparecem aqui — clientes que vêm via site/catálogo não são detectáveis.

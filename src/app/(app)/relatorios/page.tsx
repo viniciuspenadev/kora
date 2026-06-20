@@ -3,6 +3,7 @@ import { PeriodPicker } from "@/components/relatorios/period-picker"
 import { Filters } from "@/components/relatorios/filters"
 import { KpiCard } from "@/components/relatorios/kpi-card"
 import { OverviewCharts } from "./charts"
+import { InstanceBreakdown } from "@/components/relatorios/instance-breakdown"
 import { ReportsTabs } from "./tabs"
 import { parseFilters, getTenantChannels, getTenantInstances, formatSec, formatMoneyBRL, formatNumber } from "./_helpers"
 import { auth } from "@/auth"
@@ -93,6 +94,10 @@ export default async function RelatoriosPage({
         </div>
 
         <OverviewCharts daily={data.daily} channels={data.channels} />
+
+        {availableInstances.length > 1 && (
+          <InstanceBreakdown rows={data.byInstance} instances={availableInstances} subtitle="Conversas, contatos e resolução por número de WhatsApp" />
+        )}
       </div>
     </div>
   )
