@@ -314,8 +314,9 @@ function HeaderCard({
           {formatPhoneDisplay(contact.phone_number)}
         </p>
       ) : (
-        <p className="text-[11px] text-slate-400 mt-0.5">Visitante do site</p>
+        <p className="text-[11px] text-slate-400 mt-0.5">{contact.username ? "Sem telefone" : "Visitante do site"}</p>
       )}
+      {contact.username && <p className="text-[11px] font-medium text-primary-600 mt-0.5">@{contact.username}</p>}
 
       {/* Tags em chips compactos abaixo do telefone */}
       {appliedTags.length > 0 && (

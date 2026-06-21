@@ -34,6 +34,17 @@ export function normalizePhone(raw: string | null | undefined, defaultCountry: s
   return parsed.number.replace("+", "")   // E.164 sem '+' → só dígitos, pro JID
 }
 
+/**
+ * Telefone → { phone (dígitos E.164 c/ DDI), jid } no formato do WhatsApp — dedup-safe.
+ * Usa libphonenumber: respeita `+DDI` (exterior, ex: +1 EUA) e só assume BR como default
+ * quando não há código de país. NUNCA força 55 cegamente.
+ */
+export function normalizeWhatsAppPhone(input: string | null | undefined, defaultCountry = "BR"): { phone: string; jid: string } | null {
+  const digits = normalizePhone(input, defaultCountry)
+  if (!digits) return null
+  return { phone: digits, jid: `${digits}@s.whatsapp.net` }
+}
+
 /** Formata número para exibição: +55 (11) 99999-9999. Vazio/null → "" (contato sem telefone, ex: site-chat). */
 export function formatPhoneDisplay(phone: string | null | undefined): string {
   if (!phone) return ""

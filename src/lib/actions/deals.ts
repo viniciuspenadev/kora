@@ -400,8 +400,24 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   }
 }
 
-/** Move um negócio por dealId (drawer). Gated + visibilidade herdada. */
-export async function moveDealById(dealId: string, stageId: string): Promise<{ ok: true } | { error: string }> {
+/** Edita nome e/ou valor do negócio. Gated + visibilidade herdada. */
+export async function updateDeal(dealId: string, fields: { name?: string; estimatedValue?: number | null }): Promise<{ ok: true } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
+  const t = session.user.tenantId
+  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  if (!deal) return { error: "Negócio não encontrado" }
+  if (!(await canAccessDeal(t, (deal as { contact_id: string | null }).contact_id))) return { error: "Sem acesso" }
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (fields.name !== undefined)           patch.name            = fields.name.trim() || null
+  if (fields.estimatedValue !== undefined) patch.estimated_value = fields.estimatedValue
+  await supabaseAdmin.from("tenant_deals").update(patch).eq("id", dealId).eq("tenant_id", t)
+  return { ok: true }
+}
+
+/** Move um negócio por dealId (drawer). Gated + visibilidade herdada. `lostReason` grava ao cair em etapa de perda. */
+export async function moveDealById(dealId: string, stageId: string, lostReason?: string): Promise<{ ok: true } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
@@ -414,7 +430,7 @@ export async function moveDealById(dealId: string, stageId: string): Promise<{ o
   const st = stage as { id: string; pipeline_id: string; is_won: boolean; is_lost: boolean }
   const now = new Date().toISOString()
   const status = st.is_won ? "won" : st.is_lost ? "lost" : "open"
-  await supabaseAdmin.from("tenant_deals").update({ pipeline_id: st.pipeline_id, stage_id: st.id, status, won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null, stage_entered_at: now, updated_at: now }).eq("id", dealId).eq("tenant_id", t)
+  await supabaseAdmin.from("tenant_deals").update({ pipeline_id: st.pipeline_id, stage_id: st.id, status, won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null, lost_reason: st.is_lost ? (lostReason?.trim() || null) : null, stage_entered_at: now, updated_at: now }).eq("id", dealId).eq("tenant_id", t)
   await supabaseAdmin.from("tenant_deal_events").insert({ tenant_id: t, deal_id: dealId, type: status === "open" ? "stage_changed" : status, from_stage: (deal as { stage_id: string | null }).stage_id, to_stage: st.id, by: session.user.id })
   // Negócio ganho → contato vira CLIENTE (eixo de relacionamento, nunca rebaixa). Doc §5.
   // Perdido NÃO marca a pessoa. Idempotente via .neq (não reescreve quem já é customer).
@@ -448,7 +464,12 @@ export interface ContactRecordContact {
   id: string; push_name: string | null; custom_name: string | null; phone_number: string | null
   email: string | null; company: string | null; doc_id: string | null; birth_date: string | null
   profile_pic_url: string | null; source: string | null; lifecycle_stage: string | null
-  qualified_at: string | null; notes: string | null; is_blocked: boolean; created_at: string; bsuid: string | null
+  qualified_at: string | null; notes: string | null; is_blocked: boolean; created_at: string; bsuid: string | null; username: string | null
+  phone_secondary: string | null; phone_secondary_label: string | null
+  address_cep: string | null; address_street: string | null; address_number: string | null
+  address_complement: string | null; address_district: string | null; address_city: string | null
+  address_state: string | null; address_country: string | null
+  consent_opt_in: boolean | null; consent_at: string | null; consent_source: string | null; marketing_opt_in: boolean | null
 }
 export interface ContactConversation {
   id: string; status: string; channel: string | null
@@ -547,7 +568,7 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
   const t = session.user.tenantId
 
   const { data: c } = await supabaseAdmin.from("chat_contacts")
-    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid")
+    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in")
     .eq("id", contactId).eq("tenant_id", t).maybeSingle()
   if (!c) return { error: "Contato não encontrado" }
 

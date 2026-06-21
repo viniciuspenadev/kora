@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useCallback, useTransition } from "react"
 import Link from "next/link"
-import { X, Loader2, MessageSquare, User, RotateCcw, Briefcase, Plus, Check } from "lucide-react"
-import { getDeal, moveDealById, reopenDealById, type DealDetail, type DealEventView } from "@/lib/actions/deals"
+import { X, Loader2, MessageSquare, User, RotateCcw, Briefcase, Plus, Check, Pencil } from "lucide-react"
+import { getDeal, moveDealById, reopenDealById, updateDeal, type DealDetail, type DealEventView } from "@/lib/actions/deals"
 import { createTask, setTaskDone, listDealTasks, type TaskRow } from "@/lib/actions/tasks"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
@@ -15,6 +15,11 @@ export function DealDrawer({ dealId, onClose, onChanged }: { dealId: string; onC
   const [deal, setDeal]       = useState<DealDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [pending, start]      = useTransition()
+  const [editing, setEditing]     = useState(false)
+  const [editName, setEditName]   = useState("")
+  const [editValue, setEditValue] = useState("")
+  const [lostStage, setLostStage] = useState<string | null>(null)
+  const [lostReason, setLostReason] = useState("")
 
   const load = useCallback(() => {
     setLoading(true)
@@ -22,8 +27,20 @@ export function DealDrawer({ dealId, onClose, onChanged }: { dealId: string; onC
   }, [dealId])
   useEffect(() => { load() }, [load])
 
-  function move(stageId: string) { start(async () => { await moveDealById(dealId, stageId); load(); onChanged?.() }) }
-  function reopen()               { start(async () => { await reopenDealById(dealId);        load(); onChanged?.() }) }
+  function move(stageId: string, reason?: string) { start(async () => { await moveDealById(dealId, stageId, reason); setLostStage(null); setLostReason(""); load(); onChanged?.() }) }
+  function reopen()               { start(async () => { await reopenDealById(dealId); load(); onChanged?.() }) }
+  function handleStageSelect(stageId: string) {
+    const st = stages.find((s) => s.id === stageId)
+    if (st?.is_lost) { setLostStage(stageId); return }  // pede motivo antes de confirmar a perda
+    move(stageId)
+  }
+  function openEdit() { if (!deal) return; setEditName(deal.name ?? ""); setEditValue(deal.estimated_value ? String(deal.estimated_value) : ""); setEditing(true) }
+  function saveEdit() {
+    start(async () => {
+      await updateDeal(dealId, { name: editName, estimatedValue: editValue.trim() ? Number(editValue) : null })
+      setEditing(false); load(); onChanged?.()
+    })
+  }
 
   const stages = deal
     ? (deal.pipelines.find((p) => p.id === deal.pipeline_id)?.stages ?? []).filter((s) => s.show_in_kanban || s.is_won || s.is_lost)
@@ -42,25 +59,53 @@ export function DealDrawer({ dealId, onClose, onChanged }: { dealId: string; onC
           <div className="flex-1 grid place-items-center text-slate-400"><Loader2 className="size-5 animate-spin" /></div>
         ) : (
           <div className="flex-1 overflow-y-auto p-4 space-y-5">
-            <div className="flex items-center justify-between gap-2">
-              {deal.status === "won"
-                ? <span className="inline-flex items-center text-xs font-semibold px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">🏆 Ganho</span>
-                : deal.status === "lost"
-                ? <span className="inline-flex items-center text-xs font-semibold px-2 py-1 rounded-full bg-red-50 text-red-600">✕ Perdido</span>
-                : (() => { const color = deal.stage?.color ?? "#64748b"; return (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-full" style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}>
-                      <span className="size-2 rounded-full" style={{ backgroundColor: color }} />{deal.stage?.name ?? "—"}
-                    </span>) })()}
-              {deal.estimated_value && deal.estimated_value > 0 && <span className="text-xl font-bold text-slate-900 tabular-nums">{brl(Number(deal.estimated_value))}</span>}
-            </div>
+            {editing ? (
+              <div className="space-y-2">
+                <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Nome do negócio"
+                  className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400 shrink-0">R$</span>
+                  <input value={editValue} onChange={(e) => setEditValue(e.target.value.replace(/[^\d]/g, ""))} inputMode="numeric" placeholder="Valor estimado"
+                    className="flex-1 h-9 px-3 text-sm border border-slate-200 rounded-lg tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                  <button type="button" onClick={saveEdit} disabled={pending} className="h-9 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg disabled:opacity-50">Salvar</button>
+                  <button type="button" onClick={() => setEditing(false)} className="h-9 px-2 text-xs text-slate-500 hover:text-slate-700">Cancelar</button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                {deal.status === "won"
+                  ? <span className="inline-flex items-center text-xs font-semibold px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">🏆 Ganho</span>
+                  : deal.status === "lost"
+                  ? <span className="inline-flex items-center text-xs font-semibold px-2 py-1 rounded-full bg-red-50 text-red-600">✕ Perdido</span>
+                  : (() => { const color = deal.stage?.color ?? "#64748b"; return (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-full" style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}>
+                        <span className="size-2 rounded-full" style={{ backgroundColor: color }} />{deal.stage?.name ?? "—"}
+                      </span>) })()}
+                <div className="flex items-center gap-2">
+                  {deal.estimated_value && deal.estimated_value > 0 && <span className="text-xl font-bold text-slate-900 tabular-nums">{brl(Number(deal.estimated_value))}</span>}
+                  <button type="button" onClick={openEdit} title="Editar nome/valor" className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 shrink-0"><Pencil className="size-3.5" /></button>
+                </div>
+              </div>
+            )}
 
             {deal.status === "open" ? (
               <div>
                 <label className="text-[11px] font-semibold text-slate-500 block mb-1">Mover etapa</label>
-                <select value={deal.stage?.id ?? ""} disabled={pending} onChange={(e) => move(e.target.value)}
+                <select value={deal.stage?.id ?? ""} disabled={pending || !!lostStage} onChange={(e) => handleStageSelect(e.target.value)}
                   className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50">
                   {stages.map((s) => <option key={s.id} value={s.id}>{s.is_won ? "🏆 " : s.is_lost ? "✕ " : ""}{s.name}</option>)}
                 </select>
+                {lostStage && (
+                  <div className="mt-2 space-y-1.5">
+                    <textarea autoFocus value={lostReason} onChange={(e) => setLostReason(e.target.value)} rows={2}
+                      placeholder="Por que perdeu? (ajuda a entender e melhorar)"
+                      className="w-full px-2.5 py-2 text-xs border border-slate-200 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300" />
+                    <div className="flex gap-1.5">
+                      <button type="button" onClick={() => move(lostStage, lostReason)} disabled={pending} className="h-8 px-3 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg disabled:opacity-50">Confirmar perda</button>
+                      <button type="button" onClick={() => { setLostStage(null); setLostReason("") }} className="h-8 px-2 text-xs text-slate-500 hover:text-slate-700">Cancelar</button>
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <button type="button" onClick={reopen} disabled={pending}

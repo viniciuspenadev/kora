@@ -3,6 +3,7 @@ import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
@@ -381,18 +382,21 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
         await processStatus(instance.tenant_id, st).catch((e) => console.error("[meta-webhook] status:", e))
       }
 
-      // Nome do contato (vem em contacts[]) — indexado por telefone (wa_id) E BSUID
-      // (user_id), porque o telefone pode faltar quando o cliente usa username.
+      // Nome + username do contato (vêm em contacts[]) — indexados por telefone (wa_id)
+      // E BSUID (user_id), porque o telefone pode faltar quando o cliente usa username.
       const nameById = new Map<string, string>()
-      for (const ct of (value.contacts as Array<{ wa_id?: string; user_id?: string; profile?: { name?: string } }> | undefined) ?? []) {
+      const userById = new Map<string, string>()   // @handle (profile.username) — display, mutável
+      for (const ct of (value.contacts as Array<{ wa_id?: string; user_id?: string; profile?: { name?: string; username?: string } }> | undefined) ?? []) {
         const nm = ct.profile?.name ?? ""
-        if (ct.wa_id)   nameById.set(ct.wa_id, nm)
-        if (ct.user_id) nameById.set(ct.user_id, nm)
+        const un = ct.profile?.username ?? ""
+        if (ct.wa_id)   { nameById.set(ct.wa_id, nm);   if (un) userById.set(ct.wa_id, un) }
+        if (ct.user_id) { nameById.set(ct.user_id, nm); if (un) userById.set(ct.user_id, un) }
       }
 
       for (const msg of (value.messages as MetaMessage[] | undefined) ?? []) {
         const nm = (msg.from && nameById.get(msg.from)) || (msg.from_user_id && nameById.get(msg.from_user_id)) || null
-        await processMessage(instance, msg, nm)
+        const un = (msg.from && userById.get(msg.from)) || (msg.from_user_id && userById.get(msg.from_user_id)) || null
+        await processMessage(instance, msg, nm, un)
           .catch((e) => console.error("[meta-webhook] message:", e))
       }
     }
@@ -408,7 +412,7 @@ async function findInstance(phoneNumberId: string): Promise<InstanceRow | null> 
   return (data ?? null) as InstanceRow | null
 }
 
-async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName: string | null) {
+async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName: string | null, username: string | null = null) {
   // BSUID — monitoramento (TEMPORÁRIO): captura o payload REAL da troca-de-número
   // (system `user_changed_user_id`) pra destravar o handler (docs/BUSID §6.4). O bloco
   // `system` traz `user_id` (novo BSUID) + `body` ("changed from OLD to NEW"). Remover após capturar.
@@ -426,7 +430,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     return
   }
 
-  const contact = await upsertContact(instance.tenant_id, { jid, phone, bsuid, pushName })
+  const contact = await upsertContact(instance.tenant_id, { jid, phone, bsuid, pushName, username })
   const conv    = await findOrCreateConversation(instance.tenant_id, contact.id, instance.id)
 
   // CTWA — atribuição de anúncio (formato rico da Cloud API).
@@ -713,58 +717,12 @@ async function processTemplateChange(wabaId: string | undefined, field: string, 
  */
 async function upsertContact(
   tenantId: string,
-  { jid, phone, bsuid, pushName }: { jid: string | null; phone: string | null; bsuid: string | null; pushName: string | null },
+  { jid, phone, bsuid, pushName, username }: { jid: string | null; phone: string | null; bsuid: string | null; pushName: string | null; username?: string | null },
 ): Promise<{ id: string }> {
-  const COLS = "id, whatsapp_id, phone_number, bsuid, primary_external_id"
-
-  // 1) Acha por jid (telefone) OU por BSUID — a primeira chave que casar.
-  let existing: Record<string, unknown> | null = null
-  if (jid) {
-    const { data } = await supabaseAdmin.from("chat_contacts").select(COLS)
-      .eq("tenant_id", tenantId).eq("whatsapp_id", jid).maybeSingle()
-    existing = data ?? null
-  }
-  if (!existing && bsuid) {
-    const { data } = await supabaseAdmin.from("chat_contacts").select(COLS)
-      .eq("tenant_id", tenantId).eq("bsuid", bsuid).maybeSingle()
-    existing = data ?? null
-  }
-
-  // 2) Achou → MERGE: só backfill do que falta; nunca apaga dado bom.
-  if (existing) {
-    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
-    if (bsuid && !existing.bsuid)        patch.bsuid = bsuid
-    if (jid   && !existing.whatsapp_id)  patch.whatsapp_id = jid
-    if (phone && !existing.phone_number) patch.phone_number = phone
-    if (pushName)                        patch.push_name = pushName
-    // primary_external_id converge pro jid quando o telefone aparece (era "bsuid:…").
-    if (jid && String(existing.primary_external_id ?? "").startsWith("bsuid:")) patch.primary_external_id = jid
-    await supabaseAdmin.from("chat_contacts").update(patch).eq("id", existing.id as string)
-    return { id: existing.id as string }
-  }
-
-  // 3) Não achou → cria. primary_external_id = jid quando há, senão "bsuid:<BSUID>".
-  const { data, error } = await supabaseAdmin.from("chat_contacts").insert({
-    tenant_id: tenantId, whatsapp_id: jid, phone_number: phone, bsuid, push_name: pushName,
-    primary_channel: "whatsapp", primary_external_id: jid ?? (bsuid ? `bsuid:${bsuid}` : null),
-    updated_at: new Date().toISOString(),
-  }).select("id").single()
-
-  // Corrida: outro webhook criou o mesmo contato no meio → re-acha pela chave que colidiu.
-  if (error?.code === "23505") {
-    if (jid) {
-      const { data: r } = await supabaseAdmin.from("chat_contacts").select("id")
-        .eq("tenant_id", tenantId).eq("whatsapp_id", jid).maybeSingle()
-      if (r) return { id: r.id as string }
-    }
-    if (bsuid) {
-      const { data: r } = await supabaseAdmin.from("chat_contacts").select("id")
-        .eq("tenant_id", tenantId).eq("bsuid", bsuid).maybeSingle()
-      if (r) return { id: r.id as string }
-    }
-  }
-  if (error || !data) throw new Error(`meta upsertContact: ${error?.message}`)
-  return { id: data.id as string }
+  // Identidade via RESOLVER CANÔNICO (fonte única) — paridade: find jid→bsuid, merge
+  // backfill + push_name latest, source no DEFAULT, updated_at sempre (touch).
+  const r = await resolveOrCreateContact(tenantId, { jid, phone, bsuid }, { pushName, username, touch: true })
+  return { id: r.id }
 }
 
 async function findOrCreateConversation(tenantId: string, contactId: string, instanceId: string) {

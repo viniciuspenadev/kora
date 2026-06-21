@@ -12,6 +12,8 @@ import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
 import { requireLimit } from "@/lib/limits"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { resolveOrCreateContact } from "@/lib/contacts/identity"
+import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -1191,12 +1193,7 @@ export async function setConversationPinned(conversationId: string, value: boole
 
 // ── Criar conversa manual ───────────────────────────────────
 
-function normalizePhone(input: string): { phone: string; jid: string } | null {
-  const digits = input.replace(/\D/g, "")
-  if (digits.length < 10) return null
-  const withCountry = digits.startsWith("55") ? digits : `55${digits}`
-  return { phone: withCountry, jid: `${withCountry}@s.whatsapp.net` }
-}
+// normalizePhone unificado em phone-utils.ts → normalizeWhatsAppPhone (internacional, libphonenumber).
 
 export async function searchContacts(query: string) {
   const session = await auth()
@@ -1275,35 +1272,15 @@ export async function createManualConversation(input: {
   let contactId = input.contactId ?? null
 
   if (!contactId) {
-    const norm = normalizePhone(input.phone ?? "")
+    const norm = normalizeWhatsAppPhone(input.phone)
     if (!norm) throw new Error("Telefone inválido. Use DDD + número (ex: 11999998888)")
-
-    const { data: existing } = await supabaseAdmin
-      .from("chat_contacts")
-      .select("id")
-      .eq("tenant_id", tenantId)
-      .eq("whatsapp_id", norm.jid)
-      .maybeSingle()
-
-    if (existing) {
-      contactId = existing.id
-    } else {
-      const { data: created, error } = await supabaseAdmin
-        .from("chat_contacts")
-        .insert({
-          tenant_id:           tenantId,
-          whatsapp_id:         norm.jid,
-          phone_number:        norm.phone,
-          push_name:           input.pushName ?? null,
-          source:              "whatsapp_outbound",
-          primary_channel:     "whatsapp",   // identidade multicanal (Fase 1)
-          primary_external_id: norm.jid,
-        })
-        .select("id")
-        .single()
-      if (error || !created) throw new Error(`Erro criando contato: ${error?.message}`)
-      contactId = created.id
-    }
+    // Resolver canônico de identidade (merge-por-chave) — fonte única, dedup-safe.
+    const r = await resolveOrCreateContact(
+      tenantId,
+      { jid: norm.jid, phone: norm.phone },
+      { pushName: input.pushName ?? null, source: "whatsapp_outbound" },
+    )
+    contactId = r.id
   }
 
   if (!contactId) throw new Error("Falha ao resolver contato")
@@ -1424,6 +1401,21 @@ export interface ContactInfoInput {
   company?:     string | null
   doc_id?:      string | null
   birth_date?:  string | null  // ISO YYYY-MM-DD ou null
+  // Contato adicional
+  phone_secondary?:       string | null
+  phone_secondary_label?: string | null
+  // Endereço
+  address_cep?:        string | null
+  address_street?:     string | null
+  address_number?:     string | null
+  address_complement?: string | null
+  address_district?:   string | null
+  address_city?:       string | null
+  address_state?:      string | null
+  // Consentimento / LGPD
+  consent_opt_in?:   boolean | null
+  consent_source?:   string | null
+  marketing_opt_in?: boolean | null
 }
 
 export async function updateContactInfo(
@@ -1440,6 +1432,24 @@ export async function updateContactInfo(
   if (input.company     !== undefined) payload.company     = input.company?.trim() || null
   if (input.doc_id      !== undefined) payload.doc_id      = input.doc_id?.replace(/\D/g, "") || null
   if (input.birth_date  !== undefined) payload.birth_date  = input.birth_date || null
+  // Contato adicional
+  if (input.phone_secondary       !== undefined) payload.phone_secondary       = input.phone_secondary?.trim() || null
+  if (input.phone_secondary_label !== undefined) payload.phone_secondary_label = input.phone_secondary_label?.trim() || null
+  // Endereço
+  if (input.address_cep        !== undefined) payload.address_cep        = input.address_cep?.replace(/\D/g, "") || null
+  if (input.address_street     !== undefined) payload.address_street     = input.address_street?.trim() || null
+  if (input.address_number     !== undefined) payload.address_number     = input.address_number?.trim() || null
+  if (input.address_complement !== undefined) payload.address_complement = input.address_complement?.trim() || null
+  if (input.address_district   !== undefined) payload.address_district   = input.address_district?.trim() || null
+  if (input.address_city       !== undefined) payload.address_city       = input.address_city?.trim() || null
+  if (input.address_state      !== undefined) payload.address_state      = input.address_state?.trim().toUpperCase().slice(0, 2) || null
+  // Consentimento / LGPD — ao ligar o opt-in, carimba a data se ainda não houver.
+  if (input.consent_opt_in   !== undefined) {
+    payload.consent_opt_in = input.consent_opt_in
+    if (input.consent_opt_in) payload.consent_at = new Date().toISOString()
+  }
+  if (input.consent_source   !== undefined) payload.consent_source   = input.consent_source?.trim() || null
+  if (input.marketing_opt_in !== undefined) payload.marketing_opt_in = input.marketing_opt_in
 
   // Validação rápida — email no formato básico (não vamos rodar regex perfeita)
   if (payload.email && typeof payload.email === "string" && !payload.email.includes("@")) {

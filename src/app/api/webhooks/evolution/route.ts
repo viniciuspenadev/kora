@@ -9,6 +9,7 @@ import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { notifyInboundMessage } from "@/lib/push/send"
 import { slimAdMeta } from "@/lib/ad-reply"
 import type { EvolutionMessageData, ExternalAdReply } from "@/types/chat"
@@ -1129,37 +1130,26 @@ async function findOrCreateContact(
   pushName:  string | null,
   instance?: InstanceRow,
 ): Promise<{ id: string }> {
-  // Upsert atômico via UNIQUE(tenant_id, whatsapp_id). Resolve race quando
-  // dois webhooks paralelos do mesmo JID chegam ao mesmo tempo.
-  const { data: upserted, error: upErr } = await supabaseAdmin
-    .from("chat_contacts")
-    .upsert(
-      {
-        tenant_id:           tenantId,
-        whatsapp_id:         jid,
-        phone_number:        phone,
-        push_name:           pushName,
-        primary_channel:     "whatsapp",   // identidade multicanal (Fase 1)
-        primary_external_id: jid,
-        updated_at:          new Date().toISOString(),
-      },
-      { onConflict: "tenant_id,whatsapp_id", ignoreDuplicates: false },
-    )
-    .select("id, profile_pic_url, profile_pic_fetched_at")
-    .single()
+  // Identidade via RESOLVER CANÔNICO (fonte única). Baileys: só jid; push_name latest;
+  // source no DEFAULT ('whatsapp_inbound'); updated_at sempre (touch). Race tratada no
+  // resolver (23505 → re-acha). Backfill nunca clobbera dado bom (= no-op pro tráfego Baileys).
+  const { id } = await resolveOrCreateContact(tenantId, { jid, phone }, { pushName, touch: true })
 
-  if (upErr || !upserted) throw new Error(`Failed to upsert contact: ${upErr?.message}`)
-
-  // Refresh por TTL (fire-and-forget): busca a foto se nunca buscou OU se venceu (>7 dias).
-  // Pega carona no tráfego (só contato que mandou msg) e nunca bloqueia o webhook.
+  // Refresh da foto de perfil por TTL (efeito colateral PRESERVADO) — fire-and-forget,
+  // pega carona no tráfego e nunca bloqueia o webhook.
   if (instance) {
-    const fetchedAt = upserted.profile_pic_fetched_at ? new Date(upserted.profile_pic_fetched_at).getTime() : 0
+    const { data } = await supabaseAdmin
+      .from("chat_contacts")
+      .select("profile_pic_fetched_at")
+      .eq("id", id).eq("tenant_id", tenantId)
+      .maybeSingle()
+    const fetchedAt = data?.profile_pic_fetched_at ? new Date(data.profile_pic_fetched_at as string).getTime() : 0
     if (Date.now() - fetchedAt > PROFILE_PIC_TTL_MS) {
-      fetchAndSaveProfilePicture(instance, jid, upserted.id, tenantId).catch(() => {})
+      fetchAndSaveProfilePicture(instance, jid, id, tenantId).catch(() => {})
     }
   }
 
-  return { id: upserted.id }
+  return { id }
 }
 
 const PROFILE_PIC_TTL_MS = 7 * 24 * 60 * 60 * 1000  // 7 dias

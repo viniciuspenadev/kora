@@ -48,7 +48,7 @@ const CONVERSATION_SELECT = `
     id, tenant_id, whatsapp_id, phone_number, push_name,
     custom_name, email, company, doc_id, birth_date, metadata,
     profile_pic_url, is_blocked, notes, source, lifecycle_stage,
-    created_at, updated_at
+    bsuid, username, created_at, updated_at
   ),
   profiles ( full_name ),
   pipeline_stages ( id, name, color, is_won, is_lost ),

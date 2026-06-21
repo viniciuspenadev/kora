@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { ContatosList } from "@/components/chat/contatos-list"
+import { NewContactButton } from "@/components/chat/new-contact-dialog"
 import { Contact } from "lucide-react"
 
 export default async function ContatosPage() {
@@ -57,12 +58,13 @@ export default async function ContatosPage() {
           <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center">
             <Contact className="size-5 text-primary-600" />
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">Contatos</h1>
             <p className="text-xs text-slate-400 mt-0.5">
               {total} {total === 1 ? "contato" : "contatos"} · {withTags} com tags
             </p>
           </div>
+          <NewContactButton />
         </div>
       </div>
 

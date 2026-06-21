@@ -57,6 +57,8 @@ export interface ChatContact {
   // vira nullable quando criarmos contatos não-WhatsApp (IG/widget-chat).
   primary_channel:      string | null
   primary_external_id:  string | null
+  bsuid:                string | null   // Meta — chave canônica (canal oficial)
+  username:             string | null   // @handle do WhatsApp (display, mutável)
   whatsapp_id:          string
   phone_number:         string
   push_name:            string | null
