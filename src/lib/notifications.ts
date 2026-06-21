@@ -18,6 +18,7 @@ export type NotificationType =
   | "appt_rescheduled"  // remarcado
   | "appt_no_show"      // faltou
   | "daily_briefing"    // resumo do dia
+  | "task_due"          // tarefa do CRM venceu (responsável)
   | (string & {})       // extensível p/ futuros produtores (transfer_received, …)
 
 export interface CreateNotificationInput {

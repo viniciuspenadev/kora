@@ -35,9 +35,11 @@ export interface WhatsAppInstance {
 export type LifecycleStage =
   | "contact"
   | "lead"
+  | "customer"
+  | "unfit"
+  // legado pré-migração (won→customer, lost→lead) — tolerado na leitura/render
   | "won"
   | "lost"
-  | "unfit"
 
 export type ContactSource =
   | "whatsapp_inbound"

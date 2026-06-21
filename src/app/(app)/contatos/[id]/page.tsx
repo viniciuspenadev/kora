@@ -1,0 +1,24 @@
+import { auth } from "@/auth"
+import { redirect, notFound } from "next/navigation"
+import { getContactRecord, getContactActivity } from "@/lib/actions/deals"
+import { getContactAppointments } from "@/lib/actions/agenda"
+import { ClienteRecord } from "./cliente-client"
+
+export default async function ContatoDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const session = await auth()
+  if (!session) redirect("/auth/signin")
+  const { id } = await params
+
+  const [record, appts, activity] = await Promise.all([
+    getContactRecord(id),
+    getContactAppointments(id).catch(() => null),
+    getContactActivity(id).catch(() => []),
+  ])
+  if ("error" in record) notFound()
+
+  const appointments = appts && appts.enabled
+    ? appts.items.map((a) => ({ id: a.id, starts_at: a.starts_at, status: a.status, service: a.service_name ?? null, resource: a.resource_name ?? null }))
+    : null
+
+  return <ClienteRecord record={record} appointments={appointments} activity={activity} />
+}

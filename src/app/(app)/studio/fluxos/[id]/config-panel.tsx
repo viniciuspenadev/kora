@@ -404,11 +404,12 @@ function SetVariableConfig({ cfg, set }: { cfg: SetVariableNodeConfig; set: (pat
   )
 }
 
+// Eixo de relacionamento do contato (doc §5). "Perdido" saiu — é desfecho do
+// NEGÓCIO, não estado da pessoa. Pra reagir a perda use os triggers de negócio.
 const LIFECYCLE_OPTS: { v: string; label: string }[] = [
   { v: "contact", label: "Novo (contato)" },
   { v: "lead", label: "Lead" },
-  { v: "won", label: "Cliente (ganho)" },
-  { v: "lost", label: "Perdido" },
+  { v: "customer", label: "Cliente" },
   { v: "unfit", label: "Fora do perfil" },
 ]
 const CHANNEL_OPTS: { v: string; label: string }[] = [

@@ -4,7 +4,7 @@ import { useState, useTransition, useEffect, useCallback } from "react"
 import {
   ChevronDown, ChevronLeft, ChevronRight, MoreHorizontal, Ban, Archive,
   Users, Tag as TagIcon, FileText, Sparkles, Megaphone,
-  Plus, X, Loader2, Trophy, Check, UserPlus, Target,
+  Plus, X, Loader2, Trophy, Check, UserPlus, Target, Briefcase,
   Pencil, Mail, Building2, IdCard, CalendarDays, CalendarClock, Flag, User as UserIcon,
 } from "lucide-react"
 import { getContactAppointments, type ContactAppt } from "@/lib/actions/agenda"
@@ -29,6 +29,9 @@ import {
   moveConversation,
   markConversationWonLost,
 } from "@/lib/actions/pipeline"
+import { getDealsPanel, moveDeal, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship } from "@/lib/actions/deals"
+import { createTask, setTaskDone, snoozeTask } from "@/lib/actions/tasks"
+import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { applyTag, removeTag, createTag } from "@/lib/actions/tags"
 import { qualifyLead, markUnfit } from "@/lib/actions/chat"
 import type { ChatContact, ChatConversation, LifecycleStage, ExternalAdReply } from "@/types/chat"
@@ -123,25 +126,34 @@ export function ContactSidebar(props: Props) {
         sheetMode={props.forceExpanded}
         onClose={props.onClose}
       />
-      <ContactInfoCard contact={props.contact} />
-      <LifecycleCard conversation={props.conversation} contact={props.contact} />
-      <PipelineCard
-        conversation={props.conversation}
-        pipelines={props.pipelines}
-        stages={props.stages}
+      {/* ── Zona "Agora": o que o atendente decide enquanto conversa ── */}
+      <ZoneLabel>Agora</ZoneLabel>
+      <DealsCard
+        conversationId={props.conversation.id}
+        contactName={displayContactName(props.contact)}
       />
       <ContactAgendaCard
         contactId={props.contact.id}
         contactName={displayContactName(props.contact)}
         conversationId={props.conversation.id}
       />
-      <ParticipantsCard conversation={props.conversation} agents={props.agents} />
+      <LifecycleCard conversation={props.conversation} contact={props.contact} />
+
+      {/* ── Zona "Detalhes": referência, colapsada por padrão ── */}
+      <ZoneLabel>Detalhes</ZoneLabel>
+      <ContactInfoCard contact={props.contact} />
+      <PipelineCard
+        conversation={props.conversation}
+        pipelines={props.pipelines}
+        stages={props.stages}
+      />
       <TagsCard
         contactId={props.contact.id}
         tags={props.tags}
         appliedIds={appliedTagIds}
         onTagChange={props.onTagChange}
       />
+      <ParticipantsCard conversation={props.conversation} agents={props.agents} />
       <LeadSourceCard contact={props.contact} adReply={props.externalAdReply ?? null} />
       <SiteLeadCard conversation={props.conversation} contact={props.contact} />
       <NotesCard contactId={props.contact.id} initialNotes={props.contact.notes} />
@@ -181,6 +193,15 @@ function Section({
         </button>
       </div>
       {open && <div className="px-4 pb-4 pt-0.5">{children}</div>}
+    </div>
+  )
+}
+
+// Rótulo de zona (eyebrow) — separa "Agora" (foco) de "Detalhes" (referência).
+function ZoneLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-4 pt-3.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 select-none">
+      {children}
     </div>
   )
 }
@@ -237,7 +258,7 @@ function HeaderCard({
 
   return (
     <>
-    <header className="flex flex-col items-center px-4 pt-5 pb-4 border-b border-slate-100 relative bg-gradient-to-b from-slate-50 to-white">
+    <header className="flex flex-col items-center px-4 pt-5 pb-4 border-b border-slate-200 relative bg-white">
       <button
         type="button"
         onClick={sheetMode ? onClose : onCollapse}
@@ -277,12 +298,12 @@ function HeaderCard({
         </div>
       )}
 
-      <div className="size-16 rounded-full bg-gradient-to-br from-primary-50 to-slate-200 ring-2 ring-white shadow-sm shadow-slate-300/50 flex items-center justify-center mb-2.5 overflow-hidden mt-1">
+      <div className="size-16 rounded-full bg-slate-100 ring-1 ring-slate-200 flex items-center justify-center mb-2.5 overflow-hidden mt-1">
         {contact.profile_pic_url ? (
           /* eslint-disable-next-line @next/next/no-img-element */
           <img src={contact.profile_pic_url} alt="" className="size-16 object-cover" />
         ) : (
-          <span className="text-xl font-bold text-primary-300">{initial}</span>
+          <span className="text-xl font-bold text-slate-400">{initial}</span>
         )}
       </div>
       <p className="text-[15px] font-semibold text-slate-900 text-center truncate max-w-full">
@@ -302,7 +323,7 @@ function HeaderCard({
           {appliedTags.slice(0, 4).map((t) => (
             <span
               key={t.id}
-              className="inline-flex items-center text-[9px] font-semibold px-1.5 py-0.5 rounded-full"
+              className="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
               style={{ backgroundColor: t.color + "22", color: t.color }}
               title={t.name}
             >
@@ -310,7 +331,7 @@ function HeaderCard({
             </span>
           ))}
           {appliedTags.length > 4 && (
-            <span className="inline-flex items-center text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
+            <span className="inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
               +{appliedTags.length - 4}
             </span>
           )}
@@ -318,7 +339,7 @@ function HeaderCard({
       )}
 
       {contact.is_blocked && (
-        <span className="mt-2 inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider bg-red-50 text-red-600 px-2 py-0.5 rounded-full">
+        <span className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-red-50 text-red-600 px-2 py-0.5 rounded-full">
           <Ban className="size-2.5" /> Bloqueado
         </span>
       )}
@@ -396,7 +417,7 @@ function ContactInfoCard({ contact }: { contact: ChatContact }) {
   const isEmpty = !contact.custom_name && !contact.email && !contact.company && !contact.doc_id && !contact.birth_date
 
   return (
-    <Section icon={UserIcon} title="Informações" action={!editing && (
+    <Section icon={UserIcon} title="Informações" defaultOpen={false} action={!editing && (
       <button
         type="button"
         onClick={startEdit}
@@ -629,6 +650,9 @@ function PipelineCard({
   const [, startTransition] = useTransition()
   const [lostOpen, setLostOpen] = useState(false)
   const [lostReason, setLostReason] = useState("")
+  // Com CRM ligado, a etapa/fechamento vive no Negócio (fonte única) → esconde o Pipeline da conversa.
+  const [crmOn, setCrmOn] = useState<boolean | null>(null)
+  useEffect(() => { crmEnabled().then(setCrmOn).catch(() => setCrmOn(false)) }, [])
 
   const currentPipeline = pipelines.find((p) => p.id === conversation.pipeline_id)
                        ?? pipelines.find((p) => p.is_default)
@@ -636,6 +660,7 @@ function PipelineCard({
   const pipelineStages  = stages.filter((s) => s.pipeline_id === currentPipeline?.id)
   const currentStage    = pipelineStages.find((s) => s.id === conversation.stage_id)
 
+  if (crmOn !== false) return null   // null (carregando) ou true (CRM on) → não renderiza (sem flicker)
   if (!currentPipeline) return null
 
   function changeStage(stageId: string) {
@@ -661,7 +686,7 @@ function PipelineCard({
   }
 
   return (
-    <Section icon={Target} title="Pipeline" action={
+    <Section icon={Target} title="Pipeline" defaultOpen={false} action={
       <span className="text-[10px] text-slate-500 flex items-center gap-1">
         <span className="size-1.5 rounded-full" style={{ backgroundColor: currentPipeline.color }} />
         {currentPipeline.name}
@@ -778,7 +803,7 @@ function ParticipantsCard({
   }
 
   return (
-    <Section icon={Users} title="Atendentes" action={available.length > 0 && (
+    <Section icon={Users} title="Atendentes" defaultOpen={false} action={available.length > 0 && (
       <button
         type="button"
         onClick={() => setShowAdd((v) => !v)}
@@ -792,7 +817,7 @@ function ParticipantsCard({
         <div className="flex items-center gap-2 mb-1.5">
           <AgentAvatar userId={owner.id} name={owner.full_name} className="size-6" />
           <span className="text-xs font-medium text-slate-700 truncate flex-1">{owner.full_name ?? "—"}</span>
-          <span className="text-[9px] font-bold uppercase tracking-wider text-primary-700">Resp.</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-primary-700">Resp.</span>
         </div>
       ) : (
         <p className="text-[11px] text-slate-400 italic mb-1.5">Sem atendente responsável</p>
@@ -879,7 +904,7 @@ function TagsCard({
   }
 
   return (
-    <Section icon={TagIcon} title="Tags" action={
+    <Section icon={TagIcon} title="Tags" defaultOpen={false} action={
       <button
         type="button"
         onClick={() => setShowPicker((v) => !v)}
@@ -1047,7 +1072,7 @@ function LeadSourceCard({
             </div>
           </div>
           {adReply.sourceId && (
-            <p className="px-2.5 py-1 border-t border-slate-200 bg-slate-100 text-[9px] font-mono text-slate-500 truncate" title={adReply.sourceId}>
+            <p className="px-2.5 py-1 border-t border-slate-200 bg-slate-100 text-[10px] font-mono text-slate-500 truncate" title={adReply.sourceId}>
               ID: {adReply.sourceId}
             </p>
           )}
@@ -1092,7 +1117,7 @@ function NotesCard({ contactId, initialNotes }: { contactId: string; initialNote
       <>
         {pending && <Loader2 className="size-3 animate-spin text-slate-400" />}
         {!pending && savedAt && !dirty && (
-          <span className="text-[9px] text-emerald-600 flex items-center gap-0.5">
+          <span className="text-[10px] text-emerald-600 flex items-center gap-0.5">
             <Check className="size-2.5" /> salvo
           </span>
         )}
@@ -1244,6 +1269,211 @@ function apptWhen(iso: string): string {
   return `${wd} ${dm} · ${hm}`
 }
 
+// ── Negócios (CRM) — card lazy/gated, espelha o padrão da Agenda ──
+const dealBrl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
+function dealAging(d: PanelDeal): { days: number; tone: "amber" | "red" } | null {
+  if (d.status !== "open" || !d.stage_entered_at) return null
+  const days = Math.floor((Date.now() - new Date(d.stage_entered_at).getTime()) / 86_400_000)
+  if (days < 3) return null
+  return { days, tone: days >= 7 ? "red" : "amber" }
+}
+
+function DealsCard({ conversationId, contactName }: { conversationId: string; contactName: string }) {
+  const [panel, setPanel]           = useState<DealsPanel | null>(null)
+  const [showNew, setShowNew]       = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [moving, setMoving]         = useState<string | null>(null)
+
+  const load = useCallback(() => { getDealsPanel(conversationId).then(setPanel).catch(() => {}) }, [conversationId])
+  useEffect(() => { load() }, [load])
+
+  if (!panel || !panel.enabled) return null   // módulo crm desligado → invisível
+
+  const active = panel.deals.find((d) => d.is_active && d.status === "open")
+    ?? panel.deals.find((d) => d.status === "open") ?? null
+  const rest = panel.deals.filter((d) => d.id !== active?.id)
+
+  async function move(dealId: string, stageId: string) {
+    setMoving(dealId)
+    await moveDeal(conversationId, dealId, stageId)
+    setMoving(null); load()
+  }
+
+  return (
+    <Section icon={Briefcase} title="Negócios" action={panel.pipelines.length > 0 && (
+      <button type="button" onClick={() => setShowNew(true)} className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 transition-colors">
+        <Plus className="size-3" /> Novo
+      </button>
+    )}>
+      <RelationshipBadge relationship={panel.relationship} wonCount={panel.wonCount} dealCount={panel.deals.length} />
+
+      {active ? (
+        <ActiveDeal deal={active} pipelines={panel.pipelines} onMove={move} moving={moving === active.id} onTaskChange={load} />
+      ) : (
+        <p className="text-[11px] text-slate-400 leading-relaxed">
+          Nenhum negócio aberto. Conduza pela conversa, ou{" "}
+          {panel.pipelines.length > 0
+            ? <button type="button" onClick={() => setShowNew(true)} className="text-primary-600 font-semibold hover:underline">abra um negócio</button>
+            : "abra um negócio"} quando fizer sentido.
+        </p>
+      )}
+
+      {rest.length > 0 && (
+        <>
+          <button type="button" onClick={() => setShowHistory((v) => !v)} className="mt-2.5 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-600">
+            <ChevronDown className={`size-3 transition-transform ${showHistory ? "rotate-180" : ""}`} /> Histórico ({rest.length})
+          </button>
+          {showHistory && <div className="mt-1.5 space-y-0.5">{rest.map((d) => <DealHistoryRow key={d.id} deal={d} />)}</div>}
+        </>
+      )}
+
+      {showNew && (
+        <NewDealDialog
+          conversationId={conversationId}
+          pipelines={panel.pipelines}
+          contactName={contactName}
+          onClose={() => setShowNew(false)}
+          onCreated={() => { setShowNew(false); load() }}
+        />
+      )}
+    </Section>
+  )
+}
+
+function RelationshipBadge({ relationship, wonCount, dealCount }: { relationship: Relationship; wonCount: number; dealCount: number }) {
+  const meta = relationship === "cliente"
+    ? { label: "Cliente", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" }
+    : relationship === "negociacao"
+    ? { label: "Em negociação", cls: "bg-primary-50 text-primary-700 border-primary-200" }
+    : { label: "Prospect", cls: "bg-slate-100 text-slate-500 border-slate-200" }
+  return (
+    <div className="flex items-center gap-2 mb-2">
+      <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border ${meta.cls}`}>{meta.label}</span>
+      {dealCount > 0 && (
+        <span className="text-[10px] text-slate-400 tabular-nums">
+          {wonCount > 0 ? `${wonCount} ganho${wonCount > 1 ? "s" : ""} · ` : ""}{dealCount} negócio{dealCount > 1 ? "s" : ""}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function taskDueChip(iso: string): { label: string; overdue: boolean } {
+  const d = new Date(iso), now = new Date()
+  const diff = d.getTime() - now.getTime()
+  if (diff < 0) { const days = Math.ceil(-diff / 86_400_000); return { label: days <= 1 ? "atrasada" : `${days}d atrás`, overdue: true } }
+  const time = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+  if (d.toDateString() === now.toDateString()) return { label: `hoje ${time}`, overdue: false }
+  if (new Date(now.getTime() + 86_400_000).toDateString() === d.toDateString()) return { label: `amanhã ${time}`, overdue: false }
+  return { label: d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }), overdue: false }
+}
+
+function NextAction({ deal, onChange }: { deal: PanelDeal; onChange: () => void }) {
+  const [adding, setAdding] = useState(false)
+  const [title, setTitle]   = useState("")
+  const [due, setDue]       = useState("")
+  const [busy, start]       = useTransition()
+  const t = deal.next_task
+
+  function add() {
+    if (!title.trim()) return
+    start(async () => { await createTask({ dealId: deal.id, title, dueAt: due ? new Date(due).toISOString() : null }); setTitle(""); setDue(""); setAdding(false); onChange() })
+  }
+  // Ao concluir, já abre o input da próxima ação (encadeamento — padrão HubSpot/Intercom).
+  function complete() { if (!t) return; start(async () => { await setTaskDone(t.id, true); setAdding(true); onChange() }) }
+  function snoozeTomorrow() {
+    if (!t) return
+    const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0)
+    start(async () => { await snoozeTask(t.id, d.toISOString()); onChange() })
+  }
+
+  if (t) {
+    const c = t.due_at ? taskDueChip(t.due_at) : null
+    return (
+      <div className="mt-2 flex items-center gap-2 rounded-lg bg-white border border-slate-200 px-2 py-1.5">
+        <button type="button" onClick={complete} disabled={busy} title="Concluir"
+          className="size-4 rounded border border-slate-300 hover:border-primary grid place-items-center shrink-0 disabled:opacity-50">
+          {busy && <Loader2 className="size-3 animate-spin text-slate-400" />}
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-medium text-slate-700 truncate leading-tight">{t.title}</p>
+          {c && <p className={`text-[10px] leading-tight ${c.overdue ? "text-red-600 font-semibold" : "text-slate-400"}`}>{c.label}</p>}
+        </div>
+        <button type="button" onClick={snoozeTomorrow} disabled={busy} title="Adiar pra amanhã"
+          className="text-[10px] font-semibold text-slate-400 hover:text-slate-700 shrink-0 px-1">adiar</button>
+      </div>
+    )
+  }
+
+  if (adding) {
+    return (
+      <div className="mt-2 space-y-1.5">
+        <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add() }}
+          placeholder="Ex: Ligar amanhã pra fechar" className="w-full h-7 px-2 text-[11px] border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20" />
+        <div className="flex items-center gap-1.5">
+          <input type="datetime-local" value={due} onChange={(e) => setDue(e.target.value)} className="flex-1 h-7 px-1.5 text-[10px] border border-slate-200 rounded-lg text-slate-600" />
+          <button type="button" onClick={add} disabled={busy} className="h-7 px-2.5 text-[11px] font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg disabled:opacity-50">OK</button>
+          <button type="button" onClick={() => { setAdding(false); setTitle("") }} className="h-7 px-1.5 text-[11px] text-slate-400 hover:text-slate-600">✕</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <button type="button" onClick={() => setAdding(true)} className="mt-2 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-600 hover:text-amber-700">
+      <Plus className="size-3" /> Definir próxima ação
+    </button>
+  )
+}
+
+function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange }: {
+  deal: PanelDeal; pipelines: DealPipeline[]; onMove: (dealId: string, stageId: string) => void; moving: boolean; onTaskChange: () => void
+}) {
+  const pipeline = pipelines.find((p) => p.id === deal.pipeline_id)
+  const stages   = (pipeline?.stages ?? []).filter((s) => s.show_in_kanban || s.is_won || s.is_lost)
+  const color    = deal.stage?.color ?? "#64748b"
+  const aging    = dealAging(deal)
+  const value    = deal.estimated_value && deal.estimated_value > 0 ? dealBrl(Number(deal.estimated_value)) : null
+  return (
+    <div className="rounded-lg border border-slate-300 bg-white p-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-[13px] font-semibold text-slate-900 leading-tight flex-1 min-w-0">{deal.name?.trim() || "Negócio sem nome"}</p>
+        {value && <span className="text-[13px] font-bold text-slate-900 tabular-nums shrink-0">{value}</span>}
+      </div>
+      <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+          style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color }}>
+          <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} /> {deal.stage?.name ?? "—"}
+        </span>
+        {aging && <span className={`text-[10px] font-medium ${aging.tone === "red" ? "text-red-600" : "text-amber-700"}`}>{aging.days}d na etapa</span>}
+        {deal.pipeline_name && <span className="text-[10px] text-slate-400 truncate">· {deal.pipeline_name}</span>}
+      </div>
+      <div className="mt-2 flex items-center gap-1.5">
+        <select value={deal.stage?.id ?? ""} disabled={moving} onChange={(e) => onMove(deal.id, e.target.value)}
+          className="flex-1 h-7 px-2 text-[11px] border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50">
+          {stages.map((s) => <option key={s.id} value={s.id}>{s.is_won ? "🏆 " : s.is_lost ? "✕ " : ""}{s.name}</option>)}
+        </select>
+        {moving && <Loader2 className="size-3.5 animate-spin text-slate-400 shrink-0" />}
+      </div>
+      <NextAction deal={deal} onChange={onTaskChange} />
+    </div>
+  )
+}
+
+function DealHistoryRow({ deal }: { deal: PanelDeal }) {
+  const icon  = deal.status === "won" ? "🏆" : deal.status === "lost" ? "✕" : "○"
+  const date  = deal.won_at ?? deal.lost_at ?? deal.created_at
+  const value = deal.estimated_value && deal.estimated_value > 0 ? dealBrl(Number(deal.estimated_value)) : null
+  return (
+    <div className="flex items-center gap-2 text-[11px] py-0.5">
+      <span className="shrink-0 text-slate-400">{icon}</span>
+      <span className="flex-1 min-w-0 truncate text-slate-600">{deal.name?.trim() || "Negócio"}</span>
+      {value && <span className="tabular-nums text-slate-500 shrink-0">{value}</span>}
+      <span className="text-slate-300 shrink-0">{new Date(date).toLocaleDateString("pt-BR", { month: "short", year: "2-digit" })}</span>
+    </div>
+  )
+}
+
 function ContactAgendaCard({ contactId, contactName, conversationId }: {
   contactId: string; contactName: string; conversationId: string
 }) {
@@ -1322,7 +1552,7 @@ function ApptRow({ a }: { a: ContactAppt }) {
           <p className="text-[10px] text-slate-400 truncate">{a.service_name ?? a.resource_name}</p>
         )}
       </div>
-      <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full border shrink-0 ${APPT_CHIP[a.status] ?? APPT_CHIP.scheduled}`}>
+      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border shrink-0 ${APPT_CHIP[a.status] ?? APPT_CHIP.scheduled}`}>
         {APPT_LABEL[a.status] ?? a.status}
       </span>
     </div>

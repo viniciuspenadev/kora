@@ -9,11 +9,13 @@ export const LIFECYCLE_META: Record<LifecycleStage, {
   ring:  string
   short: string
 }> = {
-  contact: { label: "Contato", icon: "👤", bg: "bg-slate-100",  text: "text-slate-600",   ring: "ring-slate-200",   short: "C" },
-  lead:    { label: "Lead",    icon: "🎯", bg: "bg-primary-50", text: "text-primary-700", ring: "ring-primary-200", short: "L" },
-  won:     { label: "Ganho",   icon: "🏆", bg: "bg-emerald-50", text: "text-emerald-700", ring: "ring-emerald-200", short: "W" },
-  lost:    { label: "Perdido", icon: "💔", bg: "bg-slate-100",  text: "text-slate-500",   ring: "ring-slate-300",   short: "P" },
-  unfit:   { label: "Sem fit", icon: "🚫", bg: "bg-red-50",     text: "text-red-600",     ring: "ring-red-200",     short: "U" },
+  contact:  { label: "Contato", icon: "👤", bg: "bg-slate-100",  text: "text-slate-600",   ring: "ring-slate-200",   short: "C" },
+  lead:     { label: "Lead",    icon: "🎯", bg: "bg-primary-50", text: "text-primary-700", ring: "ring-primary-200", short: "L" },
+  customer: { label: "Cliente", icon: "🏆", bg: "bg-emerald-50", text: "text-emerald-700", ring: "ring-emerald-200", short: "C" },
+  unfit:    { label: "Sem fit", icon: "🚫", bg: "bg-red-50",     text: "text-red-600",     ring: "ring-red-200",     short: "U" },
+  // Legado pré-migração (won→customer, lost→lead) — render-only, não produzido mais.
+  won:      { label: "Cliente", icon: "🏆", bg: "bg-emerald-50", text: "text-emerald-700", ring: "ring-emerald-200", short: "C" },
+  lost:     { label: "Perdido", icon: "💔", bg: "bg-slate-100",  text: "text-slate-500",   ring: "ring-slate-300",   short: "P" },
 }
 
 /** Configuração visual de cada canal de origem. */

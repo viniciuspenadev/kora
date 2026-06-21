@@ -29,6 +29,7 @@ export type ModuleSlug =
   | "inbox" | "contacts" | "tags" | "team"
   // Commercial
   | "kanban" | "pipelines" | "quick_replies" | "auto_assign" | "agenda" | "agenda_reminders" | "agenda_owner_routing"
+  | "crm"
   // Lead gen
   | "widget_site" | "keyword_triggers" | "welcome_message" | "business_hours"
   // AI

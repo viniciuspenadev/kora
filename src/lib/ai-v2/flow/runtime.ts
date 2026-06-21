@@ -13,6 +13,7 @@
 
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { normalizeLifecycle } from "@/lib/lifecycle-stage"
 import { sendBotText, sendBotMedia } from "../outbound"
 import { getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
@@ -99,7 +100,8 @@ async function evalCondition(node: FlowNode, ctx: ExecCtx): Promise<boolean> {
     case "has_name":     return !!(c.custom_name?.trim() || c.push_name?.trim())
     case "has_document": return !!c.doc_id?.trim()
     case "has_company":  return !!c.company?.trim()
-    case "lifecycle_is": return (c.lifecycle_stage ?? "contact").toLowerCase() === val
+    // Normaliza ambos os lados → config legada ("won"/"lost") casa com o vocabulário novo. Doc §5.
+    case "lifecycle_is": return normalizeLifecycle(c.lifecycle_stage) === normalizeLifecycle(val)
     case "channel_is":   return (ctx.channel ?? c.primary_channel ?? "").toLowerCase() === val
     case "has_tag":      return await contactHasTag(ctx, cfg.value ?? "")
     default:             return false
@@ -335,7 +337,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         const raw = cfg.source === "channel"
           ? (ctx.channel ?? ctx.contact.primary_channel ?? "")
           : cfg.source === "lifecycle"
-            ? (ctx.contact.lifecycle_stage ?? "contact")
+            ? normalizeLifecycle(ctx.contact.lifecycle_stage)   // vocabulário novo (doc §5)
             : resolvePath(variables, (cfg.variable ?? "").trim())
         const val = String(raw ?? "").trim().toLowerCase()
         const matched = (cfg.cases ?? []).find((c) => String(c.equals ?? "").trim().toLowerCase() === val)

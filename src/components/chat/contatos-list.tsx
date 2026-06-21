@@ -320,7 +320,7 @@ function ContactRow({
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <p className="text-sm font-semibold text-slate-900 truncate">{name}</p>
+          <Link href={`/contatos/${contact.id}`} className="block text-sm font-semibold text-slate-900 truncate hover:text-primary-700 transition-colors">{name}</Link>
           {contact.is_blocked && (
             <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-50 text-red-600">
               <Ban className="size-2.5" /> Bloqueado

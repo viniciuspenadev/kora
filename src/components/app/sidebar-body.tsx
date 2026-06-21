@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation"
 import { signOut } from "next-auth/react"
 import { useState, useEffect, useMemo } from "react"
 import {
-  LogOut, Inbox, Workflow, Contact, Settings, ChevronDown,
+  LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked,
 } from "lucide-react"
@@ -46,6 +46,7 @@ const subIcon = "w-4 h-4 shrink-0"
 const NAV: NavItem[] = [
   { href: "/inbox",      label: "Inbox",      icon: <Inbox     className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "inbox"    },
   { href: "/kanban",     label: "Kanban",     icon: <Workflow  className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "kanban"   },
+  { href: "/negocios",   label: "Negócios",   icon: <Briefcase className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "crm", adminOnly: true },
   { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "agenda"  },
   { href: "/contatos",   label: "Contatos",   icon: <Contact   className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts" },
   { href: "/relatorios", label: "Relatórios", icon: <BarChart3 className="w-5 h-5 shrink-0" strokeWidth={1.75} /> },
