@@ -11,7 +11,6 @@ import {
 import { SectionCard } from "@/components/ui/section-card"
 import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
 import { SourceLogo } from "@/components/chat/source-logo"
-import { DealDrawer } from "@/components/crm/deal-drawer"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { updateContactInfo } from "@/lib/actions/chat"
 import { updateContactIdentity } from "@/lib/actions/contacts"
@@ -45,7 +44,6 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
   const rel     = REL[stats.relationship]
   const openConvHref = conversations[0] ? `/inbox?conversation=${conversations[0].id}` : "/inbox"
   const router = useRouter()
-  const [openDeal, setOpenDeal] = useState<string | null>(null)
   const [showNewDeal, setShowNewDeal] = useState(false)
   const canNewDeal = record.crmEnabled && record.pipelines.length > 0 && !!conversations[0]
 
@@ -98,11 +96,10 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
           <IdentityCard contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} />
         </div>
         <div className="lg:col-span-1 lg:sticky lg:top-4">
-          <TabbedPanel deals={deals} conversations={conversations} appointments={appointments} activity={activity} crmEnabled={record.crmEnabled} onOpenDeal={setOpenDeal} />
+          <TabbedPanel deals={deals} conversations={conversations} appointments={appointments} activity={activity} crmEnabled={record.crmEnabled} onOpenDeal={(id) => router.push(`/negocios/${id}`)} />
         </div>
       </div>
 
-      {openDeal && <DealDrawer dealId={openDeal} onClose={() => setOpenDeal(null)} onChanged={() => router.refresh()} />}
       {showNewDeal && conversations[0] && (
         <NewDealDialog
           conversationId={conversations[0].id}

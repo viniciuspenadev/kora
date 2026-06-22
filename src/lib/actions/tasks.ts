@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule } from "@/lib/modules"
 import { canAccessDeal } from "@/lib/actions/deals"
+import { recordDealEvent } from "@/lib/crm/deals"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM — Tarefas / Próxima ação
@@ -51,6 +52,8 @@ export async function createTask(input: {
     created_by:  session.user.id,
   }).select("id").single()
   if (error || !data) return { error: error?.message ?? "Falha ao criar tarefa" }
+  // Dossiê do negócio: "Próxima ação definida" (só auditoria — sem cartão no chat).
+  if (dealId) await recordDealEvent({ tenantId: t, dealId, type: "task_created", by: session.user.id, note: input.title.trim(), postCard: false })
   return { id: (data as { id: string }).id }
 }
 
@@ -59,14 +62,17 @@ export async function setTaskDone(taskId: string, done: boolean): Promise<{ ok: 
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
-  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id").eq("id", taskId).eq("tenant_id", t).maybeSingle()
+  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id, deal_id, title").eq("id", taskId).eq("tenant_id", t).maybeSingle()
   if (!task) return { error: "Tarefa não encontrada" }
-  if (!(await canAccessDeal(t, (task as { contact_id: string | null }).contact_id))) return { error: "Sem acesso" }
+  const tk = task as { contact_id: string | null; deal_id: string | null; title: string }
+  if (!(await canAccessDeal(t, tk.contact_id))) return { error: "Sem acesso" }
   await supabaseAdmin.from("tenant_tasks").update({
     status:  done ? "done" : "pending",
     done_at: done ? new Date().toISOString() : null,
     updated_at: new Date().toISOString(),
   }).eq("id", taskId).eq("tenant_id", t)
+  // Dossiê: concluir tarefa de um negócio entra na timeline (só auditoria).
+  if (done && tk.deal_id) await recordDealEvent({ tenantId: t, dealId: tk.deal_id, type: "task_done", by: session.user.id, note: tk.title, postCard: false })
   return { ok: true }
 }
 

@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
-import { createDeal, syncContactLifecycleFromDeal } from "@/lib/crm/deals"
+import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM Negócios — Server actions (Fase 1)
@@ -326,19 +326,22 @@ export async function canAccessDeal(tenantId: string, contactId: string | null):
   return ((data ?? []) as ConvVis[]).some((c) => canViewConversation(scope, c))
 }
 
-export interface DealEventView { id: string; type: string; at: string; by: string | null; from_stage: string | null; to_stage: string | null }
+export interface DealEventView { id: string; type: string; at: string; by: string | null; from_stage: string | null; to_stage: string | null; note: string | null; reason: string | null; change: DealFieldChange | null; extras: DealEventExtras | null }
 export interface DealDetail {
   id: string; name: string | null; status: string
   estimated_value: number | null; expected_close_date: string | null
   won_at: string | null; lost_at: string | null; lost_reason: string | null
+  canceled_at?: string | null
   stage_entered_at: string | null; created_at: string
   pipeline_id: string | null; pipeline_name: string | null
   stage: DealStageMini | null
-  contact: { id: string; name: string | null } | null
+  contact: { id: string; name: string | null; push_name?: string | null; profile_pic_url?: string | null; phone_number?: string | null; lifecycle_stage?: string | null } | null
   responsible: string | null
   conversationId: string | null
   pipelines: DealPipeline[]
   events: DealEventView[]
+  otherDeals: { id: string; name: string | null; status: string; estimated_value: number | null }[]
+  nextTask: { id: string; title: string; due_at: string | null } | null
 }
 
 export async function getDeal(dealId: string): Promise<DealDetail | { error: string }> {
@@ -348,19 +351,28 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   const t = session.user.tenantId
 
   const { data: d } = await supabaseAdmin.from("tenant_deals").select(`
-    id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, stage_entered_at, created_at, created_by, contact_id, pipeline_id,
-    chat_contacts ( id, push_name, custom_name ),
+    id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, canceled_at, stage_entered_at, created_at, created_by, contact_id, pipeline_id,
+    chat_contacts ( id, push_name, custom_name, profile_pic_url, phone_number, lifecycle_stage ),
     pipelines ( name ),
     pipeline_stages ( id, name, color, is_won, is_lost )
   `).eq("id", dealId).eq("tenant_id", t).maybeSingle()
   if (!d) return { error: "Negócio não encontrado" }
   const deal = d as Record<string, unknown>
   if (!(await canAccessDeal(t, deal.contact_id as string | null))) return { error: "Sem acesso a este negócio" }
+  const contactId = deal.contact_id as string | null
 
-  const [{ data: evs }, { data: conv }, { data: pipes }] = await Promise.all([
-    supabaseAdmin.from("tenant_deal_events").select("id, type, at, by, from_stage, to_stage").eq("tenant_id", t).eq("deal_id", dealId).order("at", { ascending: true }),
-    supabaseAdmin.from("chat_conversations").select("id").eq("tenant_id", t).eq("active_deal_id", dealId).maybeSingle(),
+  const [{ data: evs }, { data: convs }, { data: pipes }, { data: others }, { data: tasks }] = await Promise.all([
+    supabaseAdmin.from("tenant_deal_events").select("id, type, at, by, from_stage, to_stage, meta").eq("tenant_id", t).eq("deal_id", dealId).order("at", { ascending: true }),
+    // Conversa do CONTATO (não só a do negócio ativo): a que tem este negócio como ativo,
+    // senão a mais recente — pra a página poder mover/anotar mesmo em negócio secundário.
+    contactId
+      ? supabaseAdmin.from("chat_conversations").select("id, active_deal_id, last_message_at").eq("tenant_id", t).eq("contact_id", contactId).order("last_message_at", { ascending: false, nullsFirst: false }).limit(20)
+      : Promise.resolve({ data: [] as unknown[] }),
     supabaseAdmin.from("pipelines").select("id, name, is_default, pipeline_stages ( id, name, color, position, is_won, is_lost, show_in_kanban )").eq("tenant_id", t).eq("active", true).order("position"),
+    contactId
+      ? supabaseAdmin.from("tenant_deals").select("id, name, status, estimated_value").eq("tenant_id", t).eq("contact_id", contactId).neq("id", dealId).order("created_at", { ascending: false }).limit(20)
+      : Promise.resolve({ data: [] as unknown[] }),
+    supabaseAdmin.from("tenant_tasks").select("id, title, due_at").eq("tenant_id", t).eq("deal_id", dealId).eq("status", "pending").order("due_at", { ascending: true, nullsFirst: false }).limit(1),
   ])
 
   const evRows   = (evs ?? []) as Record<string, unknown>[]
@@ -373,14 +385,21 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   const sMap = new Map(((stageNames.data ?? []) as { id: string; name: string }[]).map((s) => [s.id, s.name]))
   const pMap = new Map(((byNames.data ?? []) as { id: string; full_name: string | null }[]).map((p) => [p.id, p.full_name ?? "—"]))
 
-  const events: DealEventView[] = evRows.map((e) => ({
-    id: e.id as string, type: e.type as string, at: e.at as string,
-    by:         e.by         ? (pMap.get(e.by as string) ?? null) : null,
-    from_stage: e.from_stage ? (sMap.get(e.from_stage as string) ?? null) : null,
-    to_stage:   e.to_stage   ? (sMap.get(e.to_stage as string) ?? null) : null,
-  }))
+  const events: DealEventView[] = evRows.map((e) => {
+    const meta = (e.meta ?? {}) as { note?: string | null; reason?: string | null; actor?: { label?: string | null } | null; change?: DealFieldChange | null; extras?: DealEventExtras | null }
+    return {
+      id: e.id as string, type: e.type as string, at: e.at as string,
+      by:         meta.actor?.label ?? (e.by ? (pMap.get(e.by as string) ?? null) : null),
+      from_stage: e.from_stage ? (sMap.get(e.from_stage as string) ?? null) : null,
+      to_stage:   e.to_stage   ? (sMap.get(e.to_stage as string) ?? null) : null,
+      note:       meta.note ?? null,
+      reason:     meta.reason ?? null,
+      change:     meta.change ?? null,
+      extras:     meta.extras ?? null,
+    }
+  })
 
-  const c = deal.chat_contacts as { id: string; push_name: string | null; custom_name: string | null } | null
+  const c = deal.chat_contacts as { id: string; push_name: string | null; custom_name: string | null; profile_pic_url: string | null; phone_number: string | null; lifecycle_stage: string | null } | null
   const pipelines: DealPipeline[] = ((pipes ?? []) as Record<string, unknown>[]).map((p) => ({
     id: p.id as string, name: p.name as string, is_default: !!p.is_default,
     stages: ((p.pipeline_stages as DealPipeline["stages"] | null) ?? []).slice().sort((a, b) => a.position - b.position),
@@ -393,26 +412,57 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     stage_entered_at: (deal.stage_entered_at as string | null) ?? null, created_at: deal.created_at as string,
     pipeline_id: (deal.pipeline_id as string | null) ?? null, pipeline_name: (deal.pipelines as { name: string | null } | null)?.name ?? null,
     stage: (deal.pipeline_stages as DealStageMini | null) ?? null,
-    contact: c ? { id: c.id, name: c.custom_name?.trim() || c.push_name?.trim() || null } : null,
+    canceled_at: (deal.canceled_at as string | null) ?? null,
+    contact: c ? { id: c.id, name: c.custom_name?.trim() || c.push_name?.trim() || null, push_name: c.push_name, profile_pic_url: c.profile_pic_url, phone_number: c.phone_number, lifecycle_stage: c.lifecycle_stage } : null,
     responsible: deal.created_by ? (pMap.get(deal.created_by as string) ?? null) : null,
-    conversationId: (conv as { id: string } | null)?.id ?? null,
+    conversationId: (() => {
+      const rows = (convs ?? []) as { id: string; active_deal_id: string | null }[]
+      return rows.find((r) => r.active_deal_id === dealId)?.id ?? rows[0]?.id ?? null
+    })(),
     pipelines, events,
+    otherDeals: ((others ?? []) as Record<string, unknown>[]).map((o) => ({ id: o.id as string, name: (o.name as string | null) ?? null, status: o.status as string, estimated_value: (o.estimated_value as number | null) ?? null })),
+    nextTask: (tasks && (tasks as unknown[])[0]) ? (() => { const tk = (tasks as Record<string, unknown>[])[0]; return { id: tk.id as string, title: tk.title as string, due_at: (tk.due_at as string | null) ?? null } })() : null,
   }
 }
 
 /** Edita nome e/ou valor do negócio. Gated + visibilidade herdada. */
-export async function updateDeal(dealId: string, fields: { name?: string; estimatedValue?: number | null }): Promise<{ ok: true } | { error: string }> {
+export async function updateDeal(dealId: string, fields: { name?: string; estimatedValue?: number | null }, opts?: { silentCard?: boolean }): Promise<{ ok: true } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
-  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, name, estimated_value").eq("id", dealId).eq("tenant_id", t).maybeSingle()
   if (!deal) return { error: "Negócio não encontrado" }
-  if (!(await canAccessDeal(t, (deal as { contact_id: string | null }).contact_id))) return { error: "Sem acesso" }
+  const d = deal as { contact_id: string | null; name: string | null; estimated_value: number | null }
+  if (!(await canAccessDeal(t, d.contact_id))) return { error: "Sem acesso" }
+
+  // Detecta o que MUDOU de fato (pra auditar antes→depois e não gravar evento à toa).
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (fields.name !== undefined)           patch.name            = fields.name.trim() || null
-  if (fields.estimatedValue !== undefined) patch.estimated_value = fields.estimatedValue
+  const changes: DealFieldChange[] = []
+  if (fields.name !== undefined) {
+    const next = fields.name.trim() || null
+    if (next !== (d.name ?? null)) { patch.name = next; changes.push({ label: "Nome", from: d.name ?? "—", to: next ?? "—" }) }
+  }
+  if (fields.estimatedValue !== undefined) {
+    const next = fields.estimatedValue ?? null
+    if (next !== (d.estimated_value ?? null)) {
+      patch.estimated_value = next
+      const fmt = (v: number | null) => v != null ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }) : "—"
+      changes.push({ label: "Valor", from: fmt(d.estimated_value), to: fmt(next) })
+    }
+  }
+  if (changes.length === 0) return { ok: true }   // nada mudou de fato
+
   await supabaseAdmin.from("tenant_deals").update(patch).eq("id", dealId).eq("tenant_id", t)
+  // Conversa do contato (mais recente) → cartão ENXUTO sinaliza no chat e leva ao dossiê.
+  const { data: conv } = await supabaseAdmin.from("chat_conversations")
+    .select("id").eq("tenant_id", t).eq("contact_id", d.contact_id ?? "")
+    .order("last_message_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle()
+  const conversationId = (conv as { id: string } | null)?.id ?? null
+  // Auditoria (antes→depois fica no dossiê via meta.change) + cartão compacto com link.
+  for (const change of changes) {
+    await recordDealEvent({ tenantId: t, dealId, type: "field_changed", conversationId, by: session.user.id, change, postCard: !opts?.silentCard })
+  }
   return { ok: true }
 }
 
@@ -628,7 +678,7 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
  * Move um Negócio para outra etapa (avançar / ganhar / perder) a partir da sidebar.
  * Vira o negócio ativo da conversa. Gated + visibilidade + ownership (deal do contato).
  */
-export async function moveDeal(conversationId: string, dealId: string, stageId: string): Promise<{ ok: true } | { error: string }> {
+export async function moveDeal(conversationId: string, dealId: string, stageId: string, reason?: string | null, note?: string | null, extras?: DealEventExtras): Promise<{ ok: true } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
@@ -667,11 +717,169 @@ export async function moveDeal(conversationId: string, dealId: string, stageId: 
       stage_entered_at: now, updated_at: now,
     }).eq("id", conversationId).eq("tenant_id", tenantId)
 
-  await supabaseAdmin.from("tenant_deal_events").insert({
-    tenant_id: tenantId, deal_id: dealId, type: status === "open" ? "stage_changed" : status,
-    from_stage: fromStage, to_stage: st.id, by: session.user.id,
+  // Evento + cartão interno no chat (de→para, autor, motivo se perder). Fonte única da narrativa.
+  await recordDealEvent({
+    tenantId, dealId, type: status === "open" ? "stage_changed" : status,
+    conversationId, fromStageId: fromStage, toStageId: st.id, by: session.user.id, reason: reason ?? null, note: note ?? null, extras,
   })
   // Lifecycle do contato: ganho→Cliente · aberto/trabalho→Lead · perdido→não-mexe (nunca rebaixa). Doc §5.
   await syncContactLifecycleFromDeal(tenantId, conv.contact_id, st)
+  return { ok: true }
+}
+
+// ── Feed "Movimentações" (sidebar) — mensagens internas da conversa ──────────
+// Unifica os cartões de evento do negócio (deal_event) + as notas internas livres.
+// Cada item carrega o id da mensagem → clicar rola até ela no chat (#msg-<id>).
+export interface DealEventMeta {
+  type: string; from_name?: string | null; to_name?: string | null
+  note?: string | null; reason?: string | null; deal_id?: string | null
+  change?: { label?: string | null } | null
+  actor?: { kind?: string; label?: string | null } | null
+}
+export interface TimelineItem {
+  id:         string
+  createdAt:  string
+  kind:       "deal_event" | "note"
+  content:    string
+  authorName: string | null
+  dealEvent:  DealEventMeta | null
+}
+
+/** Timeline interna da conversa (eventos do negócio + notas livres), mais recente 1º. */
+export async function getConversationTimeline(conversationId: string): Promise<TimelineItem[]> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return []
+  const tenantId = session.user.tenantId
+  const conv = await loadVisibleConversation(conversationId, tenantId)   // visibilidade herdada
+  if (!conv) return []
+
+  const { data } = await supabaseAdmin.from("chat_messages")
+    .select("id, content, created_at, sender_type, sender_id, metadata")
+    .eq("conversation_id", conversationId).eq("tenant_id", tenantId)
+    .eq("is_private_note", true)
+    .order("created_at", { ascending: false }).limit(60)
+  const rows = (data ?? []) as { id: string; content: string | null; created_at: string; sender_type: string; sender_id: string | null; metadata: unknown }[]
+
+  // Resolve nomes dos autores das notas livres (agente) num único select.
+  const ids = [...new Set(rows.filter((r) => r.sender_id).map((r) => r.sender_id as string))]
+  const nameById: Record<string, string> = {}
+  if (ids.length > 0) {
+    const { data: profs } = await supabaseAdmin.from("profiles").select("id, full_name").in("id", ids)
+    for (const p of (profs ?? []) as { id: string; full_name: string | null }[]) nameById[p.id] = p.full_name ?? ""
+  }
+
+  return rows.map((r) => {
+    const de = (r.metadata as { deal_event?: DealEventMeta } | null)?.deal_event ?? null
+    const author = de?.actor?.label ?? (r.sender_id ? nameById[r.sender_id] || null : (r.sender_type === "system" ? "Sistema" : null))
+    return { id: r.id, createdAt: r.created_at, kind: de ? "deal_event" : "note", content: r.content ?? "", authorName: author, dealEvent: de }
+  })
+}
+
+/**
+ * CANCELA um negócio (≠ Perdido): anula. NÃO conta como perda, NÃO rebaixa o lifecycle.
+ * O card volta a ser "sem negócio" na coluna atual (limpa só o `active_deal_id`, mantém a
+ * etapa da conversa). Registra evento + cartão no chat. Gated + visibilidade + posse.
+ * ⚠️ Requer a migration 20260622_deal_cancel.sql aplicada (status 'canceled').
+ */
+export async function cancelDeal(conversationId: string, dealId: string, reason?: string | null): Promise<{ ok: true } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
+  const tenantId = session.user.tenantId
+
+  const conv = await loadVisibleConversation(conversationId, tenantId)
+  if (!conv || !conv.contact_id) return { error: "Sem acesso a esta conversa" }
+
+  const { data: deal } = await supabaseAdmin.from("tenant_deals")
+    .select("contact_id, stage_id, status").eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()
+  const d = deal as { contact_id: string; stage_id: string | null; status: string } | null
+  if (!d || d.contact_id !== conv.contact_id) return { error: "Negócio inválido para esta conversa" }
+  if (d.status === "canceled") return { error: "Negócio já cancelado" }
+
+  const now = new Date().toISOString()
+  await supabaseAdmin.from("tenant_deals")
+    .update({ status: "canceled", canceled_at: now, updated_at: now })
+    .eq("id", dealId).eq("tenant_id", tenantId)
+
+  // Volta a ser "sem negócio" na coluna atual: limpa só o ponteiro ativo (mantém stage_id
+  // da conversa). Lifecycle NÃO rebaixa (cancelar = anular, não perder).
+  if (conv.active_deal_id === dealId) {
+    await supabaseAdmin.from("chat_conversations")
+      .update({ active_deal_id: null, updated_at: now }).eq("id", conversationId).eq("tenant_id", tenantId)
+  }
+
+  await recordDealEvent({
+    tenantId, dealId, type: "canceled",
+    conversationId, fromStageId: d.stage_id, by: session.user.id, reason: reason ?? null,
+  })
+  return { ok: true }
+}
+
+/** Adiciona uma OBSERVAÇÃO (nota) ao negócio — vira evento `note` + cartão no chat. */
+export async function addDealNote(conversationId: string, dealId: string, text: string): Promise<{ ok: true } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
+  const t = session.user.tenantId
+  const note = text.trim()
+  if (!note) return { error: "Escreva a observação." }
+
+  const conv = await loadVisibleConversation(conversationId, t)
+  if (!conv || !conv.contact_id) return { error: "Sem acesso a esta conversa" }
+  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  if (!deal || (deal as { contact_id: string }).contact_id !== conv.contact_id) return { error: "Negócio inválido para esta conversa" }
+
+  await recordDealEvent({ tenantId: t, dealId, type: "note", conversationId, by: session.user.id, note })
+  return { ok: true }
+}
+
+/**
+ * REABRE um negócio fechado (perdido/cancelado/ganho) a partir da conversa. Volta pra
+ * uma etapa de FUNIL (a atual se for de funil; senão a 1ª da trilha), reativa na conversa
+ * + espelha (card volta ao board), limpa desfechos. Registra evento. Gated + visibilidade.
+ */
+export async function reopenDeal(conversationId: string, dealId: string): Promise<{ ok: true } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
+  const tenantId = session.user.tenantId
+
+  const conv = await loadVisibleConversation(conversationId, tenantId)
+  if (!conv || !conv.contact_id) return { error: "Sem acesso a esta conversa" }
+
+  const { data: deal } = await supabaseAdmin.from("tenant_deals")
+    .select("contact_id, stage_id, pipeline_id, status").eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()
+  const d = deal as { contact_id: string; stage_id: string | null; pipeline_id: string | null; status: string } | null
+  if (!d || d.contact_id !== conv.contact_id) return { error: "Negócio inválido para esta conversa" }
+  if (d.status === "open") return { error: "Negócio já está aberto" }
+
+  // Etapa de retorno: a atual se for de funil (show_in_kanban); senão a 1ª de funil da trilha.
+  let targetStage = d.stage_id
+  let targetPipeline = d.pipeline_id
+  const { data: cur } = await supabaseAdmin.from("pipeline_stages")
+    .select("id, pipeline_id, is_won, is_lost, show_in_kanban")
+    .eq("id", d.stage_id ?? "").eq("tenant_id", tenantId).maybeSingle()
+  const c = cur as { pipeline_id: string; is_won: boolean; is_lost: boolean; show_in_kanban: boolean } | null
+  if (!c || c.is_won || c.is_lost || !c.show_in_kanban) {
+    const pid = c?.pipeline_id ?? d.pipeline_id
+    const { data: first } = await supabaseAdmin.from("pipeline_stages")
+      .select("id, pipeline_id").eq("tenant_id", tenantId).eq("pipeline_id", pid ?? "")
+      .eq("show_in_kanban", true).order("position").limit(1).maybeSingle()
+    if (first) { targetStage = (first as { id: string }).id; targetPipeline = (first as { pipeline_id: string }).pipeline_id }
+  }
+
+  const now = new Date().toISOString()
+  await supabaseAdmin.from("tenant_deals").update({
+    status: "open", won_at: null, lost_at: null, lost_reason: null, canceled_at: null,
+    pipeline_id: targetPipeline, stage_id: targetStage, stage_entered_at: now, updated_at: now,
+  }).eq("id", dealId).eq("tenant_id", tenantId)
+
+  // Reativa na conversa + espelha (card volta ao board na etapa de retorno).
+  await supabaseAdmin.from("chat_conversations").update({
+    active_deal_id: dealId, pipeline_id: targetPipeline, stage_id: targetStage,
+    won_at: null, lost_at: null, stage_entered_at: now, updated_at: now,
+  }).eq("id", conversationId).eq("tenant_id", tenantId)
+
+  await recordDealEvent({ tenantId, dealId, type: "reopened", conversationId, toStageId: targetStage, by: session.user.id })
   return { ok: true }
 }

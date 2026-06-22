@@ -558,8 +558,8 @@ export function ChatPanel({
                 item.kind === "divider" ? (
                   <TimelineDivider key={item.id} icon={item.icon} label={item.label} time={item.time} />
                 ) : (
+                  <div key={item.id} id={`msg-${item.msg.id}`}>
                   <MessageBubble
-                    key={item.id}
                     message={item.msg}
                     agentName={item.msg.sender_type === "agent" ? item.msg.profiles?.full_name : null}
                     reactions={item.msg.whatsapp_msg_id ? reactionsByTarget.get(item.msg.whatsapp_msg_id) : undefined}
@@ -573,6 +573,7 @@ export function ChatPanel({
                           : name
                     }
                   />
+                  </div>
                 )
               )}
             </section>

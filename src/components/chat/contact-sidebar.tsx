@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useState, useTransition, useEffect, useCallback } from "react"
 import {
   ChevronDown, ChevronLeft, ChevronRight, MoreHorizontal, Ban, Archive,
@@ -29,9 +30,11 @@ import {
   moveConversation,
   markConversationWonLost,
 } from "@/lib/actions/pipeline"
-import { getDealsPanel, moveDeal, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship } from "@/lib/actions/deals"
+import { getDealsPanel, moveDeal, updateDeal, cancelDeal, reopenDeal, getConversationTimeline, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship, type TimelineItem } from "@/lib/actions/deals"
 import { createTask, setTaskDone, snoozeTask } from "@/lib/actions/tasks"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
+import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
+import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { applyTag, removeTag, createTag } from "@/lib/actions/tags"
 import { qualifyLead, markUnfit } from "@/lib/actions/chat"
 import type { ChatContact, ChatConversation, LifecycleStage, ExternalAdReply } from "@/types/chat"
@@ -156,7 +159,7 @@ export function ContactSidebar(props: Props) {
       <ParticipantsCard conversation={props.conversation} agents={props.agents} />
       <LeadSourceCard contact={props.contact} adReply={props.externalAdReply ?? null} />
       <SiteLeadCard conversation={props.conversation} contact={props.contact} />
-      <NotesCard contactId={props.contact.id} initialNotes={props.contact.notes} />
+      <MovimentacoesCard conversationId={props.conversation.id} />
     </aside>
   )
 }
@@ -1087,51 +1090,77 @@ function LeadSourceCard({
 // Notas internas
 // ═══════════════════════════════════════════════════════════════
 
-function NotesCard({ contactId, initialNotes }: { contactId: string; initialNotes: string | null }) {
-  const [notes, setNotes]     = useState(initialNotes ?? "")
-  const [pending, startTransition] = useTransition()
-  const [savedAt, setSavedAt] = useState<Date | null>(null)
-  const [dirty, setDirty]     = useState(false)
+function tlTime(iso: string): string {
+  const d = new Date(iso)
+  const diff = (Date.now() - d.getTime()) / 60000
+  if (diff < 1)    return "agora"
+  if (diff < 60)   return `${Math.floor(diff)}m`
+  if (diff < 1440) return `${Math.floor(diff / 60)}h`
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })
+}
 
-  useEffect(() => {
-    setNotes(initialNotes ?? "")
-    setDirty(false)
-  }, [initialNotes])
+/** Feed "Movimentações": eventos do negócio + notas internas livres. Clicar → rola no chat. */
+function MovimentacoesCard({ conversationId }: { conversationId: string }) {
+  const [items, setItems] = useState<TimelineItem[] | null>(null)
 
-  // Auto-save com debounce de 1.5s
+  const load = useCallback(() => {
+    getConversationTimeline(conversationId).then(setItems).catch(() => setItems([]))
+  }, [conversationId])
+
+  useEffect(() => { load() }, [load])
+
+  // Recarrega quando uma ação de negócio acontece na sidebar (componente irmão).
   useEffect(() => {
-    if (!dirty) return
-    const id = setTimeout(() => {
-      startTransition(async () => {
-        try {
-          await setContactNotes(contactId, notes.trim() || null)
-          setSavedAt(new Date())
-          setDirty(false)
-        } catch (e) { alert((e as Error).message) }
-      })
-    }, 1500)
-    return () => clearTimeout(id)
-  }, [notes, dirty, contactId])
+    const h = (e: Event) => { if ((e as CustomEvent).detail?.conversationId === conversationId) load() }
+    window.addEventListener("kora:timeline-refresh", h)
+    return () => window.removeEventListener("kora:timeline-refresh", h)
+  }, [conversationId, load])
+
+  function jump(id: string) {
+    const el = document.getElementById(`msg-${id}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: "smooth", block: "center" })
+    el.classList.add("ring-2", "ring-primary-300", "rounded-lg")
+    setTimeout(() => el.classList.remove("ring-2", "ring-primary-300", "rounded-lg"), 1600)
+  }
 
   return (
-    <Section icon={FileText} title="Notas internas" defaultOpen={false} action={
-      <>
-        {pending && <Loader2 className="size-3 animate-spin text-slate-400" />}
-        {!pending && savedAt && !dirty && (
-          <span className="text-[10px] text-emerald-600 flex items-center gap-0.5">
-            <Check className="size-2.5" /> salvo
-          </span>
-        )}
-      </>
-    }>
-      <textarea
-        value={notes}
-        onChange={(e) => { setNotes(e.target.value); setDirty(true); setSavedAt(null) }}
-        rows={4}
-        placeholder="Anotações sobre esse contato — só o time vê."
-        className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 resize-none"
-      />
+    <Section icon={FileText} title="Movimentações" defaultOpen={false}>
+      {items == null ? (
+        <p className="text-[11px] text-slate-400">Carregando…</p>
+      ) : items.length === 0 ? (
+        <p className="text-[11px] text-slate-400 leading-relaxed">As movimentações do negócio e notas internas aparecem aqui.</p>
+      ) : (
+        <div className="space-y-0.5">
+          {items.map((it) => <TimelineRow key={it.id} item={it} onJump={() => jump(it.id)} />)}
+        </div>
+      )}
     </Section>
+  )
+}
+
+function TimelineRow({ item, onJump }: { item: TimelineItem; onJump: () => void }) {
+  const de = item.dealEvent
+  const s  = dealEventStyle(de?.type ?? "note")
+  const Icon = s.Icon
+  const headline = !de ? (item.content.split("\n")[0] || "Nota interna")
+    : de.type === "stage_changed"                          ? `${de.from_name ?? "—"} → ${de.to_name ?? "—"}`
+    : de.type === "created" || de.type === "reopened"      ? `${s.label}${de.to_name ? ` · ${de.to_name}` : ""}`
+    : de.type === "lost" || de.type === "canceled"         ? `${s.label}${de.reason ? ` · ${de.reason}` : ""}`
+    : de.type === "field_changed"                          ? `${de.change?.label ?? "Campo"} atualizado`
+    : de.type === "note"                                   ? (de.note ?? "Observação")
+    :                                                        s.label
+  const meta = [item.authorName, tlTime(item.createdAt)].filter(Boolean).join(" · ")
+  return (
+    <button type="button" onClick={onJump} className="w-full text-left flex items-start gap-2 rounded-md px-1.5 py-1 hover:bg-slate-50 transition-colors">
+      <span className="size-4 rounded-full grid place-items-center shrink-0 mt-0.5" style={{ backgroundColor: s.accent }}>
+        <Icon className="size-2 text-white" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[11px] font-medium text-slate-700 truncate">{headline}</span>
+        {meta && <span className="block text-[10px] text-slate-400 truncate">{meta}</span>}
+      </span>
+    </button>
   )
 }
 
@@ -1284,6 +1313,7 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
   const [showNew, setShowNew]       = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [moving, setMoving]         = useState<string | null>(null)
+  const [moveReq, setMoveReq]       = useState<{ dealId: string; stageId: string; toName: string; fromName: string | null; dealName: string | null; fromDays: number | null; currentValue: number | null } | null>(null)
 
   const load = useCallback(() => { getDealsPanel(conversationId).then(setPanel).catch(() => {}) }, [conversationId])
   useEffect(() => { load() }, [load])
@@ -1294,10 +1324,42 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
     ?? panel.deals.find((d) => d.status === "open") ?? null
   const rest = panel.deals.filter((d) => d.id !== active?.id)
 
-  async function move(dealId: string, stageId: string) {
+  // Avisa o feed "Movimentações" (componente irmão) pra recarregar após uma ação.
+  function bumpTimeline() {
+    window.dispatchEvent(new CustomEvent("kora:timeline-refresh", { detail: { conversationId } }))
+  }
+
+  // Mover negócio ABERTO → abre a ficha da movimentação (mesma UX do kanban/página).
+  function requestMove(dealId: string, stageId: string, toName: string, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) {
+    setMoveReq({ dealId, stageId, toName, fromName, dealName, fromDays, currentValue })
+  }
+  async function commitMove(res: MoveDealResult) {
+    if (!moveReq) return
+    setMoving(moveReq.dealId)
+    const valueChanged = res.value != null && res.value !== (moveReq.currentValue ?? null)
+    const extras = {
+      valueChange: valueChanged ? { from: moveReq.currentValue != null && moveReq.currentValue > 0 ? dealBrl(moveReq.currentValue) : "—", to: dealBrl(res.value as number) } : null,
+      followUp: res.task ? { title: res.task.title, due: res.task.dueAt ? new Date(res.task.dueAt).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : null } : null,
+    }
+    const r = await moveDeal(conversationId, moveReq.dealId, moveReq.stageId, null, res.note || null, extras)
+    if (!("error" in r) && valueChanged) await updateDeal(moveReq.dealId, { estimatedValue: res.value }, { silentCard: true })
+    if (!("error" in r) && res.task) await createTask({ dealId: moveReq.dealId, title: res.task.title, dueAt: res.task.dueAt })
+    setMoving(null); setMoveReq(null)
+    if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
+  }
+
+  async function cancel(dealId: string, reason: string) {
     setMoving(dealId)
-    await moveDeal(conversationId, dealId, stageId)
-    setMoving(null); load()
+    const r = await cancelDeal(conversationId, dealId, reason || null)
+    setMoving(null)
+    if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
+  }
+
+  async function reopen(dealId: string) {
+    setMoving(dealId)
+    const r = await reopenDeal(conversationId, dealId)
+    setMoving(null)
+    if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
   }
 
   return (
@@ -1309,7 +1371,7 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
       <RelationshipBadge relationship={panel.relationship} wonCount={panel.wonCount} dealCount={panel.deals.length} />
 
       {active ? (
-        <ActiveDeal deal={active} pipelines={panel.pipelines} onMove={move} moving={moving === active.id} onTaskChange={load} />
+        <ActiveDeal deal={active} pipelines={panel.pipelines} onMove={requestMove} onCancel={cancel} moving={moving === active.id} onTaskChange={load} />
       ) : (
         <p className="text-[11px] text-slate-400 leading-relaxed">
           Nenhum negócio aberto. Conduza pela conversa, ou{" "}
@@ -1324,7 +1386,7 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
           <button type="button" onClick={() => setShowHistory((v) => !v)} className="mt-2.5 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-600">
             <ChevronDown className={`size-3 transition-transform ${showHistory ? "rotate-180" : ""}`} /> Histórico ({rest.length})
           </button>
-          {showHistory && <div className="mt-1.5 space-y-0.5">{rest.map((d) => <DealHistoryRow key={d.id} deal={d} />)}</div>}
+          {showHistory && <div className="mt-1.5 space-y-0.5">{rest.map((d) => <DealHistoryRow key={d.id} deal={d} onReopen={reopen} moving={moving === d.id} />)}</div>}
         </>
       )}
 
@@ -1335,6 +1397,14 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
           contactName={contactName}
           onClose={() => setShowNew(false)}
           onCreated={() => { setShowNew(false); load() }}
+        />
+      )}
+
+      {moveReq && (
+        <MoveDealDialog
+          dealName={moveReq.dealName} fromStageName={moveReq.fromName} fromStageDays={moveReq.fromDays}
+          toStageName={moveReq.toName} currentValue={moveReq.currentValue}
+          pending={moving === moveReq.dealId} onConfirm={commitMove} onClose={() => setMoveReq(null)}
         />
       )}
     </Section>
@@ -1427,9 +1497,17 @@ function NextAction({ deal, onChange }: { deal: PanelDeal; onChange: () => void 
   )
 }
 
-function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange }: {
-  deal: PanelDeal; pipelines: DealPipeline[]; onMove: (dealId: string, stageId: string) => void; moving: boolean; onTaskChange: () => void
+const CANCEL_REASONS = ["Criado por engano", "Duplicado", "Cliente desistiu", "Fora do perfil", "Outro"]
+
+function ActiveDeal({ deal, pipelines, onMove, onCancel, moving, onTaskChange }: {
+  deal: PanelDeal; pipelines: DealPipeline[]
+  onMove: (dealId: string, stageId: string, toName: string, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) => void
+  onCancel: (dealId: string, reason: string) => void
+  moving: boolean; onTaskChange: () => void
 }) {
+  const [cancelOpen, setCancelOpen] = useState(false)
+  const [reasonSel, setReasonSel]   = useState(CANCEL_REASONS[0])
+  const [reasonTxt, setReasonTxt]   = useState("")
   const pipeline = pipelines.find((p) => p.id === deal.pipeline_id)
   const stages   = (pipeline?.stages ?? []).filter((s) => s.show_in_kanban || s.is_won || s.is_lost)
   const color    = deal.stage?.color ?? "#64748b"
@@ -1438,7 +1516,7 @@ function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange }: {
   return (
     <div className="rounded-lg border border-slate-300 bg-white p-2.5">
       <div className="flex items-start justify-between gap-2">
-        <p className="text-[13px] font-semibold text-slate-900 leading-tight flex-1 min-w-0">{deal.name?.trim() || "Negócio sem nome"}</p>
+        <Link href={`/negocios/${deal.id}`} className="text-[13px] font-semibold text-slate-900 leading-tight flex-1 min-w-0 hover:text-primary-700 transition-colors">{deal.name?.trim() || "Negócio sem nome"}</Link>
         {value && <span className="text-[13px] font-bold text-slate-900 tabular-nums shrink-0">{value}</span>}
       </div>
       <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
@@ -1450,25 +1528,65 @@ function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange }: {
         {deal.pipeline_name && <span className="text-[10px] text-slate-400 truncate">· {deal.pipeline_name}</span>}
       </div>
       <div className="mt-2 flex items-center gap-1.5">
-        <select value={deal.stage?.id ?? ""} disabled={moving} onChange={(e) => onMove(deal.id, e.target.value)}
+        <select value={deal.stage?.id ?? ""} disabled={moving}
+          onChange={(e) => { const s = stages.find((x) => x.id === e.target.value); if (s && s.id !== deal.stage?.id) onMove(deal.id, s.id, s.name, deal.stage?.name ?? null, deal.name ?? null, deal.stage_entered_at ? Math.floor((Date.now() - new Date(deal.stage_entered_at).getTime()) / 86400000) : null, deal.estimated_value ?? null) }}
           className="flex-1 h-7 px-2 text-[11px] border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50">
           {stages.map((s) => <option key={s.id} value={s.id}>{s.is_won ? "🏆 " : s.is_lost ? "✕ " : ""}{s.name}</option>)}
         </select>
         {moving && <Loader2 className="size-3.5 animate-spin text-slate-400 shrink-0" />}
       </div>
       <NextAction deal={deal} onChange={onTaskChange} />
+
+      {/* Cancelar negócio — anula (≠ Perdido): não conta como perda, card volta a "sem negócio". */}
+      {!cancelOpen ? (
+        <button type="button" onClick={() => setCancelOpen(true)} disabled={moving}
+          className="mt-2 text-[10px] font-medium text-slate-400 hover:text-red-600 transition-colors disabled:opacity-50">
+          Cancelar negócio
+        </button>
+      ) : (
+        <div className="mt-2 rounded-lg border border-red-100 bg-red-50/50 p-2 space-y-1.5">
+          <p className="text-[10px] font-semibold text-red-700">Cancelar — anula (não conta como perda)</p>
+          <select value={reasonSel} onChange={(e) => setReasonSel(e.target.value)}
+            className="w-full h-7 px-2 text-[11px] border border-red-200 rounded-lg bg-white focus:outline-none">
+            {CANCEL_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          {reasonSel === "Outro" && (
+            <input value={reasonTxt} onChange={(e) => setReasonTxt(e.target.value)} placeholder="Motivo…"
+              className="w-full h-7 px-2 text-[11px] border border-red-200 rounded-lg bg-white focus:outline-none" />
+          )}
+          <div className="flex items-center gap-1.5">
+            <button type="button" disabled={moving}
+              onClick={() => onCancel(deal.id, reasonSel === "Outro" ? (reasonTxt.trim() || "Outro") : reasonSel)}
+              className="inline-flex items-center gap-1 h-7 px-2.5 text-[11px] font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
+              {moving && <Loader2 className="size-3 animate-spin" />} Confirmar
+            </button>
+            <button type="button" onClick={() => setCancelOpen(false)} disabled={moving}
+              className="h-7 px-2.5 text-[11px] font-medium text-slate-500 hover:bg-slate-100 rounded-lg">
+              Voltar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function DealHistoryRow({ deal }: { deal: PanelDeal }) {
-  const icon  = deal.status === "won" ? "🏆" : deal.status === "lost" ? "✕" : "○"
+function DealHistoryRow({ deal, onReopen, moving }: { deal: PanelDeal; onReopen?: (dealId: string) => void; moving?: boolean }) {
+  const closed = deal.status === "won" || deal.status === "lost" || deal.status === "canceled"
+  const ds    = dealEventStyle(deal.status)
+  const HIcon = ds.Icon
   const date  = deal.won_at ?? deal.lost_at ?? deal.created_at
   const value = deal.estimated_value && deal.estimated_value > 0 ? dealBrl(Number(deal.estimated_value)) : null
   return (
-    <div className="flex items-center gap-2 text-[11px] py-0.5">
-      <span className="shrink-0 text-slate-400">{icon}</span>
+    <div className="group/hr flex items-center gap-2 text-[11px] py-0.5">
+      <HIcon className="size-3 shrink-0" style={{ color: closed ? ds.accent : "#94a3b8" }} />
       <span className="flex-1 min-w-0 truncate text-slate-600">{deal.name?.trim() || "Negócio"}</span>
+      {closed && onReopen ? (
+        <button type="button" onClick={() => onReopen(deal.id)} disabled={moving}
+          className="shrink-0 text-[10px] font-semibold text-primary-600 hover:text-primary-700 opacity-0 group-hover/hr:opacity-100 transition-opacity disabled:opacity-50">
+          {moving ? "…" : "Reabrir"}
+        </button>
+      ) : null}
       {value && <span className="tabular-nums text-slate-500 shrink-0">{value}</span>}
       <span className="text-slate-300 shrink-0">{new Date(date).toLocaleDateString("pt-BR", { month: "short", year: "2-digit" })}</span>
     </div>

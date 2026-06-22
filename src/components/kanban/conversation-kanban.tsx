@@ -13,7 +13,9 @@ import {
   type DragStartEvent, type DragEndEvent, type DraggableAttributes,
 } from "@dnd-kit/core"
 import { moveConversation, getManagementCards } from "@/lib/actions/pipeline"
-import { moveDeal, type DealPipeline } from "@/lib/actions/deals"
+import { moveDeal, updateDeal, type DealPipeline } from "@/lib/actions/deals"
+import { createTask } from "@/lib/actions/tasks"
+import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
 import { getRealtimeClient } from "@/lib/realtime"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
@@ -209,6 +211,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
   const [activeId, setActiveId]       = useState<string | null>(null)
   const [pending, startTransition]    = useTransition()
   const [dealFor, setDealFor]         = useState<Conversation | null>(null)   // afford. "Abrir negócio"
+  const [moveDialog, setMoveDialog]   = useState<{ convId: string; dealId: string; dealName: string | null; stageId: string; toName: string; fromName: string | null; fromDays: number | null; currentValue: number | null } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   const [mgmtCards, setMgmtCards] = useState<Conversation[] | null>(null)
@@ -359,21 +362,43 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     setConvs((prev) => prev.map((x) => x.id === cardId
       ? { ...x, stage_id: stageId, card_position: newPos, deal: x.deal ? { ...x.deal, stage_id: stageId } : null }
       : x))
+
+    // Card COM negócio (o coração do CRM) → abre a FICHA da movimentação (detalhe opcional)
+    // antes de commitar. Card SEM negócio (só atendimento / CRM off) → move a conversa, silencioso.
+    if (c.deal) {
+      const enteredAt = c.deal.stage_entered_at ?? c.stage_entered_at
+      setMoveDialog({
+        convId: c.id, dealId: c.deal.id, dealName: c.deal.name ?? null, stageId,
+        toName: stages.find((s) => s.id === stageId)?.name ?? "etapa",
+        fromName: stages.find((s) => s.id === c.stage_id)?.name ?? null,
+        fromDays: enteredAt ? Math.floor((Date.now() - new Date(enteredAt).getTime()) / 86400000) : null,
+        currentValue: c.deal.estimated_value ?? null,
+      })
+      return
+    }
     startTransition(async () => {
-      // Card COM negócio → move o NEGÓCIO (fonte da verdade; espelha etapa→conversa p/ relatórios).
-      // Card SEM negócio → move a conversa, como sempre.
-      const action = c.deal
-        ? moveDeal(c.id, c.deal.id, stageId).then((r) => { if ("error" in r) throw new Error(r.error) })
-        : moveConversation(cardId, stageId, newPos)
-      try { await action }
-      catch (err) {
-        // Reverte pela VERDADE do servidor (não pra `initial`, que perderia deltas do
-        // Realtime chegados desde o último SSR e poderia ressuscitar card removido).
-        alert((err as Error).message ?? "Erro ao mover")
-        router.refresh()
-      }
+      try { await moveConversation(cardId, stageId, newPos) }
+      catch (err) { alert((err as Error).message ?? "Erro ao mover"); router.refresh() }
     })
   }
+
+  function confirmMoveDialog(res: MoveDealResult) {
+    if (!moveDialog) return
+    const { convId, dealId, stageId, currentValue } = moveDialog
+    setMoveDialog(null)
+    startTransition(async () => {
+      const valueChanged = res.value != null && res.value !== (currentValue ?? null)
+      const extras = {
+        valueChange: valueChanged ? { from: currentValue != null && currentValue > 0 ? BRL(currentValue) : "—", to: BRL(res.value as number) } : null,
+        followUp: res.task ? { title: res.task.title, due: res.task.dueAt ? new Date(res.task.dueAt).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : null } : null,
+      }
+      const r = await moveDeal(convId, dealId, stageId, null, res.note || null, extras)
+      if ("error" in r) { alert(r.error); router.refresh(); return }
+      if (valueChanged) await updateDeal(dealId, { estimatedValue: res.value }, { silentCard: true })
+      if (res.task) await createTask({ dealId, title: res.task.title, dueAt: res.task.dueAt })
+    })
+  }
+  function cancelMoveDialog() { setMoveDialog(null); router.refresh() }   // reverte o otimista
   const activeCard = activeId ? dataset.find((c) => c.id === activeId) ?? null : null
 
   return (
@@ -423,6 +448,14 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
           initialStageId={dealFor.stage_id ?? undefined}
           onClose={() => setDealFor(null)}
           onCreated={() => { setDealFor(null); router.refresh() }}
+        />
+      )}
+
+      {moveDialog && (
+        <MoveDealDialog
+          dealName={moveDialog.dealName} fromStageName={moveDialog.fromName} fromStageDays={moveDialog.fromDays}
+          toStageName={moveDialog.toName} currentValue={moveDialog.currentValue}
+          pending={pending} onConfirm={confirmMoveDialog} onClose={cancelMoveDialog}
         />
       )}
     </DndContext>

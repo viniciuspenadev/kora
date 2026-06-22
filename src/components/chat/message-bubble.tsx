@@ -1,14 +1,17 @@
 "use client"
 
+import Link from "next/link"
 import { useState, useRef } from "react"
 import {
   Check, CheckCheck, Clock, AlertCircle, Lock, FileText, MapPin, Mic, Video,
   Image as ImageIcon, Download, X, ImageOff, Reply, Smartphone,
   Megaphone, ExternalLink, Eye, EyeOff, Trash2, Pencil, MessageSquareWarning,
   User as UserIcon, ListChecks, Square, Sparkles, ArrowRight, Smile, Forward,
+  DollarSign, Bell,
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
+import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { AudioPlayer } from "./audio-player"
 import { resolveMediaUrl } from "@/lib/media"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
@@ -205,6 +208,80 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Cartão de EVENTO do Negócio (Linha do Tempo) — interno, cliente nunca vê ──
+  // Vem ANTES do system pill: a movimentação é postada como sender_type "system" + is_private_note,
+  // então sem este early-return ela cairia na pílula cinza centralizada.
+  const dealEvent = (message.metadata as { deal_event?: {
+    type: string; deal_id?: string | null; from_name?: string | null; to_name?: string | null
+    note?: string | null; reason?: string | null
+    change?: { label?: string | null; from?: string | null; to?: string | null } | null
+    extras?: { valueChange?: { from: string; to: string } | null; followUp?: { title: string; due: string | null } | null } | null
+    actor?: { label?: string | null } | null
+  } } | null)?.deal_event
+  if (dealEvent) {
+    const e = dealEventStyle(dealEvent.type)
+    const EvIcon = e.Icon
+    const actorLabel = dealEvent.actor?.label ?? "Sistema"
+    const ev = dealEvent
+    // Destaque principal (de→para / antes→depois / etapa). Pra nota, o texto é o corpo.
+    const detail =
+        ev.type === "stage_changed"                  ? `${ev.from_name ?? "—"} → ${ev.to_name ?? "—"}`
+      : ev.type === "created" || ev.type === "reopened" ? (ev.to_name ?? "")
+      : ev.type === "lost" || ev.type === "canceled"  ? (ev.reason ?? "")
+      : ev.type === "field_changed"                   ? `${ev.change?.label ?? "Campo"}: ${ev.change?.from ?? "—"} → ${ev.change?.to ?? "—"}`
+      :                                                  ""
+    const isNoteType = ev.type === "note"
+    return (
+      // Mesma ESTRUTURA do "Dossiê da IA": direita · header ícone+label+hora · seções rótulo/valor.
+      <div className="flex justify-end px-4 py-1.5">
+        <div className="w-full max-w-md rounded-xl border shadow-sm overflow-hidden bg-white" style={{ borderColor: `${e.accent}33` }}>
+          <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: `${e.accent}1f`, backgroundColor: `${e.accent}0d` }}>
+            <span className="size-5 rounded grid place-items-center shrink-0" style={{ backgroundColor: e.accent }}><EvIcon className="size-3 text-white" /></span>
+            <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: e.accent }}>{e.label}</span>
+            <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-400"><Lock className="size-2.5" /> interno</span>
+            <span className="ml-auto text-[10px] text-slate-400">{time}</span>
+          </div>
+          <div className="px-3 py-2.5 space-y-2.5">
+            {detail && <p className="text-[13px] font-semibold text-slate-800">{detail}</p>}
+
+            {ev.note && (
+              isNoteType
+                ? <p className="text-[13px] text-slate-700 whitespace-pre-wrap break-words leading-snug">{ev.note}</p>
+                : <div>
+                    <p className="text-[10px] font-semibold uppercase text-slate-400 tracking-wide mb-0.5">O que rolou</p>
+                    <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap break-words">{ev.note}</p>
+                  </div>
+            )}
+
+            {(ev.extras?.valueChange || ev.extras?.followUp) && (
+              <div className="space-y-2">
+                {ev.extras?.valueChange && (
+                  <div className="text-xs leading-snug">
+                    <p className="text-[11px] text-slate-400">Valor</p>
+                    <p className="text-slate-800 font-medium tabular-nums inline-flex items-center gap-1.5">{ev.extras.valueChange.from} <ArrowRight className="size-3 text-slate-300 shrink-0" /> <span className="text-emerald-700">{ev.extras.valueChange.to}</span></p>
+                  </div>
+                )}
+                {ev.extras?.followUp && (
+                  <div className="text-xs leading-snug">
+                    <p className="text-[11px] text-slate-400">Follow-up</p>
+                    <p className="text-slate-800 font-medium inline-flex items-center gap-1.5"><Bell className="size-3 text-primary-500 shrink-0" /> {ev.extras.followUp.title}{ev.extras.followUp.due ? <span className="font-normal text-slate-400"> · {ev.extras.followUp.due}</span> : null}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
+              <span className="text-[10px] text-slate-400">por {actorLabel}</span>
+              {ev.deal_id && (
+                <Link href={`/negocios/${ev.deal_id}`} className="shrink-0 inline-flex items-center gap-0.5 text-[10px] font-bold text-primary-600 hover:text-primary-700">ver no negócio →</Link>
+              )}
+            </div>
           </div>
         </div>
       </div>

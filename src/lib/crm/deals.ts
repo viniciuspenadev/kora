@@ -31,6 +31,102 @@ async function logEvent(
   })
 }
 
+// ── Linha do Tempo do Negócio (docs/crm-deal-timeline-design.md) ─────────────
+export type DealEventType = "created" | "stage_changed" | "won" | "lost" | "canceled" | "reopened" | "note" | "field_changed" | "task_created" | "task_done"
+export interface DealEventActor { kind: "human" | "ia" | "automation"; userId?: string | null; label?: string | null }
+export interface DealFieldChange { label: string; from: string | null; to: string | null }
+export interface DealEventExtras { valueChange?: { from: string; to: string } | null; followUp?: { title: string; due: string | null } | null }
+interface RecordDealEventOpts {
+  tenantId:        string
+  dealId:          string
+  type:            DealEventType
+  conversationId?: string | null
+  fromStageId?:    string | null
+  toStageId?:      string | null
+  by?:             string | null            // user humano que disparou (quando houver)
+  actor?:          DealEventActor            // default = humano (by); IA/automação passam label
+  note?:           string | null            // observação do atendente
+  reason?:         string | null            // motivo estruturado (perdido/cancelado)
+  change?:         DealFieldChange           // field_changed: rótulo + antes→depois (auditoria)
+  postCard?:       boolean                   // false = só auditoria (não posta cartão no chat)
+  extras?:         DealEventExtras           // cartão CONSOLIDADO: valor + follow-up na mesma movimentação
+}
+
+const DEAL_EVENT_ICON: Record<DealEventType, string> = {
+  created: "💼", stage_changed: "💼", won: "🏆", lost: "💔", canceled: "🚫", reopened: "↩️", note: "📝", field_changed: "✏️", task_created: "📌", task_done: "✅",
+}
+
+async function resolveStageNames(tenantId: string, ids: (string | null | undefined)[]): Promise<Record<string, string>> {
+  const want = [...new Set(ids.filter(Boolean) as string[])]
+  if (want.length === 0) return {}
+  const { data } = await supabaseAdmin.from("pipeline_stages").select("id, name").eq("tenant_id", tenantId).in("id", want)
+  const map: Record<string, string> = {}
+  for (const s of (data ?? []) as { id: string; name: string }[]) map[s.id] = s.name
+  return map
+}
+
+/**
+ * Fonte ÚNICA da narrativa do Negócio: grava o evento (audit em `tenant_deal_events`,
+ * com nomes de etapa + ator + observação em `meta`) E posta um cartão INTERNO no chat
+ * (`is_private_note` → o cliente NUNCA vê), com de→para, autor e observação. Render
+ * especial do cartão lê `metadata.deal_event`. Best-effort no cartão (nunca derruba a ação).
+ */
+export async function recordDealEvent(opts: RecordDealEventOpts): Promise<void> {
+  const { tenantId, dealId, type, conversationId, fromStageId, toStageId, by, note, reason, change, extras } = opts
+  const actor: DealEventActor = opts.actor ?? { kind: "human", userId: by ?? null }
+
+  const names    = await resolveStageNames(tenantId, [fromStageId, toStageId])
+  const fromName = fromStageId ? names[fromStageId] ?? null : null
+  const toName   = toStageId ? names[toStageId] ?? null : null
+
+  // Rótulo do autor: humano → nome no profile; IA/automação → label; fallback genérico.
+  let actorLabel = actor.label ?? null
+  const humanId  = actor.userId ?? (actor.kind === "human" ? by : null)
+  if (!actorLabel && actor.kind === "human" && humanId) {
+    const { data: prof } = await supabaseAdmin.from("profiles").select("full_name").eq("id", humanId).maybeSingle()
+    actorLabel = (prof as { full_name: string | null } | null)?.full_name ?? null
+  }
+  if (!actorLabel) actorLabel = actor.kind === "ia" ? "IA" : actor.kind === "automation" ? "Automação" : "Sistema"
+
+  const actorMeta = { kind: actor.kind, label: actorLabel }
+
+  // 1. Audit (sempre).
+  await supabaseAdmin.from("tenant_deal_events").insert({
+    tenant_id: tenantId, deal_id: dealId, type,
+    from_stage: fromStageId ?? null, to_stage: toStageId ?? null, by: by ?? null,
+    meta: { note: note ?? null, reason: reason ?? null, from_name: fromName, to_name: toName, actor: actorMeta, change: change ?? null, extras: extras ?? null },
+  })
+
+  // 2. Cartão interno no chat. Pulado quando: sem conversa, OU postCard=false (alteração
+  //    de campo é só AUDITORIA no dossiê do negócio — não polui a conversa do cliente).
+  if (!conversationId || opts.postCard === false) return
+  try {
+    const headline =
+        type === "created"       ? `Negócio aberto${toName ? ` em ${toName}` : ""}`
+      : type === "stage_changed" ? `${fromName ?? "—"} → ${toName ?? "—"}`
+      : type === "won"           ? "Negócio ganho"
+      : type === "lost"          ? `Negócio perdido${reason ? ` · ${reason}` : ""}`
+      : type === "canceled"      ? `Negócio cancelado${reason ? ` · ${reason}` : ""}`
+      : type === "reopened"      ? `Negócio reaberto${toName ? ` em ${toName}` : ""}`
+      : type === "field_changed" ? `${change?.label ?? "Campo"} atualizado`
+      : type === "task_created"  ? `Próxima ação: ${note ?? "tarefa"}`
+      : type === "task_done"     ? `Tarefa concluída: ${note ?? ""}`
+      :                            (note ?? "Observação")
+    const lines = [`${DEAL_EVENT_ICON[type]} ${headline} — por ${actorLabel}`]
+    if (note && type !== "note") lines.push(note)
+    if (extras?.valueChange) lines.push(`Valor: ${extras.valueChange.from} → ${extras.valueChange.to}`)
+    if (extras?.followUp)     lines.push(`Follow-up: ${extras.followUp.title}${extras.followUp.due ? ` · ${extras.followUp.due}` : ""}`)
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId, tenant_id: tenantId,
+      sender_type: "system", content_type: "text", content: lines.join("\n"),
+      status: "delivered", is_private_note: true,
+      metadata: { deal_event: { type, deal_id: dealId, from_stage: fromStageId ?? null, to_stage: toStageId ?? null, from_name: fromName, to_name: toName, note: note ?? null, reason: reason ?? null, actor: actorMeta, change: change ?? null, extras: extras ?? null } },
+    })
+  } catch (e) {
+    console.error("[crm.recordDealEvent] cartão:", (e as Error).message)
+  }
+}
+
 /**
  * Promove o lifecycle do CONTATO conforme o estado do negócio — NUNCA rebaixa (doc §5).
  *  • ganho   → customer (topo).
@@ -131,7 +227,10 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
       })
       .eq("id", args.conversationId).eq("tenant_id", args.tenantId)
   }
-  await logEvent(args.tenantId, dealId, "created", null, args.stageId, args.by)
+  await recordDealEvent({
+    tenantId: args.tenantId, dealId, type: "created",
+    conversationId: args.conversationId, toStageId: args.stageId, by: args.by,
+  })
   // Abrir negócio → contato vira Lead (ganho → Cliente). Nunca rebaixa. Doc §5.
   await syncContactLifecycleFromDeal(args.tenantId, args.contactId, { is_won: args.isWon, is_lost: args.isLost })
   return { id: dealId }

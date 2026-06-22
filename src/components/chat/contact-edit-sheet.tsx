@@ -17,7 +17,7 @@ import { formatPhoneDisplay } from "@/lib/phone-utils"
 interface Props {
   contact: {
     id:              string
-    phone_number:    string
+    phone_number:    string | null
     push_name:       string | null
     custom_name:     string | null
     email:           string | null
@@ -170,7 +170,7 @@ export function ContactEditSheet({ contact, onClose, onFeedback }: Props) {
             <p className="text-sm font-semibold text-slate-900 truncate">{displayName}</p>
             <p className="text-[11px] font-mono text-slate-500 flex items-center gap-1.5">
               <Phone className="size-2.5" />
-              {formatPhoneDisplay(contact.phone_number)}
+              {formatPhoneDisplay(contact.phone_number) || <span className="not-italic text-slate-300">sem telefone</span>}
             </p>
             {contact.push_name && contact.push_name !== customName && (
               <p className="text-[10px] text-slate-400 mt-0.5">

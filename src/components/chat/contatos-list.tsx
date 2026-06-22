@@ -13,8 +13,8 @@ import { ContactEditSheet } from "./contact-edit-sheet"
 
 interface Contact {
   id:              string
-  whatsapp_id:     string
-  phone_number:    string
+  whatsapp_id:     string | null
+  phone_number:    string | null   // contato pode existir sem telefone (BSUID-only / sem-WhatsApp)
   push_name:       string | null
   custom_name:     string | null
   email:           string | null
@@ -57,7 +57,8 @@ const TAG_COLORS = [
   "#EC4899", "#06B6D4", "#84CC16", "#F97316", "#6366F1",
 ]
 
-function formatPhone(phone: string): string {
+function formatPhone(phone: string | null | undefined): string {
+  if (!phone) return ""
   const clean = phone.replace(/\D/g, "")
   if (clean.length === 13) {
     return `+${clean.slice(0, 2)} (${clean.slice(2, 4)}) ${clean.slice(4, 9)}-${clean.slice(9)}`
@@ -348,9 +349,15 @@ function ContactRow({
           ))}
         </div>
         <div className="flex items-center gap-3 mt-0.5 flex-wrap">
-          <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-            <Phone className="size-2.5" /> {formatPhone(contact.phone_number)}
-          </span>
+          {contact.phone_number ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+              <Phone className="size-2.5" /> {formatPhone(contact.phone_number)}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[11px] text-slate-300 italic">
+              <Phone className="size-2.5" /> sem telefone
+            </span>
+          )}
           {contact.email && (
             <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
               <Mail className="size-2.5" /> {contact.email}

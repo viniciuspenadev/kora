@@ -3,7 +3,6 @@
 import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { Search, X } from "lucide-react"
-import { DealDrawer } from "@/components/crm/deal-drawer"
 import type { DealsPageData, DealRow } from "@/lib/actions/deals"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
@@ -31,7 +30,6 @@ export function NegociosClient({ data }: { data: DealsPageData }) {
   const [pipe, setPipe]     = useState("")
   const [status, setStatus] = useState("")
   const [agent, setAgent]   = useState("")
-  const [openDeal, setOpenDeal] = useState<string | null>(null)
   const router = useRouter()
 
   const deals = useMemo(() => {
@@ -104,13 +102,11 @@ export function NegociosClient({ data }: { data: DealsPageData }) {
             <tbody>
               {deals.length === 0 ? (
                 <tr><td colSpan={8} className="text-center text-xs text-slate-400 py-12">Nenhum negócio encontrado.</td></tr>
-              ) : deals.map((d) => <DealTableRow key={d.id} d={d} onOpen={() => setOpenDeal(d.id)} />)}
+              ) : deals.map((d) => <DealTableRow key={d.id} d={d} onOpen={() => router.push(`/negocios/${d.id}`)} />)}
             </tbody>
           </table>
         </div>
       </div>
-
-      {openDeal && <DealDrawer dealId={openDeal} onClose={() => setOpenDeal(null)} onChanged={() => router.refresh()} />}
     </div>
   )
 }
