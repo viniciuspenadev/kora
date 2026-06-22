@@ -26,22 +26,30 @@ const QUALITY: Record<string, { tone: Tone; label: string }> = {
   RED: { tone: "danger", label: "Baixa" }, UNKNOWN: { tone: "neutral", label: "—" },
 }
 const CATEGORY: Record<string, string> = { MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Autenticação" }
+// Categorias internas do Kora (etiqueta de propósito) — vêm do cache local via koraByName.
+const KORA_LABELS: Record<string, string> = { agenda: "Agenda", atendimento: "Atendimento", marketing: "Marketing", cobranca: "Cobrança", outro: "Outro" }
 
-export function TemplatesClient({ templates, error, created }: { templates: MetaTemplate[]; error: string | null; created?: boolean }) {
+export function TemplatesClient({ templates, error, created, koraByName = {} }: { templates: MetaTemplate[]; error: string | null; created?: boolean; koraByName?: Record<string, string> }) {
   const router = useRouter()
   const [view, setView] = useState<"grid" | "list">("grid")
   const [q, setQ] = useState("")
   const [fStatus, setFStatus] = useState("all")
   const [fCat, setFCat] = useState("all")
+  const [fKora, setFKora] = useState("all")
+
+  const koraOf = (t: MetaTemplate) => koraByName[`${t.name.toLowerCase()}|${t.language}`]
+  // Só mostra o filtro Kora se houver ao menos um template etiquetado.
+  const hasKora = useMemo(() => Object.keys(koraByName).length > 0, [koraByName])
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase()
     return templates.filter((t) =>
       (fStatus === "all" || t.status === fStatus) &&
       (fCat === "all" || t.category === fCat) &&
+      (fKora === "all" || koraOf(t) === fKora) &&
       (!term || t.name.toLowerCase().includes(term) || bodyText(t).toLowerCase().includes(term)),
     )
-  }, [templates, q, fStatus, fCat])
+  }, [templates, q, fStatus, fCat, fKora, koraByName])
 
   // Cada card/linha navega pra página dedicada (precisa do id da Graph).
   function open(t: MetaTemplate) {
@@ -73,10 +81,16 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
           <option value="all">Todos os status</option>
           {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         </select>
-        <select value={fCat} onChange={(e) => setFCat(e.target.value)} className="h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
+        <select value={fCat} onChange={(e) => setFCat(e.target.value)} className="h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" title="Categoria da Meta">
           <option value="all">Todas categorias</option>
           {Object.entries(CATEGORY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
+        {hasKora && (
+          <select value={fKora} onChange={(e) => setFKora(e.target.value)} className="h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" title="Categoria do Kora (propósito)">
+            <option value="all">Todos os propósitos</option>
+            {Object.entries(KORA_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        )}
         <div className="inline-flex rounded-lg border border-slate-200 p-0.5">
           <button onClick={() => setView("grid")} className={`size-7 inline-flex items-center justify-center rounded-md ${view === "grid" ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`} title="Grade"><LayoutGrid className="size-4" /></button>
           <button onClick={() => setView("list")} className={`size-7 inline-flex items-center justify-center rounded-md ${view === "list" ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`} title="Lista"><ListIcon className="size-4" /></button>
@@ -107,7 +121,10 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-slate-800 truncate">{t.name}</p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">{CATEGORY[t.category] ?? t.category} · {t.language}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1.5">
+                      <span>{CATEGORY[t.category] ?? t.category} · {t.language}</span>
+                      {koraOf(t) && <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide rounded-full bg-primary-50 text-primary-700 px-1.5 py-0.5">{KORA_LABELS[koraOf(t)!] ?? koraOf(t)}</span>}
+                    </p>
                   </div>
                   <StatusDot tone={st.tone} label={st.label} size="sm" />
                 </div>
@@ -130,7 +147,10 @@ export function TemplatesClient({ templates, error, created }: { templates: Meta
                   <p className="text-sm font-semibold text-slate-800 truncate">{t.name}</p>
                   <p className="text-xs text-slate-500 truncate mt-0.5">{bodyText(t)}</p>
                 </div>
-                <span className="hidden sm:block text-[11px] text-slate-400 shrink-0 w-24">{CATEGORY[t.category] ?? t.category}</span>
+                <span className="hidden sm:flex items-center gap-1.5 text-[11px] text-slate-400 shrink-0 w-32">
+                  <span>{CATEGORY[t.category] ?? t.category}</span>
+                  {koraOf(t) && <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide rounded-full bg-primary-50 text-primary-700 px-1.5 py-0.5">{KORA_LABELS[koraOf(t)!] ?? koraOf(t)}</span>}
+                </span>
                 <span className="hidden md:flex shrink-0 w-20"><StatusDot tone={ql.tone} label={ql.label} size="sm" /></span>
                 <span className="shrink-0 w-24"><StatusDot tone={st.tone} label={st.label} size="sm" /></span>
               </button>

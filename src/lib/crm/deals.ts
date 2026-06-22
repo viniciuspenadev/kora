@@ -31,6 +31,32 @@ async function logEvent(
   })
 }
 
+/**
+ * Promove o lifecycle do CONTATO conforme o estado do negócio — NUNCA rebaixa (doc §5).
+ *  • ganho   → customer (topo).
+ *  • aberto/trabalho → lead, mas SÓ promovendo de 'contact' (não mexe em lead/customer/unfit).
+ *  • perdido → não mexe (o desfecho é do negócio, não da pessoa).
+ * Best-effort: nunca lança. Fonte única usada por createDeal + moveDeal(ById).
+ */
+export async function syncContactLifecycleFromDeal(
+  tenantId: string, contactId: string, stage: { is_won?: boolean | null; is_lost?: boolean | null },
+): Promise<void> {
+  try {
+    const now = new Date().toISOString()
+    if (stage.is_won) {
+      await supabaseAdmin.from("chat_contacts")
+        .update({ lifecycle_stage: "customer", lifecycle_changed_at: now, updated_at: now })
+        .eq("id", contactId).eq("tenant_id", tenantId).neq("lifecycle_stage", "customer")
+    } else if (!stage.is_lost) {
+      await supabaseAdmin.from("chat_contacts")
+        .update({ lifecycle_stage: "lead", lifecycle_changed_at: now, updated_at: now })
+        .eq("id", contactId).eq("tenant_id", tenantId).eq("lifecycle_stage", "contact")
+    }
+  } catch (e) {
+    console.error("[crm.syncContactLifecycleFromDeal]", (e as Error).message)
+  }
+}
+
 interface CreateDealArgs {
   tenantId:        string
   contactId:       string
@@ -94,11 +120,20 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
   const dealId = (data as { id: string }).id
 
   if (args.conversationId) {
+    // Espelha a etapa inicial do negócio na conversa (mesmo motivo do moveDeal): o board
+    // posiciona o card pela etapa da conversa e os relatórios leem as colunas dela.
     await supabaseAdmin.from("chat_conversations")
-      .update({ active_deal_id: dealId })
+      .update({
+        active_deal_id: dealId,
+        pipeline_id: args.pipelineId, stage_id: args.stageId,
+        won_at: args.isWon ? now : null, lost_at: args.isLost ? now : null,
+        stage_entered_at: now, updated_at: now,
+      })
       .eq("id", args.conversationId).eq("tenant_id", args.tenantId)
   }
   await logEvent(args.tenantId, dealId, "created", null, args.stageId, args.by)
+  // Abrir negócio → contato vira Lead (ganho → Cliente). Nunca rebaixa. Doc §5.
+  await syncContactLifecycleFromDeal(args.tenantId, args.contactId, { is_won: args.isWon, is_lost: args.isLost })
   return { id: dealId }
 }
 

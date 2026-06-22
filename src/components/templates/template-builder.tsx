@@ -6,6 +6,7 @@ import { createOfficialTemplate, editOfficialTemplate, type TemplateButton } fro
 import type { MetaTemplate, MetaTemplateComponent } from "@/lib/providers/meta-cloud-provider"
 import { parseVars, isNamed } from "@/lib/whatsapp/template-vars"
 import { varsForContext } from "@/lib/variables/registry"
+import { KORA_CATEGORY_LABELS, type KoraCategory } from "@/lib/templates/library"
 import { TemplatePreview } from "./template-preview"
 
 const INPUT = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
@@ -24,6 +25,7 @@ const COMMON_VARS = varsForContext("generic").map((v) => ({ token: v.token, labe
 export interface BuilderInitial {
   name:          string
   category:      "MARKETING" | "UTILITY"
+  koraCategory?: KoraCategory | null
   language:      string
   varMode:       "number" | "name"
   headerText:    string
@@ -47,6 +49,7 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   const isEdit = mode === "edit"
   const [name, setName]           = useState(initial?.name ?? "")
   const [category, setCategory]   = useState<"MARKETING" | "UTILITY">(initial?.category ?? "MARKETING")
+  const [koraCategory, setKoraCategory] = useState<string>(initial?.koraCategory ?? "")
   const [language, setLanguage]   = useState(initial?.language ?? "pt_BR")
   const [headerText, setHeaderText] = useState(initial?.headerText ?? "")
   const [headerExample, setHeaderExample] = useState(initial?.headerExample ?? "")
@@ -105,6 +108,7 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
     startT(async () => {
       const payload = {
         name, category, language,
+        koraCategory: (koraCategory || null) as KoraCategory | null,
         parameterFormat: (varMode === "name" ? "NAMED" : "POSITIONAL") as "NAMED" | "POSITIONAL",
         headerText: headerText.trim() || undefined,
         headerExample: headerExample.trim() || undefined,
@@ -161,6 +165,16 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
                     </select>
                     {isEdit && <Lock className="size-3.5 text-slate-300 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />}
                   </div>
+                </Field>
+                {/* Propósito = categoria INTERNA do Kora (etiqueta nossa, não vai à Meta).
+                    Organiza a lista e habilita usos por escopo (ex: lembrete da Agenda). */}
+                <Field label="Propósito" hint="categoria interna">
+                  <select value={koraCategory} onChange={(e) => setKoraCategory(e.target.value)} className={SELECT}>
+                    <option value="">— nenhum —</option>
+                    {(Object.entries(KORA_CATEGORY_LABELS) as [KoraCategory, string][]).map(([v, label]) => (
+                      <option key={v} value={v}>{label}</option>
+                    ))}
+                  </select>
                 </Field>
               </div>
               <Hint>

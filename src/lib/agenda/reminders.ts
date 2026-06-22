@@ -142,15 +142,16 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
 
   const text = render(step.text ?? "", vars).trim()
   const phone = appt.chat_contacts?.phone_number ?? appt.chat_contacts?.bsuid ?? ""
-  if (!text)  return logReminder(appt, stepKey, "whatsapp", "skipped", "step sem texto")
-  if (!phone) return logReminder(appt, stepKey, "whatsapp", "skipped", "contato sem telefone nem BSUID")
-  // 3b envia pela conversa existente (janela fresca). Sem conversa → 3c (cron/template).
-  if (!appt.conversation_id) return logReminder(appt, stepKey, "whatsapp", "skipped", "sem conversa (3b)")
-
-  // Round-trip (3d.4): se o step pede confirmação, vai pelo veículo certo do canal —
+  // Round-trip (3d.4): step de confirmação vai pelo veículo certo do canal —
   // Baileys texto numerado · Meta botão nativo (dentro da janela) · template (fora) —
   // e grava o pending_agenda pra o interceptor mapear a resposta (§6.10).
   const isConfirm = step.request_confirmation === true
+  // ⚠️ Confirmação NÃO exige texto livre — a âncora é montada do agendamento + botões/template.
+  // Só o aviso PLANO (não-confirm) precisa de texto. (Bug: confirm sem texto era skipado "step sem texto".)
+  if (!text && !isConfirm) return logReminder(appt, stepKey, "whatsapp", "skipped", "step sem texto")
+  if (!phone) return logReminder(appt, stepKey, "whatsapp", "skipped", "contato sem telefone nem BSUID")
+  // 3b envia pela conversa existente (janela fresca). Sem conversa → 3c (cron/template).
+  if (!appt.conversation_id) return logReminder(appt, stepKey, "whatsapp", "skipped", "sem conversa (3b)")
 
   // Resolve a instância da conversa (fallback: 1ª do tenant) + a janela 24h.
   const { data: conv } = await supabaseAdmin.from("chat_conversations")
@@ -175,6 +176,7 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
       const send = await sendAgendaConfirm({
         tenantId: appt.tenant_id, instance, phone, apptId: appt.id, vars, inWindow,
         anchorText: buildConfirmAnchor(text, vars), numberedText: buildConfirmMessage(text, vars),
+        templateName: step.template_name ?? null,
       })
       if ("degraded" in send) {
         // Gate fail-closed: não saiu (sem template aprovado) → loga + avisa o atendente.
@@ -206,6 +208,9 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
     const msg = e instanceof Error ? e.message : String(e)
     // #131047 = janela 24h fechada no Meta → precisa template (Fase 3d.4).
     await logReminder(appt, stepKey, "whatsapp", "failed", /131047/.test(msg) ? "janela fechada (template = 3d.4)" : msg)
+    // Fail-closed: confirmação que ESTOUROU (ex: Meta recusou o template) também avisa o dono
+    // pra confirmar na mão — senão o agendamento fica sem confirmação e ninguém sabe.
+    if (isConfirm) await notifyConfirmFallback(appt, vars)
   }
   return true
 }

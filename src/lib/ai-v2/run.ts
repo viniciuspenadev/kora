@@ -57,7 +57,7 @@ export async function runStudioTurn(input: RunAITurnInput, opts?: StudioTurnOpts
 }
 
 async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promise<RunAITurnResult> {
-  const { tenantId, conversationId, incomingText, instance } = input
+  const { tenantId, conversationId, incomingText, instance, onWillRespond } = input
   const startedAt = Date.now()
 
   // ── 1) Config + persona + master switch ────────────────────
@@ -86,6 +86,10 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
 
   const contact = convData.chat_contacts as unknown as ContactRow | null
   if (!contact) return { status: "skipped", reason: "no_contact" }
+
+  // ✅ Passou TODOS os gates → a IA vai processar de fato. SÓ AGORA é honesto "digitar"
+  // (antes disso, o "digitando…" era fantasma: aparecia mesmo com humano ativo/IA off).
+  if (!opts?.dryRun) { try { await onWillRespond?.() } catch { /* digitando é best-effort */ } }
 
   // ── 3) Histórico (reusa o gatherer estável do contexto) ────
   const conv: ConvRow = {

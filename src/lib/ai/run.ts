@@ -45,6 +45,9 @@ export interface RunAITurnInput {
   conversationId: string
   incomingText:   string
   instance:       InstanceForProvider
+  /** Chamado SÓ depois que todos os gates de elegibilidade passaram (a IA vai mesmo
+   *  processar) — pra enviar o "digitando…" de forma honesta, não-fantasma. */
+  onWillRespond?: () => void | Promise<void>
 }
 
 export type RunAITurnResult =

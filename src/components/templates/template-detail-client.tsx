@@ -7,8 +7,10 @@ import {
   Reply, Send, CheckCheck, Eye, MousePointerClick, Trash2,
 } from "lucide-react"
 import {
-  getOfficialTemplateAnalytics, deleteOfficialTemplateById,
+  getOfficialTemplateAnalytics, deleteOfficialTemplateById, setTemplateKoraCategory,
 } from "@/lib/actions/whatsapp-official"
+import type { KoraCategory } from "@/lib/templates/library"
+import { toast } from "sonner"
 import type {
   MetaTemplate, TemplateAnalytics, TemplateAnalyticsPoint,
 } from "@/lib/providers/meta-cloud-provider"
@@ -36,6 +38,11 @@ const QUALITY: Record<string, { tone: Tone; label: string }> = {
 const CATEGORY: Record<string, string> = {
   MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Autenticação",
 }
+// Categoria interna do Kora (propósito) — etiqueta nossa, não afeta a Meta.
+const KORA_OPTS: { v: KoraCategory; label: string }[] = [
+  { v: "agenda", label: "Agenda" }, { v: "atendimento", label: "Atendimento" },
+  { v: "marketing", label: "Marketing" }, { v: "cobranca", label: "Cobrança" }, { v: "outro", label: "Outro" },
+]
 const BTN_LABEL: Record<string, string> = {
   URL: "Acessar link", PHONE_NUMBER: "Ligar", QUICK_REPLY: "Resposta rápida",
 }
@@ -71,12 +78,13 @@ const EVENT_LABEL: Record<string, string> = {
 }
 
 export function TemplateDetailClient({
-  template, analytics, history, templateId,
+  template, analytics, history, templateId, koraCategory,
 }: {
-  template:   MetaTemplate
-  analytics:  TemplateAnalytics | null
-  history:    HistoryItem[]
-  templateId: string
+  template:     MetaTemplate
+  analytics:    TemplateAnalytics | null
+  history:      HistoryItem[]
+  templateId:   string
+  koraCategory: string | null
 }) {
   const router = useRouter()
   const [days, setDays] = useState(30)
@@ -84,6 +92,21 @@ export function TemplateDetailClient({
   const [aErr, setAErr] = useState<string | null>(null)
   const [pending, startT] = useTransition()
   const [confirmDel, setConfirmDel] = useState(false)
+  const [kora, setKora] = useState<string>(koraCategory ?? "")
+  const [savingKora, startKora] = useTransition()
+
+  function changeKora(next: string) {
+    const prev = kora
+    setKora(next)   // otimista
+    startKora(async () => {
+      const r = await setTemplateKoraCategory({
+        name: template.name, language: template.language,
+        koraCategory: (next || null) as KoraCategory | null,
+      })
+      if (r.ok) { toast.success("Propósito atualizado."); router.refresh() }
+      else { setKora(prev); toast.error(r.error ?? "Falha ao salvar.") }
+    })
+  }
 
   const st = STATUS[template.status] ?? { tone: "neutral" as Tone, label: template.status }
   const ql = QUALITY[template.quality_score?.score ?? "UNKNOWN"] ?? QUALITY.UNKNOWN
@@ -139,6 +162,13 @@ export function TemplateDetailClient({
         <Facet label="Categoria"><span className="text-sm font-medium text-slate-800">{CATEGORY[template.category] ?? template.category}</span></Facet>
         <Facet label="Idioma"><span className="text-sm font-medium text-slate-800">{template.language}</span></Facet>
         <Facet label="Variáveis"><span className="text-sm font-medium text-slate-800">{nVars}</span></Facet>
+        <Facet label="Propósito (interno)">
+          <select value={kora} onChange={(e) => changeKora(e.target.value)} disabled={savingKora}
+            className="h-7 -ml-1 pl-1 pr-6 text-sm font-medium text-slate-800 rounded-md border border-transparent hover:border-slate-200 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20 bg-transparent disabled:opacity-50">
+            <option value="">— nenhum —</option>
+            {KORA_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+          </select>
+        </Facet>
       </div>
 
       {template.status === "REJECTED" && (

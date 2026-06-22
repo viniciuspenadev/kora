@@ -62,6 +62,14 @@ export default async function TemplateDetailPage({ params }: { params: Promise<{
 
   const history = await getTemplateEvents(session.user.tenantId, template.name, template.language)
 
+  // Categoria interna do Kora (propósito) — cache local, editável inline no detalhe.
+  const { data: waRow } = await supabaseAdmin
+    .from("wa_templates")
+    .select("kora_category")
+    .eq("tenant_id", session.user.tenantId)
+    .eq("name", template.name).eq("language", template.language)
+    .maybeSingle()
+
   return (
     <PageShell
       title={template.name}
@@ -89,6 +97,7 @@ export default async function TemplateDetailPage({ params }: { params: Promise<{
         analytics={analytics}
         history={history}
         templateId={id}
+        koraCategory={(waRow?.kora_category as string | null) ?? null}
       />
     </PageShell>
   )

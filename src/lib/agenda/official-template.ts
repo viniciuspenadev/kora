@@ -4,6 +4,7 @@ import { getProvider } from "@/lib/providers"
 import { MetaCloudProvider } from "@/lib/providers/meta-cloud-provider"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { getBlueprintByName } from "@/lib/templates/library"
+import { parseVars } from "@/lib/whatsapp/template-vars"
 
 // ═══════════════════════════════════════════════════════════════
 // Canal OFICIAL (Meta) da confirmação da Agenda — Fase 3d.4 (§6.10)
@@ -121,6 +122,78 @@ export async function approvedConfirmTemplate(tenantId: string): Promise<string 
   return tpl?.status === "APPROVED" ? name : null
 }
 
+// ── Seletor de template do lembrete (tenant escolhe entre os APROVADOS) ──────────
+// O tenant pode criar vários templates e escolher qual usar no lembrete fora da janela.
+// Pra a confirmação funcionar, o modelo precisa ter ≥2 botões de resposta rápida
+// (Confirmar/Remarcar) — `quickReplies` deixa a UI avisar quando não tem.
+
+export interface ApprovedTemplateOption {
+  name:          string
+  language:      string
+  body:          string
+  varKeys:       string[]   // variáveis do corpo, na ordem
+  named:         boolean     // formato nomeado ({{nome}}) vs posicional ({{1}})
+  quickReplies:  number      // qtd de botões de resposta rápida
+  quickReplyIdx: number[]    // ÍNDICES reais dos quick-reply (botão pode não ser o 0/1)
+  koraCategory:  string | null
+}
+
+function toTemplateOption(row: { name: string; language: string; components: unknown; kora_category: string | null }): ApprovedTemplateOption {
+  const comps = Array.isArray(row.components) ? (row.components as Array<Record<string, unknown>>) : []
+  const bodyC = comps.find((c) => String(c.type).toUpperCase() === "BODY")
+  const body  = (bodyC?.text as string) ?? ""
+  const vars  = parseVars(body)
+  const btnC  = comps.find((c) => String(c.type).toUpperCase() === "BUTTONS")
+  const btns  = (btnC?.buttons as Array<{ type?: string }> | undefined) ?? []
+  // Índices REAIS dos quick-reply (um URL/Phone antes deslocaria o payload se assumíssemos 0/1).
+  const quickReplyIdx = btns
+    .map((b, i) => (String(b.type).toUpperCase() === "QUICK_REPLY" ? i : -1))
+    .filter((i) => i >= 0)
+  return {
+    name: row.name, language: row.language, body,
+    varKeys: vars.map((v) => v.key), named: vars.some((v) => v.named),
+    quickReplies: quickReplyIdx.length, quickReplyIdx,
+    koraCategory: row.kora_category,
+  }
+}
+
+/** Templates APROVADOS do tenant pro seletor do lembrete (com forma p/ avisos na UI). */
+export async function listApprovedTemplates(tenantId: string): Promise<ApprovedTemplateOption[]> {
+  const { data } = await supabaseAdmin.from("wa_templates")
+    .select("name, language, components, kora_category")
+    .eq("tenant_id", tenantId).eq("status", "APPROVED")
+  return (data ?? []).map((r) => toTemplateOption(r as never)).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Resolve um template SE ainda aprovado (gate fail-closed no envio). */
+async function resolveApprovedTemplate(tenantId: string, name: string): Promise<ApprovedTemplateOption | null> {
+  const { data } = await supabaseAdmin.from("wa_templates")
+    .select("name, language, components, kora_category")
+    .eq("tenant_id", tenantId).eq("name", name).eq("status", "APPROVED").maybeSingle()
+  return data ? toTemplateOption(data as never) : null
+}
+
+// Casa a variável do template escolhido com o valor do agendamento (nome/serviço/data/hora).
+function agendaValueFor(key: string, vars: Record<string, string>): string {
+  const k = key.toLowerCase()
+  if (/nome|contato|cliente/.test(k))            return vars.nome || "você"
+  if (/servico|serviço|atendimento/.test(k))     return vars.servico || "seu atendimento"
+  if (/data|dia/.test(k))                        return vars.data || "—"
+  if (/hora/.test(k))                            return vars.hora || "—"
+  if (/recurso|profissional/.test(k))            return vars.recurso || ""
+  return vars[key] ?? ""
+}
+function buildBodyParams(opt: ApprovedTemplateOption, vars: Record<string, string>): Array<{ paramName?: string; text: string }> {
+  return opt.varKeys.map((k) => opt.named ? { paramName: k, text: agendaValueFor(k, vars) } : { text: agendaValueFor(k, vars) })
+}
+function buildButtonParams(opt: ApprovedTemplateOption, apptId: string): Array<{ subType: "quick_reply"; index: number; payload: string }> {
+  const out: Array<{ subType: "quick_reply"; index: number; payload: string }> = []
+  const [i0, i1] = opt.quickReplyIdx
+  if (i0 !== undefined) out.push({ subType: "quick_reply", index: i0, payload: `agenda:confirm:${apptId}` })
+  if (i1 !== undefined) out.push({ subType: "quick_reply", index: i1, payload: `agenda:resched:${apptId}` })
+  return out
+}
+
 interface ConfirmSendArgs {
   tenantId: string
   instance: ProviderInstance
@@ -130,6 +203,7 @@ interface ConfirmSendArgs {
   anchorText:   string   // corpo do botão nativo (Meta) — sem menu numerado
   numberedText: string   // texto do Baileys — com menu numerado
   inWindow: boolean
+  templateName?: string | null   // template escolhido pelo tenant (fora da janela). Vazio = do sistema.
 }
 type ConfirmSendResult = { messageId: string | null; displayText: string } | { degraded: string }
 
@@ -162,8 +236,25 @@ export async function sendAgendaConfirm(args: ConfirmSendArgs): Promise<ConfirmS
 
   // Fora da janela → SÓ template aprovado (gate fail-closed). Sem aprovado → degrada
   // (e auto-semeia: a aprovação é async, então o próximo lembrete já vai conseguir).
+  if (!provider.sendTemplate) return { degraded: "instância oficial sem suporte a template" }
+
+  // 1) Template ESCOLHIDO pelo tenant (≠ sistema, se ainda aprovado) tem prioridade; params/
+  //    botões montados da estrutura real dele. O template do SISTEMA NUNCA entra aqui — ele é
+  //    auto-semeado sem `components` no cache, então cai no caminho seguro abaixo (params fixos).
+  const chosen = (args.templateName && args.templateName !== AGENDA_CONFIRM_TEMPLATE)
+    ? await resolveApprovedTemplate(args.tenantId, args.templateName)
+    : null
+  if (chosen) {
+    const r = await provider.sendTemplate(
+      args.phone, chosen.name, chosen.language,
+      buildBodyParams(chosen, args.vars),
+      buildButtonParams(chosen, args.apptId),
+    )
+    return { messageId: r.messageId || null, displayText: args.anchorText }
+  }
+
   const name = await approvedConfirmTemplate(args.tenantId)
-  if (!name || !provider.sendTemplate) {
+  if (!name) {
     await ensureAgendaConfirmTemplate(args.tenantId)
     return { degraded: "template de confirmação fora da janela 24h ainda não aprovado" }
   }

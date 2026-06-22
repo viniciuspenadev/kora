@@ -3,8 +3,9 @@
 import { useState, useEffect, useMemo } from "react"
 import Link from "next/link"
 import { ChevronDown, Plus, Settings, ZoomIn, ZoomOut } from "lucide-react"
-import { ConversationKanban, cardMatchesFilters, type GroupBy, type SortKey, type KanbanFilters } from "@/components/kanban/conversation-kanban"
+import { ConversationKanban, cardMatchesFilters, effectiveValue, type GroupBy, type SortKey, type KanbanFilters } from "@/components/kanban/conversation-kanban"
 import { KanbanToolbar } from "@/components/kanban/kanban-toolbar"
+import type { DealPipeline } from "@/lib/actions/deals"
 
 const ZOOM_MIN = 0.5
 const ZOOM_MAX = 1.1
@@ -30,6 +31,8 @@ interface Props {
   showChannel:     boolean
   tenantId:        string
   supabaseToken:   string
+  crmEnabled:      boolean
+  dealPipelines:   DealPipeline[]
 }
 
 /**
@@ -40,7 +43,7 @@ interface Props {
 export function KanbanView({
   pipelines, currentPipeline, convCount, isAdminOrOwner, isManager,
   stages, conversations, agents, departments, tintColumns, showChannel,
-  tenantId, supabaseToken,
+  tenantId, supabaseToken, crmEnabled, dealPipelines,
 }: Props) {
   const [groupBy, setGroupBy] = useState<GroupBy>("stage")
   const [pipeOpen, setPipeOpen] = useState(false)
@@ -57,7 +60,7 @@ export function KanbanView({
   )
   // Cards visíveis após filtro → header (contagem + total aberto) reflete o filtro.
   const visible      = useMemo(() => conversations.filter((c) => cardMatchesFilters(c, filters)), [conversations, filters])
-  const openValue    = visible.reduce((s, c) => s + Number(c.estimated_value ?? 0), 0)
+  const openValue    = visible.reduce((s, c) => s + effectiveValue(c), 0)
   const agentOpts    = useMemo(() => agents.map((a) => ({ value: a.id, label: a.full_name ?? "—" })), [agents])
   const instanceOpts = useMemo(() => {
     const m = new Map<string, string>()
@@ -210,6 +213,8 @@ export function KanbanView({
             departments={departments}
             tenantId={tenantId}
             supabaseToken={supabaseToken}
+            crmEnabled={crmEnabled}
+            dealPipelines={dealPipelines}
           />
         </div>
       </div>

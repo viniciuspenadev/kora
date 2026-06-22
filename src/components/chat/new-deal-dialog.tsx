@@ -9,18 +9,26 @@ const inputCls =
 
 /** Dialog "Novo negócio" — abre um negócio explicitamente a partir da conversa.
  *  Pode abrir em QUALQUER etapa (inclusive Ganho, pra registrar venda já fechada). */
-export function NewDealDialog({ conversationId, pipelines, contactName, onClose, onCreated }: {
+export function NewDealDialog({ conversationId, pipelines, contactName, initialStageId, onClose, onCreated }: {
   conversationId: string
   pipelines:      DealPipeline[]
   contactName:    string
+  /** Etapa inicial sugerida (ex: a coluna do card no kanban) — senão a 1ª da trilha. */
+  initialStageId?: string
   onClose:        () => void
   onCreated:      () => void
 }) {
   const def = pipelines.find((p) => p.is_default) ?? pipelines[0]
-  const [pipelineId, setPipelineId] = useState(def?.id ?? "")
+  // Se a etapa sugerida pertence a alguma trilha, abre já nessa trilha.
+  const initPipe = initialStageId
+    ? pipelines.find((p) => p.stages.some((s) => s.id === initialStageId)) ?? def
+    : def
+  const [pipelineId, setPipelineId] = useState(initPipe?.id ?? "")
   const pipeline = pipelines.find((p) => p.id === pipelineId) ?? def
   const stages   = (pipeline?.stages ?? []).filter((s) => s.show_in_kanban || s.is_won || s.is_lost)
-  const [stageId, setStageId] = useState(stages[0]?.id ?? "")
+  const [stageId, setStageId] = useState(
+    initialStageId && stages.some((s) => s.id === initialStageId) ? initialStageId : (stages[0]?.id ?? ""),
+  )
   const [name, setName]   = useState("")
   const [value, setValue] = useState("")
   const [pending, start]  = useTransition()

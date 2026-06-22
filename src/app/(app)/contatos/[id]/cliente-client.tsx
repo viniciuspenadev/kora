@@ -15,6 +15,7 @@ import { DealDrawer } from "@/components/crm/deal-drawer"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { updateContactInfo } from "@/lib/actions/chat"
 import { updateContactIdentity } from "@/lib/actions/contacts"
+import { setContactCustomFields, type ContactFieldDef } from "@/lib/actions/custom-fields"
 import type { ContactRecord, ContactRecordContact, PanelDeal, ContactConversation, ActivityItem } from "@/lib/actions/deals"
 
 interface Appt { id: string; starts_at: string; status: string; service: string | null; resource: string | null }
@@ -37,7 +38,7 @@ const REL = {
   prospect:   { label: "Prospect",      cls: "bg-slate-100 text-slate-500 border-slate-200" },
 } as const
 
-export function ClienteRecord({ record, appointments, activity, canEditIdentity }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean }) {
+export function ClienteRecord({ record, appointments, activity, canEditIdentity, customFields }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean; customFields: ContactFieldDef[] }) {
   const { contact, stats, deals, conversations } = record
   const name    = contact.custom_name?.trim() || contact.push_name?.trim() || fmtPhone(contact.phone_number) || "Sem nome"
   const initial = (name[0] ?? "?").toUpperCase()
@@ -94,7 +95,7 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity 
       {/* Body: identidade fixa + abas que rolam (escala com o crescimento) */}
       <div className="px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
         <div className="lg:col-span-2">
-          <IdentityCard contact={contact} canEditIdentity={canEditIdentity} />
+          <IdentityCard contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} />
         </div>
         <div className="lg:col-span-1 lg:sticky lg:top-4">
           <TabbedPanel deals={deals} conversations={conversations} appointments={appointments} activity={activity} crmEnabled={record.crmEnabled} onOpenDeal={setOpenDeal} />
@@ -198,12 +199,14 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   )
 }
 
-function IdentityCard({ contact, canEditIdentity }: { contact: ContactRecordContact; canEditIdentity: boolean }) {
+function IdentityCard({ contact, canEditIdentity, customFields }: { contact: ContactRecordContact; canEditIdentity: boolean; customFields: ContactFieldDef[] }) {
   const router = useRouter()
   const [editing, setEditing] = useState(false)
   const lc = lifecycleMeta(contact.lifecycle_stage)
 
-  if (editing) return <IdentityEdit contact={contact} canEditIdentity={canEditIdentity} onDone={() => { setEditing(false); router.refresh() }} onCancel={() => setEditing(false)} />
+  if (editing) return <IdentityEdit contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} onDone={() => { setEditing(false); router.refresh() }} onCancel={() => setEditing(false)} />
+
+  const cfFilled = customFields.filter((f) => { const v = contact.custom_fields?.[f.key]; return v !== undefined && v !== null && v !== "" })
 
   const hasAddress = !!(contact.address_street || contact.address_city || contact.address_cep)
   const fullAddress = [
@@ -247,6 +250,15 @@ function IdentityCard({ contact, canEditIdentity }: { contact: ContactRecordCont
         </div>
       )}
 
+      {cfFilled.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-slate-100">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Campos do negócio</p>
+          <dl className="grid sm:grid-cols-2 gap-x-6 gap-y-2.5">
+            {cfFilled.map((f) => <Field key={f.id} icon={Hash} label={f.label} value={fmtCustom(f, contact.custom_fields?.[f.key])} />)}
+          </dl>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100 flex-wrap">
         <span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`}>{lc.icon} {lc.label}</span>
         {contact.source && (
@@ -263,6 +275,13 @@ function IdentityCard({ contact, canEditIdentity }: { contact: ContactRecordCont
       )}
     </SectionCard>
   )
+}
+
+function fmtCustom(f: ContactFieldDef, v: unknown): string {
+  if (v === undefined || v === null || v === "") return "—"
+  if (f.type === "bool") return v ? "Sim" : "Não"
+  if (f.type === "date") { try { return fmtDate(String(v)) } catch { return String(v) } }
+  return String(v)
 }
 
 function Consent({ on, label }: { on: boolean; label: string }) {
@@ -286,8 +305,10 @@ function Field({ icon: Icon, label, value }: { icon: typeof Phone; label: string
 // ── Edição completa do cadastro ─────────────────────────────────
 const editInput = "w-full h-8 px-2.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
 
-function IdentityEdit({ contact, canEditIdentity, onDone, onCancel }: { contact: ContactRecordContact; canEditIdentity: boolean; onDone: () => void; onCancel: () => void }) {
+function IdentityEdit({ contact, canEditIdentity, customFields, onDone, onCancel }: { contact: ContactRecordContact; canEditIdentity: boolean; customFields: ContactFieldDef[]; onDone: () => void; onCancel: () => void }) {
   const [showIdentity, setShowIdentity] = useState(false)
+  const [cf, setCf] = useState<Record<string, unknown>>(() => ({ ...(contact.custom_fields ?? {}) }))
+  const setCfVal = (k: string, v: unknown) => setCf((s) => ({ ...s, [k]: v }))
   const [f, setF] = useState({
     custom_name: contact.custom_name ?? "", email: contact.email ?? "", company: contact.company ?? "",
     doc_id: contact.doc_id ?? "", birth_date: contact.birth_date ?? "",
@@ -319,6 +340,7 @@ function IdentityEdit({ contact, canEditIdentity, onDone, onCancel }: { contact:
     start(async () => {
       const r = await updateContactInfo(contact.id, { ...f, birth_date: f.birth_date || null })
       if (r?.error) { setError(r.error); return }
+      if (customFields.length) { const c = await setContactCustomFields(contact.id, cf); if ("error" in c) { setError(c.error); return } }
       onDone()
     })
   }
@@ -380,6 +402,12 @@ function IdentityEdit({ contact, canEditIdentity, onDone, onCancel }: { contact:
           <L label="Origem do consentimento"><input value={f.consent_source} onChange={(e) => set("consent_source", e.target.value)} className={editInput} placeholder="Ex: formulário, verbal…" /></L>
         </EditGroup>
 
+        {customFields.length > 0 && (
+          <EditGroup label="Campos do negócio">
+            {customFields.map((cfd) => <CustomFieldEdit key={cfd.id} def={cfd} value={cf[cfd.key]} onChange={(v) => setCfVal(cfd.key, v)} />)}
+          </EditGroup>
+        )}
+
         {error && <p className="text-[11px] text-red-700 bg-red-50 border border-red-100 rounded-md px-2 py-1.5">{error}</p>}
         <div className="flex items-center justify-end gap-2 pt-1">
           <button type="button" onClick={onCancel} disabled={pending} className="h-8 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50">Cancelar</button>
@@ -390,6 +418,24 @@ function IdentityEdit({ contact, canEditIdentity, onDone, onCancel }: { contact:
       </div>
     </SectionCard>
   )
+}
+
+function CustomFieldEdit({ def, value, onChange }: { def: ContactFieldDef; value: unknown; onChange: (v: unknown) => void }) {
+  if (def.type === "bool") return (
+    <label className="flex items-center gap-2 text-xs text-slate-700">
+      <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked)} className="size-3.5 rounded border-slate-300 text-primary focus:ring-primary/20" /> {def.label}
+    </label>
+  )
+  if (def.type === "select") return (
+    <L label={def.label}>
+      <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} className={editInput}>
+        <option value="">—</option>
+        {(def.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </L>
+  )
+  const inputType = def.type === "number" ? "number" : def.type === "date" ? "date" : "text"
+  return <L label={def.label}><input type={inputType} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} className={editInput} /></L>
 }
 
 function EditGroup({ label, children }: { label: string; children: React.ReactNode }) {

@@ -3,7 +3,9 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, applyVisibilityFilter } from "@/lib/visibility"
 import { ensurePipelineBootstrap } from "@/lib/actions/pipeline"
+import { hasModule } from "@/lib/modules"
 import { KanbanView } from "@/components/kanban/kanban-view"
+import type { DealPipeline } from "@/lib/actions/deals"
 
 export default async function KanbanPage({
   searchParams,
@@ -87,12 +89,13 @@ export default async function KanbanPage({
       pipeline_id, stage_id, card_position, stage_entered_at,
       estimated_value, expected_close_date, lost_reason,
       won_at, lost_at,
-      assigned_to, instance_id,
+      assigned_to, instance_id, active_deal_id,
       chat_contacts (
         id, push_name, custom_name, phone_number, profile_pic_url, source, lifecycle_stage
       ),
       profiles ( full_name, email ),
-      whatsapp_instances!instance_id ( provider, display_name )
+      whatsapp_instances!instance_id ( provider, display_name ),
+      deal:tenant_deals!active_deal_id ( id, name, status, stage_id, pipeline_id, estimated_value, stage_entered_at, won_at, lost_at )
     `)
     .eq("tenant_id", tenantId)
     .eq("pipeline_id", currentPipeline.id)
@@ -105,6 +108,21 @@ export default async function KanbanPage({
   convQuery = applyVisibilityFilter(convQuery, scope)
 
   const { data: conversations } = await convQuery
+
+  // CRM ligado? → cards viram deal-aware + afford. "Abrir negócio". Trilhas (com etapas)
+  // pro dialog de novo negócio. Só carrega quando o módulo está habilitado.
+  const crmEnabled = await hasModule(tenantId, "crm")
+  let dealPipelines: DealPipeline[] = []
+  if (crmEnabled) {
+    const { data: dp } = await supabaseAdmin
+      .from("pipelines")
+      .select("id, name, is_default, pipeline_stages ( id, name, color, position, is_won, is_lost, show_in_kanban )")
+      .eq("tenant_id", tenantId).eq("active", true).order("position")
+    dealPipelines = ((dp ?? []) as Record<string, unknown>[]).map((p) => ({
+      id: p.id as string, name: p.name as string, is_default: !!p.is_default,
+      stages: ((p.pipeline_stages as DealPipeline["stages"] | null) ?? []).slice().sort((a, b) => a.position - b.position),
+    }))
+  }
 
   return (
     <KanbanView
@@ -121,6 +139,8 @@ export default async function KanbanPage({
       showChannel={showChannel}
       tenantId={tenantId}
       supabaseToken={session.user.supabaseToken}
+      crmEnabled={crmEnabled}
+      dealPipelines={dealPipelines}
     />
   )
 }

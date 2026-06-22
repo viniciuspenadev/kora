@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import Link from "next/link"
 import { ContatosList } from "@/components/chat/contatos-list"
 import { NewContactButton } from "@/components/chat/new-contact-dialog"
-import { Contact } from "lucide-react"
+import { Contact, UploadCloud } from "lucide-react"
 
 export default async function ContatosPage() {
   const session = await auth()
@@ -64,6 +65,11 @@ export default async function ContatosPage() {
               {total} {total === 1 ? "contato" : "contatos"} · {withTags} com tags
             </p>
           </div>
+          {["owner", "admin"].includes(session.user.role) && (
+            <Link href="/contatos/importar" className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg transition-colors shrink-0">
+              <UploadCloud className="size-3.5" /> Importar
+            </Link>
+          )}
           <NewContactButton />
         </div>
       </div>

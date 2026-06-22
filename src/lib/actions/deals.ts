@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
-import { createDeal } from "@/lib/crm/deals"
+import { createDeal, syncContactLifecycleFromDeal } from "@/lib/crm/deals"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM Negócios — Server actions (Fase 1)
@@ -432,14 +432,9 @@ export async function moveDealById(dealId: string, stageId: string, lostReason?:
   const status = st.is_won ? "won" : st.is_lost ? "lost" : "open"
   await supabaseAdmin.from("tenant_deals").update({ pipeline_id: st.pipeline_id, stage_id: st.id, status, won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null, lost_reason: st.is_lost ? (lostReason?.trim() || null) : null, stage_entered_at: now, updated_at: now }).eq("id", dealId).eq("tenant_id", t)
   await supabaseAdmin.from("tenant_deal_events").insert({ tenant_id: t, deal_id: dealId, type: status === "open" ? "stage_changed" : status, from_stage: (deal as { stage_id: string | null }).stage_id, to_stage: st.id, by: session.user.id })
-  // Negócio ganho → contato vira CLIENTE (eixo de relacionamento, nunca rebaixa). Doc §5.
-  // Perdido NÃO marca a pessoa. Idempotente via .neq (não reescreve quem já é customer).
-  const wonContactId = (deal as { contact_id: string | null }).contact_id
-  if (st.is_won && wonContactId) {
-    await supabaseAdmin.from("chat_contacts")
-      .update({ lifecycle_stage: "customer", lifecycle_changed_at: now, updated_at: now })
-      .eq("id", wonContactId).eq("tenant_id", t).neq("lifecycle_stage", "customer")
-  }
+  // Lifecycle do contato: ganho→Cliente · aberto/trabalho→Lead · perdido→não-mexe (nunca rebaixa). Doc §5.
+  const moveContactId = (deal as { contact_id: string | null }).contact_id
+  if (moveContactId) await syncContactLifecycleFromDeal(t, moveContactId, st)
   return { ok: true }
 }
 
@@ -470,6 +465,7 @@ export interface ContactRecordContact {
   address_complement: string | null; address_district: string | null; address_city: string | null
   address_state: string | null; address_country: string | null
   consent_opt_in: boolean | null; consent_at: string | null; consent_source: string | null; marketing_opt_in: boolean | null
+  custom_fields: Record<string, unknown> | null
 }
 export interface ContactConversation {
   id: string; status: string; channel: string | null
@@ -568,7 +564,7 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
   const t = session.user.tenantId
 
   const { data: c } = await supabaseAdmin.from("chat_contacts")
-    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in")
+    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in, custom_fields")
     .eq("id", contactId).eq("tenant_id", t).maybeSingle()
   if (!c) return { error: "Contato não encontrado" }
 
@@ -660,18 +656,22 @@ export async function moveDeal(conversationId: string, dealId: string, stageId: 
     stage_entered_at: now, updated_at: now,
   }).eq("id", dealId).eq("tenant_id", tenantId)
 
+  // moveDeal SEMPRE torna este o negócio ATIVO da conversa → espelha a etapa dele de volta
+  // (mantém conv.stage_id == etapa do negócio ativo, pro board posicionar o card certo E pros
+  // relatórios de funil — que ainda leem as colunas de pipeline da conversa até a F3.4 — baterem).
   await supabaseAdmin.from("chat_conversations")
-    .update({ active_deal_id: dealId }).eq("id", conversationId).eq("tenant_id", tenantId)
+    .update({
+      active_deal_id: dealId,
+      pipeline_id: st.pipeline_id, stage_id: st.id,
+      won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null,
+      stage_entered_at: now, updated_at: now,
+    }).eq("id", conversationId).eq("tenant_id", tenantId)
 
   await supabaseAdmin.from("tenant_deal_events").insert({
     tenant_id: tenantId, deal_id: dealId, type: status === "open" ? "stage_changed" : status,
     from_stage: fromStage, to_stage: st.id, by: session.user.id,
   })
-  // Negócio ganho → contato vira CLIENTE (nunca rebaixa). Doc §5.
-  if (st.is_won) {
-    await supabaseAdmin.from("chat_contacts")
-      .update({ lifecycle_stage: "customer", lifecycle_changed_at: now, updated_at: now })
-      .eq("id", conv.contact_id).eq("tenant_id", tenantId).neq("lifecycle_stage", "customer")
-  }
+  // Lifecycle do contato: ganho→Cliente · aberto/trabalho→Lead · perdido→não-mexe (nunca rebaixa). Doc §5.
+  await syncContactLifecycleFromDeal(tenantId, conv.contact_id, st)
   return { ok: true }
 }

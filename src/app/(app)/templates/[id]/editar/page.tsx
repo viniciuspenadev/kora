@@ -35,6 +35,14 @@ export default async function EditTemplatePage({ params }: { params: Promise<{ i
   if (!r.ok || !r.template) redirect(`/templates/${id}`)
   const template = r.template
 
+  // Propósito (categoria interna) atual — passado pro builder pra NÃO ser apagado ao salvar.
+  const { data: waRow } = await supabaseAdmin
+    .from("wa_templates")
+    .select("kora_category")
+    .eq("tenant_id", session.user.tenantId)
+    .eq("name", template.name).eq("language", template.language)
+    .maybeSingle()
+
   const locked = !EDITABLE.includes(template.status?.toUpperCase())
 
   return (
@@ -60,7 +68,7 @@ export default async function EditTemplatePage({ params }: { params: Promise<{ i
           </span>
         </div>
       )}
-      <EditTemplateClient id={id} template={template} />
+      <EditTemplateClient id={id} template={template} koraCategory={(waRow?.kora_category as string | null) ?? null} />
     </PageShell>
   )
 }

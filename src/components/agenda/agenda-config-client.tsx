@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
 import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageSquare, ChevronRight, X, Loader2, Sparkles, CheckCircle2 } from "lucide-react"
@@ -15,12 +15,13 @@ import { varsForContext, withAliases } from "@/lib/variables/registry"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog"
+import { WhatsAppPreview } from "@/components/ui/whatsapp-preview"
 import {
   createResource, updateResource, createService, updateService, setAgendaRemindersEnabled,
   activateAgendaConfirmTemplate,
   type ResourceRow, type ServiceRow,
 } from "@/lib/actions/agenda"
-import type { AgendaTemplateStatus } from "@/lib/agenda/official-template"
+import type { AgendaTemplateStatus, ApprovedTemplateOption } from "@/lib/agenda/official-template"
 import type { WorkingHoursDay } from "@/lib/agenda/availability"
 
 interface Agent { id: string; name: string }
@@ -51,11 +52,11 @@ function workingHoursToDays(wh: WorkingHoursDay[]): Record<number, DayState> {
 }
 
 export function AgendaConfigClient({
-  initialResources, initialServices, agents, remindersEnabled, remindersModule, isMeta, confirmStatus,
+  initialResources, initialServices, agents, remindersEnabled, remindersModule, isMeta, confirmStatus, approvedTemplates,
 }: {
   initialResources: ResourceRow[]; initialServices: ServiceRow[]; agents: Agent[]
   remindersEnabled: boolean; remindersModule: boolean
-  isMeta: boolean; confirmStatus: AgendaTemplateStatus
+  isMeta: boolean; confirmStatus: AgendaTemplateStatus; approvedTemplates: ApprovedTemplateOption[]
 }) {
   const [resources, setResources] = useState(initialResources)
   const [services, setServices]   = useState(initialServices)
@@ -215,6 +216,7 @@ export function AgendaConfigClient({
           remindersModule={remindersModule}
           isMeta={isMeta}
           confirmStatus={confirmStatus}
+          approvedTemplates={approvedTemplates}
           onPremiumCta={premiumCta}
           onClose={() => setEditSvc(null)}
           onSaved={(row) => {
@@ -380,9 +382,9 @@ const BUFFERS = [0, 5, 10, 15, 20, 30, 45, 60]
 const MSG_VARS = varsForContext("agenda").map((v) => ({ token: `{{${v.token}}}`, label: v.label }))
 const DEFAULT_MSG = "Olá {{nome}}! Seu horário de {{servico}} está marcado para {{data}} às {{hora}}. Até lá 😊"
 
-function ServiceDialog({ service, resources, remindersModule, isMeta, confirmStatus, onPremiumCta, onClose, onSaved }: {
+function ServiceDialog({ service, resources, remindersModule, isMeta, confirmStatus, approvedTemplates, onPremiumCta, onClose, onSaved }: {
   service: ServiceRow | null; resources: ResourceRow[]
-  remindersModule: boolean; isMeta: boolean; confirmStatus: AgendaTemplateStatus; onPremiumCta: () => void
+  remindersModule: boolean; isMeta: boolean; confirmStatus: AgendaTemplateStatus; approvedTemplates: ApprovedTemplateOption[]; onPremiumCta: () => void
   onClose: () => void; onSaved: (s: ServiceRow) => void
 }) {
   const [name, setName] = useState(service?.name ?? "")
@@ -541,13 +543,12 @@ function ServiceDialog({ service, resources, remindersModule, isMeta, confirmSta
                     ))}
                   </div>
                 )}
-                {editing ? (
-                  <ReminderEditor draft={editing.draft} exampleVars={exampleVars} isMeta={isMeta} confirmStatus={confirmStatus}
+                <button type="button" onClick={() => setEditing({ index: null, draft: { offset_minutes: -1440, text: "", requestConfirmation: isMeta || undefined } })}
+                  className="text-xs font-medium text-primary-600 hover:text-primary-700">+ Adicionar lembrete</button>
+                {editing && (
+                  <ReminderEditorDialog draft={editing.draft} exampleVars={exampleVars} isMeta={isMeta} confirmStatus={confirmStatus} approvedTemplates={approvedTemplates}
                     onChange={(d) => setEditing({ ...editing, draft: d })}
                     onSave={saveReminder} onCancel={() => setEditing(null)} />
-                ) : (
-                  <button type="button" onClick={() => setEditing({ index: null, draft: { offset_minutes: -1440, text: "", requestConfirmation: isMeta || undefined } })}
-                    className="text-xs font-medium text-primary-600 hover:text-primary-700">+ Adicionar lembrete</button>
                 )}
               </div>
             </div>
@@ -631,54 +632,167 @@ const REMINDER_WHENS = [
 function whenLabel(off: number): string {
   return REMINDER_WHENS.find((w) => w.v === off)?.l ?? `${Math.abs(off)} min antes`
 }
-interface Reminder { offset_minutes: number; text: string; requestConfirmation?: boolean }
+interface Reminder { offset_minutes: number; text: string; requestConfirmation?: boolean; templateName?: string }
 
-function ReminderEditor({ draft, exampleVars, isMeta, confirmStatus, onChange, onSave, onCancel }: {
+const SYSTEM_AGENDA_TEMPLATE = "kora_agenda_confirmacao"
+// Preenche o corpo do template escolhido com os valores de exemplo (prévia).
+// Espelha o agendaValueFor do servidor (official-template.ts).
+function fillAgendaTemplate(opt: ApprovedTemplateOption, v: Record<string, string>): string {
+  const val = (key: string) => {
+    const k = key.toLowerCase()
+    if (/nome|contato|cliente/.test(k))        return v.nome || "cliente"
+    if (/servico|serviço|atendimento/.test(k)) return v.servico || "atendimento"
+    if (/data|dia/.test(k))                    return v.data || "—"
+    if (/hora/.test(k))                        return v.hora || "—"
+    if (/recurso|profissional/.test(k))        return v.recurso || ""
+    return v[key] ?? `{{${key}}}`
+  }
+  if (opt.named) return opt.body.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, (_, k) => val(k))
+  const order = [v.nome, v.servico, v.data, v.hora, v.recurso]
+  return opt.body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_, n) => order[Number(n) - 1] ?? `{{${n}}}`)
+}
+
+// Modal DEDICADO de lembrete — abre por cima do modal do serviço (sua visualização não
+// fica confusa). 2 veículos com PREVIEW: janela aberta (texto+botões grátis) · janela
+// fechada (template). O runtime já roteia por janela (sendAgendaConfirm).
+function ReminderEditorDialog({ draft, exampleVars, isMeta, confirmStatus, approvedTemplates, onChange, onSave, onCancel }: {
   draft: Reminder; exampleVars: Record<string, string>
-  isMeta: boolean; confirmStatus: AgendaTemplateStatus
+  isMeta: boolean; confirmStatus: AgendaTemplateStatus; approvedTemplates: ApprovedTemplateOption[]
   onChange: (d: Reminder) => void; onSave: () => void; onCancel: () => void
 }) {
-  return (
-    <div className="rounded-lg border border-primary-200 bg-primary-50/30 p-2.5 space-y-2.5">
-      <div>
-        <span className="text-[11px] font-medium text-slate-500">Quando avisar o cliente</span>
-        <div className="mt-1 flex flex-wrap gap-1.5">
-          {REMINDER_WHENS.map((w) => (
-            <Chip key={w.v} active={draft.offset_minutes === w.v} onClick={() => onChange({ ...draft, offset_minutes: w.v })}>{w.l}</Chip>
-          ))}
-        </div>
-      </div>
+  const v = exampleVars
+  const [showResched, setShowResched] = useState(false)
+  const confirmButtons = ["Confirmar", "Remarcar"]
+  const buttons = draft.requestConfirmation ? confirmButtons : undefined
+  const defaultAnchor = `Olá ${v.nome || "cliente"}! Passando pra confirmar seu horário 👋\n\n📅 *${v.servico || "atendimento"}*\n🗓️ ${v.data || "—"} às ${v.hora || "—"}\n\nPosso confirmar?`
+  const inWindowBody = renderTemplate(draft.text, v).trim() || (draft.requestConfirmation ? defaultAnchor : "(sua mensagem aparece aqui)")
+  const templateBody = `Olá ${v.nome || "cliente"}! Confirmando seu ${v.servico || "atendimento"} em ${v.data || "—"} às ${v.hora || "—"}. Posso confirmar?`
+  const canSave = draft.text.trim().length > 0 || (draft.requestConfirmation ?? false)
 
-      {isMeta ? (
-        // Canal oficial: o lembrete sai fora da janela 24h → SÓ via template aprovado.
-        // Sem texto livre (falharia calado); o veículo é o modelo de confirmação.
-        <MetaReminderTemplate confirmStatus={confirmStatus} />
-      ) : (
-        <>
+  // Seletor de template (fora da janela): só APROVADOS na categoria "Agenda" — inclui o
+  // do sistema (kora_agenda_confirmacao, que já nasce com kora_category="agenda").
+  const agendaTemplates = approvedTemplates.filter((t) => t.koraCategory === "agenda")
+  const defaultTplName  = agendaTemplates.some((t) => t.name === SYSTEM_AGENDA_TEMPLATE)
+    ? SYSTEM_AGENDA_TEMPLATE : (agendaTemplates[0]?.name ?? "")
+  const selectedName    = draft.templateName || defaultTplName
+  const isSystemSel     = !selectedName || selectedName === SYSTEM_AGENDA_TEMPLATE
+  const selectedTpl     = agendaTemplates.find((t) => t.name === selectedName) ?? null
+  // Template do sistema → prévia fixa (no envio ele usa params hardcoded, não o cache);
+  // só os customizados leem a estrutura real do cache.
+  const tplBody         = (selectedTpl && !isSystemSel) ? fillAgendaTemplate(selectedTpl, v) : templateBody
+  const tplButtons      = (selectedTpl && !isSystemSel)
+    ? (selectedTpl.quickReplies >= 2 ? confirmButtons : selectedTpl.quickReplies === 1 ? ["Confirmar"] : undefined)
+    : confirmButtons
+
+  // WYSIWYG: só na CONFIRMAÇÃO (único caminho que usa template), fixa a escolha no draft.
+  useEffect(() => {
+    if (draft.requestConfirmation && agendaTemplates.length > 0 && !draft.templateName && defaultTplName) {
+      onChange({ ...draft, templateName: defaultTplName })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onCancel() }}>
+      {/* z-[60]: empilha acima do modal do serviço (z-50) — overlay fosco cobre o que está atrás.
+          Layout: header/footer fixos, corpo rola; largura folgada e colunas que empilham no estreito. */}
+      <DialogContent className="z-[60] flex max-h-[88vh] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl lg:max-w-4xl">
+        <DialogHeader className="border-b border-slate-100 px-6 py-4">
+          <DialogTitle>Lembrete antes do horário</DialogTitle>
+          <DialogDescription>Quando avisar + como a mensagem chega na tela do cliente — dentro e fora da janela de 24h.</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
           <div>
-            <span className="text-[11px] font-medium text-slate-500">Mensagem</span>
-            <div className="mt-1">
-              <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={exampleVars}
-                placeholder="Ex: Oi {{nome}}, seu horário é {{data}} às {{hora}}!" />
+            <span className="text-xs font-medium text-slate-500">Quando avisar o cliente</span>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {REMINDER_WHENS.map((w) => <Chip key={w.v} active={draft.offset_minutes === w.v} onClick={() => onChange({ ...draft, offset_minutes: w.v })}>{w.l}</Chip>)}
             </div>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
-            <Switch
-              checked={draft.requestConfirmation ?? false}
-              onChange={(v) => onChange({ ...draft, requestConfirmation: v })}
-              size="sm"
-              label="Pedir confirmação ao cliente"
-              description="O cliente responde Confirmar / Remarcar — e o status muda sozinho (sem precisar de IA)."
-            />
-          </div>
-        </>
-      )}
 
-      <div className="flex justify-end gap-2">
-        <Button size="sm" variant="ghost" onClick={onCancel}>Cancelar</Button>
-        <Button size="sm" onClick={onSave} disabled={isMeta ? false : !draft.text.trim()}>Salvar lembrete</Button>
-      </div>
-    </div>
+          {isMeta ? (
+            <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
+              {/* Janela aberta */}
+              <div className="space-y-3 rounded-xl border border-slate-200 p-4">
+                <p className="text-xs font-semibold text-emerald-700">🟢 Janela aberta · texto + botões (grátis)</p>
+                <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={v} placeholder="Ex: Oi {{nome}}, confirmando seu horário…" />
+                <Switch checked={draft.requestConfirmation ?? false} onChange={(x) => onChange({ ...draft, requestConfirmation: x })} size="sm" label="Pedir confirmação (botões Confirmar/Remarcar)" />
+                <WhatsAppPreview body={inWindowBody} buttons={buttons} badge="Dentro da janela · grátis" />
+              </div>
+              {/* Janela fechada */}
+              <div className="space-y-3 rounded-xl border border-slate-200 p-4">
+                <p className="text-xs font-semibold text-slate-600">🔒 Janela fechada · modelo aprovado</p>
+
+                {agendaTemplates.length > 0 ? (
+                  <>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium text-slate-500">Modelo a enviar</label>
+                      <select value={selectedName} onChange={(e) => onChange({ ...draft, templateName: e.target.value })}
+                        className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40">
+                        {agendaTemplates.map((t) => (
+                          <option key={t.name} value={t.name}>{t.name === SYSTEM_AGENDA_TEMPLATE ? `${t.name} · do sistema` : t.name}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-400">Só modelos <strong>aprovados</strong> na categoria <strong>Agenda</strong>.</p>
+                    </div>
+                    {selectedTpl && !isSystemSel && selectedTpl.quickReplies < 2 && (
+                      <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+                        ⚠️ Este modelo não tem os botões <strong>Confirmar/Remarcar</strong> — o lembrete é enviado, mas <strong>sem confirmação automática</strong>.
+                      </p>
+                    )}
+                    <WhatsAppPreview variant="template" body={tplBody} buttons={tplButtons} badge="Fora da janela · ~R$0,035" />
+                  </>
+                ) : (
+                  <>
+                    <MetaReminderTemplate confirmStatus={confirmStatus} />
+                    <WhatsAppPreview variant="template" body={tplBody} buttons={tplButtons} badge="Fora da janela · ~R$0,035" />
+                  </>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3 rounded-xl border border-slate-200 p-4">
+              <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={v} placeholder="Ex: Oi {{nome}}, seu horário é {{data}} às {{hora}}!" />
+              <Switch checked={draft.requestConfirmation ?? false} onChange={(x) => onChange({ ...draft, requestConfirmation: x })} size="sm" label="Pedir confirmação ao cliente" description="O cliente responde Confirmar / Remarcar — status muda sozinho." />
+              <WhatsAppPreview body={inWindowBody} buttons={buttons} />
+            </div>
+          )}
+
+          {/* Ramo "Remarcar" — só faz sentido quando há confirmação (botão Remarcar existe).
+              Fica atrás de um botão pra não poluir; ao abrir, mostra o que o cliente vê
+              DEPOIS de tocar Remarcar (o sistema responde sozinho). */}
+          {draft.requestConfirmation && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+              <button type="button" onClick={() => setShowResched((s) => !s)}
+                className="flex w-full items-center justify-between gap-2 text-left">
+                <span className="text-xs font-semibold text-slate-600">↩️ E se o cliente tocar em <span className="text-slate-800">Remarcar</span>?</span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-700">
+                  {showResched ? "Ocultar" : "Ver como fica"}
+                  <ChevronRight className={`size-3.5 transition-transform ${showResched ? "rotate-90" : ""}`} />
+                </span>
+              </button>
+              {showResched && (
+                <div className="mt-3 space-y-3">
+                  <p className="text-[11px] leading-relaxed text-slate-500">
+                    O sistema responde <strong>sozinho</strong> com os próximos horários livres (respeita jornada, duração e bloqueios). O cliente escolhe um → o horário é <strong>remarcado na hora</strong> e o atendente é avisado. Se nenhum servir, cai pra um atendente.
+                  </p>
+                  <WhatsAppPreview
+                    body="Estes são os próximos horários livres:"
+                    list={{ buttonText: "Ver horários", rows: ["sex 12/06 às 14h00", "sex 12/06 às 15h30", "seg 15/06 às 09h00", "Ver outros dias"] }}
+                    badge="Resposta automática"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter className="mx-0 mb-0 px-6 py-4">
+          <Button variant="ghost" onClick={onCancel}>Cancelar</Button>
+          <Button onClick={onSave} disabled={!canSave}>Salvar lembrete</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -745,7 +859,7 @@ function MetaReminderTemplate({ confirmStatus }: { confirmStatus: AgendaTemplate
 }
 
 // ── reminder_policy helpers ──────────────────────────────────
-interface PolicyStep { offset_minutes?: number; audience?: string; channel?: string; text?: string; request_confirmation?: boolean }
+interface PolicyStep { offset_minutes?: number; audience?: string; channel?: string; text?: string; request_confirmation?: boolean; template_name?: string }
 function readNotifyStep(service: ServiceRow | null): string {
   const steps = (service?.reminder_policy as { steps?: PolicyStep[] } | undefined)?.steps ?? []
   return steps.find((s) => (s.offset_minutes ?? 0) === 0 && (s.audience ?? "customer") !== "agent")?.text ?? ""
@@ -754,7 +868,7 @@ function readReminders(service: ServiceRow | null): Reminder[] {
   const steps = (service?.reminder_policy as { steps?: PolicyStep[] } | undefined)?.steps ?? []
   // Lembretes são só pro CLIENTE (a consciência do atendente é a tela "Hoje").
   return steps.filter((s) => (s.offset_minutes ?? 0) < 0 && (s.audience ?? "customer") !== "agent")
-    .map((s) => ({ offset_minutes: s.offset_minutes ?? -60, text: s.text ?? "", requestConfirmation: s.request_confirmation === true }))
+    .map((s) => ({ offset_minutes: s.offset_minutes ?? -60, text: s.text ?? "", requestConfirmation: s.request_confirmation === true, templateName: s.template_name || undefined }))
     .sort((a, b) => a.offset_minutes - b.offset_minutes)
 }
 /** Compõe a reminder_policy: "ao agendar" (offset 0) + lembretes (offset<0), todos pro cliente. */
@@ -763,7 +877,7 @@ function buildPolicy(service: ServiceRow | null, msg: string, reminders: Reminde
   const steps: PolicyStep[] = []
   if (msg.trim()) steps.push({ offset_minutes: 0, audience: "customer", channel: "whatsapp", text: msg.trim() })
   for (const r of reminders) {
-    steps.push({ offset_minutes: r.offset_minutes, audience: "customer", channel: "whatsapp", text: r.text.trim() || undefined, request_confirmation: r.requestConfirmation || undefined })
+    steps.push({ offset_minutes: r.offset_minutes, audience: "customer", channel: "whatsapp", text: r.text.trim() || undefined, request_confirmation: r.requestConfirmation || undefined, template_name: (r.requestConfirmation && r.templateName) || undefined })
   }
   return { ...prev, steps }
 }

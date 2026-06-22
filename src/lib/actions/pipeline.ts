@@ -14,10 +14,11 @@ const KANBAN_CARD_SELECT = `
   last_message_at, last_message_preview, last_message_dir, unread_count,
   pipeline_id, stage_id, card_position, department_id, stage_entered_at,
   estimated_value, expected_close_date, lost_reason, won_at, lost_at,
-  assigned_to, instance_id,
+  assigned_to, instance_id, active_deal_id,
   chat_contacts ( id, push_name, custom_name, phone_number, profile_pic_url, source, lifecycle_stage ),
   profiles ( full_name, email ),
-  whatsapp_instances!instance_id ( provider, display_name )
+  whatsapp_instances!instance_id ( provider, display_name ),
+  deal:tenant_deals!active_deal_id ( id, name, status, stage_id, pipeline_id, estimated_value, stage_entered_at, won_at, lost_at )
 `
 
 /**

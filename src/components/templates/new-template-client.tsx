@@ -11,6 +11,7 @@ function blueprintInitial(id: string): BuilderInitial | undefined {
   return {
     name:          bp.name,
     category:      bp.metaCategory === "MARKETING" ? "MARKETING" : "UTILITY",
+    koraCategory:  bp.koraCategory,   // a Biblioteca já sabe o propósito → vem pré-setado
     language:      bp.language,
     varMode:       "name",   // blueprints usam variáveis nomeadas ({{nome}})
     headerText:    "",

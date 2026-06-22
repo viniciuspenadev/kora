@@ -10,6 +10,7 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { parseVars, type TemplateVar } from "@/lib/whatsapp/template-vars"
 import { upsertTemplateCache } from "@/lib/channels/template-cache"
+import type { KoraCategory } from "@/lib/templates/library"
 import { requireLimit } from "@/lib/limits"
 import { revalidatePath } from "next/cache"
 
@@ -188,6 +189,7 @@ export interface TemplateButton { type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; 
 export interface TemplateInput {
   name: string
   category: "MARKETING" | "UTILITY"
+  koraCategory?: KoraCategory | null   // categoria INTERNA do Kora (propósito) — não vai à Meta
   language: string
   parameterFormat?: "NAMED" | "POSITIONAL"   // seleção do usuário; vai à Meta como parameter_format
   headerText?:    string
@@ -273,6 +275,41 @@ function validateTemplateInput(input: TemplateInput): { error: string } | { buil
   }
 }
 
+/**
+ * Categoria INTERNA do Kora (etiqueta de propósito: agenda/atendimento/…). É só nossa
+ * — não existe na Graph e NÃO afeta aprovação da Meta. Persiste no cache `wa_templates`
+ * (upsert parcial keyed tenant+name+language; o sync da Graph nunca apaga essa coluna).
+ * Best-effort: nunca lança.
+ */
+async function persistKoraCategory(tenantId: string, name: string, language: string, koraCategory: KoraCategory | null): Promise<void> {
+  try {
+    const { data: inst } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id, meta_business_account_id")
+      .eq("tenant_id", tenantId).eq("provider", "meta_cloud")
+      .order("created_at", { ascending: true }).limit(1).maybeSingle()
+    await supabaseAdmin.from("wa_templates").upsert({
+      tenant_id: tenantId, instance_id: inst?.id ?? null, waba_id: inst?.meta_business_account_id ?? null,
+      name, language, kora_category: koraCategory, updated_at: new Date().toISOString(),
+    }, { onConflict: "tenant_id,name,language" })
+  } catch (e) {
+    console.error("[wa] persistKoraCategory", (e as Error).message)
+  }
+}
+
+/** Define/limpa a categoria interna (propósito) de um template. owner/admin. Sem round-trip Meta. */
+export async function setTemplateKoraCategory(input: { name: string; language: string; koraCategory: KoraCategory | null }): Promise<Result> {
+  const session = await auth()
+  if (!session) return { ok: false, error: "Não autenticado." }
+  if (!["owner", "admin"].includes(session.user.role)) return { ok: false, error: "Acesso restrito a administradores." }
+  const name = input.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_")
+  if (!name) return { ok: false, error: "Template inválido." }
+  await persistKoraCategory(session.user.tenantId, name, input.language, input.koraCategory)
+  revalidatePath(PAGE)
+  revalidatePath("/templates")
+  return { ok: true }
+}
+
 export async function createOfficialTemplate(input: TemplateInput): Promise<Result> {
   const r = await tenantMetaProvider()
   if ("error" in r) return { ok: false, error: r.error }
@@ -282,6 +319,11 @@ export async function createOfficialTemplate(input: TemplateInput): Promise<Resu
 
   try {
     const res = await r.provider.createTemplate(v.build)
+    // Propósito (categoria interna) — persiste no cache, fora do round-trip Meta.
+    if (input.koraCategory !== undefined) {
+      const session = await auth()
+      if (session) await persistKoraCategory(session.user.tenantId, v.build.name, v.build.language, input.koraCategory)
+    }
     revalidatePath(PAGE)
     return { ok: true, id: res.id }
   } catch (e) {
@@ -303,6 +345,10 @@ export async function editOfficialTemplate(input: TemplateInput & { templateId: 
 
   try {
     await r.provider.editTemplate(input.templateId, v.build)
+    if (input.koraCategory !== undefined) {
+      const session = await auth()
+      if (session) await persistKoraCategory(session.user.tenantId, v.build.name, v.build.language, input.koraCategory)
+    }
     revalidatePath(PAGE)
     return { ok: true, id: input.templateId }
   } catch (e) {

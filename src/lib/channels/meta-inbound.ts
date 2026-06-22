@@ -588,9 +588,12 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
             const baseline = await latestInboundAt(convId)
             await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
             if ((await latestInboundAt(convId)) !== baseline) return
-            // "digitando…" honesto: só quando vamos de fato gerar resposta.
-            try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ }
-            const ai = await routeAutomationTurn({ tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance })
+            // "digitando…" honesto: enviado pelo onWillRespond, SÓ depois dos gates da IA
+            // (humano ativo / IA off / já roteada) — nunca fantasma.
+            const ai = await routeAutomationTurn({
+              tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance,
+              onWillRespond: async () => { try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ } },
+            })
             if (ai.status === "responded" || ai.status === "routed") return
             if (ai.status === "skipped" && ai.reason === "already_routed") return
           }

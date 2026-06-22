@@ -44,6 +44,19 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
     error = (e as Error).message
   }
 
+  // Categoria interna do Kora (agenda/atendimento/…) — vive no cache local, não na Graph.
+  // Mapeia por nome (lower) pra colar na lista vinda da Meta.
+  const { data: waRows } = await supabaseAdmin
+    .from("wa_templates")
+    .select("name, language, kora_category")
+    .eq("tenant_id", session.user.tenantId)
+  // Chave por nome+idioma (a linha é única por tenant+name+language) — evita um idioma
+  // sobrescrever o badge do outro quando o mesmo nome existe em 2 línguas.
+  const koraByName: Record<string, string> = {}
+  for (const r of waRows ?? []) {
+    if (r.kora_category) koraByName[`${(r.name as string).toLowerCase()}|${r.language}`] = r.kora_category as string
+  }
+
   // Visitar a lista atualiza o cache local (status/qualidade) — fire-and-forget.
   // tenantId resolvido AQUI (fora do after) — headers()/auth() não rodam dentro de after().
   after(() => syncTemplatesCacheFor(session.user.tenantId))
@@ -54,7 +67,7 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
       description="Modelos de mensagem da sua linha oficial — crie, monitore e gerencie."
       icon={FileText}
     >
-      <TemplatesClient templates={templates} error={error} created={created === "1"} />
+      <TemplatesClient templates={templates} error={error} created={created === "1"} koraByName={koraByName} />
     </PageShell>
   )
 }

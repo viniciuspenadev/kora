@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   GripVertical, Clock, AlertCircle, Trophy, XCircle,
-  Phone, DollarSign, Calendar, Loader2,
+  Phone, DollarSign, Calendar, Loader2, Briefcase, Plus,
   ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
 } from "lucide-react"
 import {
@@ -13,10 +13,12 @@ import {
   type DragStartEvent, type DragEndEvent, type DraggableAttributes,
 } from "@dnd-kit/core"
 import { moveConversation, getManagementCards } from "@/lib/actions/pipeline"
+import { moveDeal, type DealPipeline } from "@/lib/actions/deals"
 import { getRealtimeClient } from "@/lib/realtime"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { SourceLogo } from "@/components/chat/source-logo"
+import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 
 interface Stage {
   id:              string
@@ -37,6 +39,19 @@ interface ChatContact {
   profile_pic_url: string | null
   source:          string | null
   lifecycle_stage: string | null
+}
+
+/** Negócio ativo embedado na conversa (left-join). Quando presente, manda no card. */
+interface DealMini {
+  id:               string
+  name:             string | null
+  status:           string
+  stage_id:         string | null
+  pipeline_id:      string | null
+  estimated_value:  number | null
+  stage_entered_at: string | null
+  won_at:           string | null
+  lost_at:          string | null
 }
 
 interface Conversation {
@@ -61,6 +76,8 @@ interface Conversation {
   assigned_to:          string | null
   department_id:        string | null
   instance_id:          string | null
+  active_deal_id:       string | null
+  deal:                 DealMini | null
   chat_contacts:        ChatContact | null
   profiles:             { full_name: string | null; email: string } | null
   whatsapp_instances:   { provider: string | null; display_name: string | null } | null
@@ -87,6 +104,9 @@ interface Props {
   departments?:  DeptMini[]
   tenantId:      string
   supabaseToken: string
+  /** CRM ligado → cards deal-aware + afford. "Abrir negócio". */
+  crmEnabled?:   boolean
+  dealPipelines?: DealPipeline[]
 }
 
 // Atualiza os campos escalares de um card a partir da row crua do Realtime
@@ -113,6 +133,11 @@ function mergeCardScalars(existing: Conversation, row: Conversation): Conversati
 }
 
 const BRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+
+// Valor "efetivo" do card: do negócio quando há um; senão da conversa (legado/fallback).
+export function effectiveValue(c: { deal?: DealMini | null; estimated_value: number | null }): number {
+  return Number((c.deal ? c.deal.estimated_value : c.estimated_value) ?? 0)
+}
 
 function formatPhone(phone: string) {
   const clean = phone.replace(/\D/g, "")
@@ -165,7 +190,7 @@ export function cardMatchesFilters(c: Conversation, f: KanbanFilters): boolean {
 
 function sortCards(list: Conversation[], sort: SortKey): Conversation[] {
   const arr = [...list]
-  if (sort === "value") return arr.sort((a, b) => Number(b.estimated_value ?? 0) - Number(a.estimated_value ?? 0))
+  if (sort === "value") return arr.sort((a, b) => effectiveValue(b) - effectiveValue(a))
   if (sort === "stale") {
     const t = (c: Conversation) => new Date(c.stage_entered_at ?? c.last_message_at ?? 0).getTime()
     return arr.sort((a, b) => t(a) - t(b))   // mais antigo primeiro = parado há mais tempo
@@ -178,11 +203,12 @@ function sortCards(list: Conversation[], sort: SortKey): Conversation[] {
   })
 }
 
-export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false, groupBy, filters = { search: "", agentId: null, instanceId: null }, sort = "recent", agents = [], departments = [], tenantId, supabaseToken }: Props) {
+export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false, groupBy, filters = { search: "", agentId: null, instanceId: null }, sort = "recent", agents = [], departments = [], tenantId, supabaseToken, crmEnabled = false, dealPipelines = [] }: Props) {
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
   const [activeId, setActiveId]       = useState<string | null>(null)
   const [pending, startTransition]    = useTransition()
+  const [dealFor, setDealFor]         = useState<Conversation | null>(null)   // afford. "Abrir negócio"
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   const [mgmtCards, setMgmtCards] = useState<Conversation[] | null>(null)
@@ -205,6 +231,9 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
   // Merge incremental in-place dos cards já carregados (move de coluna, atualiza
   // preview/valor; remove quando sai do board). Card NOVO/entrando → refresh
   // debounced (precisa dos embeds que o Realtime não traz). Fallback 60s.
+  // ⚠️ Só ouvimos `chat_conversations`. Edição de NOME/VALOR do negócio (escreve só em
+  // tenant_deals) não emite evento aqui → reflete no fallback 60s / navegação. OK p/ F1.1
+  // (mover negócio já espelha a conversa, então etapa/posição são instantâneos).
   const groupByRef  = useRef(groupBy);          groupByRef.current  = groupBy
   const stageIdsRef = useRef<string[]>([]);     stageIdsRef.current = stages.map((s) => s.id)
   const convsRef    = useRef(convs);            convsRef.current    = convs
@@ -249,7 +278,15 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
 
           const prev = gb === "stage" ? convsRef.current : mgmtRef.current
           if (prev == null) return                 // panorama ainda não carregado
-          const has = prev.some((c) => c.id === row.id)
+          const existing = prev.find((c) => c.id === row.id)
+          const has = !!existing
+
+          // Card ganhou/trocou/perdeu negócio ativo → o embed do deal só vem da query
+          // (o Realtime traz a row crua, sem join) → busca completa pra refletir o card.
+          if (has && qualifies && (row.active_deal_id ?? null) !== (existing!.active_deal_id ?? null)) {
+            scheduleRefresh()
+            return
+          }
 
           if (has) {
             const apply = (list: Conversation[]) => qualifies
@@ -317,10 +354,24 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     const c = convs.find((x) => x.id === cardId)
     if (!c || c.stage_id === stageId) return
     const newPos = cardsFor(stageId).length
-    setConvs((prev) => prev.map((x) => x.id === cardId ? { ...x, stage_id: stageId, card_position: newPos } : x))
+    // Otimista: move o card + alinha o stage do negócio embedado (quando há) pra a
+    // coluna não "pular" no re-render (o deal é a fonte do título/valor).
+    setConvs((prev) => prev.map((x) => x.id === cardId
+      ? { ...x, stage_id: stageId, card_position: newPos, deal: x.deal ? { ...x.deal, stage_id: stageId } : null }
+      : x))
     startTransition(async () => {
-      try { await moveConversation(cardId, stageId, newPos) }
-      catch (err) { setConvs(initial); alert((err as Error).message ?? "Erro ao mover") }
+      // Card COM negócio → move o NEGÓCIO (fonte da verdade; espelha etapa→conversa p/ relatórios).
+      // Card SEM negócio → move a conversa, como sempre.
+      const action = c.deal
+        ? moveDeal(c.id, c.deal.id, stageId).then((r) => { if ("error" in r) throw new Error(r.error) })
+        : moveConversation(cardId, stageId, newPos)
+      try { await action }
+      catch (err) {
+        // Reverte pela VERDADE do servidor (não pra `initial`, que perderia deltas do
+        // Realtime chegados desde o último SSR e poderia ressuscitar card removido).
+        alert((err as Error).message ?? "Erro ao mover")
+        router.refresh()
+      }
     })
   }
   const activeCard = activeId ? dataset.find((c) => c.id === activeId) ?? null : null
@@ -343,6 +394,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
                 readOnly={readOnly}
                 showChannel={showChannel}
                 dragging={!!activeId}
+                onOpenDeal={crmEnabled ? setDealFor : undefined}
               />
             ))}
           </div>
@@ -362,17 +414,29 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
       <DragOverlay dropAnimation={null}>
         {activeCard ? <ConversationCard conv={activeCard} showChannel={showChannel} overlay /> : null}
       </DragOverlay>
+
+      {dealFor && (
+        <NewDealDialog
+          conversationId={dealFor.id}
+          pipelines={dealPipelines}
+          contactName={dealFor.chat_contacts ? displayContactName(dealFor.chat_contacts) : "Contato"}
+          initialStageId={dealFor.stage_id ?? undefined}
+          onClose={() => setDealFor(null)}
+          onCreated={() => { setDealFor(null); router.refresh() }}
+        />
+      )}
     </DndContext>
   )
 }
 
 // ── Coluna droppable (dnd-kit) ──────────────────────────────────
-function KanbanColumn({ col, list, tinted, readOnly, showChannel, dragging }: {
+function KanbanColumn({ col, list, tinted, readOnly, showChannel, dragging, onOpenDeal }: {
   col: Column; list: Conversation[]; tinted: boolean; readOnly: boolean; showChannel: boolean; dragging: boolean
+  onOpenDeal?: (c: Conversation) => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.key, disabled: readOnly })
   const StageIcon = col.stage?.is_won ? Trophy : col.stage?.is_lost ? XCircle : null
-  const total     = list.reduce((s, c) => s + Number(c.estimated_value ?? 0), 0)
+  const total     = list.reduce((s, c) => s + effectiveValue(c), 0)
   const highlight = isOver && !readOnly && dragging
   return (
     <div
@@ -402,7 +466,7 @@ function KanbanColumn({ col, list, tinted, readOnly, showChannel, dragging }: {
       </div>
 
       <div className="flex-1 min-h-0 px-2 py-2 space-y-2 overflow-y-auto">
-        {list.map((conv) => <DraggableCard key={conv.id} conv={conv} showChannel={showChannel} readOnly={readOnly} />)}
+        {list.map((conv) => <DraggableCard key={conv.id} conv={conv} showChannel={showChannel} readOnly={readOnly} onOpenDeal={onOpenDeal} />)}
         {highlight && (
           <div className="rounded-lg border-2 border-dashed border-primary-300 bg-primary-50/60 h-14 flex items-center justify-center text-[11px] font-semibold text-primary-600 shrink-0">
             Soltar aqui
@@ -417,7 +481,7 @@ function KanbanColumn({ col, list, tinted, readOnly, showChannel, dragging }: {
 }
 
 // ── Card draggable (dnd-kit) ────────────────────────────────────
-function DraggableCard({ conv, showChannel, readOnly }: { conv: Conversation; showChannel: boolean; readOnly: boolean }) {
+function DraggableCard({ conv, showChannel, readOnly, onOpenDeal }: { conv: Conversation; showChannel: boolean; readOnly: boolean; onOpenDeal?: (c: Conversation) => void }) {
   const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: conv.id, disabled: readOnly })
   return (
     <ConversationCard
@@ -428,12 +492,13 @@ function DraggableCard({ conv, showChannel, readOnly }: { conv: Conversation; sh
       listeners={listeners}
       attributes={attributes}
       isDragging={isDragging}
+      onOpenDeal={onOpenDeal}
     />
   )
 }
 
 function ConversationCard({
-  conv, showChannel, readOnly = false, dragRef, listeners, attributes, isDragging = false, overlay = false,
+  conv, showChannel, readOnly = false, dragRef, listeners, attributes, isDragging = false, overlay = false, onOpenDeal,
 }: {
   conv:        Conversation
   showChannel: boolean
@@ -443,10 +508,17 @@ function ConversationCard({
   attributes?: DraggableAttributes
   isDragging?: boolean
   overlay?:    boolean
+  onOpenDeal?: (c: Conversation) => void
 }) {
   const contact      = conv.chat_contacts
   const displayName  = contact ? displayContactName(contact) : "Sem nome"
   const initial      = contact ? displayContactInitial(contact) : "?"
+  // Negócio ativo manda no card: nome = título, contato = subtítulo, valor = do negócio.
+  // Etapa/aging/ganho-perdido seguem da CONVERSA (espelhada — fica fresca no Realtime).
+  const deal         = conv.deal
+  const dealName     = deal?.name?.trim() || null
+  const title        = dealName ?? displayName
+  const effValue     = effectiveValue(conv)
 
   const ownerName    = conv.profiles?.full_name?.split(" ")[0]
   const time         = conv.last_message_at ? relativeTime(conv.last_message_at) : null
@@ -487,17 +559,22 @@ function ConversationCard({
           <div className="flex-1 min-w-0">
             <p className="text-xs font-semibold text-slate-900 truncate flex items-center gap-1">
               {prio && <span className={`size-1.5 rounded-full shrink-0 ${prio.dot}`} title={prio.label} />}
+              {dealName && <Briefcase className="size-3 text-primary-500 shrink-0" />}
               {conv.channel === "site" && (
                 <span className="inline-flex items-center justify-center size-4 rounded-full bg-sky-50 border border-sky-200 shrink-0" title="Lead via site">
                   <SourceLogo source="webform" size={9} />
                 </span>
               )}
-              <span className="truncate">{displayName}</span>
+              <span className="truncate">{title}</span>
             </p>
-            <p className="text-[10px] text-slate-400 truncate flex items-center gap-1">
-              <Phone className="size-2.5" />
-              {contact?.phone_number ? formatPhone(contact.phone_number) : "—"}
-            </p>
+            {dealName ? (
+              <p className="text-[10px] text-slate-500 truncate">{displayName}</p>
+            ) : (
+              <p className="text-[10px] text-slate-400 truncate flex items-center gap-1">
+                <Phone className="size-2.5" />
+                {contact?.phone_number ? formatPhone(contact.phone_number) : "—"}
+              </p>
+            )}
           </div>
           <GripVertical className="size-3 text-slate-300 shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity" />
         </div>
@@ -536,12 +613,12 @@ function ConversationCard({
           )}
         </div>
 
-        {(conv.estimated_value || conv.expected_close_date) && (
+        {(effValue > 0 || conv.expected_close_date) && (
           <div className="flex items-center justify-between gap-2 text-[10px] pt-2 border-t border-slate-100">
             <div className="flex items-center gap-2 min-w-0">
-              {conv.estimated_value && conv.estimated_value > 0 ? (
+              {effValue > 0 ? (
                 <span className="font-semibold text-slate-700 tabular-nums flex items-center gap-0.5">
-                  <DollarSign className="size-2.5" />{BRL(Number(conv.estimated_value)).replace("R$", "").trim()}
+                  <DollarSign className="size-2.5" />{BRL(effValue).replace("R$", "").trim()}
                 </span>
               ) : null}
             </div>
@@ -587,6 +664,19 @@ function ConversationCard({
             )}
           </div>
         </div>
+
+        {/* Conversa SEM negócio + CRM ligado → atalho pra abrir um (caminho de adoção
+            do board híbrido). preventDefault/stopPropagation: não navega nem inicia drag. */}
+        {!deal && onOpenDeal && !overlay && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onOpenDeal(conv) }}
+            className="w-full inline-flex items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-primary-700 hover:bg-primary-50 rounded-md py-1 border border-dashed border-slate-200 hover:border-primary-200 transition-colors"
+          >
+            <Plus className="size-2.5" /> Abrir negócio
+          </button>
+        )}
       </div>
   )
 

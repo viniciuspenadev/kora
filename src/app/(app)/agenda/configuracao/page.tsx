@@ -3,7 +3,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { listResources, listServices, getAgendaRemindersEnabled } from "@/lib/actions/agenda"
-import { agendaConfirmStatus } from "@/lib/agenda/official-template"
+import { agendaConfirmStatus, listApprovedTemplates } from "@/lib/agenda/official-template"
 import { AgendaConfigClient } from "@/components/agenda/agenda-config-client"
 
 export default async function AgendaConfigPage() {
@@ -35,7 +35,10 @@ export default async function AgendaConfigPage() {
     .from("whatsapp_instances")
     .select("id").eq("tenant_id", tenantId).eq("provider", "meta_cloud").limit(1).maybeSingle()
   const isMeta = !!metaInst
-  const confirmStatus = isMeta ? await agendaConfirmStatus(tenantId) : "none"
+  const [confirmStatus, approvedTemplates] = await Promise.all([
+    isMeta ? agendaConfirmStatus(tenantId) : Promise.resolve("none" as const),
+    isMeta ? listApprovedTemplates(tenantId) : Promise.resolve([]),
+  ])
 
   return (
     <AgendaConfigClient
@@ -46,6 +49,7 @@ export default async function AgendaConfigPage() {
       remindersModule={remindersModule}
       isMeta={isMeta}
       confirmStatus={confirmStatus}
+      approvedTemplates={approvedTemplates}
     />
   )
 }

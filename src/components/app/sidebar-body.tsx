@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays,
-  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked,
+  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked, IdCard,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -82,6 +82,7 @@ const NAV: NavItem[] = [
     children: [
       { href: "/configuracoes/atendimento",    label: "Atendimento",       icon: <Headset      className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/tags",           label: "Tags",              icon: <TagIcon      className={subIcon} strokeWidth={1.75} /> },
+      { href: "/configuracoes/cadastro",       label: "Campos do cadastro", icon: <IdCard       className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/respostas",      label: "Respostas rápidas", icon: <MessageSquare className={subIcon} strokeWidth={1.75} />, module: "quick_replies" },
       { href: "/configuracoes/equipe",         label: "Equipe",            icon: <Users        className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/relatorios",     label: "Relatórios automáticos", icon: <Mail        className={subIcon} strokeWidth={1.75} /> },
