@@ -21,6 +21,10 @@ interface TransferArgs {
   collected:        { label: string; value: string }[]
   /** Campos-alvo (do `collect` do nó) — guiam a extração do dossiê. */
   collectHint:      string[]
+  /** A transferência foi decidida pela IA (tool do Agente IA, ou nó após um Agente IA que
+   *  coletou)? Default true. `false` = nó Transferir DETERMINÍSTICO (menu→transfer puro):
+   *  NÃO extrai dossiê via LLM e NÃO rotula "pela IA" — apenas encaminha. */
+  byAI:             boolean
 }
 
 export const transferCapability = defineCapability<TransferArgs>({
@@ -72,6 +76,7 @@ export const transferCapability = defineCapability<TransferArgs>({
       handoffMessage: typeof p.handoff_message === "string" && p.handoff_message.trim() ? p.handoff_message.trim() : null,
       collected,
       collectHint,
+      byAI:           p.byAI !== false,   // default true (caminho IA); o nó determinístico passa false
     }
   },
   execute: async (ctx, args) => {
@@ -86,12 +91,12 @@ export const transferCapability = defineCapability<TransferArgs>({
       return { ok: false, toolMessage: `Departamento "${args.department}" não existe. Opções válidas: ${opts}.` }
     }
 
-    // Captura confiável (§Pilar 2): o dossiê não depende do finish_step da IA. Se o
-    // chamador não trouxe `collected`, EXTRAI da conversa (passo determinístico do
-    // handoff, sempre roda). Cobre os DOIS caminhos: nó Transfer E tool da IA.
+    // Dossiê: usa o que veio; senão EXTRAI da conversa via LLM — mas SÓ no caminho da IA
+    // (byAI). Transfer DETERMINÍSTICO (menu→transfer puro, byAI=false) NÃO chama LLM:
+    // "apenas transferir" significa apenas transferir, sem queimar token nem inventar dossiê.
     const collected = args.collected.length > 0
       ? args.collected
-      : await extractDossier(ctx.model ?? "gpt-4.1", ctx.history ?? [], args.collectHint)
+      : (args.byAI ? await extractDossier(ctx.model ?? "gpt-4.1", ctx.history ?? [], args.collectHint) : [])
 
     // 1) Dossiê factual como NOTA INTERNA (equipe vê; cliente não). O card "Dossiê
     //    da IA" renderiza `summary` + `collected` (dados coletados pela IA).
@@ -102,10 +107,12 @@ export const transferCapability = defineCapability<TransferArgs>({
       tenant_id:       tenantId,
       sender_type:     "system",
       content_type:    "text",
-      content:         `🤖 Encaminhado pela IA → ${dept.name}${args.summary ? `\nResumo: ${args.summary}` : ""}${collectedLine}`,
+      content:         `${args.byAI ? "🤖 Encaminhado pela IA" : "📋 Encaminhado"} → ${dept.name}${args.summary ? `\nResumo: ${args.summary}` : ""}${collectedLine}`,
       status:          "sent",
       is_private_note: true,
-      metadata: { ai_routed: true, studio: true, department_id: dept.id, department_name: dept.name, summary: args.summary, collected },
+      // ai_routed=true só quando a IA esteve envolvida → renderiza o card "Dossiê da IA".
+      // Determinístico (byAI=false) → false → vira pílula simples "📋 Encaminhado → Setor".
+      metadata: { ai_routed: args.byAI, studio: true, department_id: dept.id, department_name: dept.name, summary: args.summary, collected },
     })
 
     // 2) Mensagem de transição pro cliente (se houver).

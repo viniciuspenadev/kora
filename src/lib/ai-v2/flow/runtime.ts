@@ -262,20 +262,11 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
   // que re-roda o agente com a nova mensagem.)
   if (run.status === "waiting" && currentId) {
     const node = nodeById(graph, currentId)
-    console.log("[studio/diag] resume", JSON.stringify({
-      conv: ctx.conversationId, runStatus: run.status, currentId,
-      nodeType: node?.type ?? null, optionId: input.optionId ?? null, incomingText: input.incomingText,
-    }))
     if (node?.type === "menu") {
       const cfg = node.config as unknown as MenuNodeConfig
       // Oficial: tap num botão/lista volta com o id da opção (= option.id) → casa
       // determinístico. Baileys (número/rótulo digitado, optionId ausente) → parse texto.
       const picked = resolveMenuChoice(cfg, input.incomingText, input.optionId)
-      console.log("[studio/diag] menu.resolve", JSON.stringify({
-        conv: ctx.conversationId, optionId: input.optionId ?? null,
-        pickedId: picked?.id ?? null, pickedLabel: picked?.label ?? null,
-        nextId: picked ? edgeTarget(graph, node.id, picked.id) : null,
-      }))
       if (!picked) {
         await sendBotText(ctx, cfg.noMatch?.trim() || "Não entendi 🤔 Responda com o número da opção:")
         await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
@@ -462,6 +453,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "ai_agent": {
         const cfg = node.config as unknown as AiAgentNodeConfig
+        // Marca que a IA ESTEVE no fluxo (independente de coletar campo) → um nó Transfer
+        // determinístico mais à frente sabe que pode soltar o dossiê e rotular "pela IA".
+        // Sem nenhum Agente IA = fluxo puro → o Transfer só encaminha.
+        variables["__ai_touched"] = true
         // Guarda os campos do `collect` (do nó) pra GUIAR a extração do dossiê no
         // handoff (§Pilar 2): o que o cliente declarou aqui é GARANTIDO no dossiê.
         if (cfg.collect?.length) {
@@ -544,23 +539,21 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       case "transfer": {
         const cfg = node.config as unknown as TransferNodeConfig
         const cap = getCapability(TRANSFER)
-        console.log("[studio/diag] transfer", JSON.stringify({
-          conv: ctx.conversationId, nodeId: node.id, department: cfg.department,
-          capPresent: !!cap, departments: ctx.departments?.length ?? 0,
-        }))
         // O dossiê é EXTRAÍDO dentro da capability (§Pilar 2, captura confiável —
         // cobre nó E tool). Aqui só passamos o summary do autor (interpola {{vars}}).
         const summary = interpolate((cfg.summary ?? "").trim(), variables)
+        // byAI = a IA esteve no fluxo (QUALQUER nó Agente IA rodou → __ai_touched). Aí o
+        // dossiê faz sentido. Menu→transfer puro (sem Agente IA) → false: o transfer NÃO
+        // chama LLM nem finge "pela IA", apenas encaminha. collect_hint guia a EXTRAÇÃO
+        // quando há campos do `collect` (mas não decide o byAI).
+        const collectHint = Array.isArray(variables["__collect"]) ? (variables["__collect"] as string[]) : []
         const r = await cap?.run(ctx, {
           department:      cfg.department,
           summary:         summary || undefined,
           handoff_message: cfg.handoff ?? null,
-          // Campos do `collect` (definidos PELO CLIENTE no nó de IA) guiam a extração.
-          collect_hint:    Array.isArray(variables["__collect"]) ? variables["__collect"] : [],
+          collect_hint:    collectHint,
+          byAI:            variables["__ai_touched"] === true,
         })
-        console.log("[studio/diag] transfer.result", JSON.stringify({
-          conv: ctx.conversationId, routedDepartmentId: r?.routedDepartmentId ?? null, ok: r?.ok ?? null, error: r?.error ?? null,
-        }))
         await finishRun(run.id)
         if (r?.routedDepartmentId) return { status: "routed", departmentId: r.routedDepartmentId, error: null, agent: lastAgent }
         // departamento inválido na config → não encaminhou; registra pro admin ver.
