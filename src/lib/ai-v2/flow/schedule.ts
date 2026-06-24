@@ -204,6 +204,42 @@ type DatePick = { kind: "day"; index: number } | { kind: "more" } | { kind: "non
 type TimePick = { kind: "slot"; index: number } | { kind: "back" } | { kind: "none" }
 type SlotPick = { kind: "slot"; index: number } | { kind: "none" }
 
+// ── roteio determinístico por id (Oficial) ─────────────────────
+// O tap numa row/botão devolve EXATAMENTE o token que enviamos (schedule:slot:<i> ·
+// schedule:day:<i> · schedule:svc:<i> · schedule:none/more/back). Cada resolver
+// traduz o token no MESMO *Pick que o parser de texto produz → a máquina de estados
+// abaixo não muda. Token de OUTRO contexto (ex.: "day" recebido na fase slots) →
+// null → cai no parse de texto (que vira re-pergunta se também não casar).
+const SCHED_TOKEN = "schedule:"
+function tokenParts(optionId?: string): string[] | null {
+  return optionId?.startsWith(SCHED_TOKEN) ? optionId.split(":") : null
+}
+function tokenSlotPick(optionId: string | undefined, slots: string[]): SlotPick | null {
+  const p = tokenParts(optionId); if (!p) return null
+  if (p[1] === "none") return { kind: "none" }
+  if (p[1] === "slot") { const i = parseInt(p[2] ?? "", 10); if (i >= 0 && i < slots.length) return { kind: "slot", index: i } }
+  return null
+}
+function tokenDatePick(optionId: string | undefined, page: string[], hasMore: boolean): DatePick | null {
+  const p = tokenParts(optionId); if (!p) return null
+  if (p[1] === "none") return { kind: "none" }
+  if (p[1] === "more") return hasMore ? { kind: "more" } : { kind: "none" }
+  if (p[1] === "day") { const i = parseInt(p[2] ?? "", 10); if (i >= 0 && i < page.length) return { kind: "day", index: i } }
+  return null
+}
+function tokenTimePick(optionId: string | undefined, slots: string[]): TimePick | null {
+  const p = tokenParts(optionId); if (!p) return null
+  if (p[1] === "none") return { kind: "none" }
+  if (p[1] === "back") return { kind: "back" }
+  if (p[1] === "slot") { const i = parseInt(p[2] ?? "", 10); if (i >= 0 && i < slots.length) return { kind: "slot", index: i } }
+  return null
+}
+function tokenServiceIndex(optionId: string | undefined, services: { id: string; name: string }[]): number | null {
+  const p = tokenParts(optionId); if (!p || p[1] !== "svc") return null
+  const i = parseInt(p[2] ?? "", 10)
+  return i >= 0 && i < services.length ? i : null
+}
+
 /** Modo slots: tap (título) > "nenhum"/0 > número digitado. */
 function parseSlotPick(reply: string, slots: string[]): SlotPick | null {
   const r = reply.trim().toLowerCase()
@@ -258,10 +294,11 @@ async function book(ctx: ExecCtx, cfg: ScheduleNodeConfig, iso: string, serviceI
 
 export async function resumeSchedule(
   ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: ScheduleStash | undefined, reply: string,
+  optionId?: string,   // Oficial: token `schedule:*` do tap → roteio determinístico (id-first)
 ): Promise<ScheduleResume> {
   // ── aiParse: cliente escolheu o serviço no picker → resolve + oferta ──
   if (stash?.mode === "pick_service") {
-    const idx = pickServiceIndex(reply, stash.services)
+    const idx = tokenServiceIndex(optionId, stash.services) ?? pickServiceIndex(reply, stash.services)
     if (idx == null) {
       await sendBotText(ctx, "É só escolher um dos serviços 👇", SCHED_META)
       await sendServicePicker(ctx, cfg, stash.services)
@@ -275,7 +312,7 @@ export async function resumeSchedule(
   // ── modo slots (default; cobre stash antigo sem `mode`) ──
   if (!stash || stash.mode === "slots") {
     const s = (stash as Extract<ScheduleStash, { mode: "slots" }> | undefined) ?? { mode: "slots", slots: [], serviceId: null, pool: [] }
-    const pick = parseSlotPick(reply, s.slots)
+    const pick = tokenSlotPick(optionId, s.slots) ?? parseSlotPick(reply, s.slots)
     if (!pick) {
       await sendBotText(ctx, "É só responder com o *número* do horário (ou 0 se nenhum servir).", SCHED_META)
       await sendScheduleOffer(ctx, cfg, s.slots)
@@ -298,7 +335,7 @@ export async function resumeSchedule(
   if (stash.phase === "date") {
     const page = stash.dayKeys.slice(stash.pageStart, stash.pageStart + DATE_PAGE)
     const hasMore = stash.pageStart + DATE_PAGE < stash.dayKeys.length
-    const pick = parseDatePick(reply, page.map((k) => stash.byDay[k][0]), hasMore)
+    const pick = tokenDatePick(optionId, page, hasMore) ?? parseDatePick(reply, page.map((k) => stash.byDay[k][0]), hasMore)
     if (!pick) {
       await sendBotText(ctx, "É só tocar (ou responder o número) do dia que prefere.", SCHED_META)
       await sendDateOffer(ctx, cfg, stash)
@@ -319,7 +356,7 @@ export async function resumeSchedule(
   }
 
   // phase === "time"
-  const pick = parseTimePick(reply, stash.slots)
+  const pick = tokenTimePick(optionId, stash.slots) ?? parseTimePick(reply, stash.slots)
   if (!pick) {
     await sendBotText(ctx, "É só tocar (ou responder o número) do horário.", SCHED_META)
     await sendTimeOffer(ctx, cfg, stash)

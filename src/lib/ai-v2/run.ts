@@ -61,7 +61,7 @@ export async function runStudioTurn(input: RunAITurnInput, opts?: StudioTurnOpts
 }
 
 async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promise<RunAITurnResult> {
-  const { tenantId, conversationId, incomingText, instance, onWillRespond } = input
+  const { tenantId, conversationId, incomingText, optionId, instance, onWillRespond } = input
   const startedAt = Date.now()
 
   // ── 1) Config + persona + master switch ────────────────────
@@ -151,7 +151,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     dryRun:   opts?.dryRun,
     captured: opts?.dryRun ? [] : undefined,
   }
-  const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText }
+  const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText, optionId }
 
   // ── 6) Fluxo tem PRECEDÊNCIA; agente é o fallback ──────────
   const existingRun = await activeFlowRun(conversationId)

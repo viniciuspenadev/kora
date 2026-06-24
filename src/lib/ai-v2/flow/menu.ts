@@ -35,6 +35,26 @@ export async function sendMenu(ctx: ExecCtx, cfg: MenuNodeConfig): Promise<void>
 }
 
 /**
+ * Resolve a opção escolhida pelo cliente, unificando as DUAS formas de resposta:
+ *   • Oficial (Meta): tap num botão/lista → `optionId` = id da opção (= option.id, o
+ *     mesmo que enviamos). Casa direto, sem ambiguidade — FONTE DA VERDADE.
+ *   • Baileys / texto digitado: sem id → cai no parse de texto (número/rótulo).
+ * Id-first garante o avanço mesmo quando o rótulo do botão não casa o texto (limite de
+ * 20 chars da Meta trunca, emoji no label, etc.). Sem match em nenhum dos dois → null.
+ */
+export function resolveMenuChoice(
+  cfg: MenuNodeConfig, reply: string, optionId?: string,
+): { id: string; label: string } | null {
+  if (optionId) {
+    const byId = cfg.options.find((o) => o.id === optionId)
+    if (byId) return byId
+    // id presente mas DESCONHECIDO (ex.: menu trocado desde o envio, ou tap num
+    // botão de outro contexto) → cai no texto; se também não casar, vira re-pergunta.
+  }
+  return parseMenuReply(cfg, reply)
+}
+
+/**
  * Parseia a resposta do cliente → opção escolhida. Determinístico:
  *   1) número (1..n), tolerante a "1", "1.", "opção 2"
  *   2) label exato OU a resposta contém o label

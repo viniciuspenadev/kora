@@ -20,7 +20,7 @@ import { runAgentTurn, type AgentTurnResult } from "../agent"
 import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
 import { classifyIntent } from "./router"
-import { sendMenu, parseMenuReply } from "./menu"
+import { sendMenu, resolveMenuChoice } from "./menu"
 import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
 import { deferralConcepts } from "./boundary"
 import type {
@@ -64,6 +64,10 @@ export interface FlowExecInput {
   persona:      PersonaInput
   history:      { role: "user" | "assistant"; content: string }[]
   incomingText: string
+  /** Oficial (Meta): id da opção interativa TOCADA (botão/lista) — fonte-da-verdade
+   *  determinística da escolha do cliente. Os nós de escolha (menu/schedule) casam
+   *  por ele PRIMEIRO; ausente (Baileys / texto digitado) → parse de texto clássico. */
+  optionId?:    string
 }
 
 export interface FlowResult {
@@ -251,7 +255,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
     const node = nodeById(graph, currentId)
     if (node?.type === "menu") {
       const cfg = node.config as unknown as MenuNodeConfig
-      const picked = parseMenuReply(cfg, input.incomingText)
+      // Oficial: tap num botão/lista volta com o id da opção (= option.id) → casa
+      // determinístico. Baileys (número/rótulo digitado, optionId ausente) → parse texto.
+      const picked = resolveMenuChoice(cfg, input.incomingText, input.optionId)
       if (!picked) {
         await sendBotText(ctx, cfg.noMatch?.trim() || "Não entendi 🤔 Responda com o número da opção:")
         await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
@@ -274,7 +280,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       const cfg   = { ...(node.config as unknown as ScheduleNodeConfig) }
       cfg.intro   = interpolate(cfg.intro ?? "", variables)
       const stash = variables[`schedule:${node.id}`] as ScheduleStash | undefined
-      const out   = await resumeSchedule(ctx, cfg, stash, input.incomingText)
+      // optionId (Oficial): token `schedule:*` da row/botão tocado → roteio determinístico
+      // (slot/day/svc/none/more/back); ausente (Baileys) → parse de texto clássico.
+      const out   = await resumeSchedule(ctx, cfg, stash, input.incomingText, input.optionId)
       if (out.kind === "wait") {
         variables[`schedule:${node.id}`] = out.stash
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")

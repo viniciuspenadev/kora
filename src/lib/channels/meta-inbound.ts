@@ -583,6 +583,9 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
       const text = routable
       const msgId = msg.id
       const convReopened = conv._reopened ?? false
+      // id da opção interativa tocada (botão/lista/template button) — já extraído no
+      // parse do inbound. Roteia a escolha no motor do Studio de forma determinística.
+      const interactiveId = (ext.metadata as { interactive_id?: string })?.interactive_id ?? null
       after(async () => {
         try {
           if (text) {
@@ -593,6 +596,10 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
             // (humano ativo / IA off / já roteada) — nunca fantasma.
             const ai = await routeAutomationTurn({
               tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance,
+              // Tap numa opção interativa nativa (botão/lista) → o id que ENVIAMOS volta
+              // aqui. Threadado pro motor do Studio casar a escolha de forma determinística
+              // (mesmo padrão do interceptor da Agenda acima). Baileys não tem → undefined.
+              optionId: interactiveId ?? undefined,
               signals: { isReopened: convReopened },
               onWillRespond: async () => { try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ } },
             })

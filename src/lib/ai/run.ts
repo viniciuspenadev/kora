@@ -44,6 +44,12 @@ export interface RunAITurnInput {
   tenantId:       string
   conversationId: string
   incomingText:   string
+  /** Canal Oficial (Meta): id da opção interativa TOCADA (botão/lista/template button),
+   *  exatamente como nós a enviamos (uuid de option.id no Menu, token `schedule:*` no
+   *  Agendar). Fonte-da-verdade determinística do que o cliente escolheu — os nós de
+   *  escolha casam por ele PRIMEIRO e só caem no parse de texto quando ausente. Baileys
+   *  (texto/número digitado) → undefined → comportamento clássico intacto. */
+  optionId?:      string
   instance:       InstanceForProvider
   /** Chamado SÓ depois que todos os gates de elegibilidade passaram (a IA vai mesmo
    *  processar) — pra enviar o "digitando…" de forma honesta, não-fantasma. */
