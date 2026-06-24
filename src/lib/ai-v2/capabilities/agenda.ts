@@ -19,7 +19,7 @@ export const RESCHEDULE_APPOINTMENT   = "reschedule_appointment"
 
 const TZ = "America/Sao_Paulo"
 const HORIZON_DAYS = 21
-const MAX_SLOTS = 6
+const MAX_DAYS = 6   // dias distintos com vaga oferecidos na visão DIA-PRIMEIRO
 
 // "qua 09/06 às 14h00" — legível; o ISO cru vai entre [ ] pra a IA reusar no schedule.
 function fmtSlot(iso: string): string {
@@ -28,6 +28,22 @@ function fmtSlot(iso: string): string {
   const dm = d.toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit" })
   const hm = d.toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).replace(":", "h")
   return `${wd} ${dm} às ${hm}`
+}
+
+// ── visão DIA-PRIMEIRO (ref. de padrão: flow/schedule.ts) ────────────────
+/** Chave de dia no fuso (YYYY-MM-DD) — ordenável cronologicamente como string. */
+function dayKey(iso: string): string { return new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ }) }
+/** "Hoje 24/06" / "Amanhã 25/06" / "Quinta 26/06" — rótulo de DIA (não bookável). */
+function fmtDay(iso: string): string {
+  const d = new Date(iso)
+  const k = dayKey(iso)
+  const todayK    = new Date().toLocaleDateString("en-CA", { timeZone: TZ })
+  const tomorrowK = new Date(Date.now() + 86_400_000).toLocaleDateString("en-CA", { timeZone: TZ })
+  const dm = d.toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit" })
+  if (k === todayK)    return `Hoje ${dm}`
+  if (k === tomorrowK) return `Amanhã ${dm}`
+  const wd = d.toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long" })
+  return `${wd.charAt(0).toUpperCase()}${wd.slice(1)} ${dm}`   // "Quinta 26/06"
 }
 
 // ── targeting de DIA/PERÍODO (alavanca 1: honrar "sexta à tarde") ─────────
@@ -92,9 +108,10 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
     function: {
       name: CHECK_AVAILABILITY,
       description:
-        "Consulta os horários REAIS livres na agenda do negócio. Chame ANTES de oferecer qualquer horário — " +
-        "NUNCA invente horário, ofereça SOMENTE os que esta ferramenta retornar. Se o cliente citar um dia ou " +
-        "período, passe from_date/period — NUNCA diga que não tem sem consultar aquele dia.",
+        "Consulta a disponibilidade REAL da agenda. SEM from_date → devolve os DIAS que têm vaga (ofereça os dias); " +
+        "COM from_date → devolve os HORÁRIOS daquele dia (rotulados com LETRA, pra marcar). Chame ANTES de oferecer " +
+        "qualquer dia/horário — NUNCA invente, ofereça SOMENTE o que esta ferramenta retornar. Se o cliente citar um " +
+        "dia (e período), passe from_date (e period) — NUNCA diga que não tem sem consultar aquele dia.",
       parameters: {
         type: "object",
         properties: {
@@ -121,16 +138,17 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
     if (services.length > 0)  L.push(`Serviços (use o nome exato): ${services.join(", ")}.`)
     if (resources.length > 0) L.push(`Agendas/profissionais: ${resources.join(", ")}.`)
     L.push(
-      "COMO AGENDAR — siga à risca:",
-      "1. NUNCA invente horário. Chame check_availability ANTES de oferecer e ofereça SOMENTE o que ela retornar. Pra marcar, passe em \"slot\" a LETRA daquele horário (A, B, C…) — copie a letra exata, NUNCA invente uma letra fora da lista nem escreva a data/hora.",
-      "2. Recomende o horário mais próximo E pergunte se prefere outro dia/horário. Ex: \"Tenho terça às 09h — esse serve, ou prefere outro dia?\".",
-      "3. Se o cliente citar um dia/período, chame check_availability com from_date (YYYY-MM-DD) e/ou period (manha/tarde/noite). NUNCA diga que não tem sem consultar aquele dia.",
-      "4. Se não houver no dia/período pedido, diga e ofereça o mais próximo OU pergunte outro dia — nunca empurre só o mais cedo.",
-      "5. ANTES de marcar, confirme o horário exato (\"Fecho terça às 09h, ok?\") e só marque após o \"sim\".",
-      "6. Você NÃO tem lista de espera — não prometa \"te aviso quando abrir\". Se nada servir, transfira pro time.",
-      "7. Reaproveite os horários que já consultou neste papo; só chame check_availability de novo se o cliente mudar o dia/período.",
-      "8. Pegue o NOME da pessoa (update_contact) antes de marcar, pra a confirmação sair personalizada.",
-      "9. ⚠️ DEMO/AGENDAMENTO trava a conclusão: se você ofereceu, mencionou OU o cliente topou uma demonstração/horário, NÃO chame finish_step (não conclua/transfira) até MARCAR o horário OU o cliente recusar claramente. NUNCA pergunte 'tem interesse em agendar?' e conclua na mesma resposta — se ele topar, chame check_availability, ofereça os horários, ESPERE a escolha e MARQUE primeiro. Só depois de marcar (ou recusa) você segue.",
+      "COMO AGENDAR — siga à risca (fluxo DIA-PRIMEIRO):",
+      "1. Comece pelo DIA. Chame check_availability SEM from_date → ela devolve os DIAS com vaga. Ofereça esses dias ao cliente (ex: \"Tenho Quinta 26/06, Sexta 27/06 ou Segunda 30/06 — qual fica melhor?\"). NÃO ofereça horário ainda; dia NÃO é marcável.",
+      "2. Quando o cliente escolher um dia, chame check_availability de novo COM from_date (YYYY-MM-DD daquele dia) — aí ela devolve os HORÁRIOS daquele dia, cada um com uma LETRA (A, B, C…). Se o cliente já disse o período (manhã/tarde/noite), passe period junto pra filtrar.",
+      "3. NUNCA invente horário nem letra. Ofereça SOMENTE os horários que vieram. Pra marcar, passe em \"slot\" a LETRA exata daquele horário — copie a letra, NUNCA escreva a data/hora nem invente uma letra fora da lista.",
+      "4. ANTES de negar um horário, CONFIRA o dia/período. Se o cliente propôs um horário específico (ex: \"às 16h\") e ele NÃO está entre os retornados daquele dia, diga claramente que aquele horário não está livre e ofereça os MAIS PRÓXIMOS do mesmo dia — nunca afirme \"não tem\" sem ter consultado o dia inteiro.",
+      "5. Se o dia/período pedido não tiver NENHUMA vaga, diga e ofereça outro dia (volte ao passo 1) — não empurre só o mais cedo.",
+      "6. ANTES de marcar, confirme o horário exato (\"Fecho Sexta 27/06 às 09h, ok?\") e só marque após o \"sim\".",
+      "7. Você NÃO tem lista de espera — não prometa \"te aviso quando abrir\". Se nada servir, transfira pro time.",
+      "8. Reaproveite o que já consultou neste papo; só re-consulte se o cliente mudar o dia/período. Os HORÁRIOS (com letra) só valem pro dia que você consultou — pra outro dia, consulte aquele dia.",
+      "9. Pegue o NOME da pessoa (update_contact) antes de marcar, pra a confirmação sair personalizada.",
+      "10. ⚠️ DEMO/AGENDAMENTO trava a conclusão: se você ofereceu, mencionou OU o cliente topou uma demonstração/horário, NÃO chame finish_step (não conclua/transfira) até MARCAR o horário OU o cliente recusar claramente. NUNCA pergunte 'tem interesse em agendar?' e conclua na mesma resposta — se ele topar, mostre os dias, depois os horários, ESPERE a escolha e MARQUE primeiro. Só depois de marcar (ou recusa) você segue.",
     )
     return L.join("\n")
   },
@@ -151,27 +169,60 @@ export const checkAvailabilityCapability = defineCapability<CheckArgs>({
 
     const now = Date.now()
     const day = args.from_date ? localDayRange(args.from_date) : null
-    const rangeStart = day ? new Date(Math.max(now, day.start)).toISOString() : new Date(now).toISOString()
-    const rangeEnd   = day ? new Date(day.end).toISOString()                  : new Date(now + HORIZON_DAYS * 86_400_000).toISOString()
 
+    // ── DIA-PRIMEIRO: sem from_date → devolve os DIAS com vaga (não bookável) ──
+    // Varre o horizonte inteiro e agrupa por dia. NÃO salva oferta de slot (dia não
+    // tem letra → a IA não pode marcar um dia; ela primeiro carrega os horários dele).
+    if (!day) {
+      const rangeStart = new Date(now).toISOString()
+      const rangeEnd   = new Date(now + HORIZON_DAYS * 86_400_000).toISOString()
+      let merged = await availabilityPool(ctx.tenantId, { pool, serviceId, rangeStart, rangeEnd })
+      if (args.period) merged = merged.filter((s) => inPeriod(s.start, args.period))
+
+      // primeiro instante livre de cada dia distinto, em ordem cronológica
+      const firstByDay = new Map<string, string>()
+      for (const s of merged) { const k = dayKey(s.start); if (!firstByDay.has(k)) firstByDay.set(k, s.start) }
+
+      if (firstByDay.size === 0) {
+        const qual = args.period ? ` de ${args.period}` : ""
+        return { ok: true, toolMessage: `Sem dias com vaga${qual} nos próximos dias. Diga ao cliente e ofereça outro período (ou um atendente ajuda a encontrar).` }
+      }
+      const days = [...firstByDay.values()].slice(0, MAX_DAYS)
+      const list = days.map((iso) => fmtDay(iso)).join(" · ")
+      return {
+        ok: true,
+        toolMessage:
+          `DIAS com vaga (ofereça estes DIAS ao cliente — NÃO ofereça horário ainda, dia não é marcável): ${list}. ` +
+          `Quando o cliente escolher um dia, chame check_availability de novo com from_date no formato YYYY-MM-DD ` +
+          `(e period se ele citou manhã/tarde/noite) pra ver os HORÁRIOS daquele dia.`,
+        data: { days },
+      }
+    }
+
+    // ── HORÁRIOS DE UM DIA: com from_date → bookável (letra + oferta salva) ──
+    const rangeStart = new Date(Math.max(now, day.start)).toISOString()
+    const rangeEnd   = new Date(day.end).toISOString()
     let merged = await availabilityPool(ctx.tenantId, { pool, serviceId, rangeStart, rangeEnd })
     if (args.period) merged = merged.filter((s) => inPeriod(s.start, args.period))
 
     if (merged.length === 0) {
-      const onde = day ? "nesse dia" : "nos próximos dias"
       const qual = args.period ? ` de ${args.period}` : ""
-      return { ok: true, toolMessage: `Sem horários livres${qual} ${onde}. Diga ao cliente e ofereça outro dia/período (ou um atendente ajuda a encontrar).` }
+      return { ok: true, toolMessage: `Sem horários livres${qual} nesse dia. Diga ao cliente e ofereça outro dia/período (consulte SEM from_date pra ver os dias com vaga).` }
     }
     // Rotula cada horário com uma LETRA e guarda o mapa letra→ISO (+ pool/serviço) no
     // estado da conversa. A IA oferta as letras; pra marcar, COPIA a letra (não inventa).
-    const top = merged.slice(0, Math.min(MAX_SLOTS, LETTERS.length))
+    // Cap = LETTERS.length (8) pra caber o dia inteiro (manhã+tarde), não cortar a tarde.
+    const top = merged.slice(0, LETTERS.length)
     const slots: Record<string, string> = {}
     top.forEach((s, i) => { slots[LETTERS[i]] = s.start })
     await saveOffer(ctx, { at: Date.now(), serviceId, pool, slots })
     const list = top.map((s, i) => `${LETTERS[i]}) ${fmtSlot(s.start)}`).join(" · ")
     return {
       ok: true,
-      toolMessage: `Horários LIVRES (ofereça SOMENTE estes; pra marcar, passe em "slot" a LETRA exata — NUNCA invente uma letra fora da lista): ${list}`,
+      toolMessage:
+        `Horários LIVRES nesse dia (ofereça SOMENTE estes; pra marcar, passe em "slot" a LETRA exata — NUNCA invente ` +
+        `uma letra fora da lista). Se o cliente propôs um horário que NÃO está aqui, diga que não está livre e ofereça ` +
+        `o mais próximo desta lista: ${list}`,
       data: { slots: top, serviceId },
     }
   },
