@@ -10,18 +10,59 @@ import type { FlowRow, FlowRunRow, FlowTrigger } from "./types"
 
 const FLOW_SELECT = "id, tenant_id, name, version, trigger, graph"
 
-function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boolean): boolean {
-  switch (t?.type) {
+/** Sinais do inbound usados pelo matcher (além do texto/isNewContact). */
+export interface MatchSignals {
+  channel?:    string | null
+  instanceId?: string | null
+  isReopened?: boolean
+  /** Conversa nasceu de um anúncio Meta (Click-to-WhatsApp)? */
+  fromAd?:     boolean
+  /** Id do anúncio de origem (from_ad_meta.sourceId), p/ filtro por anúncio específico. */
+  adId?:       string | null
+}
+
+/** Normaliza p/ comparação PT-BR: minúsculas + remove acento (olá → ola). */
+function norm(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+}
+
+function matchesKeyword(t: FlowTrigger, text: string): boolean {
+  const haystack = norm(text)
+  const exact = t.keywordMatch === "exact"
+  // "exact" = palavra inteira (tokens separados por não-alfanumérico).
+  const tokens = exact ? new Set(haystack.split(/[^\p{L}\p{N}]+/u).filter(Boolean)) : null
+  return (t.keywords ?? []).some((k) => {
+    const kw = norm(k.trim())
+    if (!kw) return false
+    return exact ? tokens!.has(kw) : haystack.includes(kw)
+  })
+}
+
+function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boolean, sig: MatchSignals): boolean {
+  if (!t) return false
+  // Gatilho ATIVO (manual/campanha) nunca casa com um inbound — só dispara sob demanda.
+  if ((t.mode ?? "receptive") === "active") return false
+  // Filtros de canal/instância (ausente/vazio = qualquer).
+  if (t.channels?.length  && !t.channels.includes(sig.channel ?? "")) return false
+  if (t.instances?.length && !t.instances.includes(sig.instanceId ?? "")) return false
+  switch (t.type) {
     case "any_message": return true
     case "new_contact": return isNewContact
-    case "keyword": return (t.keywords ?? []).some((k) => k && text.toLowerCase().includes(k.toLowerCase()))
+    case "reopened":    return !!sig.isReopened
+    case "keyword":     return matchesKeyword(t, text)
+    case "from_ad":
+      if (!sig.fromAd) return false
+      // Filtro de anúncio específico (ausente/vazio = qualquer anúncio).
+      if (t.adIds?.length) return !!sig.adId && t.adIds.includes(sig.adId)
+      return true
     default: return false
   }
 }
 
 // Especificidade do gatilho — o MAIS específico vence quando vários casam. O
 // `any_message` (catch-all) é o ÚLTIMO recurso, não compete de igual com keyword.
-const TRIGGER_RANK: Record<string, number> = { keyword: 3, new_contact: 2, any_message: 1 }
+// `from_ad` é o mais específico (origem declarada do contato).
+const TRIGGER_RANK: Record<string, number> = { from_ad: 5, reopened: 4, keyword: 3, new_contact: 2, any_message: 1 }
 
 /**
  * Fluxo publicado+ativo que inicia pra esta mensagem. Entre vários que casam,
@@ -32,6 +73,7 @@ export async function findFlowToStart(
   tenantId: string,
   incomingText: string,
   isNewContact: boolean,
+  signals: MatchSignals = {},
 ): Promise<FlowRow | null> {
   const { data } = await supabaseAdmin
     .from("studio_flows")
@@ -44,7 +86,7 @@ export async function findFlowToStart(
   let best: FlowRow | null = null
   let bestRank = 0
   for (const f of (data ?? []) as FlowRow[]) {
-    if (!matchesTrigger(f.trigger, incomingText, isNewContact)) continue
+    if (!matchesTrigger(f.trigger, incomingText, isNewContact, signals)) continue
     const rank = TRIGGER_RANK[f.trigger?.type ?? ""] ?? 0
     if (rank > bestRank) { best = f; bestRank = rank }   // empate mantém o 1º (mais antigo)
   }

@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
-import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
+import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, openDealOf, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM Negócios — Server actions (Fase 1)
@@ -46,6 +46,7 @@ export interface OpenDealInput {
   expectedClose?:  string | null
   isWon?:          boolean
   isLost?:         boolean
+  parentDealId?:   string | null   // handoff: negócio anterior da jornada
 }
 
 /**
@@ -72,6 +73,7 @@ export async function openDeal(input: OpenDealInput): Promise<{ id: string } | {
     expectedClose:  input.expectedClose ?? null,
     isWon:          input.isWon,
     isLost:         input.isLost,
+    parentDealId:   input.parentDealId ?? null,
     by:             session.user.id,
   })
 }
@@ -338,6 +340,7 @@ export interface DealDetail {
   contact: { id: string; name: string | null; push_name?: string | null; profile_pic_url?: string | null; phone_number?: string | null; lifecycle_stage?: string | null } | null
   responsible: string | null
   conversationId: string | null
+  lastMessageAt: string | null
   pipelines: DealPipeline[]
   events: DealEventView[]
   otherDeals: { id: string; name: string | null; status: string; estimated_value: number | null }[]
@@ -419,6 +422,10 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       const rows = (convs ?? []) as { id: string; active_deal_id: string | null }[]
       return rows.find((r) => r.active_deal_id === dealId)?.id ?? rows[0]?.id ?? null
     })(),
+    lastMessageAt: (() => {
+      const rows = (convs ?? []) as { last_message_at: string | null }[]
+      return rows.map((r) => r.last_message_at).filter(Boolean).sort().reverse()[0] ?? null
+    })(),
     pipelines, events,
     otherDeals: ((others ?? []) as Record<string, unknown>[]).map((o) => ({ id: o.id as string, name: (o.name as string | null) ?? null, status: o.status as string, estimated_value: (o.estimated_value as number | null) ?? null })),
     nextTask: (tasks && (tasks as unknown[])[0]) ? (() => { const tk = (tasks as Record<string, unknown>[])[0]; return { id: tk.id as string, title: tk.title as string, due_at: (tk.due_at as string | null) ?? null } })() : null,
@@ -466,25 +473,65 @@ export async function updateDeal(dealId: string, fields: { name?: string; estima
   return { ok: true }
 }
 
-/** Move um negócio por dealId (drawer). Gated + visibilidade herdada. `lostReason` grava ao cair em etapa de perda. */
-export async function moveDealById(dealId: string, stageId: string, lostReason?: string): Promise<{ ok: true } | { error: string }> {
+/**
+ * Move um negócio por dealId — o mover CANÔNICO (Kanban de Negócios + qualquer caminho
+ * sem conversationId à mão). Resolve a conversa do negócio (pro espelho + card), atualiza
+ * o deal, espelha na conversa e grava via `recordDealEvent` (evento rico + card no chat +
+ * timeline) — mesma narrativa do `moveDeal`. Gated + visibilidade herdada + lifecycle.
+ */
+export async function moveDealById(dealId: string, stageId: string, opts?: { note?: string | null; lostReason?: string | null; extras?: DealEventExtras }): Promise<{ ok: true } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
+
   const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, stage_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
-  if (!deal) return { error: "Negócio não encontrado" }
-  if (!(await canAccessDeal(t, (deal as { contact_id: string | null }).contact_id))) return { error: "Sem acesso" }
+  const d = deal as { contact_id: string | null; stage_id: string | null } | null
+  if (!d) return { error: "Negócio não encontrado" }
+  if (!(await canAccessDeal(t, d.contact_id))) return { error: "Sem acesso" }
+
   const { data: stage } = await supabaseAdmin.from("pipeline_stages").select("id, pipeline_id, is_won, is_lost").eq("id", stageId).eq("tenant_id", t).maybeSingle()
   if (!stage) return { error: "Etapa inválida" }
   const st = stage as { id: string; pipeline_id: string; is_won: boolean; is_lost: boolean }
-  const now = new Date().toISOString()
+  if (st.id === d.stage_id) return { ok: true }   // já está lá
+
+  // Conversa do negócio (pro card + espelho): a que aponta este deal como ativo, senão a + recente do contato.
+  let conversationId: string | null = null
+  if (d.contact_id) {
+    const { data: convs } = await supabaseAdmin.from("chat_conversations")
+      .select("id, active_deal_id").eq("tenant_id", t).eq("contact_id", d.contact_id)
+      .order("last_message_at", { ascending: false, nullsFirst: false }).limit(20)
+    const rows = (convs ?? []) as { id: string; active_deal_id: string | null }[]
+    conversationId = rows.find((r) => r.active_deal_id === dealId)?.id ?? rows[0]?.id ?? null
+  }
+
+  const now    = new Date().toISOString()
   const status = st.is_won ? "won" : st.is_lost ? "lost" : "open"
-  await supabaseAdmin.from("tenant_deals").update({ pipeline_id: st.pipeline_id, stage_id: st.id, status, won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null, lost_reason: st.is_lost ? (lostReason?.trim() || null) : null, stage_entered_at: now, updated_at: now }).eq("id", dealId).eq("tenant_id", t)
-  await supabaseAdmin.from("tenant_deal_events").insert({ tenant_id: t, deal_id: dealId, type: status === "open" ? "stage_changed" : status, from_stage: (deal as { stage_id: string | null }).stage_id, to_stage: st.id, by: session.user.id })
+  const reason = st.is_lost ? (opts?.lostReason?.trim() || null) : null
+
+  await supabaseAdmin.from("tenant_deals").update({
+    pipeline_id: st.pipeline_id, stage_id: st.id, status,
+    won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null,
+    lost_reason: reason, stage_entered_at: now, updated_at: now,
+  }).eq("id", dealId).eq("tenant_id", t)
+
+  // Espelha na conversa (mesmo motivo do moveDeal: board/relatórios ainda leem a conversa).
+  if (conversationId) {
+    await supabaseAdmin.from("chat_conversations").update({
+      active_deal_id: dealId, pipeline_id: st.pipeline_id, stage_id: st.id,
+      won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null,
+      stage_entered_at: now, updated_at: now,
+    }).eq("id", conversationId).eq("tenant_id", t)
+  }
+
+  // Fonte única da narrativa: evento rico + card interno no chat (quando há conversa).
+  await recordDealEvent({
+    tenantId: t, dealId, type: status === "open" ? "stage_changed" : status,
+    conversationId, fromStageId: d.stage_id, toStageId: st.id, by: session.user.id,
+    reason, note: opts?.note ?? null, extras: opts?.extras,
+  })
   // Lifecycle do contato: ganho→Cliente · aberto/trabalho→Lead · perdido→não-mexe (nunca rebaixa). Doc §5.
-  const moveContactId = (deal as { contact_id: string | null }).contact_id
-  if (moveContactId) await syncContactLifecycleFromDeal(t, moveContactId, st)
+  if (d.contact_id) await syncContactLifecycleFromDeal(t, d.contact_id, st)
   return { ok: true }
 }
 
@@ -496,7 +543,13 @@ export async function reopenDealById(dealId: string): Promise<{ ok: true } | { e
   const t = session.user.tenantId
   const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, stage_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
   if (!deal) return { error: "Negócio não encontrado" }
-  if (!(await canAccessDeal(t, (deal as { contact_id: string | null }).contact_id))) return { error: "Sem acesso" }
+  const reopenContactId = (deal as { contact_id: string | null }).contact_id
+  if (!(await canAccessDeal(t, reopenContactId))) return { error: "Sem acesso" }
+  // Trava "um aberto por vez": não reabre se o contato já tem outro negócio aberto.
+  if (reopenContactId) {
+    const open = await openDealOf(t, reopenContactId, dealId)
+    if (open) return { error: `Não é possível reabrir: este contato já tem outro negócio aberto${open.name ? ` (“${open.name}”)` : ""}. Finalize-o antes.` }
+  }
   const now = new Date().toISOString()
   await supabaseAdmin.from("tenant_deals").update({ status: "open", won_at: null, lost_at: null, lost_reason: null, updated_at: now }).eq("id", dealId).eq("tenant_id", t)
   await supabaseAdmin.from("tenant_deal_events").insert({ tenant_id: t, deal_id: dealId, type: "reopened", to_stage: (deal as { stage_id: string | null }).stage_id, by: session.user.id })
@@ -852,6 +905,9 @@ export async function reopenDeal(conversationId: string, dealId: string): Promis
   const d = deal as { contact_id: string; stage_id: string | null; pipeline_id: string | null; status: string } | null
   if (!d || d.contact_id !== conv.contact_id) return { error: "Negócio inválido para esta conversa" }
   if (d.status === "open") return { error: "Negócio já está aberto" }
+  // Trava "um aberto por vez": não reabre se o contato já tem outro negócio aberto.
+  const blockingOpen = await openDealOf(tenantId, conv.contact_id, dealId)
+  if (blockingOpen) return { error: `Não é possível reabrir: este contato já tem outro negócio aberto${blockingOpen.name ? ` (“${blockingOpen.name}”)` : ""}. Finalize-o antes.` }
 
   // Etapa de retorno: a atual se for de funil (show_in_kanban); senão a 1ª de funil da trilha.
   let targetStage = d.stage_id

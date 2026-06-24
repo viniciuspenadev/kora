@@ -62,9 +62,16 @@
   --radius-lg: var(--radius);
 }
 
+/* Canvas de página — token DEDICADO `bg-canvas` (azul clarinho), usado SÓ no fundo das
+   páginas (PageShell + roots). slate-50 fica NEUTRO (é preenchimento de card/rodapé/hover,
+   não pode azular). Card/surface = white. Distinto do primary-50 pra chips continuarem evidentes. */
+@theme {
+  --color-canvas: #eff4fd;
+}
+
 :root {
   /* Superfícies */
-  --background: oklch(0.985 0.002 247);
+  --background: oklch(0.965 0.014 256);   /* = bg-canvas (body harmoniza com o fundo das páginas) */
   --foreground: oklch(0.145 0.015 260);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0.015 260);

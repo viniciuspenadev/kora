@@ -26,6 +26,7 @@ import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
 import { toRF, fromRF, newRFNode, type RFNode, type RFEdge } from "./graph-sync"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
 import type { FlowTrigger, FlowNodeType } from "@/lib/ai-v2/flow/types"
+import type { TriggerChannel, TriggerInstance, TriggerAd } from "@/lib/studio/trigger-meta"
 import type { StudioFlowFull } from "@/types/studio"
 
 interface Props {
@@ -37,6 +38,9 @@ interface Props {
   services:    { id: string; name: string }[]
   resources:   { id: string; name: string }[]
   ownerRouting: boolean
+  channels:    TriggerChannel[]
+  instances:   TriggerInstance[]
+  ads:         TriggerAd[]
 }
 
 const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ className?: string }>; ai?: boolean }[] = [
@@ -91,7 +95,7 @@ export function FlowEditorCanvas(props: Props) {
   )
 }
 
-function EditorInner({ flow, departments, flows, stages, tags, services, resources, ownerRouting }: Props) {
+function EditorInner({ flow, departments, flows, stages, tags, services, resources, ownerRouting, channels, instances, ads }: Props) {
   const router = useRouter()
   const initial = toRF(flow.graph)
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(
@@ -102,6 +106,11 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
   const [name, setName]             = useState(flow.name)
   const [triggerType, setTrigType]  = useState<FlowTrigger["type"]>(flow.trigger?.type ?? "keyword")
   const [keywords, setKeywords]     = useState((flow.trigger?.keywords ?? []).join(", "))
+  const [mode, setMode]             = useState<"receptive" | "active">(flow.trigger?.mode ?? "receptive")
+  const [trigChannels, setChannels] = useState<string[]>(flow.trigger?.channels ?? [])
+  const [trigInstances, setInsts]   = useState<string[]>(flow.trigger?.instances ?? [])
+  const [trigAds, setAds]           = useState<string[]>(flow.trigger?.adIds ?? [])
+  const [kwMatch, setKwMatch]       = useState<"contains" | "exact">(flow.trigger?.keywordMatch ?? "contains")
   const [addCount, setAddCount]     = useState(0)
   const [pending, startTransition]  = useTransition()
   const [feedback, setFeedback]     = useState<{ kind: "ok" | "error"; text: string } | null>(null)
@@ -150,9 +159,17 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
   function persist(publish: boolean) {
     setFeedback(null)
     const graph = fromRF(nodes, edges)
-    const trigger: FlowTrigger = triggerType === "keyword"
-      ? { type: "keyword", keywords: keywords.split(",").map((k) => k.trim()).filter(Boolean) }
-      : { type: triggerType }
+    const trigger: FlowTrigger = {
+      type: triggerType,
+      ...(triggerType === "keyword" ? {
+        keywords: keywords.split(",").map((k) => k.trim()).filter(Boolean),
+        ...(kwMatch === "exact" ? { keywordMatch: "exact" as const } : {}),
+      } : {}),
+      ...(triggerType === "from_ad" && trigAds.length ? { adIds: trigAds } : {}),
+      ...(mode === "active" ? { mode } : {}),          // receptivo é o default → não polui o JSON
+      ...(trigChannels.length  ? { channels: trigChannels }   : {}),
+      ...(trigInstances.length ? { instances: trigInstances } : {}),
+    }
     startTransition(async () => {
       const r = publish
         ? await publishFlow(flow.id, { name, trigger, graph })
@@ -238,7 +255,14 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
         <div className="w-80 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
           {selectedNode
             ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
-            : <FlowSettingsPanel triggerType={triggerType} keywords={keywords} onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords} />}
+            : <FlowSettingsPanel
+                triggerType={triggerType} keywords={keywords}
+                mode={mode} channels={trigChannels} instances={trigInstances}
+                channelOptions={channels} instanceOptions={instances}
+                keywordMatch={kwMatch} adIds={trigAds} adOptions={ads}
+                onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords}
+                onMode={setMode} onChannels={setChannels} onInstances={setInsts}
+                onKeywordMatch={setKwMatch} onAds={setAds} />}
         </div>
       </div>
     </div>

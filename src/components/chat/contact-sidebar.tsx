@@ -7,6 +7,7 @@ import {
   Users, Tag as TagIcon, FileText, Sparkles, Megaphone,
   Plus, X, Loader2, Trophy, Check, UserPlus, Target, Briefcase,
   Pencil, Mail, Building2, IdCard, CalendarDays, CalendarClock, Flag, User as UserIcon,
+  Route, ArrowRightLeft,
 } from "lucide-react"
 import { getContactAppointments, type ContactAppt } from "@/lib/actions/agenda"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
@@ -30,10 +31,11 @@ import {
   moveConversation,
   markConversationWonLost,
 } from "@/lib/actions/pipeline"
-import { getDealsPanel, moveDeal, updateDeal, cancelDeal, reopenDeal, getConversationTimeline, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship, type TimelineItem } from "@/lib/actions/deals"
+import { getDealsPanel, moveDeal, moveDealById, openDeal, updateDeal, cancelDeal, reopenDeal, getConversationTimeline, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship, type TimelineItem } from "@/lib/actions/deals"
 import { createTask, setTaskDone, snoozeTask } from "@/lib/actions/tasks"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
+import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { applyTag, removeTag, createTag } from "@/lib/actions/tags"
 import { qualifyLead, markUnfit } from "@/lib/actions/chat"
@@ -1314,6 +1316,8 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
   const [showHistory, setShowHistory] = useState(false)
   const [moving, setMoving]         = useState<string | null>(null)
   const [moveReq, setMoveReq]       = useState<{ dealId: string; stageId: string; toName: string; fromName: string | null; dealName: string | null; fromDays: number | null; currentValue: number | null } | null>(null)
+  const [blocked, setBlocked]       = useState<PanelDeal | null>(null)   // negócio aberto que impede abrir outro
+  const [flowModal, setFlowModal]   = useState<{ mode: "handoff" | "reclass"; dealId: string } | null>(null)
 
   const load = useCallback(() => { getDealsPanel(conversationId).then(setPanel).catch(() => {}) }, [conversationId])
   useEffect(() => { load() }, [load])
@@ -1362,23 +1366,61 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
     if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
   }
 
+  // Trava "um aberto por vez": antes de abrir o modal, se já há um aberto → avisa no meio da tela.
+  function tryNew() {
+    if (active) { setBlocked(active); return }
+    setShowNew(true)
+  }
+
+  // Mover de fluxo — reclassificar (mesmo negócio) ou handoff (abre próximo, ligado a este).
+  function flowEntryStage(pid: string): string | null {
+    const p = (panel?.pipelines ?? []).find((x) => x.id === pid)
+    const entry = (p?.stages ?? []).filter((s) => s.show_in_kanban && !s.is_won && !s.is_lost).slice().sort((a, b) => a.position - b.position)[0]
+    return entry?.id ?? null
+  }
+  async function applyFlow(pid: string) {
+    if (!flowModal) return
+    const { mode, dealId } = flowModal
+    const sid = flowEntryStage(pid)
+    setFlowModal(null)
+    if (!sid) return
+    setMoving(dealId)
+    const r = mode === "reclass"
+      ? await moveDealById(dealId, sid)
+      : await openDeal({ conversationId, pipelineId: pid, stageId: sid, parentDealId: dealId })
+    setMoving(null)
+    if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
+  }
+
   return (
     <Section icon={Briefcase} title="Negócios" action={panel.pipelines.length > 0 && (
-      <button type="button" onClick={() => setShowNew(true)} className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 transition-colors">
+      <button type="button" onClick={tryNew} className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 transition-colors">
         <Plus className="size-3" /> Novo
       </button>
     )}>
       <RelationshipBadge relationship={panel.relationship} wonCount={panel.wonCount} dealCount={panel.deals.length} />
 
       {active ? (
-        <ActiveDeal deal={active} pipelines={panel.pipelines} onMove={requestMove} onCancel={cancel} moving={moving === active.id} onTaskChange={load} />
+        <ActiveDeal deal={active} pipelines={panel.pipelines} onMove={requestMove} onCancel={cancel} moving={moving === active.id} onTaskChange={load}
+          onReclassify={panel.pipelines.length > 1 ? () => setFlowModal({ mode: "reclass", dealId: active.id }) : undefined} />
       ) : (
-        <p className="text-[11px] text-slate-400 leading-relaxed">
-          Nenhum negócio aberto. Conduza pela conversa, ou{" "}
-          {panel.pipelines.length > 0
-            ? <button type="button" onClick={() => setShowNew(true)} className="text-primary-600 font-semibold hover:underline">abra um negócio</button>
-            : "abra um negócio"} quando fizer sentido.
-        </p>
+        <>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Nenhum negócio aberto. Conduza pela conversa, ou{" "}
+            {panel.pipelines.length > 0
+              ? <button type="button" onClick={tryNew} className="text-primary-600 font-semibold hover:underline">abra um negócio</button>
+              : "abra um negócio"} quando fizer sentido.
+          </p>
+          {(() => {
+            const lw = panel.deals.find((d) => d.status === "won")
+            return lw && panel.pipelines.length > 1 ? (
+              <button type="button" onClick={() => setFlowModal({ mode: "handoff", dealId: lw.id })}
+                className="mt-2 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-primary-200 bg-primary-50 text-primary-700 text-[11px] font-semibold hover:bg-primary-100 transition-colors">
+                <Route className="size-3" /> Iniciar próximo fluxo
+              </button>
+            ) : null
+          })()}
+        </>
       )}
 
       {rest.length > 0 && (
@@ -1400,11 +1442,42 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
         />
       )}
 
+      {blocked && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm" onClick={() => setBlocked(null)} onKeyDown={(e) => { if (e.key === "Escape") setBlocked(null) }}>
+          <div className="w-full max-w-sm bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 pt-5 pb-4 text-center">
+              <span className="size-11 rounded-full bg-amber-50 grid place-items-center mx-auto mb-3"><Briefcase className="size-5 text-amber-600" /></span>
+              <p className="text-base font-bold text-slate-900">Já existe um negócio aberto</p>
+              <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                Este contato já tem <span className="font-semibold text-slate-700">{blocked.name?.trim() || "um negócio"}</span> em aberto. Finalize, perca ou cancele antes de abrir outro.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2 px-5 py-3 border-t border-slate-100 bg-slate-50/50">
+              <button type="button" onClick={() => setBlocked(null)} className="h-9 px-4 text-xs font-semibold text-slate-600 hover:bg-slate-200/60 rounded-lg">Entendi</button>
+              <a href={`/negocios/${blocked.id}`} className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
+                <Briefcase className="size-3.5" /> Ver negócio
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
       {moveReq && (
         <MoveDealDialog
           dealName={moveReq.dealName} fromStageName={moveReq.fromName} fromStageDays={moveReq.fromDays}
           toStageName={moveReq.toName} currentValue={moveReq.currentValue}
           pending={moving === moveReq.dealId} onConfirm={commitMove} onClose={() => setMoveReq(null)}
+        />
+      )}
+
+      {flowModal && (
+        <PickPipelineModal
+          mode={flowModal.mode}
+          pipelines={panel.pipelines}
+          currentPipelineId={panel.deals.find((d) => d.id === flowModal.dealId)?.pipeline_id ?? null}
+          pending={moving === flowModal.dealId}
+          onPick={applyFlow}
+          onClose={() => setFlowModal(null)}
         />
       )}
     </Section>
@@ -1499,11 +1572,11 @@ function NextAction({ deal, onChange }: { deal: PanelDeal; onChange: () => void 
 
 const CANCEL_REASONS = ["Criado por engano", "Duplicado", "Cliente desistiu", "Fora do perfil", "Outro"]
 
-function ActiveDeal({ deal, pipelines, onMove, onCancel, moving, onTaskChange }: {
+function ActiveDeal({ deal, pipelines, onMove, onCancel, moving, onTaskChange, onReclassify }: {
   deal: PanelDeal; pipelines: DealPipeline[]
   onMove: (dealId: string, stageId: string, toName: string, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) => void
   onCancel: (dealId: string, reason: string) => void
-  moving: boolean; onTaskChange: () => void
+  moving: boolean; onTaskChange: () => void; onReclassify?: () => void
 }) {
   const [cancelOpen, setCancelOpen] = useState(false)
   const [reasonSel, setReasonSel]   = useState(CANCEL_REASONS[0])
@@ -1533,6 +1606,12 @@ function ActiveDeal({ deal, pipelines, onMove, onCancel, moving, onTaskChange }:
           className="flex-1 h-7 px-2 text-[11px] border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50">
           {stages.map((s) => <option key={s.id} value={s.id}>{s.is_won ? "🏆 " : s.is_lost ? "✕ " : ""}{s.name}</option>)}
         </select>
+        {onReclassify && (
+          <button type="button" onClick={onReclassify} disabled={moving} title="Mover para outro funil"
+            className="size-7 shrink-0 grid place-items-center rounded-lg border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+            <ArrowRightLeft className="size-3.5" />
+          </button>
+        )}
         {moving && <Loader2 className="size-3.5 animate-spin text-slate-400 shrink-0" />}
       </div>
       <NextAction deal={deal} onChange={onTaskChange} />

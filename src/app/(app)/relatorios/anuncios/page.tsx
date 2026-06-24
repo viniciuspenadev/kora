@@ -40,7 +40,7 @@ export default async function AnunciosReportPage({
   ])
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-canvas">
       <div className="px-6 py-6">
         <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
           <div>

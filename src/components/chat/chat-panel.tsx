@@ -3,9 +3,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { MessageBubble } from "./message-bubble"
 import { MessageInput } from "./message-input"
+import { MessageContextMenu } from "./message-context-menu"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
+import { getChannelPolicy } from "@/lib/channels/policy"
 import { toast } from "sonner"
 import {
   Phone, CheckCircle2, Clock, XCircle,
@@ -114,6 +116,8 @@ export function ChatPanel({
   const isArchived = !!conversation.archived_at
   // Menu de ações (kebab) por clique — funciona em desktop e mobile (toque).
   const [menuOpen, setMenuOpen] = useState(false)
+  // Menu de contexto (clique direito numa mensagem): responder/copiar/reagir/agendar/disparar fluxo.
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; msg: ChatMessage | null } | null>(null)
   const [transferOpen, setTransferOpen] = useState(false)
   // Agendar pela conversa (módulo agenda) — carrega recursos/serviços on-demand.
   const [scheduleOpen, setScheduleOpen] = useState(false)
@@ -153,10 +157,11 @@ export function ChatPanel({
   const lc        = lifecycleMeta(lifecycle)
   const channelSource = contact?.source ?? null
 
-  // ── Janela de 24h (só instância oficial Cloud API) ──────────────
-  // Baileys não tem janela → toda a lógica abaixo é gated em isOfficial,
-  // então conversa QR (Bernardo) se comporta exatamente como hoje.
-  const isOfficial = conversation.whatsapp_instances?.provider === "meta_cloud"
+  // ── Janela de sessão — motor de política por canal (lib/channels/policy.ts) ──
+  // Decide pelo CANAL da conversa (não pelo provider da instância — senão a janela da
+  // WhatsApp Cloud vazava pra conversa de site pendurada na mesma instância oficial).
+  const policy = getChannelPolicy(conversation.channel, conversation.whatsapp_instances?.provider)
+  const hasWindow = policy.hasWindow
   // Âncora da janela = `last_inbound_at` da conversa (gravado do timestamp da Meta no
   // inbound — fonte autoritativa). Cross-check com a última msg inbound carregada cobre
   // o "chegou agora enquanto vejo" (antes do row refresh via realtime). Usa o mais recente.
@@ -171,14 +176,15 @@ export function ChatPanel({
   }, [messages, conversation.last_inbound_at])
   const [nowTick, setNowTick] = useState(() => Date.now())
   useEffect(() => {
-    if (!isOfficial) return
+    if (!hasWindow) return
     const id = setInterval(() => setNowTick(Date.now()), 60_000)
     return () => clearInterval(id)
-  }, [isOfficial])
-  const windowMsLeft = (isOfficial && lastInboundAt)
-    ? 24 * 60 * 60 * 1000 - (nowTick - new Date(lastInboundAt).getTime())
+  }, [hasWindow])
+  const windowMsLeft = (hasWindow && lastInboundAt)
+    ? policy.windowHours * 60 * 60 * 1000 - (nowTick - new Date(lastInboundAt).getTime())
     : null
-  const windowOpen = windowMsLeft !== null && windowMsLeft > 0
+  const windowOpen = !hasWindow ? true : (windowMsLeft !== null && windowMsLeft > 0)
+  const windowClosed = hasWindow && !windowOpen && policy.outsideWindow === "template"
 
   // Preservação de scroll quando msgs antigas são prepended.
   // Roda ANTES do paint pra evitar flicker.
@@ -228,6 +234,18 @@ export function ChatPanel({
     }
     return { timelineMessages: normal, reactionsByTarget: map }
   }, [messages])
+
+  // Lookup p/ o menu de contexto: resolve a mensagem clicada (data-msg-id no DOM).
+  const msgById = useMemo(() => new Map(timelineMessages.map((m) => [m.id, m])), [timelineMessages])
+
+  // Clique direito em QUALQUER ponto do chat → menu de contexto. Se caiu numa
+  // bolha (data-msg-id), traz as ações de mensagem; no vazio, só as da conversa.
+  function openContextMenu(e: React.MouseEvent) {
+    const el = (e.target as HTMLElement).closest("[data-msg-id]") as HTMLElement | null
+    const msg = el?.dataset.msgId ? (msgById.get(el.dataset.msgId) ?? null) : null
+    e.preventDefault()
+    setCtxMenu({ x: e.clientX, y: e.clientY, msg })
+  }
 
   useEffect(() => {
     const container = scrollContainerRef.current
@@ -374,7 +392,7 @@ export function ChatPanel({
                     </span>
                   )}
                   {/* Janela de 24h (só oficial) — movida do cluster de ações pra cá, alivia a barra. */}
-                  {isOfficial && (windowOpen ? (
+                  {hasWindow && (windowOpen ? (
                     <span
                       className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${windowMsLeft! < 2 * 60 * 60 * 1000 ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}`}
                       title="Janela de atendimento de 24h (WhatsApp Oficial). Dentro dela você responde com texto livre."
@@ -529,6 +547,7 @@ export function ChatPanel({
 
       <div
         ref={scrollContainerRef}
+        onContextMenu={openContextMenu}
         className="flex-1 overflow-y-auto px-2 py-4"
         style={{ backgroundImage: "radial-gradient(circle at 1px 1px, rgba(0,0,0,0.03) 1px, transparent 0)", backgroundSize: "20px 20px" }}
       >
@@ -558,7 +577,7 @@ export function ChatPanel({
                 item.kind === "divider" ? (
                   <TimelineDivider key={item.id} icon={item.icon} label={item.label} time={item.time} />
                 ) : (
-                  <div key={item.id} id={`msg-${item.msg.id}`}>
+                  <div key={item.id} id={`msg-${item.msg.id}`} data-msg-id={item.msg.id}>
                   <MessageBubble
                     message={item.msg}
                     agentName={item.msg.sender_type === "agent" ? item.msg.profiles?.full_name : null}
@@ -586,8 +605,8 @@ export function ChatPanel({
         conversationId={conversation.id}
         quickReplies={quickReplies}
         disabled={conversation.status === "resolved"}
-        windowClosed={isOfficial && !windowOpen}
-        windowNeverOpened={isOfficial && !lastInboundAt}
+        windowClosed={windowClosed}
+        windowNeverOpened={windowClosed && !lastInboundAt}
         contactFirstName={name.split(/\s+/)[0] ?? ""}
         onSendText={onSendText}
         onSendMedia={onSendMedia}
@@ -616,6 +635,20 @@ export function ChatPanel({
           conversationId={conversation.id}
           onClose={() => setScheduleOpen(false)}
           onCreated={() => { setScheduleOpen(false); toast.success("Agendamento criado") }}
+        />
+      )}
+
+      {ctxMenu && (
+        <MessageContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          message={ctxMenu.msg}
+          conversationId={conversation.id}
+          canTriggerFlow={!conversation.is_group}
+          onReply={onReply}
+          onReact={onReact}
+          onSchedule={agendaEnabled && conversation.contact_id ? openSchedule : undefined}
+          onClose={() => setCtxMenu(null)}
         />
       )}
     </div>

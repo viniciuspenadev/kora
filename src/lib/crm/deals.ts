@@ -153,6 +153,18 @@ export async function syncContactLifecycleFromDeal(
   }
 }
 
+/**
+ * Negócio ABERTO do contato (no máx. 1, pela trava "um por vez"). `exceptId` ignora um
+ * negócio (usado na reabertura). Fonte única da regra — usado por createDeal + reopenDeal(ById).
+ */
+export async function openDealOf(tenantId: string, contactId: string, exceptId?: string): Promise<{ id: string; name: string | null } | null> {
+  let q = supabaseAdmin.from("tenant_deals")
+    .select("id, name").eq("tenant_id", tenantId).eq("contact_id", contactId).eq("status", "open")
+  if (exceptId) q = q.neq("id", exceptId)
+  const { data } = await q.limit(1).maybeSingle()
+  return (data as { id: string; name: string | null } | null) ?? null
+}
+
 interface CreateDealArgs {
   tenantId:        string
   contactId:       string
@@ -164,6 +176,7 @@ interface CreateDealArgs {
   expectedClose?:  string | null
   isWon?:          boolean
   isLost?:         boolean
+  parentDealId?:   string | null   // handoff: negócio anterior da jornada (carimbo + vínculo)
   by:              string | null
 }
 
@@ -191,8 +204,15 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
     }
   }
 
-  const now    = new Date().toISOString()
+  // 3. Trava "um negócio aberto por vez" — evita o sequestro do active_deal_id em
+  //    multi-negócio. Só barra se o NOVO nasce aberto E o contato já tem um aberto.
   const status = dealStatus(args.isWon, args.isLost)
+  if (status === "open") {
+    const open = await openDealOf(args.tenantId, args.contactId)
+    if (open) return { error: `Este contato já tem um negócio aberto${open.name ? ` (“${open.name}”)` : ""}. Finalize, perca ou cancele antes de abrir outro.` }
+  }
+
+  const now = new Date().toISOString()
 
   const { data, error } = await supabaseAdmin
     .from("tenant_deals")
@@ -227,9 +247,18 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
       })
       .eq("id", args.conversationId).eq("tenant_id", args.tenantId)
   }
+  // Handoff: carimbo no histórico ("Originado de…") + vínculo estruturado (best-effort —
+  // roda OK mesmo antes da migration parent_deal_id ser aplicada; só não grava a coluna).
+  let originNote: string | null = null
+  if (args.parentDealId) {
+    const { data: parent } = await supabaseAdmin.from("tenant_deals").select("name").eq("id", args.parentDealId).eq("tenant_id", args.tenantId).maybeSingle()
+    originNote = `Originado de: ${(parent as { name: string | null } | null)?.name?.trim() || "negócio anterior"}`
+    const { error: pErr } = await supabaseAdmin.from("tenant_deals").update({ parent_deal_id: args.parentDealId }).eq("id", dealId).eq("tenant_id", args.tenantId)
+    if (pErr) console.error("[crm.createDeal] parent_deal_id (migration pendente?):", pErr.message)
+  }
   await recordDealEvent({
     tenantId: args.tenantId, dealId, type: "created",
-    conversationId: args.conversationId, toStageId: args.stageId, by: args.by,
+    conversationId: args.conversationId, toStageId: args.stageId, by: args.by, note: originNote,
   })
   // Abrir negócio → contato vira Lead (ganho → Cliente). Nunca rebaixa. Doc §5.
   await syncContactLifecycleFromDeal(args.tenantId, args.contactId, { is_won: args.isWon, is_lost: args.isLost })

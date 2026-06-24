@@ -605,6 +605,7 @@ async function handleMessageUpsert(
     // Guardas de takeover/grupo/disabled ficam dentro do motor (v1/v2).
     if (!agendaHandled && !kwMatched) {
       const convId = conversation.id
+      const convReopened = (conversation as { _reopened?: boolean })._reopened ?? false
       after(async () => {
         try {
           // IA só processa texto. Mídia pura → pula direto pras automações fixas.
@@ -620,6 +621,7 @@ async function handleMessageUpsert(
               conversationId: convId,
               incomingText:   content,
               instance,
+              signals:        { isReopened: convReopened },
             })
             // IA atuou (respondeu/roteou) OU a conversa já foi encaminhada pro
             // time humano → não dispara automações fixas por cima do handoff.
@@ -1231,7 +1233,7 @@ async function findOrCreateConversation(
 
   if (dedup.found !== "none") {
     const c = dedup.conversation as unknown as { id: string; status: string; unread_count: number }
-    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false }
+    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false, _reopened: dedup.found === "reopened" }
   }
 
   // ── Nunca teve conversa com esse contato → cria nova ──
@@ -1305,12 +1307,12 @@ async function findOrCreateConversation(
     })
     if (retry.found !== "none") {
       const c = retry.conversation as unknown as { id: string; status: string; unread_count: number }
-      return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false }
+      return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false, _reopened: retry.found === "reopened" }
     }
   }
 
   if (error || !newConv) throw new Error(`Failed to create conversation: ${error?.message}`)
-  return { ...newConv, _isNew: true }
+  return { ...newConv, _isNew: true, _reopened: false }
 }
 
 // ── Grupos: opt-in ─────────────────────────────────────────

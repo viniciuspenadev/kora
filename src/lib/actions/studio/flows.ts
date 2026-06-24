@@ -9,6 +9,9 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
+import { getViewerScope, canViewConversation } from "@/lib/visibility"
+import { isWindowOpen } from "@/lib/channels/policy"
+import { runStudioTurn } from "@/lib/ai-v2/run"
 import type { FlowGraph, FlowTrigger } from "@/lib/ai-v2/flow/types"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
 
@@ -23,7 +26,7 @@ export async function listFlows(): Promise<StudioFlowSummary[]> {
   const session = await requireAdmin()
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
-    .select("id, name, status, active, version, updated_at")
+    .select("id, name, status, active, version, trigger, updated_at")
     .eq("tenant_id", session.user.tenantId)
     .neq("status", "archived")
     .order("updated_at", { ascending: false })
@@ -186,4 +189,81 @@ export async function deleteFlow(id: string): Promise<{ error?: string }> {
   if (error) return { error: error.message }
   revalidatePath("/studio/fluxos")
   return {}
+}
+
+// ── Disparo ATIVO (modo=active) a partir da conversa ────────────────────────
+
+/** Fluxos publicados + ativos com gatilho de modo ATIVO — pro botão "Disparar fluxo" no chat. */
+export async function listActiveFlows(): Promise<{ id: string; name: string }[]> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return []
+  const { data } = await supabaseAdmin
+    .from("studio_flows")
+    .select("id, name")
+    .eq("tenant_id", session.user.tenantId)
+    .eq("status", "published")
+    .eq("active", true)
+    .eq("trigger->>mode", "active")
+    .order("name")
+  return (data ?? []) as { id: string; name: string }[]
+}
+
+/**
+ * Dispara um fluxo (modo ativo) DENTRO de uma conversa — ação explícita do atendente.
+ * Checa visibilidade (mesma regra do envio); o motor roda o fluxo ignorando os guards
+ * de inbound (atendente atribuído / já roteada) via opts.forceFlowId.
+ */
+export async function triggerFlowInConversation(
+  conversationId: string,
+  flowId:         string,
+): Promise<{ ok?: true; error?: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  const tenantId = session.user.tenantId
+
+  const { data: conv } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at")
+    .eq("id", conversationId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+  if (!conv) return { error: "Conversa não encontrada" }
+
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, {
+    assigned_to:   (conv as { assigned_to: string | null }).assigned_to,
+    participants:  (conv as { participants?: string[] | null }).participants,
+    department_id: (conv as { department_id?: string | null }).department_id,
+    instance_id:   (conv as { instance_id?: string | null }).instance_id,
+  })) {
+    return { error: "Sem permissão para disparar nesta conversa." }
+  }
+
+  // Instância pro provider (o runtime do fluxo envia as mensagens).
+  const { data: instance } = await supabaseAdmin
+    .from("whatsapp_instances")
+    .select("*")
+    .eq("id", (conv as { instance_id: string }).instance_id)
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+  if (!instance) return { error: "Número da conversa indisponível." }
+
+  // Gate fail-closed da janela de canal: um fluxo manda texto livre/mídia. No Oficial
+  // fora das 24h isso é rejeitado pela Meta — então recusamos ANTES de disparar e
+  // mandar o atendente falhar. (Receptivo é seguro: o inbound acabou de abrir a janela.)
+  const provider = (instance as { provider?: string | null }).provider ?? null
+  if (!isWindowOpen((conv as { channel: string | null }).channel, provider, (conv as { last_inbound_at: string | null }).last_inbound_at)) {
+    return { error: "Janela de atendimento fechada — não dá pra disparar um fluxo de texto livre. Reabra com um template aprovado." }
+  }
+
+  const r = await runStudioTurn(
+    { tenantId, conversationId, incomingText: "", instance },
+    { forceFlowId: flowId },
+  )
+  if (r.status === "error") return { error: r.error ?? "Falha ao disparar o fluxo." }
+  if (r.status === "skipped") {
+    const msg = r.reason === "flow_unavailable" ? "Fluxo indisponível (despublicado?)." : "Não foi possível disparar agora."
+    return { error: msg }
+  }
+  return { ok: true }
 }

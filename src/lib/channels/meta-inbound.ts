@@ -582,6 +582,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
       const convId = conv.id
       const text = routable
       const msgId = msg.id
+      const convReopened = conv._reopened ?? false
       after(async () => {
         try {
           if (text) {
@@ -592,6 +593,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
             // (humano ativo / IA off / já roteada) — nunca fantasma.
             const ai = await routeAutomationTurn({
               tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance,
+              signals: { isReopened: convReopened },
               onWillRespond: async () => { try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ } },
             })
             if (ai.status === "responded" || ai.status === "routed") return
@@ -732,7 +734,7 @@ async function findOrCreateConversation(tenantId: string, contactId: string, ins
   const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, skipOwnershipCheck: true })
   if (dedup.found !== "none") {
     const c = dedup.conversation as unknown as { id: string; status: string; unread_count: number }
-    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false }
+    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false, _reopened: dedup.found === "reopened" }
   }
 
   let pipelineId: string | null = null
@@ -755,10 +757,10 @@ async function findOrCreateConversation(tenantId: string, contactId: string, ins
   if (error?.code === "23505") {
     const retry = await findOrReopenConversation({ tenantId, contactId, skipOwnershipCheck: true })
     const c = retry.conversation as unknown as { id: string; status: string; unread_count: number }
-    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false }
+    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false, _reopened: retry.found === "reopened" }
   }
   if (error || !nc) throw new Error(`meta findOrCreateConversation: ${error?.message}`)
-  return { id: nc.id as string, status: nc.status as string, unread_count: nc.unread_count as number, _isNew: true }
+  return { id: nc.id as string, status: nc.status as string, unread_count: nc.unread_count as number, _isNew: true, _reopened: false }
 }
 
 async function storeMedia(

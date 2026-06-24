@@ -17,7 +17,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { runAgentTurn, type AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
-import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun } from "./flow/triggers"
+import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, type MatchSignals } from "./flow/triggers"
 import type { PersonaInput } from "./prompt"
 import type { ExecCtx } from "./capabilities"
 import { gatherPromptContext, type ConvRow, type ContactRow } from "@/lib/ai/context"
@@ -38,8 +38,12 @@ function estimateCost(model: string, inTok: number, outTok: number): number | nu
   return (inTok / 1_000_000) * p.in + (outTok / 1_000_000) * p.out
 }
 
-/** opts.dryRun = modo SIMULADOR: persiste tudo (sandbox), mas não transmite ao WhatsApp. */
-export interface StudioTurnOpts { dryRun?: boolean }
+/**
+ * opts.dryRun     = modo SIMULADOR: persiste tudo (sandbox), mas não transmite ao WhatsApp.
+ * opts.forceFlowId = disparo ATIVO/manual: roda ESTE fluxo na conversa ignorando os guards
+ *   de inbound (atendente atribuído / já roteada) — quem clicou escolheu disparar de propósito.
+ */
+export interface StudioTurnOpts { dryRun?: boolean; forceFlowId?: string }
 
 export async function runStudioTurn(input: RunAITurnInput, opts?: StudioTurnOpts): Promise<RunAITurnResult> {
   const { conversationId } = input
@@ -66,13 +70,16 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     .select("*")
     .eq("tenant_id", tenantId)
     .maybeSingle()
-  if (!config || !config.ai_enabled) return { status: "skipped", reason: "disabled" }
+  // Disparo manual (forceFlowId) ignora o master switch — é uma ação explícita do
+  // atendente/campanha, não a auto-resposta a um inbound que o ai_enabled governa.
+  if (!config) return { status: "skipped", reason: "disabled" }
+  if (!config.ai_enabled && !opts?.forceFlowId) return { status: "skipped", reason: "disabled" }
 
   // ── 2) Conversa + contato + guardas ────────────────────────
   const { data: convData } = await supabaseAdmin
     .from("chat_conversations")
     .select(`
-      id, contact_id, stage_id, channel, from_ad_meta, is_group, assigned_to, ai_handling, metadata, department_id,
+      id, contact_id, stage_id, channel, instance_id, from_ad_meta, is_group, assigned_to, ai_handling, metadata, department_id,
       chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel, bsuid )
     `)
     .eq("id", conversationId)
@@ -80,9 +87,20 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     .maybeSingle()
 
   if (!convData || convData.is_group || !convData.contact_id) return { status: "skipped", reason: "not_eligible" }
-  if (convData.assigned_to) return { status: "skipped", reason: "human_assigned" }
+  // Guards de inbound (atendente atribuído / já roteada) NÃO se aplicam ao disparo manual.
+  if (!opts?.forceFlowId && convData.assigned_to) return { status: "skipped", reason: "human_assigned" }
   const convMeta = (convData.metadata as Record<string, unknown> | null) ?? {}
-  if (convMeta.ai_routed) return { status: "skipped", reason: "already_routed" }
+  if (!opts?.forceFlowId && convMeta.ai_routed) return { status: "skipped", reason: "already_routed" }
+
+  // Sinais que o matcher de gatilho usa (canal/instância/retorno/anúncio).
+  const adMeta = convData.from_ad_meta as { sourceId?: string | null } | null
+  const matchSig: MatchSignals = {
+    channel:    convData.channel,
+    instanceId: convData.instance_id,
+    isReopened: input.signals?.isReopened,
+    fromAd:     !!adMeta,
+    adId:       adMeta?.sourceId ?? null,
+  }
 
   const contact = convData.chat_contacts as unknown as ContactRow | null
   if (!contact) return { status: "skipped", reason: "no_contact" }
@@ -140,6 +158,15 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   let flowResult: FlowResult | null = null
   let activeFlowId: string | null = null
 
+  // 6.0) Disparo ATIVO/manual — roda o fluxo escolhido e encerra (não cai no gatilho/agente).
+  if (opts?.forceFlowId) {
+    const flow = await loadStartableFlow(tenantId, opts.forceFlowId)
+    if (!flow) return { status: "skipped", reason: "flow_unavailable" }
+    const run    = await startFlowRun(tenantId, conversationId, flow)  // reseta o run por conversation_id
+    activeFlowId = flow.id
+    flowResult   = await runFlow(flowInput, flow, run)
+  } else {
+
   // 6a) Fluxo de retorno FIXADO (vínculo='ai' marcou metadata.ai_pinned_flow no
   // reopen). Tem precedência sobre run pendente e sobre o gatilho — o tenant
   // escolheu ESTE fluxo dedicado (sem o filtro de lifecycle do fluxo de captação).
@@ -171,7 +198,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
         .update({ status: "done", updated_at: new Date().toISOString() })
         .eq("id", existingRun.id)
       const isNewContact = history.length <= 1
-      const fresh = await findFlowToStart(tenantId, incomingText, isNewContact)
+      const fresh = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
       if (fresh) {
         const run    = await startFlowRun(tenantId, conversationId, fresh)
         activeFlowId = fresh.id
@@ -182,13 +209,14 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     // "Contato novo" = é a 1ª mensagem da conversa. O histórico JÁ inclui a
     // mensagem que acabou de chegar, então a 1ª vez vem com length <= 1.
     const isNewContact = history.length <= 1
-    const flow = await findFlowToStart(tenantId, incomingText, isNewContact)
+    const flow = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
     if (flow) {
       const run    = await startFlowRun(tenantId, conversationId, flow)
       activeFlowId = flow.id
       flowResult   = await runFlow(flowInput, flow, run)
     }
   }
+  } // fim do bloco receptivo (não-forçado)
 
   if (flowResult) {
     await persistStudioRun({

@@ -37,6 +37,7 @@ export type {
   FlowGraph, FlowNode, FlowEdge, FlowNodeType, FlowTrigger,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
 } from "@/lib/ai-v2/flow/types"
+import type { FlowTrigger as _FlowTrigger } from "@/lib/ai-v2/flow/types"
 
 export interface StudioFlowSummary {
   id:         string
@@ -44,6 +45,7 @@ export interface StudioFlowSummary {
   status:     "draft" | "published" | "archived"
   active:     boolean
   version:    number
+  trigger:    _FlowTrigger | null
   updated_at: string
 }
 

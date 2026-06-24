@@ -1,10 +1,9 @@
 import { redirect } from "next/navigation"
-import Link from "next/link"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
-import { PipelineConfigClient } from "@/components/kanban/pipeline-config-client"
-import { KanbanAppearance } from "@/components/kanban/kanban-appearance"
-import { Settings, ChevronLeft, ChevronRight } from "lucide-react"
+import { FunnelsManagerClient, type FunnelSummary } from "@/components/kanban/funnels-manager-client"
+
+export const dynamic = "force-dynamic"
 
 export default async function KanbanConfigPage() {
   const session = await auth()
@@ -13,74 +12,37 @@ export default async function KanbanConfigPage() {
 
   const tenantId = session.user.tenantId
 
-  const [{ data: pipelines }, { data: stages }, { data: stageStats }, { data: cfg }] = await Promise.all([
-    supabaseAdmin
-      .from("pipelines")
-      .select("*")
-      .eq("tenant_id", tenantId)
-      .order("position"),
-    supabaseAdmin
-      .from("pipeline_stages")
-      .select("*")
-      .eq("tenant_id", tenantId)
-      .order("position"),
-    supabaseAdmin
-      .from("chat_conversations")
-      .select("stage_id")
-      .eq("tenant_id", tenantId)
-      .not("stage_id", "is", null),
-    supabaseAdmin
-      .from("tenant_config")
-      .select("kanban_tinted_columns")
-      .eq("tenant_id", tenantId)
-      .maybeSingle(),
+  const [{ data: pipelines }, { data: stages }, { data: convs }, { data: deals }, { data: cfg }] = await Promise.all([
+    supabaseAdmin.from("pipelines").select("id, name, color, is_default, position").eq("tenant_id", tenantId).eq("active", true).order("position"),
+    supabaseAdmin.from("pipeline_stages").select("id, pipeline_id, color, position").eq("tenant_id", tenantId).order("position"),
+    supabaseAdmin.from("chat_conversations").select("pipeline_id").eq("tenant_id", tenantId).not("pipeline_id", "is", null),
+    supabaseAdmin.from("tenant_deals").select("pipeline_id").eq("tenant_id", tenantId).eq("status", "open").not("pipeline_id", "is", null),
+    supabaseAdmin.from("tenant_config").select("kanban_tinted_columns").eq("tenant_id", tenantId).maybeSingle(),
   ])
 
-  const stageCount: Record<string, number> = {}
-  for (const s of stageStats ?? []) {
-    const key = (s as { stage_id: string | null }).stage_id
-    if (key) stageCount[key] = (stageCount[key] ?? 0) + 1
+  const tally = (rows: { pipeline_id: string | null }[] | null) => {
+    const m: Record<string, number> = {}
+    for (const r of rows ?? []) if (r.pipeline_id) m[r.pipeline_id] = (m[r.pipeline_id] ?? 0) + 1
+    return m
+  }
+  const convBy = tally(convs as { pipeline_id: string | null }[] | null)
+  const dealBy = tally(deals as { pipeline_id: string | null }[] | null)
+
+  const stagesBy: Record<string, { color: string; position: number }[]> = {}
+  for (const s of (stages ?? []) as { pipeline_id: string; color: string; position: number }[]) {
+    (stagesBy[s.pipeline_id] ??= []).push({ color: s.color, position: s.position })
   }
 
-  return (
-    <div className="min-h-full bg-slate-50">
+  const funnels: FunnelSummary[] = ((pipelines ?? []) as { id: string; name: string; color: string; is_default: boolean }[]).map((p) => {
+    const st = (stagesBy[p.id] ?? []).sort((a, b) => a.position - b.position)
+    return {
+      id: p.id, name: p.name, color: p.color, is_default: p.is_default,
+      stageCount: st.length,
+      stageColors: st.map((s) => s.color).slice(0, 8),
+      convCount: convBy[p.id] ?? 0,
+      dealCount: dealBy[p.id] ?? 0,
+    }
+  })
 
-      <div className="bg-white border-b border-slate-200 sticky top-0 z-10 px-6 py-3.5 flex items-center gap-3">
-        <Link
-          href="/kanban"
-          className="size-8 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center shrink-0 transition-colors"
-        >
-          <ChevronLeft className="size-4 text-slate-600" />
-        </Link>
-        <div className="flex items-center gap-2 text-xs">
-          <Link href="/kanban" className="text-slate-400 hover:text-slate-600">Kanban</Link>
-          <ChevronRight className="size-3 text-slate-300" />
-          <span className="font-semibold text-slate-900">Configuração</span>
-        </div>
-      </div>
-
-      <div className="bg-white border-b border-slate-200 px-6 py-5">
-        <div className="flex items-center gap-3">
-          <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center">
-            <Settings className="size-5 text-primary-600" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Configurar funis</h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Crie quantos funis quiser. Adicione, remova ou reordene etapas livremente.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="px-6 py-6">
-        <KanbanAppearance initialTinted={cfg?.kanban_tinted_columns ?? false} />
-        <PipelineConfigClient
-          pipelines={pipelines ?? []}
-          stages={stages ?? []}
-          stageCount={stageCount}
-        />
-      </div>
-    </div>
-  )
+  return <FunnelsManagerClient funnels={funnels} tinted={cfg?.kanban_tinted_columns ?? false} />
 }

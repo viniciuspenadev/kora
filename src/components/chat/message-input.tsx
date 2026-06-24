@@ -229,7 +229,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
 
   // Janela de 24h fechada (Oficial): só template aprovado reabre a conversa.
   if (windowClosed) {
-    return <ClosedWindowComposer conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} />
+    return <ClosedWindowGate conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} />
   }
 
   return (
@@ -675,7 +675,27 @@ function renderTemplate(body: string, params: Record<string, string>): string {
   return body.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, k) => params[k]?.trim() || `{{${k}}}`)
 }
 
-function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName }: { conversationId: string; neverOpened: boolean; contactFirstName: string }) {
+// Janela fechada — alterna entre o FORM de template e um input bloqueado (recolhido) com
+// botão pra reabrir o disparo. O usuário fecha o form e vê a conversa sem o painel ocupando.
+function ClosedWindowGate({ conversationId, neverOpened, contactFirstName }: { conversationId: string; neverOpened: boolean; contactFirstName: string }) {
+  const [open, setOpen] = useState(true)
+  if (open) return <ClosedWindowComposer conversationId={conversationId} neverOpened={neverOpened} contactFirstName={contactFirstName} onClose={() => setOpen(false)} />
+  return (
+    <div className="border-t border-slate-200 bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <div className="flex items-center gap-2">
+        <div className="flex-1 flex items-center gap-2 h-10 px-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-400 select-none cursor-not-allowed" title="Janela de 24h fechada — só dá pra enviar um template aprovado.">
+          <Lock className="size-3.5 shrink-0" />
+          <span className="text-xs truncate">Janela fechada — só template aprovado.</span>
+        </div>
+        <button onClick={() => setOpen(true)} className="h-10 px-3.5 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white inline-flex items-center gap-1.5 shrink-0 transition-colors">
+          <Send className="size-3.5" /> Enviar template
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName, onClose }: { conversationId: string; neverOpened: boolean; contactFirstName: string; onClose?: () => void }) {
   const [templates, setTemplates] = useState<InboxTemplate[] | null>(null)
   const [selected, setSelected]   = useState("")
   const [params, setParams]       = useState<Record<string, string>>({})
@@ -735,11 +755,12 @@ function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName }:
     <div className="border-t border-slate-200 bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <div className="flex items-start gap-2 mb-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
         <Lock className="size-4 shrink-0 mt-0.5" />
-        <span>
+        <span className="flex-1">
           {neverOpened
             ? <>Conversa nova no número oficial. Inicie com um <strong>template aprovado</strong> — o texto livre libera quando o cliente responder.</>
             : <>Janela de 24h fechada. Pra reabrir a conversa, envie um <strong>template aprovado</strong>. O texto livre volta assim que o cliente responder.</>}
         </span>
+        {onClose && <button type="button" onClick={onClose} title="Fechar" className="shrink-0 -mt-0.5 -mr-0.5 size-6 grid place-items-center rounded-md text-amber-700 hover:bg-amber-100 transition-colors"><X className="size-3.5" /></button>}
       </div>
 
       {templates === null ? (

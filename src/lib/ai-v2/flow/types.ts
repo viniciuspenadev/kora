@@ -185,8 +185,18 @@ export interface MoveStageNodeConfig {
 
 // ── Trigger (quando o fluxo dispara) ──
 export interface FlowTrigger {
-  type:      "any_message" | "keyword" | "new_contact"
-  keywords?: string[]
+  type:       "any_message" | "keyword" | "new_contact" | "reopened" | "from_ad"
+  keywords?:  string[]
+  /** Match da palavra-chave: "contains" (default, substring) | "exact" (palavra inteira). Ambos ignoram acento. */
+  keywordMatch?: "contains" | "exact"
+  /** receptivo (escuta inbound) | ativo (só disparo manual/campanha — NÃO casa no inbound). Default: receptive. */
+  mode?:      "receptive" | "active"
+  /** Filtro de canal (ausente/vazio = qualquer). Ex: ["whatsapp", "site", "instagram"]. */
+  channels?:  string[]
+  /** Filtro de instância/número (ausente/vazio = qualquer). Ids de whatsapp_instances. */
+  instances?: string[]
+  /** Só p/ type "from_ad": mira anúncios específicos (sourceId). Ausente/vazio = qualquer anúncio. */
+  adIds?:     string[]
 }
 
 // ── Linhas do banco ──

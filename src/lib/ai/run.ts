@@ -48,6 +48,8 @@ export interface RunAITurnInput {
   /** Chamado SÓ depois que todos os gates de elegibilidade passaram (a IA vai mesmo
    *  processar) — pra enviar o "digitando…" de forma honesta, não-fantasma. */
   onWillRespond?: () => void | Promise<void>
+  /** Sinais do inbound pro matcher de gatilho do Studio v2 (ex: conversa reaberta). */
+  signals?: { isReopened?: boolean }
 }
 
 export type RunAITurnResult =

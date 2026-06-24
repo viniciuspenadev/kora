@@ -31,7 +31,7 @@ export function PlansClient({ plans, modules, tenantCount }: Props) {
   const [editing, setEditing] = useState<Plan | "new" | null>(null)
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-canvas">
       <div className="bg-white border-b border-slate-200 px-6 py-5 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center">

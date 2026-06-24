@@ -52,7 +52,7 @@ export default async function ContatosPage() {
   const withTags = enrichedContacts.filter((c) => c.tag_ids.length > 0).length
 
   return (
-    <div className="min-h-full bg-slate-50">
+    <div className="min-h-full bg-canvas">
 
       <div className="bg-white border-b border-slate-200 px-6 py-5">
         <div className="flex items-center gap-3">

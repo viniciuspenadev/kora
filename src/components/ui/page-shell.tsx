@@ -32,7 +32,7 @@ export function PageShell({
   children,
 }: PageShellProps) {
   return (
-    <div className="min-h-full bg-slate-50">
+    <div className="min-h-full bg-canvas">
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 py-5">
         <div className="flex items-center gap-3">
           {Icon && (

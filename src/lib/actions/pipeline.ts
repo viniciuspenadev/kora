@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope } from "@/lib/visibility"
 import { resolveLifecycle } from "@/lib/lifecycle-stage"
 import { syncActiveDeal } from "@/lib/crm/deals"
+import { getBlueprint } from "@/lib/templates/funnels"
 import { revalidatePath } from "next/cache"
 
 // Select dos cards do kanban (espelha o da página). Inclui department_id pro
@@ -169,6 +170,43 @@ export async function createPipeline(name: string, description?: string, color?:
   return { id: data.id }
 }
 
+/**
+ * Aplica um MODELO da biblioteca: cria o(s) funil(is) + etapas a partir do registry
+ * (`src/lib/templates/funnels.ts`). Modelo simples cria 1 funil; kit cria N de uma vez.
+ * blueprintId é validado server-side contra o catálogo. Retorna os ids criados.
+ */
+export async function applyFunnelTemplate(blueprintId: string): Promise<{ ids: string[] }> {
+  const session = await requireAdmin()
+  const t = session.user.tenantId
+  const bp = getBlueprint(blueprintId)
+  if (!bp) throw new Error("Modelo inválido")
+
+  const { data: last } = await supabaseAdmin
+    .from("pipelines").select("position").eq("tenant_id", t).order("position", { ascending: false }).limit(1).maybeSingle()
+  let pos = (last?.position ?? -1) + 1
+  const ids: string[] = []
+
+  for (const f of bp.funnels) {
+    const { data: pipe, error } = await supabaseAdmin.from("pipelines").insert({
+      tenant_id: t, name: f.name, color: f.color, position: pos++, created_by: session.user.id,
+    }).select("id").single()
+    if (error || !pipe) throw new Error(error?.message ?? "Erro ao criar funil")
+    const pid = (pipe as { id: string }).id
+    ids.push(pid)
+
+    const rows = f.stages.map((st, i) => ({
+      pipeline_id: pid, tenant_id: t, name: st.name, color: st.color, position: i,
+      probability_pct: st.probability_pct, is_won: st.is_won ?? false, is_lost: st.is_lost ?? false,
+      is_triage: st.is_triage ?? false, show_in_kanban: st.show_in_kanban ?? true,
+    }))
+    if (rows.length) { const { error: se } = await supabaseAdmin.from("pipeline_stages").insert(rows); if (se) throw new Error(se.message) }
+  }
+
+  revalidatePath("/kanban")
+  revalidatePath("/kanban/configuracao")
+  return { ids }
+}
+
 export async function updatePipeline(id: string, data: Partial<{ name: string; description: string | null; color: string }>) {
   const session = await requireAdmin()
 
@@ -205,6 +243,25 @@ export async function deletePipeline(id: string) {
   }
 
   await supabaseAdmin.from("pipelines").delete().eq("id", id).eq("tenant_id", session.user.tenantId)
+
+  revalidatePath("/kanban")
+  revalidatePath("/kanban/configuracao")
+}
+
+/**
+ * Arquiva um funil (some do board e da gestão; histórico intacto) — NÃO exclui de verdade.
+ * Usa `pipelines.active` (já existe no schema). Padrão não pode ser arquivado.
+ */
+export async function archivePipeline(id: string) {
+  const session = await requireAdmin()
+
+  const { data: p } = await supabaseAdmin
+    .from("pipelines").select("is_default").eq("id", id).eq("tenant_id", session.user.tenantId).single()
+  if (p?.is_default) throw new Error("Não é possível arquivar o funil padrão. Defina outro como padrão antes.")
+
+  await supabaseAdmin
+    .from("pipelines").update({ active: false, updated_at: new Date().toISOString() })
+    .eq("id", id).eq("tenant_id", session.user.tenantId)
 
   revalidatePath("/kanban")
   revalidatePath("/kanban/configuracao")
@@ -286,18 +343,41 @@ export async function updateStage(
 
 export async function deleteStage(id: string) {
   const session = await requireAdmin()
+  const t = session.user.tenantId
 
-  const { count } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("id", { count: "exact", head: true })
-    .eq("stage_id", id)
-    .eq("tenant_id", session.user.tenantId)
+  const { data: stage } = await supabaseAdmin
+    .from("pipeline_stages").select("pipeline_id, is_won, is_lost, is_triage")
+    .eq("id", id).eq("tenant_id", t).maybeSingle()
+  if (!stage) throw new Error("Etapa não encontrada")
+  const s = stage as { pipeline_id: string; is_won: boolean; is_lost: boolean; is_triage: boolean }
 
-  if ((count ?? 0) > 0) {
-    throw new Error(`Estágio tem ${count} conversa(s). Mova-as antes de excluir.`)
+  // Itens vivos: conversas E negócios. A FK é ON DELETE SET NULL — sem este guard, excluir
+  // uma etapa com negócios zeraria o stage_id deles silenciosamente (órfãos, somem do board).
+  const [{ count: convCount }, { count: dealCount }] = await Promise.all([
+    supabaseAdmin.from("chat_conversations").select("id", { count: "exact", head: true }).eq("stage_id", id).eq("tenant_id", t),
+    supabaseAdmin.from("tenant_deals").select("id", { count: "exact", head: true }).eq("stage_id", id).eq("tenant_id", t),
+  ])
+  if ((convCount ?? 0) > 0 || (dealCount ?? 0) > 0) {
+    const parts: string[] = []
+    if (convCount) parts.push(`${convCount} conversa(s)`)
+    if (dealCount) parts.push(`${dealCount} negócio(s)`)
+    throw new Error(`Esta etapa tem ${parts.join(" e ")}. Mova para outra etapa antes de excluir.`)
   }
 
-  await supabaseAdmin.from("pipeline_stages").delete().eq("id", id).eq("tenant_id", session.user.tenantId)
+  // Proteção estrutural: não excluir a ÚNICA etapa de Ganho/Perda/Triagem do funil
+  // (senão "Ganhar"/"Perder"/roteamento de nova conversa ficam sem destino).
+  if (s.is_won || s.is_lost || s.is_triage) {
+    const flag = s.is_won ? "is_won" : s.is_lost ? "is_lost" : "is_triage"
+    const { count: siblings } = await supabaseAdmin
+      .from("pipeline_stages").select("id", { count: "exact", head: true })
+      .eq("pipeline_id", s.pipeline_id).eq("tenant_id", t).eq(flag, true).neq("id", id)
+    if ((siblings ?? 0) === 0) {
+      const label = s.is_won ? "Ganho" : s.is_lost ? "Perda" : "Triagem"
+      throw new Error(`Esta é a única etapa de ${label} do funil. Marque outra como ${label} antes de excluir.`)
+    }
+  }
+
+  await supabaseAdmin.from("pipeline_stages").delete().eq("id", id).eq("tenant_id", t)
   revalidatePath("/kanban")
   revalidatePath("/kanban/configuracao")
 }

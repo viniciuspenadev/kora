@@ -26,7 +26,7 @@ export function EmailsClient({ templates, tenants, defaultTestEmail }: Props) {
   const [testOpen, setTestOpen] = useState(false)
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-canvas">
       <div className="px-6 py-6">
         <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
           <div>

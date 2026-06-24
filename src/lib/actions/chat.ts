@@ -8,6 +8,7 @@ import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
+import { isWindowOpen } from "@/lib/channels/policy"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
 import { requireLimit } from "@/lib/limits"
@@ -349,7 +350,7 @@ export async function sendMessage(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -361,6 +362,16 @@ export async function sendMessage(
   if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
     throw new Error("Sem permissão para responder nesta conversa. Peça para o atendente atribuído te adicionar como participante.")
   }
+
+  // Gate fail-closed da janela de sessão (motor de canal, lib/channels/policy): fora da janela
+  // o texto livre é bloqueado — só template reabre. Nota privada é interna (isenta). A UI já
+  // avisa, mas a regra de verdade mora aqui — frontend é manipulável.
+  const sendInst = (conv as unknown as { whatsapp_instances?: { provider: string | null } | { provider: string | null }[] | null }).whatsapp_instances
+  const sendProvider = Array.isArray(sendInst) ? (sendInst[0]?.provider ?? null) : (sendInst?.provider ?? null)
+  if (!isPrivateNote && !isWindowOpen((conv as { channel: string | null }).channel, sendProvider, (conv as { last_inbound_at: string | null }).last_inbound_at)) {
+    throw new Error("Janela de atendimento fechada — envie um template aprovado pra reabrir a conversa.")
+  }
+
   const isPool = assignedTo === null
 
   // Pool — primeiro a responder vira responsável (auto-assign).
@@ -596,12 +607,20 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
 
   if (!conv) return { error: "Conversa não encontrada." }
+
+  // Gate fail-closed da janela de sessão (motor de canal) — fora da janela, mídia/texto livre
+  // é bloqueado; só template reabre. A UI já avisa; a regra de verdade mora aqui.
+  const mediaInst = (conv as unknown as { whatsapp_instances?: { provider: string | null } | { provider: string | null }[] | null }).whatsapp_instances
+  const mediaProvider = Array.isArray(mediaInst) ? (mediaInst[0]?.provider ?? null) : (mediaInst?.provider ?? null)
+  if (!isWindowOpen((conv as { channel: string | null }).channel, mediaProvider, (conv as { last_inbound_at: string | null }).last_inbound_at)) {
+    return { error: "Janela de atendimento fechada — envie um template aprovado pra reabrir a conversa." }
+  }
 
   // Mídia hoje só sai no WhatsApp. Em canais sem envio de mídia (site-chat),
   // bloqueia com mensagem clara em vez de tentar enviar pra um destino vazio.

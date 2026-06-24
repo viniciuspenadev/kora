@@ -2,7 +2,8 @@
 
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
 import { useRef } from "react"
-import { Trash2, Plus, Settings2, Sparkles } from "lucide-react"
+import { Trash2, Plus, Settings2, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone } from "lucide-react"
+import { SourceLogo } from "@/components/chat/source-logo"
 import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
@@ -928,34 +929,181 @@ function RouterConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch:
   )
 }
 
+// Canal do gatilho → glifo do SourceLogo (whatsapp/site/instagram/messenger).
+const CHANNEL_LOGO: Record<string, string> = {
+  whatsapp: "whatsapp_inbound", site: "webform", instagram: "instagram", messenger: "messenger",
+}
+
+function toggle(list: string[], v: string): string[] {
+  return list.includes(v) ? list.filter((x) => x !== v) : [...list, v]
+}
+
 export function FlowSettingsPanel({
-  triggerType, keywords, onType, onKeywords,
+  triggerType, keywords, mode, channels, instances,
+  channelOptions, instanceOptions, keywordMatch, adIds, adOptions,
+  onType, onKeywords, onMode, onChannels, onInstances, onKeywordMatch, onAds,
 }: {
   triggerType: string
   keywords: string
+  mode: "receptive" | "active"
+  channels: string[]
+  instances: string[]
+  channelOptions:  { key: string; label: string }[]
+  instanceOptions: { id: string; label: string; provider: "meta_cloud" | "baileys" }[]
+  keywordMatch: "contains" | "exact"
+  adIds: string[]
+  adOptions: { id: string; label: string }[]
   onType: (t: string) => void
   onKeywords: (k: string) => void
+  onMode: (m: "receptive" | "active") => void
+  onChannels: (c: string[]) => void
+  onInstances: (i: string[]) => void
+  onKeywordMatch: (m: "contains" | "exact") => void
+  onAds: (a: string[]) => void
 }) {
+  // Filtro só faz sentido com 2+ opções — quem tem 1 canal/1 número não escolhe nada.
+  const showChannels  = channelOptions.length  > 1
+  const showInstances = instanceOptions.length > 1
+
   return (
     <div className="space-y-4">
       <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
         <Settings2 className="size-3.5" /> Configuração do fluxo
       </h3>
+
+      {/* Modo: receptivo (escuta) vs ativo (disparo manual/campanha) */}
       <div>
-        <label className={LABEL}>Quando dispara</label>
-        <select className={INPUT} value={triggerType} onChange={(e) => onType(e.target.value)}>
-          <option value="keyword">Palavra-chave</option>
-          <option value="any_message">Qualquer mensagem</option>
-          <option value="new_contact">Contato novo</option>
-        </select>
-      </div>
-      {triggerType === "keyword" && (
-        <div>
-          <label className={LABEL}>Palavras-chave</label>
-          <input className={INPUT} value={keywords} onChange={(e) => onKeywords(e.target.value)} placeholder="oi, menu, começar" />
-          <p className="text-[11px] text-slate-400 mt-1">Separe por vírgula.</p>
+        <label className={LABEL}>Modo</label>
+        <div className="grid grid-cols-2 gap-1.5">
+          {([
+            { v: "receptive", icon: Inbox,     title: "Receptivo", desc: "Responde mensagens" },
+            { v: "active",    icon: Megaphone,  title: "Ativo",     desc: "Disparo manual / campanha" },
+          ] as const).map((o) => {
+            const on = mode === o.v
+            return (
+              <button key={o.v} type="button" onClick={() => onMode(o.v)}
+                className={`flex flex-col items-start gap-0.5 rounded-lg border px-2.5 py-2 text-left transition ${
+                  on ? "border-primary bg-primary-50/60 ring-1 ring-primary/20" : "border-slate-200 hover:border-slate-300"}`}>
+                <span className={`flex items-center gap-1.5 text-[13px] font-semibold ${on ? "text-primary-700" : "text-slate-700"}`}>
+                  <o.icon className="size-3.5" /> {o.title}
+                </span>
+                <span className="text-[11px] text-slate-400">{o.desc}</span>
+              </button>
+            )
+          })}
         </div>
+      </div>
+
+      {mode === "active" ? (
+        <p className="text-[11px] text-slate-500 leading-relaxed rounded-lg bg-slate-50 border border-slate-200 px-3 py-2.5">
+          <Megaphone className="inline size-3.5 mr-1 -mt-0.5 text-slate-400" />
+          Não responde sozinho. É disparado por um atendente dentro da conversa ou por uma campanha.
+        </p>
+      ) : (
+        <>
+          <div>
+            <label className={LABEL}>Quando dispara</label>
+            <select className={INPUT} value={triggerType} onChange={(e) => onType(e.target.value)}>
+              <option value="keyword">Palavra-chave</option>
+              <option value="any_message">Qualquer mensagem</option>
+              <option value="new_contact">Contato novo</option>
+              <option value="reopened">Retornou (conversa reaberta)</option>
+              <option value="from_ad">Veio de anúncio (Meta)</option>
+            </select>
+          </div>
+          {triggerType === "keyword" && (
+            <div>
+              <label className={LABEL}>Palavras-chave</label>
+              <input className={INPUT} value={keywords} onChange={(e) => onKeywords(e.target.value)} placeholder="oi, menu, começar" />
+              <p className="text-[11px] text-slate-400 mt-1">Separe por vírgula. Ignora acento (olá = ola).</p>
+              <div className="grid grid-cols-2 gap-1.5 mt-2">
+                {([
+                  { v: "contains", title: "Contém",      desc: "casa em qualquer parte" },
+                  { v: "exact",    title: "Palavra exata", desc: "a palavra inteira" },
+                ] as const).map((o) => {
+                  const on = keywordMatch === o.v
+                  return (
+                    <button key={o.v} type="button" onClick={() => onKeywordMatch(o.v)}
+                      className={`flex flex-col items-start gap-0.5 rounded-lg border px-2.5 py-1.5 text-left transition ${
+                        on ? "border-primary bg-primary-50/60 ring-1 ring-primary/20" : "border-slate-200 hover:border-slate-300"}`}>
+                      <span className={`text-[12px] font-semibold ${on ? "text-primary-700" : "text-slate-700"}`}>{o.title}</span>
+                      <span className="text-[10px] text-slate-400">{o.desc}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          {triggerType === "from_ad" && (
+            <div>
+              <label className={LABEL}>De qual anúncio</label>
+              {adOptions.length === 0 ? (
+                <p className="text-[11px] text-slate-400 leading-relaxed rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                  Dispara pra qualquer conversa que vier de um anúncio Meta (Click-to-WhatsApp).
+                  Ainda não há anúncios registrados pra mirar um específico.
+                </p>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-1.5">
+                    {adOptions.map((a) => {
+                      const on = adIds.includes(a.id)
+                      return (
+                        <button key={a.id} type="button" onClick={() => onAds(toggle(adIds, a.id))}
+                          title={a.id}
+                          className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium max-w-full transition ${
+                            on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
+                          <Megaphone className="size-3.5 shrink-0" /> <span className="truncate">{a.label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer anúncio.</p>
+                </>
+              )}
+            </div>
+          )}
+
+          {showChannels && (
+            <div>
+              <label className={LABEL}>Em quais canais</label>
+              <div className="flex flex-wrap gap-1.5">
+                {channelOptions.map((c) => {
+                  const on = channels.includes(c.key)
+                  return (
+                    <button key={c.key} type="button" onClick={() => onChannels(toggle(channels, c.key))}
+                      className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium transition ${
+                        on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
+                      <SourceLogo source={CHANNEL_LOGO[c.key] ?? "manual"} size={14} /> {c.label}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer canal.</p>
+            </div>
+          )}
+
+          {showInstances && (
+            <div>
+              <label className={LABEL}>Em quais números</label>
+              <div className="flex flex-wrap gap-1.5">
+                {instanceOptions.map((i) => {
+                  const on = instances.includes(i.id)
+                  const Badge = i.provider === "meta_cloud" ? BadgeCheck : Smartphone
+                  return (
+                    <button key={i.id} type="button" onClick={() => onInstances(toggle(instances, i.id))}
+                      className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium transition ${
+                        on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
+                      <Badge className={`size-3.5 ${i.provider === "meta_cloud" ? "text-sky-500" : "text-slate-400"}`} /> {i.label}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer número.</p>
+            </div>
+          )}
+        </>
       )}
+
       <p className="text-[11px] text-slate-400 leading-relaxed border-t border-slate-100 pt-3">
         Clique num nó pra configurá-lo. Arraste de uma bolinha à outra pra conectar os passos.
       </p>

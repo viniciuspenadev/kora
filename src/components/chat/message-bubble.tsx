@@ -68,6 +68,8 @@ interface Props {
   onReply?:     (msg: ChatMessage) => void
   /** Reagir a esta mensagem com um emoji. */
   onReact?:     (msg: ChatMessage, emoji: string) => void
+  /** Clique direito → menu de contexto (resolvido pelo ChatPanel). */
+  onContextMenu?: (e: React.MouseEvent, msg: ChatMessage) => void
   /** Reações que colam NESTA bolha (resolvidas pelo ChatPanel por whatsapp_msg_id). */
   reactions?:   { emoji: string; fromAgent: boolean }[]
 }
@@ -136,7 +138,7 @@ function scrollToQuoted(msgId: string) {
   setTimeout(() => el.classList.remove("ring-2", "ring-primary", "ring-offset-2"), 1600)
 }
 
-export function MessageBubble({ message, agentName, senderLabel, onReply, onReact, reactions }: Props) {
+export function MessageBubble({ message, agentName, senderLabel, onReply, onReact, onContextMenu, reactions }: Props) {
   const isIncoming = message.sender_type === "contact"
   const isSystem   = message.sender_type === "system"
   const isNote     = message.is_private_note
@@ -416,6 +418,7 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
         onPointerUp={endPress}
         onPointerLeave={endPress}
         onPointerCancel={endPress}
+        onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}
         className={`relative max-w-[75%] rounded-2xl px-4 py-2.5 transition-shadow ${
           isIncoming
             ? "bg-white border border-slate-200 rounded-bl-md shadow-sm"

@@ -2,6 +2,7 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
+import { loadTenantChannels, loadTenantInstances, loadTenantAds } from "@/lib/studio/trigger-meta"
 import { FlowEditorCanvas } from "./editor-canvas"
 import type { StudioFlowFull } from "@/types/studio"
 
@@ -36,7 +37,13 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   if (!flow) redirect("/studio/fluxos")
 
   // Gate (god mode): binding "Dono da conversa" nos nós de agendamento (beta).
-  const ownerRouting = await hasModule(tenantId, "agenda_owner_routing")
+  // + opções de canal/instância pro filtro do gatilho (derivadas do tenant).
+  const [ownerRouting, channels, instances, ads] = await Promise.all([
+    hasModule(tenantId, "agenda_owner_routing"),
+    loadTenantChannels(tenantId),
+    loadTenantInstances(tenantId),
+    loadTenantAds(tenantId),
+  ])
 
   return (
     <FlowEditorCanvas
@@ -48,6 +55,9 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
       services={(svcList ?? []) as { id: string; name: string }[]}
       resources={(resList ?? []) as { id: string; name: string }[]}
       ownerRouting={ownerRouting}
+      channels={channels}
+      instances={instances}
+      ads={ads}
     />
   )
 }

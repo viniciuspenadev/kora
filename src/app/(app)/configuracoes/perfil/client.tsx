@@ -20,7 +20,7 @@ export function ProfileClient({ profile, sessions }: Props) {
   const router = useRouter()
 
   return (
-    <div className="min-h-full bg-slate-50">
+    <div className="min-h-full bg-canvas">
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 space-y-5">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Meu perfil</h1>

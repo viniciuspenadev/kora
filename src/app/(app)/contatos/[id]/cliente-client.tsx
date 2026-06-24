@@ -48,7 +48,7 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
   const canNewDeal = record.crmEnabled && record.pipelines.length > 0 && !!conversations[0]
 
   return (
-    <div className="min-h-full bg-slate-50">
+    <div className="min-h-full bg-canvas">
       {/* Header */}
       <div className="bg-white border-b border-slate-200 px-4 sm:px-6 pt-4 pb-5">
         <Link href="/contatos" className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-slate-700 transition-colors">

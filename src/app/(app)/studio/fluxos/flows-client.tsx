@@ -3,12 +3,42 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { Plus, Loader2, Network, Pencil, Archive, Sparkles, X, Pause, Play } from "lucide-react"
+import { Plus, Loader2, Network, Pencil, Archive, Sparkles, X, Pause, Play, Inbox, Megaphone } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state"
 import { StatusDot } from "@/components/ui/status-dot"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
+import { SourceLogo } from "@/components/chat/source-logo"
 import { createFlow, createFlowWithAI, deleteFlow, setFlowActive } from "@/lib/actions/studio/flows"
-import type { StudioFlowSummary } from "@/types/studio"
+import type { StudioFlowSummary, FlowTrigger } from "@/types/studio"
+
+const CHANNEL_LOGO: Record<string, string> = {
+  whatsapp: "whatsapp_inbound", site: "webform", instagram: "instagram", messenger: "messenger",
+}
+const TRIGGER_LABEL: Record<string, string> = {
+  keyword: "Palavra-chave", any_message: "Qualquer mensagem", new_contact: "Contato novo", reopened: "Retornou",
+  from_ad: "Veio de anúncio",
+}
+
+// Tira de metadados do gatilho: selo de modo + canais (logos) + tipo de disparo.
+function TriggerMeta({ trigger }: { trigger: FlowTrigger | null }) {
+  const active   = trigger?.mode === "active"
+  const channels = trigger?.channels ?? []
+  return (
+    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+      <span className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-semibold ${
+        active ? "bg-amber-50 text-amber-700 ring-1 ring-amber-200" : "bg-sky-50 text-sky-700 ring-1 ring-sky-200"}`}>
+        {active ? <Megaphone className="size-3" /> : <Inbox className="size-3" />}
+        {active ? "Ativo" : "Receptivo"}
+      </span>
+      {channels.length > 0
+        ? channels.map((c) => <SourceLogo key={c} source={CHANNEL_LOGO[c] ?? "manual"} size={14} />)
+        : <span className="text-[10px] text-slate-400">Todos os canais</span>}
+      {!active && trigger?.type && (
+        <span className="text-[10px] text-slate-400">· {TRIGGER_LABEL[trigger.type] ?? trigger.type}</span>
+      )}
+    </div>
+  )
+}
 
 export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
   const router = useRouter()
@@ -109,6 +139,7 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
                       : <StatusDot tone="warning" label="Rascunho" />}
                   <span className="text-[10px] text-slate-400 tabular-nums">v{f.version}</span>
                 </div>
+                <TriggerMeta trigger={f.trigger} />
               </div>
               {f.status === "published" && (
                 <button

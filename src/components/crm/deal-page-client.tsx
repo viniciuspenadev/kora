@@ -6,38 +6,48 @@ import Link from "next/link"
 import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
-  TrendingUp, TrendingDown, Briefcase,
+  TrendingUp, TrendingDown, Briefcase, Calendar, AlertCircle, ChevronDown, Route, ArrowRightLeft,
 } from "lucide-react"
 import {
-  moveDeal, cancelDeal, reopenDeal, updateDeal, addDealNote,
+  moveDeal, moveDealById, openDeal, cancelDeal, reopenDeal, updateDeal, addDealNote,
   type DealDetail, type DealEventView,
 } from "@/lib/actions/deals"
 import { createTask, setTaskDone, type TaskRow } from "@/lib/actions/tasks"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
+import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
-  open:     { label: "Aberto",    cls: "bg-primary-50 text-primary-700 border-primary-200" },
-  won:      { label: "Ganho",     cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  lost:     { label: "Perdido",   cls: "bg-red-50 text-red-700 border-red-200" },
-  canceled: { label: "Cancelado", cls: "bg-slate-100 text-slate-500 border-slate-200" },
+  open:     { label: "Em negociação", cls: "bg-primary-50 text-primary-700 border-primary-200" },
+  won:      { label: "Ganho",         cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  lost:     { label: "Perdido",       cls: "bg-red-50 text-red-700 border-red-200" },
+  canceled: { label: "Cancelado",     cls: "bg-slate-100 text-slate-500 border-slate-200" },
 }
 const CANCEL_REASONS = ["Criado por engano", "Duplicado", "Cliente desistiu", "Fora do perfil", "Outro"]
 const LOST_REASONS   = ["Preço", "Sem resposta", "Comprou concorrente", "Fora do perfil", "Sem orçamento", "Outro"]
 
+const HBTN = "inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg border transition-colors disabled:opacity-50"
+
 const shortDate = (iso: string | null) => iso ? new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "2-digit" }) : "—"
 const fmtDue = (iso: string) => new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
-const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+const fmtDateTime = (iso: string) => { const d = new Date(iso); return `${d.toLocaleDateString("pt-BR")} às ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` }
 const agingDays = (iso: string | null) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null
-function dayLabel(iso: string): string {
-  const d = new Date(iso), now = new Date()
-  const same = (a: Date, b: Date) => a.toDateString() === b.toDateString()
-  if (same(d, now)) return "Hoje"
-  const y = new Date(now); y.setDate(now.getDate() - 1)
-  if (same(d, y)) return "Ontem"
-  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "long" })
+// "há 2 dias" — leitura rápida do quão recente foi a última interação.
+function relTime(iso: string | null): string {
+  if (!iso) return "—"
+  const diff = Date.now() - new Date(iso).getTime()
+  const days = Math.floor(diff / 86400000)
+  if (days <= 0) {
+    const h = Math.floor(diff / 3600000)
+    if (h <= 0) { const m = Math.floor(diff / 60000); return m <= 1 ? "agora" : `há ${m} min` }
+    return `há ${h}h`
+  }
+  if (days === 1) return "ontem"
+  if (days < 7)  return `há ${days} dias`
+  if (days < 30) return `há ${Math.floor(days / 7)} sem`
+  return `há ${Math.floor(days / 30)} mês${days >= 60 ? "es" : ""}`
 }
 
 export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskRow[] }) {
@@ -69,22 +79,28 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   const [reasonTxt, setReasonTxt] = useState("")
   const [pendingMove, setPendingMove] = useState<{ id: string; name: string } | null>(null)
 
-  // Filtro do log + dossiê compilado + FAB (nota/tarefa)
-  const [filter, setFilter] = useState<"all" | "notes" | "stages">("all")
-  const [openEvent, setOpenEvent] = useState<DealEventView | null>(null)
+  // Linha do tempo unificada (movimentações + notas + tarefas) + protocolo no modal + FAB.
+  const [filter, setFilter] = useState<FeedFilter>("all")
+  const [shown, setShown] = useState(8)
   const [openProtocol, setOpenProtocol] = useState<Protocol | null>(null)
+  const [flowModal, setFlowModal] = useState<null | "handoff" | "reclass">(null)
+  const [showDone, setShowDone] = useState(false)
   const [fabOpen, setFabOpen] = useState(false)
   const [activeModal, setActiveModal] = useState<"note" | "task" | null>(null)
 
   const isOpen = deal.status === "open"
   const st     = STATUS_META[deal.status] ?? STATUS_META.open
-  const aging  = isOpen ? agingDays(deal.stage_entered_at) : null
+  const stageAging = isOpen ? agingDays(deal.stage_entered_at) : null
+  const daysOpen   = agingDays(deal.created_at)
+  const lastTouch  = deal.lastMessageAt ?? deal.events[deal.events.length - 1]?.at ?? deal.created_at
 
-  const events = [...deal.events].reverse().filter((e) =>
-    filter === "all" ? true : filter === "notes" ? e.type === "note" : e.type !== "note")
-  const pendingTasks = tasks.filter((t) => t.status === "pending")
-  const doneTasks    = tasks.filter((t) => t.status !== "pending")
   const protocols    = buildProtocols(deal)
+  const feedAll      = buildFeed(deal, tasks, protocols)
+  const feed         = feedAll.filter((n) => matchFilter(n, filter))
+  const visibleFeed  = feed.slice(0, shown)
+  const pendingTasks = tasks.filter((t) => t.status === "pending")
+    .sort((a, b) => (a.due_at ?? "9999").localeCompare(b.due_at ?? "9999"))
+  const doneTasks    = tasks.filter((t) => t.status !== "pending")
 
   function saveName() {
     setEditName(false)
@@ -143,70 +159,136 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
     run(() => createTask({ dealId: deal.id, title: title.trim(), dueAt }))
   }
 
+  // Fluxo — entrada do funil destino (1ª etapa de funil). Reclassificar = mesmo negócio muda
+  // de funil. Handoff = abre um negócio NOVO no destino, ligado a este (jornada).
+  function entryStageOf(pid: string): string | null {
+    const p = deal.pipelines.find((x) => x.id === pid)
+    const entry = (p?.stages ?? []).filter((s) => s.show_in_kanban && !s.is_won && !s.is_lost).slice().sort((a, b) => a.position - b.position)[0]
+    return entry?.id ?? null
+  }
+  function doReclassify(pid: string) {
+    const sid = entryStageOf(pid); if (!sid) return
+    setFlowModal(null)
+    run(() => moveDealById(deal.id, sid))
+  }
+  function doHandoff(pid: string) {
+    if (!convId) return
+    const sid = entryStageOf(pid); if (!sid) return
+    setFlowModal(null)
+    start(async () => {
+      const r = await openDeal({ conversationId: convId, pipelineId: pid, stageId: sid, parentDealId: deal.id })
+      if ("error" in r) { alert(r.error); return }
+      router.push(`/negocios/${r.id}`)
+    })
+  }
+
   const ABTN = "inline-flex items-center gap-1 h-8 px-3 text-xs font-semibold rounded-lg border transition-colors disabled:opacity-50"
+  const contactName = deal.contact?.name || deal.contact?.push_name || "Sem nome"
 
   return (
-    <div className="min-h-[calc(100dvh-3.5rem)] bg-slate-50">
-      {/* ── Cabeçalho (full-width) ── */}
+    <div className="min-h-[calc(100dvh-3.5rem)] bg-canvas">
+      {/* ── Cabeçalho vivo (full-width) ── */}
       <div className="bg-white border-b border-slate-200">
         <div className="px-6 py-4">
           <Link href="/negocios" className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 mb-3">
             <ArrowLeft className="size-3.5" /> Negócios
           </Link>
 
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div className="min-w-0">
-              {editName ? (
-                <div className="flex items-center gap-1.5">
-                  <input autoFocus value={nameVal} onChange={(e) => setNameVal(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditName(false) }}
-                    className="text-xl font-bold text-slate-900 border-b-2 border-primary-300 focus:outline-none bg-transparent" />
-                  <button onClick={saveName} className="text-emerald-600"><Check className="size-4" /></button>
-                  <button onClick={() => setEditName(false)} className="text-slate-400"><X className="size-4" /></button>
+          <div className="flex items-center justify-between gap-x-8 gap-y-4 flex-wrap">
+            {/* Identidade + valor lado a lado (pessoa primeiro, WhatsApp-native) */}
+            <div className="flex items-center gap-x-6 gap-y-2 min-w-0 flex-wrap">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="size-14 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0 ring-1 ring-slate-200/70">
+                  {deal.contact?.profile_pic_url
+                    // eslint-disable-next-line @next/next/no-img-element
+                    ? <img src={deal.contact.profile_pic_url} alt="" className="size-14 object-cover" />
+                    : <User className="size-6 text-slate-400" />}
                 </div>
-              ) : (
-                <button onClick={() => { setNameVal(deal.name ?? ""); setEditName(true) }} className="group inline-flex items-center gap-2 text-left">
-                  <h1 className="text-xl font-bold text-slate-900">{deal.name?.trim() || "Negócio sem nome"}</h1>
-                  <Pencil className="size-3.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-                </button>
-              )}
-              <div className="flex items-center gap-2 mt-1 text-xs text-slate-500 flex-wrap">
-                <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border ${st.cls}`}>{st.label}</span>
-                {deal.pipeline_name && <span>{deal.pipeline_name}</span>}
-                {deal.estimated_value != null && deal.estimated_value > 0 && <span className="font-semibold text-slate-700">· {brl(deal.estimated_value)}</span>}
-                {aging != null && <span>· aberto há {aging}d</span>}
+                <div className="min-w-0">
+                  {deal.contact ? (
+                    <Link href={`/contatos/${deal.contact.id}`} className="block text-xl font-bold text-slate-900 hover:text-primary-700 truncate leading-tight">{contactName}</Link>
+                  ) : <h1 className="text-xl font-bold text-slate-900 truncate leading-tight">{contactName}</h1>}
+                  {editName ? (
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <input autoFocus value={nameVal} onChange={(e) => setNameVal(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditName(false) }}
+                        className="text-sm text-slate-600 border-b-2 border-primary-300 focus:outline-none bg-transparent" />
+                      <button onClick={saveName} className="text-emerald-600"><Check className="size-3.5" /></button>
+                      <button onClick={() => setEditName(false)} className="text-slate-400"><X className="size-3.5" /></button>
+                    </div>
+                  ) : (
+                    <button onClick={() => { setNameVal(deal.name ?? ""); setEditName(true) }} className="group inline-flex items-center gap-1.5 text-left mt-0.5">
+                      <span className="text-sm text-slate-500 truncate">{deal.name?.trim() || "Negócio sem nome"}</span>
+                      <Pencil className="size-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Valor + status, ao lado do nome */}
+              <div className="flex items-center gap-2.5 shrink-0">
+                {editValue ? (
+                  <span className="inline-flex items-center gap-1">
+                    <input autoFocus value={valueVal} onChange={(e) => setValueVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveValue(); if (e.key === "Escape") setEditValue(false) }} className="w-32 h-9 px-2 text-2xl font-bold text-right border border-primary-300 rounded-lg focus:outline-none" />
+                    <button onClick={saveValue} className="text-emerald-600"><Check className="size-4" /></button>
+                  </span>
+                ) : (
+                  <button onClick={() => { setValueVal(deal.estimated_value != null ? String(deal.estimated_value) : ""); setEditValue(true) }} className="group inline-flex items-center gap-1.5">
+                    <span className="text-[28px] leading-none font-bold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
+                    <Pencil className="size-3.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+                )}
+                <span className={`inline-flex items-center text-[11px] font-semibold px-2.5 py-1 rounded-full border ${st.cls}`}>{st.label}</span>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Ações — outline calmo, ícone carrega o tom */}
+            <div className="flex items-center gap-2 shrink-0">
               {pending && <Loader2 className="size-4 animate-spin text-slate-400" />}
+              {convId && <Link href={`/inbox?conversation=${convId}`} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><MessageSquare className="size-3.5 text-primary-500" /> Abrir conversa</Link>}
               {isOpen ? (
                 <>
-                  {wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${ABTN} border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100`}><Trophy className="size-3.5" /> Ganhar</button>}
-                  <button onClick={() => { setReasonSel(LOST_REASONS[0]); setCanceling(false); setLosing(true) }} disabled={!convId || pending} className={`${ABTN} border-slate-200 text-slate-600 hover:bg-slate-50`}><XCircle className="size-3.5" /> Perder</button>
-                  <button onClick={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }} disabled={!convId || pending} className={`${ABTN} border-slate-200 text-slate-500 hover:bg-slate-50`}><Ban className="size-3.5" /> Cancelar</button>
+                  {wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><Trophy className="size-3.5 text-emerald-500" /> Ganhar</button>}
+                  {deal.pipelines.length > 1 && <button onClick={() => setFlowModal("reclass")} disabled={pending} title="Mover para outro funil" className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><ArrowRightLeft className="size-3.5 text-slate-400" /></button>}
+                  <EncerrarMenu disabled={!convId || pending}
+                    onLose={() => { setReasonSel(LOST_REASONS[0]); setCanceling(false); setLosing(true) }}
+                    onCancel={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }} />
                 </>
               ) : (
-                <button onClick={() => convId && run(() => reopenDeal(convId, deal.id))} disabled={!convId || pending} className={`${ABTN} border-primary-200 text-primary-700 bg-primary-50 hover:bg-primary-100`}><RotateCcw className="size-3.5" /> Reabrir</button>
+                <>
+                  {deal.status === "won" && convId && deal.pipelines.length > 1 && (
+                    <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary-200 text-primary-700 bg-primary-50 hover:bg-primary-100`}><Route className="size-3.5" /> Próximo fluxo</button>
+                  )}
+                  <button onClick={() => convId && run(() => reopenDeal(convId, deal.id))} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><RotateCcw className="size-3.5 text-primary-500" /> Reabrir</button>
+                </>
               )}
             </div>
           </div>
 
-          {/* Stepper do funil */}
-          <div className="mt-4 flex items-center gap-1 overflow-x-auto pb-1">
-            {stepStages.map((s, i) => {
-              const active = s.id === curStageId
-              const done   = curIdx >= 0 && i < curIdx && !s.is_won && !s.is_lost
-              return (
-                <button key={s.id} onClick={() => clickStage(s)} disabled={!convId || pending || active}
-                  className={`shrink-0 inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] font-semibold border transition-colors ${
-                    active ? "text-white border-transparent" : done ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white text-slate-600 border-slate-200 hover:border-primary-300 disabled:hover:border-slate-200"
-                  }`}
-                  style={active ? { backgroundColor: s.color ?? "#004add" } : undefined}>
-                  {s.is_won ? <Trophy className="size-3" /> : s.is_lost ? <XCircle className="size-3" /> : null}{s.name}
-                </button>
-              )
-            })}
+          {/* Stepper do funil + KPIs */}
+          <div className="mt-5 pt-4 border-t border-slate-100 flex items-end justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-1 overflow-x-auto pb-1 min-w-0">
+              {stepStages.map((s, i) => {
+                const active = s.id === curStageId
+                const done   = curIdx >= 0 && i < curIdx && !s.is_won && !s.is_lost
+                return (
+                  <button key={s.id} onClick={() => clickStage(s)} disabled={!convId || pending || active}
+                    className={`shrink-0 inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] font-semibold border transition-colors ${
+                      active ? "text-white border-transparent" : done ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white text-slate-600 border-slate-200 hover:border-primary-300 disabled:hover:border-slate-200"
+                    }`}
+                    style={active ? { backgroundColor: s.color ?? "#004add" } : undefined}>
+                    {s.is_won ? <Trophy className="size-3" /> : s.is_lost ? <XCircle className="size-3" /> : null}{s.name}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="flex items-center gap-5 shrink-0">
+              <Kpi label={isOpen ? "Dias aberto" : "Duração"} value={daysOpen != null ? `${daysOpen}` : "—"} />
+              <span className="w-px h-7 bg-slate-200" />
+              <Kpi label="Previsão" value={shortDate(deal.expected_close_date)} />
+              <span className="w-px h-7 bg-slate-200" />
+              <Kpi label="Última interação" value={relTime(lastTouch)} />
+            </div>
           </div>
           {!convId && <p className="mt-2 text-[11px] text-amber-600">Negócio sem conversa vinculada — mover/ganhar/perder/observar ficam indisponíveis nesta tela.</p>}
 
@@ -228,120 +310,75 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
         </div>
       </div>
 
-      {/* ── Corpo (full-width, 3 colunas) ── */}
+      {/* ── Corpo (3 colunas) ── */}
       <div className="px-6 py-6 grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-        {/* Principal */}
-        <div className="xl:col-span-2 space-y-5">
-          {/* Movimentação do negócio — lista de protocolos (1 por movimentação), mais novo no topo. */}
-          <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2.5">
-              <span className="size-8 rounded-lg bg-primary-50 grid place-items-center shrink-0"><FileText className="size-4 text-primary-600" /></span>
-              <div className="min-w-0">
-                <h2 className="text-sm font-bold text-slate-900">Movimentação do negócio</h2>
-                <p className="text-[11px] text-slate-400">Um protocolo por movimentação — evolução ou regressão</p>
-              </div>
-              {protocols.length > 0 && <span className="ml-auto text-[11px] font-semibold text-slate-500 tabular-nums shrink-0">{protocols.length}</span>}
-            </div>
-            {protocols.length === 0 ? (
-              <p className="px-4 py-7 text-xs text-slate-400 text-center">Nenhuma movimentação ainda. Cada mudança de etapa do negócio gera um protocolo.</p>
-            ) : (
-              <div className="divide-y divide-slate-100 overflow-y-auto max-h-[28rem]">
-                {[...protocols].reverse().map((p) => <ProtocolRow key={p.id} p={p} latest={p.n === protocols.length} onOpen={() => setOpenProtocol(p)} />)}
-              </div>
-            )}
-          </section>
-
-          {/* Registros — LOG de auditoria (compacto, cronológico). Clica → ficha do registro. */}
-          <section className="bg-white rounded-xl border border-slate-200 p-4">
-            <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
-              <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Registros</h2>
+        {/* Linha do tempo única — movimentações + notas + tarefas */}
+        <div className="xl:col-span-2">
+          <section className="bg-white rounded-xl border border-slate-200 p-5">
+            <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+              <h2 className="text-base font-bold text-slate-900">Linha do tempo</h2>
               <div className="inline-flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
-                {([["all", "Tudo"], ["notes", "Notas"], ["stages", "Movimentações"]] as const).map(([k, label]) => (
-                  <button key={k} onClick={() => setFilter(k)} className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${filter === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>{label}</button>
+                {FEED_TABS.map(([k, label]) => (
+                  <button key={k} onClick={() => { setFilter(k); setShown(8) }} className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${filter === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>{label}</button>
                 ))}
               </div>
             </div>
-            {events.length === 0 ? (
-              <p className="text-xs text-slate-400 py-4 text-center">Nenhum registro ainda.</p>
+            {feed.length === 0 ? (
+              <p className="text-xs text-slate-400 py-10 text-center">Nada por aqui ainda. Movimentações, notas e tarefas aparecem nesta linha.</p>
             ) : (
-              <div className="space-y-3">
-                {Object.entries(groupByDay(events)).map(([label, evs]) => (
-                  <div key={label}>
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-300 mb-1">{label}</p>
-                    <div className="space-y-0.5">
-                      {evs.map((e) => <LogRow key={e.id} e={e} onOpen={() => setOpenEvent(e)} />)}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <>
+                <ol>
+                  {visibleFeed.map((node, i) => (
+                    <FeedItem key={node.id} node={node} isLast={i === visibleFeed.length - 1 && visibleFeed.length === feed.length}
+                      pending={pending}
+                      onOpenProtocol={node.kind === "event" && node.protocol ? () => setOpenProtocol(node.protocol!) : undefined}
+                      onToggleTask={node.kind === "task" ? () => run(() => setTaskDone(node.t.id, node.t.status === "pending")) : undefined} />
+                  ))}
+                </ol>
+                {feed.length > shown && (
+                  <button onClick={() => setShown((n) => n + 10)} className="mt-1 w-full text-center text-xs font-semibold text-primary-600 hover:text-primary-700 py-2">
+                    Carregar mais atividades
+                  </button>
+                )}
+              </>
             )}
           </section>
         </div>
 
-        {/* Lateral */}
+        {/* Lateral — ação + fatos */}
         <div className="space-y-5">
-          {/* Resumo */}
-          <Card title="Resumo">
+          {/* Próximos follow-ups */}
+          <section className="bg-white rounded-xl border border-slate-200 p-4">
+            <h2 className="text-sm font-bold text-slate-900 mb-2">Próximos follow-ups</h2>
+            {pendingTasks.length === 0 && (!showDone || doneTasks.length === 0) ? (
+              <p className="text-xs text-slate-400 py-2">Nenhum follow-up agendado. Crie um no botão flutuante.</p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {pendingTasks.map((t) => <FollowUpRow key={t.id} t={t} responsible={deal.responsible} pending={pending} onToggle={() => run(() => setTaskDone(t.id, true))} />)}
+                {showDone && doneTasks.map((t) => <FollowUpRow key={t.id} t={t} responsible={deal.responsible} pending={pending} onToggle={() => run(() => setTaskDone(t.id, false))} />)}
+              </div>
+            )}
+            {doneTasks.length > 0 && (
+              <button onClick={() => setShowDone((v) => !v)} className="mt-2 text-[11px] font-semibold text-primary-600 hover:text-primary-700">
+                {showDone ? "Ocultar concluídas" : `Ver concluídas (${doneTasks.length})`}
+              </button>
+            )}
+          </section>
+
+          {/* Detalhes */}
+          <Card title="Detalhes">
             <dl className="space-y-2 text-xs">
-              <Row label="Valor">
-                {editValue ? (
-                  <span className="inline-flex items-center gap-1">
-                    <input autoFocus value={valueVal} onChange={(e) => setValueVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveValue(); if (e.key === "Escape") setEditValue(false) }} className="w-24 h-6 px-1.5 text-xs border border-primary-300 rounded focus:outline-none" />
-                    <button onClick={saveValue} className="text-emerald-600"><Check className="size-3.5" /></button>
-                  </span>
-                ) : (
-                  <button onClick={() => { setValueVal(deal.estimated_value != null ? String(deal.estimated_value) : ""); setEditValue(true) }} className="group inline-flex items-center gap-1 font-semibold text-slate-800">
-                    {deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}
-                    <Pencil className="size-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </button>
-                )}
-              </Row>
+              <Row label="Valor"><span className="font-semibold text-slate-800">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span></Row>
               <Row label="Etapa">{deal.stage?.name ?? "—"}</Row>
-              {aging != null && <Row label="Dias na etapa">{aging}d</Row>}
-              <Row label="Fechamento">{shortDate(deal.expected_close_date)}</Row>
+              {stageAging != null && <Row label="Dias na etapa">{stageAging}d</Row>}
+              <Row label="Previsão">{shortDate(deal.expected_close_date)}</Row>
+              <Row label="Responsável">{deal.responsible ?? "—"}</Row>
+              {deal.contact?.phone_number && <Row label="Telefone">{deal.contact.phone_number}</Row>}
               <Row label="Criado">{shortDate(deal.created_at)}</Row>
-              {deal.responsible && <Row label="Responsável">{deal.responsible}</Row>}
               {deal.status === "won" && deal.won_at && <Row label="Ganho em">{shortDate(deal.won_at)}</Row>}
               {deal.status === "lost" && <Row label="Perdido em">{`${shortDate(deal.lost_at)}${deal.lost_reason ? ` · ${deal.lost_reason}` : ""}`}</Row>}
               {deal.status === "canceled" && <Row label="Cancelado em">{shortDate(deal.canceled_at ?? null)}</Row>}
             </dl>
-          </Card>
-
-          {/* Contato */}
-          <Card title="Contato">
-            {deal.contact ? (
-              <div>
-                <div className="flex items-center gap-2.5">
-                  <div className="size-10 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0">
-                    {deal.contact.profile_pic_url
-                      // eslint-disable-next-line @next/next/no-img-element
-                      ? <img src={deal.contact.profile_pic_url} alt="" className="size-10 object-cover" />
-                      : <User className="size-5 text-slate-400" />}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 truncate">{deal.contact.name || deal.contact.push_name || "Sem nome"}</p>
-                    {deal.contact.phone_number && <p className="text-[11px] text-slate-400 truncate">{deal.contact.phone_number}</p>}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 mt-3">
-                  {convId && <Link href={`/inbox?conversation=${convId}`} className="flex-1 inline-flex items-center justify-center gap-1 h-8 text-xs font-semibold rounded-lg bg-primary-50 text-primary-700 hover:bg-primary-100"><MessageSquare className="size-3.5" /> Conversa</Link>}
-                  <Link href={`/contatos/${deal.contact.id}`} className="flex-1 inline-flex items-center justify-center gap-1 h-8 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50"><User className="size-3.5" /> Ficha</Link>
-                </div>
-              </div>
-            ) : <p className="text-xs text-slate-400">Sem contato vinculado.</p>}
-          </Card>
-
-          {/* Tarefas */}
-          <Card title={`Tarefas${pendingTasks.length ? ` (${pendingTasks.length})` : ""}`}>
-            {tasks.length === 0 ? (
-              <p className="text-xs text-slate-400">Nenhuma tarefa. Crie uma no bloco acima.</p>
-            ) : (
-              <div className="space-y-1">
-                {pendingTasks.map((t) => <TaskItem key={t.id} t={t} onToggle={() => run(() => setTaskDone(t.id, true))} pending={pending} />)}
-                {doneTasks.length > 0 && <p className="text-[10px] font-bold uppercase tracking-wider text-slate-300 pt-1.5">Concluídas</p>}
-                {doneTasks.map((t) => <TaskItem key={t.id} t={t} onToggle={() => run(() => setTaskDone(t.id, false))} pending={pending} />)}
-              </div>
-            )}
           </Card>
 
           {/* Outros negócios */}
@@ -369,8 +406,18 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
         />
       )}
 
-      {openEvent && <EventDetailModal e={openEvent} onClose={() => setOpenEvent(null)} />}
       {openProtocol && <ProtocolDocModal p={openProtocol} deal={deal} onClose={() => setOpenProtocol(null)} />}
+
+      {flowModal && (
+        <PickPipelineModal
+          mode={flowModal}
+          pipelines={deal.pipelines}
+          currentPipelineId={deal.pipeline_id}
+          pending={pending}
+          onPick={(pid) => (flowModal === "handoff" ? doHandoff(pid) : doReclassify(pid))}
+          onClose={() => setFlowModal(null)}
+        />
+      )}
 
       {/* Botão flutuante — Nota / Tarefa */}
       <DealFab open={fabOpen} onToggle={() => setFabOpen((v) => !v)}
@@ -379,6 +426,259 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
         noteDisabled={!convId} />
       {activeModal === "note" && <NoteModal onSubmit={doAddNote} onClose={() => setActiveModal(null)} pending={pending} />}
       {activeModal === "task" && <TaskModal onSubmit={doAddTask} onClose={() => setActiveModal(null)} pending={pending} />}
+    </div>
+  )
+}
+
+// ── KPI do header ──
+function Kpi({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="text-right">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="text-sm font-bold text-slate-800 tabular-nums">{value}</p>
+    </div>
+  )
+}
+
+// Ações secundárias (Perder / Cancelar) recolhidas — desafoga o header.
+function EncerrarMenu({ disabled, onLose, onCancel }: { disabled?: boolean; onLose: () => void; onCancel: () => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((v) => !v)} disabled={disabled} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}>
+        Encerrar <ChevronDown className={`size-3.5 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <>
+          <button className="fixed inset-0 z-40 cursor-default" onClick={() => setOpen(false)} aria-hidden tabIndex={-1} />
+          <div className="absolute right-0 top-full mt-1.5 z-50 w-48 bg-white rounded-xl border border-slate-200 shadow-lg overflow-hidden py-1">
+            <button onClick={() => { setOpen(false); onLose() }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"><XCircle className="size-3.5 text-red-500 shrink-0" /> Marcar como perdido</button>
+            <button onClick={() => { setOpen(false); onCancel() }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"><Ban className="size-3.5 text-slate-400 shrink-0" /> Cancelar negócio</button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// Linha do tempo única — funde eventos do negócio + tarefas num feed
+// ══════════════════════════════════════════════════════════════
+type FeedFilter = "all" | "stages" | "notes" | "tasks"
+const FEED_TABS: [FeedFilter, string][] = [["all", "Tudo"], ["stages", "Movimentações"], ["notes", "Notas"], ["tasks", "Tarefas"]]
+
+type FeedNode =
+  | { id: string; at: string; kind: "event"; e: DealEventView; protocol: Protocol | null }
+  | { id: string; at: string; kind: "task"; t: TaskRow }
+
+// Eventos `task_*` são só auditoria — as tarefas entram pelo array `tasks` (com toggle vivo),
+// então pulamos os eventos pra não duplicar.
+function buildFeed(deal: DealDetail, tasks: TaskRow[], protocols: Protocol[]): FeedNode[] {
+  const protoByEvent = new Map(protocols.map((p) => [p.id, p]))
+  const nodes: FeedNode[] = []
+  for (const e of deal.events) {
+    if (e.type === "task_created" || e.type === "task_done") continue
+    nodes.push({ id: `e-${e.id}`, at: e.at, kind: "event", e, protocol: protoByEvent.get(e.id) ?? null })
+  }
+  for (const t of tasks) nodes.push({ id: `t-${t.id}`, at: t.created_at, kind: "task", t })
+  return nodes.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+}
+
+function matchFilter(n: FeedNode, f: FeedFilter): boolean {
+  if (f === "all") return true
+  if (f === "tasks") return n.kind === "task"
+  if (n.kind !== "event") return false
+  return f === "notes" ? n.e.type === "note" : n.e.type !== "note"   // stages = movimentações + edições
+}
+
+function taskState(t: TaskRow): { label: string; cls: string; overdue: boolean; done: boolean } {
+  const done = t.status !== "pending"
+  if (done) return { label: "Concluída", cls: "bg-emerald-50 text-emerald-700", overdue: false, done: true }
+  const overdue = !!t.due_at && new Date(t.due_at) < new Date()
+  return overdue
+    ? { label: "Atrasado", cls: "bg-red-50 text-red-600", overdue: true, done: false }
+    : { label: "Pendente", cls: "bg-primary-50 text-primary-700", overdue: false, done: false }
+}
+
+function describeEvent(e: DealEventView, protocol: Protocol | null): { title: string; no: string | null; desc: string } {
+  if (e.type === "note") return { title: "Nota adicionada", no: null, desc: e.note ?? "—" }
+  if (e.type === "field_changed") return { title: `${e.change?.label ?? "Campo"} alterado`, no: null, desc: `${e.change?.from ?? "—"} → ${e.change?.to ?? "—"}` }
+  const label = protocol ? PROTOCOL_STYLE[protocol.kind].label : dealEventStyle(e.type).label
+  let desc: string
+  switch (e.type) {
+    case "stage_changed": desc = `Etapa alterada de “${e.from_stage ?? "—"}” para “${e.to_stage ?? "—"}”.`; break
+    case "created":  desc = `Negócio aberto${e.to_stage ? ` em “${e.to_stage}”` : ""}.`; break
+    case "won":      desc = `Negócio ganho${e.to_stage ? ` em “${e.to_stage}”` : ""}.`; break
+    case "lost":     desc = `Negócio perdido${e.reason ? ` · ${e.reason}` : ""}.`; break
+    case "canceled": desc = `Negócio cancelado${e.reason ? ` · ${e.reason}` : ""}.`; break
+    case "reopened": desc = `Negócio reaberto${e.to_stage ? ` em “${e.to_stage}”` : ""}.`; break
+    default:         desc = e.note ?? ""
+  }
+  return { title: label, no: protocol ? protocolNo(protocol.n) : null, desc }
+}
+
+function nodeIcon(node: FeedNode): typeof Clock {
+  if (node.kind === "task") return node.t.status !== "pending" ? CheckSquare : Square
+  if (node.e.type === "note") return StickyNote
+  if (node.e.type === "field_changed") return Pencil
+  return PROTOCOL_STYLE[node.protocol?.kind ?? "mudanca"].Icon
+}
+
+// Acento único: movimentação = azul (fio condutor do negócio); nota/tarefa = neutro.
+function nodeStyle(node: FeedNode): string {
+  if (node.kind === "event" && node.protocol) return "bg-primary-50 text-primary-600"
+  return "bg-slate-100 text-slate-400"
+}
+
+// Item da timeline — círculo monocromático + conector vertical (estilo editorial).
+function FeedItem({ node, isLast, pending, onOpenProtocol, onToggleTask }: {
+  node: FeedNode; isLast: boolean; pending: boolean
+  onOpenProtocol?: () => void; onToggleTask?: () => void
+}) {
+  const Icon = nodeIcon(node)
+  const hasProtocol = node.kind === "event" && node.protocol != null
+  return (
+    <li className="flex gap-3.5">
+      <div className="flex flex-col items-center">
+        <span className={`size-8 rounded-full grid place-items-center shrink-0 ${nodeStyle(node)}`}><Icon className="size-3.5" /></span>
+        {!isLast && <span className="w-px flex-1 bg-slate-200/80 my-1.5" />}
+      </div>
+      <div className="flex-1 min-w-0 pb-5 py-0.5">
+        {node.kind === "task" ? (
+          <TaskBody t={node.t} pending={pending} onToggle={onToggleTask!} />
+        ) : hasProtocol ? (
+          // Movimentação = card contido: narrativa + resumo (Etapa/Valor) à direita + detalhe no rodapé.
+          <MovimentacaoCard e={node.e} protocol={node.protocol!} onOpenFull={() => onOpenProtocol?.()} />
+        ) : (
+          <EventBody e={node.e} protocol={null} clickable={false} />
+        )}
+      </div>
+    </li>
+  )
+}
+
+// Card da movimentação — tudo dentro de um bloco delimitado (sem painel flutuante / sem vão).
+function MovimentacaoCard({ e, protocol, onOpenFull }: { e: DealEventView; protocol: Protocol; onOpenFull: () => void }) {
+  const { title, no, desc } = describeEvent(e, protocol)
+  const delta = valueDelta(protocol.value)
+  const valueNow = protocol.value ? protocol.value.to : null
+  const hasDetail = !!(protocol.value || protocol.followUp || protocol.reason || protocol.note)
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+      {/* Cabeçalho: narrativa à esquerda, resumo (Etapa/Valor) usa o espaço à direita */}
+      <div className="px-4 py-3 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h4 className="text-sm font-semibold text-slate-800">{title}{no && <span className="ml-1.5 text-xs font-bold text-primary-600 tabular-nums">{no}</span>}</h4>
+          {desc && <p className="text-[13px] text-slate-500 mt-0.5 break-words">{desc}</p>}
+          <div className="flex items-center gap-x-2 gap-y-0.5 mt-1.5 text-[11px] text-slate-400 flex-wrap">
+            <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {fmtDateTime(e.at)}</span>
+            {e.by && <span>· por {e.by}</span>}
+            {delta && <span className="font-semibold text-slate-600 tabular-nums">· {delta}</span>}
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Etapa</p>
+          <p className="text-sm font-semibold text-slate-800">{protocol.to ?? "—"}</p>
+          {valueNow && <p className="text-[11px] text-slate-400 tabular-nums mt-0.5">{valueNow}</p>}
+        </div>
+      </div>
+      {/* Rodapé: o que mudou neste movimento, em grade horizontal contida */}
+      {hasDetail && (
+        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/60">
+          <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3">
+            {protocol.value && (
+              <DetailField label="Evolução do valor">
+                <span className="inline-flex items-center gap-1.5 tabular-nums"><span className="text-slate-400">{protocol.value.from}</span><ArrowRight className="size-3 text-slate-300 shrink-0" /><span className="font-semibold text-slate-800">{protocol.value.to}</span></span>
+              </DetailField>
+            )}
+            {protocol.followUp && (
+              <DetailField label="Follow-up">
+                <span className="inline-flex items-start gap-1.5"><Bell className="size-3 text-primary-500 shrink-0 mt-0.5" /> <span>{protocol.followUp.title}{protocol.followUp.due ? <span className="text-slate-400"> · {protocol.followUp.due}</span> : null}</span></span>
+              </DetailField>
+            )}
+            {protocol.reason && <DetailField label="Motivo">{protocol.reason}</DetailField>}
+            {protocol.note && (
+              <div className="sm:col-span-2">
+                <DetailField label="Anotação"><span className="leading-relaxed whitespace-pre-wrap break-words">{protocol.note}</span></DetailField>
+              </div>
+            )}
+          </div>
+          <button onClick={onOpenFull} className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700">Documento completo <ArrowRight className="size-3" /></button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-0.5">{label}</p>
+      <div className="text-xs text-slate-700">{children}</div>
+    </div>
+  )
+}
+
+function EventBody({ e, protocol, clickable }: { e: DealEventView; protocol: Protocol | null; clickable: boolean }) {
+  const { title, no, desc } = describeEvent(e, protocol)
+  const delta = valueDelta(e.extras?.valueChange ?? null)
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-sm font-semibold text-slate-800 truncate">
+          {title}{no && <span className="ml-1.5 text-xs font-bold text-primary-600 tabular-nums">{no}</span>}
+        </h4>
+        {clickable && <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 opacity-0 group-hover:opacity-100 transition-opacity">Ver protocolo <ArrowRight className="size-3" /></span>}
+      </div>
+      {desc && <p className="text-[13px] text-slate-500 mt-0.5 break-words whitespace-pre-wrap">{desc}</p>}
+      <div className="flex items-center gap-x-2 gap-y-0.5 mt-1.5 text-[11px] text-slate-400 flex-wrap">
+        <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {fmtDateTime(e.at)}</span>
+        {e.by && <span>· por {e.by}</span>}
+        {delta && <span className="font-semibold text-slate-600 tabular-nums">· {delta}</span>}
+        {e.extras?.followUp && <span className="inline-flex items-center gap-1 text-slate-500">· <Bell className="size-3" /> follow-up</span>}
+      </div>
+    </>
+  )
+}
+
+function TaskBody({ t, pending, onToggle }: { t: TaskRow; pending: boolean; onToggle: () => void }) {
+  const s = taskState(t)
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2">
+        <h4 className={`text-sm font-semibold truncate ${s.done ? "text-slate-400 line-through" : "text-slate-800"}`}>{s.done ? "Tarefa concluída" : "Tarefa agendada"}</h4>
+        <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${s.cls}`}>{s.label}</span>
+      </div>
+      <p className={`text-[13px] mt-0.5 break-words ${s.done ? "text-slate-400" : "text-slate-500"}`}>{t.title}</p>
+      <div className="flex items-center gap-2 mt-1.5 text-[11px] text-slate-400">
+        <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {t.due_at ? fmtDateTime(t.due_at) : "sem prazo"}</span>
+        <button onClick={(ev) => { ev.stopPropagation(); onToggle() }} disabled={pending} className="ml-1 inline-flex items-center gap-1 text-slate-400 hover:text-emerald-600 disabled:opacity-50">
+          {s.done ? <><Square className="size-3" /> reabrir</> : <><CheckSquare className="size-3" /> concluir</>}
+        </button>
+      </div>
+    </>
+  )
+}
+
+// Follow-up na lateral — urgência por cor (atrasado = vermelho).
+function FollowUpRow({ t, responsible, pending, onToggle }: { t: TaskRow; responsible: string | null; pending: boolean; onToggle: () => void }) {
+  const s = taskState(t)
+  return (
+    <div className="flex items-start gap-2.5 py-2.5 first:pt-0 last:pb-0">
+      <span className={`size-9 rounded-full grid place-items-center shrink-0 ${s.overdue ? "bg-red-50 text-red-500" : s.done ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"}`}>
+        {s.overdue ? <AlertCircle className="size-4" /> : s.done ? <CheckSquare className="size-4" /> : <Calendar className="size-4" />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <p className={`text-sm font-semibold truncate ${s.done ? "text-slate-400 line-through" : "text-slate-800"}`}>{t.title}</p>
+          {s.overdue && <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-red-600">Atrasado</span>}
+        </div>
+        <p className="text-[11px] text-slate-400 inline-flex items-center gap-1"><Clock className="size-2.5" /> {t.due_at ? fmtDateTime(t.due_at) : "sem prazo"}</p>
+        {responsible && <p className="text-[11px] text-slate-400">Responsável: {responsible}</p>}
+      </div>
+      <button onClick={onToggle} disabled={pending} title={s.done ? "Reabrir" : "Concluir"} className="shrink-0 text-slate-300 hover:text-emerald-600 disabled:opacity-50">
+        {s.done ? <Square className="size-4" /> : <CheckSquare className="size-4" />}
+      </button>
     </div>
   )
 }
@@ -488,18 +788,17 @@ interface Protocol {
   value: { from: string; to: string } | null
   followUp: { title: string; due: string | null } | null
   note: string | null; reason: string | null
-  sinceDays: number | null   // dias desde a movimentação anterior (ritmo)
 }
 
-const PROTOCOL_STYLE: Record<ProtocolKind, { Icon: typeof TrendingUp; accent: string; label: string }> = {
-  abertura:     { Icon: Briefcase,    accent: "#0ea5e9", label: "Abertura" },
-  evolucao:     { Icon: TrendingUp,   accent: "#059669", label: "Evolução" },
-  regressao:    { Icon: TrendingDown, accent: "#d97706", label: "Regressão" },
-  ganho:        { Icon: Trophy,       accent: "#059669", label: "Ganho" },
-  perda:        { Icon: XCircle,      accent: "#dc2626", label: "Perda" },
-  cancelamento: { Icon: Ban,          accent: "#64748b", label: "Cancelamento" },
-  reabertura:   { Icon: RotateCcw,    accent: "#004add", label: "Reabertura" },
-  mudanca:      { Icon: ArrowRight,   accent: "#64748b", label: "Movimentação" },
+const PROTOCOL_STYLE: Record<ProtocolKind, { Icon: typeof TrendingUp; label: string }> = {
+  abertura:     { Icon: Briefcase,    label: "Abertura" },
+  evolucao:     { Icon: TrendingUp,   label: "Evolução" },
+  regressao:    { Icon: TrendingDown, label: "Regressão" },
+  ganho:        { Icon: Trophy,       label: "Ganho" },
+  perda:        { Icon: XCircle,      label: "Perda" },
+  cancelamento: { Icon: Ban,          label: "Cancelamento" },
+  reabertura:   { Icon: RotateCcw,    label: "Reabertura" },
+  mudanca:      { Icon: ArrowRight,   label: "Movimentação" },
 }
 
 const PROTOCOL_TYPES = new Set(["created", "stage_changed", "won", "lost", "canceled", "reopened"])
@@ -511,7 +810,6 @@ function buildProtocols(deal: DealDetail): Protocol[] {
   const posOf = new Map((pipe?.stages ?? []).map((s) => [s.name, s.position]))
   const out: Protocol[] = []
   let n = 0
-  let prevAt: string | null = null
   for (const e of deal.events) { // cronológico ascendente → protocolo Nº cresce com o tempo
     if (!PROTOCOL_TYPES.has(e.type)) continue
     n++
@@ -532,9 +830,7 @@ function buildProtocols(deal: DealDetail): Protocol[] {
       value: e.extras?.valueChange ?? null,
       followUp: e.extras?.followUp ?? null,
       note: e.note, reason: e.reason,
-      sinceDays: prevAt ? Math.max(0, Math.floor((new Date(e.at).getTime() - new Date(prevAt).getTime()) / 86400000)) : null,
     })
-    prevAt = e.at
   }
   return out
 }
@@ -555,37 +851,6 @@ function valueDelta(v: { from: string; to: string } | null): string | null {
   return `${d > 0 ? "▲" : "▼"} ${brl(Math.abs(d))}`
 }
 
-// Linha da lista — cada protocolo. Monocromática. Botão "Detalhes" sempre visível abre o doc.
-function ProtocolRow({ p, onOpen, latest }: { p: Protocol; onOpen: () => void; latest: boolean }) {
-  const s = PROTOCOL_STYLE[p.kind]; const Icon = s.Icon
-  const path = p.from ? `${p.from} → ${p.to ?? "—"}` : (p.to ?? s.label)
-  const delta = valueDelta(p.value)
-  return (
-    <div onClick={onOpen} className="group flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-50 transition-colors">
-      <span className="size-9 rounded-lg grid place-items-center shrink-0 bg-slate-100 text-slate-600 group-hover:bg-white group-hover:ring-1 group-hover:ring-slate-200 transition-colors"><Icon className="size-4" /></span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[10px] font-bold tabular-nums text-slate-400">{protocolNo(p.n)}</span>
-          <span className="text-[11px] font-bold uppercase tracking-wide text-slate-600">{s.label}</span>
-          {latest && <span className="text-[9px] font-bold uppercase tracking-wide text-slate-600 bg-slate-200/70 px-1.5 py-px rounded-full">atual</span>}
-        </div>
-        <p className="text-sm font-medium text-slate-800 truncate">{path}</p>
-        <div className="flex items-center gap-x-2 gap-y-0.5 mt-0.5 text-[11px] text-slate-400 flex-wrap">
-          <span>{shortDate(p.at)}</span>
-          {p.by && <span className="truncate max-w-[140px]">· {p.by}</span>}
-          {p.sinceDays != null && <span className="inline-flex items-center gap-0.5" title="Tempo desde a movimentação anterior">· <Clock className="size-2.5" /> {p.sinceDays}d</span>}
-          {delta && <span className="font-semibold text-slate-600 tabular-nums">· {delta}</span>}
-          {p.followUp && <span className="inline-flex items-center gap-0.5 text-slate-500">· <Bell className="size-2.5" /> follow-up</span>}
-        </div>
-      </div>
-      <button onClick={(e) => { e.stopPropagation(); onOpen() }}
-        className="shrink-0 inline-flex items-center gap-1 h-8 px-3 text-xs font-semibold rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-primary-300 hover:bg-primary-50 hover:text-primary-700 transition-colors">
-        Detalhes <ArrowRight className="size-3.5" />
-      </button>
-    </div>
-  )
-}
-
 // Doc de UM protocolo — mesmo formato do documento (Situação atual + seções), escopado à movimentação.
 function ProtocolDocModal({ p, deal, onClose }: { p: Protocol; deal: DealDetail; onClose: () => void }) {
   const s = PROTOCOL_STYLE[p.kind]
@@ -596,7 +861,6 @@ function ProtocolDocModal({ p, deal, onClose }: { p: Protocol; deal: DealDetail;
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} onKeyDown={(e) => { if (e.key === "Escape") onClose() }}>
       <div className="w-full max-w-2xl max-h-[90vh] bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-        {/* Cabeçalho do protocolo (mesmo estilo do documento) */}
         <div className="px-6 py-4 border-b border-slate-200 flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 min-w-0">
             <span className="size-9 rounded-lg bg-primary-50 grid place-items-center shrink-0"><FileText className="size-4 text-primary-600" /></span>
@@ -613,7 +877,6 @@ function ProtocolDocModal({ p, deal, onClose }: { p: Protocol; deal: DealDetail;
         </div>
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-          {/* Situação atual — estado resultante desta movimentação */}
           <DocSection title="Situação atual">
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3">
               <DocStat label="Etapa" value={stageNow} />
@@ -625,7 +888,6 @@ function ProtocolDocModal({ p, deal, onClose }: { p: Protocol; deal: DealDetail;
             </div>
           </DocSection>
 
-          {/* Evolução do valor — só o antigo→novo se mudou aqui */}
           <DocSection title="Evolução do valor">
             {p.value ? (
               <p className="text-sm inline-flex items-center gap-2 tabular-nums"><span className="text-slate-500">{p.value.from}</span><ArrowRight className="size-3.5 text-slate-300 shrink-0" /><span className="font-semibold text-emerald-700">{p.value.to}</span></p>
@@ -634,7 +896,6 @@ function ProtocolDocModal({ p, deal, onClose }: { p: Protocol; deal: DealDetail;
             )}
           </DocSection>
 
-          {/* Jornada no funil — a etapa em que ficou */}
           <DocSection title="Jornada no funil">
             <div className="flex items-center gap-3">
               <span className="size-2.5 rounded-full bg-primary-600 ring-4 ring-primary-100 shrink-0" />
@@ -645,21 +906,18 @@ function ProtocolDocModal({ p, deal, onClose }: { p: Protocol; deal: DealDetail;
             </div>
           </DocSection>
 
-          {/* Motivo (perda/cancelamento) */}
           {p.reason && (
             <DocSection title="Motivo">
               <p className="text-sm text-slate-700">{p.reason}</p>
             </DocSection>
           )}
 
-          {/* Follow-up agendado nesta alteração */}
           {p.followUp && (
             <DocSection title="Follow-up agendado">
               <p className="text-sm text-slate-800 inline-flex items-center gap-1.5"><Bell className="size-3.5 text-primary-500 shrink-0" /> {p.followUp.title}{p.followUp.due ? <span className="font-normal text-slate-400"> · {p.followUp.due}</span> : null}</p>
             </DocSection>
           )}
 
-          {/* Anotações & contexto — só a nota desta atualização */}
           <DocSection title="Anotações & contexto">
             {p.note ? (
               <div className="rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2">
@@ -703,12 +961,6 @@ function StatusIcon({ status }: { status: string }) {
   return <I className="size-3 shrink-0" style={{ color: status === "open" ? "#94a3b8" : ds.accent }} />
 }
 
-function groupByDay(events: DealEventView[]): Record<string, DealEventView[]> {
-  const out: Record<string, DealEventView[]> = {}
-  for (const e of events) { const k = dayLabel(e.at); (out[k] ??= []).push(e) }
-  return out
-}
-
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="bg-white rounded-xl border border-slate-200 p-4">
@@ -723,98 +975,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-center justify-between gap-2">
       <dt className="text-slate-400 shrink-0">{label}</dt>
       <dd className="text-slate-700 text-right min-w-0 truncate">{children}</dd>
-    </div>
-  )
-}
-
-function TaskItem({ t, onToggle, pending }: { t: TaskRow; onToggle: () => void; pending: boolean }) {
-  const done = t.status !== "pending"
-  const overdue = !done && t.due_at && new Date(t.due_at) < new Date()
-  return (
-    <div className="flex items-start gap-2 py-0.5">
-      <button onClick={onToggle} disabled={pending} className="shrink-0 mt-0.5 text-slate-400 hover:text-emerald-600 disabled:opacity-50">
-        {done ? <CheckSquare className="size-4 text-emerald-600" /> : <Square className="size-4" />}
-      </button>
-      <div className="min-w-0 flex-1">
-        <p className={`text-xs ${done ? "text-slate-400 line-through" : "text-slate-700"}`}>{t.title}</p>
-        {t.due_at && <p className={`text-[10px] inline-flex items-center gap-1 ${overdue ? "text-red-500 font-semibold" : "text-slate-400"}`}><Clock className="size-2.5" /> {shortDate(t.due_at)}</p>}
-      </div>
-    </div>
-  )
-}
-
-// Linha de LOG compacta — pra auditar movimentação (clica → ficha individual).
-function LogRow({ e, onOpen }: { e: DealEventView; onOpen: () => void }) {
-  const s = dealEventStyle(e.type)
-  const Icon = s.Icon
-  const headline =
-      e.type === "stage_changed"                     ? `${e.from_stage ?? "—"} → ${e.to_stage ?? "—"}`
-    : e.type === "created" || e.type === "reopened"  ? `${s.label}${e.to_stage ? ` · ${e.to_stage}` : ""}`
-    : e.type === "lost" || e.type === "canceled"     ? `${s.label}${e.reason ? ` · ${e.reason}` : ""}`
-    : e.type === "field_changed"                     ? `${e.change?.label ?? "Campo"} alterado`
-    : e.type === "note"                              ? (e.note ?? "Observação")
-    :                                                  s.label
-  return (
-    <button onClick={onOpen} className="w-full text-left flex items-start gap-2.5 px-1.5 py-1 rounded-md hover:bg-slate-50 transition-colors">
-      <span className="size-4 rounded-full grid place-items-center shrink-0 mt-0.5" style={{ backgroundColor: s.accent }}><Icon className="size-2 text-white" /></span>
-      <span className="min-w-0 flex-1">
-        <span className="block text-[12px] text-slate-700 truncate">{headline}</span>
-        <span className="block text-[10px] text-slate-400">{[e.by, hhmm(e.at)].filter(Boolean).join(" · ")}</span>
-      </span>
-    </button>
-  )
-}
-
-function EventDetailModal({ e, onClose }: { e: DealEventView; onClose: () => void }) {
-  const s = dealEventStyle(e.type)
-  const Icon = s.Icon
-  const when = new Date(e.at).toLocaleString("pt-BR", { day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm" onClick={onClose}
-      onKeyDown={(ev) => { if (ev.key === "Escape") onClose() }}>
-      <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden" onClick={(ev) => ev.stopPropagation()}>
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100">
-          <span className="size-9 rounded-full grid place-items-center shrink-0" style={{ backgroundColor: s.accent }}><Icon className="size-4 text-white" /></span>
-          <div className="min-w-0">
-            <p className="text-sm font-bold text-slate-900">{s.label}</p>
-            <p className="text-[11px] text-slate-400">{when}</p>
-          </div>
-        </div>
-        <dl className="px-5 py-4 space-y-3 text-sm">
-          {(e.type === "stage_changed" || e.type === "created" || e.type === "reopened") && (e.from_stage || e.to_stage) && (
-            <DRow label="Etapa">
-              <span className="inline-flex items-center gap-1.5">
-                {e.from_stage && <><span className="text-slate-400">{e.from_stage}</span><ArrowRight className="size-3.5 text-slate-300" /></>}
-                <span className="font-semibold text-slate-800">{e.to_stage ?? "—"}</span>
-              </span>
-            </DRow>
-          )}
-          {e.type === "field_changed" && e.change && (
-            <DRow label={e.change.label}>
-              <span className="inline-flex items-center gap-1.5"><span className="text-slate-400">{e.change.from ?? "—"}</span><ArrowRight className="size-3.5 text-slate-300" /><span className="font-semibold text-emerald-700">{e.change.to ?? "—"}</span></span>
-            </DRow>
-          )}
-          {e.reason && <DRow label="Motivo">{e.reason}</DRow>}
-          {e.note && <DRow label="Observação"><span className="whitespace-pre-wrap break-words">{e.note}</span></DRow>}
-          {e.extras?.valueChange && (
-            <DRow label="Valor"><span className="inline-flex items-center gap-1.5 tabular-nums"><span className="text-slate-400">{e.extras.valueChange.from}</span><ArrowRight className="size-3.5 text-slate-300" /><span className="font-semibold text-emerald-700">{e.extras.valueChange.to}</span></span></DRow>
-          )}
-          {e.extras?.followUp && <DRow label="Follow-up"><span className="inline-flex items-center gap-1.5"><Bell className="size-3.5 text-primary-500" /> {e.extras.followUp.title}{e.extras.followUp.due ? ` · ${e.extras.followUp.due}` : ""}</span></DRow>}
-          {e.by && <DRow label="Por">{e.by}</DRow>}
-        </dl>
-        <div className="flex justify-end px-5 py-3 border-t border-slate-100 bg-slate-50/50">
-          <button type="button" onClick={onClose} className="h-9 px-4 text-sm font-semibold text-slate-600 hover:bg-slate-200/60 rounded-lg transition-colors">Fechar</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function DRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <dt className="text-xs font-semibold text-slate-400 shrink-0 pt-0.5">{label}</dt>
-      <dd className="text-sm text-slate-700 text-right min-w-0">{children}</dd>
     </div>
   )
 }
