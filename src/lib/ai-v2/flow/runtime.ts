@@ -15,7 +15,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { normalizeLifecycle } from "@/lib/lifecycle-stage"
 import { sendBotText, sendBotMedia } from "../outbound"
-import { getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
+import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
 import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
@@ -225,6 +225,15 @@ async function restoreReopenOwner(ctx: ExecCtx): Promise<void> {
 
 // ── execução ────────────────────────────────────────────────────
 export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunRow): Promise<FlowResult> {
+  // Os nós determinísticos (transfer/tag/move_stage/assign/http) resolvem a
+  // capacidade via getCapability(). O REGISTRY só é populado por
+  // ensureCapabilitiesRegistered(), que até aqui só era chamado dentro de
+  // runAgentTurn(). Num turno 100% determinístico (ex.: tap de menu → transfer,
+  // sem nó ai_agent), numa réplica "fria" (nenhum turno de agente antes), o
+  // registry ficava VAZIO → getCapability(TRANSFER) === null → o nó transfer
+  // virava no-op SILENCIOSO (sem nota, sem department_id, sem re-pergunta).
+  // O runtime é consumidor de 1ª classe do registry → garante o registro aqui.
+  ensureCapabilitiesRegistered()
   const { ctx } = input
   let activeFlow = flow
   let graph      = activeFlow.graph
@@ -253,11 +262,20 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
   // que re-roda o agente com a nova mensagem.)
   if (run.status === "waiting" && currentId) {
     const node = nodeById(graph, currentId)
+    console.log("[studio/diag] resume", JSON.stringify({
+      conv: ctx.conversationId, runStatus: run.status, currentId,
+      nodeType: node?.type ?? null, optionId: input.optionId ?? null, incomingText: input.incomingText,
+    }))
     if (node?.type === "menu") {
       const cfg = node.config as unknown as MenuNodeConfig
       // Oficial: tap num botão/lista volta com o id da opção (= option.id) → casa
       // determinístico. Baileys (número/rótulo digitado, optionId ausente) → parse texto.
       const picked = resolveMenuChoice(cfg, input.incomingText, input.optionId)
+      console.log("[studio/diag] menu.resolve", JSON.stringify({
+        conv: ctx.conversationId, optionId: input.optionId ?? null,
+        pickedId: picked?.id ?? null, pickedLabel: picked?.label ?? null,
+        nextId: picked ? edgeTarget(graph, node.id, picked.id) : null,
+      }))
       if (!picked) {
         await sendBotText(ctx, cfg.noMatch?.trim() || "Não entendi 🤔 Responda com o número da opção:")
         await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
@@ -526,6 +544,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       case "transfer": {
         const cfg = node.config as unknown as TransferNodeConfig
         const cap = getCapability(TRANSFER)
+        console.log("[studio/diag] transfer", JSON.stringify({
+          conv: ctx.conversationId, nodeId: node.id, department: cfg.department,
+          capPresent: !!cap, departments: ctx.departments?.length ?? 0,
+        }))
         // O dossiê é EXTRAÍDO dentro da capability (§Pilar 2, captura confiável —
         // cobre nó E tool). Aqui só passamos o summary do autor (interpola {{vars}}).
         const summary = interpolate((cfg.summary ?? "").trim(), variables)
@@ -536,6 +558,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           // Campos do `collect` (definidos PELO CLIENTE no nó de IA) guiam a extração.
           collect_hint:    Array.isArray(variables["__collect"]) ? variables["__collect"] : [],
         })
+        console.log("[studio/diag] transfer.result", JSON.stringify({
+          conv: ctx.conversationId, routedDepartmentId: r?.routedDepartmentId ?? null, ok: r?.ok ?? null, error: r?.error ?? null,
+        }))
         await finishRun(run.id)
         if (r?.routedDepartmentId) return { status: "routed", departmentId: r.routedDepartmentId, error: null, agent: lastAgent }
         // departamento inválido na config → não encaminhou; registra pro admin ver.
