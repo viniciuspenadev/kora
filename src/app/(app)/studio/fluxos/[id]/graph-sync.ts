@@ -12,6 +12,7 @@ import type { FlowGraph, FlowNodeType } from "@/lib/ai-v2/flow/types"
 export type RFData = { config: Record<string, unknown> }
 export type RFNode = Node<RFData>
 export type RFEdge = Edge
+export type Orientation = "vertical" | "horizontal"
 
 export function genId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `n_${Math.random().toString(36).slice(2)}`
@@ -62,11 +63,12 @@ export function toRF(graph: FlowGraph): { nodes: RFNode[]; edges: RFEdge[] } {
     source:       e.from,
     target:       e.to,
     sourceHandle: e.branch || undefined,
+    type:         "deletable",
   }))
   return { nodes, edges }
 }
 
-export function fromRF(nodes: RFNode[], edges: RFEdge[]): FlowGraph {
+export function fromRF(nodes: RFNode[], edges: RFEdge[], orientation: Orientation = "vertical"): FlowGraph {
   return {
     nodes: nodes.map((n) => ({
       id:       n.id,
@@ -79,5 +81,56 @@ export function fromRF(nodes: RFNode[], edges: RFEdge[]): FlowGraph {
       to:     e.target,
       branch: e.sourceHandle ?? undefined,
     })),
+    ...(orientation === "horizontal" ? { orientation } : {}), // vertical é default → não polui o JSON
   }
+}
+
+// Re-arranja os nós em camadas (longest-path do start) pra a orientação dada.
+// Chamado ao alternar horizontal⇄vertical — senão um fluxo montado na vertical
+// fica com as linhas torcidas ao virar horizontal. O usuário ainda pode arrastar.
+export function autoLayout(nodes: RFNode[], edges: RFEdge[], orientation: Orientation): RFNode[] {
+  const out   = new Map<string, string[]>()
+  const indeg = new Map<string, number>()
+  for (const n of nodes) indeg.set(n.id, 0)
+  for (const e of edges) {
+    if (!indeg.has(e.source) || !indeg.has(e.target)) continue
+    out.set(e.source, [...(out.get(e.source) ?? []), e.target])
+    indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1)
+  }
+  // Kahn + longest-path → profundidade (camada) de cada nó.
+  const depth = new Map<string, number>()
+  const ind   = new Map(indeg)
+  const queue: string[] = []
+  for (const n of nodes) if ((ind.get(n.id) ?? 0) === 0) { queue.push(n.id); depth.set(n.id, 0) }
+  while (queue.length) {
+    const u  = queue.shift()!
+    const du = depth.get(u) ?? 0
+    for (const v of out.get(u) ?? []) {
+      depth.set(v, Math.max(depth.get(v) ?? 0, du + 1))
+      const d = (ind.get(v) ?? 0) - 1
+      ind.set(v, d)
+      if (d === 0) queue.push(v)
+    }
+  }
+  for (const n of nodes) if (!depth.has(n.id)) depth.set(n.id, 0) // ciclo defensivo
+
+  const byDepth = new Map<number, RFNode[]>()
+  for (const n of nodes) {
+    const d = depth.get(n.id) ?? 0
+    byDepth.set(d, [...(byDepth.get(d) ?? []), n])
+  }
+  const horizontal = orientation === "horizontal"
+  const MAIN  = horizontal ? 340 : 190   // distância entre camadas
+  const CROSS = horizontal ? 150 : 290   // distância entre irmãos da mesma camada
+  const result: RFNode[] = []
+  for (const [d, group] of [...byDepth.entries()].sort((a, b) => a[0] - b[0])) {
+    // ordem estável: preserva a posição relativa atual no eixo cruzado
+    group.sort((a, b) => (horizontal ? a.position.y - b.position.y : a.position.x - b.position.x))
+    group.forEach((n, i) => {
+      const main  = d * MAIN + 40
+      const cross = i * CROSS + 40
+      result.push({ ...n, position: horizontal ? { x: main, y: cross } : { x: cross, y: main } })
+    })
+  }
+  return result
 }

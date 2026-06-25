@@ -204,7 +204,6 @@ export function ConversationList({
 
       <div className="px-4 pt-4 pb-2 border-b border-slate-100 shrink-0">
         <div className="flex items-center gap-2 mb-3">
-          <MessageCircle className="size-5 text-primary-600" />
           <h2 className="text-sm font-bold text-slate-900">Inbox</h2>
           {unreadTotal > 0 && (
             <span className="text-[10px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded-full min-w-[18px] text-center tabular-nums">
@@ -445,7 +444,7 @@ export function ConversationList({
                 }}
                 className={`relative w-full flex items-start gap-3.5 px-4 py-3.5 text-left transition-colors border-b border-slate-100 ${
                   isActive
-                    ? "bg-primary-50/60"
+                    ? "bg-gradient-to-r from-primary-100 via-primary-50/40 to-transparent"
                     : "hover:bg-slate-50"
                 }`}
               >

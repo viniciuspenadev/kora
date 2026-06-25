@@ -5,7 +5,6 @@ import { MessageBubble } from "./message-bubble"
 import { MessageInput } from "./message-input"
 import { MessageContextMenu } from "./message-context-menu"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
-import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { getChannelPolicy } from "@/lib/channels/policy"
 import { toast } from "sonner"
@@ -149,12 +148,9 @@ export function ChatPanel({
 
   const contact = conversation.chat_contacts
   const name    = contact ? displayContactName(contact) : formatPhoneDisplay("")
-  const phone   = contact?.phone_number ? formatPhoneDisplay(contact.phone_number) : ""
 
   const currentStatus = STATUS_OPTIONS.find((s) => s.key === conversation.status) ?? STATUS_OPTIONS[0]
 
-  const lifecycle = contact?.lifecycle_stage ?? "contact"
-  const lc        = lifecycleMeta(lifecycle)
   const channelSource = contact?.source ?? null
 
   // ── Janela de sessão — motor de política por canal (lib/channels/policy.ts) ──
@@ -234,6 +230,15 @@ export function ChatPanel({
     }
     return { timelineMessages: normal, reactionsByTarget: map }
   }, [messages])
+
+  // Nome do agente remetente resolvido pela lista `agents` (sender_id) — não pelo
+  // join `profiles`, que NÃO vem nas mensagens de Realtime/otimistas (por isso o
+  // nome só aparecia após sair e voltar na conversa = refetch com join).
+  const agentsById = useMemo(() => {
+    const m = new Map<string, string | null>()
+    for (const a of agents) m.set(a.id, a.full_name)
+    return m
+  }, [agents])
 
   // Lookup p/ o menu de contexto: resolve a mensagem clicada (data-msg-id no DOM).
   const msgById = useMemo(() => new Map(timelineMessages.map((m) => [m.id, m])), [timelineMessages])
@@ -382,9 +387,6 @@ export function ChatPanel({
                       {numberName}
                     </span>
                   )}
-                  {phone && (
-                    <span className="text-[11px] text-slate-400 font-mono">{phone}</span>
-                  )}
                   {/* Status atual — só aparece quando NÃO é "Aberto" (estado normal não polui). */}
                   {conversation.status !== "open" && (
                     <span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${currentStatus.color}`}>
@@ -411,13 +413,7 @@ export function ChatPanel({
                       <span className="truncate max-w-[110px]">{conversation.profiles?.full_name ?? "Atribuída"}</span>
                     </span>
                   )}
-                  {/* Secundárias (lifecycle + origem): só no desktop — no mobile estão na ficha "i". */}
-                  <span
-                    className={`hidden md:inline text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`}
-                    title={lc.label}
-                  >
-                    {lc.icon} {lc.label}
-                  </span>
+                  {/* Origem: só no desktop — no mobile está na ficha "i" (lifecycle/telefone vivem no sidebar). */}
                   {channelSource && (
                     <span className="hidden md:inline-flex">
                       <SourceChip source={channelSource} className="text-[10px]" />
@@ -580,7 +576,7 @@ export function ChatPanel({
                   <div key={item.id} id={`msg-${item.msg.id}`} data-msg-id={item.msg.id}>
                   <MessageBubble
                     message={item.msg}
-                    agentName={item.msg.sender_type === "agent" ? item.msg.profiles?.full_name : null}
+                    agentName={item.msg.sender_type === "agent" ? (agentsById.get(item.msg.sender_id ?? "") ?? item.msg.profiles?.full_name) : null}
                     reactions={item.msg.whatsapp_msg_id ? reactionsByTarget.get(item.msg.whatsapp_msg_id) : undefined}
                     onReply={onReply}
                     onReact={onReact}

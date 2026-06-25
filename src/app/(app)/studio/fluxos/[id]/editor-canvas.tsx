@@ -12,18 +12,19 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap,
-  useNodesState, useEdgesState, addEdge, type OnConnect,
+  useNodesState, useEdgesState, addEdge, useReactFlow, useUpdateNodeInternals, type OnConnect,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import {
   ArrowLeft, Loader2, CheckCircle2, AlertCircle,
   MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag,
   GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon,
-  CalendarPlus, Sparkles,
+  CalendarPlus, Sparkles, MoveHorizontal, MoveVertical,
 } from "lucide-react"
-import { nodeTypes } from "./flow-nodes"
+import { nodeTypes, OrientationContext, TriggerSummaryContext } from "./flow-nodes"
+import { edgeTypes, EdgeActionsContext } from "./flow-edge"
 import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
-import { toRF, fromRF, newRFNode, type RFNode, type RFEdge } from "./graph-sync"
+import { toRF, fromRF, newRFNode, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
 import type { FlowTrigger, FlowNodeType } from "@/lib/ai-v2/flow/types"
 import type { TriggerChannel, TriggerInstance, TriggerAd } from "@/lib/studio/trigger-meta"
@@ -97,6 +98,8 @@ export function FlowEditorCanvas(props: Props) {
 
 function EditorInner({ flow, departments, flows, stages, tags, services, resources, ownerRouting, channels, instances, ads }: Props) {
   const router = useRouter()
+  const { fitView } = useReactFlow()
+  const updateNodeInternals = useUpdateNodeInternals()
   const initial = toRF(flow.graph)
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(
     initial.nodes.map((n) => (n.type === "start" ? { ...n, deletable: false } : n)),
@@ -111,11 +114,17 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
   const [trigInstances, setInsts]   = useState<string[]>(flow.trigger?.instances ?? [])
   const [trigAds, setAds]           = useState<string[]>(flow.trigger?.adIds ?? [])
   const [kwMatch, setKwMatch]       = useState<"contains" | "exact">(flow.trigger?.keywordMatch ?? "contains")
+  const [orientation, setOrientation] = useState<Orientation>(flow.graph.orientation ?? "vertical")
   const [addCount, setAddCount]     = useState(0)
   const [pending, startTransition]  = useTransition()
   const [feedback, setFeedback]     = useState<{ kind: "ok" | "error"; text: string } | null>(null)
 
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
+  // Resumo do gatilho injetado no nó "Início" (modo + canais + tipo), ao vivo.
+  const triggerSummary = useMemo(
+    () => ({ type: triggerType, mode, channels: trigChannels, keywords }),
+    [triggerType, mode, trigChannels, keywords],
+  )
   // Variáveis que o cliente CRIOU no fluxo (Coletar/Definir/HTTP/Agendar/IA) → viram
   // chips no editor, junto dos campos de contato. Atualiza ao vivo conforme monta.
   const flowVars = useMemo(() => collectFlowVars(nodes), [nodes])
@@ -125,6 +134,22 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
       addEdge(conn, eds.filter((e) => !(e.source === conn.source && (e.sourceHandle ?? null) === (conn.sourceHandle ?? null)))),
     )
   }, [setEdges])
+
+  // Remover uma conexão (× na aresta selecionada). Vai pro contexto da aresta.
+  const deleteEdge   = useCallback((id: string) => setEdges((es) => es.filter((e) => e.id !== id)), [setEdges])
+  const edgeActions  = useMemo(() => ({ onDelete: deleteEdge }), [deleteEdge])
+
+  // Alternar horizontal⇄vertical: vira os handles (via contexto) e re-arranja os
+  // nós em camadas pra a nova direção, depois enquadra. A direção é salva no fluxo.
+  const toggleOrientation = useCallback(() => {
+    const next: Orientation = orientation === "vertical" ? "horizontal" : "vertical"
+    setOrientation(next)
+    setNodes((ns) => autoLayout(ns, edges, next))
+    setTimeout(() => {
+      nodes.forEach((n) => updateNodeInternals(n.id)) // re-mede handles (Top→Left etc.)
+      fitView({ duration: 300, padding: 0.2 })
+    }, 0)
+  }, [orientation, edges, nodes, setNodes, fitView, updateNodeInternals])
 
   const addNode = useCallback((type: FlowNodeType) => {
     const node = newRFNode(type, { x: 560, y: 60 + (addCount % 6) * 120 })
@@ -158,7 +183,7 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
 
   function persist(publish: boolean) {
     setFeedback(null)
-    const graph = fromRF(nodes, edges)
+    const graph = fromRF(nodes, edges, orientation)
     const trigger: FlowTrigger = {
       type: triggerType,
       ...(triggerType === "keyword" ? {
@@ -193,6 +218,12 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
           placeholder="Nome do fluxo"
         />
         <div className="ml-auto flex items-center gap-2">
+          <button type="button" onClick={toggleOrientation}
+            title={orientation === "vertical" ? "Mudar para horizontal" : "Mudar para vertical"}
+            className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-lg">
+            {orientation === "vertical" ? <MoveHorizontal className="size-3.5" /> : <MoveVertical className="size-3.5" />}
+            {orientation === "vertical" ? "Horizontal" : "Vertical"}
+          </button>
           {feedback && (
             <span className={`inline-flex items-center gap-1 text-xs ${feedback.kind === "ok" ? "text-success" : "text-danger"}`}>
               {feedback.kind === "ok" ? <CheckCircle2 className="size-3.5" /> : <AlertCircle className="size-3.5" />}
@@ -233,6 +264,9 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
 
         {/* Canvas */}
         <div className="flex-1 min-w-0">
+          <EdgeActionsContext.Provider value={edgeActions}>
+          <OrientationContext.Provider value={orientation}>
+          <TriggerSummaryContext.Provider value={triggerSummary}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -240,20 +274,24 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodeClick={(_, n) => setSelectedId(n.id)}
             onPaneClick={() => setSelectedId(null)}
             fitView
-            defaultEdgeOptions={{ animated: true, style: { stroke: "#94a3b8", strokeWidth: 2 } }}
+            defaultEdgeOptions={{ type: "deletable", animated: true, style: { stroke: "#94a3b8", strokeWidth: 2 } }}
           >
             <Background color="#cbd5e1" gap={20} />
             <Controls showInteractive={false} />
             <MiniMap pannable zoomable />
           </ReactFlow>
+          </TriggerSummaryContext.Provider>
+          </OrientationContext.Provider>
+          </EdgeActionsContext.Provider>
         </div>
 
         {/* Painel direito */}
-        <div className="w-80 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
-          {selectedNode
+        <div className="w-96 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
+          {selectedNode && selectedNode.type !== "start"
             ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}

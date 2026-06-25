@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect, useTransition } from "react"
-import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2, Plus, MapPin, User as UserIcon, Search, Reply, Sticker } from "lucide-react"
+import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2, Plus, MapPin, User as UserIcon, Users, Search, Reply, Sticker } from "lucide-react"
 import { EmojiPicker } from "./emoji-picker"
 import { VoiceRecorder } from "./voice-recorder"
 import { validateMediaFile, ACCEPT_ATTR } from "@/lib/chat/media-validation"
@@ -65,7 +65,6 @@ function formatBytes(b: number) {
 }
 
 export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
-  void conversationId  // mantido na API por clareza; envio é orquestrado no parent
   const [text, setText]                = useState("")
   const [isPrivate, setIsPrivate]      = useState(false)
   const [showQuickReplies, setShowQR]  = useState(false)
@@ -85,6 +84,10 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
 
   // Citar → foca o campo de texto na hora.
   useEffect(() => { if (replyTarget) inputRef.current?.focus() }, [replyTarget])
+
+  // Rota A: o modo "Chat interno" reseta ao trocar de conversa — você nunca carrega
+  // o modo interno pra o próximo cliente sem querer (segurança contra ghosting).
+  useEffect(() => { setIsPrivate(false) }, [conversationId])
 
   async function handleStickerSelected(e: React.ChangeEvent<HTMLInputElement>) {
     setSendError(null)
@@ -196,7 +199,8 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
 
     const privateNow = isPrivate
     setText("")
-    setIsPrivate(false)
+    // NÃO reseta isPrivate: o "Chat interno" é sticky — fica ligado até o atendente
+    // desligar de propósito (rota A: só reseta ao trocar de conversa, abaixo).
     onSendText(trimmed, privateNow).catch((err) => {
       setSendError((err as Error).message ?? "Erro ao enviar")
     })
@@ -254,11 +258,18 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
       )}
 
       {isPrivate && (
-        <div className="flex items-center gap-2 px-4 py-1.5 bg-amber-50 border-b border-amber-100">
-          <Lock className="size-3 text-amber-600" />
-          <span className="text-xs font-medium text-amber-700">
-            Nota privada — não será enviada ao cliente
+        <div className="flex items-center gap-2 px-4 py-2 bg-amber-100 border-b border-amber-200">
+          <Users className="size-3.5 text-amber-700 shrink-0" />
+          <span className="text-xs font-semibold text-amber-800 flex-1">
+            Chat interno — só a equipe vê. O cliente NÃO recebe.
           </span>
+          <button
+            type="button"
+            onClick={() => setIsPrivate(false)}
+            className="text-[11px] font-semibold text-amber-700 hover:text-amber-900 underline underline-offset-2 shrink-0"
+          >
+            Falar com o cliente
+          </button>
         </div>
       )}
 
@@ -358,14 +369,14 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
               type="button"
               onClick={() => setIsPrivate(!isPrivate)}
               disabled={!!attachedFile}
-              title={attachedFile ? "Mídia sempre vai ao cliente" : (isPrivate ? "Voltar para mensagem normal" : "Nota privada")}
+              title={attachedFile ? "Mídia sempre vai ao cliente" : (isPrivate ? "Sair do chat interno (voltar a falar com o cliente)" : "Chat interno (conversa entre atendentes)")}
               className={`size-10 flex items-center justify-center rounded-lg transition-colors ${
                 isPrivate
-                  ? "bg-amber-100 text-amber-700"
+                  ? "bg-amber-100 text-amber-700 ring-1 ring-amber-300"
                   : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
               } disabled:opacity-30 disabled:cursor-not-allowed`}
             >
-              <Lock className="size-4" />
+              <Users className="size-4" />
             </button>
 
             <button
@@ -462,7 +473,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
               onKeyDown={handleKeyDown}
               placeholder={
                 attachedFile ? "Legenda (opcional)..." :
-                isPrivate ? "Escreva uma nota interna..." :
+                isPrivate ? "Mensagem para a equipe… (o cliente não vê)" :
                 "Digite uma mensagem... (/ para atalhos)"
               }
               disabled={disabled}

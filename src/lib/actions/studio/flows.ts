@@ -178,6 +178,40 @@ export async function setFlowActive(id: string, active: boolean): Promise<{ erro
   return {}
 }
 
+/**
+ * Clona um fluxo → novo RASCUNHO inativo ("Cópia de X"). Copia grafo+gatilho,
+ * mas nasce despublicado e inativo: nunca dispara sozinho até o cliente publicar
+ * (sem risco de dois fluxos no mesmo gatilho). Não copia runs/versões.
+ */
+export async function cloneFlow(id: string): Promise<{ id?: string; error?: string }> {
+  const session = await requireAdmin()
+  const { data: src, error: readErr } = await supabaseAdmin
+    .from("studio_flows")
+    .select("name, trigger, graph")
+    .eq("tenant_id", session.user.tenantId)
+    .eq("id", id)
+    .maybeSingle()
+  if (readErr) return { error: readErr.message }
+  if (!src) return { error: "Fluxo não encontrado." }
+
+  const { data, error } = await supabaseAdmin
+    .from("studio_flows")
+    .insert({
+      tenant_id: session.user.tenantId,
+      name:      `Cópia de ${src.name as string}`.slice(0, 120),
+      status:    "draft",
+      version:   1,
+      active:    false,
+      trigger:   src.trigger,
+      graph:     src.graph,
+    })
+    .select("id")
+    .maybeSingle()
+  if (error) return { error: error.message }
+  revalidatePath("/studio/fluxos")
+  return { id: data?.id }
+}
+
 export async function deleteFlow(id: string): Promise<{ error?: string }> {
   const session = await requireAdmin()
   // Soft-delete: arquiva (preserva runs/versions; nunca apaga dado de prod).

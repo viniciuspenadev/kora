@@ -1,14 +1,14 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { Plus, Loader2, Network, Pencil, Archive, Sparkles, X, Pause, Play, Inbox, Megaphone } from "lucide-react"
+import { Plus, Loader2, Network, Pencil, Trash2, Copy, Sparkles, X, Pause, Play, Inbox, Megaphone, Search } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state"
 import { StatusDot } from "@/components/ui/status-dot"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import { SourceLogo } from "@/components/chat/source-logo"
-import { createFlow, createFlowWithAI, deleteFlow, setFlowActive } from "@/lib/actions/studio/flows"
+import { createFlow, createFlowWithAI, deleteFlow, cloneFlow, setFlowActive } from "@/lib/actions/studio/flows"
 import type { StudioFlowSummary, FlowTrigger } from "@/types/studio"
 
 const CHANNEL_LOGO: Record<string, string> = {
@@ -19,12 +19,25 @@ const TRIGGER_LABEL: Record<string, string> = {
   from_ad: "Veio de anúncio",
 }
 
+type FlowState = "published" | "paused" | "draft"
+function flowState(f: StudioFlowSummary): FlowState {
+  if (f.status === "published") return f.active ? "published" : "paused"
+  return "draft"
+}
+
+const FILTERS: { key: "all" | FlowState; label: string }[] = [
+  { key: "all",       label: "Todos" },
+  { key: "published", label: "Publicados" },
+  { key: "paused",    label: "Pausados" },
+  { key: "draft",     label: "Rascunhos" },
+]
+
 // Tira de metadados do gatilho: selo de modo + canais (logos) + tipo de disparo.
 function TriggerMeta({ trigger }: { trigger: FlowTrigger | null }) {
   const active   = trigger?.mode === "active"
   const channels = trigger?.channels ?? []
   return (
-    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+    <div className="flex items-center gap-1.5 flex-wrap">
       <span className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-semibold ${
         active ? "bg-amber-50 text-amber-700 ring-1 ring-amber-200" : "bg-sky-50 text-sky-700 ring-1 ring-sky-200"}`}>
         {active ? <Megaphone className="size-3" /> : <Inbox className="size-3" />}
@@ -40,15 +53,96 @@ function TriggerMeta({ trigger }: { trigger: FlowTrigger | null }) {
   )
 }
 
+function FlowCard({
+  f, busy, onToggle, onClone, onDelete,
+}: {
+  f: StudioFlowSummary
+  busy: boolean
+  onToggle: () => void
+  onClone: () => void
+  onDelete: () => void
+}) {
+  const st = flowState(f)
+  const iconBtn = "inline-flex items-center justify-center size-8 rounded-lg text-slate-400 transition-colors disabled:opacity-50 hover:bg-slate-100"
+  return (
+    <div className="flex flex-col rounded-xl border border-slate-200 bg-white p-4 hover:border-slate-300 hover:shadow-card transition-all">
+      <div className="flex items-start gap-3">
+        <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center shrink-0">
+          <Network className="size-5 text-primary-600" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <Link href={`/studio/fluxos/${f.id}`} className="text-sm font-semibold text-slate-900 hover:text-primary-600 truncate block">
+            {f.name}
+          </Link>
+          <div className="flex items-center gap-2 mt-1">
+            {st === "published"
+              ? <StatusDot tone="success" label="Publicado" />
+              : st === "paused"
+                ? <StatusDot tone="neutral" label="Pausado" />
+                : <StatusDot tone="warning" label="Rascunho" />}
+            <span className="text-[10px] text-slate-400 tabular-nums">v{f.version}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <TriggerMeta trigger={f.trigger} />
+      </div>
+
+      {/* Ações — primária à esquerda, secundárias à direita */}
+      <div className="flex items-center gap-1.5 mt-4 pt-3 border-t border-slate-100">
+        <Link
+          href={`/studio/fluxos/${f.id}`}
+          className="inline-flex items-center gap-1.5 h-8 px-3 flex-1 text-xs font-semibold text-slate-700 border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors"
+        >
+          <Pencil className="size-3.5" /> Editar
+        </Link>
+        {f.status === "published" && (
+          <button
+            type="button" onClick={onToggle} disabled={busy}
+            className={`${iconBtn} ${f.active ? "hover:text-amber-600" : "hover:text-emerald-600"}`}
+            title={f.active ? "Pausar (para de rodar, sem arquivar)" : "Ativar"}
+            aria-label={f.active ? "Pausar" : "Ativar"}
+          >
+            {busy ? <Loader2 className="size-4 animate-spin" /> : f.active ? <Pause className="size-4" /> : <Play className="size-4" />}
+          </button>
+        )}
+        <button type="button" onClick={onClone} disabled={busy} className={`${iconBtn} hover:text-primary-600`} title="Clonar" aria-label="Clonar">
+          <Copy className="size-4" />
+        </button>
+        <button type="button" onClick={onDelete} disabled={busy} className={`${iconBtn} hover:text-danger`} title="Excluir" aria-label="Excluir">
+          <Trash2 className="size-4" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [archiving, setArchiving] = useState<string | null>(null)
-  const [togglingId, setTogglingId] = useState<string | null>(null)
+  const [busyId, setBusyId]   = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
+  const [query, setQuery]     = useState("")
+  const [filter, setFilter]   = useState<"all" | FlowState>("all")
   const [aiOpen, setAiOpen]   = useState(false)
   const [aiDesc, setAiDesc]   = useState("")
   const [aiError, setAiError] = useState<string | null>(null)
   const [aiPending, startAi]  = useTransition()
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: flows.length, published: 0, paused: 0, draft: 0 }
+    for (const f of flows) c[flowState(f)]++
+    return c
+  }, [flows])
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return flows.filter((f) =>
+      (filter === "all" || flowState(f) === filter) &&
+      (!q || f.name.toLowerCase().includes(q)),
+    )
+  }, [flows, query, filter])
 
   function handleNew() {
     startTransition(async () => {
@@ -66,43 +160,85 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
     })
   }
 
-  function handleArchive(id: string) {
+  function handleDelete(id: string) {
+    setBusyId(id)
     startTransition(async () => {
       await deleteFlow(id)
-      setArchiving(null)
+      setBusyId(null); setDeleting(null)
+      router.refresh()
+    })
+  }
+
+  function handleClone(id: string) {
+    setBusyId(id)
+    startTransition(async () => {
+      await cloneFlow(id)
+      setBusyId(null)
       router.refresh()
     })
   }
 
   function handleToggleActive(id: string, active: boolean) {
-    setTogglingId(id)
+    setBusyId(id)
     startTransition(async () => {
       await setFlowActive(id, active)
-      setTogglingId(null)
+      setBusyId(null)
       router.refresh()
     })
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => { setAiError(null); setAiOpen(true) }}
-          className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold text-violet-700 bg-violet-50 hover:bg-violet-100 ring-1 ring-violet-200 rounded-lg transition-colors"
-        >
-          <Sparkles className="size-3.5" /> Criar com IA
-        </button>
-        <button
-          type="button"
-          onClick={handleNew}
-          disabled={pending}
-          className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors"
-        >
-          {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
-          Novo fluxo
-        </button>
+      {/* Barra: busca + criar */}
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+        <div className="relative flex-1 min-w-0">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar fluxo…"
+            className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
+          />
+        </div>
+        <div className="flex gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => { setAiError(null); setAiOpen(true) }}
+            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold text-violet-700 bg-violet-50 hover:bg-violet-100 ring-1 ring-violet-200 rounded-lg transition-colors"
+          >
+            <Sparkles className="size-3.5" /> Criar com IA
+          </button>
+          <button
+            type="button"
+            onClick={handleNew}
+            disabled={pending}
+            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+          >
+            {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
+            Novo fluxo
+          </button>
+        </div>
       </div>
+
+      {/* Filtros por status (com contadores) */}
+      {flows.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {FILTERS.map((ff) => {
+            const on = filter === ff.key
+            const n  = counts[ff.key] ?? 0
+            return (
+              <button
+                key={ff.key} type="button" onClick={() => setFilter(ff.key)}
+                className={`inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium rounded-lg transition-colors ${
+                  on ? "bg-primary text-white" : "text-slate-600 hover:bg-slate-100"}`}
+              >
+                {ff.label}
+                <span className={`tabular-nums text-[10px] ${on ? "text-white/80" : "text-slate-400"}`}>{n}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {flows.length === 0 ? (
         <EmptyState
@@ -120,55 +256,24 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
             </button>
           }
         />
+      ) : visible.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-12 text-center">
+          <p className="text-sm text-slate-500">Nenhum fluxo encontrado.</p>
+          <button type="button" onClick={() => { setQuery(""); setFilter("all") }} className="mt-1 text-xs font-medium text-primary-600 hover:text-primary-700">
+            Limpar filtros
+          </button>
+        </div>
       ) : (
-        <div className="space-y-2">
-          {flows.map((f) => (
-            <div key={f.id} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4">
-              <div className="size-10 rounded-xl bg-primary-50 flex items-center justify-center shrink-0">
-                <Network className="size-5 text-primary-600" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <Link href={`/studio/fluxos/${f.id}`} className="text-sm font-semibold text-slate-900 hover:text-primary-600 truncate block">
-                  {f.name}
-                </Link>
-                <div className="flex items-center gap-2 mt-1">
-                  {f.status === "published" && f.active
-                    ? <StatusDot tone="success" label="Publicado" />
-                    : f.status === "published"
-                      ? <StatusDot tone="neutral" label="Pausado" />
-                      : <StatusDot tone="warning" label="Rascunho" />}
-                  <span className="text-[10px] text-slate-400 tabular-nums">v{f.version}</span>
-                </div>
-                <TriggerMeta trigger={f.trigger} />
-              </div>
-              {f.status === "published" && (
-                <button
-                  type="button"
-                  onClick={() => handleToggleActive(f.id, !f.active)}
-                  disabled={togglingId === f.id}
-                  className={`inline-flex items-center justify-center size-8 rounded-lg transition-colors hover:bg-slate-100 disabled:opacity-50 ${f.active ? "text-slate-400 hover:text-amber-600" : "text-slate-400 hover:text-emerald-600"}`}
-                  aria-label={f.active ? "Pausar" : "Ativar"}
-                  title={f.active ? "Pausar (para de rodar, sem arquivar)" : "Ativar"}
-                >
-                  {togglingId === f.id ? <Loader2 className="size-4 animate-spin" /> : f.active ? <Pause className="size-4" /> : <Play className="size-4" />}
-                </button>
-              )}
-              <Link
-                href={`/studio/fluxos/${f.id}`}
-                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-primary-600 hover:bg-slate-100 rounded-lg transition-colors"
-                aria-label="Editar"
-              >
-                <Pencil className="size-4" />
-              </Link>
-              <button
-                type="button"
-                onClick={() => setArchiving(f.id)}
-                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger hover:bg-slate-100 rounded-lg transition-colors"
-                aria-label="Arquivar"
-              >
-                <Archive className="size-4" />
-              </button>
-            </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {visible.map((f) => (
+            <FlowCard
+              key={f.id}
+              f={f}
+              busy={busyId === f.id}
+              onToggle={() => handleToggleActive(f.id, !f.active)}
+              onClone={() => handleClone(f.id)}
+              onDelete={() => setDeleting(f.id)}
+            />
           ))}
         </div>
       )}
@@ -215,12 +320,12 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
       )}
 
       <DangerConfirm
-        open={!!archiving}
-        title="Arquivar fluxo?"
-        body={<>O fluxo para de rodar e some da lista. Os dados não são apagados — dá pra recuperar depois.</>}
-        confirmLabel="Arquivar"
-        onConfirm={() => { if (archiving) handleArchive(archiving) }}
-        onClose={() => setArchiving(null)}
+        open={!!deleting}
+        title="Excluir fluxo?"
+        body={<>O fluxo para de rodar e some da lista. Os dados (execuções e versões) são preservados — dá pra recuperar depois.</>}
+        confirmLabel="Excluir"
+        onConfirm={() => { if (deleting) handleDelete(deleting) }}
+        onClose={() => setDeleting(null)}
       />
     </div>
   )

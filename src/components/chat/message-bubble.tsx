@@ -419,10 +419,10 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
         onPointerLeave={endPress}
         onPointerCancel={endPress}
         onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}
-        className={`relative max-w-[75%] rounded-2xl px-4 py-2.5 transition-shadow ${
+        className={`relative max-w-[75%] rounded-2xl px-4 py-2.5 ${
           isIncoming
-            ? "bg-white border border-slate-200 rounded-bl-md shadow-sm"
-            : "bg-primary-100 text-slate-900 border border-primary-200/60 rounded-br-md shadow-sm"
+            ? "bg-white border border-slate-200 rounded-bl-md"
+            : "bg-primary-100 text-slate-900 border border-primary-200/60 rounded-br-md"
         }`}
       >
         {/* Long-press (mobile): mesmas ações do hover, com alvos de toque maiores. */}
@@ -747,7 +747,7 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
         )}
 
         {message.content && message.content_type !== "location" && message.content_type !== "interactive" && (
-          <p className={`text-sm whitespace-pre-wrap break-words leading-relaxed ${
+          <p className={`text-[13px] whitespace-pre-wrap break-words leading-relaxed ${
             isIncoming ? "text-slate-800" : "text-slate-900"
           }`}>
             {message.content}

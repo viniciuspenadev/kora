@@ -1693,7 +1693,9 @@ export async function getUnreadTotal() {
     }
   }
 
-  return visible.reduce((s: number, c: { unread_count: number | null }) => s + (c.unread_count ?? 0), 0)
+  // Conta CONVERSAS com não-lidas (não a soma de mensagens) — `visible` já está
+  // filtrado a unread_count > 0, então o tamanho = nº de conversas pendentes.
+  return visible.length
 }
 
 // ── Configuração por tenant ─────────────────────────────────

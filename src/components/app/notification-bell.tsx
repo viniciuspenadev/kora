@@ -151,7 +151,7 @@ export function NotificationBell({
       >
         <Bell className="size-5" strokeWidth={1.75} />
         {unread > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full bg-primary text-white text-[9px] font-semibold flex items-center justify-center ring-2 ring-white tabular-nums">
+          <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full bg-red-500 text-white text-[9px] font-semibold flex items-center justify-center ring-2 ring-white tabular-nums">
             {badge}
           </span>
         )}

@@ -657,7 +657,7 @@ export function InboxClient({
     conversation_id:       activeIdRef.current ?? "",
     tenant_id:             "",
     sender_type:           "agent",
-    sender_id:             null,
+    sender_id:             currentUserId,   // já carimba o autor → nome aparece na hora (otimista), sem esperar o refetch
     content_type:          opts.contentType,
     content:               opts.content ?? null,
     media_url:             opts.mediaUrl ?? null,
@@ -673,7 +673,7 @@ export function InboxClient({
     deleted_at:            null,
     created_at:            new Date().toISOString(),
     profiles:              null,
-  }), [])
+  }), [currentUserId])
 
   const handleSendText = useCallback(async (content: string, isPrivate: boolean) => {
     const convId = activeIdRef.current

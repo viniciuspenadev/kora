@@ -61,11 +61,17 @@ export function Topbar({
 
       <div className="flex items-center gap-2.5">
         <NotificationBell userId={userId} supabaseToken={supabaseToken} />
-        <div className="text-right hidden sm:block">
-          <p className="text-xs font-semibold text-slate-700 leading-none">{userName}</p>
-          <p className="text-[11px] text-slate-400 leading-none mt-0.5">{ROLE_LABELS[userRole] ?? userRole}</p>
-        </div>
-        <MyAvatar name={userName} className="size-8" />
+        <Link
+          href="/configuracoes/perfil"
+          title="Meu perfil"
+          className="group/me flex items-center gap-2.5 rounded-lg px-1.5 py-1 -mr-1 hover:bg-slate-50 transition-colors"
+        >
+          <div className="text-right hidden sm:block">
+            <p className="text-xs font-semibold text-slate-700 leading-none group-hover/me:text-primary-700">{userName}</p>
+            <p className="text-[11px] text-slate-400 leading-none mt-0.5">{ROLE_LABELS[userRole] ?? userRole}</p>
+          </div>
+          <MyAvatar name={userName} className="size-8" />
+        </Link>
       </div>
     </header>
   )

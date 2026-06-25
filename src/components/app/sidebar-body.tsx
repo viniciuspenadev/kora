@@ -4,7 +4,7 @@ import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
 import { signOut } from "next-auth/react"
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays,
@@ -197,6 +197,40 @@ export function SidebarBody({
     await signOut({ redirectTo: "/auth/signin" })
   }
 
+  // ── Indicador ativo deslizante ──────────────────────────────────────────
+  // Um único realce que ESCORREGA (transform + transition) do item antigo até o
+  // novo, em vez de aparecer instantâneo. Mede a posição do chip ativo via rects;
+  // useLayoutEffect posiciona antes do paint (sem "pulo" no mount/refresh).
+  const navRef     = useRef<HTMLElement>(null)
+  const chipRefs   = useRef<Map<string, HTMLElement>>(new Map())
+  const setChipRef = useCallback((key: string, el: HTMLElement | null) => {
+    if (el) chipRefs.current.set(key, el); else chipRefs.current.delete(key)
+  }, [])
+  const [pill, setPill] = useState<{ x: number; y: number; show: boolean }>({ x: 0, y: 0, show: false })
+
+  const activeKey = useMemo(() => {
+    for (const item of visibleNav) {
+      if (isGroup(item)) { if (isGroupActive(item)) return item.key }
+      else if (isLeafActive(item.href)) return item.href
+    }
+    return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleNav, pathname])
+
+  const measurePill = useCallback(() => {
+    const nav  = navRef.current
+    const chip = activeKey ? chipRefs.current.get(activeKey) : null
+    if (!nav || !chip) { setPill((p) => ({ ...p, show: false })); return }
+    const n = nav.getBoundingClientRect(), c = chip.getBoundingClientRect()
+    setPill({ x: c.left - n.left + nav.scrollLeft, y: c.top - n.top + nav.scrollTop, show: true })
+  }, [activeKey])
+
+  useLayoutEffect(() => { measurePill() }, [measurePill, open, expanded])
+  useEffect(() => {
+    window.addEventListener("resize", measurePill)
+    return () => window.removeEventListener("resize", measurePill)
+  }, [measurePill])
+
   return (
     <>
       <div className="flex items-center h-14 border-b border-slate-200 px-2.5 shrink-0 overflow-hidden">
@@ -216,7 +250,13 @@ export function SidebarBody({
         </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-3 space-y-1">
+      <nav ref={navRef} className="relative flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-3 space-y-1">
+        {/* Realce deslizante — escorrega até o item ativo. Fica atrás dos ícones. */}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-0 size-9 rounded-xl bg-primary-100 transition-transform duration-300 ease-out"
+          style={{ transform: `translate(${pill.x}px, ${pill.y}px)`, opacity: pill.show ? 1 : 0 }}
+        />
         {visibleNav.map((item) => {
           if (!isGroup(item)) {
             const active   = isLeafActive(item.href)
@@ -231,10 +271,10 @@ export function SidebarBody({
                 title={showBadge ? `${item.label} · ${unread} não lidas` : item.label}
                 className={`group/item relative flex items-center gap-3 rounded-xl py-1.5 pr-3 ${item.soon ? "cursor-default" : ""}`}
               >
-                <span className={`
-                  relative flex size-9 items-center justify-center rounded-xl shrink-0 transition-all duration-150
+                <span ref={(el) => setChipRef(item.href, el)} className={`
+                  relative flex size-9 items-center justify-center rounded-xl shrink-0 transition-colors duration-150
                   ${active
-                    ? "bg-primary text-white shadow-sm shadow-primary/25"
+                    ? "text-primary-700"
                     : item.soon
                     ? "text-slate-300"
                     : "text-slate-500 group-hover/item:bg-slate-100 group-hover/item:text-slate-900"
@@ -282,10 +322,10 @@ export function SidebarBody({
                 title={item.label}
                 className="group/item relative w-full flex items-center gap-3 rounded-xl py-1.5 pr-3"
               >
-                <span className={`
-                  flex size-9 items-center justify-center rounded-xl shrink-0 transition-all duration-150
+                <span ref={(el) => setChipRef(item.key, el)} className={`
+                  flex size-9 items-center justify-center rounded-xl shrink-0 transition-colors duration-150
                   ${groupActive
-                    ? "bg-primary text-white shadow-sm shadow-primary/25"
+                    ? "text-primary-700"
                     : "text-slate-500 group-hover/item:bg-slate-100 group-hover/item:text-slate-900"
                   }
                 `}>

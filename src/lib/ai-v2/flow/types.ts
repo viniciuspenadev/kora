@@ -48,6 +48,8 @@ export interface FlowEdge {
 export interface FlowGraph {
   nodes: FlowNode[]
   edges: FlowEdge[]
+  /** Orientação do canvas (editor). O runtime IGNORA — vertical (default) ou horizontal. */
+  orientation?: "vertical" | "horizontal"
 }
 
 // ── Config tipada por nó (lida via `as unknown as X` + validação) ──

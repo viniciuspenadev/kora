@@ -31,14 +31,13 @@ import {
   moveConversation,
   markConversationWonLost,
 } from "@/lib/actions/pipeline"
-import { getDealsPanel, moveDeal, moveDealById, openDeal, updateDeal, cancelDeal, reopenDeal, getConversationTimeline, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship, type TimelineItem } from "@/lib/actions/deals"
+import { getDealsPanel, moveDeal, moveDealById, openDeal, updateDeal, reopenDeal, getConversationTimeline, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship, type TimelineItem } from "@/lib/actions/deals"
 import { createTask, setTaskDone, snoozeTask } from "@/lib/actions/tasks"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
 import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { applyTag, removeTag, createTag } from "@/lib/actions/tags"
-import { qualifyLead, markUnfit } from "@/lib/actions/chat"
 import type { ChatContact, ChatConversation, LifecycleStage, ExternalAdReply } from "@/types/chat"
 
 // ── Types compartilhados ────────────────────────────────────
@@ -93,6 +92,14 @@ export function ContactSidebar(props: Props) {
     })
   }
 
+  // Panel de negócios buscado UMA vez aqui → alimenta o selo de relacionamento no
+  // header (junto das tags) e a seção Negócios (sem refetch duplicado).
+  const [dealsPanel, setDealsPanel] = useState<DealsPanel | null>(null)
+  const reloadDeals = useCallback(() => {
+    getDealsPanel(props.conversation.id).then(setDealsPanel).catch(() => {})
+  }, [props.conversation.id])
+  useEffect(() => { reloadDeals() }, [reloadDeals])
+
   if (collapsed) {
     return (
       <aside className="w-12 shrink-0 border-l border-slate-200 bg-white flex flex-col items-center py-3 gap-2">
@@ -127,6 +134,7 @@ export function ContactSidebar(props: Props) {
         conversation={props.conversation}
         contact={props.contact}
         appliedTags={appliedTags}
+        relationship={dealsPanel?.enabled ? dealsPanel.relationship : null}
         onCollapse={toggle}
         sheetMode={props.forceExpanded}
         onClose={props.onClose}
@@ -136,13 +144,15 @@ export function ContactSidebar(props: Props) {
       <DealsCard
         conversationId={props.conversation.id}
         contactName={displayContactName(props.contact)}
+        panel={dealsPanel}
+        onReload={reloadDeals}
       />
       <ContactAgendaCard
         contactId={props.contact.id}
         contactName={displayContactName(props.contact)}
         conversationId={props.conversation.id}
       />
-      <LifecycleCard conversation={props.conversation} contact={props.contact} />
+      <LifecycleCard contact={props.contact} />
 
       {/* ── Zona "Detalhes": referência, colapsada por padrão ── */}
       <ZoneLabel>Detalhes</ZoneLabel>
@@ -227,16 +237,25 @@ function Hint({ icon: Icon, label }: { icon: typeof Target; label: string }) {
 // Header
 // ═══════════════════════════════════════════════════════════════
 
+// Selo de relacionamento (derivado dos negócios) — só os estados informativos:
+// Cliente (já comprou) e Em negociação (negócio aberto). Prospect = sem selo (limpo).
+const REL_META: Partial<Record<Relationship, { label: string; cls: string }>> = {
+  cliente:    { label: "Cliente",       cls: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" },
+  negociacao: { label: "Em negociação", cls: "bg-primary-50 text-primary-700 ring-1 ring-primary-200" },
+}
+
 function HeaderCard({
-  conversation, contact, appliedTags, onCollapse, sheetMode, onClose,
+  conversation, contact, appliedTags, relationship, onCollapse, sheetMode, onClose,
 }: {
-  conversation: ChatConversation
-  contact:      ChatContact
-  appliedTags:  TagMini[]
-  onCollapse:   () => void
-  sheetMode?:   boolean
-  onClose?:     () => void
+  conversation:  ChatConversation
+  contact:       ChatContact
+  appliedTags:   TagMini[]
+  relationship:  Relationship | null
+  onCollapse:    () => void
+  sheetMode?:    boolean
+  onClose?:      () => void
 }) {
+  const relMeta = relationship ? REL_META[relationship] : null
   const [, startTransition] = useTransition()
   const [showActions, setShowActions] = useState(false)
   const { confirm, confirmDialog } = useConfirm()
@@ -323,9 +342,14 @@ function HeaderCard({
       )}
       {contact.username && <p className="text-[11px] font-medium text-primary-600 mt-0.5">@{contact.username}</p>}
 
-      {/* Tags em chips compactos abaixo do telefone */}
-      {appliedTags.length > 0 && (
+      {/* Selo de relacionamento + tags em chips compactos abaixo do nome */}
+      {(relMeta || appliedTags.length > 0) && (
         <div className="mt-2 flex flex-wrap gap-1 justify-center max-w-full px-2">
+          {relMeta && (
+            <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${relMeta.cls}`}>
+              {relMeta.label}
+            </span>
+          )}
           {appliedTags.slice(0, 4).map((t) => (
             <span
               key={t.id}
@@ -556,88 +580,13 @@ function Row({ icon: Icon, label, children }: { icon: typeof UserIcon; label: st
 // Lifecycle
 // ═══════════════════════════════════════════════════════════════
 
-function LifecycleCard({
-  conversation, contact,
-}: {
-  conversation: ChatConversation
-  contact:      ChatContact
-}) {
+function LifecycleCard({ contact }: { contact: ChatContact }) {
   const lc = lifecycleMeta(contact.lifecycle_stage as LifecycleStage)
-  const [, startTransition] = useTransition()
-  const [unfitOpen, setUnfitOpen] = useState(false)
-  const [unfitReason, setUnfitReason] = useState("")
-
-  const isContact = contact.lifecycle_stage === "contact"
-  const isLead    = contact.lifecycle_stage === "lead"
-
-  function handleQualify() {
-    startTransition(async () => {
-      try { await qualifyLead(conversation.id) } catch (e) { alert((e as Error).message) }
-    })
-  }
-
-  function handleUnfit() {
-    startTransition(async () => {
-      try {
-        await markUnfit(conversation.id, unfitReason.trim() || undefined)
-        setUnfitOpen(false); setUnfitReason("")
-      } catch (e) { alert((e as Error).message) }
-    })
-  }
-
   return (
     <Section icon={Flag} title="Ciclo de vida">
       <div className={`inline-flex items-center gap-1.5 ${lc.bg} ${lc.text} text-xs font-semibold px-2.5 py-1 rounded-md`}>
         <span>{lc.icon}</span> {lc.label}
       </div>
-
-      {(isContact || isLead) && (
-        <div className="mt-3 flex flex-col gap-1.5">
-          {isContact && (
-            <button
-              type="button"
-              onClick={handleQualify}
-              className="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors"
-            >
-              <Target className="size-3.5" /> Qualificar como Lead
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => setUnfitOpen(true)}
-            className="inline-flex items-center justify-center gap-1.5 h-8 px-3 text-xs font-medium border border-red-200 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            <Ban className="size-3.5" /> Sem fit
-          </button>
-        </div>
-      )}
-
-      {unfitOpen && (
-        <div
-          className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4"
-          onClick={() => setUnfitOpen(false)}
-        >
-          <div className="bg-white rounded-xl shadow-soft w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="px-5 py-4 border-b border-slate-100">
-              <h4 className="text-sm font-semibold text-slate-900">Marcar como sem fit</h4>
-              <p className="text-xs text-slate-500 mt-0.5">Sai do funil. Motivo é opcional, mas ajuda depois.</p>
-            </div>
-            <div className="p-5">
-              <textarea
-                value={unfitReason}
-                onChange={(e) => setUnfitReason(e.target.value)}
-                rows={3}
-                placeholder="Ex: orçamento não cabe, fora do perfil…"
-                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 resize-none"
-              />
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 py-3 bg-slate-50 border-t border-slate-100">
-              <button type="button" onClick={() => setUnfitOpen(false)} className="h-9 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-lg">Cancelar</button>
-              <button type="button" onClick={handleUnfit} className="h-9 px-4 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">Confirmar</button>
-            </div>
-          </div>
-        </div>
-      )}
     </Section>
   )
 }
@@ -1310,8 +1259,9 @@ function dealAging(d: PanelDeal): { days: number; tone: "amber" | "red" } | null
   return { days, tone: days >= 7 ? "red" : "amber" }
 }
 
-function DealsCard({ conversationId, contactName }: { conversationId: string; contactName: string }) {
-  const [panel, setPanel]           = useState<DealsPanel | null>(null)
+function DealsCard({ conversationId, contactName, panel, onReload }: {
+  conversationId: string; contactName: string; panel: DealsPanel | null; onReload: () => void
+}) {
   const [showNew, setShowNew]       = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [moving, setMoving]         = useState<string | null>(null)
@@ -1319,8 +1269,7 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
   const [blocked, setBlocked]       = useState<PanelDeal | null>(null)   // negócio aberto que impede abrir outro
   const [flowModal, setFlowModal]   = useState<{ mode: "handoff" | "reclass"; dealId: string } | null>(null)
 
-  const load = useCallback(() => { getDealsPanel(conversationId).then(setPanel).catch(() => {}) }, [conversationId])
-  useEffect(() => { load() }, [load])
+  const load = onReload   // recarrega o panel (vive no root do sidebar)
 
   if (!panel || !panel.enabled) return null   // módulo crm desligado → invisível
 
@@ -1349,13 +1298,6 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
     if (!("error" in r) && valueChanged) await updateDeal(moveReq.dealId, { estimatedValue: res.value }, { silentCard: true })
     if (!("error" in r) && res.task) await createTask({ dealId: moveReq.dealId, title: res.task.title, dueAt: res.task.dueAt })
     setMoving(null); setMoveReq(null)
-    if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
-  }
-
-  async function cancel(dealId: string, reason: string) {
-    setMoving(dealId)
-    const r = await cancelDeal(conversationId, dealId, reason || null)
-    setMoving(null)
     if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
   }
 
@@ -1394,14 +1336,13 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
 
   return (
     <Section icon={Briefcase} title="Negócios" action={panel.pipelines.length > 0 && (
-      <button type="button" onClick={tryNew} className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 transition-colors">
-        <Plus className="size-3" /> Novo
+      <button type="button" onClick={tryNew} aria-label="Novo negócio" title="Novo negócio"
+        className="size-6 inline-flex items-center justify-center rounded-full bg-primary text-white hover:bg-primary-700 transition-colors">
+        <Plus className="size-3.5" />
       </button>
     )}>
-      <RelationshipBadge relationship={panel.relationship} wonCount={panel.wonCount} dealCount={panel.deals.length} />
-
       {active ? (
-        <ActiveDeal deal={active} pipelines={panel.pipelines} onMove={requestMove} onCancel={cancel} moving={moving === active.id} onTaskChange={load}
+        <ActiveDeal deal={active} pipelines={panel.pipelines} onMove={requestMove} moving={moving === active.id} onTaskChange={load}
           onReclassify={panel.pipelines.length > 1 ? () => setFlowModal({ mode: "reclass", dealId: active.id }) : undefined} />
       ) : (
         <>
@@ -1484,24 +1425,6 @@ function DealsCard({ conversationId, contactName }: { conversationId: string; co
   )
 }
 
-function RelationshipBadge({ relationship, wonCount, dealCount }: { relationship: Relationship; wonCount: number; dealCount: number }) {
-  const meta = relationship === "cliente"
-    ? { label: "Cliente", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" }
-    : relationship === "negociacao"
-    ? { label: "Em negociação", cls: "bg-primary-50 text-primary-700 border-primary-200" }
-    : { label: "Prospect", cls: "bg-slate-100 text-slate-500 border-slate-200" }
-  return (
-    <div className="flex items-center gap-2 mb-2">
-      <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border ${meta.cls}`}>{meta.label}</span>
-      {dealCount > 0 && (
-        <span className="text-[10px] text-slate-400 tabular-nums">
-          {wonCount > 0 ? `${wonCount} ganho${wonCount > 1 ? "s" : ""} · ` : ""}{dealCount} negócio{dealCount > 1 ? "s" : ""}
-        </span>
-      )}
-    </div>
-  )
-}
-
 function taskDueChip(iso: string): { label: string; overdue: boolean } {
   const d = new Date(iso), now = new Date()
   const diff = d.getTime() - now.getTime()
@@ -1570,17 +1493,11 @@ function NextAction({ deal, onChange }: { deal: PanelDeal; onChange: () => void 
   )
 }
 
-const CANCEL_REASONS = ["Criado por engano", "Duplicado", "Cliente desistiu", "Fora do perfil", "Outro"]
-
-function ActiveDeal({ deal, pipelines, onMove, onCancel, moving, onTaskChange, onReclassify }: {
+function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange, onReclassify }: {
   deal: PanelDeal; pipelines: DealPipeline[]
   onMove: (dealId: string, stageId: string, toName: string, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) => void
-  onCancel: (dealId: string, reason: string) => void
   moving: boolean; onTaskChange: () => void; onReclassify?: () => void
 }) {
-  const [cancelOpen, setCancelOpen] = useState(false)
-  const [reasonSel, setReasonSel]   = useState(CANCEL_REASONS[0])
-  const [reasonTxt, setReasonTxt]   = useState("")
   const pipeline = pipelines.find((p) => p.id === deal.pipeline_id)
   const stages   = (pipeline?.stages ?? []).filter((s) => s.show_in_kanban || s.is_won || s.is_lost)
   const color    = deal.stage?.color ?? "#64748b"
@@ -1615,37 +1532,6 @@ function ActiveDeal({ deal, pipelines, onMove, onCancel, moving, onTaskChange, o
         {moving && <Loader2 className="size-3.5 animate-spin text-slate-400 shrink-0" />}
       </div>
       <NextAction deal={deal} onChange={onTaskChange} />
-
-      {/* Cancelar negócio — anula (≠ Perdido): não conta como perda, card volta a "sem negócio". */}
-      {!cancelOpen ? (
-        <button type="button" onClick={() => setCancelOpen(true)} disabled={moving}
-          className="mt-2 text-[10px] font-medium text-slate-400 hover:text-red-600 transition-colors disabled:opacity-50">
-          Cancelar negócio
-        </button>
-      ) : (
-        <div className="mt-2 rounded-lg border border-red-100 bg-red-50/50 p-2 space-y-1.5">
-          <p className="text-[10px] font-semibold text-red-700">Cancelar — anula (não conta como perda)</p>
-          <select value={reasonSel} onChange={(e) => setReasonSel(e.target.value)}
-            className="w-full h-7 px-2 text-[11px] border border-red-200 rounded-lg bg-white focus:outline-none">
-            {CANCEL_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-          {reasonSel === "Outro" && (
-            <input value={reasonTxt} onChange={(e) => setReasonTxt(e.target.value)} placeholder="Motivo…"
-              className="w-full h-7 px-2 text-[11px] border border-red-200 rounded-lg bg-white focus:outline-none" />
-          )}
-          <div className="flex items-center gap-1.5">
-            <button type="button" disabled={moving}
-              onClick={() => onCancel(deal.id, reasonSel === "Outro" ? (reasonTxt.trim() || "Outro") : reasonSel)}
-              className="inline-flex items-center gap-1 h-7 px-2.5 text-[11px] font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
-              {moving && <Loader2 className="size-3 animate-spin" />} Confirmar
-            </button>
-            <button type="button" onClick={() => setCancelOpen(false)} disabled={moving}
-              className="h-7 px-2.5 text-[11px] font-medium text-slate-500 hover:bg-slate-100 rounded-lg">
-              Voltar
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -1695,9 +1581,10 @@ function ContactAgendaCard({ contactId, contactName, conversationId }: {
       <button
         type="button"
         onClick={() => setShowModal(true)}
-        className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-semibold text-primary-700 bg-primary-50 hover:bg-primary-100 transition-colors"
+        aria-label="Novo agendamento" title="Novo agendamento"
+        className="size-6 inline-flex items-center justify-center rounded-full bg-primary text-white hover:bg-primary-700 transition-colors"
       >
-        <Plus className="size-3" /> Novo
+        <Plus className="size-3.5" />
       </button>
     )}>
       {upcoming.length === 0 ? (
