@@ -1,13 +1,43 @@
 import "server-only"
+import { supabaseAdmin } from "@/lib/supabase"
+import { decryptSecret } from "@/lib/crypto/secrets"
 
 /**
  * Cliente mínimo da Graph API do Instagram (caminho "Instagram Login").
- * Base: graph.instagram.com. Usado pra (a) validar/descobrir a conta no connect e
- * (b) enriquecer o contato (nome/@/foto) a partir do IGSID. Token vem decifrado.
+ * Base: graph.instagram.com. Usado pra (a) validar/descobrir a conta no connect,
+ * (b) enriquecer o contato (nome/@/foto) e (c) ENVIAR DM (outbound). Token decifrado.
  * Doc: docs/instagram-direct-design.md.
  */
 
 const IG_BASE = "https://graph.instagram.com"
+
+/** Conta IG conectada + token (decifrado) do tenant — pra OUTBOUND. */
+export async function getInstagramSender(tenantId: string): Promise<{ igAccountId: string; token: string } | null> {
+  const { data } = await supabaseAdmin.from("channel_connections")
+    .select("external_account_id, access_token")
+    .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active").maybeSingle()
+  const acc   = data?.external_account_id as string | null
+  const token = decryptSecret((data?.access_token as string | null) ?? null)
+  if (!acc || !token) return null
+  return { igAccountId: acc, token }
+}
+
+/** Envia um texto via Instagram Send API (Graph). Só vale dentro da janela 24h. */
+export async function sendInstagramText(
+  igAccountId: string, recipientIgsid: string, token: string, text: string,
+): Promise<{ messageId: string | null } | { error: string }> {
+  try {
+    const r = await fetch(`${IG_BASE}/${igAccountId}/messages?access_token=${encodeURIComponent(token)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipient: { id: recipientIgsid }, message: { text } }),
+    })
+    const j = await r.json() as { message_id?: string; error?: { message?: string } }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { messageId: j.message_id ?? null }
+  } catch (e) {
+    return { error: (e as Error).message }
+  }
+}
 
 const APP_ID     = () => process.env.INSTAGRAM_APP_ID ?? ""
 const APP_SECRET = () => process.env.INSTAGRAM_APP_SECRET ?? ""

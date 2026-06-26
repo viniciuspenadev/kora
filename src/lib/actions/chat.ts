@@ -9,6 +9,7 @@ import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { isWindowOpen } from "@/lib/channels/policy"
+import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
 import { requireLimit } from "@/lib/limits"
@@ -350,7 +351,7 @@ export async function sendMessage(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid, primary_external_id)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -385,7 +386,7 @@ export async function sendMessage(
   }
 
   const contact = conv.chat_contacts as unknown as {
-    whatsapp_id: string | null; phone_number: string | null; primary_channel: string | null; bsuid: string | null
+    whatsapp_id: string | null; phone_number: string | null; primary_channel: string | null; bsuid: string | null; primary_external_id: string | null
   }
 
   // Citação (responder a uma mensagem). Notas privadas não citam pro WhatsApp.
@@ -449,6 +450,22 @@ export async function sendMessage(
         .from("chat_messages")
         .update({ status: "sent" })
         .eq("id", msg.id)
+    } else if (channel === "instagram") {
+      // Instagram Direct — envia via Graph API (token cifrado da conexão), dentro da
+      // janela 24h. Destinatário = IGSID (primary_external_id do contato).
+      try {
+        const sender = await getInstagramSender(tenantId)
+        const igsid  = contact.primary_external_id
+        if (!sender) throw new Error("Conta do Instagram não conectada (conecte em Integrações).")
+        if (!igsid)  throw new Error("Contato sem identidade do Instagram.")
+        const r = await sendInstagramText(sender.igAccountId, igsid, sender.token, content)
+        if ("error" in r) throw new Error(r.error)
+        await supabaseAdmin.from("chat_messages")
+          .update({ whatsapp_msg_id: r.messageId || null, status: "sent" }).eq("id", msg.id)
+      } catch (err) {
+        await supabaseAdmin.from("chat_messages").update({ status: "failed" }).eq("id", msg.id)
+        throw new Error(`Erro ao enviar no Instagram: ${(err as Error).message}`)
+      }
     } else {
       await supabaseAdmin
         .from("chat_messages")

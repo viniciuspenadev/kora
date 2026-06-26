@@ -19,11 +19,17 @@ const IG_PLACEHOLDER_NAME = "Usuário do Instagram"
  * placeholder (igual o canal `site`); NÃO é usada pra enviar no IG (isso é o token da conexão).
  */
 
+type IgAttachment = { type?: string; payload?: { url?: string } }
 type IgMessaging = {
   sender?:    { id?: string }            // IGSID de quem mandou
   recipient?: { id?: string }            // id da conta conectada
   timestamp?: number
-  message?:   { mid?: string; text?: string; is_echo?: boolean; attachments?: unknown[] }
+  message?:   { mid?: string; text?: string; is_echo?: boolean; attachments?: IgAttachment[] }
+}
+
+const MEDIA_LABEL: Record<string, string> = { image: "📷 Imagem", video: "📹 Vídeo", audio: "🎤 Áudio", file: "📎 Arquivo", share: "🔗 Compartilhado", story_mention: "📖 Menção no story" }
+function attachmentKind(type?: string): string {
+  return type === "image" ? "image" : type === "video" ? "video" : type === "audio" ? "audio" : "document"
 }
 type IgChange  = { field?: string; value?: Record<string, unknown> }
 type IgEntry   = { id?: string; time?: number; messaging?: IgMessaging[]; changes?: IgChange[] }
@@ -88,6 +94,7 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   const fromIgsid = m.sender?.id ?? null
   const text = m.message?.text ?? null
   const mid  = m.message?.mid ?? null
+  const att  = m.message?.attachments?.[0]
   if (!igAccountId || igAccountId === "0" || !fromIgsid) { log("dm-skip", { reason: "missing-id", igAccountId, fromIgsid }); return }
 
   const conn = await connectionFor(igAccountId)
@@ -100,30 +107,36 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
 
   const conv = await getOrCreateIgConversation(conn.tenantId, contact.id, instanceId)
 
-  const preview = (text?.trim()?.slice(0, 100)) || "Mensagem"
+  // Mídia: visível já (label + URL no metadata). Download p/ o bucket = próximo passo.
+  const contentType = att?.type ? attachmentKind(att.type) : "text"
+  const content     = att?.type ? (text?.trim() || MEDIA_LABEL[att.type] || "📎 Anexo") : text
+  const preview     = (content?.trim()?.slice(0, 100)) || "Mensagem"
+  const now = new Date().toISOString()
+
   const { error } = await supabaseAdmin.from("chat_messages").insert({
     conversation_id: conv.id, tenant_id: conn.tenantId,
     sender_type: "contact", sender_id: null,
-    content_type: "text", content: text,
+    content_type: contentType, content,
     whatsapp_msg_id: mid,                 // idempotência (reusa a coluna; Meta reenvia)
     status: "delivered", is_private_note: false,
-    metadata: { channel: "instagram", ig_account_id: igAccountId },
+    metadata: { channel: "instagram", ig_account_id: igAccountId, ...(att?.payload?.url ? { ig_attachment_url: att.payload.url, ig_attachment_type: att.type } : {}) },
   })
   if (error) { if (error.code !== "23505") log("dm-insert-err", { err: error.message }); return }   // 23505 = duplicata
 
   const { data: cc } = await supabaseAdmin.from("chat_conversations").select("unread_count, status").eq("id", conv.id).single()
   const wasResolved = (cc?.status as string) === "resolved"
   await supabaseAdmin.from("chat_conversations").update({
-    last_message_at:      new Date().toISOString(),
+    last_message_at:      now,
+    last_inbound_at:      now,            // abre a janela 24h (o cliente falou) → habilita resposta
     last_message_preview: preview,
     last_message_dir:     "in",
     unread_count:         ((cc?.unread_count as number) ?? 0) + 1,
     status:               wasResolved ? "open" : (cc?.status as string),
-    updated_at:           new Date().toISOString(),
+    updated_at:           now,
     ...(wasResolved ? { resolved_at: null } : {}),
   }).eq("id", conv.id)
 
-  log("dm-ok", { tenantId: conn.tenantId, contactId: contact.id, convId: conv.id, isNew: conv.isNew, created: contact.created })
+  log("dm-ok", { tenantId: conn.tenantId, contactId: contact.id, convId: conv.id, isNew: conv.isNew, created: contact.created, kind: contentType })
 }
 
 export async function processInstagramWebhook(body: unknown): Promise<void> {
