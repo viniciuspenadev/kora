@@ -191,10 +191,13 @@ function extractIgContent(m: IgMessaging): IgDecoded {
   const att = msg.attachments?.[0]
   if (att?.type) {
     meta.ig_attachment_type = att.type
-    if (att.type === "share") {
-      meta.ig_share_url = att.payload?.url ?? null
+    // Share de post/reel/story — a doc da Meta usa ig_post/ig_reel/ig_story (NÃO "share").
+    if (att.type === "ig_post" || att.type === "ig_reel" || att.type === "ig_story" || att.type === "share") {
+      meta.ig_share_url  = att.payload?.url ?? null
+      meta.ig_share_kind = att.type
       const t = msg.text?.trim() || null
-      return { contentType: "text", content: t || "🔗 Compartilhou um post", metadata: meta, routableText: t }
+      const label = att.type === "ig_reel" ? "🎬 Compartilhou um reel" : att.type === "ig_story" ? "📖 Compartilhou um story" : "🔗 Compartilhou um post"
+      return { contentType: "text", content: t || label, metadata: meta, routableText: t }
     }
     if (att.type === "story_mention") {
       meta.ig_story = "mention"
@@ -299,6 +302,7 @@ export async function processInstagramWebhook(body: unknown): Promise<void> {
     const igAccountId = entry.id ?? null
 
     for (const m of entry.messaging ?? []) {
+      log("raw-msg", { igAccountId, m })   // DEBUG TEMPORÁRIO: estrutura real do evento (remover após mapear)
       if (m.message?.is_echo) continue   // eco do nosso envio → não re-ingere
       if (m.reaction)              { await handleReaction(igAccountId, m).catch((e) => log("reaction-err", { err: (e as Error).message })); continue }
       if (m.read)                  { await handleRead(igAccountId, m).catch((e) => log("read-err", { err: (e as Error).message })); continue }
@@ -307,6 +311,7 @@ export async function processInstagramWebhook(body: unknown): Promise<void> {
     }
 
     for (const ch of entry.changes ?? []) {
+      log("raw-change", { igAccountId, field: ch.field ?? null, value: ch.value ?? null })   // DEBUG TEMPORÁRIO
       if (ch.field !== "comments") { log("change", { igAccountId, field: ch.field ?? null }); continue }
       const v = ch.value ?? {}
       const from = v.from as { id?: string; username?: string } | undefined
