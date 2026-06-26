@@ -2,9 +2,8 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
-import { getViewerScope } from "@/lib/visibility"
+import { getViewerScope, applyVisibilityFilter, canViewConversation } from "@/lib/visibility"
 import { resolveLifecycle } from "@/lib/lifecycle-stage"
-import { syncActiveDeal } from "@/lib/crm/deals"
 import { getBlueprint } from "@/lib/templates/funnels"
 import { revalidatePath } from "next/cache"
 
@@ -30,9 +29,11 @@ const KANBAN_CARD_SELECT = `
  */
 export async function getManagementCards(): Promise<unknown[]> {
   const scope = await getViewerScope()
-  if (!scope.isAdmin && !scope.viewAll) return []   // só alto escalão
 
-  const { data, error } = await supabaseAdmin
+  // Visibilidade pela regra única (admin/supervisor vê tudo; atendente a fatia
+  // dele) — assim o Quadro de Atendimento (lente por departamento) funciona pra
+  // TODOS, não só alto escalão.
+  let query = supabaseAdmin
     .from("chat_conversations")
     .select(KANBAN_CARD_SELECT)
     .eq("tenant_id", scope.tenantId)
@@ -40,7 +41,9 @@ export async function getManagementCards(): Promise<unknown[]> {
     .is("archived_at", null)
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .limit(500)
+  query = applyVisibilityFilter(query, scope)
 
+  const { data, error } = await query
   if (error) throw new Error(`getManagementCards: ${error.message}`)
   return data ?? []
 }
@@ -267,19 +270,27 @@ export async function archivePipeline(id: string) {
   revalidatePath("/kanban/configuracao")
 }
 
-export async function setDefaultPipeline(id: string) {
+/**
+ * Define o funil padrão das conversas NOVAS — ou `null` = "Nenhum (atendimento
+ * puro)": conversa nasce SEM funil (department-only), o agente joga no funil que
+ * quiser depois. Desacopla o atendimento do funil de venda, por-tenant, self-serve.
+ */
+export async function setDefaultPipeline(id: string | null) {
   const session = await requireAdmin()
 
+  // Limpa o is_default de todos (só um padrão por vez; nenhum se id=null).
   await supabaseAdmin
     .from("pipelines")
     .update({ is_default: false })
     .eq("tenant_id", session.user.tenantId)
 
-  await supabaseAdmin
-    .from("pipelines")
-    .update({ is_default: true })
-    .eq("id", id)
-    .eq("tenant_id", session.user.tenantId)
+  if (id) {
+    await supabaseAdmin
+      .from("pipelines")
+      .update({ is_default: true })
+      .eq("id", id)
+      .eq("tenant_id", session.user.tenantId)
+  }
 
   await supabaseAdmin
     .from("tenant_config")
@@ -351,17 +362,14 @@ export async function deleteStage(id: string) {
   if (!stage) throw new Error("Etapa não encontrada")
   const s = stage as { pipeline_id: string; is_won: boolean; is_lost: boolean; is_triage: boolean }
 
-  // Itens vivos: conversas E negócios. A FK é ON DELETE SET NULL — sem este guard, excluir
-  // uma etapa com negócios zeraria o stage_id deles silenciosamente (órfãos, somem do board).
-  const [{ count: convCount }, { count: dealCount }] = await Promise.all([
-    supabaseAdmin.from("chat_conversations").select("id", { count: "exact", head: true }).eq("stage_id", id).eq("tenant_id", t),
-    supabaseAdmin.from("tenant_deals").select("id", { count: "exact", head: true }).eq("stage_id", id).eq("tenant_id", t),
-  ])
-  if ((convCount ?? 0) > 0 || (dealCount ?? 0) > 0) {
-    const parts: string[] = []
-    if (convCount) parts.push(`${convCount} conversa(s)`)
-    if (dealCount) parts.push(`${dealCount} negócio(s)`)
-    throw new Error(`Esta etapa tem ${parts.join(" e ")}. Mova para outra etapa antes de excluir.`)
+  // Conversas vivas na etapa. A FK é ON DELETE SET NULL — sem este guard, excluir uma etapa
+  // com conversas zeraria o stage_id delas silenciosamente (somem do board de atendimento).
+  // Negócios não entram mais aqui: `pipeline_stages` é só ATENDIMENTO; o funil de venda usa
+  // `deal_pipeline_stages` (guard equivalente vive no CRUD de funis de venda).
+  const { count: convCount } = await supabaseAdmin
+    .from("chat_conversations").select("id", { count: "exact", head: true }).eq("stage_id", id).eq("tenant_id", t)
+  if ((convCount ?? 0) > 0) {
+    throw new Error(`Esta etapa tem ${convCount} conversa(s). Mova para outra etapa antes de excluir.`)
   }
 
   // Proteção estrutural: não excluir a ÚNICA etapa de Ganho/Perda/Triagem do funil
@@ -413,12 +421,20 @@ export async function moveConversation(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("stage_id, pipeline_id")
+    .select("stage_id, pipeline_id, assigned_to, participants, department_id, instance_id")
     .eq("id", conversationId)
     .eq("tenant_id", session.user.tenantId)
     .single()
 
   if (!conv) throw new Error("Conversa não encontrada")
+
+  // Gate de visibilidade (fail-closed): só move quem PODE ver/atuar na conversa
+  // (mesma regra do envio/transferência). Mover etapa é colaboração — participante
+  // pode (≠ trocar dono, que é só dono/admin/supervisor).
+  const scope = await getViewerScope()
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null })) {
+    throw new Error("Sem permissão para mover esta conversa.")
+  }
 
   const { data: newStage } = await supabaseAdmin
     .from("pipeline_stages")
@@ -489,15 +505,8 @@ export async function moveConversation(
 
   }
 
-  // CRM Negócios — Fase 0 (shadow): se a conversa TEM negócio ativo, sincroniza com a
-  // nova etapa. NÃO cria negócio (nasce só por "abrir negócio"). Best-effort.
-  await syncActiveDeal({
-    tenantId:       session.user.tenantId,
-    conversationId,
-    stage:          { id: newStage.id, pipeline_id: newStage.pipeline_id, is_won: newStage.is_won, is_lost: newStage.is_lost },
-    movedStage:     conv.stage_id !== newStageId,
-    by:             session.user.id,
-  })
+  // Mover a conversa NÃO mexe mais no negócio: o funil de venda (deal_*) é independente
+  // do pipeline de ATENDIMENTO da conversa. (espelho syncActiveDeal removido na separação)
 
   if (conv.stage_id !== newStageId) {
     await supabaseAdmin.from("chat_messages").insert({

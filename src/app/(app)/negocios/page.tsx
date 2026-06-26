@@ -3,7 +3,7 @@ import { redirect } from "next/navigation"
 import { Briefcase } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
-import { getDealsPage } from "@/lib/actions/deals"
+import { getDealsPage, getDealPipelines } from "@/lib/actions/deals"
 import { NegociosClient } from "./negocios-client"
 
 export default async function NegociosPage() {
@@ -13,12 +13,12 @@ export default async function NegociosPage() {
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
   if (!(await hasModule(session.user.tenantId, "crm"))) redirect("/inbox")
 
-  const data = await getDealsPage()
+  const [data, pipelines] = await Promise.all([getDealsPage(), getDealPipelines()])
   if ("error" in data) redirect("/inbox")
 
   return (
     <PageShell title="Negócios" description="Gerencie negócios, clientes e o funil de vendas." icon={Briefcase}>
-      <NegociosClient data={data} />
+      <NegociosClient data={data} pipelines={pipelines} />
     </PageShell>
   )
 }

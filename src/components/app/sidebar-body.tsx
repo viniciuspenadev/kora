@@ -7,7 +7,7 @@ import { signOut } from "next-auth/react"
 import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, Briefcase,
-  Bot, Bell, MessageSquare, Layers, CalendarDays,
+  Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked, IdCard,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
@@ -45,7 +45,15 @@ const subIcon = "w-4 h-4 shrink-0"
 
 const NAV: NavItem[] = [
   { href: "/inbox",      label: "Inbox",      icon: <Inbox     className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "inbox"    },
-  { href: "/kanban",     label: "Kanban",     icon: <Workflow  className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "kanban"   },
+  {
+    key:   "atendimento",
+    label: "Atendimento",
+    icon:  <Headset className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    children: [
+      { href: "/kanban",       label: "Pipelines",     icon: <Workflow className={subIcon} strokeWidth={1.75} />, module: "kanban" },
+      { href: "/atendimentos", label: "Departamentos", icon: <Columns3 className={subIcon} strokeWidth={1.75} />, module: "inbox"  },
+    ],
+  },
   { href: "/negocios",   label: "Negócios",   icon: <Briefcase className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "crm", adminOnly: true },
   { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "agenda"  },
   { href: "/contatos",   label: "Contatos",   icon: <Contact   className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts" },
@@ -225,10 +233,41 @@ export function SidebarBody({
     setPill({ x: c.left - n.left + nav.scrollLeft, y: c.top - n.top + nav.scrollTop, show: true })
   }, [activeKey])
 
-  useLayoutEffect(() => { measurePill() }, [measurePill, open, expanded])
+  // rAF loop (~280ms): re-mede a cada frame durante uma transição (largura do
+  // sidebar / max-height do submenu) pra a bola SEGUIR o item que desliza. Medir
+  // UMA vez pega a posição no meio da animação (= bug "volta de posição").
+  const rafRef = useRef(0)
+  const loopMeasure = useCallback(() => {
+    cancelAnimationFrame(rafRef.current)
+    const start = performance.now()
+    const tick = () => {
+      measurePill()
+      if (performance.now() - start < 280) rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+  }, [measurePill])
+
+  // Medição imediata: mount · troca de página (activeKey via measurePill) · expand (drawer).
+  useLayoutEffect(() => { measurePill() }, [measurePill, expanded])
+  // Abrir/fechar grupo (estado) → segue a animação do submenu.
+  useEffect(() => { loopMeasure() }, [open, loopMeasure])
+  // RECOLHER/EXPANDIR o sidebar é via :hover (CSS puro, sem estado React) →
+  // escuta o hover no container .group/sb e re-mede durante a transição. Conserta
+  // o "volta de posição" ao recolher.
+  useEffect(() => {
+    const host = navRef.current?.parentElement   // <aside class="group/sb">
+    if (!host) return
+    const onHover = () => loopMeasure()
+    host.addEventListener("mouseenter", onHover)
+    host.addEventListener("mouseleave", onHover)
+    return () => {
+      host.removeEventListener("mouseenter", onHover)
+      host.removeEventListener("mouseleave", onHover)
+    }
+  }, [loopMeasure])
   useEffect(() => {
     window.addEventListener("resize", measurePill)
-    return () => window.removeEventListener("resize", measurePill)
+    return () => { window.removeEventListener("resize", measurePill); cancelAnimationFrame(rafRef.current) }
   }, [measurePill])
 
   return (

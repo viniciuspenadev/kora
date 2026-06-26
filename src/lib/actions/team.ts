@@ -20,6 +20,7 @@ export interface TeamMember {
   see_pool:      boolean
   instance_ids:  string[] | null   // números que atende (Fase D); null/[] = todos
   department_id: string | null
+  supervises_departments: string[]  // supervisão escopada: setores que vê por inteiro; [] = nenhum
   department:    { id: string; name: string; color: string } | null
   joined_at:     string
 }
@@ -65,7 +66,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color )
     `)
@@ -88,6 +89,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       see_pool:      row.see_pool ?? true,
       instance_ids:  (row.instance_ids as string[] | null) ?? null,
       department_id: row.department_id,
+      supervises_departments: (row.supervises_departments as string[] | null) ?? [],
       department:    dept,
       joined_at:     row.joined_at,
     }
@@ -363,6 +365,39 @@ export async function updateMemberInstances(userId: string, instanceIds: string[
   const { error } = await supabaseAdmin
     .from("tenant_users")
     .update({ instance_ids: valid.length > 0 ? valid : null })   // [] → null (= todos)
+    .eq("tenant_id", tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Supervisão ESCOPADA: os setores que o atendente supervisiona (vê por inteiro).
+ * Valida que os ids pertencem ao tenant (anti-IDOR). [] → null (não supervisiona).
+ * Ortogonal a view_all (= supervisão geral).
+ */
+export async function setMemberSupervises(userId: string, departmentIds: string[]): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  const tenantId = session.user.tenantId
+
+  let valid: string[] = []
+  if (departmentIds.length > 0) {
+    const { data: rows } = await supabaseAdmin
+      .from("tenant_departments")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .in("id", departmentIds)
+    const ok = new Set((rows ?? []).map((r) => (r as { id: string }).id))
+    valid = departmentIds.filter((id) => ok.has(id))
+    if (valid.length !== departmentIds.length) return { error: "Departamento inválido para este tenant" }
+  }
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ supervises_departments: valid.length > 0 ? valid : null })
     .eq("tenant_id", tenantId)
     .eq("user_id", userId)
 

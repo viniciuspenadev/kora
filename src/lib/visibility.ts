@@ -28,10 +28,11 @@ export interface ViewerScope {
   tenantId:     string
   userId:       string
   isAdmin:      boolean          // owner | admin
-  viewAll:      boolean          // supervisor — vê tudo do tenant
+  viewAll:      boolean          // supervisor GERAL — vê tudo do tenant
   seePool:      boolean          // vê conversas não atribuídas (pool)
   departmentId: string | null    // departamento do atendente — habilita a fila do setor
   instanceIds:  string[] | null  // números que atende (Fase D); null = todos (sem restrição)
+  supervisesDepartments: string[]  // supervisão ESCOPADA: vê tudo desses setores (qualquer dono); [] = nenhum
 }
 
 export interface ConvVisibilityFields {
@@ -55,11 +56,12 @@ export async function getViewerScope(): Promise<ViewerScope> {
   let seePool = true   // default = comportamento clássico (vê o pool)
   let departmentId: string | null = null
   let instanceIds: string[] | null = null   // null = todos os números (sem restrição)
+  let supervisesDepartments: string[] = []
 
   if (!isAdmin) {
     const { data: tu } = await supabaseAdmin
       .from("tenant_users")
-      .select("view_all, see_pool, department_id, instance_ids")
+      .select("view_all, see_pool, department_id, instance_ids, supervises_departments")
       .eq("tenant_id", session.user.tenantId)
       .eq("user_id", session.user.id)
       .maybeSingle()
@@ -68,9 +70,11 @@ export async function getViewerScope(): Promise<ViewerScope> {
     departmentId = tu?.department_id ?? null
     const arr = tu?.instance_ids as string[] | null | undefined
     instanceIds = Array.isArray(arr) && arr.length > 0 ? arr : null   // {} / null → todos
+    const sup = tu?.supervises_departments as string[] | null | undefined
+    supervisesDepartments = Array.isArray(sup) ? sup : []
   }
 
-  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds }
+  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments }
 }
 
 /**
@@ -79,6 +83,9 @@ export async function getViewerScope(): Promise<ViewerScope> {
  */
 export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFields): boolean {
   if (scope.isAdmin || scope.viewAll) return true
+  // Supervisor ESCOPADO: vê tudo dos setores que supervisiona — inclusive conversas
+  // COM dono (≠ fila do setor, que é só não-atribuído). Independe de número.
+  if (conv.department_id != null && scope.supervisesDepartments.includes(conv.department_id)) return true
   // Grant EXPLÍCITO bypassa a restrição de número (Fase D): se a conversa é dele
   // ou ele é participante, vê — mesmo que seja de um número que ele não atende.
   if (conv.assigned_to === scope.userId) return true
@@ -139,6 +146,11 @@ export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
   // quem vê o pool já enxerga todo não-atribuído, depto incluso).
   if (scope.departmentId && !scope.seePool) {
     clauses.push(`and(assigned_to.is.null,department_id.eq.${scope.departmentId}${inInst})`)
+  }
+  // Supervisão ESCOPADA: vê TUDO dos setores supervisionados (qualquer dono) —
+  // não limitado por número (é grant de supervisão, como assigned/participant).
+  if (scope.supervisesDepartments.length) {
+    clauses.push(`department_id.in.(${scope.supervisesDepartments.join(",")})`)
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (query as any).or(clauses.join(",")) as T

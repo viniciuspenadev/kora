@@ -136,14 +136,14 @@ export function KanbanView({
 
           {isManager && (
             <div className="inline-flex items-center gap-1 bg-slate-100 rounded-lg p-1 ml-1 shrink-0">
-              {(["stage", "agent", "department"] as const).map((k) => (
+              {(["stage", "agent"] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
                   onClick={() => setGroupBy(k)}
                   className={`text-xs font-semibold px-3 py-1.5 rounded-md transition-colors ${groupBy === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
                 >
-                  {k === "stage" ? "Funil" : k === "agent" ? "Atendente" : "Departamento"}
+                  {k === "stage" ? "Funil" : "Atendente"}
                 </button>
               ))}
             </div>

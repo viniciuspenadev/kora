@@ -22,15 +22,6 @@ function dealStatus(isWon?: boolean, isLost?: boolean): DealStatus {
   return isWon ? "won" : isLost ? "lost" : "open"
 }
 
-async function logEvent(
-  tenantId: string, dealId: string, type: string,
-  fromStage: string | null, toStage: string | null, by: string | null,
-) {
-  await supabaseAdmin.from("tenant_deal_events").insert({
-    tenant_id: tenantId, deal_id: dealId, type, from_stage: fromStage, to_stage: toStage, by,
-  })
-}
-
 // ── Linha do Tempo do Negócio (docs/crm-deal-timeline-design.md) ─────────────
 export type DealEventType = "created" | "stage_changed" | "won" | "lost" | "canceled" | "reopened" | "note" | "field_changed" | "task_created" | "task_done"
 export interface DealEventActor { kind: "human" | "ia" | "automation"; userId?: string | null; label?: string | null }
@@ -59,7 +50,7 @@ const DEAL_EVENT_ICON: Record<DealEventType, string> = {
 async function resolveStageNames(tenantId: string, ids: (string | null | undefined)[]): Promise<Record<string, string>> {
   const want = [...new Set(ids.filter(Boolean) as string[])]
   if (want.length === 0) return {}
-  const { data } = await supabaseAdmin.from("pipeline_stages").select("id, name").eq("tenant_id", tenantId).in("id", want)
+  const { data } = await supabaseAdmin.from("deal_pipeline_stages").select("id, name").eq("tenant_id", tenantId).in("id", want)
   const map: Record<string, string> = {}
   for (const s of (data ?? []) as { id: string; name: string }[]) map[s.id] = s.name
   return map
@@ -236,15 +227,10 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
   const dealId = (data as { id: string }).id
 
   if (args.conversationId) {
-    // Espelha a etapa inicial do negócio na conversa (mesmo motivo do moveDeal): o board
-    // posiciona o card pela etapa da conversa e os relatórios leem as colunas dela.
+    // Liga o negócio à conversa (ativo) — SEM espelhar etapa. O funil de venda mora no
+    // negócio (deal_*); o pipeline da conversa é só ATENDIMENTO e é independente.
     await supabaseAdmin.from("chat_conversations")
-      .update({
-        active_deal_id: dealId,
-        pipeline_id: args.pipelineId, stage_id: args.stageId,
-        won_at: args.isWon ? now : null, lost_at: args.isLost ? now : null,
-        stage_entered_at: now, updated_at: now,
-      })
+      .update({ active_deal_id: dealId, updated_at: now })
       .eq("id", args.conversationId).eq("tenant_id", args.tenantId)
   }
   // Handoff: carimbo no histórico ("Originado de…") + vínculo estruturado (best-effort —
@@ -265,56 +251,3 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
   return { id: dealId }
 }
 
-interface SyncArgs {
-  tenantId:       string
-  conversationId: string
-  stage:          { id: string; pipeline_id: string; is_won: boolean; is_lost: boolean }
-  movedStage:     boolean        // a etapa mudou de fato? (vs reordenar na mesma coluna)
-  by:             string | null
-}
-
-/**
- * Sincroniza o Negócio ATIVO da conversa com o estado de pipeline (chamado no move).
- * **NÃO cria negócio** — se a conversa não tem negócio ativo, é NO-OP. Idempotente.
- * Best-effort (nunca lança — shadow não pode derrubar o move).
- */
-export async function syncActiveDeal(args: SyncArgs): Promise<void> {
-  try {
-    const { tenantId, conversationId, stage, movedStage, by } = args
-
-    const { data: conv } = await supabaseAdmin
-      .from("chat_conversations").select("active_deal_id")
-      .eq("id", conversationId).eq("tenant_id", tenantId)
-      .maybeSingle()
-    const dealId = (conv as { active_deal_id: string | null } | null)?.active_deal_id
-    if (!dealId) return     // sem negócio ativo → NÃO cria. Nasce só se aberto.
-
-    // Estágio anterior do negócio (pra audit from_stage). Escopo por tenant.
-    const { data: prev } = await supabaseAdmin
-      .from("tenant_deals").select("stage_id")
-      .eq("id", dealId).eq("tenant_id", tenantId)
-      .maybeSingle()
-    const fromStage = (prev as { stage_id: string | null } | null)?.stage_id ?? null
-
-    const now    = new Date().toISOString()
-    const status = dealStatus(stage.is_won, stage.is_lost)
-    await supabaseAdmin.from("tenant_deals")
-      .update({
-        pipeline_id: stage.pipeline_id,
-        stage_id:    stage.id,
-        status,
-        won_at:      stage.is_won  ? now : null,
-        lost_at:     stage.is_lost ? now : null,
-        ...(movedStage ? { stage_entered_at: now } : {}),
-        updated_at:  now,
-      })
-      .eq("id", dealId).eq("tenant_id", tenantId)
-
-    if (movedStage) {
-      const type = status === "open" ? "stage_changed" : status   // "won" | "lost" | "stage_changed"
-      await logEvent(tenantId, dealId, type, fromStage, stage.id, by)
-    }
-  } catch (e) {
-    console.error("[crm.syncActiveDeal]", (e as Error).message)   // shadow: nunca derruba o move
-  }
-}

@@ -133,7 +133,7 @@ export function ConversationList({
   conversations, activeId, onSelect,
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
   statusFilter, onStatusChange,
-  pipelines, stages, tags, departments, tagsByContact, showChannel = false, officialChannel = false, channelReady = true, agents,
+  pipelines, tags, departments, showChannel = false, officialChannel = false, channelReady = true, agents,
   unreadTotal,
   searchValue, onSearchChange,
   pipelineFilter, onPipelineFilterChange,
@@ -149,18 +149,6 @@ export function ConversationList({
   const [showStatusMenu, setShowStatusMenu] = useState(false)
   const [showNewModal, setShowNewModal]     = useState(false)
   const [menu, setMenu]                     = useState<{ x: number; y: number; conv: ChatConversation } | null>(null)
-
-  const stageById = useMemo(() => {
-    const m: Record<string, StageMini> = {}
-    for (const s of stages) m[s.id] = s
-    return m
-  }, [stages])
-
-  const tagById = useMemo(() => {
-    const m: Record<string, TagMini> = {}
-    for (const t of tags) m[t.id] = t
-    return m
-  }, [tags])
 
   const departmentById = useMemo(() => {
     const m: Record<string, DepartmentMini> = {}
@@ -403,10 +391,7 @@ export function ConversationList({
             // Abrir a conversa zera (markConversationRead limpa unread_count + flagged_pending).
             const hasUnread  = conv.unread_count > 0 || conv.flagged_pending
             const assignedTo = conv.profiles?.full_name
-            const stage      = conv.pipeline_stages ?? stageById[conv.stage_id ?? ""]
-            const contactTags = (!isGroup && conv.contact_id ? tagsByContact[conv.contact_id] ?? [] : [])
-              .map((tid) => tagById[tid])
-              .filter(Boolean)
+            const dept       = conv.department_id ? departmentById[conv.department_id] : null
             // "Sem resposta há +24h" é sinal de SLA separado: só quando o contato falou por último.
             const isStale     = conv.last_message_dir === "in" && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD && conv.status !== "resolved"
             const isPinned    = !!conv.pinned_at
@@ -429,7 +414,6 @@ export function ConversationList({
             const isWaiting   = !assignedTo && (!!aiRouted || !!conv.department_id)
 
             const showSource = !!contact?.source && !isGroup
-            const hasFooter = (stage && !stage.name?.toLowerCase().includes("triagem")) || contactTags.length > 0
 
             return (
               <button
@@ -534,36 +518,12 @@ export function ConversationList({
                     </div>
                   )}
 
-                  {hasFooter && (
+                  {dept && (
                     <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-slate-400 truncate">
-                      {stage && !stage.name?.toLowerCase().includes("triagem") && (
-                        <span
-                          className="inline-flex items-center gap-1 shrink-0"
-                          title={`Estágio: ${stage.name}`}
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill={stage.color} className="shrink-0" aria-hidden="true">
-                            <path d="M3 4h18a1 1 0 0 1 .78 1.62L15 14v6a1 1 0 0 1-1.45.9l-3-1.5A1 1 0 0 1 10 18.5V14L3.22 5.62A1 1 0 0 1 4 4z" />
-                          </svg>
-                          <span className="truncate" style={{ color: stage.color }}>{stage.name}</span>
-                        </span>
-                      )}
-                      {stage && contactTags.length > 0 && (
-                        <span className="text-slate-300">·</span>
-                      )}
-                      {contactTags[0] && (
-                        <span
-                          className="inline-flex items-center gap-1 shrink-0"
-                          title={contactTags[0].name}
-                        >
-                          <span className="size-1.5 rounded-full" style={{ backgroundColor: contactTags[0].color }} />
-                          <span className="truncate" style={{ color: contactTags[0].color }}>
-                            {contactTags[0].name}
-                          </span>
-                        </span>
-                      )}
-                      {contactTags.length > 1 && (
-                        <span className="text-slate-400 shrink-0">+{contactTags.length - 1}</span>
-                      )}
+                      <span className="inline-flex items-center gap-1 shrink-0 min-w-0" title={`Departamento: ${dept.name}`}>
+                        <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: dept.color }} />
+                        <span className="truncate" style={{ color: dept.color }}>{dept.name}</span>
+                      </span>
                     </div>
                   )}
                 </div>

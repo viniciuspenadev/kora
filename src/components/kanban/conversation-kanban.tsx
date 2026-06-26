@@ -4,23 +4,20 @@ import { useState, useEffect, useMemo, useCallback, useRef, useTransition } from
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
-  GripVertical, Clock, AlertCircle, Trophy, XCircle,
-  Phone, DollarSign, Calendar, Loader2, Briefcase, Plus,
-  ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
+  Clock, Trophy, XCircle, Loader2, Plus, FileText,
+  Globe, MessageCircle, Mail, User,
 } from "lucide-react"
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors, useDraggable, useDroppable,
   type DragStartEvent, type DragEndEvent, type DraggableAttributes,
 } from "@dnd-kit/core"
 import { moveConversation, getManagementCards } from "@/lib/actions/pipeline"
-import { moveDeal, updateDeal, type DealPipeline } from "@/lib/actions/deals"
-import { createTask } from "@/lib/actions/tasks"
-import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
+import { transferConversation } from "@/lib/actions/chat"
+import { type DealPipeline } from "@/lib/actions/deals"
 import { getRealtimeClient } from "@/lib/realtime"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
-import { SourceLogo } from "@/components/chat/source-logo"
-import { NewDealDialog } from "@/components/chat/new-deal-dialog"
+import { NewConversationModal } from "@/components/chat/new-conversation-modal"
 
 interface Stage {
   id:              string
@@ -134,18 +131,9 @@ function mergeCardScalars(existing: Conversation, row: Conversation): Conversati
   }
 }
 
-const BRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-
 // Valor "efetivo" do card: do negócio quando há um; senão da conversa (legado/fallback).
 export function effectiveValue(c: { deal?: DealMini | null; estimated_value: number | null }): number {
   return Number((c.deal ? c.deal.estimated_value : c.estimated_value) ?? 0)
-}
-
-function formatPhone(phone: string) {
-  const clean = phone.replace(/\D/g, "")
-  if (clean.length === 13) return `+${clean.slice(0, 2)} (${clean.slice(2, 4)}) ${clean.slice(4, 9)}-${clean.slice(9)}`
-  if (clean.length === 11) return `(${clean.slice(0, 2)}) ${clean.slice(2, 7)}-${clean.slice(7)}`
-  return phone
 }
 
 function relativeTime(date: string): { label: string; hot: boolean } {
@@ -205,16 +193,15 @@ function sortCards(list: Conversation[], sort: SortKey): Conversation[] {
   })
 }
 
-export function ConversationKanban({ stages, conversations: initial, tintColumns, showChannel = false, groupBy, filters = { search: "", agentId: null, instanceId: null }, sort = "recent", agents = [], departments = [], tenantId, supabaseToken, crmEnabled = false, dealPipelines = [] }: Props) {
+export function ConversationKanban({ stages, conversations: initial, tintColumns, groupBy, filters = { search: "", agentId: null, instanceId: null }, sort = "recent", agents = [], departments = [], tenantId, supabaseToken }: Props) {
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
   const [activeId, setActiveId]       = useState<string | null>(null)
   const [pending, startTransition]    = useTransition()
-  const [dealFor, setDealFor]         = useState<Conversation | null>(null)   // afford. "Abrir negócio"
-  const [moveDialog, setMoveDialog]   = useState<{ convId: string; dealId: string; dealName: string | null; stageId: string; toName: string; fromName: string | null; fromDays: number | null; currentValue: number | null } | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
   const [mgmtCards, setMgmtCards] = useState<Conversation[] | null>(null)
+  const [showNew, setShowNew]     = useState(false)   // "+ Adicionar conversa"
 
   // Sincroniza o funil com o SSR (router.refresh / fallback)
   useEffect(() => { setConvs(initial) }, [initial])
@@ -318,8 +305,9 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     }
   }, [supabaseToken, tenantId, router])
 
-  const readOnly    = groupBy !== "stage"
-  const loadingMgmt = readOnly && mgmtCards === null
+  // Departamento (Quadro de Atendimento) é DRAGGABLE (rotear); Atendente é só leitura.
+  const readOnly    = groupBy === "agent"
+  const loadingMgmt = groupBy !== "stage" && mgmtCards === null
   const dataset     = groupBy === "stage" ? convs : (mgmtCards ?? [])
   const filtered    = useMemo(
     () => dataset.filter((c) => cardMatchesFilters(c, filters)),
@@ -332,8 +320,8 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
       ...agents.map((a) => ({ key: a.id, title: a.full_name ?? "—" })),
     ]
     if (groupBy === "department") return [
+      { key: "__none__", title: "Triagem", color: "#64748b" },
       ...departments.map((d) => ({ key: d.id, title: d.name, color: d.color })),
-      { key: "__none__", title: "Sem departamento" },
     ]
     return stages.map((s) => ({ key: s.id, title: s.name, color: s.color, stage: s }))
   }, [groupBy, stages, agents, departments])
@@ -353,52 +341,40 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     const { active, over } = e
     if (!over) return
     const cardId  = String(active.id)
+
+    // ── Modo DEPARTAMENTO (Quadro de Atendimento): rotear via o MOTOR de
+    // transferência (mesmo do botão "Transferir" no chat) — gate de visibilidade,
+    // tira a IA de cena, nota de sistema. Soltar num setor → fila do setor;
+    // soltar na Triagem → fila geral (sem setor, sem dono). NÃO é update cru.
+    if (groupBy === "department") {
+      const card = (mgmtCards ?? []).find((x) => x.id === cardId)
+      if (!card) return
+      const targetDept = over.id === "__none__" ? null : String(over.id)
+      if ((card.department_id ?? null) === targetDept) return   // mesma coluna → no-op
+      setMgmtCards((prev) => (prev ?? []).map((x) => x.id === cardId ? { ...x, department_id: targetDept, assigned_to: null } : x))
+      startTransition(async () => {
+        const r = targetDept
+          ? await transferConversation(cardId, { mode: "department", departmentId: targetDept })
+          : await transferConversation(cardId, { mode: "pool" })
+        if (r?.error) { alert(r.error); loadMgmt() }
+      })
+      return
+    }
+
+    // ── Modo ETAPA (board de atendimento): arrastar move SÓ a conversa
+    // (pipeline_stages). O negócio é independente (deal_pipelines) — move-se no
+    // board de Negócios, nunca aqui. O active_deal_id no card é só um pointer.
     const stageId = String(over.id)            // droppable.id = key da etapa
     const c = convs.find((x) => x.id === cardId)
     if (!c || c.stage_id === stageId) return
     const newPos = cardsFor(stageId).length
-    // Otimista: move o card + alinha o stage do negócio embedado (quando há) pra a
-    // coluna não "pular" no re-render (o deal é a fonte do título/valor).
-    setConvs((prev) => prev.map((x) => x.id === cardId
-      ? { ...x, stage_id: stageId, card_position: newPos, deal: x.deal ? { ...x.deal, stage_id: stageId } : null }
-      : x))
-
-    // Card COM negócio (o coração do CRM) → abre a FICHA da movimentação (detalhe opcional)
-    // antes de commitar. Card SEM negócio (só atendimento / CRM off) → move a conversa, silencioso.
-    if (c.deal) {
-      const enteredAt = c.deal.stage_entered_at ?? c.stage_entered_at
-      setMoveDialog({
-        convId: c.id, dealId: c.deal.id, dealName: c.deal.name ?? null, stageId,
-        toName: stages.find((s) => s.id === stageId)?.name ?? "etapa",
-        fromName: stages.find((s) => s.id === c.stage_id)?.name ?? null,
-        fromDays: enteredAt ? Math.floor((Date.now() - new Date(enteredAt).getTime()) / 86400000) : null,
-        currentValue: c.deal.estimated_value ?? null,
-      })
-      return
-    }
+    setConvs((prev) => prev.map((x) => x.id === cardId ? { ...x, stage_id: stageId, card_position: newPos } : x))
     startTransition(async () => {
       try { await moveConversation(cardId, stageId, newPos) }
       catch (err) { alert((err as Error).message ?? "Erro ao mover"); router.refresh() }
     })
   }
 
-  function confirmMoveDialog(res: MoveDealResult) {
-    if (!moveDialog) return
-    const { convId, dealId, stageId, currentValue } = moveDialog
-    setMoveDialog(null)
-    startTransition(async () => {
-      const valueChanged = res.value != null && res.value !== (currentValue ?? null)
-      const extras = {
-        valueChange: valueChanged ? { from: currentValue != null && currentValue > 0 ? BRL(currentValue) : "—", to: BRL(res.value as number) } : null,
-        followUp: res.task ? { title: res.task.title, due: res.task.dueAt ? new Date(res.task.dueAt).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : null } : null,
-      }
-      const r = await moveDeal(convId, dealId, stageId, null, res.note || null, extras)
-      if ("error" in r) { alert(r.error); router.refresh(); return }
-      if (valueChanged) await updateDeal(dealId, { estimatedValue: res.value }, { silentCard: true })
-      if (res.task) await createTask({ dealId, title: res.task.title, dueAt: res.task.dueAt })
-    })
-  }
-  function cancelMoveDialog() { setMoveDialog(null); router.refresh() }   // reverte o otimista
   const activeCard = activeId ? dataset.find((c) => c.id === activeId) ?? null : null
 
   return (
@@ -417,9 +393,8 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
                 list={cardsFor(col.key)}
                 tinted={tintColumns && !!col.color}
                 readOnly={readOnly}
-                showChannel={showChannel}
                 dragging={!!activeId}
-                onOpenDeal={crmEnabled ? setDealFor : undefined}
+                onAddConversation={groupBy === "stage" ? () => setShowNew(true) : undefined}
               />
             ))}
           </div>
@@ -437,280 +412,219 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
           transparência do DnD nativo). dnd-kit dimensiona pelo tamanho visual
           do card de origem → casa em qualquer zoom sem double-scale. */}
       <DragOverlay dropAnimation={null}>
-        {activeCard ? <ConversationCard conv={activeCard} showChannel={showChannel} overlay /> : null}
+        {activeCard ? <ConversationCard conv={activeCard} overlay /> : null}
       </DragOverlay>
 
-      {dealFor && (
-        <NewDealDialog
-          conversationId={dealFor.id}
-          pipelines={dealPipelines}
-          contactName={dealFor.chat_contacts ? displayContactName(dealFor.chat_contacts) : "Contato"}
-          initialStageId={dealFor.stage_id ?? undefined}
-          onClose={() => setDealFor(null)}
-          onCreated={() => { setDealFor(null); router.refresh() }}
-        />
-      )}
-
-      {moveDialog && (
-        <MoveDealDialog
-          dealName={moveDialog.dealName} fromStageName={moveDialog.fromName} fromStageDays={moveDialog.fromDays}
-          toStageName={moveDialog.toName} currentValue={moveDialog.currentValue}
-          pending={pending} onConfirm={confirmMoveDialog} onClose={cancelMoveDialog}
-        />
-      )}
+      <NewConversationModal open={showNew} onClose={() => setShowNew(false)} />
     </DndContext>
   )
 }
 
+// ── Empty-state por etapa (desenhado, didático) ─────────────────
+function ColumnEmpty({ col }: { col: Column }) {
+  const won = col.stage?.is_won, lost = col.stage?.is_lost
+  const Icon = won ? Trophy : lost ? XCircle : FileText
+  const tone = won ? "text-emerald-500 bg-emerald-50" : lost ? "text-red-400 bg-red-50" : "text-slate-300 bg-slate-100"
+  const text = won  ? "As conversas ganhas aparecerão aqui."
+             : lost ? "Conversas perdidas aparecerão aqui."
+             :        "Nenhuma conversa nesta etapa."
+  const sub = won ? "Parabéns!" : null
+  return (
+    <div className="flex flex-col items-center justify-center text-center gap-2 px-4 py-10 select-none">
+      <div className={`size-11 rounded-full grid place-items-center ${tone}`}>
+        <Icon className="size-5" />
+      </div>
+      {sub && <p className="text-xs font-semibold text-slate-500">{sub}</p>}
+      <p className="text-[11px] text-slate-400 leading-relaxed max-w-[180px]">{text}</p>
+    </div>
+  )
+}
+
 // ── Coluna droppable (dnd-kit) ──────────────────────────────────
-function KanbanColumn({ col, list, tinted, readOnly, showChannel, dragging, onOpenDeal }: {
-  col: Column; list: Conversation[]; tinted: boolean; readOnly: boolean; showChannel: boolean; dragging: boolean
-  onOpenDeal?: (c: Conversation) => void
+function KanbanColumn({ col, list, tinted, readOnly, dragging, onAddConversation }: {
+  col: Column; list: Conversation[]; tinted: boolean; readOnly: boolean; dragging: boolean
+  onAddConversation?: () => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.key, disabled: readOnly })
   const StageIcon = col.stage?.is_won ? Trophy : col.stage?.is_lost ? XCircle : null
-  const total     = list.reduce((s, c) => s + effectiveValue(c), 0)
   const highlight = isOver && !readOnly && dragging
   return (
     <div
       ref={setNodeRef}
       style={{
         borderTop: `3px solid ${col.color ?? "#cbd5e1"}`,
-        backgroundColor: highlight || !tinted ? undefined : `color-mix(in srgb, ${col.color} 12%, transparent)`,
+        backgroundColor: highlight || !tinted ? undefined : `color-mix(in srgb, ${col.color} 7%, transparent)`,
       }}
       className={`shrink-0 w-80 flex flex-col rounded-xl overflow-hidden transition-all duration-150 ${
-        highlight ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : tinted ? "" : "bg-slate-100/60"
+        highlight ? "bg-primary-50 ring-2 ring-inset ring-primary-300" : tinted ? "" : "bg-slate-50/80"
       }`}
     >
-      <div className="px-3 py-2.5 border-b border-slate-200/70">
-        <div className="flex items-center gap-2 mb-1.5">
-          <span className="text-sm font-semibold text-slate-900 flex-1 truncate">{col.title}</span>
-          {StageIcon && <StageIcon className={`size-3.5 ${col.stage?.is_won ? "text-emerald-600" : "text-red-500"}`} />}
-          <span className="text-[10px] font-bold text-slate-500 tabular-nums bg-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center shadow-sm">
-            {list.length}
-          </span>
-        </div>
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-sm font-bold text-slate-800 tabular-nums truncate">
-            {total > 0 ? BRL(total) : <span className="text-xs font-normal text-slate-300">—</span>}
-          </span>
-          {col.stage && <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{col.stage.probability_pct}% prob.</span>}
-        </div>
+      <div className="px-3.5 py-3 flex items-center gap-2">
+        <span className="text-sm font-semibold text-slate-800 flex-1 truncate">{col.title}</span>
+        {StageIcon && <StageIcon className={`size-4 ${col.stage?.is_won ? "text-emerald-500" : "text-red-400"}`} />}
+        <span className="text-[11px] font-semibold text-slate-500 tabular-nums bg-white/80 ring-1 ring-inset ring-slate-200/80 rounded-full px-2 py-0.5 min-w-[22px] text-center">
+          {list.length}
+        </span>
       </div>
 
-      <div className="flex-1 min-h-0 px-2 py-2 space-y-2 overflow-y-auto">
-        {list.map((conv) => <DraggableCard key={conv.id} conv={conv} showChannel={showChannel} readOnly={readOnly} onOpenDeal={onOpenDeal} />)}
+      <div className="flex-1 min-h-0 px-2.5 pb-2 space-y-2.5 overflow-y-auto">
+        {list.map((conv) => (
+          <DraggableCard key={conv.id} conv={conv} readOnly={readOnly} />
+        ))}
         {highlight && (
-          <div className="rounded-lg border-2 border-dashed border-primary-300 bg-primary-50/60 h-14 flex items-center justify-center text-[11px] font-semibold text-primary-600 shrink-0">
+          <div className="rounded-xl border-2 border-dashed border-primary-300 bg-primary-50/60 h-16 flex items-center justify-center text-[11px] font-semibold text-primary-600 shrink-0">
             Soltar aqui
           </div>
         )}
-        {list.length === 0 && !highlight && (
-          <p className="text-[11px] text-slate-400 italic text-center py-6">{readOnly ? "—" : "Solte conversas aqui"}</p>
-        )}
+        {list.length === 0 && !highlight && <ColumnEmpty col={col} />}
       </div>
+
+      {onAddConversation && (
+        <button
+          type="button"
+          onClick={onAddConversation}
+          className="m-2 mt-0 inline-flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium text-slate-400 hover:text-primary-700 hover:bg-white/70 transition-colors"
+        >
+          <Plus className="size-3.5" /> Adicionar conversa
+        </button>
+      )}
     </div>
   )
 }
 
 // ── Card draggable (dnd-kit) ────────────────────────────────────
-function DraggableCard({ conv, showChannel, readOnly, onOpenDeal }: { conv: Conversation; showChannel: boolean; readOnly: boolean; onOpenDeal?: (c: Conversation) => void }) {
+function DraggableCard({ conv, readOnly }: { conv: Conversation; readOnly: boolean }) {
   const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: conv.id, disabled: readOnly })
   return (
     <ConversationCard
       conv={conv}
-      showChannel={showChannel}
       readOnly={readOnly}
       dragRef={setNodeRef}
       listeners={listeners}
       attributes={attributes}
       isDragging={isDragging}
-      onOpenDeal={onOpenDeal}
     />
   )
 }
 
+// ── Canal da conversa (ícone + rótulo) ──────────────────────────
+function channelMeta(channel: string | null): { Icon: typeof Globe; label: string; cls: string } {
+  switch (channel) {
+    case "whatsapp": return { Icon: MessageCircle, label: "WhatsApp", cls: "text-emerald-500" }
+    case "site":     return { Icon: Globe,         label: "Site",     cls: "text-sky-500" }
+    case "email":    return { Icon: Mail,          label: "E-mail",   cls: "text-violet-500" }
+    default:         return { Icon: MessageCircle, label: channel ? channel[0].toUpperCase() + channel.slice(1) : "Conversa", cls: "text-slate-400" }
+  }
+}
+
 function ConversationCard({
-  conv, showChannel, readOnly = false, dragRef, listeners, attributes, isDragging = false, overlay = false, onOpenDeal,
+  conv, readOnly = false, dragRef, listeners, attributes, isDragging = false, overlay = false,
 }: {
   conv:        Conversation
-  showChannel: boolean
+  showChannel?: boolean
   readOnly?:   boolean
   dragRef?:    (el: HTMLElement | null) => void
   listeners?:  Record<string, unknown>
   attributes?: DraggableAttributes
   isDragging?: boolean
   overlay?:    boolean
-  onOpenDeal?: (c: Conversation) => void
 }) {
   const contact      = conv.chat_contacts
   const displayName  = contact ? displayContactName(contact) : "Sem nome"
   const initial      = contact ? displayContactInitial(contact) : "?"
-  // Negócio ativo manda no card: nome = título, contato = subtítulo, valor = do negócio.
-  // Etapa/aging/ganho-perdido seguem da CONVERSA (espelhada — fica fresca no Realtime).
+  const router       = useRouter()
+
   const deal         = conv.deal
-  const dealName     = deal?.name?.trim() || null
-  const title        = dealName ?? displayName
-  const effValue     = effectiveValue(conv)
+  // Rótulo discreto do negócio: nome do negócio, senão o estágio do relacionamento.
+  const dealLabel    = deal ? (deal.name?.trim() || lifecycleMeta(contact?.lifecycle_stage).label) : null
 
   const ownerName    = conv.profiles?.full_name?.split(" ")[0]
   const time         = conv.last_message_at ? relativeTime(conv.last_message_at) : null
-  // SLA: "a bola está com você" = última msg do contato e conversa não resolvida.
   const awaitingReply = conv.last_message_dir === "in" && conv.status !== "resolved"
   const overdueReply  = awaitingReply && !!time?.hot
-  const dirArrow     =
-    conv.last_message_dir === "out_phone" ? <Smartphone    className="size-3 text-emerald-500 shrink-0 mt-0.5" />
-    : conv.last_message_dir === "out"     ? <ArrowUpRight  className="size-3 text-emerald-500 shrink-0 mt-0.5" />
-    :                                       <ArrowDownLeft className="size-3 text-sky-400 shrink-0 mt-0.5" />
-  const today        = new Date().toISOString().split("T")[0]
-  const overdueDate  = conv.expected_close_date && conv.expected_close_date < today && !conv.won_at && !conv.lost_at
-  const aging        = stageAging(conv)
-  const prio         = conv.priority === "urgent" ? { dot: "bg-red-500",   label: "Urgente" }
-                     : conv.priority === "high"   ? { dot: "bg-amber-500", label: "Alta prioridade" }
-                     : null
+  // "Aguardando atendimento" = ninguém atendendo: cliente mandou a última msg OU
+  // conversa sem dono (fila — Triagem/setor), enquanto não resolvida.
+  const aguardando    = conv.status !== "resolved" && (conv.last_message_dir === "in" || conv.assigned_to == null)
+  const aging         = stageAging(conv)
+  const ch            = channelMeta(conv.channel)
+  const ChIcon        = ch.Icon
 
-  const cardCls = `block group bg-white rounded-lg border shadow-sm transition-all ${
+  const cardCls = `block group bg-white rounded-xl border transition-all ${
     overlay
       ? "border-primary-300 shadow-2xl rotate-2 cursor-grabbing"
-      : `border-slate-200 hover:shadow-md hover:border-primary-200 ${readOnly ? "cursor-pointer" : "cursor-grab"}`
+      : `border-slate-200/80 hover:border-slate-300 hover:shadow-soft ${readOnly ? "cursor-pointer" : "cursor-grab"}`
   } ${isDragging ? "opacity-40 scale-[0.97]" : ""} ${
     aging && !overlay ? (aging.tone === "red" ? "border-l-[3px] border-l-red-400" : "border-l-[3px] border-l-amber-400") : ""
   }`
 
   const body = (
-    <div className="p-3 space-y-2">
-
-        <div className="flex items-start gap-2.5">
-          <div className="size-9 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0 overflow-hidden">
-            {contact?.profile_pic_url ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img src={contact.profile_pic_url} alt="" className="size-9 object-cover" />
-            ) : (
-              <span className="text-sm font-bold text-slate-400">{initial}</span>
-            )}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-semibold text-slate-900 truncate flex items-center gap-1">
-              {prio && <span className={`size-1.5 rounded-full shrink-0 ${prio.dot}`} title={prio.label} />}
-              {dealName && <Briefcase className="size-3 text-primary-500 shrink-0" />}
-              {conv.channel === "site" && (
-                <span className="inline-flex items-center justify-center size-4 rounded-full bg-sky-50 border border-sky-200 shrink-0" title="Lead via site">
-                  <SourceLogo source="webform" size={9} />
-                </span>
-              )}
-              <span className="truncate">{title}</span>
-            </p>
-            {dealName ? (
-              <p className="text-[10px] text-slate-500 truncate">{displayName}</p>
-            ) : (
-              <p className="text-[10px] text-slate-400 truncate flex items-center gap-1">
-                <Phone className="size-2.5" />
-                {contact?.phone_number ? formatPhone(contact.phone_number) : "—"}
-              </p>
-            )}
-          </div>
-          <GripVertical className="size-3 text-slate-300 shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity" />
-        </div>
-
-        {conv.last_message_preview && (
-          <div className="flex items-start gap-1.5 text-[11px] text-slate-500 bg-slate-50 rounded px-2 py-1.5">
-            {dirArrow}
-            <p className="line-clamp-2 leading-snug">{conv.last_message_preview}</p>
-          </div>
-        )}
-
-        <div className="flex items-center gap-1 flex-wrap">
-          {(() => {
-            const lc = lifecycleMeta(contact?.lifecycle_stage)
-            return (
-              <span
-                className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`}
-                title={lc.label}
-              >
-                {lc.icon} {lc.label}
-              </span>
-            )
-          })()}
-          {contact?.source && (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-white border border-slate-200">
-              <SourceLogo source={contact.source} size={11} />
-            </span>
+    <div className="p-3.5 space-y-2.5">
+      {/* Identidade */}
+      <div className="flex items-start gap-2.5">
+        <div className="size-9 rounded-full bg-gradient-to-br from-slate-50 to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0 overflow-hidden">
+          {contact?.profile_pic_url ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img src={contact.profile_pic_url} alt="" className="size-9 object-cover" />
+          ) : (
+            <span className="text-sm font-bold text-slate-400">{initial}</span>
           )}
-          {aging && (
-            <span
-              className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${aging.tone === "red" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-700"}`}
-              title={aging.inStage ? `${aging.days} dias nesta etapa` : `${aging.days} dias desde a última atividade`}
-            >
-              <Clock className="size-2.5" /> {aging.days}d
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-[13px] font-semibold text-slate-900 truncate">{displayName}</p>
+          {aguardando && (
+            <span className="text-[10px] font-semibold text-amber-500 animate-pulse" title="Cliente aguardando atendimento">
+              Aguardando atend.
             </span>
           )}
         </div>
-
-        {(effValue > 0 || conv.expected_close_date) && (
-          <div className="flex items-center justify-between gap-2 text-[10px] pt-2 border-t border-slate-100">
-            <div className="flex items-center gap-2 min-w-0">
-              {effValue > 0 ? (
-                <span className="font-semibold text-slate-700 tabular-nums flex items-center gap-0.5">
-                  <DollarSign className="size-2.5" />{BRL(effValue).replace("R$", "").trim()}
-                </span>
-              ) : null}
-            </div>
-            {conv.expected_close_date && (
-              <span className={`flex items-center gap-0.5 ${overdueDate ? "text-red-500 font-semibold" : "text-slate-400"}`}>
-                <Calendar className="size-2.5" />
-                {new Date(conv.expected_close_date + "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })}
-              </span>
-            )}
-          </div>
-        )}
-
-        <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-100">
-          <div className="flex items-center gap-1.5 min-w-0">
-            {time && (
-              <span className={`inline-flex items-center gap-1 text-[10px] shrink-0 ${overdueReply ? "text-red-600 font-semibold" : "text-slate-400"}`}>
-                {overdueReply ? <AlertCircle className="size-2.5" /> : <Clock className="size-2.5" />}
-                {time.label}{overdueReply && " sem resposta"}
-              </span>
-            )}
-            {conv.whatsapp_instances && (showChannel || conv.whatsapp_instances.display_name?.trim()) && (
-              <span
-                className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full max-w-[120px] min-w-0 ${
-                  conv.whatsapp_instances.provider === "meta_cloud" ? "bg-primary-50 text-primary-700" : "bg-slate-100 text-slate-600"
-                }`}
-                title={`Atendido pelo número ${conv.whatsapp_instances.display_name?.trim() || (conv.whatsapp_instances.provider === "meta_cloud" ? "Oficial" : "QR")}`}
-              >
-                {conv.whatsapp_instances.provider === "meta_cloud" ? <BadgeCheck className="size-2.5 shrink-0" /> : <Smartphone className="size-2.5 shrink-0" />}
-                <span className="truncate">{conv.whatsapp_instances.display_name?.trim() || (conv.whatsapp_instances.provider === "meta_cloud" ? "Oficial" : "QR")}</span>
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {conv.unread_count > 0 && (
-              <span className="size-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center">
-                {conv.unread_count}
-              </span>
-            )}
-            {ownerName && (
-              <div className="size-4 rounded-full bg-primary-100 flex items-center justify-center" title={ownerName}>
-                <span className="text-[8px] font-bold text-primary-700">{ownerName[0]?.toUpperCase()}</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Conversa SEM negócio + CRM ligado → atalho pra abrir um (caminho de adoção
-            do board híbrido). preventDefault/stopPropagation: não navega nem inicia drag. */}
-        {!deal && onOpenDeal && !overlay && (
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onOpenDeal(conv) }}
-            className="w-full inline-flex items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-primary-700 hover:bg-primary-50 rounded-md py-1 border border-dashed border-slate-200 hover:border-primary-200 transition-colors"
-          >
-            <Plus className="size-2.5" /> Abrir negócio
-          </button>
+        {conv.unread_count > 0 && (
+          <span className="size-5 rounded-full bg-primary text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+            {conv.unread_count}
+          </span>
         )}
       </div>
+
+      {/* Prévia */}
+      {conv.last_message_preview && (
+        <p className="text-[12px] text-slate-500 leading-snug line-clamp-2">{conv.last_message_preview}</p>
+      )}
+
+      {/* Meta: canal · atendente · tempo */}
+      <div className="flex items-center gap-1.5 text-[11px] text-slate-400 min-w-0">
+        <span className="inline-flex items-center gap-1 shrink-0">
+          <ChIcon className={`size-3 ${ch.cls}`} /> {ch.label}
+        </span>
+        {ownerName && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className="inline-flex items-center gap-1 shrink-0 min-w-0">
+              <User className="size-3" /> <span className="truncate max-w-[80px]">{ownerName}</span>
+            </span>
+          </>
+        )}
+        {time && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className={`inline-flex items-center gap-1 shrink-0 ml-auto ${overdueReply ? "text-red-500 font-medium" : ""}`}>
+              <Clock className="size-3" /> {time.label}{overdueReply && " sem resposta"}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Negócio — pointer discreto (só quando existe). Sem afford. de criação aqui. */}
+      {dealLabel && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); router.push(`/negocios/${conv.active_deal_id}`) }}
+          className="flex items-center gap-1 text-[11px] pt-2 border-t border-slate-100 w-full text-left"
+        >
+          <span className="text-slate-400">Negócio:</span>
+          <span className="font-semibold text-primary-600 hover:text-primary-700 truncate">{dealLabel}</span>
+        </button>
+      )}
+    </div>
   )
 
   if (overlay) return <div className={cardCls}>{body}</div>

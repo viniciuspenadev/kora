@@ -2,7 +2,7 @@ import "server-only"
 import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
-import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
@@ -738,36 +738,10 @@ async function upsertContact(
 }
 
 async function findOrCreateConversation(tenantId: string, contactId: string, instanceId: string) {
-  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, skipOwnershipCheck: true })
-  if (dedup.found !== "none") {
-    const c = dedup.conversation as unknown as { id: string; status: string; unread_count: number }
-    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false, _reopened: dedup.found === "reopened" }
-  }
-
-  let pipelineId: string | null = null
-  let stageId: string | null = null
-  const { data: cfg } = await supabaseAdmin.from("tenant_config").select("default_pipeline_id").eq("tenant_id", tenantId).maybeSingle()
-  if (cfg?.default_pipeline_id) {
-    pipelineId = cfg.default_pipeline_id
-    const { data: triage } = await supabaseAdmin
-      .from("pipeline_stages").select("id")
-      .eq("pipeline_id", pipelineId).eq("tenant_id", tenantId).eq("is_triage", true)
-      .order("position", { ascending: true }).limit(1).maybeSingle()
-    stageId = triage?.id ?? null
-  }
-
-  const { data: nc, error } = await supabaseAdmin
-    .from("chat_conversations")
-    .insert({ tenant_id: tenantId, contact_id: contactId, instance_id: instanceId, status: "open", unread_count: 0, pipeline_id: pipelineId, stage_id: stageId, card_position: 0 })
-    .select("id, status, unread_count").single()
-
-  if (error?.code === "23505") {
-    const retry = await findOrReopenConversation({ tenantId, contactId, skipOwnershipCheck: true })
-    const c = retry.conversation as unknown as { id: string; status: string; unread_count: number }
-    return { id: c.id, status: c.status, unread_count: c.unread_count, _isNew: false, _reopened: retry.found === "reopened" }
-  }
-  if (error || !nc) throw new Error(`meta findOrCreateConversation: ${error?.message}`)
-  return { id: nc.id as string, status: nc.status as string, unread_count: nc.unread_count as number, _isNew: true, _reopened: false }
+  // Fonte única de recebimento (dedup/reopen + criação consistente). Mantém o
+  // shape `_isNew`/`_reopened` que o resto deste módulo (auto-assign) espera.
+  const r = await createInboundConversation({ tenantId, contactId, instanceId })
+  return { id: r.id, status: r.status, unread_count: r.unread_count, _isNew: r.isNew, _reopened: r.reopened }
 }
 
 async function storeMedia(

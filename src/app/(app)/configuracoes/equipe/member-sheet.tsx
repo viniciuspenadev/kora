@@ -6,7 +6,7 @@ import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
-  updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool, updateMemberInstances, setMemberActive,
+  updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool, updateMemberInstances, setMemberSupervises, setMemberActive,
   type TeamMember, type Department, type TenantRole,
 } from "@/lib/actions/team"
 import {
@@ -30,7 +30,10 @@ interface Props {
 export function MemberSheet({ member, departments, numbers, currentUserId, currentUserRole, onClose, onFeedback }: Props) {
   const [role, setRole]               = useState<TenantRole>(member.role)
   const [departmentId, setDepartment] = useState<string>(member.department_id ?? "")
-  const [viewAll, setViewAll]         = useState(member.view_all)
+  const [supMode, setSupMode]         = useState<"none" | "scoped" | "all">(
+    member.view_all ? "all" : (member.supervises_departments.length ? "scoped" : "none"),
+  )
+  const [supDepts, setSupDepts]       = useState<string[]>(member.supervises_departments)
   const [seePool, setSeePool]         = useState(member.see_pool)
   const [instanceIds, setInstanceIds] = useState<string[]>(member.instance_ids ?? [])
 
@@ -63,10 +66,19 @@ export function MemberSheet({ member, departments, numbers, currentUserId, curre
         if (r.error) anyError = r.error
       }
 
-      // view_all
-      if (viewAll !== member.view_all) {
+      // Supervisão: view_all = GERAL · supervises_departments = ESCOPADO (setores).
+      const targetViewAll = supMode === "all"
+      if (targetViewAll !== member.view_all) {
         anyChange = true
-        const r = await toggleMemberViewAll(member.user_id, viewAll)
+        const r = await toggleMemberViewAll(member.user_id, targetViewAll)
+        if (r.error) anyError = r.error
+      }
+      const targetSup = supMode === "scoped" ? supDepts : []
+      const curSup = member.supervises_departments
+      const sameSup = curSup.length === targetSup.length && curSup.every((id) => targetSup.includes(id))
+      if (!sameSup) {
+        anyChange = true
+        const r = await setMemberSupervises(member.user_id, targetSup)
         if (r.error) anyError = r.error
       }
 
@@ -192,40 +204,72 @@ export function MemberSheet({ member, departments, numbers, currentUserId, curre
           </FormRow>
 
           <div className="pt-4 border-t border-slate-100">
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={viewAll}
-                onChange={(e) => setViewAll(e.target.checked)}
-                disabled={!canEditOther}
-                className="size-4 mt-0.5 rounded border-slate-300 text-primary focus:ring-primary/30 disabled:opacity-50"
-              />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-slate-800">Pode ver todas as conversas</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Quando desligado, essa pessoa vê apenas: conversas atribuídas a ela, as que participa, a fila do seu departamento e — se permitido — o pool não-atribuído. Ligue para supervisores que precisam do panorama completo.
-                </p>
+            <p className="text-sm font-medium text-slate-800">Supervisão</p>
+            <p className="text-[11px] text-slate-500 mt-0.5 mb-2">
+              O que essa pessoa vê do trabalho dos <strong>outros</strong> atendentes (além do que é dela).
+            </p>
+            <div className="inline-flex w-full rounded-lg border border-slate-200 bg-white p-0.5">
+              {([
+                { v: "none",   l: "Não" },
+                { v: "scoped", l: "Setores" },
+                { v: "all",    l: "Geral" },
+              ] as const).map((o) => (
+                <button
+                  key={o.v} type="button" disabled={!canEditOther}
+                  onClick={() => setSupMode(o.v)}
+                  className={`flex-1 px-2 py-1.5 text-xs font-medium rounded-md transition-colors disabled:opacity-50 ${supMode === o.v ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:text-slate-800"}`}
+                >
+                  {o.l}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2">
+              {supMode === "none"
+                ? "Vê só o que é dela + a fila do setor dela."
+                : supMode === "all"
+                ? "Vê todas as conversas do tenant (supervisor geral)."
+                : "Vê tudo dos setores marcados abaixo — inclusive conversas que já têm dono."}
+            </p>
+            {supMode === "scoped" && (
+              <div className="space-y-1.5 mt-2">
+                {departments.length === 0 && <p className="text-[11px] text-slate-400">Nenhum departamento cadastrado.</p>}
+                {departments.map((d) => {
+                  const checked = supDepts.includes(d.id)
+                  return (
+                    <label key={d.id} className={`flex items-center gap-2.5 rounded-lg border border-slate-200 px-2.5 py-2 ${canEditOther ? "cursor-pointer hover:bg-slate-50" : "cursor-not-allowed opacity-60"}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => setSupDepts((prev) => e.target.checked ? [...prev, d.id] : prev.filter((x) => x !== d.id))}
+                        disabled={!canEditOther}
+                        className="size-4 rounded border-slate-300 text-primary focus:ring-primary/30 disabled:opacity-50"
+                      />
+                      <span className="size-2.5 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                      <span className="text-sm text-slate-700">{d.name}</span>
+                    </label>
+                  )
+                })}
               </div>
-            </label>
+            )}
           </div>
 
           <div className="pt-4 border-t border-slate-100">
-            <label className={`flex items-start gap-3 ${viewAll ? "cursor-not-allowed" : "cursor-pointer"}`}>
+            <label className={`flex items-start gap-3 ${supMode === "all" ? "cursor-not-allowed" : "cursor-pointer"}`}>
               <input
                 type="checkbox"
-                checked={viewAll ? true : seePool}
+                checked={supMode === "all" ? true : seePool}
                 onChange={(e) => setSeePool(e.target.checked)}
-                disabled={!canEditOther || viewAll}
+                disabled={!canEditOther || supMode === "all"}
                 className="size-4 mt-0.5 rounded border-slate-300 text-primary focus:ring-primary/30 disabled:opacity-50"
               />
               <div className="flex-1">
                 <p className="text-sm font-medium text-slate-800">Ver conversas não atribuídas (pool)</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  {viewAll
+                  {supMode === "all"
                     ? "Como vê todas as conversas, já enxerga o pool."
                     : "Quando desligado, essa pessoa só vê conversas atribuídas a ela ou que participa."}
                 </p>
-                {!viewAll && !seePool && (
+                {supMode !== "all" && !seePool && (
                   <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mt-1.5 leading-relaxed">
                     ⚠️ Esta pessoa só verá conversas atribuídas a ela. Garanta que a <strong>Distribuição automática</strong> está ligada (ou que alguém atribui manualmente), senão ela não recebe conversas novas.
                   </p>

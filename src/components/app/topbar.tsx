@@ -9,7 +9,8 @@ import { NotificationBell } from "@/components/app/notification-bell"
 
 const ROUTE_LABELS: Record<string, string> = {
   "/inbox":         "Inbox",
-  "/kanban":        "Kanban",
+  "/atendimentos":  "Departamentos",
+  "/kanban":        "Pipelines",
   "/contatos":      "Contatos",
   "/configuracoes": "Configurações",
 }

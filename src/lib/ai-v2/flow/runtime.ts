@@ -202,7 +202,20 @@ async function restoreReopenOwner(ctx: ExecCtx): Promise<void> {
 
   const upd: Record<string, unknown> = { metadata: m, updated_at: new Date().toISOString() }
   const restore = !data?.assigned_to       // ninguém assumiu no meio
-  if (restore) { upd.assigned_to = owner; upd.ai_handling = false }
+  let restoredToOwner = false
+  if (restore) {
+    upd.ai_handling = false   // IA sai de cena de qualquer forma
+    // H9: só DEVOLVE pro ex-dono se ele ainda é membro ATIVO. Saiu/desativou →
+    // assigned_to fica null (cai na fila/setor), nunca atribui a usuário inválido.
+    const { data: member } = await supabaseAdmin
+      .from("tenant_users")
+      .select("user_id")
+      .eq("tenant_id", ctx.tenantId)
+      .eq("user_id", owner)
+      .eq("active", true)
+      .maybeSingle()
+    if (member) { upd.assigned_to = owner; restoredToOwner = true }
+  }
 
   await supabaseAdmin
     .from("chat_conversations")
@@ -216,7 +229,9 @@ async function restoreReopenOwner(ctx: ExecCtx): Promise<void> {
       tenant_id:       ctx.tenantId,
       sender_type:     "system",
       content_type:    "text",
-      content:         "🔁 IA concluiu o retorno — conversa devolvida ao atendente responsável.",
+      content:         restoredToOwner
+        ? "🔁 IA concluiu o retorno — conversa devolvida ao atendente responsável."
+        : "🔁 IA concluiu o retorno — atendente anterior indisponível, conversa liberada na fila.",
       status:          "delivered",
       is_private_note: true,
     })

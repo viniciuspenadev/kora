@@ -64,6 +64,8 @@ export function FunnelsManagerClient({ funnels, tinted }: { funnels: FunnelSumma
           </div>
         )}
 
+        <AutoFunnelBar funnels={funnels} />
+
         {/* Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {list.map((f) => <FunnelCard key={f.id} f={f} />)}
@@ -78,6 +80,42 @@ export function FunnelsManagerClient({ funnels, tinted }: { funnels: FunnelSumma
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// Funil automático das conversas NOVAS — escolher um funil (★ nos cards) ou
+// "Nenhum (atendimento puro)": conversa nasce sem funil, agente joga depois.
+function AutoFunnelBar({ funnels }: { funnels: FunnelSummary[] }) {
+  const [pending, start] = useTransition()
+  const def = funnels.find((f) => f.is_default) ?? null
+
+  function disable() {
+    start(async () => { try { await setDefaultPipeline(null) } catch (e) { alert((e as Error).message) } })
+  }
+
+  return (
+    <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 flex items-center gap-3 flex-wrap">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-slate-800">Funil automático para conversas novas</p>
+        {def ? (
+          <p className="text-xs text-slate-500 mt-0.5">
+            Conversa nova entra em <span className="font-semibold text-slate-700">{def.name}</span> (etapa de triagem).
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500 mt-0.5">
+            <span className="font-semibold text-slate-700">Nenhum — atendimento puro.</span> A conversa nasce sem funil; o agente joga no funil quando for venda.
+          </p>
+        )}
+      </div>
+      {def ? (
+        <button onClick={disable} disabled={pending}
+          className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-50 shrink-0">
+          {pending && <Loader2 className="size-3.5 animate-spin" />} Desligar (atendimento puro)
+        </button>
+      ) : (
+        <span className="text-[11px] text-slate-400 shrink-0">Clique no ★ de um funil abaixo pra reativar.</span>
+      )}
     </div>
   )
 }

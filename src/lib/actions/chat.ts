@@ -381,6 +381,7 @@ export async function sendMessage(
       .from("chat_conversations")
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
+      .is("assigned_to", null)
   }
 
   const contact = conv.chat_contacts as unknown as {
@@ -507,6 +508,7 @@ export async function sendOfficialTemplate(
     await supabaseAdmin.from("chat_conversations")
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
+      .is("assigned_to", null)
   }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
@@ -675,6 +677,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       .from("chat_conversations")
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
+      .is("assigned_to", null)
   }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; bsuid: string | null }
@@ -818,6 +821,7 @@ async function resolveSendContext(
     await supabaseAdmin.from("chat_conversations")
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
+      .is("assigned_to", null)
   }
 
   return { tenantId, userId: session.user.id, instanceId: (conv as { instance_id: string }).instance_id, phone: contact.phone_number ?? contact.bsuid ?? "" }
@@ -961,13 +965,35 @@ export async function searchContactsForShare(query: string): Promise<{ id: strin
 export async function assignConversation(conversationId: string, agentId: string | null) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
+  const tenantId = session.user.tenantId
+
+  // Gate de visibilidade (fail-closed — a tela é manipulável, a trava é aqui).
+  // Modo A: pode atribuir/reatribuir quem é admin/supervisor (view_all), OU é o
+  // DONO atual (repassa), OU está PEGANDO DA FILA (conversa sem dono que ele
+  // enxerga — pool/setor). Participante NÃO troca o dono.
+  const { data: conv } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("assigned_to, participants, department_id, instance_id")
+    .eq("id", conversationId)
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+  if (!conv) throw new Error("Conversa não encontrada")
+
+  const scope = await getViewerScope()
+  const c = conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null }
+  const canAssign =
+    scope.isAdmin || scope.viewAll ||
+    (c.department_id != null && scope.supervisesDepartments.includes(c.department_id)) ||  // supervisor escopado do setor
+    c.assigned_to === scope.userId ||
+    (c.assigned_to === null && canViewConversation(scope, c))
+  if (!canAssign) throw new Error("Sem permissão para atribuir esta conversa.")
 
   // Valida que agentId (se não-null) pertence ao tenant — bloqueia IDOR
   if (agentId) {
     const { data: member } = await supabaseAdmin
       .from("tenant_users")
       .select("user_id")
-      .eq("tenant_id", session.user.tenantId)
+      .eq("tenant_id", tenantId)
       .eq("user_id", agentId)
       .eq("active", true)
       .maybeSingle()
@@ -978,7 +1004,7 @@ export async function assignConversation(conversationId: string, agentId: string
     .from("chat_conversations")
     .update({ assigned_to: agentId, updated_at: new Date().toISOString() })
     .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", tenantId)
 
   revalidatePath("/inbox")
 }
