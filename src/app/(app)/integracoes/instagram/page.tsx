@@ -8,10 +8,12 @@ import { InstagramConnectClient } from "./instagram-connect-client"
 
 export const dynamic = "force-dynamic"
 
-export default async function InstagramIntegrationPage() {
+export default async function InstagramIntegrationPage({ searchParams }: { searchParams: Promise<{ connected?: string; error?: string }> }) {
   const session = await auth()
   if (!session) redirect("/auth/signin")
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
+  const sp = await searchParams
+  const notice = sp.error ? { error: sp.error } : sp.connected ? { ok: true } : undefined
 
   const { data } = await supabaseAdmin
     .from("channel_connections")
@@ -30,7 +32,7 @@ export default async function InstagramIntegrationPage() {
         <ChevronRight className="size-3 text-slate-300" />
         <span className="font-semibold text-slate-600">Instagram Direct</span>
       </div>
-      <InstagramConnectClient connection={connection} />
+      <InstagramConnectClient connection={connection} notice={notice} />
     </PageShell>
   )
 }
