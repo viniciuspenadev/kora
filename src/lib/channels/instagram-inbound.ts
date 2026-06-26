@@ -192,11 +192,14 @@ function extractIgContent(m: IgMessaging): IgDecoded {
   if (att?.type) {
     meta.ig_attachment_type = att.type
     // Share de post/reel/story — a doc da Meta usa ig_post/ig_reel/ig_story (NÃO "share").
+    // Baixa a IMAGEM do post + marca como share (mostra a imagem + o contexto "compartilhou").
     if (att.type === "ig_post" || att.type === "ig_reel" || att.type === "ig_story" || att.type === "share") {
-      meta.ig_share_url  = att.payload?.url ?? null
-      meta.ig_share_kind = att.type
+      meta.ig_share = att.type
       const t = msg.text?.trim() || null
       const label = att.type === "ig_reel" ? "🎬 Compartilhou um reel" : att.type === "ig_story" ? "📖 Compartilhou um story" : "🔗 Compartilhou um post"
+      if (att.payload?.url) {
+        return { contentType: "image", content: t || label, metadata: meta, routableText: t, attachment: { url: att.payload.url, kind: "image" } }
+      }
       return { contentType: "text", content: t || label, metadata: meta, routableText: t }
     }
     if (att.type === "story_mention") {
