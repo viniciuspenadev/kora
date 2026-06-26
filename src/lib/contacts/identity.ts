@@ -13,10 +13,11 @@ import { supabaseAdmin } from "@/lib/supabase"
 // com .eq('tenant_id'); corrida (23505) re-acha pela chave que colidiu.
 
 export interface ContactKeys {
-  jid?:   string | null   // whatsapp_id (telefone → <país+ddd+num>@s.whatsapp.net)
-  bsuid?: string | null   // identificador opaco do Meta Cloud
-  phone?: string | null   // dígitos com país (caller já normalizou)
-  email?: string | null
+  jid?:       string | null   // whatsapp_id (telefone → <país+ddd+num>@s.whatsapp.net)
+  bsuid?:     string | null   // identificador opaco do Meta Cloud
+  phone?:     string | null   // dígitos com país (caller já normalizou)
+  email?:     string | null
+  instagram?: string | null   // IGSID — identidade via (primary_channel='instagram', primary_external_id=IGSID)
 }
 
 export interface ContactAttrs {
@@ -36,12 +37,13 @@ export async function resolveOrCreateContact(
   keys: ContactKeys,
   attrs: ContactAttrs = {},
 ): Promise<{ id: string; created: boolean }> {
-  const jid   = keys.jid   ?? null
-  const bsuid = keys.bsuid ?? null
-  const phone = keys.phone ?? null
-  const email = keys.email ?? null
+  const jid       = keys.jid   ?? null
+  const bsuid     = keys.bsuid ?? null
+  const phone     = keys.phone ?? null
+  const email     = keys.email ?? null
+  const instagram = keys.instagram ?? null
 
-  // 1) Acha pela 1ª chave que casar — ordem jid → bsuid → email.
+  // 1) Acha pela 1ª chave que casar — ordem jid → bsuid → email → instagram.
   let existing: Record<string, unknown> | null = null
   if (jid) {
     const { data } = await supabaseAdmin.from("chat_contacts").select(COLS).eq("tenant_id", tenantId).eq("whatsapp_id", jid).maybeSingle()
@@ -53,6 +55,13 @@ export async function resolveOrCreateContact(
   }
   if (!existing && email) {
     const { data } = await supabaseAdmin.from("chat_contacts").select(COLS).eq("tenant_id", tenantId).eq("email", email).maybeSingle()
+    existing = data ?? null
+  }
+  // Instagram: identidade sem chave comum com WhatsApp (IGSID) → casa por
+  // (primary_channel='instagram', primary_external_id=IGSID). Unir com um contato
+  // WhatsApp da mesma pessoa = merge/contact_identities (fase futura), não aqui.
+  if (!existing && instagram) {
+    const { data } = await supabaseAdmin.from("chat_contacts").select(COLS).eq("tenant_id", tenantId).eq("primary_channel", "instagram").eq("primary_external_id", instagram).maybeSingle()
     existing = data ?? null
   }
 
@@ -75,9 +84,9 @@ export async function resolveOrCreateContact(
     return { id: existing.id as string, created: false }
   }
 
-  // 3) Cria. primary_external_id = jid ?? bsuid:<…> ?? email:<…>.
-  const primaryExternalId = jid ?? (bsuid ? `bsuid:${bsuid}` : (email ? `email:${email}` : null))
-  const channel = attrs.primaryChannel ?? ((jid || phone || bsuid) ? "whatsapp" : (email ? "email" : "none"))
+  // 3) Cria. primary_external_id = jid ?? bsuid:<…> ?? email:<…> ?? IGSID.
+  const primaryExternalId = jid ?? (bsuid ? `bsuid:${bsuid}` : (email ? `email:${email}` : (instagram ?? null)))
+  const channel = attrs.primaryChannel ?? ((jid || phone || bsuid) ? "whatsapp" : email ? "email" : instagram ? "instagram" : "none")
   const insertObj: Record<string, unknown> = {
     tenant_id:           tenantId,
     whatsapp_id:         jid,
@@ -104,6 +113,10 @@ export async function resolveOrCreateContact(
     }
     if (bsuid) {
       const { data: r } = await supabaseAdmin.from("chat_contacts").select("id").eq("tenant_id", tenantId).eq("bsuid", bsuid).maybeSingle()
+      if (r) return { id: r.id as string, created: false }
+    }
+    if (instagram) {
+      const { data: r } = await supabaseAdmin.from("chat_contacts").select("id").eq("tenant_id", tenantId).eq("primary_channel", "instagram").eq("primary_external_id", instagram).maybeSingle()
       if (r) return { id: r.id as string, created: false }
     }
   }

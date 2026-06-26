@@ -29,13 +29,19 @@ export default async function IntegracoesPage() {
 
   const tenantId = session.user.tenantId
 
-  const [{ data: instances }, modules] = await Promise.all([
+  const [{ data: instances }, modules, { data: igConn }] = await Promise.all([
     supabaseAdmin
       .from("whatsapp_instances")
       .select("provider, status")
       .eq("tenant_id", tenantId),
     getEnabledModuleSlugs(tenantId),
+    supabaseAdmin
+      .from("channel_connections")
+      .select("username, status, access_token")
+      .eq("tenant_id", tenantId).eq("channel", "instagram")
+      .maybeSingle(),
   ])
+  const igConnected = igConn?.status === "active" && !!igConn?.access_token
 
   const list = instances ?? []
   const waTotal     = list.length
@@ -67,11 +73,13 @@ export default async function IntegracoesPage() {
     {
       slug:        "instagram",
       name:        "Instagram Direct",
-      description: "Receba e responda mensagens do Instagram dentro da Kora.",
+      description: igConnected && igConn?.username
+        ? `Conectado · @${igConn.username}`
+        : "Receba e responda mensagens do Instagram dentro da Kora.",
       source:      "instagram",
       category:    "Canais",
-      href:        null,
-      status:      "soon",
+      href:        "/integracoes/instagram",
+      status:      igConnected ? "connected" : "available",
     },
     {
       slug:        "messenger",
