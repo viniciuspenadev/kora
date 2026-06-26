@@ -3,6 +3,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { exchangeIgCode, fetchIgAccount } from "@/lib/instagram/api"
+import { publicOrigin } from "@/lib/http"
 
 /**
  * Callback do Instagram Business Login. Verifica CSRF (cookie), troca o code por
@@ -12,27 +13,28 @@ import { exchangeIgCode, fetchIgAccount } from "@/lib/instagram/api"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-function back(req: NextRequest, q: string) {
-  return NextResponse.redirect(new URL(`/integracoes/instagram?${q}`, req.url))
+function back(origin: string, q: string) {
+  return NextResponse.redirect(new URL(`/integracoes/instagram?${q}`, origin))
 }
 
 export async function GET(req: NextRequest) {
+  const origin = publicOrigin(req)
   const session = await auth()
   if (!session?.user?.tenantId || !["owner", "admin"].includes(session.user.role)) {
-    return NextResponse.redirect(new URL("/inbox", req.url))
+    return NextResponse.redirect(new URL("/inbox", origin))
   }
 
   const sp = req.nextUrl.searchParams
-  if (sp.get("error")) return back(req, `error=${encodeURIComponent(sp.get("error_description") ?? sp.get("error")!)}`)
+  if (sp.get("error")) return back(origin, `error=${encodeURIComponent(sp.get("error_description") ?? sp.get("error")!)}`)
 
   const code  = sp.get("code")
   const state = sp.get("state")
   const cookieState = req.cookies.get("ig_oauth_state")?.value
-  if (!code || !state || !cookieState || state !== cookieState) return back(req, "error=Sess%C3%A3o+inv%C3%A1lida+(CSRF)")
+  if (!code || !state || !cookieState || state !== cookieState) return back(origin, "error=Sess%C3%A3o+inv%C3%A1lida+(CSRF)")
 
-  const redirectUri = process.env.INSTAGRAM_REDIRECT_URI ?? `${req.nextUrl.origin}/api/integrations/instagram/callback`
+  const redirectUri = process.env.INSTAGRAM_REDIRECT_URI ?? `${origin}/api/integrations/instagram/callback`
   const ex = await exchangeIgCode(code, redirectUri)
-  if ("error" in ex) return back(req, `error=${encodeURIComponent(ex.error)}`)
+  if ("error" in ex) return back(origin, `error=${encodeURIComponent(ex.error)}`)
 
   // @handle pra display (o user_id já veio do exchange).
   const acc = await fetchIgAccount(ex.token)
@@ -42,7 +44,7 @@ export async function GET(req: NextRequest) {
   // Anti-hijack: conta já em outro workspace?
   const { data: existing } = await supabaseAdmin.from("channel_connections")
     .select("tenant_id").eq("channel", "instagram").eq("external_account_id", externalAccountId).maybeSingle()
-  if (existing && existing.tenant_id !== session.user.tenantId) return back(req, "error=Conta+j%C3%A1+conectada+a+outro+workspace")
+  if (existing && existing.tenant_id !== session.user.tenantId) return back(origin, "error=Conta+j%C3%A1+conectada+a+outro+workspace")
 
   const expiresAt = ex.expiresIn ? new Date(Date.now() + ex.expiresIn * 1000).toISOString() : null
   const { error } = await supabaseAdmin.from("channel_connections").upsert({
@@ -55,9 +57,9 @@ export async function GET(req: NextRequest) {
     status:              "active",
     updated_at:          new Date().toISOString(),
   }, { onConflict: "channel,external_account_id" })
-  if (error) return back(req, `error=${encodeURIComponent(error.message)}`)
+  if (error) return back(origin, `error=${encodeURIComponent(error.message)}`)
 
-  const res = back(req, "connected=1")
+  const res = back(origin, "connected=1")
   res.cookies.delete("ig_oauth_state")
   return res
 }

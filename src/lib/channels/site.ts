@@ -8,6 +8,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { syncContactIdentities } from "@/lib/contacts/identity"
 
 /**
  * Acha (ou cria) o contato anônimo do visitante por identidade de site.
@@ -36,7 +37,11 @@ export async function getOrCreateSiteContact(tenantId: string, visitorId: string
     })
     .select("id")
     .single()
-  if (created) return created.id
+  if (created) {
+    // Dual-write da identidade de site (FASE B) — best-effort.
+    await syncContactIdentities(tenantId, created.id, { site: visitorId }, visitorId, "site")
+    return created.id
+  }
 
   // Corrida (2 mensagens simultâneas): unique de identidade → refetch.
   if (error?.code === "23505") {

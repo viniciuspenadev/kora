@@ -2,6 +2,7 @@ import { auth } from "@/auth"
 import { redirect, notFound } from "next/navigation"
 import { getContactRecord, getContactActivity } from "@/lib/actions/deals"
 import { getContactAppointments } from "@/lib/actions/agenda"
+import { getContactChannels } from "@/lib/contacts/channels"
 import { getViewerScope } from "@/lib/visibility"
 import { listContactFields } from "@/lib/actions/custom-fields"
 import { ClienteRecord } from "./cliente-client"
@@ -11,12 +12,13 @@ export default async function ContatoDetailPage({ params }: { params: Promise<{ 
   if (!session) redirect("/auth/signin")
   const { id } = await params
 
-  const [record, appts, activity, scope, customFields] = await Promise.all([
+  const [record, appts, activity, scope, customFields, channels] = await Promise.all([
     getContactRecord(id),
     getContactAppointments(id).catch(() => null),
     getContactActivity(id).catch(() => []),
     getViewerScope(),
     listContactFields().catch(() => []),
+    getContactChannels(id).catch(() => []),
   ])
   if ("error" in record) notFound()
 
@@ -27,5 +29,5 @@ export default async function ContatoDetailPage({ params }: { params: Promise<{ 
   // Identidade (telefone/BSUID) só admin/owner ou supervisor (view_all) — gate tb no backend.
   const canEditIdentity = scope.isAdmin || scope.viewAll
 
-  return <ClienteRecord record={record} appointments={appointments} activity={activity} canEditIdentity={canEditIdentity} customFields={customFields} />
+  return <ClienteRecord record={record} appointments={appointments} activity={activity} canEditIdentity={canEditIdentity} customFields={customFields} channels={channels} />
 }

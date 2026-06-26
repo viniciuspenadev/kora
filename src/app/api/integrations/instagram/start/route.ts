@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import crypto from "crypto"
 import { auth } from "@/auth"
 import { buildIgAuthorizeUrl } from "@/lib/instagram/api"
+import { publicOrigin } from "@/lib/http"
 
 /**
  * Inicia o Instagram Business Login (o "botão Conectar"). Gated owner/admin.
@@ -11,16 +12,17 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 function redirectUriFor(req: NextRequest): string {
-  return process.env.INSTAGRAM_REDIRECT_URI ?? `${req.nextUrl.origin}/api/integrations/instagram/callback`
+  return process.env.INSTAGRAM_REDIRECT_URI ?? `${publicOrigin(req)}/api/integrations/instagram/callback`
 }
 
 export async function GET(req: NextRequest) {
+  const origin = publicOrigin(req)
   const session = await auth()
   if (!session?.user?.tenantId || !["owner", "admin"].includes(session.user.role)) {
-    return NextResponse.redirect(new URL("/inbox", req.url))
+    return NextResponse.redirect(new URL("/inbox", origin))
   }
   if (!process.env.INSTAGRAM_APP_ID) {
-    return NextResponse.redirect(new URL("/integracoes/instagram?error=Falta+INSTAGRAM_APP_ID", req.url))
+    return NextResponse.redirect(new URL("/integracoes/instagram?error=Falta+INSTAGRAM_APP_ID", origin))
   }
 
   const nonce = crypto.randomBytes(16).toString("hex")

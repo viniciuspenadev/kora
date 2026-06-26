@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   ArrowLeft, Phone, Mail, Building2, IdCard, CalendarDays, MessageSquare,
-  CalendarClock, MessageCircle, ExternalLink, Plus, Pencil, MapPin, ShieldCheck, AtSign, Loader2,
-  X, AlertTriangle, Hash,
+  CalendarClock, Plus, Pencil, MapPin, ShieldCheck, AtSign, Loader2,
+  X, AlertTriangle, Hash, Star, ChevronRight, Radio,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
@@ -15,7 +15,8 @@ import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { updateContactInfo } from "@/lib/actions/chat"
 import { updateContactIdentity } from "@/lib/actions/contacts"
 import { setContactCustomFields, type ContactFieldDef } from "@/lib/actions/custom-fields"
-import type { ContactRecord, ContactRecordContact, PanelDeal, ContactConversation, ActivityItem } from "@/lib/actions/deals"
+import type { ContactRecord, ContactRecordContact, PanelDeal, ActivityItem } from "@/lib/actions/deals"
+import type { ContactChannelRow } from "@/lib/contacts/channels"
 
 interface Appt { id: string; starts_at: string; status: string; service: string | null; resource: string | null }
 
@@ -37,7 +38,7 @@ const REL = {
   prospect:   { label: "Prospect",      cls: "bg-slate-100 text-slate-500 border-slate-200" },
 } as const
 
-export function ClienteRecord({ record, appointments, activity, canEditIdentity, customFields }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean; customFields: ContactFieldDef[] }) {
+export function ClienteRecord({ record, appointments, activity, canEditIdentity, customFields, channels }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean; customFields: ContactFieldDef[]; channels: ContactChannelRow[] }) {
   const { contact, stats, deals, conversations } = record
   const name    = contact.custom_name?.trim() || contact.push_name?.trim() || fmtPhone(contact.phone_number) || "Sem nome"
   const initial = (name[0] ?? "?").toUpperCase()
@@ -92,11 +93,12 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
 
       {/* Body: identidade fixa + abas que rolam (escala com o crescimento) */}
       <div className="px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-5">
           <IdentityCard contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} />
+          <ChannelsCard channels={channels} />
         </div>
         <div className="lg:col-span-1 lg:sticky lg:top-4">
-          <TabbedPanel deals={deals} conversations={conversations} appointments={appointments} activity={activity} crmEnabled={record.crmEnabled} onOpenDeal={(id) => router.push(`/negocios/${id}`)} />
+          <TabbedPanel deals={deals} appointments={appointments} activity={activity} crmEnabled={record.crmEnabled} onOpenDeal={(id) => router.push(`/negocios/${id}`)} />
         </div>
       </div>
 
@@ -114,16 +116,15 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
 }
 
 // ── Abas (escala) ───────────────────────────────────────────────
-function TabbedPanel({ deals, conversations, appointments, activity, crmEnabled, onOpenDeal }: {
-  deals: PanelDeal[]; conversations: ContactConversation[]; appointments: Appt[] | null; activity: ActivityItem[]; crmEnabled: boolean; onOpenDeal: (id: string) => void
+function TabbedPanel({ deals, appointments, activity, crmEnabled, onOpenDeal }: {
+  deals: PanelDeal[]; appointments: Appt[] | null; activity: ActivityItem[]; crmEnabled: boolean; onOpenDeal: (id: string) => void
 }) {
   const tabs = [
     activity.length ? { key: "activity", label: "Atividade", count: activity.length } : null,
     crmEnabled ? { key: "deals", label: "Negócios", count: deals.length } : null,
-    { key: "conv", label: "Conversas", count: conversations.length },
     appointments && appointments.length ? { key: "agenda", label: "Agenda", count: appointments.length } : null,
   ].filter(Boolean) as { key: string; label: string; count: number }[]
-  const [tab, setTab] = useState(tabs[0]?.key ?? "conv")
+  const [tab, setTab] = useState(tabs[0]?.key ?? "deals")
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
@@ -148,9 +149,6 @@ function TabbedPanel({ deals, conversations, appointments, activity, crmEnabled,
         {tab === "deals" && (deals.length
           ? <div className="space-y-1.5">{deals.map((d) => <DealRow key={d.id} d={d} onOpen={() => onOpenDeal(d.id)} />)}</div>
           : <Empty text="Nenhum negócio ainda. Abra um pela conversa quando fizer sentido." />)}
-        {tab === "conv" && (conversations.length
-          ? <div className="space-y-1">{conversations.map((c) => <ConvRow key={c.id} c={c} />)}</div>
-          : <Empty text="Nenhuma conversa." />)}
         {tab === "agenda" && <div className="space-y-1.5">{(appointments ?? []).map((a) => <ApptRow key={a.id} a={a} />)}</div>}
       </div>
     </div>
@@ -527,16 +525,60 @@ function DealRow({ d, onOpen }: { d: PanelDeal; onOpen: () => void }) {
   )
 }
 
-function ConvRow({ c }: { c: ContactConversation }) {
+// ── Central de canais ───────────────────────────────────────────
+const CHANNEL_META: Record<string, { label: string; source: string }> = {
+  whatsapp:  { label: "WhatsApp",  source: "whatsapp_inbound" },
+  instagram: { label: "Instagram", source: "instagram" },
+  site:      { label: "Site",      source: "webform" },
+}
+
+function ChannelsCard({ channels }: { channels: ContactChannelRow[] }) {
   return (
-    <Link href={`/inbox?conversation=${c.id}`} className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-slate-50 transition-colors">
-      <MessageCircle className="size-3.5 text-slate-300 shrink-0" />
-      <span className="text-xs text-slate-600 truncate flex-1">{c.last_message_preview?.trim() || "Conversa"}</span>
-      {c.unread_count > 0 && <span className="size-4 rounded-full bg-primary text-white text-[9px] font-bold grid place-items-center shrink-0">{c.unread_count}</span>}
-      <span className="text-[10px] text-slate-300 shrink-0">{c.last_message_at ? fmtDate(c.last_message_at) : ""}</span>
-      <ExternalLink className="size-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-    </Link>
+    <SectionCard title="Canais" icon={Radio} description="Por onde essa pessoa fala com você"
+      actions={channels.length > 0 ? <span className="text-[11px] text-slate-400 tabular-nums">{channels.length} {channels.length === 1 ? "canal" : "canais"}</span> : undefined}>
+      {channels.length === 0
+        ? <Empty text="Sem canais ainda. Quando a pessoa falar por WhatsApp, Instagram ou site, eles aparecem aqui." />
+        : <div className="space-y-1.5">{channels.map((ch, i) => <ChannelRow key={`${ch.channel}-${ch.conversationId ?? i}`} ch={ch} />)}</div>}
+    </SectionCard>
   )
+}
+
+function ChannelRow({ ch }: { ch: ContactChannelRow }) {
+  const meta   = CHANNEL_META[ch.channel] ?? { label: ch.channel, source: "manual" }
+  const status = [
+    ch.conversationId ? "Conversa ativa" : "Sem conversa",
+    ch.instanceName,
+    ch.lastMessageAt ? fmtDate(ch.lastMessageAt) : null,
+  ].filter(Boolean).join(" · ")
+
+  const body = (
+    <>
+      <div className="size-9 rounded-lg bg-slate-50 border border-slate-200 grid place-items-center shrink-0">
+        <SourceLogo source={meta.source} size={18} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[13px] font-semibold text-slate-900 shrink-0">{meta.label}</span>
+          {ch.isPrimary && <Star className="size-3 text-amber-500 fill-amber-400 shrink-0" />}
+          {ch.windowOpen === true  && <span className="text-[9px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-full shrink-0">janela aberta</span>}
+          {ch.windowOpen === false && <span className="text-[9px] font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full shrink-0">janela fechada</span>}
+          {ch.handle && <span className="text-[11px] text-slate-400 truncate">· {ch.handle}</span>}
+        </div>
+        <p className="text-[11px] text-slate-400 truncate">{status}</p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {ch.unread > 0 && <span className="size-4 rounded-full bg-primary text-white text-[9px] font-bold grid place-items-center">{ch.unread}</span>}
+        {ch.conversationId
+          ? <span className="text-[11px] font-semibold text-primary-700 inline-flex items-center gap-0.5">Abrir <ChevronRight className="size-3.5" /></span>
+          : <span className="text-[10px] text-slate-300">—</span>}
+      </div>
+    </>
+  )
+
+  const cls = "flex items-center gap-2.5 rounded-lg border border-slate-200 px-2.5 py-2 transition-colors"
+  return ch.conversationId
+    ? <Link href={`/inbox?conversation=${ch.conversationId}`} className={`${cls} hover:bg-slate-50 hover:border-slate-300`}>{body}</Link>
+    : <div className={`${cls} bg-slate-50/40`}>{body}</div>
 }
 
 function ApptRow({ a }: { a: Appt }) {

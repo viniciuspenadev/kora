@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
+import { syncContactIdentities } from "@/lib/contacts/identity"
 
 /**
  * POST /api/site/lead
@@ -158,6 +159,10 @@ export async function POST(req: NextRequest) {
           .update(updates)
           .eq("id", contactId)
       }
+      // Dual-write (FASE B): se um e-mail novo entrou, registra a identidade. Best-effort.
+      if (updates.email) {
+        await syncContactIdentities(tenant.id, contactId, { whatsapp: jid, email: updates.email as string }, jid, "whatsapp")
+      }
     } else {
       const { data: newContact, error: cErr } = await supabaseAdmin
         .from("chat_contacts")
@@ -197,6 +202,8 @@ export async function POST(req: NextRequest) {
         return cors(NextResponse.json({ error: "erro criando contato" }, { status: 500 }))
       }
       contactId = newContact.id
+      // Dual-write (FASE B): identidade WhatsApp (e e-mail se veio) do novo lead. Best-effort.
+      await syncContactIdentities(tenant.id, contactId, { whatsapp: jid, email: answers.email?.trim().toLowerCase() ?? null }, jid, "whatsapp")
     }
 
     // ── Conversation Dedup: reusa ativa ou reabre fechada recente ──
@@ -246,7 +253,7 @@ export async function POST(req: NextRequest) {
         .eq("tenant_id", tenant.id)
         .maybeSingle()
 
-      let pipelineId: string | null = tc?.default_pipeline_id ?? null
+      const pipelineId: string | null = tc?.default_pipeline_id ?? null
       let stageId:    string | null = null
       if (pipelineId) {
         const { data: firstStage } = await supabaseAdmin
