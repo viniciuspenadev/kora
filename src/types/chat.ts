@@ -58,7 +58,9 @@ export interface ChatContact {
   primary_channel:      string | null
   primary_external_id:  string | null
   bsuid:                string | null   // Meta — chave canônica (canal oficial)
-  username:             string | null   // @handle do WhatsApp (display, mutável)
+  username:             string | null   // LEGADO (compartilhado) — usar wp_username/ig_username
+  wp_username:          string | null   // username do WhatsApp (só Oficial)
+  ig_username:          string | null   // @handle do Instagram
   whatsapp_id:          string
   phone_number:         string
   push_name:            string | null
