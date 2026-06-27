@@ -10,6 +10,10 @@ import { createTag, applyTag, removeTag } from "@/lib/actions/tags"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { ContactEditSheet } from "./contact-edit-sheet"
+import { SourceLogo } from "@/components/chat/source-logo"
+
+// Canal (contact_identities) → fonte do logo de marca.
+const CHANNEL_SOURCE: Record<string, string> = { whatsapp: "whatsapp_inbound", instagram: "instagram", site: "webform" }
 
 interface Contact {
   id:              string
@@ -29,6 +33,7 @@ interface Contact {
   created_at:      string
   updated_at:      string
   tag_ids:         string[]
+  channels:        string[]   // canais que o contato tem no cadastro (whatsapp/instagram/site)
 }
 
 interface Tag {
@@ -322,6 +327,13 @@ function ContactRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <Link href={`/contatos/${contact.id}`} className="block text-sm font-semibold text-slate-900 truncate hover:text-primary-700 transition-colors">{name}</Link>
+          {contact.channels.length > 0 && (
+            <span className="inline-flex items-center gap-1" title={`Canais: ${contact.channels.join(", ")}`}>
+              {contact.channels.map((ch) => CHANNEL_SOURCE[ch] && (
+                <SourceLogo key={ch} source={CHANNEL_SOURCE[ch]} size={15} />
+              ))}
+            </span>
+          )}
           {contact.is_blocked && (
             <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-50 text-red-600">
               <Ban className="size-2.5" /> Bloqueado

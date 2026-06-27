@@ -111,11 +111,29 @@ export async function resolveOrCreateContact(
     existing = data ?? null
   }
   // Instagram: identidade sem chave comum com WhatsApp (IGSID) → casa por
-  // (primary_channel='instagram', primary_external_id=IGSID). Unir com um contato
-  // WhatsApp da mesma pessoa = merge/contact_identities (fase futura), não aqui.
+  // (primary_channel='instagram', primary_external_id=IGSID).
   if (!existing && instagram) {
     const { data } = await supabaseAdmin.from("chat_contacts").select(COLS).eq("tenant_id", tenantId).eq("primary_channel", "instagram").eq("primary_external_id", instagram).maybeSingle()
     existing = data ?? null
+  }
+
+  // Fallback via contact_identities — cobre contatos MESCLADOS (F6): após o merge, a
+  // identidade de um canal vira SECUNDÁRIA (sai das colunas-âncora do chat_contacts).
+  // Sem isto, a próxima msg desse canal re-criaria um contato separado (re-split do
+  // merge). Só chaves ÚNICAS (whatsapp/bsuid/instagram); email é compartilhado (ambíguo).
+  if (!existing) {
+    const idChecks: { channel: string; ext: string }[] = []
+    if (jid)       idChecks.push({ channel: "whatsapp",  ext: jid })
+    if (bsuid)     idChecks.push({ channel: "bsuid",     ext: bsuid })
+    if (instagram) idChecks.push({ channel: "instagram", ext: instagram })
+    for (const c of idChecks) {
+      const { data: idRow } = await supabaseAdmin.from("contact_identities")
+        .select("contact_id").eq("tenant_id", tenantId).eq("channel", c.channel).eq("external_id", c.ext).maybeSingle()
+      if (idRow) {
+        const { data } = await supabaseAdmin.from("chat_contacts").select(COLS).eq("tenant_id", tenantId).eq("id", idRow.contact_id as string).maybeSingle()
+        if (data) { existing = data; break }
+      }
+    }
   }
 
   // 2) MERGE — backfill só o que falta; nunca apaga dado bom.

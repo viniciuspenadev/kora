@@ -38,7 +38,7 @@ type IgChange  = { field?: string; value?: Record<string, unknown> }
 type IgEntry   = { id?: string; time?: number; messaging?: IgMessaging[]; changes?: IgChange[] }
 type IgWebhook = { object?: string; entry?: IgEntry[] }
 
-const MEDIA_LABEL: Record<string, string> = { image: "📷 Imagem", video: "📹 Vídeo", audio: "🎤 Áudio", file: "📎 Arquivo", share: "🔗 Compartilhado", story_mention: "📖 Menção no story" }
+const MEDIA_LABEL: Record<string, string> = { image: "📷 Imagem", video: "📹 Vídeo", audio: "🎤 Áudio", file: "📎 Arquivo", share: "🔗 Compartilhado", story_mention: "📖 Menção no story", ig_post: "🔗 Compartilhou um post", ig_reel: "🎬 Compartilhou um reel", ig_story: "📖 Compartilhou um story" }
 const PREVIEW_LABEL: Record<string, string> = { image: "📷 Imagem", audio: "🎤 Áudio", video: "📹 Vídeo", document: "📎 Documento", reaction: "Reação", interactive: "Resposta", deleted: "Mensagem apagada" }
 function attachmentKind(type?: string): string {
   return type === "image" ? "image" : type === "video" ? "video" : type === "audio" ? "audio" : "document"
@@ -106,8 +106,8 @@ async function defaultInstanceId(tenantId: string): Promise<string | null> {
   return (data?.id as string) ?? null
 }
 
-async function getOrCreateIgConversation(tenantId: string, contactId: string, instanceId: string): Promise<{ id: string; isNew: boolean }> {
-  const dedup = await findOrReopenConversation({ tenantId, contactId, skipOwnershipCheck: true })
+async function getOrCreateIgConversation(tenantId: string, contactId: string, instanceId: string | null): Promise<{ id: string; isNew: boolean }> {
+  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, channel: "instagram", skipOwnershipCheck: true })
   if (dedup.found !== "none") return { id: dedup.conversation.id, isNew: false }
   const { data, error } = await supabaseAdmin.from("chat_conversations").insert({
     tenant_id: tenantId, contact_id: contactId, instance_id: instanceId,
@@ -121,8 +121,9 @@ async function getOrCreateIgConversation(tenantId: string, contactId: string, in
 async function resolveIgContext(igAccountId: string, fromIgsid: string): Promise<{ tenantId: string; convId: string; token: string | null } | null> {
   const conn = await connectionFor(igAccountId)
   if (!conn) { log("skip", { reason: "no-connection", igAccountId }); return null }
+  // instance_id é "emprestado" do WhatsApp por compatibilidade; tenant IG-first (sem
+  // WhatsApp) cria o fio com null — o canal já discrimina (coalesce(instance,canal)).
   const instanceId = await defaultInstanceId(conn.tenantId)
-  if (!instanceId) { log("skip", { reason: "no-instance", tenantId: conn.tenantId }); return null }
   const contact = await resolveOrCreateContact(conn.tenantId, { instagram: fromIgsid }, { primaryChannel: "instagram", source: "instagram" })
   await maybeEnrich(conn.token, fromIgsid, contact.id, contact.created)
   const conv = await getOrCreateIgConversation(conn.tenantId, contact.id, instanceId)
@@ -194,13 +195,12 @@ function extractIgContent(m: IgMessaging): IgDecoded {
     // Share de post/reel/story — a doc da Meta usa ig_post/ig_reel/ig_story (NÃO "share").
     // Baixa a IMAGEM do post + marca como share (mostra a imagem + o contexto "compartilhou").
     if (att.type === "ig_post" || att.type === "ig_reel" || att.type === "ig_story" || att.type === "share") {
-      meta.ig_share = att.type
-      const t = msg.text?.trim() || null
-      const label = att.type === "ig_reel" ? "🎬 Compartilhou um reel" : att.type === "ig_story" ? "📖 Compartilhou um story" : "🔗 Compartilhou um post"
+      meta.ig_share = att.type === "share" ? "ig_post" : att.type    // "share" legado → trata como post
+      const t = msg.text?.trim() || null                            // só a legenda; o selo "Compartilhou…" vem do bubble
       if (att.payload?.url) {
-        return { contentType: "image", content: t || label, metadata: meta, routableText: t, attachment: { url: att.payload.url, kind: "image" } }
+        return { contentType: "image", content: t, metadata: meta, routableText: t, attachment: { url: att.payload.url, kind: "image" } }
       }
-      return { contentType: "text", content: t || label, metadata: meta, routableText: t }
+      return { contentType: "text", content: t, metadata: meta, routableText: t }
     }
     if (att.type === "story_mention") {
       meta.ig_story = "mention"
@@ -231,7 +231,7 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   const mid = m.message?.mid ?? m.postback?.mid ?? null
   if (!mid) { log("dm-skip", { reason: "no-mid", igAccountId }); return }
   // Nada renderável (ex: like vazio) → ignora (senão vira bubble vazio).
-  if (dec.contentType === "text" && !dec.content?.trim() && !dec.metadata.quoted && !dec.metadata.ig_story_reply) { log("dm-skip", { reason: "empty-message", mid }); return }
+  if (dec.contentType === "text" && !dec.content?.trim() && !dec.metadata.quoted && !dec.metadata.ig_story_reply && !dec.metadata.ig_share) { log("dm-skip", { reason: "empty-message", mid }); return }
 
   const ctx = await resolveIgContext(igAccountId, fromIgsid)
   if (!ctx) return

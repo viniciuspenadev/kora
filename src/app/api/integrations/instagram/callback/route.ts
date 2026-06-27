@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { encryptSecret } from "@/lib/crypto/secrets"
-import { exchangeIgCode, fetchIgAccount } from "@/lib/instagram/api"
+import { exchangeIgCode, fetchIgAccount, subscribeIgWebhooks } from "@/lib/instagram/api"
 import { publicOrigin } from "@/lib/http"
 
 /**
@@ -58,6 +58,11 @@ export async function GET(req: NextRequest) {
     updated_at:          new Date().toISOString(),
   }, { onConflict: "channel,external_account_id" })
   if (error) return back(origin, `error=${encodeURIComponent(error.message)}`)
+
+  // Auto-assina os campos de webhook (inclui message_reactions) — self-provision,
+  // não depende de toggle manual no painel. Não-fatal: conexão vale mesmo se falhar.
+  const sub = await subscribeIgWebhooks(ex.token)
+  console.log(JSON.stringify({ src: "ig-connect", kind: "subscribe", account: externalAccountId, result: "error" in sub ? sub.error : "ok" }))
 
   const res = back(origin, "connected=1")
   res.cookies.delete("ig_oauth_state")

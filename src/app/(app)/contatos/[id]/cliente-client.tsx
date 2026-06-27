@@ -12,6 +12,7 @@ import { SectionCard } from "@/components/ui/section-card"
 import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
+import { MergeContactButton } from "@/components/chat/merge-contact-dialog"
 import { updateContactInfo } from "@/lib/actions/chat"
 import { updateContactIdentity } from "@/lib/actions/contacts"
 import { setContactCustomFields, type ContactFieldDef } from "@/lib/actions/custom-fields"
@@ -95,7 +96,7 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
       <div className="px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
         <div className="lg:col-span-2 space-y-5">
           <IdentityCard contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} />
-          <ChannelsCard channels={channels} />
+          <ChannelsCard channels={channels} contactId={contact.id} contactName={name} contactPic={contact.profile_pic_url} canMerge={canEditIdentity} />
         </div>
         <div className="lg:col-span-1 lg:sticky lg:top-4">
           <TabbedPanel deals={deals} appointments={appointments} activity={activity} crmEnabled={record.crmEnabled} onOpenDeal={(id) => router.push(`/negocios/${id}`)} />
@@ -532,10 +533,15 @@ const CHANNEL_META: Record<string, { label: string; source: string }> = {
   site:      { label: "Site",      source: "webform" },
 }
 
-function ChannelsCard({ channels }: { channels: ContactChannelRow[] }) {
+function ChannelsCard({ channels, contactId, contactName, contactPic, canMerge }: { channels: ContactChannelRow[]; contactId: string; contactName: string; contactPic: string | null; canMerge: boolean }) {
   return (
     <SectionCard title="Canais" icon={Radio} description="Por onde essa pessoa fala com você"
-      actions={channels.length > 0 ? <span className="text-[11px] text-slate-400 tabular-nums">{channels.length} {channels.length === 1 ? "canal" : "canais"}</span> : undefined}>
+      actions={
+        <div className="flex items-center gap-2">
+          {channels.length > 0 && <span className="text-[11px] text-slate-400 tabular-nums">{channels.length} {channels.length === 1 ? "canal" : "canais"}</span>}
+          {canMerge && <MergeContactButton survivorId={contactId} survivorName={contactName} survivorPic={contactPic} />}
+        </div>
+      }>
       {channels.length === 0
         ? <Empty text="Sem canais ainda. Quando a pessoa falar por WhatsApp, Instagram ou site, eles aparecem aqui." />
         : <div className="space-y-1.5">{channels.map((ch, i) => <ChannelRow key={`${ch.channel}-${ch.conversationId ?? i}`} ch={ch} />)}</div>}
@@ -553,9 +559,9 @@ function ChannelRow({ ch }: { ch: ContactChannelRow }) {
 
   const body = (
     <>
-      <div className="size-9 rounded-lg bg-slate-50 border border-slate-200 grid place-items-center shrink-0">
-        <SourceLogo source={meta.source} size={18} />
-      </div>
+      <span className="shrink-0 inline-flex items-center justify-center">
+        <SourceLogo source={meta.source} size={28} />
+      </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] font-semibold text-slate-900 shrink-0">{meta.label}</span>

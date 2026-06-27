@@ -24,22 +24,41 @@ const BRAND_COLOR: Record<string, string> = {
   import:            "#D97706",
 }
 
-function WhatsAppSvg({ size, fill }: { size: number; fill: string }) {
+// Logo "redondo" da marca: círculo full-bleed colorido (ocupa todo o badge) +
+// glifo branco. id de gradiente FIXO de propósito — todas as instâncias do mesmo
+// canal são idênticas, então url(#id) resolve pro 1º e renderiza igual (hook-free,
+// safe em Server Components). Arte fornecida pelo dono.
+function WhatsAppSvg({ size }: { size: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} aria-label="WhatsApp" className="shrink-0">
-      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893A11.821 11.821 0 0020.464 3.488"/>
+    <svg width={size} height={size} viewBox="0 0 512 512" aria-label="WhatsApp" className="shrink-0">
+      <defs>
+        <linearGradient id="kora-wa-grad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#25D366" />
+          <stop offset="100%" stopColor="#128C7E" />
+        </linearGradient>
+      </defs>
+      <circle cx="256" cy="256" r="256" fill="url(#kora-wa-grad)" />
+      <path fill="#FFFFFF" d="M256.1 120c-74.9 0-135.8 60.8-135.8 135.7 0 24 6.3 47.3 18.2 67.8l-19.3 70.4 72.1-18.9c19.8 10.8 42.2 16.5 64.7 16.5h.1c74.8 0 135.7-60.9 135.7-135.7C391.8 180.9 330.9 120 256.1 120zm0 248.6h-.1c-20.3 0-40.2-5.5-57.4-15.8l-4.1-2.5-42.8 11.2 11.4-41.8-2.7-4.3c-11.3-17.9-17.2-38.5-17.2-59.6 0-62.2 50.6-112.8 112.9-112.8 30.1 0 58.4 11.7 79.7 33 21.3 21.3 33 49.6 33 79.8-.1 62.1-50.7 112.8-112.7 112.8zm61.9-84.5c-3.4-1.7-20-9.9-23.2-11-3.1-1.2-5.4-1.7-7.7 1.7-2.3 3.4-8.8 11-10.8 13.3-2 2.3-4 2.6-7.4.9-20.1-10-33.3-17.9-46.6-40.6-3.5-6-.3-9.3 2.6-12.2 2.7-2.7 3.4-4.6 5.1-7.7 1.7-3.1.9-5.7-.3-8-1.2-2.3-7.7-18.6-10.5-25.4-2.8-6.6-5.6-5.7-7.7-5.8-2-.1-4.3-.1-6.6-.1s-6 1-9.1 4.3c-3.1 3.4-12 11.7-12 28.6 0 16.9 12.3 33.2 14 35.5 1.7 2.3 24.1 36.8 58.5 51.6 21.8 9.4 30.3 10.2 41.2 8.6 6.7-1 20-8.2 22.8-16.1 2.8-8 2.8-14.8 2-16.1-.8-1.5-3.1-2.4-6.6-4.1z" />
     </svg>
   )
 }
 
-function InstagramSvg({ size, fill }: { size: number; fill: string }) {
-  // Glyph filled: quadrado arredondado sólido na cor da marca + lente e flash
-  // recortados em branco (estilo logo "pintado por dentro").
+function InstagramSvg({ size }: { size: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" aria-label="Instagram" className="shrink-0">
-      <rect x="2" y="2" width="20" height="20" rx="5.5" fill={fill} />
-      <circle cx="12" cy="12" r="4" fill="none" stroke="#fff" strokeWidth="2" />
-      <circle cx="17.4" cy="6.6" r="1.35" fill="#fff" />
+    <svg width={size} height={size} viewBox="0 0 512 512" aria-label="Instagram" className="shrink-0">
+      <defs>
+        <radialGradient id="kora-ig-grad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(150 500) rotate(-55) scale(620)">
+          <stop offset="0" stopColor="#FFD600" />
+          <stop offset="0.25" stopColor="#FF7A00" />
+          <stop offset="0.5" stopColor="#FF0069" />
+          <stop offset="0.75" stopColor="#D300C5" />
+          <stop offset="1" stopColor="#7638FA" />
+        </radialGradient>
+      </defs>
+      <circle cx="256" cy="256" r="256" fill="url(#kora-ig-grad)" />
+      <rect x="120" y="120" width="272" height="272" rx="78" fill="none" stroke="#fff" strokeWidth="30" />
+      <circle cx="256" cy="256" r="70" fill="none" stroke="#fff" strokeWidth="30" />
+      <circle cx="338" cy="174" r="18" fill="#fff" />
     </svg>
   )
 }
@@ -54,10 +73,26 @@ function MessengerSvg({ size, fill }: { size: number; fill: string }) {
   )
 }
 
-function WebformSvg({ size, fill }: { size: number; fill: string }) {
+function WebformSvg({ size }: { size: number }) {
+  // Logo redondo do site: fundo branco circular + balões de chat centralizados
+  // (frente azul + trás cinza). Self-contained, igual WhatsApp/Instagram.
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} aria-label="Site / Formulário" className="shrink-0">
-      <path d="M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3H3V5zm0 5h18v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9zm3 3a1 1 0 0 0 0 2h6a1 1 0 1 0 0-2H6zm0 4a1 1 0 1 0 0 2h4a1 1 0 1 0 0-2H6z"/>
+    <svg width={size} height={size} viewBox="8 8 284 284" aria-label="Site / Chat" className="shrink-0">
+      <circle cx="150" cy="150" r="142" fill="#FFFFFF" />
+      {/* balões ampliados (~1.25) a partir do centro pra preencher melhor a roda */}
+      <g transform="translate(150 150) scale(1.25) translate(-150 -150) translate(45 84)">
+        <g transform="translate(94,35)">
+          <rect x="0" y="0" width="116" height="74" rx="16" fill="#B8BEDA" />
+          <path d="M82 74 L105 74 L105 93 Z" fill="#B8BEDA" />
+        </g>
+        <g>
+          <rect x="0" y="0" width="150" height="108" rx="20" fill="#3F5BEF" />
+          <path d="M50 108 L50 133 L77 108 Z" fill="#3F5BEF" />
+          <circle cx="39" cy="54" r="12" fill="#FFFFFF" />
+          <circle cx="75" cy="54" r="12" fill="#FFFFFF" />
+          <circle cx="111" cy="54" r="12" fill="#FFFFFF" />
+        </g>
+      </g>
     </svg>
   )
 }
@@ -87,16 +122,16 @@ export function SourceLogo({ source, size = 14, monochrome = false, className = 
   switch (key) {
     case "whatsapp_inbound":
     case "whatsapp_outbound":
-      inner = <WhatsAppSvg size={size} fill={fill} />
+      inner = <WhatsAppSvg size={size} />
       break
     case "instagram":
-      inner = <InstagramSvg size={size} fill={fill} />
+      inner = <InstagramSvg size={size} />
       break
     case "messenger":
       inner = <MessengerSvg size={size} fill={fill} />
       break
     case "webform":
-      inner = <WebformSvg size={size} fill={fill} />
+      inner = <WebformSvg size={size} />
       break
     case "import":
       inner = <ImportSvg size={size} fill={fill} />

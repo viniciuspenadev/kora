@@ -12,7 +12,7 @@ export default async function ContatosPage() {
 
   const tenantId = session.user.tenantId
 
-  const [{ data: contacts }, { data: tags }, { data: taggings }] = await Promise.all([
+  const [{ data: contacts }, { data: tags }, { data: taggings }, { data: identities }] = await Promise.all([
     supabaseAdmin
       .from("chat_contacts")
       .select(`
@@ -33,6 +33,12 @@ export default async function ContatosPage() {
       .select("tag_id, taggable_id")
       .eq("tenant_id", tenantId)
       .eq("taggable_type", "contact"),
+    // Canais que o contato REALMENTE tem (identidades) — só os mensageáveis.
+    supabaseAdmin
+      .from("contact_identities")
+      .select("contact_id, channel")
+      .eq("tenant_id", tenantId)
+      .in("channel", ["whatsapp", "instagram", "site"]),
   ])
 
   const tagsByContact = new Map<string, string[]>()
@@ -42,9 +48,19 @@ export default async function ContatosPage() {
     tagsByContact.set(t.taggable_id, arr)
   }
 
+  // contact_id → set de canais (dedup multi-número do WhatsApp num só "whatsapp").
+  const channelsByContact = new Map<string, Set<string>>()
+  for (const id of identities ?? []) {
+    const set = channelsByContact.get(id.contact_id) ?? new Set<string>()
+    set.add(id.channel)
+    channelsByContact.set(id.contact_id, set)
+  }
+  const CHANNEL_ORDER = ["whatsapp", "instagram", "site"]
+
   const enrichedContacts = (contacts ?? []).map((c) => ({
     ...c,
-    tag_ids: tagsByContact.get(c.id) ?? [],
+    tag_ids:  tagsByContact.get(c.id) ?? [],
+    channels: CHANNEL_ORDER.filter((ch) => channelsByContact.get(c.id)?.has(ch)),
   }))
 
   const total    = enrichedContacts.length

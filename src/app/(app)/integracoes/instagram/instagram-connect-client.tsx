@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { Loader2, CheckCircle2, Link2, Unlink, KeyRound, ChevronDown, AlertCircle } from "lucide-react"
-import { connectInstagramAccount, disconnectInstagramAccount } from "@/lib/actions/instagram"
+import { Loader2, CheckCircle2, Link2, Unlink, KeyRound, ChevronDown, AlertCircle, RefreshCw } from "lucide-react"
+import { connectInstagramAccount, disconnectInstagramAccount, resubscribeInstagramWebhooks } from "@/lib/actions/instagram"
 
 interface Conn { external_account_id: string; username: string | null; status: string; hasToken: boolean }
 
@@ -34,6 +34,14 @@ export function InstagramConnectClient({ connection, notice }: { connection: Con
       router.refresh()
     })
   }
+  function resubscribe() {
+    setError(null); setOkMsg(null)
+    start(async () => {
+      const r = await resubscribeInstagramWebhooks()
+      if ("error" in r) { setError(r.error); return }
+      setOkMsg("Recebimento reativado — reações e eventos do Direct atualizados.")
+    })
+  }
 
   return (
     <div className="max-w-xl space-y-5">
@@ -47,16 +55,24 @@ export function InstagramConnectClient({ connection, notice }: { connection: Con
       )}
 
       {connected ? (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 flex items-center gap-3">
-          <CheckCircle2 className="size-5 text-emerald-600 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-slate-900">Conectado{connection?.username ? ` · @${connection.username}` : ""}</p>
-            <p className="text-xs text-slate-500">Mensagens do Direct caem no inbox da Kora.</p>
+        <div className="space-y-2">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 flex items-center gap-3">
+            <CheckCircle2 className="size-5 text-emerald-600 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-slate-900">Conectado{connection?.username ? ` · @${connection.username}` : ""}</p>
+              <p className="text-xs text-slate-500">Mensagens, reações e eventos do Direct caem no inbox da Kora.</p>
+            </div>
+            <button onClick={resubscribe} disabled={pending} title="Reassina os eventos do webhook (mensagens, reações, comentários)"
+              className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-50">
+              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} Reativar recebimento
+            </button>
+            <button onClick={disconnect} disabled={pending}
+              className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-50">
+              <Unlink className="size-3.5" /> Desconectar
+            </button>
           </div>
-          <button onClick={disconnect} disabled={pending}
-            className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 disabled:opacity-50">
-            <Unlink className="size-3.5" /> Desconectar
-          </button>
+          {okMsg && <p className="text-xs text-emerald-600 px-1">{okMsg}</p>}
+          {error && <p className="text-xs text-red-600 px-1">{error}</p>}
         </div>
       ) : (
         <div className="rounded-xl border border-slate-200 bg-white p-5">

@@ -7,7 +7,7 @@ import {
   Image as ImageIcon, Download, X, ImageOff, Reply, Smartphone,
   Megaphone, ExternalLink, Eye, EyeOff, Trash2, Pencil, MessageSquareWarning,
   User as UserIcon, ListChecks, Square, Sparkles, ArrowRight, Smile, Forward,
-  DollarSign, Bell,
+  DollarSign, Bell, Camera, Share2,
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
@@ -31,6 +31,10 @@ interface MessageMeta {
   external_ad_reply?: ExternalAdReply
   quoted?:            QuotedMeta
   via_celular?:       boolean
+  // Instagram — contexto interativo (resposta a story, compartilhamento de post/reel)
+  ig_story_reply?:    { id?: string | null; url?: string | null }
+  ig_share?:          string   // "ig_post" | "ig_reel" | "ig_story"
+  ig_story?:          string   // "mention"
   // Novos
   view_once?:         boolean
   ephemeral?:         boolean
@@ -479,6 +483,8 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
         )}
 
         <QuotedReplyCard quoted={quoted} incoming={isIncoming} />
+        <StoryReplyCard story={meta.ig_story_reply} mention={meta.ig_story === "mention"} incoming={isIncoming} />
+        <ShareBadge share={meta.ig_share} incoming={isIncoming} />
         <AdReplyCard ad={adReply} />
 
         {(() => {
@@ -923,6 +929,57 @@ function QuotedReplyCard({ quoted, incoming }: { quoted: QuotedMeta | null; inco
         {quoted.preview}
       </p>
     </button>
+  )
+}
+
+/**
+ * Resposta a um story do Instagram (ou menção em story). O story é efêmero (24h),
+ * então a thumbnail vem da CDN da Meta (lookaside) renderizada direto — fallback
+ * gracioso se o link expirar. Mesmo padrão do thumbnail de anúncio.
+ */
+function StoryReplyCard({ story, mention, incoming }: {
+  story?: { id?: string | null; url?: string | null } | null
+  mention?: boolean
+  incoming: boolean
+}) {
+  const [broken, setBroken] = useState(false)
+  if (!story?.url && !mention) return null
+  const url = story?.url ?? null
+  return (
+    <div className={`flex items-center gap-2.5 -mx-1 mb-1.5 px-2 py-1.5 rounded-md ${
+      incoming ? "bg-slate-50 border border-slate-200" : "bg-white/60"
+    }`}>
+      {url && !broken ? (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img src={url} alt="" onError={() => setBroken(true)} className="h-12 w-8 rounded object-cover shrink-0 border border-slate-200" />
+      ) : (
+        <div className="h-12 w-8 rounded shrink-0 border border-slate-200 bg-gradient-to-br from-fuchsia-100 to-amber-100 flex items-center justify-center">
+          <Camera className="size-3.5 text-fuchsia-500" />
+        </div>
+      )}
+      <div className="min-w-0">
+        <p className={`text-[10px] font-semibold uppercase tracking-wider flex items-center gap-1 ${
+          incoming ? "text-fuchsia-600" : "text-fuchsia-700"
+        }`}>
+          <Camera className="size-2.5" />
+          {mention ? "Mencionou você no story" : "Respondeu ao seu story"}
+        </p>
+        <p className="text-[10px] text-slate-400">Story do Instagram</p>
+      </div>
+    </div>
+  )
+}
+
+/** Compartilhamento de post/reel/story do Instagram — selo de contexto sobre a imagem. */
+function ShareBadge({ share, incoming }: { share?: string; incoming: boolean }) {
+  if (!share) return null
+  const label = share === "ig_reel" ? "Compartilhou um reel" : share === "ig_story" ? "Compartilhou um story" : "Compartilhou um post"
+  return (
+    <p className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider mb-1 ${
+      incoming ? "text-primary-600" : "text-primary-700"
+    }`}>
+      <Share2 className="size-2.5" /> {label}
+    </p>
   )
 }
 

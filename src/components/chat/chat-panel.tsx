@@ -14,6 +14,7 @@ import {
   ArrowLeft, Info, CalendarPlus,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
+import { SourceLogo } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { TransferDialog, type TransferOpts } from "@/components/chat/transfer-dialog"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
@@ -415,7 +416,8 @@ export function ChatPanel({
                   )}
                   {/* Origem: só no desktop — no mobile está na ficha "i" (lifecycle/telefone vivem no sidebar). */}
                   {channelSource && (
-                    <span className="hidden md:inline-flex">
+                    <span className="hidden md:inline-flex items-center gap-1">
+                      <SourceLogo source={channelSource} size={14} />
                       <SourceChip source={channelSource} className="text-[10px]" />
                     </span>
                   )}

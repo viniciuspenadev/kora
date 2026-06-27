@@ -80,7 +80,8 @@ export async function POST(req: NextRequest) {
       return cors(NextResponse.json({ error: "widget desabilitado" }, { status: 403 }))
     }
 
-    // Instância WhatsApp do tenant (pra associar a conversa) — default (1ª)
+    // Instância WhatsApp do tenant (emprestada pra associar a conversa) — default (1ª).
+    // Tenant SEM WhatsApp (site-first) → null; o fio nasce sem número (canal discrimina).
     const { data: instance } = await supabaseAdmin
       .from("whatsapp_instances")
       .select("id")
@@ -88,10 +89,6 @@ export async function POST(req: NextRequest) {
       .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle()
-
-    if (!instance) {
-      return cors(NextResponse.json({ error: "WhatsApp não configurado" }, { status: 503 }))
-    }
 
     // Jornada: últimas 10 visitas desse visitor
     let journey: Array<Record<string, unknown>> = []
@@ -208,6 +205,9 @@ export async function POST(req: NextRequest) {
 
     // ── Conversation Dedup: reusa ativa ou reabre fechada recente ──
     // Lead novo de contato existente NÃO cria nova conversa — append na existente.
+    // Site = ORIGEM (source='webform'), não um fio vivo: o lead captura o número e a
+    // conversa real é WhatsApp. Sem escopo de canal → reusa o fio existente do contato
+    // (anexa "veio do site"); só cria conversa nova (channel='site') se não houver nenhuma.
     const dedup = await findOrReopenConversation({ tenantId: tenant.id, contactId })
 
     let conv: { id: string }
@@ -272,7 +272,7 @@ export async function POST(req: NextRequest) {
         .insert({
           tenant_id:     tenant.id,
           contact_id:    contactId,
-          instance_id:   instance.id,
+          instance_id:   instance?.id ?? null,
           channel:       "site",
           status:        "open",
           unread_count:  1,

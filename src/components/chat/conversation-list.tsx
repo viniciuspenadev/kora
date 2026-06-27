@@ -456,8 +456,8 @@ export function ConversationList({
                     )}
                   </div>
                   {showSource && contact?.source && (
-                    <span className="absolute -bottom-0.5 -right-0.5 size-4 rounded-full bg-white ring-[1.5px] ring-white inline-flex items-center justify-center shadow-sm">
-                      <SourceLogo source={contact.source} size={12} />
+                    <span className="absolute -bottom-1 -right-1 inline-flex items-center justify-center">
+                      <SourceLogo source={contact.source} size={17} />
                     </span>
                   )}
                 </div>

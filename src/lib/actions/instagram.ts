@@ -3,7 +3,7 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { encryptSecret } from "@/lib/crypto/secrets"
-import { fetchIgAccount } from "@/lib/instagram/api"
+import { fetchIgAccount, getInstagramSender, subscribeIgWebhooks } from "@/lib/instagram/api"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -47,6 +47,21 @@ export async function connectInstagramAccount(token: string): Promise<{ ok: true
   revalidatePath("/integracoes")
   revalidatePath("/integracoes/instagram")
   return { ok: true, username: acc.username }
+}
+
+/**
+ * Re-assina os campos de webhook (inclui `message_reactions`) da conta JÁ conectada
+ * — self-heal sem reautorizar. Reação só chega se esse campo estiver assinado.
+ */
+export async function resubscribeInstagramWebhooks(): Promise<{ ok: true } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
+  const sender = await getInstagramSender(session.user.tenantId)
+  if (!sender) return { error: "Nenhuma conta do Instagram ativa." }
+  const r = await subscribeIgWebhooks(sender.token)
+  if ("error" in r) return { error: r.error }
+  return { ok: true }
 }
 
 /** Desconecta (revoga) a conta IG do tenant — limpa o token. */

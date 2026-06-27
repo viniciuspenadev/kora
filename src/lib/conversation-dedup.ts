@@ -33,11 +33,17 @@ export interface FindOrReopenInput {
   tenantId:          string
   contactId:         string
   /**
-   * Escopa o dedup à instância (split por canal). Quando passado, só reusa/reabre
-   * conversa da MESMA instância — o mesmo contato pode ter conversas separadas por
-   * número/canal (Baileys vs Oficial). Omitir = comportamento legado (qualquer instância).
+   * Escopa o dedup à instância (número). Quando passado, só reusa/reabre conversa da
+   * MESMA instância — multi-número: o mesmo contato tem fios separados por número.
+   * null/undefined = sem escopo de instância (canal sem número: IG/site).
    */
-  instanceId?:       string
+  instanceId?:       string | null
+  /**
+   * Escopa o dedup ao CANAL (whatsapp | instagram | site …). O mesmo contato pode ter
+   * um fio ATIVO por canal simultaneamente (WhatsApp + Instagram coexistem). Junto com
+   * instanceId, a chave do fio é (contato, canal, instância). Omitir = legado (qualquer canal).
+   */
+  channel?:          string | null
   /** Pula a validação de ownership do contato (usado pelo webhook que já validou upstream). */
   skipOwnershipCheck?: boolean
 }
@@ -73,7 +79,7 @@ export interface ConversationRow {
 export async function findOrReopenConversation(
   input: FindOrReopenInput,
 ): Promise<FindOrReopenResult> {
-  const { tenantId, contactId, instanceId, skipOwnershipCheck } = input
+  const { tenantId, contactId, instanceId, channel, skipOwnershipCheck } = input
 
   // ── 1. Valida ownership do contato (anti-IDOR) ──
   // Webhook pula porque já validou contact via findOrCreateContact upstream.
@@ -97,6 +103,7 @@ export async function findOrReopenConversation(
     .eq("contact_id", contactId)
     .in("status", ["open", "pending", "snoozed"])
   if (instanceId) activeQuery = activeQuery.eq("instance_id", instanceId)
+  if (channel)    activeQuery = activeQuery.eq("channel", channel)
   const { data: active } = await activeQuery
     .order("updated_at", { ascending: false })
     .limit(1)
@@ -135,6 +142,7 @@ export async function findOrReopenConversation(
     .eq("contact_id", contactId)
     .eq("status", "resolved")
   if (instanceId) resolvedQuery = resolvedQuery.eq("instance_id", instanceId)
+  if (channel)    resolvedQuery = resolvedQuery.eq("channel", channel)
   const { data: resolved } = await resolvedQuery
     .order("updated_at", { ascending: false })
     .limit(1)

@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope } from "@/lib/visibility"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
@@ -103,6 +104,82 @@ export async function lookupContact(input: {
 
   const d = data as { id: string; custom_name: string | null; push_name: string | null; phone_number: string | null }
   return { id: d.id, name: d.custom_name?.trim() || d.push_name?.trim() || d.phone_number || "Contato" }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Vincular / mesclar contatos (F6) — funde DOIS num só (atômico no banco)
+// ═══════════════════════════════════════════════════════════════
+// O contato VISTO é o sobrevivente; o escolhido é absorvido (conversas, canais,
+// negócios, tags, histórico passam pro sobrevivente). Backfill só-vazio (mantém
+// foto/nome). Destrutivo (apaga o absorvido, com snapshot no audit_log) →
+// gate fail-closed (admin/owner ou supervisor). Núcleo = função SQL merge_contacts.
+
+/** Busca contatos pra escolher qual absorver (free-text, exclui o atual). */
+export async function searchContactsForMerge(
+  query: string, excludeId: string,
+): Promise<{ id: string; name: string; phone: string | null; pic: string | null }[]> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return []
+  const safe = query.replace(/[%,()\\*]/g, " ").trim()   // sanitiza pro filtro PostgREST .or
+  if (safe.length < 2) return []
+  const { data } = await supabaseAdmin.from("chat_contacts")
+    .select("id, custom_name, push_name, phone_number, profile_pic_url")
+    .eq("tenant_id", session.user.tenantId).neq("id", excludeId)
+    .or(`custom_name.ilike.%${safe}%,push_name.ilike.%${safe}%,phone_number.ilike.%${safe}%,username.ilike.%${safe}%,email.ilike.%${safe}%`)
+    .order("updated_at", { ascending: false }).limit(8)
+  return (data ?? []).map((d) => {
+    const r = d as { id: string; custom_name: string | null; push_name: string | null; phone_number: string | null; profile_pic_url: string | null }
+    return { id: r.id, name: r.custom_name?.trim() || r.push_name?.trim() || r.phone_number || "Contato", phone: r.phone_number, pic: r.profile_pic_url }
+  })
+}
+
+/** Prévia do que será movido do contato a ser absorvido (mostra na confirmação). */
+export async function getMergePreview(
+  loserId: string,
+): Promise<{ conversations: number; channels: number; deals: number; tasks: number; tags: number; appointments: number } | null> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return null
+  const t = session.user.tenantId
+  const head = (table: string, col: string) =>
+    supabaseAdmin.from(table).select("id", { count: "exact", head: true }).eq("tenant_id", t).eq(col, loserId)
+  const [conv, ident, deals, tasks, appts, tags] = await Promise.all([
+    head("chat_conversations", "contact_id"),
+    head("contact_identities", "contact_id"),
+    head("tenant_deals", "contact_id"),
+    head("tenant_tasks", "contact_id"),
+    head("appointments", "contact_id"),
+    supabaseAdmin.from("taggings").select("id", { count: "exact", head: true })
+      .eq("tenant_id", t).eq("taggable_type", "contact").eq("taggable_id", loserId),
+  ])
+  return {
+    conversations: conv.count ?? 0, channels: ident.count ?? 0, deals: deals.count ?? 0,
+    tasks: tasks.count ?? 0, appointments: appts.count ?? 0, tags: tags.count ?? 0,
+  }
+}
+
+/** Funde `loserId` → `survivorId` (mesmo tenant). Atômico via RPC merge_contacts. */
+export async function mergeContacts(
+  survivorId: string, loserId: string,
+): Promise<{ ok: true; moved?: Record<string, number> } | { error: string }> {
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
+  // 🔒 Gate fail-closed: só admin/owner ou supervisor (view_all) — operação destrutiva.
+  if (!(scope.isAdmin || scope.viewAll)) return { error: "Você não tem permissão para vincular contatos." }
+  if (survivorId === loserId) return { error: "Selecione dois contatos diferentes." }
+
+  // Defense-in-depth: ambos precisam ser do tenant da sessão (a função SQL revalida).
+  const { data: rows } = await supabaseAdmin.from("chat_contacts")
+    .select("id").eq("tenant_id", scope.tenantId).in("id", [survivorId, loserId])
+  if (!rows || rows.length !== 2) return { error: "Contato não encontrado neste workspace." }
+
+  const { data, error } = await supabaseAdmin.rpc("merge_contacts", {
+    p_survivor: survivorId, p_loser: loserId, p_tenant: scope.tenantId,
+  })
+  if (error) return { error: error.message }
+
+  revalidatePath("/contatos")
+  revalidatePath(`/contatos/${survivorId}`)
+  return { ok: true, moved: (data as { moved?: Record<string, number> } | null)?.moved }
 }
 
 // ═══════════════════════════════════════════════════════════════

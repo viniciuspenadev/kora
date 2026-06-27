@@ -39,6 +39,28 @@ export async function sendInstagramText(
   }
 }
 
+/**
+ * Campos de webhook que o nosso ingestor trata. Reação chega APENAS via
+ * `message_reactions` (separado de `messages` — confirmado na doc da Meta);
+ * sem assinar esse campo, a reação reverte no app e nunca chega no webhook.
+ */
+export const IG_WEBHOOK_FIELDS = "messages,message_reactions,messaging_postbacks,messaging_seen,messaging_referral,comments"
+
+/**
+ * Auto-assina a conta autorizada nos campos de webhook (self-provision — o controle
+ * fica no backend, não num toggle manual do painel da Meta). Idempotente; não-fatal.
+ */
+export async function subscribeIgWebhooks(token: string): Promise<{ ok: true } | { error: string }> {
+  try {
+    const r = await fetch(`${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(IG_WEBHOOK_FIELDS)}&access_token=${encodeURIComponent(token)}`, { method: "POST" })
+    const j = await r.json() as { success?: boolean; error?: { message?: string } }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { ok: true }
+  } catch (e) {
+    return { error: (e as Error).message }
+  }
+}
+
 const APP_ID     = () => process.env.INSTAGRAM_APP_ID ?? ""
 const APP_SECRET = () => process.env.INSTAGRAM_APP_SECRET ?? ""
 

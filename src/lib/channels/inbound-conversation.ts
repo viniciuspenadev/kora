@@ -68,7 +68,8 @@ export async function createInboundConversation(
   const { tenantId, contactId, instanceId, channel, assignTo } = input
 
   // 1. Dedup/reopen — porta única (webhook já validou o contato upstream).
-  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, skipOwnershipCheck: true })
+  // Escopo por (instância, canal): 1 fio ativo por número/canal. WhatsApp = default.
+  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, channel: channel ?? "whatsapp", skipOwnershipCheck: true })
   if (dedup.found !== "none") {
     return toResult(dedup.conversation as unknown as { id: string; status: string; unread_count?: unknown }, dedup.found === "reopened")
   }
@@ -98,7 +99,7 @@ export async function createInboundConversation(
 
   // Race (unique constraint): outra request criou — refaz o dedup.
   if (error?.code === "23505") {
-    const retry = await findOrReopenConversation({ tenantId, contactId, instanceId, skipOwnershipCheck: true })
+    const retry = await findOrReopenConversation({ tenantId, contactId, instanceId, channel: channel ?? "whatsapp", skipOwnershipCheck: true })
     if (retry.conversation) {
       return toResult(retry.conversation as unknown as { id: string; status: string; unread_count?: unknown }, retry.found === "reopened")
     }

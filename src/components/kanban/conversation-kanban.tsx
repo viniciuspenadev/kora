@@ -18,6 +18,10 @@ import { getRealtimeClient } from "@/lib/realtime"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { NewConversationModal } from "@/components/chat/new-conversation-modal"
+import { SourceLogo } from "@/components/chat/source-logo"
+
+// Canal da conversa → fonte do logo de marca (SourceLogo). null = sem logo (ex: e-mail/legado).
+const CHANNEL_SOURCE: Record<string, string> = { whatsapp: "whatsapp_inbound", instagram: "instagram", site: "webform" }
 
 interface Stage {
   id:              string
@@ -547,7 +551,7 @@ function ConversationCard({
   const aguardando    = conv.status !== "resolved" && (conv.last_message_dir === "in" || conv.assigned_to == null)
   const aging         = stageAging(conv)
   const ch            = channelMeta(conv.channel)
-  const ChIcon        = ch.Icon
+  const chSource      = CHANNEL_SOURCE[conv.channel ?? ""] ?? null
 
   const cardCls = `block group bg-white rounded-xl border transition-all ${
     overlay
@@ -561,12 +565,19 @@ function ConversationCard({
     <div className="p-3.5 space-y-2.5">
       {/* Identidade */}
       <div className="flex items-start gap-2.5">
-        <div className="size-9 rounded-full bg-gradient-to-br from-slate-50 to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0 overflow-hidden">
-          {contact?.profile_pic_url ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img src={contact.profile_pic_url} alt="" className="size-9 object-cover" />
-          ) : (
-            <span className="text-sm font-bold text-slate-400">{initial}</span>
+        <div className="relative shrink-0">
+          <div className="size-9 rounded-full bg-gradient-to-br from-slate-50 to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center overflow-hidden">
+            {contact?.profile_pic_url ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img src={contact.profile_pic_url} alt="" className="size-9 object-cover" />
+            ) : (
+              <span className="text-sm font-bold text-slate-400">{initial}</span>
+            )}
+          </div>
+          {chSource && (
+            <span className="absolute -bottom-1 -right-1 inline-flex items-center justify-center">
+              <SourceLogo source={chSource} size={15} />
+            </span>
           )}
         </div>
         <div className="flex-1 min-w-0">
@@ -591,9 +602,7 @@ function ConversationCard({
 
       {/* Meta: canal · atendente · tempo */}
       <div className="flex items-center gap-1.5 text-[11px] text-slate-400 min-w-0">
-        <span className="inline-flex items-center gap-1 shrink-0">
-          <ChIcon className={`size-3 ${ch.cls}`} /> {ch.label}
-        </span>
+        <span className="shrink-0">{ch.label}</span>
         {ownerName && (
           <>
             <span className="text-slate-300">·</span>

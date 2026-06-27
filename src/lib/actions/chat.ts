@@ -1351,7 +1351,7 @@ export async function createManualConversation(input: {
   // - Se há ATIVA → reusa
   // - Se há fechada recente (≤7 dias) → reabre (só muda status; stage/lifecycle/won/lost intactos)
   // - Senão → cria nova (continua o fluxo abaixo)
-  const dedup = await findOrReopenConversation({ tenantId, contactId })
+  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId: instance.id, channel: "whatsapp" })
   if (dedup.found !== "none") {
     revalidatePath("/inbox")
     revalidatePath("/kanban")
@@ -1404,7 +1404,7 @@ export async function createManualConversation(input: {
   // ativo-por-contato dispara 23505 — tentamos dedup de novo pra pegar
   // a conv que ganhou a corrida.
   if (convErr?.code === "23505") {
-    const retry = await findOrReopenConversation({ tenantId, contactId })
+    const retry = await findOrReopenConversation({ tenantId, contactId, instanceId: instance.id, channel: "whatsapp" })
     if (retry.found !== "none") {
       revalidatePath("/inbox")
       revalidatePath("/kanban")
