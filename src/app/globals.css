@@ -216,3 +216,10 @@
   }
   .tabular-nums { font-variant-numeric: tabular-nums; }
 }
+
+/* Fusão de contatos (diálogo Vincular): pontinhos fluindo do absorvido → sobrevivente. */
+@keyframes merge-flow {
+  0%   { opacity: 0; transform: translateX(-9px) scale(0.5); }
+  45%  { opacity: 1; transform: translateX(0) scale(1); }
+  100% { opacity: 0; transform: translateX(11px) scale(0.5); }
+}

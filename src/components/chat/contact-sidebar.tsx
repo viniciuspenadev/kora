@@ -13,7 +13,7 @@ import { getContactAppointments, type ContactAppt } from "@/lib/actions/agenda"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
-import { SourceLogo } from "@/components/chat/source-logo"
+import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { StatusDot } from "@/components/ui/status-dot"
 import { useConfirm } from "@/components/ui/confirm-dialog"
@@ -169,7 +169,7 @@ export function ContactSidebar(props: Props) {
         onTagChange={props.onTagChange}
       />
       <ParticipantsCard conversation={props.conversation} agents={props.agents} />
-      <LeadSourceCard contact={props.contact} adReply={props.externalAdReply ?? null} />
+      <LeadSourceCard contact={props.contact} adReply={props.externalAdReply ?? null} channel={props.conversation.channel} />
       <SiteLeadCard conversation={props.conversation} contact={props.contact} />
       <MovimentacoesCard conversationId={props.conversation.id} />
     </aside>
@@ -968,19 +968,23 @@ function TagsCard({
 // ═══════════════════════════════════════════════════════════════
 
 function LeadSourceCard({
-  contact, adReply: adReplyRaw,
+  contact, adReply: adReplyRaw, channel,
 }: {
   contact: ChatContact
   adReply: Props["externalAdReply"]
+  channel: string | null
 }) {
-  const src = sourceMeta(contact.source)
+  // Mostra o canal do FIO atual (não o `source` reducionista do contato — pós-merge
+  // o source é o do sobrevivente). Fallback p/ a origem quando o canal não mapeia.
+  const effSource = channelToSource(channel) ?? contact.source
+  const src = sourceMeta(effSource)
   const adReply = sanitizeAdReply(adReplyRaw)
   const [thumbBroken, setThumbBroken] = useState(false)
 
   return (
     <Section icon={Megaphone} title="Origem do contato" defaultOpen={false}>
       <div className="flex items-center gap-2 mb-1">
-        <SourceLogo source={contact.source} size={14} />
+        <SourceLogo source={effSource} size={14} />
         <span className="text-xs font-medium text-slate-700">{src.label}</span>
       </div>
 

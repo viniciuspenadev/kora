@@ -133,6 +133,56 @@ export async function searchContactsForMerge(
   })
 }
 
+/** Atributos dos DOIS contatos pro comparativo do merge (lado a lado + inverter direção). */
+export interface MergeSide {
+  id: string; name: string; pic: string | null; lifecycle: string | null
+  channels: string[]; phone: string | null; handle: string | null
+  conversations: number; deals: number; tags: number
+}
+export async function getMergeComparison(
+  aId: string, bId: string,
+): Promise<{ a: MergeSide; b: MergeSide } | null> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return null
+  const t = session.user.tenantId
+
+  const { data: rows } = await supabaseAdmin.from("chat_contacts")
+    .select("id, custom_name, push_name, phone_number, profile_pic_url, lifecycle_stage, ig_username, wp_username")
+    .eq("tenant_id", t).in("id", [aId, bId])
+  if (!rows || rows.length !== 2) return null
+
+  const { data: ids } = await supabaseAdmin.from("contact_identities")
+    .select("contact_id, channel").eq("tenant_id", t).in("contact_id", [aId, bId]).in("channel", ["whatsapp", "instagram", "site"])
+  const ORDER = ["whatsapp", "instagram", "site"]
+  const chans = (cid: string) => ORDER.filter((ch) => (ids ?? []).some((i) => i.contact_id === cid && i.channel === ch))
+
+  const head = (table: string, col: string, id: string) =>
+    supabaseAdmin.from(table).select("id", { count: "exact", head: true }).eq("tenant_id", t).eq(col, id)
+
+  async function side(cid: string): Promise<MergeSide> {
+    const r = (rows!.find((x) => x.id === cid)) as Record<string, unknown>
+    const [conv, deals, tags] = await Promise.all([
+      head("chat_conversations", "contact_id", cid),
+      head("tenant_deals", "contact_id", cid),
+      supabaseAdmin.from("taggings").select("id", { count: "exact", head: true }).eq("tenant_id", t).eq("taggable_type", "contact").eq("taggable_id", cid),
+    ])
+    const ig = r.ig_username as string | null, wp = r.wp_username as string | null
+    return {
+      id: cid,
+      name: (r.custom_name as string)?.trim() || (r.push_name as string)?.trim() || (r.phone_number as string) || "Contato",
+      pic: (r.profile_pic_url as string | null) ?? null,
+      lifecycle: (r.lifecycle_stage as string | null) ?? null,
+      channels: chans(cid),
+      phone: (r.phone_number as string | null) ?? null,
+      handle: ig ? `@${ig}` : wp ? `@${wp}` : null,
+      conversations: conv.count ?? 0, deals: deals.count ?? 0, tags: tags.count ?? 0,
+    }
+  }
+
+  const [a, b] = await Promise.all([side(aId), side(bId)])
+  return { a, b }
+}
+
 /** Prévia do que será movido do contato a ser absorvido (mostra na confirmação). */
 export async function getMergePreview(
   loserId: string,
