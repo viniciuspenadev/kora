@@ -94,7 +94,7 @@ async function maybeEnrich(token: string | null, igsid: string, contactId: strin
   const prof = await fetchIgProfile(igsid, token)
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (prof?.name)       patch.push_name       = prof.name
-  if (prof?.username)   patch.username        = prof.username
+  if (prof?.username)   patch.ig_username     = prof.username
   if (prof?.profilePic) patch.profile_pic_url = prof.profilePic
   if (!prof?.name && created) patch.push_name = IG_PLACEHOLDER_NAME
   await supabaseAdmin.from("chat_contacts").update(patch).eq("id", contactId)

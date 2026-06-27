@@ -114,6 +114,21 @@ function ImportSvg({ size, fill }: { size: number; fill: string }) {
   )
 }
 
+/**
+ * Mapeia o CANAL de uma CONVERSA (whatsapp/instagram/site) pra fonte do SourceLogo.
+ * Use isto no badge da conversa (inbox/header) — o canal do FIO, não o `source` do
+ * contato (origem/aquisição). Pós-merge um contato tem fios de canais diferentes:
+ * cada conversa mostra o ícone do SEU canal, não o source único do contato.
+ */
+export function channelToSource(channel: string | null | undefined): string | null {
+  switch (channel) {
+    case "whatsapp":  return "whatsapp_inbound"
+    case "instagram": return "instagram"
+    case "site":      return "webform"
+    default:          return null
+  }
+}
+
 export function SourceLogo({ source, size = 14, monochrome = false, className = "" }: LogoProps) {
   const key  = (source ?? "whatsapp_inbound") as string
   const fill = monochrome ? "currentColor" : (BRAND_COLOR[key] ?? "currentColor")

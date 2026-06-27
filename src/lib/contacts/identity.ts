@@ -23,7 +23,7 @@ export interface ContactKeys {
 export interface ContactAttrs {
   pushName?:       string | null   // nome do WhatsApp (latest wins quando vier)
   customName?:     string | null   // nome digitado (cadastro manual)
-  username?:       string | null   // @handle do WhatsApp — DISPLAY/mutável (latest wins), NÃO é chave
+  username?:       string | null   // username do WhatsApp (só meta-inbound passa) → grava em `wp_username`. DISPLAY, NÃO é chave
   source?:         string | null   // só na CRIAÇÃO; OMITIDO se undefined (deixa o default 'whatsapp_inbound')
   primaryChannel?: string | null
   /** Sempre carimba updated_at no merge (mesmo no-op) — paridade com o upsert dos webhooks (ordena /contatos). */
@@ -144,7 +144,7 @@ export async function resolveOrCreateContact(
     if (phone && !existing.phone_number) patch.phone_number = phone
     if (email && !existing.email)        patch.email        = email
     if (attrs.pushName)                  patch.push_name    = attrs.pushName              // latest do WhatsApp
-    if (attrs.username)                  patch.username     = attrs.username              // @handle latest (mutável)
+    if (attrs.username)                  patch.wp_username  = attrs.username              // username WhatsApp (latest, mutável)
     if (attrs.customName && !existing.custom_name) patch.custom_name = attrs.customName   // não sobrescreve o que humano definiu
     // primary_external_id converge pro jid quando o telefone aparece (era "bsuid:…").
     if (jid && String(existing.primary_external_id ?? "").startsWith("bsuid:")) patch.primary_external_id = jid
@@ -184,7 +184,7 @@ export async function resolveOrCreateContact(
   // Paridade: os webhooks nunca setavam source/custom_name. Manual passa explícito.
   if (attrs.source !== undefined)     insertObj.source      = attrs.source
   if (attrs.customName !== undefined) insertObj.custom_name = attrs.customName
-  if (attrs.username !== undefined)   insertObj.username    = attrs.username
+  if (attrs.username !== undefined)   insertObj.wp_username = attrs.username
   const { data, error } = await supabaseAdmin.from("chat_contacts").insert(insertObj).select("id").single()
 
   // Corrida: outro request criou o mesmo contato no meio → re-acha pela chave que colidiu.

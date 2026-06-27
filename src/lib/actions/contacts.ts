@@ -125,7 +125,7 @@ export async function searchContactsForMerge(
   const { data } = await supabaseAdmin.from("chat_contacts")
     .select("id, custom_name, push_name, phone_number, profile_pic_url")
     .eq("tenant_id", session.user.tenantId).neq("id", excludeId)
-    .or(`custom_name.ilike.%${safe}%,push_name.ilike.%${safe}%,phone_number.ilike.%${safe}%,username.ilike.%${safe}%,email.ilike.%${safe}%`)
+    .or(`custom_name.ilike.%${safe}%,push_name.ilike.%${safe}%,phone_number.ilike.%${safe}%,username.ilike.%${safe}%,wp_username.ilike.%${safe}%,ig_username.ilike.%${safe}%,email.ilike.%${safe}%`)
     .order("updated_at", { ascending: false }).limit(8)
   return (data ?? []).map((d) => {
     const r = d as { id: string; custom_name: string | null; push_name: string | null; phone_number: string | null; profile_pic_url: string | null }

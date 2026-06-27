@@ -338,9 +338,9 @@ function HeaderCard({
           {formatPhoneDisplay(contact.phone_number)}
         </p>
       ) : (
-        <p className="text-[11px] text-slate-400 mt-0.5">{contact.username ? "Sem telefone" : "Visitante do site"}</p>
+        <p className="text-[11px] text-slate-400 mt-0.5">{(contact.ig_username || contact.wp_username || contact.username) ? "Sem telefone" : "Visitante do site"}</p>
       )}
-      {contact.username && <p className="text-[11px] font-medium text-primary-600 mt-0.5">@{contact.username}</p>}
+      {(() => { const h = contact.ig_username || contact.wp_username || contact.username; return h ? <p className="text-[11px] font-medium text-primary-600 mt-0.5">@{h}</p> : null })()}
 
       {/* Selo de relacionamento + tags em chips compactos abaixo do nome */}
       {(relMeta || appliedTags.length > 0) && (

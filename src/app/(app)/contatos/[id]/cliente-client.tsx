@@ -220,7 +220,7 @@ function IdentityCard({ contact, canEditIdentity, customFields }: { contact: Con
       <dl className="grid sm:grid-cols-2 gap-x-6 gap-y-2.5">
         <Field icon={Phone}        label="Telefone"   value={fmtPhone(contact.phone_number)} />
         {contact.phone_secondary && <Field icon={Phone} label={contact.phone_secondary_label?.trim() || "Telefone 2"} value={fmtPhone(contact.phone_secondary)} />}
-        {contact.username && <Field icon={AtSign} label="Usuário" value={`@${contact.username}`} />}
+        {contact.wp_username && <Field icon={AtSign} label="Usuário" value={`@${contact.wp_username}`} />}
         {contact.bsuid && <Field icon={Hash} label="BSUID" value={contact.bsuid} />}
         <Field icon={Mail}         label="Email"      value={contact.email} />
         <Field icon={Building2}    label="Empresa"    value={contact.company} />
@@ -353,7 +353,7 @@ function IdentityEdit({ contact, canEditIdentity, customFields, onDone, onCancel
           </div>
           <div className="space-y-1.5">
             <div className="flex items-center gap-2.5 text-xs"><Phone className="size-3.5 text-slate-300 shrink-0" /><span className="text-[11px] text-slate-400 w-24 shrink-0">Telefone</span><span className="text-slate-700 truncate">{fmtPhone(contact.phone_number) || "—"}</span></div>
-            <div className="flex items-center gap-2.5 text-xs"><AtSign className="size-3.5 text-slate-300 shrink-0" /><span className="text-[11px] text-slate-400 w-24 shrink-0">Usuário</span><span className="text-slate-700 truncate">{contact.username ? `@${contact.username}` : "—"}</span></div>
+            <div className="flex items-center gap-2.5 text-xs"><AtSign className="size-3.5 text-slate-300 shrink-0" /><span className="text-[11px] text-slate-400 w-24 shrink-0">Usuário</span><span className="text-slate-700 truncate">{contact.wp_username ? `@${contact.wp_username}` : "—"}</span></div>
             <div className="flex items-center gap-2.5 text-xs"><Hash className="size-3.5 text-slate-300 shrink-0" /><span className="text-[11px] text-slate-400 w-24 shrink-0">BSUID</span><span className="text-slate-700 truncate">{contact.bsuid?.trim() || "—"}</span></div>
           </div>
         </div>

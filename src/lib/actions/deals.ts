@@ -574,7 +574,7 @@ export interface ContactRecordContact {
   id: string; push_name: string | null; custom_name: string | null; phone_number: string | null
   email: string | null; company: string | null; doc_id: string | null; birth_date: string | null
   profile_pic_url: string | null; source: string | null; lifecycle_stage: string | null
-  qualified_at: string | null; notes: string | null; is_blocked: boolean; created_at: string; bsuid: string | null; username: string | null
+  qualified_at: string | null; notes: string | null; is_blocked: boolean; created_at: string; bsuid: string | null; username: string | null; wp_username: string | null; ig_username: string | null
   phone_secondary: string | null; phone_secondary_label: string | null
   address_cep: string | null; address_street: string | null; address_number: string | null
   address_complement: string | null; address_district: string | null; address_city: string | null
@@ -679,7 +679,7 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
   const t = session.user.tenantId
 
   const { data: c } = await supabaseAdmin.from("chat_contacts")
-    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in, custom_fields")
+    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, wp_username, ig_username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in, custom_fields")
     .eq("id", contactId).eq("tenant_id", t).maybeSingle()
   if (!c) return { error: "Contato não encontrado" }
 

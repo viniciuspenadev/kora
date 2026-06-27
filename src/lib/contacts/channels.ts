@@ -54,13 +54,14 @@ export async function getContactChannels(contactId: string): Promise<ContactChan
       .select("id, channel, status, last_message_at, last_message_preview, unread_count, last_inbound_at, whatsapp_instances!instance_id ( provider, display_name )")
       .eq("tenant_id", t).eq("contact_id", contactId).is("archived_at", null)
       .order("last_message_at", { ascending: false, nullsFirst: false }),
-    supabaseAdmin.from("chat_contacts").select("phone_number, username").eq("id", contactId).eq("tenant_id", t).maybeSingle(),
+    supabaseAdmin.from("chat_contacts").select("phone_number, username, ig_username, wp_username").eq("id", contactId).eq("tenant_id", t).maybeSingle(),
   ])
 
   const identities = (idsRaw ?? []) as { channel: string; is_primary: boolean }[]
   const convs      = (convsRaw ?? []) as unknown as ConvRow[]
   const phone      = (contact as { phone_number: string | null } | null)?.phone_number ?? null
-  const username   = (contact as { username: string | null } | null)?.username ?? null
+  const cc         = contact as { ig_username?: string | null; username?: string | null } | null
+  const igHandle   = cc?.ig_username ?? cc?.username ?? null   // fallback no legado durante transição
   const isPrimary  = (ch: string) => identities.find((i) => i.channel === ch)?.is_primary ?? false
   const hasId      = (ch: string) => identities.some((i) => i.channel === ch)
 
@@ -92,7 +93,7 @@ export async function getContactChannels(contactId: string): Promise<ContactChan
     if (!hasId(ch) && !conv) continue
     rows.push({
       channel: ch,
-      handle: ch === "instagram" ? (username ? `@${username}` : "Instagram") : "Visitante do site",
+      handle: ch === "instagram" ? (igHandle ? `@${igHandle}` : "Instagram") : "Visitante do site",
       isPrimary: isPrimary(ch),
       conversationId: conv?.id ?? null, status: conv?.status ?? null,
       lastMessageAt: conv?.last_message_at ?? null, lastPreview: conv?.last_message_preview ?? null,

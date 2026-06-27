@@ -14,7 +14,7 @@ import {
   ArrowLeft, Info, CalendarPlus,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
-import { SourceLogo } from "@/components/chat/source-logo"
+import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { TransferDialog, type TransferOpts } from "@/components/chat/transfer-dialog"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
@@ -152,7 +152,9 @@ export function ChatPanel({
 
   const currentStatus = STATUS_OPTIONS.find((s) => s.key === conversation.status) ?? STATUS_OPTIONS[0]
 
-  const channelSource = contact?.source ?? null
+  // Header = canal do FIO (conversa), com fallback pra origem do contato — pós-merge
+  // um contato tem fios de canais diferentes; cada conversa mostra o ícone do SEU canal.
+  const channelSource = channelToSource(conversation.channel) ?? contact?.source ?? null
 
   // ── Janela de sessão — motor de política por canal (lib/channels/policy.ts) ──
   // Decide pelo CANAL da conversa (não pelo provider da instância — senão a janela da

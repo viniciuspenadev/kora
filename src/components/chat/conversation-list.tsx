@@ -10,7 +10,7 @@ import {
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { NewConversationModal } from "./new-conversation-modal"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
-import { SourceLogo } from "@/components/chat/source-logo"
+import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { Switch } from "@/components/ui/switch"
 import type { ChatConversation } from "@/types/chat"
@@ -413,7 +413,10 @@ export function ConversationList({
             const queueDept   = aiRouted?.department_name ?? (conv.department_id ? departmentById[conv.department_id]?.name : null) ?? null
             const isWaiting   = !assignedTo && (!!aiRouted || !!conv.department_id)
 
-            const showSource = !!contact?.source && !isGroup
+            // Badge = canal do FIO (conversa), com fallback pra origem do contato.
+            // Pós-merge o contato tem fios de canais distintos: cada um mostra o SEU ícone.
+            const rowSource  = channelToSource(conv.channel) ?? contact?.source ?? null
+            const showSource = !!rowSource && !isGroup
 
             return (
               <button
@@ -455,9 +458,9 @@ export function ConversationList({
                       <span className="text-base font-bold">{initial}</span>
                     )}
                   </div>
-                  {showSource && contact?.source && (
+                  {showSource && (
                     <span className="absolute -bottom-1 -right-1 inline-flex items-center justify-center">
-                      <SourceLogo source={contact.source} size={17} />
+                      <SourceLogo source={rowSource} size={17} />
                     </span>
                   )}
                 </div>
