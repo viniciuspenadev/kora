@@ -12,7 +12,7 @@ import {
   type DragStartEvent, type DragEndEvent, type DraggableAttributes,
 } from "@dnd-kit/core"
 import { moveConversation, getManagementCards } from "@/lib/actions/pipeline"
-import { transferConversation } from "@/lib/actions/chat"
+import { transferConversation, updateConversationStatus } from "@/lib/actions/chat"
 import { type DealPipeline } from "@/lib/actions/deals"
 import { getRealtimeClient } from "@/lib/realtime"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -23,6 +23,10 @@ import { SourceLogo } from "@/components/chat/source-logo"
 // Canal da conversa → fonte do logo de marca (SourceLogo). null = sem logo (ex: e-mail/legado).
 const CHANNEL_SOURCE: Record<string, string> = { whatsapp: "whatsapp_inbound", instagram: "instagram", site: "webform" }
 
+// Coluna FIXA de sistema "Concluídos" (status=resolved). Não é uma etapa do funil —
+// é o fim do ciclo de atendimento. Arrastar pra cá = Concluir; arrastar pra fora = Reabrir.
+const DONE_KEY = "__done__"
+
 interface Stage {
   id:              string
   name:            string
@@ -31,6 +35,7 @@ interface Stage {
   probability_pct: number
   is_won:          boolean
   is_lost:         boolean
+  is_triage:       boolean
   show_in_kanban:  boolean
 }
 
@@ -318,21 +323,33 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     [dataset, filters.search, filters.agentId, filters.instanceId],
   )
 
+  // Etapa de triagem (entrada). Conversas SEM etapa (atendimento-puro) caem aqui.
+  const triageStageId = useMemo(() => stages.find((s) => s.is_triage)?.id ?? null, [stages])
+
   const columns = useMemo<Column[]>(() => {
     if (groupBy === "agent") return [
-      { key: "__pool__", title: "Pool · não atribuído" },
+      { key: "__pool__", title: "Fila geral · não atribuído" },
       ...agents.map((a) => ({ key: a.id, title: a.full_name ?? "—" })),
     ]
     if (groupBy === "department") return [
       { key: "__none__", title: "Triagem", color: "#64748b" },
       ...departments.map((d) => ({ key: d.id, title: d.name, color: d.color })),
     ]
-    return stages.map((s) => ({ key: s.id, title: s.name, color: s.color, stage: s }))
+    return [
+      ...stages.map((s) => ({ key: s.id, title: s.name, color: s.color, stage: s })),
+      { key: DONE_KEY, title: "Concluídos", color: "#16a34a" },
+    ]
   }, [groupBy, stages, agents, departments])
 
   function cardsFor(key: string): Conversation[] {
+    // Concluídos = status resolvido (de qualquer etapa). Recentes primeiro, cap pra não inchar.
+    if (groupBy === "stage" && key === DONE_KEY) {
+      const done = filtered.filter((c) => c.status === "resolved")
+      done.sort((a, b) => (b.last_message_at ?? "").localeCompare(a.last_message_at ?? ""))
+      return done.slice(0, 50)
+    }
     const list =
-        groupBy === "stage" ? filtered.filter((c) => c.stage_id === key)
+        groupBy === "stage" ? filtered.filter((c) => c.status !== "resolved" && (c.stage_id === key || (key === triageStageId && c.stage_id == null)))
       : groupBy === "agent" ? filtered.filter((c) => (c.assigned_to ?? "__pool__") === key)
       :                       filtered.filter((c) => (c.department_id ?? "__none__") === key)
     return sortCards(list, sort)
@@ -368,14 +385,33 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     // ── Modo ETAPA (board de atendimento): arrastar move SÓ a conversa
     // (pipeline_stages). O negócio é independente (deal_pipelines) — move-se no
     // board de Negócios, nunca aqui. O active_deal_id no card é só um pointer.
-    const stageId = String(over.id)            // droppable.id = key da etapa
+    const targetKey = String(over.id)          // droppable.id = key da etapa / Concluídos
     const c = convs.find((x) => x.id === cardId)
-    if (!c || c.stage_id === stageId) return
+    if (!c) return
+
+    // Concluir: soltou na coluna "Concluídos" → status resolvido. NÃO toca o dono
+    // (o Vínculo cuida de pra quem o cliente volta). Já resolvida → no-op.
+    if (targetKey === DONE_KEY) {
+      if (c.status === "resolved") return
+      setConvs((prev) => prev.map((x) => x.id === cardId ? { ...x, status: "resolved" } : x))
+      startTransition(async () => {
+        try { await updateConversationStatus(cardId, "resolved") }
+        catch (err) { alert((err as Error).message ?? "Erro ao concluir"); router.refresh() }
+      })
+      return
+    }
+
+    // Destino é uma etapa real. Vindo de Concluídos → reabre (status → open) e move.
+    const stageId     = targetKey
+    const wasResolved = c.status === "resolved"
+    if (c.stage_id === stageId && !wasResolved) return
     const newPos = cardsFor(stageId).length
-    setConvs((prev) => prev.map((x) => x.id === cardId ? { ...x, stage_id: stageId, card_position: newPos } : x))
+    setConvs((prev) => prev.map((x) => x.id === cardId ? { ...x, stage_id: stageId, card_position: newPos, status: wasResolved ? "open" : x.status } : x))
     startTransition(async () => {
-      try { await moveConversation(cardId, stageId, newPos) }
-      catch (err) { alert((err as Error).message ?? "Erro ao mover"); router.refresh() }
+      try {
+        if (wasResolved) await updateConversationStatus(cardId, "open")
+        await moveConversation(cardId, stageId, newPos)
+      } catch (err) { alert((err as Error).message ?? "Erro ao mover"); router.refresh() }
     })
   }
 
@@ -398,7 +434,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
                 tinted={tintColumns && !!col.color}
                 readOnly={readOnly}
                 dragging={!!activeId}
-                onAddConversation={groupBy === "stage" ? () => setShowNew(true) : undefined}
+                onAddConversation={groupBy === "stage" && col.key !== DONE_KEY ? () => setShowNew(true) : undefined}
               />
             ))}
           </div>

@@ -263,10 +263,10 @@ export function MemberSheet({ member, departments, numbers, currentUserId, curre
                 className="size-4 mt-0.5 rounded border-slate-300 text-primary focus:ring-primary/30 disabled:opacity-50"
               />
               <div className="flex-1">
-                <p className="text-sm font-medium text-slate-800">Ver conversas não atribuídas (pool)</p>
+                <p className="text-sm font-medium text-slate-800">Ver conversas não atribuídas (fila geral)</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
                   {supMode === "all"
-                    ? "Como vê todas as conversas, já enxerga o pool."
+                    ? "Como vê todas as conversas, já enxerga a fila geral."
                     : "Quando desligado, essa pessoa só vê conversas atribuídas a ela ou que participa."}
                 </p>
                 {supMode !== "all" && !seePool && (
@@ -282,7 +282,7 @@ export function MemberSheet({ member, departments, numbers, currentUserId, curre
             <div className="pt-4 border-t border-slate-100">
               <p className="text-sm font-medium text-slate-800">Números que atende</p>
               <p className="text-[11px] text-slate-500 mt-0.5 mb-2">
-                Marque os números cujas conversas esta pessoa atende. <strong>Nenhum marcado = todos</strong>. O número limita o que ela descobre (pool e fila do setor); conversas atribuídas a ela ou que ela participa seguem visíveis mesmo de outro número.
+                Marque os números cujas conversas esta pessoa atende. <strong>Nenhum marcado = todos</strong>. O número limita o que ela descobre (fila geral e fila do setor); conversas atribuídas a ela ou que ela participa seguem visíveis mesmo de outro número.
               </p>
               <div className="space-y-1.5">
                 {numbers.map((n) => {

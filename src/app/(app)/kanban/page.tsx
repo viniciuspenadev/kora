@@ -98,8 +98,10 @@ export default async function KanbanPage({
       deal:tenant_deals!active_deal_id ( id, name, status, stage_id, pipeline_id, estimated_value, stage_entered_at, won_at, lost_at )
     `)
     .eq("tenant_id", tenantId)
-    .eq("pipeline_id", currentPipeline.id)
-    .in("stage_id", activeStageIds.length > 0 ? activeStageIds : ["__none__"])
+    // Etapas visíveis do funil atual OU conversas SEM funil (atendimento-puro →
+    // caem na Triagem). Pra tenant com funil é no-op (não há conversa sem funil).
+    // Compõe com o .or() de visibilidade abaixo (PostgREST: múltiplos .or() = AND).
+    .or(`and(pipeline_id.eq.${currentPipeline.id},stage_id.in.(${activeStageIds.length > 0 ? activeStageIds.join(",") : "00000000-0000-0000-0000-000000000000"})),pipeline_id.is.null`)
     .is("archived_at", null)
     .order("card_position", { ascending: true })
 

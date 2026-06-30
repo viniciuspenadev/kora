@@ -115,14 +115,14 @@ export function AtendimentoClient(props: Props) {
               <Switch size="lg" checked={config.enabled} onChange={(n) => patch({ enabled: n })} />
               <div className="flex-1">
                 <p className="text-sm font-bold text-slate-900 flex items-center gap-2"><Sparkles className="size-3.5 text-primary-600" /> Distribuir novas conversas automaticamente</p>
-                <p className="text-xs text-slate-500 mt-0.5">Desligado: a conversa cai no pool (o 1º que responder atende). Ligado: cada conversa nova é atribuída a um atendente conforme a regra abaixo.</p>
+                <p className="text-xs text-slate-500 mt-0.5">Desligado: a conversa cai na fila geral (o 1º que responder atende). Ligado: cada conversa nova é atribuída a um atendente conforme a regra abaixo.</p>
               </div>
             </div>
           </SectionCard>
 
           <div className="flex items-start gap-2 rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-slate-600">
             <Users className="size-4 shrink-0 text-slate-400 mt-0.5" />
-            <p className="leading-relaxed">Atendentes que <strong>não veem o pool</strong> dependem desta distribuição (ou de atribuição manual) pra receber conversas. Configure quem vê o pool em <Link href="/configuracoes/equipe" className="font-semibold text-primary-700 hover:underline">Equipe</Link>.</p>
+            <p className="leading-relaxed">Atendentes que <strong>não veem a fila geral</strong> dependem desta distribuição (ou de atribuição manual) pra receber conversas. Configure quem vê a fila geral em <Link href="/configuracoes/equipe" className="font-semibold text-primary-700 hover:underline">Equipe</Link>.</p>
           </div>
 
           <div className={config.enabled ? "" : "opacity-50 pointer-events-none"}>
@@ -141,14 +141,14 @@ export function AtendimentoClient(props: Props) {
                     ))}
                   </div>
                 </FormRow>
-                <FormRow label="De quais canais" hint="Só conversas dos canais marcados disparam auto-assign; os outros caem no pool.">
+                <FormRow label="De quais canais" hint="Só conversas dos canais marcados disparam auto-assign; os outros caem na fila geral.">
                   <div className="flex flex-wrap gap-2">
                     {(["whatsapp", "site", "manual"] as const).map((ch) => (
                       <CheckChip key={ch} active={config.channels.includes(ch)} onClick={() => toggleChannel(ch)} label={CHANNEL_LABEL[ch]} />
                     ))}
                   </div>
                 </FormRow>
-                <FormRow label="Limite diário por atendente" hint="Evita sobrecarga. Vazio = ilimitado. Todos no cap → vai pro pool.">
+                <FormRow label="Limite diário por atendente" hint="Evita sobrecarga. Vazio = ilimitado. Todos no cap → vai pra fila geral.">
                   <div className="flex items-center gap-2">
                     <input type="number" value={config.max_per_day ?? ""} min={1} max={9999} placeholder="sem limite"
                       onChange={(e) => { const v = e.target.value.trim(); patch({ max_per_day: v === "" ? null : Math.max(1, Math.min(9999, Number(v) || 0)) }) }}
@@ -158,7 +158,7 @@ export function AtendimentoClient(props: Props) {
                 </FormRow>
                 <div className="pt-2 border-t border-slate-100 space-y-3">
                   <Switch size="md" checked={config.skip_groups} onChange={(n) => patch({ skip_groups: n })} label="Pular conversas em grupo" description="Grupos não fazem sentido pra 1:1; recomendado deixar ligado." />
-                  <Switch size="md" checked={config.only_in_hours} onChange={(n) => patch({ only_in_hours: n })} label="Distribuir apenas em horário comercial" description={<>Usa o horário comercial (em <em>Mensagens automáticas</em>). Fora do horário, cai no pool.</>} />
+                  <Switch size="md" checked={config.only_in_hours} onChange={(n) => patch({ only_in_hours: n })} label="Distribuir apenas em horário comercial" description={<>Usa o horário comercial (em <em>Mensagens automáticas</em>). Fora do horário, cai na fila geral.</>} />
                 </div>
               </div>
             </SectionCard>
@@ -186,7 +186,7 @@ export function AtendimentoClient(props: Props) {
           <div className="space-y-2">
             {/* Dono no retorno — escolha UM (radio) */}
             <RadioCard active={bind === "carteira"} onClick={() => setBind("carteira")} icon={UserCheck} title="Volta pro mesmo atendente" description="Carteira — cada cliente fica com o atendente responsável. Bom pra vendas com vendedor dono." />
-            <RadioCard active={bind === "pool"} onClick={() => setBind("pool")} icon={Users} title="Cai na fila de novo" description="Pool — volta pra fila do setor; quem estiver livre atende. Bom pra suporte compartilhado." />
+            <RadioCard active={bind === "pool"} onClick={() => setBind("pool")} icon={Users} title="Cai na fila de novo" description="Volta pra fila geral; quem estiver livre atende. Bom pra suporte compartilhado." />
 
             {/* IA atende o retorno — toggle INDEPENDENTE (combina com a opção acima) */}
             {props.hasAi && (

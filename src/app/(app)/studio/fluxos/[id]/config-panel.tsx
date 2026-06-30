@@ -284,7 +284,7 @@ export function ConfigPanel({
       {type === "assign" && (
         <div className="space-y-2">
           <p className="text-xs text-slate-400">Distribui a conversa a um atendente via <b>round-robin</b>, respeitando a configuração de Distribuição do tenant (estratégia, papéis, horário, cap).</p>
-          <p className="text-[11px] text-slate-400">Duas saídas: <b className="text-emerald-600">atribuído</b> (deu certo) e <b>pool</b> (fora do horário / sem agente / Distribuição desligada). Conecte cada uma.</p>
+          <p className="text-[11px] text-slate-400">Duas saídas: <b className="text-emerald-600">atribuído</b> (deu certo) e <b>fila geral</b> (fora do horário / sem agente / Distribuição desligada). Conecte cada uma.</p>
         </div>
       )}
 

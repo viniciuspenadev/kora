@@ -483,7 +483,7 @@ function AssignNode(p: NodeProps) {
         round-robin ao atendente
         <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
           <span className="text-emerald-600">atribuído</span>
-          <span className="text-slate-400">pool</span>
+          <span className="text-slate-400">fila geral</span>
         </div>
       </Card>
       <SourceHandle id="assigned" pct={28} color="#059669" />

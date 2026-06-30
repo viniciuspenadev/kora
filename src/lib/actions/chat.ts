@@ -16,6 +16,7 @@ import { requireLimit } from "@/lib/limits"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
+import { createNotification } from "@/lib/notifications"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -1054,7 +1055,7 @@ export async function transferConversation(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, metadata")
+    .select("id, instance_id, assigned_to, participants, department_id, metadata, contact_id, chat_contacts ( custom_name, push_name )")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -1080,9 +1081,10 @@ export async function transferConversation(
     return { deptId: (member as { department_id: string | null }).department_id ?? null, name: prof?.full_name ?? "atendente" }
   }
 
-  let nextAssigned:   string | null
-  let nextDepartment: string | null
-  let label:          string
+  let nextAssigned:       string | null
+  let nextDepartment:     string | null
+  let nextDepartmentName: string | null = null
+  let label:              string
 
   if (opts.mode === "pool") {
     // Devolver pra fila geral — sem responsável e sem setor.
@@ -1105,7 +1107,8 @@ export async function transferConversation(
       .eq("id", opts.departmentId)
       .maybeSingle()
     if (!dept) return { error: "Departamento inválido." }
-    nextDepartment = opts.departmentId
+    nextDepartment     = opts.departmentId
+    nextDepartmentName = dept.name
     if (opts.agentId) {
       const a = await resolveAgent(opts.agentId)
       if (!a) return { error: "Atendente não pertence a este tenant." }
@@ -1159,6 +1162,46 @@ export async function transferConversation(
     status:          "delivered",
     is_private_note: false,
   })
+
+  // ── Notifica o destino (sininho + push) — ADITIVO, best-effort ──────────
+  // Não toca o motor de roteamento; só avisa quem recebeu. Nunca derruba o transfer.
+  // Agente-alvo → notifica ele. Fila do setor → notifica os ativos do depto.
+  // Pool (fila geral) → sem destino específico, não notifica.
+  try {
+    const embed = (conv as { chat_contacts?: unknown }).chat_contacts
+    const c = (Array.isArray(embed) ? embed[0] : embed) as { custom_name?: string | null; push_name?: string | null } | null
+    const contactName = c?.custom_name?.trim() || c?.push_name?.trim() || "um cliente"
+
+    let recipients: string[] = []
+    if (nextAssigned) {
+      recipients = [nextAssigned]
+    } else if (opts.mode === "department" && nextDepartment) {
+      const { data: deptMembers } = await supabaseAdmin
+        .from("tenant_users")
+        .select("user_id")
+        .eq("tenant_id", tenantId)
+        .eq("department_id", nextDepartment)
+        .eq("active", true)
+      recipients = (deptMembers ?? []).map((m) => (m as { user_id: string }).user_id)
+    }
+    recipients = recipients.filter((id) => id && id !== session.user.id)
+
+    if (recipients.length > 0) {
+      const isQueue = !nextAssigned && opts.mode === "department"
+      await Promise.all(recipients.map((rid) =>
+        createNotification({
+          tenantId,
+          recipientId: rid,
+          type:        "transfer_received",
+          title:       isQueue ? `Nova conversa em ${nextDepartmentName ?? "seu setor"}` : "Conversa transferida pra você",
+          body:        `${who} • ${contactName}`,
+          payload:     { conversation_id: conversationId, by: session.user.id, department_id: nextDepartment },
+        }),
+      ))
+    }
+  } catch (e) {
+    console.error("[transfer notify] falhou:", e)
+  }
 
   revalidatePath("/inbox")
   revalidatePath("/kanban")

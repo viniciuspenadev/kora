@@ -1,7 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
-import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { fetchIgProfile } from "@/lib/instagram/api"
 
@@ -107,14 +107,11 @@ async function defaultInstanceId(tenantId: string): Promise<string | null> {
 }
 
 async function getOrCreateIgConversation(tenantId: string, contactId: string, instanceId: string | null): Promise<{ id: string; isNew: boolean }> {
-  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, channel: "instagram", skipOwnershipCheck: true })
-  if (dedup.found !== "none") return { id: dedup.conversation.id, isNew: false }
-  const { data, error } = await supabaseAdmin.from("chat_conversations").insert({
-    tenant_id: tenantId, contact_id: contactId, instance_id: instanceId,
-    channel: "instagram", status: "open", unread_count: 0, assigned_to: null, last_message_at: new Date().toISOString(),
-  }).select("id").single()
-  if (error || !data) throw new Error(`ig conv: ${error?.message ?? "desconhecido"}`)
-  return { id: data.id as string, isNew: true }
+  // Porta ÚNICA de recebimento — mesmo helper do WhatsApp/site. Resolve dedup/reopen
+  // + nasce com pipeline/etapa do funil padrão (senão a conversa de IG ficava fora do
+  // kanban de atendimento, que filtra por pipeline_id + etapa visível).
+  const r = await createInboundConversation({ tenantId, contactId, instanceId, channel: "instagram" })
+  return { id: r.id, isNew: r.isNew }
 }
 
 /** Resolve tenant + contato (identidade IG) + conversa de uma vez (fonte única). */

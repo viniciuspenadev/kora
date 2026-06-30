@@ -20,7 +20,8 @@ import { findOrReopenConversation } from "@/lib/conversation-dedup"
 export interface InboundConversationInput {
   tenantId:   string
   contactId:  string
-  instanceId: string
+  /** Instância (número). IG/site-first podem nascer sem número → null (coluna é nullable). */
+  instanceId: string | null
   /** Canal da conversa. WhatsApp (Meta/Baileys) omite (default do banco); site passa "site". */
   channel?:   string | null
   /** Dono inicial — criação MANUAL carimba o criador; inbound deixa null (pool). */
