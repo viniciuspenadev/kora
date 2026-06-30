@@ -71,6 +71,31 @@ export async function getWidgetConfig(): Promise<WidgetConfig | null> {
   return data as WidgetConfig | null
 }
 
+/**
+ * Domínios REAIS observados no tráfego do widget (site_visits) — pra UI sugerir
+ * "Autorizar X" no fail-closed. Exclui localhost/127.0.0.1 e hosts sem TLD válido.
+ */
+export async function getDetectedSiteDomains(): Promise<string[]> {
+  const session = await requireAdmin()
+  const { data } = await supabaseAdmin
+    .from("site_visits")
+    .select("page_url")
+    .eq("tenant_id", session.user.tenantId)
+    .not("page_url", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(2000)
+
+  const counts = new Map<string, number>()
+  for (const r of (data ?? []) as { page_url: string }[]) {
+    let host: string | null = null
+    try { host = new URL(r.page_url).hostname.toLowerCase().replace(/^www\./, "") } catch { /* ignora */ }
+    if (!host || host === "localhost" || host === "127.0.0.1") continue
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) continue
+    counts.set(host, (counts.get(host) ?? 0) + 1)
+  }
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([h]) => h).slice(0, 6)
+}
+
 const HEX_COLOR_RE = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i
 const URL_HTTPS_RE = /^https?:\/\/[^\s<>"']{1,2000}$/i
 

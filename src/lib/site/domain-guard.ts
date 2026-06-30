@@ -5,6 +5,9 @@
 // um copia o <script> e cola em outro domínio. Esta checagem trava o embed
 // nos domínios que o tenant autorizou (campo allowed_domains da config).
 //
+// FAIL-CLOSED: sem domínio autorizado, o widget NÃO embute em lugar nenhum
+// (vazio = bloqueia). localhost/127.0.0.1 ficam sempre liberados (dev local).
+//
 // Honestidade de segurança: Origin/Referer são forjáveis por um atacante
 // dedicado (curl). Isso barra cópia casual / embed acidental (99% dos casos);
 // contra atacante determinado quem segura é o rate-limit + teto por tenant.
@@ -22,16 +25,17 @@ function requestHost(req: Request): string | null {
 }
 
 /**
- * O request veio de um domínio autorizado a embutir o widget?
+ * O request veio de um domínio autorizado a embutir o widget? (FAIL-CLOSED)
  *
- * - Lista vazia/nula → libera todos (compat — quem não configurou continua aberto).
- * - Lista com domínios → fail-closed: só passa se o host do Origin/Referer for
- *   igual a um domínio autorizado OU subdomínio dele. Sem Origin/Referer legível
- *   numa lista não-vazia = bloqueia.
+ * - localhost / 127.0.0.1 → sempre liberado (dev local, sem superfície real).
+ * - Lista vazia/nula → BLOQUEIA (o widget não ativa até cadastrar um domínio).
+ * - Lista com domínios → passa só se o host do Origin/Referer for igual a um
+ *   domínio autorizado OU subdomínio dele. Sem Origin/Referer legível = bloqueia.
  */
 export function isOriginAllowed(req: Request, allowed: string[] | null | undefined): boolean {
-  if (!allowed || allowed.length === 0) return true
   const host = requestHost(req)
+  if (host === "localhost" || host === "127.0.0.1") return true
+  if (!allowed || allowed.length === 0) return false
   if (!host) return false
   return allowed.some((d) => {
     const dom = (d || "").trim().toLowerCase().replace(/^\*\./, "")

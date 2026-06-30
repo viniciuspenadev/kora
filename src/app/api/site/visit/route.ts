@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
-import { isOriginAllowed } from "@/lib/site/domain-guard"
 
 /**
  * POST /api/site/visit
@@ -50,7 +49,7 @@ export async function POST(req: NextRequest) {
     // Widget está ligado?
     const { data: cfg } = await supabaseAdmin
       .from("site_widget_config")
-      .select("enabled, allowed_domains")
+      .select("enabled")
       .eq("tenant_id", tenant.id)
       .maybeSingle()
 
@@ -58,10 +57,9 @@ export async function POST(req: NextRequest) {
       return cors(NextResponse.json({ ok: false, reason: "disabled" }))
     }
 
-    // Origin allowlist (fail-closed)
-    if (!isOriginAllowed(req, cfg.allowed_domains as string[] | null)) {
-      return cors(NextResponse.json({ error: "origem não autorizada" }, { status: 403 }))
-    }
+    // NÃO gateamos /visit por origem de propósito: é analytics inofensivo
+    // (rate-limited) e alimenta a descoberta de domínios pro fail-closed —
+    // um tenant sem domínio ainda registra tráfego pra gente sugerir o host.
 
     await supabaseAdmin.from("site_visits").insert({
       tenant_id:    tenant.id,

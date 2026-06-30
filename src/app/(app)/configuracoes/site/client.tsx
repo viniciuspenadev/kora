@@ -13,11 +13,12 @@ import { updateWidgetConfig, generatePrivacyPolicy, uploadWidgetLogo, type Widge
 import { Switch } from "@/components/ui/switch"
 
 interface Props {
-  initial:     WidgetConfig
-  tenantSlug:  string
-  departments: Array<{ id: string; name: string; color: string }>
-  tags:        Array<{ id: string; name: string; color: string }>
-  appUrl:      string
+  initial:         WidgetConfig
+  tenantSlug:      string
+  departments:     Array<{ id: string; name: string; color: string }>
+  tags:            Array<{ id: string; name: string; color: string }>
+  detectedDomains: string[]
+  appUrl:          string
 }
 
 const inputCls =
@@ -28,7 +29,7 @@ const COLOR_PRESETS = [
   "#8B5CF6", "#EC4899", "#6366F1", "#0f172a",
 ]
 
-export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUrl }: Props) {
+export function SiteWidgetClient({ initial, tenantSlug, departments, tags, detectedDomains, appUrl }: Props) {
   const [cfg, setCfg] = useState<WidgetConfig>(initial)
   const [pending, startTransition] = useTransition()
   const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string } | null>(null)
@@ -450,8 +451,20 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
             <SectionCard
               icon={Lock}
               title="Domínios autorizados"
-              description="Trave o widget pra carregar só nos seus sites. Vazio = libera qualquer site."
+              description="O widget só carrega nos domínios que você liberar aqui. Obrigatório pra ativar."
             >
+              {/* Aviso fail-closed: ligado mas sem domínio = não aparece */}
+              {cfg.enabled && (cfg.allowed_domains ?? []).length === 0 && (
+                <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-amber-50 border border-amber-200 mb-3">
+                  <AlertCircle className="size-4 text-amber-600 shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-amber-900 leading-relaxed">
+                    <strong>O widget não vai aparecer em nenhum site</strong> até você adicionar pelo
+                    menos um domínio autorizado. <code className="bg-amber-100 px-1 rounded">localhost</code> fica
+                    sempre liberado pra teste.
+                  </p>
+                </div>
+              )}
+
               <FormRow
                 label="Domínios (um por linha)"
                 hint="Só o domínio, sem https:// nem caminho. Ex: minhaempresa.com.br. Subdomínios entram juntos (app.minhaempresa.com.br)."
@@ -464,6 +477,29 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
                   placeholder={"minhaempresa.com.br\nloja.minhaempresa.com.br"}
                 />
               </FormRow>
+
+              {/* Sugestões detectadas no tráfego real do widget */}
+              {detectedDomains.filter((d) => !(cfg.allowed_domains ?? []).includes(d)).length > 0 && (
+                <div className="mt-3">
+                  <p className="text-[11px] font-medium text-slate-500 mb-1.5">
+                    Detectamos tráfego destes domínios — toque pra autorizar:
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {detectedDomains
+                      .filter((d) => !(cfg.allowed_domains ?? []).includes(d))
+                      .map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => patch({ allowed_domains: [...(cfg.allowed_domains ?? []), d] })}
+                          className="inline-flex items-center gap-1.5 h-7 px-2.5 text-xs font-medium border border-primary-200 bg-primary-50 hover:bg-primary-100 text-primary-700 rounded-full transition-colors"
+                        >
+                          <Plus className="size-3" /> {d}
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
             </SectionCard>
           </div>
 

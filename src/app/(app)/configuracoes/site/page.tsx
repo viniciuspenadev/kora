@@ -3,7 +3,7 @@ import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { Globe } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
-import { getWidgetConfig, type WidgetConfig } from "@/lib/actions/site-widget"
+import { getWidgetConfig, getDetectedSiteDomains, type WidgetConfig } from "@/lib/actions/site-widget"
 import { SiteWidgetClient } from "./client"
 
 export default async function ConfigSitePage() {
@@ -11,7 +11,10 @@ export default async function ConfigSitePage() {
   if (!session) redirect("/auth/signin")
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
 
-  const cfg = await getWidgetConfig()
+  const [cfg, detectedDomains] = await Promise.all([
+    getWidgetConfig(),
+    getDetectedSiteDomains(),
+  ])
   const tenantId = session.user.tenantId
 
   // Tenant slug pra montar o snippet
@@ -74,6 +77,7 @@ export default async function ConfigSitePage() {
         tenantSlug={tenant?.slug ?? ""}
         departments={depts ?? []}
         tags={tags ?? []}
+        detectedDomains={detectedDomains}
         appUrl={(process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? "").replace(/\/$/, "")}
       />
     </PageShell>
