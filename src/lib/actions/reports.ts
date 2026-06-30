@@ -1003,3 +1003,163 @@ export async function listAgentsForFilter(): Promise<AgentOption[]> {
     .map((p) => ({ id: p.id, name: p.full_name ?? p.email }))
     .sort((a, b) => a.name.localeCompare(b.name))
 }
+
+// ════════════════════════════════════════════════════════════
+// Relatório do SITE (widget) — visitas · leads · conversão
+// ════════════════════════════════════════════════════════════
+// Tudo de tabela existente: site_visits (pageviews/UTM) + chat_messages
+// (marcadores metadata.kind: 'site_lead_answers' = lead, 'site_chat' = chat) +
+// chat_conversations (nome do contato). Sem instrumentação nova. Só período
+// (site é canal único — sem filtro de agente/canal).
+
+export interface SiteMetrics {
+  range:          { from: string; to: string }
+  uniqueVisitors: DeltaNumber
+  pageviews:      DeltaNumber
+  leads:          DeltaNumber
+  chats:          DeltaNumber
+  conversionPct:  DeltaNumber
+  daily:          { date: string; visitas: number; leads: number }[]
+  topSources:     { source: string; visits: number }[]
+  topPages:       { page: string; leads: number }[]
+  recentLeads:    { conversationId: string; name: string; page: string | null; at: string }[]
+}
+
+// Conta mensagens-marcador por metadata.kind no período.
+async function countSiteMessages(t: string, kind: string, r: RangeOpts): Promise<number> {
+  const { count } = await supabaseAdmin
+    .from("chat_messages")
+    .select("*", { count: "exact", head: true })
+    .eq("tenant_id", t)
+    .eq("metadata->>kind", kind)
+    .gte("created_at", r.from.toISOString()).lt("created_at", r.to.toISOString())
+  return count ?? 0
+}
+
+// Conversas de chat DISTINTAS (o marcador 'site_chat' é por-mensagem).
+async function countSiteChats(t: string, r: RangeOpts): Promise<number> {
+  const { data } = await supabaseAdmin
+    .from("chat_messages")
+    .select("conversation_id")
+    .eq("tenant_id", t)
+    .eq("metadata->>kind", "site_chat")
+    .gte("created_at", r.from.toISOString()).lt("created_at", r.to.toISOString())
+  return new Set((data ?? []).map((m) => (m as { conversation_id: string }).conversation_id)).size
+}
+
+function hostOf(url: string | null): string | null {
+  if (!url) return null
+  try { return new URL(url).hostname.replace(/^www\./, "") } catch { return null }
+}
+
+export async function getSiteMetrics(filters: ReportFilters): Promise<SiteMetrics> {
+  const t = await tenantId()
+  const range: RangeOpts = { from: new Date(filters.from), to: new Date(filters.to) }
+  const prev:  RangeOpts = shiftRange(range)
+
+  type Visit = { visitor_id: string; created_at: string; page_url: string | null; utm_source: string | null; referrer: string | null }
+
+  const [visitsCur, visitsPrev, leadsCur, leadsPrev, chatsCur, chatsPrev] = await Promise.all([
+    supabaseAdmin.from("site_visits")
+      .select("visitor_id, created_at, page_url, utm_source, referrer")
+      .eq("tenant_id", t)
+      .gte("created_at", range.from.toISOString()).lt("created_at", range.to.toISOString())
+      .order("created_at", { ascending: true }).limit(20000),
+    supabaseAdmin.from("site_visits")
+      .select("visitor_id")
+      .eq("tenant_id", t)
+      .gte("created_at", prev.from.toISOString()).lt("created_at", prev.to.toISOString()).limit(20000),
+    countSiteMessages(t, "site_lead_answers", range),
+    countSiteMessages(t, "site_lead_answers", prev),
+    countSiteChats(t, range),
+    countSiteChats(t, prev),
+  ])
+
+  const visitRows = (visitsCur.data ?? []) as Visit[]
+  const prevRows  = (visitsPrev.data ?? []) as { visitor_id: string }[]
+
+  const pageviewsCur  = visitRows.length
+  const pageviewsPrev = prevRows.length
+  const uniqCur  = new Set(visitRows.map((v) => v.visitor_id)).size
+  const uniqPrev = new Set(prevRows.map((v) => v.visitor_id)).size
+
+  // Conversão = leads ÷ visitantes únicos (%)
+  const convCur  = uniqCur  > 0 ? Math.round((leadsCur  / uniqCur ) * 1000) / 10 : 0
+  const convPrev = uniqPrev > 0 ? Math.round((leadsPrev / uniqPrev) * 1000) / 10 : 0
+
+  // Leads do período (marcador) — pra série diária, top páginas e leads recentes.
+  const { data: leadMsgs } = await supabaseAdmin
+    .from("chat_messages")
+    .select("conversation_id, created_at, metadata")
+    .eq("tenant_id", t)
+    .eq("metadata->>kind", "site_lead_answers")
+    .gte("created_at", range.from.toISOString()).lt("created_at", range.to.toISOString())
+    .order("created_at", { ascending: false }).limit(5000)
+  type LeadMsg = { conversation_id: string; created_at: string; metadata: Record<string, unknown> | null }
+  const leadRows = (leadMsgs ?? []) as LeadMsg[]
+
+  // Série diária: buckets contínuos do range, preenchidos com visitas + leads.
+  const dayMap = new Map<string, { visitas: number; leads: number }>()
+  for (let d = new Date(range.from); d < range.to; d.setUTCDate(d.getUTCDate() + 1)) {
+    dayMap.set(isoDate(d), { visitas: 0, leads: 0 })
+  }
+  for (const v of visitRows) { const a = dayMap.get(v.created_at.slice(0, 10)); if (a) a.visitas++ }
+  for (const m of leadRows)  { const a = dayMap.get(m.created_at.slice(0, 10)); if (a) a.leads++ }
+  const daily = Array.from(dayMap.entries()).map(([date, v]) => ({ date, ...v }))
+
+  // Top origens (por visitas): utm_source → host do referrer → "Direto".
+  const srcMap = new Map<string, number>()
+  for (const v of visitRows) {
+    const src = (v.utm_source && v.utm_source.trim()) || hostOf(v.referrer) || "Direto"
+    srcMap.set(src, (srcMap.get(src) ?? 0) + 1)
+  }
+  const topSources = Array.from(srcMap.entries())
+    .map(([source, visits]) => ({ source, visits }))
+    .sort((a, b) => b.visits - a.visits).slice(0, 6)
+
+  // Top páginas que convertem (por leads): metadata.page_url.
+  const pageMap = new Map<string, number>()
+  for (const m of leadRows) {
+    const page = (m.metadata?.page_url as string | undefined) ?? null
+    if (page) pageMap.set(page, (pageMap.get(page) ?? 0) + 1)
+  }
+  const topPages = Array.from(pageMap.entries())
+    .map(([page, leads]) => ({ page, leads }))
+    .sort((a, b) => b.leads - a.leads).slice(0, 6)
+
+  // Leads recentes (8) com nome do contato.
+  const recentSlice = leadRows.slice(0, 8)
+  const convIds = recentSlice.map((m) => m.conversation_id)
+  const nameByConv = new Map<string, string>()
+  if (convIds.length > 0) {
+    const { data: convs } = await supabaseAdmin
+      .from("chat_conversations")
+      .select("id, chat_contacts ( custom_name, push_name )")
+      .eq("tenant_id", t).in("id", convIds)
+    type ContactEmbed = { custom_name: string | null; push_name: string | null }
+    for (const c of (convs ?? []) as unknown as Array<{ id: string; chat_contacts: ContactEmbed | ContactEmbed[] | null }>) {
+      const ct = Array.isArray(c.chat_contacts) ? c.chat_contacts[0] : c.chat_contacts
+      nameByConv.set(c.id, ct?.custom_name?.trim() || ct?.push_name?.trim() || "Visitante")
+    }
+  }
+  const recentLeads = recentSlice.map((m) => ({
+    conversationId: m.conversation_id,
+    name:           nameByConv.get(m.conversation_id) ?? "Visitante",
+    page:           (m.metadata?.page_url as string | undefined) ?? null,
+    at:             m.created_at,
+  }))
+
+  const D = (current: number, previous: number): DeltaNumber => ({ current, previous })
+  return {
+    range:          { from: filters.from, to: filters.to },
+    uniqueVisitors: D(uniqCur, uniqPrev),
+    pageviews:      D(pageviewsCur, pageviewsPrev),
+    leads:          D(leadsCur, leadsPrev),
+    chats:          D(chatsCur, chatsPrev),
+    conversionPct:  D(convCur, convPrev),
+    daily,
+    topSources,
+    topPages,
+    recentLeads,
+  }
+}

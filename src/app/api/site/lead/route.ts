@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
+import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { syncContactIdentities } from "@/lib/contacts/identity"
@@ -72,12 +73,17 @@ export async function POST(req: NextRequest) {
     // Config
     const { data: cfg } = await supabaseAdmin
       .from("site_widget_config")
-      .select("enabled, default_department_id, default_tag_id, questions")
+      .select("enabled, default_department_id, default_tag_id, questions, allowed_domains")
       .eq("tenant_id", tenant.id)
       .maybeSingle()
 
     if (!cfg?.enabled) {
       return cors(NextResponse.json({ error: "widget desabilitado" }, { status: 403 }))
+    }
+
+    // Origin allowlist (fail-closed)
+    if (!isOriginAllowed(req, cfg.allowed_domains as string[] | null)) {
+      return cors(NextResponse.json({ error: "origem não autorizada" }, { status: 403 }))
     }
 
     // Instância WhatsApp do tenant (emprestada pra associar a conversa) — default (1ª).

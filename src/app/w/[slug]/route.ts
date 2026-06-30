@@ -715,19 +715,19 @@ function buildWidgetJs({ slug, baseUrl }: { slug: string; baseUrl: string }): st
     }
 
     // Home premium: avatar grande + saudação + cards de início. Aparece SEMPRE
-    // numa conversa nova (mesmo sem chips configurados → usa starters padrão),
-    // pra nunca ficar aquele vazio. Some quando o visitante manda a 1ª mensagem.
+    // numa conversa nova pra nunca ficar aquele vazio. Os cards de início vêm
+    // EXCLUSIVAMENTE das sugestões configuradas pelo tenant — sem sugestão, sem
+    // cards (só avatar + saudação + composer). Some quando manda a 1ª mensagem.
     function clearHome(){ if (homeEl){ homeEl.remove(); homeEl = null; } }
     function renderHome(){
       clearHome();
-      var DEFAULTS = ['Quero saber preços', 'Falar com vendas', 'Tirar uma dúvida'];
-      var starters = (cfg.chat_suggestions && cfg.chat_suggestions.length) ? cfg.chat_suggestions.slice(0, 5) : DEFAULTS;
+      var starters = (cfg.chat_suggestions || []).slice(0, 5);
       homeEl = document.createElement('div');
       homeEl.className = 'kw-home';
       homeEl.innerHTML = ''
         + '<div class="kw-home-avatar"><div class="kw-home-avatar-inner">' + escape(initial) + '</div></div>'
         + '<p class="kw-home-title">' + escape(cfg.greeting || 'Oi! 👋') + '</p>'
-        + '<p class="kw-home-sub">Toque numa opção ou escreva sua mensagem 👇</p>'
+        + '<p class="kw-home-sub">' + (starters.length ? 'Toque numa opção ou escreva sua mensagem 👇' : 'Escreva sua mensagem abaixo 👇') + '</p>'
         + '<div class="kw-home-cards"></div>';
       body.appendChild(homeEl);
       if (cfg.logo_url){ var host = homeEl.querySelector('.kw-home-avatar-inner'); if (host) injectLogoImg(host, cfg.logo_url, initial); }

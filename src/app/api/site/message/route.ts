@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
+import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { getOrCreateSiteContact, getOrCreateSiteConversation } from "@/lib/channels/site"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 
@@ -41,9 +42,14 @@ export async function POST(req: NextRequest) {
   if (!tenant?.active) return cors(NextResponse.json({ error: "tenant not found" }, { status: 404 }))
 
   const { data: cfg } = await supabaseAdmin
-    .from("site_widget_config").select("enabled, mode").eq("tenant_id", tenant.id).maybeSingle()
+    .from("site_widget_config").select("enabled, mode, allowed_domains").eq("tenant_id", tenant.id).maybeSingle()
   if (!cfg?.enabled || cfg.mode !== "chat") {
     return cors(NextResponse.json({ error: "chat não habilitado" }, { status: 403 }))
+  }
+
+  // Origin allowlist (fail-closed)
+  if (!isOriginAllowed(req, cfg.allowed_domains as string[] | null)) {
+    return cors(NextResponse.json({ error: "origem não autorizada" }, { status: 403 }))
   }
 
   // Instância WhatsApp do tenant (instance_id é NOT NULL na conversa; não envia no site)

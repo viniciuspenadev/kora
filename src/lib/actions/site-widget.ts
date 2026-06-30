@@ -28,6 +28,7 @@ export interface WidgetConfig {
   default_tag_id:        string | null
   show_after_seconds:  number
   hide_url_patterns:   string[]
+  allowed_domains:     string[]        // origin allowlist do embed; vazio = libera todos
   off_hours_enabled:   boolean
   off_hours_message:   string | null
   // Branding
@@ -59,7 +60,7 @@ export async function getWidgetConfig(): Promise<WidgetConfig | null> {
       enabled, mode, chat_suggestions, button_color, button_position, button_label,
       greeting, questions, success_message,
       default_department_id, default_tag_id,
-      show_after_seconds, hide_url_patterns,
+      show_after_seconds, hide_url_patterns, allowed_domains,
       off_hours_enabled, off_hours_message,
       logo_url, brand_name, subtitle,
       privacy_policy_url, consent_text, dpo_email
@@ -118,6 +119,45 @@ export async function generatePrivacyPolicy(): Promise<{ markdown: string }> {
   })
 
   return { markdown }
+}
+
+// ─── Upload da logo (bucket público widget-assets) ──────────────
+const LOGO_BUCKET    = "widget-assets"
+const MAX_LOGO_BYTES = 512 * 1024
+
+/**
+ * Detecta o tipo REAL pelos magic bytes — não confia na extensão nem no
+ * Content-Type que o cliente manda (ambos forjáveis). SVG fora de propósito.
+ */
+function sniffImage(b: Uint8Array): { mime: string; ext: string } | null {
+  if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return { mime: "image/png", ext: "png" }   // PNG
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff)                   return { mime: "image/jpeg", ext: "jpg" }  // JPEG
+  if (b.length > 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46  // RIFF
+      && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50)             return { mime: "image/webp", ext: "webp" } // WEBP
+  return null
+}
+
+export async function uploadWidgetLogo(formData: FormData): Promise<{ url?: string; error?: string }> {
+  const session  = await requireAdmin()
+  const tenantId = session.user.tenantId
+
+  const file = formData.get("file")
+  if (!(file instanceof File))    return { error: "Arquivo ausente." }
+  if (file.size === 0)            return { error: "Arquivo vazio." }
+  if (file.size > MAX_LOGO_BYTES) return { error: "Imagem muito grande (máx 512 KB)." }
+
+  const buf   = new Uint8Array(await file.arrayBuffer())
+  const sniff = sniffImage(buf)
+  if (!sniff) return { error: "Formato inválido. Use PNG, JPG ou WebP." }
+
+  const path = `${tenantId}/logo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${sniff.ext}`
+  const { error: upErr } = await supabaseAdmin.storage
+    .from(LOGO_BUCKET)
+    .upload(path, buf, { contentType: sniff.mime, upsert: false })
+  if (upErr) return { error: "Falha no upload. Tente novamente." }
+
+  const { data } = supabaseAdmin.storage.from(LOGO_BUCKET).getPublicUrl(path)
+  return { url: data.publicUrl }
 }
 
 export async function updateWidgetConfig(input: Partial<WidgetConfig>): Promise<{ error?: string }> {
@@ -185,6 +225,23 @@ export async function updateWidgetConfig(input: Partial<WidgetConfig>): Promise<
   if (Array.isArray(input.hide_url_patterns)) {
     input.hide_url_patterns = input.hide_url_patterns
       .filter((p) => typeof p === "string" && p.trim() && p.length <= 200)
+      .slice(0, 20)
+  }
+
+  // 6a2. allowed_domains: normaliza pra host puro (sem protocolo/porta/path),
+  //      valida formato de domínio, max 20 entradas. Vazio = libera todos.
+  if (Array.isArray(input.allowed_domains)) {
+    input.allowed_domains = input.allowed_domains
+      .map((d) =>
+        typeof d === "string"
+          ? d.trim().toLowerCase()
+              .replace(/^https?:\/\//, "")  // tira protocolo
+              .replace(/\/.*$/, "")          // tira path
+              .replace(/:\d+$/, "")          // tira porta
+              .replace(/^\*\./, "")          // wildcard vira domínio base
+          : ""
+      )
+      .filter((d) => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d))
       .slice(0, 20)
   }
 

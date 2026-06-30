@@ -1,14 +1,15 @@
 "use client"
 
-import { useState, useTransition, useEffect } from "react"
+import { useState, useTransition, useEffect, useRef } from "react"
 import {
   Save, Loader2, AlertCircle, CheckCircle2, Code2, Eye, EyeOff,
   Plus, Trash2, GripVertical, Copy, Check, Globe,
   Sparkles, Settings as SettingsIcon, Palette, ShieldCheck, FileText, X, Download,
+  Lock, Upload, Image as ImageIcon,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { FormRow } from "@/components/ui/form-row"
-import { updateWidgetConfig, generatePrivacyPolicy, type WidgetConfig, type WidgetQuestion } from "@/lib/actions/site-widget"
+import { updateWidgetConfig, generatePrivacyPolicy, uploadWidgetLogo, type WidgetConfig, type WidgetQuestion } from "@/lib/actions/site-widget"
 import { Switch } from "@/components/ui/switch"
 
 interface Props {
@@ -32,6 +33,18 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
   const [pending, startTransition] = useTransition()
   const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string } | null>(null)
   const [policyOpen, setPolicyOpen] = useState(false)
+
+  // Tabs — o conjunto da Geral se molda ao modo: no modo form, as perguntas +
+  // roteamento aparecem inline abaixo do seletor; no modo chat, as sugestões.
+  type TabId = "geral" | "aparencia" | "comportamento" | "privacidade"
+  const [tab, setTab] = useState<TabId>("geral")
+  const isChat = cfg.mode === "chat"
+  const tabs: Array<{ id: TabId; label: string; icon: typeof Sparkles }> = [
+    { id: "geral",         label: "Geral",         icon: Sparkles },
+    { id: "aparencia",     label: "Aparência",     icon: Palette },
+    { id: "comportamento", label: "Comportamento", icon: SettingsIcon },
+    { id: "privacidade",   label: "Privacidade",   icon: ShieldCheck },
+  ]
 
   function handleSave() {
     setFeedback(null)
@@ -116,8 +129,32 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
           </div>
         </SectionCard>
 
+        {/* Tabs — navegação por intenção (some o scroll infinito) */}
+        <div className="flex items-center gap-1 overflow-x-auto rounded-xl bg-white border border-slate-200 p-1 shadow-card">
+          {tabs.map((t) => {
+            const Icon = t.icon
+            const active = tab === t.id
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={`inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                  active
+                    ? "bg-primary text-white shadow-sm"
+                    : "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                }`}
+              >
+                <Icon className="size-3.5" />
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
+
         <div className={cfg.enabled ? "" : "opacity-50 pointer-events-none"}>
 
+          {tab === "geral" && (<>
           {/* Modo do widget */}
           <SectionCard icon={Sparkles} title="Modo do widget" description="Como o visitante interage" className="mb-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -192,33 +229,14 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
             )}
           </SectionCard>
 
+          </>)}
+
+          {tab === "aparencia" && (<>
           {/* Branding */}
           <SectionCard icon={Palette} title="Marca e identidade">
             <div className="space-y-4">
 
-              <FormRow
-                label="Logo da empresa (URL)"
-                hint="URL da imagem (PNG, JPG ou SVG). Recomendado: 200×200px ou maior, com fundo transparente."
-              >
-                <div className="flex items-center gap-3">
-                  {cfg.logo_url && (
-                    /* eslint-disable-next-line @next/next/no-img-element */
-                    <img
-                      src={cfg.logo_url}
-                      alt="Preview do logo"
-                      className="size-10 rounded-full object-cover border border-slate-200 shrink-0 bg-white"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
-                    />
-                  )}
-                  <input
-                    type="url"
-                    value={cfg.logo_url ?? ""}
-                    onChange={(e) => patch({ logo_url: e.target.value || null })}
-                    placeholder="https://exemplo.com/logo.png"
-                    className={inputCls}
-                  />
-                </div>
-              </FormRow>
+              <LogoUploader value={cfg.logo_url} onChange={(url) => patch({ logo_url: url })} />
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <FormRow label="Nome de exibição" hint="Aparece no topo do chat. Vazio = nome do tenant.">
@@ -321,6 +339,10 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
             </SectionCard>
           </div>
 
+          </>)}
+
+          {tab === "geral" && !isChat && (<>
+          {/* Perguntas + roteamento — inline na Geral quando modo = formulário */}
           {/* Perguntas */}
           <div className="mt-6">
             <SectionCard
@@ -389,6 +411,9 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
             </SectionCard>
           </div>
 
+          </>)}
+
+          {tab === "comportamento" && (<>
           {/* Comportamento */}
           <div className="mt-6">
             <SectionCard title="Comportamento">
@@ -420,6 +445,31 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
             </SectionCard>
           </div>
 
+          {/* Domínios autorizados */}
+          <div className="mt-6">
+            <SectionCard
+              icon={Lock}
+              title="Domínios autorizados"
+              description="Trave o widget pra carregar só nos seus sites. Vazio = libera qualquer site."
+            >
+              <FormRow
+                label="Domínios (um por linha)"
+                hint="Só o domínio, sem https:// nem caminho. Ex: minhaempresa.com.br. Subdomínios entram juntos (app.minhaempresa.com.br)."
+              >
+                <textarea
+                  value={(cfg.allowed_domains ?? []).join("\n")}
+                  onChange={(e) => patch({ allowed_domains: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })}
+                  rows={3}
+                  className={`${inputCls} h-auto py-2 resize-none font-mono`}
+                  placeholder={"minhaempresa.com.br\nloja.minhaempresa.com.br"}
+                />
+              </FormRow>
+            </SectionCard>
+          </div>
+
+          </>)}
+
+          {tab === "privacidade" && (<>
           {/* ── LGPD — Consentimento + transparência ─────────────── */}
           <div className="mt-6">
             <SectionCard
@@ -498,6 +548,7 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, appUr
               </div>
             </SectionCard>
           </div>
+          </>)}
         </div>
 
         {/* Save bar */}
@@ -644,6 +695,90 @@ function PrivacyPolicyModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// ── Upload da logo (bucket público widget-assets) ──────────
+function LogoUploader({ value, onChange }: { value: string | null; onChange: (url: string | null) => void }) {
+  const [pending, start] = useTransition()
+  const [err, setErr]       = useState<string | null>(null)
+  const [advanced, setAdv]  = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function handleFile(file: File | undefined) {
+    if (!file) return
+    setErr(null)
+    if (file.size > 512 * 1024) { setErr("Imagem muito grande (máx 512 KB)."); return }
+    const fd = new FormData()
+    fd.append("file", file)
+    start(async () => {
+      const r = await uploadWidgetLogo(fd)
+      if (r.error) setErr(r.error)
+      else if (r.url) onChange(r.url)
+      if (inputRef.current) inputRef.current.value = ""
+    })
+  }
+
+  return (
+    <FormRow
+      label="Logo da empresa"
+      hint="PNG, JPG ou WebP · até 512 KB · idealmente quadrada (200×200+), fundo transparente."
+    >
+      <div className="space-y-2.5">
+        <div className="flex items-center gap-3">
+          <div className="size-12 rounded-full border border-slate-200 bg-white overflow-hidden shrink-0 flex items-center justify-center">
+            {value ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img src={value} alt="Logo" className="size-full object-cover" />
+            ) : (
+              <ImageIcon className="size-5 text-slate-300" />
+            )}
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={(e) => handleFile(e.target.files?.[0])}
+          />
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={pending}
+            className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+            {value ? "Trocar" : "Enviar logo"}
+          </button>
+          {value && (
+            <button
+              type="button"
+              onClick={() => { onChange(null); setErr(null) }}
+              className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            >
+              <Trash2 className="size-3.5" /> Remover
+            </button>
+          )}
+        </div>
+        {err && <p className="text-[11px] text-red-600">{err}</p>}
+        <button
+          type="button"
+          onClick={() => setAdv((v) => !v)}
+          className="text-[11px] text-slate-400 hover:text-slate-600"
+        >
+          {advanced ? "Ocultar opção avançada" : "Avançado: usar URL externa"}
+        </button>
+        {advanced && (
+          <input
+            type="url"
+            value={value ?? ""}
+            onChange={(e) => onChange(e.target.value || null)}
+            placeholder="https://exemplo.com/logo.png"
+            className={inputCls}
+          />
+        )}
+      </div>
+    </FormRow>
   )
 }
 

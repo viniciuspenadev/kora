@@ -37,7 +37,8 @@ export default async function ConfigSitePage() {
   const initialConfig: WidgetConfig = cfg ?? {
     enabled:               true,
     mode:                  "form",
-    chat_suggestions:      [],
+    chat_suggestions:      ["Quero saber preços", "Falar com vendas", "Tirar uma dúvida"],
+    allowed_domains:       [],
     button_color:          "#004add",
     button_position:       "bottom-right",
     button_label:          "Falar conosco",

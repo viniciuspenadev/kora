@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
+import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { hasModule } from "@/lib/modules"
 
 /**
@@ -35,12 +36,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
       show_after_seconds, hide_url_patterns,
       off_hours_enabled, off_hours_message,
       logo_url, brand_name, subtitle,
-      privacy_policy_url, consent_text, dpo_email
+      privacy_policy_url, consent_text, dpo_email,
+      allowed_domains
     `)
     .eq("tenant_id", tenant.id)
     .maybeSingle()
 
   if (!cfg?.enabled) {
+    return cors(NextResponse.json({ enabled: false }))
+  }
+
+  // Origin allowlist: domínio não autorizado → widget não embute (boot para aqui).
+  if (!isOriginAllowed(req, cfg.allowed_domains as string[] | null)) {
     return cors(NextResponse.json({ enabled: false }))
   }
 

@@ -18,6 +18,7 @@ export function ReportsTabs({ hasKanban, hasAi }: Props) {
     { href: "/relatorios/atendimento", label: "Atendimento", show: true },
     { href: "/relatorios/funil",       label: "Funil",       show: hasKanban },
     { href: "/relatorios/origem",      label: "Origem",      show: true },
+    { href: "/relatorios/site",        label: "Site",        show: true },
     { href: "/relatorios/anuncios",    label: "Anúncios",    show: true },
     { href: "/relatorios/ia",          label: "IA",          show: hasAi, soon: true },
   ]

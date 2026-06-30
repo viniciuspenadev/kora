@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
+import { isOriginAllowed } from "@/lib/site/domain-guard"
 
 /**
  * POST /api/site/messages
@@ -33,6 +34,13 @@ export async function POST(req: NextRequest) {
   const { data: tenant } = await supabaseAdmin
     .from("tenants").select("id, active").eq("slug", slug).maybeSingle()
   if (!tenant?.active) return cors(NextResponse.json({ error: "tenant not found" }, { status: 404 }))
+
+  // Origin allowlist (fail-closed)
+  const { data: wcfg } = await supabaseAdmin
+    .from("site_widget_config").select("allowed_domains").eq("tenant_id", tenant.id).maybeSingle()
+  if (!isOriginAllowed(req, wcfg?.allowed_domains as string[] | null)) {
+    return cors(NextResponse.json({ error: "origem não autorizada" }, { status: 403 }))
+  }
 
   // Segurança: a conversa tem que ser do contato-site DESTE visitante.
   const { data: conv } = await supabaseAdmin
