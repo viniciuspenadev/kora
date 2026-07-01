@@ -102,13 +102,13 @@ async function applyAction(tenantId: string, convId: string, eff: string, meta: 
   if (eff === "reassign") {
     // Solta o atendente atual (que está ignorando) ANTES de redistribuir —
     // senão o auto-assign recusa pelo guard `already_assigned` e não faz nada.
-    await upd({ assigned_to: null, metadata: { ...meta, inactivity_swept_at: now } })
+    await upd({ assigned_to: null, ai_handling: false, metadata: { ...meta, inactivity_swept_at: now } })
     const r = await assignNextAgent(tenantId, convId)
     await note(tenantId, convId, r.assigned
       ? "⏰ Sem resposta há um tempo — redistribuída a outro atendente."
       : "⏰ Sem resposta há um tempo — sem agente livre; ficou na fila do setor.")
   } else if (eff === "pool") {
-    await upd({ assigned_to: null, metadata: { ...meta, inactivity_swept_at: now } })
+    await upd({ assigned_to: null, ai_handling: false, metadata: { ...meta, inactivity_swept_at: now } })
     await note(tenantId, convId, "⏰ Sem resposta há um tempo — devolvida pra fila do setor.")
   } else if (eff === "ai") {
     const m: Record<string, unknown> = { ...meta, inactivity_swept_at: now }

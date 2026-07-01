@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { tenantAiActive } from "@/lib/ai/active"
 
 // ═══════════════════════════════════════════════════════════════
 // Fonte ÚNICA de recebimento — nascer/reusar conversa (1:1)
@@ -78,6 +79,12 @@ export async function createInboundConversation(
   // 2. Etapa inicial consistente.
   const { pipelineId, stageId } = await resolveInitialStage(tenantId)
 
+  // 2b. Seed do controle da IA (decouple): inbound SEM dono + tenant com IA ativa
+  // nasce com ai_handling=true (a IA é a linha de frente do turno 1). Manual
+  // (assignTo) ou IA-off → false. HOJE é no-op (o gate ainda lê assigned_to);
+  // prepara o flip pro gate passar a ler ai_handling.
+  const aiSeed = !assignTo && (await tenantAiActive(tenantId))
+
   // 3. Cria. department_id null (Triagem); assigned_to = manual ou null.
   const insert: Record<string, unknown> = {
     tenant_id:     tenantId,
@@ -88,6 +95,7 @@ export async function createInboundConversation(
     pipeline_id:   pipelineId,
     stage_id:      stageId,
     assigned_to:   assignTo ?? null,
+    ai_handling:   aiSeed,
     card_position: 0,
   }
   if (channel) insert.channel = channel

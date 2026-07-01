@@ -87,10 +87,19 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     .maybeSingle()
 
   if (!convData || convData.is_group || !convData.contact_id) return { status: "skipped", reason: "not_eligible" }
-  // Guards de inbound (atendente atribuído / já roteada) NÃO se aplicam ao disparo manual.
-  if (!opts?.forceFlowId && convData.assigned_to) return { status: "skipped", reason: "human_assigned" }
+  // Guards de inbound NÃO se aplicam ao disparo manual (forceFlowId).
   const convMeta = (convData.metadata as Record<string, unknown> | null) ?? {}
-  if (!opts?.forceFlowId && convMeta.ai_routed) return { status: "skipped", reason: "already_routed" }
+  if (!opts?.forceFlowId) {
+    if (config.ai_control_decoupled) {
+      // DESACOPLADO: IA responde só quando é a linha de frente (ai_handling). O dono
+      // (assigned_to) pode coexistir — carteira não barra a IA.
+      if (!convData.ai_handling) return { status: "skipped", reason: "not_ai_controlled" }
+    } else {
+      // LEGADO: dono setado OU já roteada = humano assumiu.
+      if (convData.assigned_to) return { status: "skipped", reason: "human_assigned" }
+      if (convMeta.ai_routed)   return { status: "skipped", reason: "already_routed" }
+    }
+  }
 
   // Sinais que o matcher de gatilho usa (canal/instância/retorno/anúncio).
   const adMeta = convData.from_ad_meta as { sourceId?: string | null } | null
@@ -322,7 +331,10 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
   if (!convData || convData.is_group || !convData.contact_id) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "not_eligible" } }
 
   const convMeta = (convData.metadata as Record<string, unknown> | null) ?? {}
-  if (convData.assigned_to || convMeta.ai_routed) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "taken_over" } }
+  const takenOver = config.ai_control_decoupled
+    ? !convData.ai_handling
+    : (!!convData.assigned_to || !!convMeta.ai_routed)
+  if (takenOver) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "taken_over" } }
   const contact = convData.chat_contacts as unknown as ContactRow | null
   if (!contact) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "no_contact" } }
 

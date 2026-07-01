@@ -82,6 +82,7 @@ interface Conversation {
   won_at:               string | null
   lost_at:              string | null
   assigned_to:          string | null
+  ai_handling:          boolean
   department_id:        string | null
   instance_id:          string | null
   active_deal_id:       string | null
@@ -124,6 +125,7 @@ function mergeCardScalars(existing: Conversation, row: Conversation): Conversati
     ...existing,
     stage_id:             row.stage_id,
     assigned_to:          row.assigned_to,
+    ai_handling:          row.ai_handling,
     department_id:        row.department_id,
     status:               row.status,
     last_message_at:      row.last_message_at,
@@ -618,11 +620,15 @@ function ConversationCard({
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-[13px] font-semibold text-slate-900 truncate">{displayName}</p>
-          {aguardando && (
+          {conv.ai_handling ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-violet-600" title="A IA está atendendo esta conversa">
+              <span className="size-1.5 rounded-full bg-violet-500 animate-pulse" /> IA atendendo
+            </span>
+          ) : aguardando ? (
             <span className="text-[10px] font-semibold text-amber-500 animate-pulse" title="Cliente aguardando atendimento">
               Aguardando atend.
             </span>
-          )}
+          ) : null}
         </div>
         {conv.unread_count > 0 && (
           <span className="size-5 rounded-full bg-primary text-white text-[10px] font-bold flex items-center justify-center shrink-0">

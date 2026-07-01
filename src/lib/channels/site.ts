@@ -8,6 +8,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { tenantAiActive } from "@/lib/ai/active"
 import { syncContactIdentities } from "@/lib/contacts/identity"
 
 /**
@@ -106,6 +107,7 @@ export async function getOrCreateSiteConversation(
       pipeline_id:   pipelineId,
       stage_id:      stageId,
       assigned_to:   null,   // pool
+      ai_handling:   await tenantAiActive(tenantId),   // seed do decouple (chat do site usa IA)
       last_message_at: new Date().toISOString(),
     })
     .select("id")

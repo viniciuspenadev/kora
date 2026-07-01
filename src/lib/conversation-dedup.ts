@@ -169,20 +169,27 @@ export async function findOrReopenConversation(
     const aiFirst = (cfg?.reopen_to_ai || legacyAi) ? await tenantAiActive(tenantId) : false
     const prevOwner = ((resolved as { assigned_to?: string | null }).assigned_to) ?? null
     const meta = ((resolved as { metadata?: Record<string, unknown> | null }).metadata) ?? {}
+    // Flag do decouple (por-tenant): no modo desacoplado o dono da carteira FICA
+    // (a IA tria por cima via ai_handling), em vez de ser zerado e restaurado no fim.
+    const { data: sc } = await supabaseAdmin
+      .from("studio_config").select("ai_control_decoupled").eq("tenant_id", tenantId).maybeSingle()
+    const decoupled = !!sc?.ai_control_decoupled
 
     const policy: Record<string, unknown> = {}
     if (aiFirst) {
-      // IA tria o retorno OWNERLESS (regra de ouro intacta — não fala por cima de
-      // humano ativo). Fixa o fluxo escolhido (run.ts roda esse, sem passar pelo
-      // gatilho do fluxo de captação). Carteira: LEMBRA o dono pra o runtime
-      // devolver ao fim do fluxo (finishRun → restoreReopenOwner).
-      policy.assigned_to = null
+      // IA tria o retorno. Fixa o fluxo escolhido (run.ts roda esse). Carteira: LEMBRA
+      // o dono (backup — se a IA TRANSFERIR, que zera assigned_to, o restore devolve).
+      // DESACOPLADO + carteira: o dono FICA no assigned_to (a IA tria por cima via
+      // ai_handling). LEGADO (ou pool): zera pra a IA rodar (gate antigo lê assigned_to).
       policy.ai_handling = true
       const m: Record<string, unknown> = { ...meta }
       delete m.ai_routed
       if (reopenFlowId) m.ai_pinned_flow = reopenFlowId
       if (binding === "carteira" && prevOwner) m.reopen_owner = prevOwner
       else delete m.reopen_owner
+      if (!(decoupled && binding === "carteira" && prevOwner)) {
+        policy.assigned_to = null
+      }
       policy.metadata = m
     } else if (binding === "pool") {
       // Pool sem IA: cai na FILA do setor (humano). Solta o dono + bloqueia a IA.
