@@ -214,7 +214,9 @@ async function restoreReopenOwner(ctx: ExecCtx): Promise<void> {
       .eq("user_id", owner)
       .eq("active", true)
       .maybeSingle()
-    if (member) { upd.assigned_to = owner; restoredToOwner = true }
+    // Carteira ganha: o dono reassume LIMPO — tira a etiqueta de setor que um
+    // nó Transfer possa ter deixado (senão ficaria "dono + fila do setor").
+    if (member) { upd.assigned_to = owner; upd.department_id = null; restoredToOwner = true }
   }
 
   await supabaseAdmin
@@ -497,6 +499,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
 
         if (turn.status === "routed") {
           await finishRun(run.id)
+          await restoreReopenOwner(ctx)   // carteira: IA roteou/transferiu → devolve o dono (ou fila se ele saiu)
           return { status: "routed", departmentId: turn.departmentId, error: null, agent: turn }
         }
         if (turn.status === "error") {
@@ -570,6 +573,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           byAI:            variables["__ai_touched"] === true,
         })
         await finishRun(run.id)
+        await restoreReopenOwner(ctx)   // carteira: fluxo terminou em transfer → devolve o dono (ou fila se ele saiu)
         if (r?.routedDepartmentId) return { status: "routed", departmentId: r.routedDepartmentId, error: null, agent: lastAgent }
         // departamento inválido na config → não encaminhou; registra pro admin ver.
         return { status: responded ? "responded" : "no_action", departmentId: null, error: r?.error ?? null, agent: lastAgent }
