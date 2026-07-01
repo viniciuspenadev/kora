@@ -154,7 +154,7 @@ export function FunnelEditorClient({ pipeline, stages: initial }: { pipeline: Ed
                     {stage.is_triage && <Tag>Triagem</Tag>}
                     {stage.is_won && <Trophy className="size-3.5 text-amber-500 shrink-0" />}
                     {stage.is_lost && <XCircle className="size-3.5 text-red-500 shrink-0" />}
-                    {!stage.show_in_kanban && <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full shrink-0"><EyeOff className="size-2.5" /> Oculto</span>}
+                    {!stage.show_in_kanban && !stage.is_triage && <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full shrink-0"><EyeOff className="size-2.5" /> Oculto</span>}
                     <span className="text-[11px] font-semibold text-slate-500 tabular-nums shrink-0">{stage.probability_pct}%</span>
                     {(stage.convCount + stage.dealCount) > 0 && (
                       <span className="text-[10px] text-slate-400 bg-white border border-slate-200 rounded-full px-1.5 py-0.5 shrink-0 tabular-nums" title={`${stage.convCount} conversa(s) · ${stage.dealCount} negócio(s)`}>
@@ -237,7 +237,11 @@ function StageEditRow({ stage, onClose, onSaved }: { stage: EditorStage; onClose
         <div className="flex items-center gap-1.5">
           <Switch label="Ganho" tone="amber" on={isWon} onToggle={() => { setWon(!isWon); if (!isWon) setLost(false) }} />
           <Switch label="Perda" tone="red" on={isLost} onToggle={() => { setLost(!isLost); if (!isLost) setWon(false) }} />
-          <Switch label={show ? "Visível" : "Oculto"} tone="primary" on={show} onToggle={() => setShow(!show)} />
+          {stage.is_triage ? (
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg" title="Triagem é a coluna de entrada — sempre visível no quadro">Coluna fixa</span>
+          ) : (
+            <Switch label={show ? "Visível" : "Oculto"} tone="primary" on={show} onToggle={() => setShow(!show)} />
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <button onClick={onClose} className="h-8 px-3 text-xs font-semibold text-slate-500 hover:bg-slate-100 rounded-lg">Cancelar</button>

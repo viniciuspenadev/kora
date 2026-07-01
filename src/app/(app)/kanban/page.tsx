@@ -75,10 +75,11 @@ export default async function KanbanPage({
 
   const isAdminOrOwner = scope.isAdmin
 
-  // Stages visíveis no Kanban = não-triagem, não-ganho, não-perdido.
-  // (Triagem entra com position=-1; ganho/perdido vão pra histórico no futuro.)
+  // Colunas do board = etapas visíveis + a TRIAGEM (trilho fixo de entrada, sempre
+  // presente, independente do toggle show_in_kanban — simétrica à Concluídos).
+  // Triagem tem position=-1 → cai sempre na esquerda.
   const activeStageIds = (stages ?? [])
-    .filter((s) => s.show_in_kanban)
+    .filter((s) => s.show_in_kanban || s.is_triage)
     .map((s) => s.id)
 
   let convQuery = supabaseAdmin
@@ -133,7 +134,7 @@ export default async function KanbanPage({
       convCount={(conversations ?? []).length}
       isAdminOrOwner={isAdminOrOwner}
       isManager={isManager}
-      stages={(stages ?? []).filter((s) => s.show_in_kanban)}
+      stages={(stages ?? []).filter((s) => s.show_in_kanban || s.is_triage)}
       conversations={(conversations ?? []) as unknown as Parameters<typeof KanbanView>[0]["conversations"]}
       agents={agents}
       departments={(departmentsRaw ?? []) as { id: string; name: string; color: string }[]}

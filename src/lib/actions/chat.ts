@@ -483,6 +483,7 @@ export async function sendMessage(
       last_message_preview: content.substring(0, 100),
       last_message_dir:     "out",
       flagged_pending:      false,
+      ai_handling:          false,   // atendente respondeu = humano assumiu, IA sai (decouple)
       updated_at:          new Date().toISOString(),
     })
     .eq("id", conversationId)
@@ -569,6 +570,7 @@ export async function sendOfficialTemplate(
       last_message_preview: displayText.substring(0, 100),
       last_message_dir:     "out",
       flagged_pending:      false,
+      ai_handling:          false,   // template enviado pelo atendente = humano assumiu (decouple)
       updated_at:           new Date().toISOString(),
     })
     .eq("id", conversationId)
@@ -795,6 +797,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       last_message_preview: caption || previewLabels[mediaType] || "Mídia",
       last_message_dir:     "out",
       flagged_pending:      false,
+      ai_handling:          false,   // mídia enviada pelo atendente = humano assumiu (decouple)
       updated_at:           new Date().toISOString(),
     })
     .eq("id", conversationId)
@@ -848,7 +851,8 @@ async function resolveSendContext(
 async function bumpConv(conversationId: string, preview: string) {
   await supabaseAdmin.from("chat_conversations").update({
     last_message_at: new Date().toISOString(), last_message_preview: preview,
-    last_message_dir: "out", flagged_pending: false, updated_at: new Date().toISOString(),
+    last_message_dir: "out", flagged_pending: false, ai_handling: false,   // envio do atendente = humano assumiu (decouple)
+    updated_at: new Date().toISOString(),
   }).eq("id", conversationId)
 }
 
@@ -1242,6 +1246,7 @@ export async function updateConversationStatus(conversationId: string, status: s
     updates.unread_count    = 0
     updates.flagged_pending = false
     updates.resolved_at     = now
+    updates.ai_handling     = false   // atendimento concluído = IA fora até o retorno (decouple)
   } else {
     // open/pending/snoozed: limpa resolved_at (caso esteja sendo reaberta)
     updates.resolved_at  = null
