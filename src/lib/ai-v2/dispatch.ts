@@ -16,6 +16,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { activeFlowRun } from "./flow/triggers"
 import { runAITurn, type RunAITurnInput, type RunAITurnResult } from "@/lib/ai/run"
 import { runStudioTurn } from "./run"
+import { logConversationEvent } from "@/lib/atendimento/events"
 
 // ═══ Quais CANAIS despacham a IA (verdade do motor, não config) ═══
 // Espelha quais pipelines de entrada chamam routeAutomationTurn. Instagram
@@ -58,4 +59,10 @@ async function maybeHandBackDecoupled(input: RunAITurnInput, result: RunAITurnRe
     .update({ ai_handling: false, updated_at: new Date().toISOString() })
     .eq("id", input.conversationId)
     .eq("tenant_id", input.tenantId)
+
+  // Evento do ciclo (relatórios): a IA devolveu o controle pro humano.
+  await logConversationEvent({
+    tenantId: input.tenantId, conversationId: input.conversationId,
+    type: "ai_handback", actorKind: "ai",
+  })
 }

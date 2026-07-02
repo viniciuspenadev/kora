@@ -38,6 +38,10 @@ export const viewport: Viewport = {
   userScalable: false,
   viewportFit: "cover",
   themeColor: "#004add",
+  // Teclado virtual (Chrome Android): encolhe o LAYOUT junto com o teclado, em vez
+  // de o teclado cobrir o conteúdo — mantém o composer visível acima dele. Sem isso,
+  // `h-dvh` não reage ao teclado e a barra de digitação cai atrás dele.
+  interactiveWidget: "resizes-content",
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

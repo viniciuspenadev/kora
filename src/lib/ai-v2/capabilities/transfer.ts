@@ -10,6 +10,7 @@ import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
 import { sendBotText } from "../outbound"
 import { extractDossier } from "../flow/dossier"
+import { logConversationEvent } from "@/lib/atendimento/events"
 
 export const TRANSFER = "transfer"
 
@@ -141,6 +142,14 @@ export const transferCapability = defineCapability<TransferArgs>({
       })
       .eq("id", conversationId)
       .eq("tenant_id", tenantId)
+
+    // Evento do ciclo (relatórios): a IA encaminhou pra fila do setor.
+    await logConversationEvent({
+      tenantId, conversationId, type: "transferred",
+      actorKind:    args.byAI ? "ai" : "system",
+      departmentId: dept.id,
+      reason:       args.summary || null,
+    })
 
     return { ok: true, routedDepartmentId: dept.id, sentText }
   },

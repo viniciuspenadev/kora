@@ -17,6 +17,7 @@ import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 import { createNotification } from "@/lib/notifications"
+import { logConversationEvent } from "@/lib/atendimento/events"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -384,6 +385,8 @@ export async function sendMessage(
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
       .is("assigned_to", null)
+    // Evento do ciclo (relatórios): pegou uma conversa da fila/pool.
+    await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
   }
 
   const contact = conv.chat_contacts as unknown as {
@@ -528,6 +531,7 @@ export async function sendOfficialTemplate(
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
       .is("assigned_to", null)
+    await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
   }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
@@ -698,6 +702,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
       .is("assigned_to", null)
+    await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
   }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; bsuid: string | null }
@@ -843,6 +848,7 @@ async function resolveSendContext(
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
       .eq("id", conversationId)
       .is("assigned_to", null)
+    await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
   }
 
   return { tenantId, userId: session.user.id, instanceId: (conv as { instance_id: string }).instance_id, phone: contact.phone_number ?? contact.bsuid ?? "" }
@@ -1028,6 +1034,16 @@ export async function assignConversation(conversationId: string, agentId: string
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
 
+  // Evento do ciclo (relatórios): atribuição/retirada manual de dono.
+  await logConversationEvent({
+    tenantId, conversationId,
+    type:      agentId ? "assigned" : "unassigned",
+    actorKind: "agent",
+    actorId:   session.user.id,
+    toAgentId: agentId ?? null,
+    reason:    "manual",
+  })
+
   revalidatePath("/inbox")
 }
 
@@ -1152,6 +1168,18 @@ export async function transferConversation(
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
 
+  // Evento do ciclo (relatórios): transferência humana. actor = quem transferiu;
+  // from/to = dono anterior → novo destino (atendente e/ou setor).
+  await logConversationEvent({
+    tenantId, conversationId, type: "transferred",
+    actorKind:    "agent",
+    actorId:      session.user.id,
+    fromAgentId:  (conv as { assigned_to: string | null }).assigned_to ?? null,
+    toAgentId:    nextAssigned,
+    departmentId: nextDepartment,
+    reason:       opts.mode,
+  })
+
   // Nota de sistema (histórico auditável) — nomeia QUEM transferiu, voz ativa.
   const { data: actor } = await supabaseAdmin.from("profiles").select("full_name").eq("id", session.user.id).maybeSingle()
   const who = actor?.full_name ?? "Alguém"
@@ -1257,6 +1285,16 @@ export async function updateConversationStatus(conversationId: string, status: s
     .update(updates)
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
+
+  // Evento do ciclo (relatórios): conclusão. Atribui ao atendente que concluiu.
+  if (status === "resolved") {
+    await logConversationEvent({
+      tenantId, conversationId, type: "resolved",
+      actorKind: "agent",
+      actorId:   session.user.id,
+      toAgentId: (conv as { assigned_to: string | null }).assigned_to ?? null,
+    })
+  }
 
   revalidatePath("/inbox")
 }

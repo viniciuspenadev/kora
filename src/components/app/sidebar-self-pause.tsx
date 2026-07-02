@@ -7,6 +7,8 @@ import { setSelfPause } from "@/lib/actions/auto-assign"
 interface Props {
   initialPaused:      boolean
   initialPausedUntil: string | null
+  /** Rail expandido → mostra texto/botões; recolhido → só o ícone de status. */
+  expanded?:          boolean
 }
 
 const OPTIONS: { hours: number | null; label: string }[] = [
@@ -31,7 +33,8 @@ function formatPauseUntil(iso: string | null): string {
   return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })
 }
 
-export function SidebarSelfPause({ initialPaused, initialPausedUntil }: Props) {
+export function SidebarSelfPause({ initialPaused, initialPausedUntil, expanded = false }: Props) {
+  const reveal = expanded ? "opacity-100" : "opacity-0"
   const [paused, setPaused]           = useState(initialPaused)
   const [pausedUntil, setPausedUntil] = useState(initialPausedUntil)
   const [pending, startTransition]    = useTransition()
@@ -83,7 +86,7 @@ export function SidebarSelfPause({ initialPaused, initialPausedUntil }: Props) {
         </div>
 
         {/* Texto + botão (expandido) */}
-        <div className="min-w-0 flex-1 overflow-hidden opacity-0 group-hover/sb:opacity-100 transition-opacity duration-150 delay-75">
+        <div className={`min-w-0 flex-1 overflow-hidden transition-opacity duration-150 ${reveal}`}>
           <p className="text-[11px] font-semibold text-slate-700 truncate whitespace-nowrap">
             {effectivelyPaused ? "Pausado" : "Recebendo"}
           </p>
@@ -95,7 +98,7 @@ export function SidebarSelfPause({ initialPaused, initialPausedUntil }: Props) {
         </div>
 
         {/* Botão de ação */}
-        <div className="shrink-0 opacity-0 group-hover/sb:opacity-100 transition-opacity duration-150 delay-75">
+        <div className={`shrink-0 transition-opacity duration-150 ${reveal}`}>
           {effectivelyPaused ? (
             <button
               type="button"

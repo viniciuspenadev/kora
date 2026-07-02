@@ -29,6 +29,7 @@
 import { supabaseAdmin } from "@/lib/supabase"
 import { tenantAiActive } from "@/lib/ai/active"
 import { channelDispatchesAI } from "@/lib/ai-v2/dispatch"
+import { logConversationEvent } from "@/lib/atendimento/events"
 
 export interface FindOrReopenInput {
   tenantId:          string
@@ -221,6 +222,17 @@ export async function findOrReopenConversation(
       .eq("tenant_id", tenantId)
       .select("*")
       .single()
+    if (reopened) {
+      // Evento do ciclo (relatórios): cliente voltou. Guarda quem ficou dono
+      // (carteira preservada = to_agent; pool = null) e se a IA tria o retorno.
+      await logConversationEvent({
+        tenantId, conversationId: resolved.id, type: "reopened",
+        actorKind: "contact",
+        toAgentId: (reopened as { assigned_to?: string | null }).assigned_to ?? null,
+        meta:      { ai_first: aiFirst, binding },
+      })
+    }
+
     if (reopenErr || !reopened) {
       // Race: outra request reabriu/mudou. Refetch.
       const { data: refetched } = await supabaseAdmin

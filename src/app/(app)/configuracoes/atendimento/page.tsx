@@ -19,7 +19,7 @@ export default async function AtendimentoConfigPage() {
     listAgentsForAutoAssign(),
     supabaseAdmin
       .from("tenant_config")
-      .select("handoff_binding, inactivity_enabled, inactivity_hours, inactivity_action")
+      .select("handoff_binding, inactivity_enabled, inactivity_hours, inactivity_action, sla_first_response_minutes")
       .eq("tenant_id", tenantId)
       .maybeSingle(),
     hasModule(tenantId, "ai_studio"),
@@ -55,6 +55,7 @@ export default async function AtendimentoConfigPage() {
         inactivityEnabled={!!cfg?.inactivity_enabled}
         inactivityHours={cfg?.inactivity_hours ?? 4}
         inactivityAction={inactivityAction}
+        slaMinutes={(cfg?.sla_first_response_minutes as number | null | undefined) ?? null}
       />
     </PageShell>
   )

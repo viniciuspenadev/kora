@@ -365,12 +365,13 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
       ) : (
         <div className="flex items-center gap-2 p-3">
           <div className="flex gap-1 shrink-0">
+            {/* Chat interno — inline no ≥sm; no mobile vai pro menu "+" */}
             <button
               type="button"
               onClick={() => setIsPrivate(!isPrivate)}
               disabled={!!attachedFile}
               title={attachedFile ? "Mídia sempre vai ao cliente" : (isPrivate ? "Sair do chat interno (voltar a falar com o cliente)" : "Chat interno (conversa entre atendentes)")}
-              className={`size-10 flex items-center justify-center rounded-lg transition-colors ${
+              className={`hidden sm:flex size-10 items-center justify-center rounded-lg transition-colors ${
                 isPrivate
                   ? "bg-amber-100 text-amber-700 ring-1 ring-amber-300"
                   : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
@@ -379,12 +380,13 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
               <Users className="size-4" />
             </button>
 
+            {/* Anexar — inline no ≥sm; no mobile vai pro menu "+" */}
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={isPrivate}
               title="Anexar arquivo"
-              className="size-10 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              className="hidden sm:flex size-10 items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <Paperclip className="size-4" />
             </button>
@@ -396,68 +398,96 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
               className="sr-only"
             />
 
-            {(onSendLocation || onSendContact || onSendSticker) && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setAttachMenu((v) => !v)}
-                  disabled={isPrivate}
-                  title="Enviar localização, contato ou figurinha"
-                  className={`size-10 flex items-center justify-center rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-                    showAttachMenu ? "bg-slate-100 text-slate-700" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
-                  }`}
-                >
-                  <Plus className="size-4" />
-                </button>
-                {showAttachMenu && (
-                  <>
-                    <div className="fixed inset-0 z-10" onClick={() => setAttachMenu(false)} />
-                    <div className="absolute bottom-full mb-2 left-0 z-20 w-44 rounded-lg border border-slate-200 bg-white shadow-lg py-1">
-                      {onSendLocation && (
-                        <button
-                          type="button"
-                          onClick={() => { setAttachMenu(false); setAttachMode("location") }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
-                        >
-                          <MapPin className="size-4 text-primary-600" /> Localização
-                        </button>
-                      )}
-                      {onSendContact && (
-                        <button
-                          type="button"
-                          onClick={() => { setAttachMenu(false); setAttachMode("contact") }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
-                        >
-                          <UserIcon className="size-4 text-primary-600" /> Contato
-                        </button>
-                      )}
-                      {onSendSticker && (
-                        <button
-                          type="button"
-                          onClick={() => { setAttachMenu(false); stickerInputRef.current?.click() }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
-                        >
-                          <Sticker className="size-4 text-primary-600" /> Figurinha
-                        </button>
-                      )}
-                    </div>
-                  </>
-                )}
-                <input
-                  ref={stickerInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleStickerSelected}
-                  className="sr-only"
-                />
-              </div>
-            )}
+            {/* Menu "+" — hub de ações. Mobile: TUDO (interno/anexar/emoji + extras) →
+                libera largura pro textarea. ≥sm: só os extras (loc/contato/figurinha),
+                e some se não houver nenhum (aí interno/anexar/emoji já estão inline). */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setAttachMenu((v) => !v)}
+                title="Mais ações"
+                className={`${(onSendLocation || onSendContact || onSendSticker) ? "flex" : "flex sm:hidden"} size-10 items-center justify-center rounded-lg transition-colors ${
+                  showAttachMenu ? "bg-slate-100 text-slate-700" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                <Plus className="size-4" />
+              </button>
+              {showAttachMenu && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setAttachMenu(false)} />
+                  <div className="absolute bottom-full mb-2 left-0 z-20 w-52 rounded-lg border border-slate-200 bg-white shadow-lg py-1">
+                    {/* Mobile-only: o que no ≥sm já é botão inline */}
+                    <button
+                      type="button"
+                      onClick={() => { setAttachMenu(false); setIsPrivate(!isPrivate) }}
+                      disabled={!!attachedFile}
+                      className="sm:hidden w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                    >
+                      <Users className="size-4 text-amber-600" /> {isPrivate ? "Sair do chat interno" : "Chat interno"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setAttachMenu(false); fileInputRef.current?.click() }}
+                      disabled={isPrivate}
+                      className="sm:hidden w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                    >
+                      <Paperclip className="size-4 text-primary-600" /> Anexar arquivo
+                    </button>
+                    {onSendLocation && (
+                      <button
+                        type="button"
+                        onClick={() => { setAttachMenu(false); setAttachMode("location") }}
+                        disabled={isPrivate}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                      >
+                        <MapPin className="size-4 text-primary-600" /> Localização
+                      </button>
+                    )}
+                    {onSendContact && (
+                      <button
+                        type="button"
+                        onClick={() => { setAttachMenu(false); setAttachMode("contact") }}
+                        disabled={isPrivate}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                      >
+                        <UserIcon className="size-4 text-primary-600" /> Contato
+                      </button>
+                    )}
+                    {onSendSticker && (
+                      <button
+                        type="button"
+                        onClick={() => { setAttachMenu(false); stickerInputRef.current?.click() }}
+                        disabled={isPrivate}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
+                      >
+                        <Sticker className="size-4 text-primary-600" /> Figurinha
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => { setAttachMenu(false); setShowEmoji(true) }}
+                      className="sm:hidden w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                    >
+                      <Smile className="size-4 text-primary-600" /> Emoji
+                    </button>
+                  </div>
+                </>
+              )}
+              <input
+                ref={stickerInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleStickerSelected}
+                className="sr-only"
+              />
+            </div>
 
+            {/* Emoji — inline no ≥sm; no mobile vai pro menu "+" */}
             <button
               type="button"
               onClick={() => setShowEmoji((v) => !v)}
               title="Emoji"
-              className={`size-10 flex items-center justify-center rounded-lg transition-colors ${
+              className={`hidden sm:flex size-10 items-center justify-center rounded-lg transition-colors ${
                 showEmoji ? "bg-slate-100 text-slate-700" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"
               }`}
             >

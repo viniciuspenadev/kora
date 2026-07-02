@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300" width="300" height="300" role="img" aria-label="Ícone de chat centralizado com fundo branco redondo">
+  <!-- fundo branco redondo -->
+  <circle cx="150" cy="150" r="142" fill="#FFFFFF"/>
+
+  <!-- composição centralizada -->
+  <g transform="translate(45,84)">
+    <!-- balão traseiro -->
+    <g transform="translate(94,35)">
+      <rect x="0" y="0" width="116" height="74" rx="16" fill="#B8BEDA"/>
+      <path d="M82 74 L105 74 L105 93 Z" fill="#B8BEDA"/>
+    </g>
+
+    <!-- balão frontal -->
+    <g>
+      <rect x="0" y="0" width="150" height="108" rx="20" fill="#3F5BEF"/>
+      <path d="M50 108 L50 133 L77 108 Z" fill="#3F5BEF"/>
+
+      <!-- 3 pontinhos perfeitamente centralizados -->
+      <circle cx="39" cy="54" r="12" fill="#FFFFFF"/>
+      <circle cx="75" cy="54" r="12" fill="#FFFFFF"/>
+      <circle cx="111" cy="54" r="12" fill="#FFFFFF"/>
+    </g>
+  </g>
+</svg>

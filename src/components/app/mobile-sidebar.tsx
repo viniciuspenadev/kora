@@ -2,7 +2,7 @@
 
 import { useEffect } from "react"
 import { usePathname } from "next/navigation"
-import { SidebarBody } from "@/components/app/sidebar-body"
+import { SidebarBody, type PipelineMini } from "@/components/app/sidebar-body"
 import { useAppShell } from "@/components/app/app-shell-context"
 
 interface Props {
@@ -13,6 +13,7 @@ interface Props {
   enabledModules:  string[]
   selfPause:      { paused: boolean; paused_until: string | null }
   hasOfficial?:   boolean
+  pipelines?:      PipelineMini[]
 }
 
 /**

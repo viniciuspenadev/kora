@@ -160,6 +160,20 @@ export async function setSelfPause(
 
   if (error) return { error: error.message }
 
+  // Histórico do liga/desliga (relatórios: tempo disponível × pausado no período).
+  // FAIL-OPEN: falha de log nunca quebra o toggle. paused_until cobre o lazy-unpause
+  // (pausa que expira sozinha, sem evento de despause).
+  try {
+    await supabaseAdmin.from("agent_availability_log").insert({
+      tenant_id:    session.user.tenantId,
+      user_id:      session.user.id,
+      paused,
+      paused_until: paused ? (pausedUntil ?? null) : null,
+    })
+  } catch (e) {
+    console.error("[availability_log] insert falhou:", e instanceof Error ? e.message : e)
+  }
+
   revalidatePath("/")  // qualquer página (afeta sidebar)
   return { ok: true }
 }

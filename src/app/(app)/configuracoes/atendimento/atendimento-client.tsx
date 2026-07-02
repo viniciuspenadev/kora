@@ -31,6 +31,8 @@ interface Props {
   inactivityEnabled: boolean
   inactivityHours:   number
   inactivityAction:  IAct
+  /** Meta de 1ª resposta em minutos (null = sem meta). */
+  slaMinutes:        number | null
 }
 
 const ROLE_LABEL: Record<string, string>    = { owner: "Owner", admin: "Admin", agent: "Atendente" }
@@ -46,6 +48,8 @@ export function AtendimentoClient(props: Props) {
   const [inact, setInact]   = useState(props.inactivityEnabled)
   const [hours, setHours]   = useState(props.inactivityHours)
   const [act, setAct]       = useState<IAct>(props.inactivityAction)
+  // Meta de 1ª resposta (SLA): null = sem meta (o "% no prazo" dos relatórios fica off).
+  const [slaMin, setSlaMin] = useState<number | null>(props.slaMinutes)
   // Sem IA → opções de IA somem; valores caem no fallback humano na exibição.
   const dispAct: IAct = props.hasAi || act !== "ai" ? act : "notify"
 
@@ -63,6 +67,7 @@ export function AtendimentoClient(props: Props) {
         handoff_binding: bind,
         inactivity_enabled: inact, inactivity_hours: hours,
         inactivity_action: (!props.hasAi && act === "ai") ? "notify" : act,
+        sla_first_response_minutes: slaMin,
       })
       if (r2?.error) return flash(false, r2.error)
       flash(true, "Configuração salva")
@@ -253,6 +258,26 @@ export function AtendimentoClient(props: Props) {
                   <RadioCard active={dispAct === "ai"}         onClick={() => setAct("ai")}           icon={Bot}     title="Devolver pra IA" description="A IA reassume o atendimento." />
                 )}
               </div>
+            </div>
+          )}
+        </SectionCard>
+      )}
+
+      {tab === "inatividade" && (
+        <SectionCard>
+          <div className="flex items-start gap-3">
+            <Switch size="lg" checked={slaMin != null} onChange={(v) => setSlaMin(v ? (props.slaMinutes ?? 15) : null)} />
+            <div className="flex-1">
+              <p className="text-sm font-bold text-slate-900">Meta de 1ª resposta</p>
+              <p className="text-xs text-slate-500 mt-0.5">Quanto tempo, no máximo, o cliente deve esperar pela primeira resposta. Vira o &quot;% no prazo&quot; nos relatórios da equipe — não muda nada no atendimento em si.</p>
+            </div>
+          </div>
+          {slaMin != null && (
+            <div className="mt-4 flex items-center gap-2 text-sm text-slate-700">
+              Responder em até
+              <input type="number" min={1} max={1440} value={slaMin} onChange={(e) => setSlaMin(Math.max(1, Math.min(1440, Number(e.target.value) || 15)))}
+                className="w-16 h-9 px-2 text-sm border border-slate-200 rounded-lg text-center focus:outline-none focus:ring-2 focus:ring-primary/30" />
+              minutos
             </div>
           )}
         </SectionCard>

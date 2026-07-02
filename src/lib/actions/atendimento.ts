@@ -25,6 +25,8 @@ export interface AtendimentoPolicy {
   inactivity_enabled: boolean
   inactivity_hours:   number
   inactivity_action:  InactivityAction
+  /** Meta de 1ª resposta em minutos (null = sem meta). Base do "% no prazo" dos relatórios. */
+  sla_first_response_minutes?: number | null
 }
 
 const BINDINGS = new Set<HandoffBinding>(["carteira", "pool"])
@@ -44,6 +46,10 @@ export async function updateAtendimentoPolicy(input: AtendimentoPolicy): Promise
   if (action === "ai" && !hasAi) action = "notify"
   const hours = Math.min(168, Math.max(1, Math.round(Number(input.inactivity_hours) || 4)))
 
+  // SLA: null = sem meta; senão clampa 1..1440 min (24h).
+  const slaRaw = input.sla_first_response_minutes
+  const sla = slaRaw == null ? null : Math.min(1440, Math.max(1, Math.round(Number(slaRaw) || 15)))
+
   const { error } = await supabaseAdmin
     .from("tenant_config")
     .update({
@@ -51,6 +57,7 @@ export async function updateAtendimentoPolicy(input: AtendimentoPolicy): Promise
       inactivity_enabled: !!input.inactivity_enabled,
       inactivity_hours:   hours,
       inactivity_action:  action,
+      sla_first_response_minutes: sla,
     })
     .eq("tenant_id", tenantId)
 
