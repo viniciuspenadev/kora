@@ -28,6 +28,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase"
 import { tenantAiActive } from "@/lib/ai/active"
+import { channelDispatchesAI } from "@/lib/ai-v2/dispatch"
 
 export interface FindOrReopenInput {
   tenantId:          string
@@ -164,9 +165,6 @@ export async function findOrReopenConversation(
     const legacyAi = rawBinding === "ai"                   // 3-way antigo = ownerless + IA-on
     const binding = legacyAi ? "pool" : rawBinding         // carteira | pool
     const reopenFlowId = (cfg?.reopen_flow_id as string | undefined) ?? null
-    // IA-no-retorno só vale se ela está ATIVA (módulo + ai_enabled). Senão cai no
-    // vínculo humano — nunca deixa órfão dependendo de uma IA desligada.
-    const aiFirst = (cfg?.reopen_to_ai || legacyAi) ? await tenantAiActive(tenantId) : false
     const prevOwner = ((resolved as { assigned_to?: string | null }).assigned_to) ?? null
     const meta = ((resolved as { metadata?: Record<string, unknown> | null }).metadata) ?? {}
     // Flag do decouple (por-tenant): no modo desacoplado o dono da carteira FICA
@@ -175,16 +173,27 @@ export async function findOrReopenConversation(
       .from("studio_config").select("ai_control_decoupled").eq("tenant_id", tenantId).maybeSingle()
     const decoupled = !!sc?.ai_control_decoupled
 
+    // "IA atende o retorno?" —
+    //  DESACOPLADO: DERIVADO (sem toggle): canal despacha IA + IA ativa. O Studio
+    //  decide O QUÊ roda (gatilho Retornou/catch-all/agente, escopado por canal);
+    //  se nada casar, o hand-back devolve pro humano. Sem pin (morre o bypass
+    //  cross-canal do reopen_flow_id).
+    //  LEGADO (flag off): comportamento antigo intacto (reopen_to_ai + pin).
+    const convChannel = ((resolved as { channel?: string | null }).channel) ?? "whatsapp"
+    const aiFirst = decoupled
+      ? (channelDispatchesAI(convChannel) && (await tenantAiActive(tenantId)))
+      : ((cfg?.reopen_to_ai || legacyAi) ? await tenantAiActive(tenantId) : false)
+
     const policy: Record<string, unknown> = {}
     if (aiFirst) {
-      // IA tria o retorno. Fixa o fluxo escolhido (run.ts roda esse). Carteira: LEMBRA
-      // o dono (backup — se a IA TRANSFERIR, que zera assigned_to, o restore devolve).
-      // DESACOPLADO + carteira: o dono FICA no assigned_to (a IA tria por cima via
-      // ai_handling). LEGADO (ou pool): zera pra a IA rodar (gate antigo lê assigned_to).
+      // IA tria o retorno. Carteira: LEMBRA o dono (backup — se a IA TRANSFERIR,
+      // que zera assigned_to, o restore devolve). DESACOPLADO + carteira: o dono
+      // FICA no assigned_to (a IA tria por cima via ai_handling). LEGADO (ou pool):
+      // zera pra a IA rodar (gate antigo lê assigned_to) + fixa o fluxo (pin).
       policy.ai_handling = true
       const m: Record<string, unknown> = { ...meta }
       delete m.ai_routed
-      if (reopenFlowId) m.ai_pinned_flow = reopenFlowId
+      if (reopenFlowId && !decoupled) m.ai_pinned_flow = reopenFlowId
       if (binding === "carteira" && prevOwner) m.reopen_owner = prevOwner
       else delete m.reopen_owner
       if (!(decoupled && binding === "carteira" && prevOwner)) {

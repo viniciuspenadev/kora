@@ -17,6 +17,19 @@ import { activeFlowRun } from "./flow/triggers"
 import { runAITurn, type RunAITurnInput, type RunAITurnResult } from "@/lib/ai/run"
 import { runStudioTurn } from "./run"
 
+// ═══ Quais CANAIS despacham a IA (verdade do motor, não config) ═══
+// Espelha quais pipelines de entrada chamam routeAutomationTurn. Instagram
+// ainda NÃO (bot do IG é frente pendente) → conversa de IG nunca nasce/reabre
+// "IA atendendo". Quando o bot do IG for ligado, adicionar "instagram" aqui —
+// 1 linha, e seed/reopen/painel derivam sozinhos. Config do TENANT (IA ligada,
+// fluxos/gatilhos por canal) mora no Studio; isto aqui é só capacidade do motor.
+const AI_DISPATCH_CHANNELS = new Set(["whatsapp", "site"])
+
+/** O canal despacha a IA? (null/undefined = whatsapp, default do banco) */
+export function channelDispatchesAI(channel: string | null | undefined): boolean {
+  return AI_DISPATCH_CHANNELS.has(channel ?? "whatsapp")
+}
+
 export async function routeAutomationTurn(input: RunAITurnInput): Promise<RunAITurnResult> {
   if (await hasModule(input.tenantId, "ai_studio")) {
     const result = await runStudioTurn(input)

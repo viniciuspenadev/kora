@@ -9,6 +9,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { tenantAiActive } from "@/lib/ai/active"
+import { channelDispatchesAI } from "@/lib/ai-v2/dispatch"
 import { syncContactIdentities } from "@/lib/contacts/identity"
 
 /**
@@ -67,12 +68,12 @@ export async function getOrCreateSiteConversation(
   tenantId:   string,
   contactId:  string,
   instanceId: string,
-): Promise<string> {
+): Promise<{ id: string; reopened: boolean }> {
   // NOTA: o split por instância (instanceId no dedup) é só pros canais WhatsApp
   // (Baileys vs Oficial). O widget do site mantém o comportamento legado (continua
   // a conversa existente do contato), por isso NÃO passa instanceId aqui.
   const dedup = await findOrReopenConversation({ tenantId, contactId, skipOwnershipCheck: true })
-  if (dedup.found !== "none") return dedup.conversation.id
+  if (dedup.found !== "none") return { id: dedup.conversation.id, reopened: dedup.found === "reopened" }
 
   // Coloca no funil padrão (consistente com o lead de form).
   const { data: tc } = await supabaseAdmin
@@ -107,11 +108,12 @@ export async function getOrCreateSiteConversation(
       pipeline_id:   pipelineId,
       stage_id:      stageId,
       assigned_to:   null,   // pool
-      ai_handling:   await tenantAiActive(tenantId),   // seed do decouple (chat do site usa IA)
+      // Seed do decouple — DERIVADO (mesmo cérebro do inbound-conversation).
+      ai_handling:   channelDispatchesAI("site") && (await tenantAiActive(tenantId)),
       last_message_at: new Date().toISOString(),
     })
     .select("id")
     .single()
   if (error || !created) throw new Error(`Falha ao criar conversa do site: ${error?.message ?? "desconhecido"}`)
-  return created.id
+  return { id: created.id, reopened: false }
 }

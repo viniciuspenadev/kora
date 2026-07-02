@@ -1,5 +1,7 @@
 "use client"
 
+import { ContactPic } from "@/components/chat/contact-pic"
+
 import { useState, useTransition } from "react"
 import {
   Loader2, AlertCircle, User as UserIcon, Mail, Building2, IdCard, CalendarDays,
@@ -159,12 +161,7 @@ export function ContactEditSheet({ contact, onClose, onFeedback }: Props) {
         {/* Identidade */}
         <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100">
           <div className="size-12 rounded-full bg-primary flex items-center justify-center shrink-0 overflow-hidden">
-            {contact.profile_pic_url ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img src={contact.profile_pic_url} alt="" className="size-12 object-cover" />
-            ) : (
-              <span className="text-base font-bold text-white">{initial}</span>
-            )}
+            <ContactPic pic={contact.profile_pic_url} initial={initial} imgClass="size-12 object-cover" fallbackClass="text-base font-bold text-white" />
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-slate-900 truncate">{displayName}</p>

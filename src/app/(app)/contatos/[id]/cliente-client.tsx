@@ -1,5 +1,7 @@
 "use client"
 
+import { ContactPic } from "@/components/chat/contact-pic"
+
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -59,10 +61,7 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
 
         <div className="flex items-start gap-4 mt-3">
           <div className="size-14 rounded-full bg-gradient-to-br from-white to-slate-100 ring-1 ring-inset ring-primary/20 grid place-items-center shrink-0 overflow-hidden">
-            {contact.profile_pic_url
-              // eslint-disable-next-line @next/next/no-img-element
-              ? <img src={contact.profile_pic_url} alt="" className="size-14 object-cover" />
-              : <span className="text-lg font-bold text-primary-600">{initial}</span>}
+            <ContactPic pic={contact.profile_pic_url} initial={initial} imgClass="size-14 object-cover" fallbackClass="text-lg font-bold text-primary-600" />
           </div>
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">{name}</h1>

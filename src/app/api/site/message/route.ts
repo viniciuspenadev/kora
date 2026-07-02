@@ -63,7 +63,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const contactId = await getOrCreateSiteContact(tenant.id, visitorId)
-    const convId    = await getOrCreateSiteConversation(tenant.id, contactId, instance.id)
+    const conv      = await getOrCreateSiteConversation(tenant.id, contactId, instance.id)
+    const convId    = conv.id
 
     // Persiste a mensagem do visitante
     await supabaseAdmin.from("chat_messages").insert({
@@ -87,7 +88,7 @@ export async function POST(req: NextRequest) {
     // widget pega via polling). Sem debounce: chat ao vivo quer resposta já.
     after(async () => {
       try {
-        await routeAutomationTurn({ tenantId: tenant.id, conversationId: convId, incomingText: text, instance })
+        await routeAutomationTurn({ tenantId: tenant.id, conversationId: convId, incomingText: text, instance, signals: { isReopened: conv.reopened } })
       } catch (err) {
         console.error("[/api/site/message] runAITurn falhou:", err)
       }

@@ -4,16 +4,13 @@
 // Política de Atendimento — server actions (docs/politica-atendimento.md)
 // ═══════════════════════════════════════════════════════════════
 // Lê/grava a política em tenant_config (1 linha por tenant). Owner/admin.
-// Default (carteira / IA off / inatividade off) preserva o comportamento atual.
 //
-// VÍNCULO e "IA atende o retorno" são ORTOGONAIS:
-//   • handoff_binding (carteira|pool) = quem é o DONO quando o cliente volta.
-//   • reopen_to_ai (bool)            = a IA tria o retorno ANTES do humano?
-//   • reopen_flow_id                 = qual fluxo a IA roda (só com reopen_to_ai).
-// carteira + IA-on = a IA faz a interação e o MESMO atendente segue dono
-// (o runtime lembra-e-restaura o dono ao fim do fluxo — conversation-dedup + runtime).
-//
-// Gate de IA no SERVIDOR: opções de IA só valem com o módulo; sem ele, coage off.
+// VÍNCULO = política de POSSE pura: handoff_binding (carteira|pool) = de quem é
+// o cliente quando volta. "A IA atende o retorno?" NÃO é mais configurado aqui —
+// é DERIVADO do Kora Studio (canal despacha IA + IA ativa; o gatilho "Retornou"/
+// catch-all/agente decide o quê roda; nada casa → hand-back devolve pro humano).
+// As colunas legadas reopen_to_ai/reopen_flow_id ficam no banco (tenants fora do
+// decouple ainda as leem) mas a UI não as escreve mais — morrem no sunset do v1.
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
@@ -25,8 +22,6 @@ export type InactivityAction = "notify" | "redistribute" | "ai"
 
 export interface AtendimentoPolicy {
   handoff_binding:    HandoffBinding
-  reopen_to_ai:       boolean
-  reopen_flow_id:     string | null
   inactivity_enabled: boolean
   inactivity_hours:   number
   inactivity_action:  InactivityAction
@@ -44,21 +39,6 @@ export async function updateAtendimentoPolicy(input: AtendimentoPolicy): Promise
   const hasAi = (await hasModule(tenantId, "ai_studio")) || (await hasModule(tenantId, "ai_atendente"))
 
   const binding: HandoffBinding = BINDINGS.has(input.handoff_binding) ? input.handoff_binding : "carteira"
-  // "IA atende o retorno": só com módulo de IA. reopen_flow_id só vale se IA-on.
-  const aiFirst = hasAi && !!input.reopen_to_ai
-
-  let reopenFlowId: string | null = null
-  if (aiFirst && input.reopen_flow_id) {
-    const { data: f } = await supabaseAdmin
-      .from("studio_flows")
-      .select("id")
-      .eq("tenant_id", tenantId)
-      .eq("id", input.reopen_flow_id)
-      .eq("status", "published")
-      .eq("active", true)
-      .maybeSingle()
-    reopenFlowId = (f?.id as string | undefined) ?? null
-  }
 
   let action: InactivityAction = ACTIONS.has(input.inactivity_action) ? input.inactivity_action : "notify"
   if (action === "ai" && !hasAi) action = "notify"
@@ -68,8 +48,6 @@ export async function updateAtendimentoPolicy(input: AtendimentoPolicy): Promise
     .from("tenant_config")
     .update({
       handoff_binding:    binding,
-      reopen_to_ai:       aiFirst,
-      reopen_flow_id:     reopenFlowId,
       inactivity_enabled: !!input.inactivity_enabled,
       inactivity_hours:   hours,
       inactivity_action:  action,
@@ -79,4 +57,52 @@ export async function updateAtendimentoPolicy(input: AtendimentoPolicy): Promise
   if (error) return { error: error.message }
   revalidatePath("/configuracoes/atendimento")
   return {}
+}
+
+// ═══ Painel derivado: quem atende o RETORNO, por canal (read-only) ═══
+// A resposta que o toggle antigo dava, agora DERIVADA da configuração real:
+// canal despacha IA? IA ativa? qual fluxo casa um retorno (Retornou > catch-all)?
+// Nada casa → agente (persona) se IA ativa; senão humano (carteira/fila).
+
+export interface ReturnRoute {
+  channel: "whatsapp" | "site" | "instagram"
+  /** Quem atende o retorno neste canal. */
+  handler: "flow" | "agent" | "human"
+  /** Nome do fluxo (quando handler=flow). */
+  flowName?: string
+  /** Motivo quando humano (ex: canal sem IA, IA desligada). */
+  reason?: string
+}
+
+export async function getReturnRouting(): Promise<ReturnRoute[]> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return []
+  const tenantId = session.user.tenantId
+
+  const { channelDispatchesAI } = await import("@/lib/ai-v2/dispatch")
+  const { tenantAiActive }      = await import("@/lib/ai/active")
+
+  const aiActive = await tenantAiActive(tenantId)
+  const { data: flows } = await supabaseAdmin
+    .from("studio_flows")
+    .select("name, trigger")
+    .eq("tenant_id", tenantId)
+    .eq("status", "published")
+    .eq("active", true)
+
+  type FlowMini = { name: string; trigger: { type?: string; mode?: string; channels?: string[] | null } | null }
+  const list = ((flows ?? []) as FlowMini[]).filter((f) => (f.trigger?.mode ?? "receptive") !== "active")
+  const catchesChannel = (f: FlowMini, ch: string) =>
+    !f.trigger?.channels?.length || f.trigger.channels.includes(ch)
+
+  return (["whatsapp", "site", "instagram"] as const).map((ch) => {
+    if (!channelDispatchesAI(ch)) return { channel: ch, handler: "human" as const, reason: "canal ainda sem IA" }
+    if (!aiActive)                return { channel: ch, handler: "human" as const, reason: "IA desligada" }
+    // Mesmo ranking do matcher: Retornou (4) vence o catch-all (1) pro retorno.
+    const reopened = list.find((f) => f.trigger?.type === "reopened"    && catchesChannel(f, ch))
+    const catchAll = list.find((f) => f.trigger?.type === "any_message" && catchesChannel(f, ch))
+    const winner = reopened ?? catchAll
+    if (winner) return { channel: ch, handler: "flow" as const, flowName: winner.name }
+    return { channel: ch, handler: "agent" as const }
+  })
 }

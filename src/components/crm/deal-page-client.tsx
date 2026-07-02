@@ -1,5 +1,7 @@
 "use client"
 
+import { ContactPic } from "@/components/chat/contact-pic"
+
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -199,10 +201,7 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
             <div className="flex items-center gap-x-6 gap-y-2 min-w-0 flex-wrap">
               <div className="flex items-center gap-3.5 min-w-0">
                 <div className="size-14 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0 ring-1 ring-slate-200/70">
-                  {deal.contact?.profile_pic_url
-                    // eslint-disable-next-line @next/next/no-img-element
-                    ? <img src={deal.contact.profile_pic_url} alt="" className="size-14 object-cover" />
-                    : <User className="size-6 text-slate-400" />}
+                  <ContactPic pic={deal.contact?.profile_pic_url} imgClass="size-14 object-cover" fallback={<User className="size-6 text-slate-400" />} />
                 </div>
                 <div className="min-w-0">
                   {deal.contact ? (

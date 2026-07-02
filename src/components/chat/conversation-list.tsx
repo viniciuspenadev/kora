@@ -1,5 +1,7 @@
 "use client"
 
+import { ContactPic } from "@/components/chat/contact-pic"
+
 import { useState, useMemo, useRef, useEffect } from "react"
 import {
   Search, MessageCircle, AlertCircle, Loader2, Filter, CheckCircle2, Clock, Moon,
@@ -451,11 +453,8 @@ export function ConversationList({
                       ) : (
                         <Users className="size-5" />
                       )
-                    ) : contact?.profile_pic_url ? (
-                      /* eslint-disable-next-line @next/next/no-img-element */
-                      <img src={contact.profile_pic_url} alt="" className="size-11 object-cover" />
                     ) : (
-                      <span className="text-base font-bold">{initial}</span>
+                      <ContactPic pic={contact?.profile_pic_url} initial={initial} imgClass="size-11 object-cover" fallbackClass="text-base font-bold" />
                     )}
                   </div>
                   {showSource && (

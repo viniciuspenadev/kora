@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useState, useTransition } from "react"
 import {
-  Save, Loader2, AlertCircle, CheckCircle2, Check, Sparkles,
+  Save, Loader2, AlertCircle, CheckCircle2, Sparkles,
   Settings as SettingsIcon, Users, Pause, Play, UserCheck, Bell, Shuffle, Bot,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
@@ -15,7 +15,7 @@ import {
   updateAutoAssignConfig, setAgentPause,
   type AutoAssignConfig, type AgentInfo,
 } from "@/lib/actions/auto-assign"
-import { updateAtendimentoPolicy } from "@/lib/actions/atendimento"
+import { updateAtendimentoPolicy, type ReturnRoute } from "@/lib/actions/atendimento"
 
 type IAct = "notify" | "redistribute" | "ai"
 type Bind = "carteira" | "pool"
@@ -26,10 +26,8 @@ interface Props {
   initialAgents:     AgentInfo[]
   hasAi:             boolean
   hasStudio:         boolean
-  flows:             { id: string; name: string }[]
   binding:           Bind
-  reopenToAi:        boolean
-  reopenFlowId:      string | null
+  returnRouting:     ReturnRoute[]
   inactivityEnabled: boolean
   inactivityHours:   number
   inactivityAction:  IAct
@@ -43,15 +41,12 @@ export function AtendimentoClient(props: Props) {
   // ── Distribuição ──
   const [config, setConfig] = useState<AutoAssignConfig>(props.initialConfig)
   const [agents, setAgents] = useState<AgentInfo[]>(props.initialAgents)
-  // ── Política (vínculo + IA-no-retorno + inatividade) ──
+  // ── Política (vínculo/posse + inatividade) — "IA no retorno" virou DERIVADO ──
   const [bind, setBind]     = useState<Bind>(props.binding)
-  const [aiFirst, setAiFirst] = useState(props.reopenToAi)
-  const [reopenFlow, setReopenFlow] = useState<string | null>(props.reopenFlowId)
   const [inact, setInact]   = useState(props.inactivityEnabled)
   const [hours, setHours]   = useState(props.inactivityHours)
   const [act, setAct]       = useState<IAct>(props.inactivityAction)
   // Sem IA → opções de IA somem; valores caem no fallback humano na exibição.
-  const aiOn  = props.hasAi && aiFirst
   const dispAct: IAct = props.hasAi || act !== "ai" ? act : "notify"
 
   const [pending, startT]   = useTransition()
@@ -66,10 +61,6 @@ export function AtendimentoClient(props: Props) {
       if ("error" in r1) return flash(false, r1.error)
       const r2 = await updateAtendimentoPolicy({
         handoff_binding: bind,
-        // "IA atende o retorno" só com IA no tenant; o fluxo só com Studio (coerção
-        // defensiva — espelha o gate do servidor).
-        reopen_to_ai: props.hasAi ? aiFirst : false,
-        reopen_flow_id: (props.hasAi && aiFirst && props.hasStudio) ? reopenFlow : null,
         inactivity_enabled: inact, inactivity_hours: hours,
         inactivity_action: (!props.hasAi && act === "ai") ? "notify" : act,
       })
@@ -188,53 +179,51 @@ export function AtendimentoClient(props: Props) {
             <RadioCard active={bind === "carteira"} onClick={() => setBind("carteira")} icon={UserCheck} title="Volta pro mesmo atendente" description="Carteira — cada cliente fica com o atendente responsável. Bom pra vendas com vendedor dono." />
             <RadioCard active={bind === "pool"} onClick={() => setBind("pool")} icon={Users} title="Cai na fila de novo" description="Volta pra fila geral; quem estiver livre atende. Bom pra suporte compartilhado." />
 
-            {/* IA atende o retorno — toggle INDEPENDENTE (combina com a opção acima) */}
-            {props.hasAi && (
-              <ToggleCard
-                active={aiFirst}
-                onClick={() => setAiFirst((v) => !v)}
-                icon={Bot}
-                title="Deixar a IA responder primeiro"
-                description={bind === "carteira"
-                  ? "A IA tria o retorno (responde/qualifica/vende) e, ao terminar o fluxo, devolve pro MESMO atendente. Se ela encaminhar, segue o encaminhamento."
-                  : "A IA tria o retorno antes de cair na fila. Se a IA estiver desligada, vai direto pra fila."}
-              />
-            )}
-
-            {/* Fluxo de retorno — habilita ABAIXO quando a IA-no-retorno está ligada (+ Studio) */}
-            {aiOn && props.hasStudio && (
-              <div className="ml-1 pl-4 border-l-2 border-primary-100 space-y-2 pb-1">
-                <label className="text-xs font-semibold text-slate-700 block">Qual fluxo a IA roda no retorno</label>
-                {props.flows.length === 0 ? (
-                  <p className="text-[11px] text-slate-500">
-                    Você ainda não tem fluxos publicados. A IA vai responder pela persona (Atendente de IA).{" "}
-                    <Link href="/studio/fluxos" className="font-semibold text-primary-700 hover:underline">Criar um fluxo</Link>.
-                  </p>
-                ) : (
-                  <>
-                    <select
-                      value={reopenFlow ?? ""}
-                      onChange={(e) => setReopenFlow(e.target.value || null)}
-                      className="h-9 w-full max-w-sm px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
-                      <option value="">A IA decide pelo gatilho da mensagem</option>
-                      {props.flows.map((f) => (
-                        <option key={f.id} value={f.id}>{f.name}</option>
-                      ))}
-                    </select>
-                    {reopenFlow && !props.flows.some((f) => f.id === reopenFlow) && (
-                      <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2.5 py-1.5">
-                        O fluxo escolhido não está mais publicado. Escolha outro — senão, no retorno, a IA cai na persona.
-                      </p>
-                    )}
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      Dica: pra <b>devolver pro mesmo atendente</b> (carteira), o fluxo precisa <b>terminar</b> (nó Fim) —
-                      se ele encaminhar pra um setor, a IA fica sendo o encaminhamento. E crie um fluxo <b>dedicado ao retorno</b>,
-                      sem a condição de “é cliente?”, senão a etapa do funil desvia quem já é lead/cliente.
-                    </p>
-                  </>
-                )}
+            {/* Quem ATENDE o retorno — DERIVADO do Kora Studio (read-only).
+                O toggle "IA responde primeiro" + seletor de fluxo morreram: o
+                Studio decide (gatilho Retornou/catch-all/agente, por canal);
+                nada casa → volta pro humano sozinho (hand-back). */}
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3.5">
+              <div className="flex items-center gap-2 mb-2">
+                <Bot className="size-4 text-violet-600" />
+                <p className="text-xs font-bold text-slate-800">Quem atende o retorno (definido no Kora Studio)</p>
               </div>
-            )}
+              <div className="space-y-1.5">
+                {props.returnRouting.map((r) => (
+                  <div key={r.channel} className="flex items-center gap-2 text-xs">
+                    <span className="w-20 shrink-0 font-semibold text-slate-500">
+                      {r.channel === "whatsapp" ? "WhatsApp" : r.channel === "site" ? "Site" : "Instagram"}
+                    </span>
+                    {r.handler === "flow" ? (
+                      <span className="inline-flex items-center gap-1.5 text-violet-700">
+                        <span className="size-1.5 rounded-full bg-violet-500" />
+                        IA — fluxo <b>{r.flowName}</b>
+                        {bind === "carteira" && <span className="text-slate-400">(e devolve pro responsável)</span>}
+                      </span>
+                    ) : r.handler === "agent" ? (
+                      <span className="inline-flex items-center gap-1.5 text-violet-700">
+                        <span className="size-1.5 rounded-full bg-violet-500" />
+                        IA — Atendente de IA (persona)
+                        {bind === "carteira" && <span className="text-slate-400">(e devolve pro responsável)</span>}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-slate-600">
+                        <span className="size-1.5 rounded-full bg-slate-400" />
+                        Humano — {bind === "carteira" ? "responsável" : "fila geral"}
+                        {r.reason && <span className="text-slate-400">({r.reason})</span>}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {props.hasStudio && (
+                <p className="text-[11px] text-slate-400 mt-2.5">
+                  Pra mudar quem atende, ajuste os fluxos e gatilhos no{" "}
+                  <Link href="/studio/fluxos" className="font-semibold text-primary-700 hover:underline">Kora Studio</Link>
+                  {" "}— o gatilho <b>“Retornou”</b> cria uma experiência dedicada ao retorno.
+                </p>
+              )}
+            </div>
           </div>
         </SectionCard>
       )}
@@ -296,25 +285,6 @@ function RadioCard({ active, onClick, title, description, icon: Icon }: { active
         {Icon && <Icon className="size-3.5" />} {title}
       </p>
       <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{description}</p>
-    </button>
-  )
-}
-
-// Mesmo visual do RadioCard, mas é um toggle INDEPENDENTE (checkbox à direita) —
-// combina com a escolha de radio acima (dá pra ver "dois selecionados").
-function ToggleCard({ active, onClick, title, description, icon: Icon }: { active: boolean; onClick: () => void; title: string; description: string; icon?: React.ComponentType<{ className?: string }> }) {
-  return (
-    <button type="button" onClick={onClick}
-      className={`w-full text-left p-3 rounded-lg border-2 transition-all flex items-start gap-2.5 ${active ? "border-primary bg-primary-50/50 ring-2 ring-primary/10" : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}`}>
-      <div className="flex-1 min-w-0">
-        <p className={`text-sm font-semibold flex items-center gap-1.5 ${active ? "text-primary-700" : "text-slate-900"}`}>
-          {Icon && <Icon className="size-3.5" />} {title}
-        </p>
-        <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">{description}</p>
-      </div>
-      <span className={`mt-0.5 size-4 rounded-md border flex items-center justify-center shrink-0 transition-colors ${active ? "bg-primary border-primary text-white" : "border-slate-300 bg-white"}`}>
-        {active && <Check className="size-3" strokeWidth={3} />}
-      </span>
     </button>
   )
 }

@@ -1,5 +1,7 @@
 "use client"
 
+import { ContactPic } from "@/components/chat/contact-pic"
+
 import Link from "next/link"
 import { useState, useTransition, useEffect, useCallback } from "react"
 import {
@@ -323,12 +325,7 @@ function HeaderCard({
       )}
 
       <div className="size-16 rounded-full bg-slate-100 ring-1 ring-slate-200 flex items-center justify-center mb-2.5 overflow-hidden mt-1">
-        {contact.profile_pic_url ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={contact.profile_pic_url} alt="" className="size-16 object-cover" />
-        ) : (
-          <span className="text-xl font-bold text-slate-400">{initial}</span>
-        )}
+        <ContactPic pic={contact.profile_pic_url} initial={initial} imgClass="size-16 object-cover" fallbackClass="text-xl font-bold text-slate-400" />
       </div>
       <p className="text-[15px] font-semibold text-slate-900 text-center truncate max-w-full">
         {displayName}

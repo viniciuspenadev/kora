@@ -1,5 +1,7 @@
 "use client"
 
+import { ContactPic } from "@/components/chat/contact-pic"
+
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { MessageBubble } from "./message-bubble"
 import { MessageInput } from "./message-input"
@@ -354,19 +356,16 @@ export function ChatPanel({
                 <Users className="size-5 text-white" />
               </div>
             )
-          ) : contact?.profile_pic_url ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={contact.profile_pic_url}
-              alt=""
-              className="size-10 rounded-full object-cover shrink-0"
-            />
           ) : (
-            <div className="size-10 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0">
-              <span className="text-sm font-bold text-slate-400">
-                {contact ? displayContactInitial(contact) : "?"}
-              </span>
-            </div>
+            <ContactPic
+              pic={contact?.profile_pic_url}
+              imgClass="size-10 rounded-full object-cover shrink-0"
+              fallback={
+                <div className="size-10 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0">
+                  <span className="text-sm font-bold text-slate-400">{contact ? displayContactInitial(contact) : "?"}</span>
+                </div>
+              }
+            />
           )}
           <div className="min-w-0">
             <p className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5">

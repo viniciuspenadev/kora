@@ -19,6 +19,7 @@ import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { NewConversationModal } from "@/components/chat/new-conversation-modal"
 import { SourceLogo } from "@/components/chat/source-logo"
+import { ContactPic } from "@/components/chat/contact-pic"
 
 // Canal da conversa → fonte do logo de marca (SourceLogo). null = sem logo (ex: e-mail/legado).
 const CHANNEL_SOURCE: Record<string, string> = { whatsapp: "whatsapp_inbound", instagram: "instagram", site: "webform" }
@@ -605,12 +606,7 @@ function ConversationCard({
       <div className="flex items-start gap-2.5">
         <div className="relative shrink-0">
           <div className="size-9 rounded-full bg-gradient-to-br from-slate-50 to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center overflow-hidden">
-            {contact?.profile_pic_url ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img src={contact.profile_pic_url} alt="" className="size-9 object-cover" />
-            ) : (
-              <span className="text-sm font-bold text-slate-400">{initial}</span>
-            )}
+            <ContactPic pic={contact?.profile_pic_url} initial={initial} imgClass="size-9 object-cover" />
           </div>
           {chSource && (
             <span className="absolute -bottom-1 -right-1 inline-flex items-center justify-center">

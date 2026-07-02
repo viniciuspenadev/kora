@@ -1,5 +1,7 @@
 "use client"
 
+import { ContactPic } from "@/components/chat/contact-pic"
+
 import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
 import {
@@ -316,12 +318,7 @@ function ContactRow({
   return (
     <div className="group flex items-center gap-3 px-5 py-3.5 hover:bg-slate-50/60 transition-colors">
       <div className="size-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0 overflow-hidden">
-        {contact.profile_pic_url ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img src={contact.profile_pic_url} alt={name} className="size-10 object-cover" />
-        ) : (
-          <span className="text-sm font-bold text-slate-500">{initial}</span>
-        )}
+        <ContactPic pic={contact.profile_pic_url} initial={initial} imgClass="size-10 object-cover" fallbackClass="text-sm font-bold text-slate-500" />
       </div>
 
       <div className="flex-1 min-w-0">
