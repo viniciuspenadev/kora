@@ -9,7 +9,7 @@ import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked, IdCard,
-  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList,
+  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList, ListChecks,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -108,6 +108,7 @@ const NAV: NavItem[] = [
           { href: "/configuracoes/catalogo", label: "Catálogo", icon: <Package       className={subIcon} strokeWidth={1.75} />, module: "crm" },
           { href: "/configuracoes/motivos",  label: "Motivos de perda", icon: <ClipboardList className={subIcon} strokeWidth={1.75} />, module: "crm" },
           { href: "/configuracoes/tags",     label: "Tags",     icon: <TagIcon       className={subIcon} strokeWidth={1.75} /> },
+          { href: "/configuracoes/listas",   label: "Listas",   icon: <ListChecks    className={subIcon} strokeWidth={1.75} /> },
         ],
       },
       { href: "/configuracoes/cadastro",       label: "Campos do cadastro", icon: <IdCard       className={subIcon} strokeWidth={1.75} /> },

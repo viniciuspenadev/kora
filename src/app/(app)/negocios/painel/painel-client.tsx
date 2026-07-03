@@ -48,6 +48,10 @@ const LENS: Record<Lens, { color: string; soft: string; ring: string }> = {
 }
 const LOSS_COLORS = ["#b91c1c", "#ef4444", "#f87171", "#fca5a5", "#dc2626", "#fecaca", "#991b1b", "#fee2e2"]
 
+/** Linha das listas Produtos/Atendentes — colunas FIXAS (nome flexível + Vendas ·
+    Ticket médio · Total) → tudo alinhado verticalmente, como a referência. */
+const STAT_ROW = "grid grid-cols-[minmax(0,1fr)_56px_108px_84px] items-center gap-3 py-2.5"
+
 const PERIODS = [
   { value: "30",  label: "Últimos 30 dias" },
   { value: "90",  label: "Últimos 90 dias" },
@@ -143,25 +147,32 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
 
   // ── produtos & atendentes (listas) ──────────────────────────────
   const products = useMemo(() => {
-    const g = new Map<string, { sales: number; total: number }>()
+    const g = new Map<string, { sales: number; total: number; sku: string | null }>()
     for (const d of set) for (const it of d.items) {
-      const cur = g.get(it.name) ?? { sales: 0, total: 0 }
+      const cur = g.get(it.name) ?? { sales: 0, total: 0, sku: it.sku }
       cur.sales += 1; cur.total += it.total
+      if (!cur.sku && it.sku) cur.sku = it.sku
       g.set(it.name, cur)
     }
     return [...g.entries()].map(([name, x]) => ({ name, ...x })).sort((a, b) => b.total - a.total).slice(0, 6)
   }, [set])
 
   const agents = useMemo(() => {
-    const g = new Map<string, { sales: number; total: number }>()
+    const meta = new Map(data.agentProfiles.map((p) => [p.id, p]))
+    const g = new Map<string, { id: string | null; name: string; email: string | null; sales: number; total: number }>()
     for (const d of set) {
-      const k = d.responsible ?? "Sem responsável"
-      const cur = g.get(k) ?? { sales: 0, total: 0 }
+      const key = d.responsible_id ?? d.responsible ?? "—"
+      const cur = g.get(key) ?? {
+        id: d.responsible_id,
+        name: d.responsible ?? "Sem responsável",
+        email: d.responsible_id ? (meta.get(d.responsible_id)?.email ?? null) : null,
+        sales: 0, total: 0,
+      }
       cur.sales += 1; cur.total += d.value
-      g.set(k, cur)
+      g.set(key, cur)
     }
-    return [...g.entries()].map(([name, x]) => ({ name, ...x })).sort((a, b) => b.total - a.total).slice(0, 6)
-  }, [set])
+    return [...g.values()].sort((a, b) => b.total - a.total).slice(0, 6)
+  }, [set, data.agentProfiles])
 
   // ── dados mensais (criados / ganhos / perdidos) ─────────────────
   const monthly = useMemo(() => {
@@ -257,20 +268,20 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
             ) : (
               <div className="mt-2 divide-y divide-slate-100">
                 {products.map((p) => (
-                  <div key={p.name} className="flex items-center gap-3 py-2.5">
-                    <span className="size-8 rounded-lg grid place-items-center text-[11px] font-bold text-white shrink-0" style={{ background: avaColor(p.name) }}>{initials(p.name)}</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold text-slate-800 truncate">{p.name}</p>
-                      <p className="text-[10.5px] text-slate-400">Vendas <span className="tabular-nums font-semibold text-slate-500">{p.sales}</span></p>
+                  <div key={p.name} className={STAT_ROW}>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="size-9 rounded-lg grid place-items-center text-xs font-bold shrink-0"
+                        style={{ background: `color-mix(in srgb, ${avaColor(p.name)} 16%, transparent)`, color: avaColor(p.name) }}>
+                        {initials(p.name).slice(0, 1)}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900 truncate">{p.name}</p>
+                        {p.sku && <p className="text-[10.5px] text-slate-400 truncate">SKU:{p.sku}</p>}
+                      </div>
                     </div>
-                    <div className="text-right shrink-0 hidden sm:block">
-                      <p className="text-[10px] text-slate-400">Ticket médio</p>
-                      <p className="text-xs font-semibold text-slate-700 tabular-nums">{brl(p.total / p.sales)}</p>
-                    </div>
-                    <div className="text-right shrink-0 w-20">
-                      <p className="text-[10px] text-slate-400">Total</p>
-                      <p className="text-xs font-bold tabular-nums" style={{ color: L.color }}>{brlK(p.total)}</p>
-                    </div>
+                    <StatCell label="Vendas"       value={String(p.sales)} />
+                    <StatCell label="Ticket médio" value={brl(p.total / p.sales)} />
+                    <StatCell label="Total"        value={brlK(p.total)} color={L.color} />
                   </div>
                 ))}
               </div>
@@ -283,21 +294,23 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
             ) : (
               <div className="mt-2 divide-y divide-slate-100">
                 {agents.map((a) => (
-                  <div key={a.name} className="flex items-center gap-3 py-2.5">
-                    <span className="size-8 rounded-full grid place-items-center text-[11px] font-bold text-white shrink-0" style={{ background: avaColor(a.name) }}>{initials(a.name)}</span>
-                    <p className="text-xs font-semibold text-slate-800 truncate flex-1">{a.name}</p>
-                    <div className="text-right shrink-0 hidden sm:block">
-                      <p className="text-[10px] text-slate-400">Vendas</p>
-                      <p className="text-xs font-semibold text-slate-700 tabular-nums">{a.sales}</p>
+                  <div key={a.id ?? a.name} className={STAT_ROW}>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="size-9 rounded-full overflow-hidden grid place-items-center text-xs font-bold text-white shrink-0" style={{ background: avaColor(a.name) }}>
+                        <ContactPic
+                          pic={a.id ? `/api/user-avatar/${a.id}` : null}
+                          imgClass="size-full object-cover"
+                          fallback={<span>{initials(a.name)}</span>}
+                        />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-900 truncate">{a.name}</p>
+                        {a.email && <p className="text-[10.5px] text-slate-400 truncate">{a.email}</p>}
+                      </div>
                     </div>
-                    <div className="text-right shrink-0 hidden md:block">
-                      <p className="text-[10px] text-slate-400">Ticket médio</p>
-                      <p className="text-xs font-semibold text-slate-700 tabular-nums">{brl(a.total / a.sales)}</p>
-                    </div>
-                    <div className="text-right shrink-0 w-20">
-                      <p className="text-[10px] text-slate-400">Total</p>
-                      <p className="text-xs font-bold tabular-nums" style={{ color: L.color }}>{brlK(a.total)}</p>
-                    </div>
+                    <StatCell label="Vendas"       value={String(a.sales)} />
+                    <StatCell label="Ticket médio" value={brl(a.total / a.sales)} />
+                    <StatCell label="Total"        value={brlK(a.total)} color={L.color} />
                   </div>
                 ))}
               </div>
@@ -346,6 +359,17 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
           )}
         </section>
       </div>
+    </div>
+  )
+}
+
+/** Célula das listas: rótulo em cima, valor embaixo (layout da referência). */
+function StatCell({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] text-slate-400 leading-tight whitespace-nowrap">{label}</p>
+      <p className={`text-xs font-bold tabular-nums leading-tight truncate ${color ? "" : "text-slate-800"}`}
+        style={color ? { color } : undefined} title={value}>{value}</p>
     </div>
   )
 }

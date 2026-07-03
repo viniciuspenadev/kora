@@ -14,7 +14,7 @@ export default async function ContatosPage() {
   const tenantId = session.user.tenantId
   const crmEnabled = await hasModule(tenantId, "crm")
 
-  const [{ data: contacts }, { data: tags }, { data: taggings }, { data: identities }, wonRes] = await Promise.all([
+  const [{ data: contacts }, { data: tags }, { data: taggings }, { data: identities }, wonRes, listsRes, membersRes] = await Promise.all([
     supabaseAdmin
       .from("chat_contacts")
       .select(`
@@ -49,6 +49,9 @@ export default async function ContatosPage() {
           .eq("tenant_id", tenantId).eq("status", "won").not("won_at", "is", null)
           .limit(5000)
       : Promise.resolve({ data: null }),
+    // Listas (segmentos salvos) + membros — gracioso se a migration não foi aplicada.
+    supabaseAdmin.from("contact_lists").select("id, name, kind, rules").eq("tenant_id", tenantId).order("name"),
+    supabaseAdmin.from("contact_list_members").select("list_id, contact_id").eq("tenant_id", tenantId),
   ])
 
   const tagsByContact = new Map<string, string[]>()
@@ -91,11 +94,22 @@ export default async function ContatosPage() {
     }
   }
 
+  // Listas por contato (segmentos salvos).
+  const listsByContact = new Map<string, string[]>()
+  for (const m of ((membersRes.data ?? []) as { list_id: string; contact_id: string }[])) {
+    const arr = listsByContact.get(m.contact_id) ?? []
+    arr.push(m.list_id)
+    listsByContact.set(m.contact_id, arr)
+  }
+  const lists = ((listsRes.data ?? []) as { id: string; name: string; kind: "static" | "dynamic" | null; rules: unknown }[])
+    .map((l) => ({ id: l.id, name: l.name, kind: (l.kind ?? "static") as "static" | "dynamic", rules: (l.rules ?? null) as import("@/lib/crm/segment-rules").SegmentRules | null }))
+
   const enrichedContacts = (contacts ?? []).map((c) => ({
     ...c,
     tag_ids:  tagsByContact.get(c.id) ?? [],
     channels: CHANNEL_ORDER.filter((ch) => channelsByContact.get(c.id)?.has(ch)),
     commerce: commerceByContact.get(c.id) ?? null,
+    list_ids: listsByContact.get(c.id) ?? [],
   }))
 
   const total    = enrichedContacts.length
@@ -129,6 +143,7 @@ export default async function ContatosPage() {
         <ContatosList
           contacts={enrichedContacts}
           tags={tags ?? []}
+          lists={lists}
           stats={{ total, blocked, withTags }}
           crmEnabled={crmEnabled}
         />

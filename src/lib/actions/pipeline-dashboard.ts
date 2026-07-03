@@ -25,9 +25,10 @@ export interface DashDeal {
   lost_at:          string | null
   stage_entered_at: string | null
   responsible:      string | null
+  responsible_id:   string | null
   lost_reason:      string | null
-  /** Itens da composição (nome + contribuição no valor total). */
-  items:            { name: string; total: number }[]
+  /** Itens da composição (nome + contribuição no valor total + SKU se houver). */
+  items:            { name: string; total: number; sku: string | null }[]
   /** Entradas de etapa em ordem cronológica (created + stage_changed + reopened). */
   path:             { stage: string; at: string }[]
 }
@@ -42,6 +43,8 @@ export interface PipelineDashboardData {
   pipelines: { id: string; name: string; is_default: boolean }[]
   stages:    DashStage[]
   deals:     DashDeal[]
+  /** Perfis dos responsáveis (nome + email) — foto via /api/user-avatar/[id]. */
+  agentProfiles: { id: string; name: string; email: string | null }[]
 }
 
 export async function getPipelineDashboard(opts: { pipelineId?: string | null; from: string; to: string }): Promise<PipelineDashboardData | { error: string }> {
@@ -81,16 +84,24 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
       : Promise.resolve({ data: [] as unknown[] }),
     dealIds.length
       ? supabaseAdmin.from("tenant_deal_items")
-          .select("deal_id, name, billing, unit_price, quantity, discount, term_months")
+          .select("deal_id, name, billing, unit_price, quantity, discount, term_months, catalog_item_id")
           .eq("tenant_id", t).in("deal_id", dealIds)
       : Promise.resolve({ data: [] as unknown[] }),
     (() => {
       const ids = Array.from(new Set(rows.map((r) => r.created_by).filter(Boolean))) as string[]
       return ids.length
-        ? supabaseAdmin.from("profiles").select("id, full_name").in("id", ids)
+        ? supabaseAdmin.from("profiles").select("id, full_name, email").in("id", ids)
         : Promise.resolve({ data: [] as unknown[] })
     })(),
   ])
+
+  // SKU dos itens (subtítulo do produto-mix, como a referência: "SKU:tbronze").
+  const catIds = Array.from(new Set(((itemRows ?? []) as { catalog_item_id: string | null }[]).map((i) => i.catalog_item_id).filter(Boolean))) as string[]
+  const skuMap = new Map<string, string | null>()
+  if (catIds.length) {
+    const { data: cats } = await supabaseAdmin.from("catalog_items").select("id, sku").eq("tenant_id", t).in("id", catIds)
+    for (const c of (cats ?? []) as { id: string; sku: string | null }[]) skuMap.set(c.id, c.sku)
+  }
 
   const pathMap = new Map<string, { stage: string; at: string }[]>()
   for (const e of (evRows ?? []) as { deal_id: string; to_stage: string | null; at: string }[]) {
@@ -100,7 +111,7 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
     pathMap.set(e.deal_id, arr)
   }
 
-  const itemMap = new Map<string, { name: string; total: number }[]>()
+  const itemMap = new Map<string, { name: string; total: number; sku: string | null }[]>()
   for (const i of (itemRows ?? []) as Record<string, unknown>[]) {
     const line = {
       billing: i.billing as "one_time" | "monthly" | "yearly",
@@ -111,11 +122,13 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
     const term = line.term_months ?? DEFAULT_TERM_MONTHS
     const total = line.billing === "one_time" ? sub : line.billing === "monthly" ? sub * term : sub * (term / 12)
     const arr = itemMap.get(i.deal_id as string) ?? []
-    arr.push({ name: i.name as string, total: Math.round(total * 100) / 100 })
+    arr.push({ name: i.name as string, total: Math.round(total * 100) / 100, sku: i.catalog_item_id ? (skuMap.get(i.catalog_item_id as string) ?? null) : null })
     itemMap.set(i.deal_id as string, arr)
   }
 
-  const profMap = new Map(((profRows ?? []) as { id: string; full_name: string | null }[]).map((p) => [p.id, p.full_name ?? "—"]))
+  const profs = ((profRows ?? []) as { id: string; full_name: string | null; email: string | null }[])
+  const profMap = new Map(profs.map((p) => [p.id, p.full_name ?? "—"]))
+  const agentProfiles = profs.map((p) => ({ id: p.id, name: p.full_name ?? "—", email: p.email }))
 
   const deals: DashDeal[] = rows.map((r) => {
     const c = r.chat_contacts as { push_name: string | null; custom_name: string | null; profile_pic_url: string | null } | null
@@ -134,6 +147,7 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
       lost_at: (r.lost_at as string | null) ?? null,
       stage_entered_at: (r.stage_entered_at as string | null) ?? null,
       responsible: r.created_by ? (profMap.get(r.created_by as string) ?? null) : null,
+      responsible_id: (r.created_by as string | null) ?? null,
       lost_reason: (r.lost_reason as string | null) ?? null,
       items: itemMap.get(r.id as string) ?? [],
       path,
@@ -145,5 +159,6 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
     pipelines,
     stages: ((stageRows ?? []) as DashStage[]),
     deals,
+    agentProfiles,
   }
 }

@@ -6,10 +6,12 @@ import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
 import {
   Search, Filter, Inbox, Tag as TagIcon, Plus, Ban, Phone, MessageCircle, Loader2, Check,
-  Pencil, X, MoreHorizontal, ExternalLink,
+  Pencil, X, MoreHorizontal, ExternalLink, ListChecks,
 } from "lucide-react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { createTag, applyTag, removeTag, applyTagToContacts } from "@/lib/actions/tags"
+import { addContactsToList } from "@/lib/actions/lists"
+import { matchesSegment, type SegmentRules } from "@/lib/crm/segment-rules"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { ContactEditSheet } from "./contact-edit-sheet"
@@ -44,6 +46,8 @@ interface Contact {
   channels:        string[]   // canais que o contato tem no cadastro (whatsapp/instagram/site)
   /** Dados comerciais (negócios GANHOS) — null sem compras / sem módulo crm. */
   commerce:        { total: number; compras: number; ciclo: number | null; ultimaDias: number | null; ticket: number | null } | null
+  /** Listas (segmentos salvos) que o contato integra. */
+  list_ids:        string[]
 }
 
 interface Tag {
@@ -62,6 +66,8 @@ interface Stats {
 interface Props {
   contacts: Contact[]
   tags:     Tag[]
+  /** Listas (segmentos salvos) — bulk "Adicionar à lista" (estáticas) e filtro ?list=. */
+  lists:    { id: string; name: string; kind: "static" | "dynamic"; rules: SegmentRules | null }[]
   stats:    Stats
   /** Módulo crm ligado → mostra os dados comerciais (roster) e o Contato 360. */
   crmEnabled?: boolean
@@ -86,16 +92,21 @@ function formatPhone(phone: string | null | undefined): string {
   return phone
 }
 
-export function ContatosList({ contacts: initialContacts, tags: initialTags, stats, crmEnabled = false }: Props) {
-  // Deep-link de SEGMENTO: /contatos?tag=<id> chega com o público já filtrado
-  // (contagem clicável em Configurações → Tags).
-  const urlTag = useSearchParams().get("tag")
+export function ContatosList({ contacts: initialContacts, tags: initialTags, lists, stats, crmEnabled = false }: Props) {
+  // Deep-link de SEGMENTO: /contatos?tag=<id> ou ?list=<id> chega com o público
+  // já filtrado (contagens clicáveis em Configurações → Tags/Listas).
+  const params  = useSearchParams()
+  const urlTag  = params.get("tag")
+  const urlList = params.get("list")
   const [contacts, setContacts] = useState(initialContacts)
   const [tags, setTags]         = useState(initialTags)
   const [search, setSearch]     = useState("")
   const [filter, setFilter]     = useState<"all" | "blocked" | "with_tags" | "with_email" | "with_company" | "no_custom_name">("all")
   const [selectedTags, setSelectedTags] = useState<Set<string>>(
     () => new Set(urlTag && initialTags.some((t) => t.id === urlTag) ? [urlTag] : [])
+  )
+  const [listFilter, setListFilter] = useState<string | null>(
+    () => (urlList && lists.some((l) => l.id === urlList) ? urlList : null)
   )
   const [editing, setEditing]   = useState<Contact | null>(null)
   const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string } | null>(null)
@@ -116,6 +127,11 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
       ids.has(c.id) && !c.tag_ids.includes(tagId) ? { ...c, tag_ids: [...c.tag_ids, tagId] } : c
     ))
   }
+  function bulkListApplied(listId: string, ids: Set<string>) {
+    setContacts((prev) => prev.map((c) =>
+      ids.has(c.id) && !c.list_ids.includes(listId) ? { ...c, list_ids: [...c.list_ids, listId] } : c
+    ))
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -125,6 +141,19 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
       if (filter === "with_email"     && !c.email) return false
       if (filter === "with_company"   && !c.company) return false
       if (filter === "no_custom_name" && c.custom_name) return false
+
+      if (listFilter) {
+        const l = lists.find((x) => x.id === listFilter)
+        if (l?.kind === "dynamic" && l.rules) {
+          // Segmento dinâmico: avalia as regras sobre a linha (mesmo avaliador do server).
+          if (!matchesSegment({
+            lifecycle_stage: c.lifecycle_stage,
+            tag_ids: c.tag_ids,
+            created_at: c.created_at,
+            ultima_dias: c.commerce?.ultimaDias ?? null,
+          }, l.rules)) return false
+        } else if (!c.list_ids.includes(listFilter)) return false
+      }
 
       if (selectedTags.size > 0) {
         for (const tId of selectedTags) {
@@ -141,7 +170,7 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
         (c.phone_number ?? "").includes(q)
       )
     })
-  }, [contacts, search, filter, selectedTags])
+  }, [contacts, search, filter, selectedTags, listFilter, lists])
 
   function toggleTagFilter(id: string) {
     setSelectedTags((prev) => {
@@ -195,6 +224,15 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
             />
           </div>
           <TagManagerButton tags={tags} onTagCreated={handleTagCreated} />
+          {listFilter && (
+            <span className="shrink-0 inline-flex items-center gap-1.5 h-9 pl-3 pr-1.5 text-xs font-semibold bg-primary-50 text-primary-700 border border-primary-200 rounded-lg">
+              Lista: {lists.find((l) => l.id === listFilter)?.name ?? "—"}
+              <button type="button" onClick={() => setListFilter(null)} title="Limpar filtro de lista"
+                className="size-6 grid place-items-center rounded-md hover:bg-primary-100 transition-colors">
+                <X className="size-3" />
+              </button>
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1 px-4 py-2 border-t border-slate-100 overflow-x-auto">
@@ -310,12 +348,22 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
         <BulkBar
           count={selected.size}
           tags={tags}
+          lists={lists.filter((l) => l.kind === "static")}   // dinâmica não recebe membro manual
           onApply={async (tagId) => {
             const ids = new Set(selected)
             try {
               const r = await applyTagToContacts(tagId, Array.from(ids))
               bulkTagApplied(tagId, ids)
               flash("ok", r.applied > 0 ? `Tag aplicada a ${r.applied} contato${r.applied !== 1 ? "s" : ""}.` : "Todos os selecionados já tinham essa tag.")
+              setSelected(new Set())
+            } catch (err) { flash("error", (err as Error).message) }
+          }}
+          onApplyList={async (listId) => {
+            const ids = new Set(selected)
+            try {
+              const r = await addContactsToList(listId, Array.from(ids))
+              bulkListApplied(listId, ids)
+              flash("ok", r.added > 0 ? `${r.added} contato${r.added !== 1 ? "s" : ""} adicionado${r.added !== 1 ? "s" : ""} à lista.` : "Todos os selecionados já estavam na lista.")
               setSelected(new Set())
             } catch (err) { flash("error", (err as Error).message) }
           }}
@@ -659,47 +707,70 @@ function PurchasesRing({ count }: { count: number }) {
 }
 
 /** Barra flutuante da seleção em massa — a segmentação virando AÇÃO. */
-function BulkBar({ count, tags, onApply, onClear }: {
+function BulkBar({ count, tags, lists, onApply, onApplyList, onClear }: {
   count: number
   tags: Tag[]
+  lists: { id: string; name: string }[]
   onApply: (tagId: string) => Promise<void>
+  onApplyList: (listId: string) => Promise<void>
   onClear: () => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState<"tag" | "list" | null>(null)
   const [pending, startTransition] = useTransition()
 
+  function menu(kind: "tag" | "list", items: { id: string; name: string; color?: string }[], run: (id: string) => Promise<void>) {
+    if (open !== kind) return null
+    return (
+      <>
+        <div className="fixed inset-0 z-10" onClick={() => setOpen(null)} />
+        <div className="absolute bottom-full left-0 mb-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-20 max-h-64 overflow-y-auto py-1">
+          {items.length === 0 && <p className="px-3 py-2 text-[11px] text-slate-400">Nada criado ainda.</p>}
+          {items.map((it) => (
+            <button
+              key={it.id}
+              type="button"
+              disabled={pending}
+              onClick={() => { setOpen(null); startTransition(async () => { await run(it.id) }) }}
+              className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-colors disabled:opacity-50"
+            >
+              {it.color
+                ? <span className="size-2.5 rounded-full shrink-0" style={{ backgroundColor: it.color }} />
+                : <ListChecks className="size-3 text-primary-500 shrink-0" />}
+              <span className="truncate">{it.name}</span>
+            </button>
+          ))}
+        </div>
+      </>
+    )
+  }
+
   return (
-    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-slate-900 text-white rounded-xl pl-4 pr-2 py-2 shadow-2xl animate-in slide-in-from-bottom-2 fade-in-0 duration-150">
-      <span className="text-xs font-semibold tabular-nums">{count} selecionado{count !== 1 ? "s" : ""}</span>
+    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-slate-900 text-white rounded-xl pl-4 pr-2 py-2 shadow-2xl animate-in slide-in-from-bottom-2 fade-in-0 duration-150">
+      <span className="text-xs font-semibold tabular-nums mr-1">{count} selecionado{count !== 1 ? "s" : ""}</span>
       <div className="relative">
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => setOpen(open === "tag" ? null : "tag")}
           disabled={pending || tags.length === 0}
           className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold bg-white/10 hover:bg-white/20 rounded-lg transition-colors disabled:opacity-50"
         >
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : <TagIcon className="size-3.5" />}
           Aplicar tag
         </button>
-        {open && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-            <div className="absolute bottom-full left-0 mb-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-20 max-h-64 overflow-y-auto py-1">
-              {tags.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  disabled={pending}
-                  onClick={() => { setOpen(false); startTransition(async () => { await onApply(t.id) }) }}
-                  className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-colors disabled:opacity-50"
-                >
-                  <span className="size-2.5 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
-                  <span className="truncate">{t.name}</span>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+        {menu("tag", tags, onApply)}
+      </div>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen(open === "list" ? null : "list")}
+          disabled={pending || lists.length === 0}
+          title={lists.length === 0 ? "Crie listas em Configurações → Comercial → Listas" : undefined}
+          className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold bg-white/10 hover:bg-white/20 rounded-lg transition-colors disabled:opacity-50"
+        >
+          <ListChecks className="size-3.5" />
+          Adicionar à lista
+        </button>
+        {menu("list", lists, onApplyList)}
       </div>
       <button
         type="button"

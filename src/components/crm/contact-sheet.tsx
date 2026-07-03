@@ -1,21 +1,30 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   X, Loader2, MessageSquare, ExternalLink, Trophy, XCircle, Briefcase, Calendar,
-  User, CheckSquare, TrendingUp, Wallet, RefreshCcw, ShoppingBag, Clock,
+  User, CheckSquare, TrendingUp, Wallet, RefreshCcw, ShoppingBag, Clock, Plus,
+  Tag as TagIcon, ListChecks, Check, Bot,
 } from "lucide-react"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { getContactSheet, type ContactSheetData } from "@/lib/actions/contact-sheet"
 import type { ActivityItem } from "@/lib/actions/deals"
+import { applyTag, removeTag } from "@/lib/actions/tags"
+import { addContactsToList, removeContactFromList } from "@/lib/actions/lists"
+import { setTaskDone } from "@/lib/actions/tasks"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem,
+} from "@/components/ui/dropdown-menu"
 
 // ─────────────────────────────────────────────────────────────────
-// Contato 360 — sheet lateral (tela 4 da referência): identidade + tags +
-// 4 KPIs comerciais à esquerda · dossiê (Histórico | Atividades | Negócios)
-// à direita. Uma superfície, N portas (board de Negócios é a primeira).
+// Contato 360 — sheet lateral (tela 4 da referência, "com vida"):
+// banda + avatar grande · tags e LISTAS gerenciáveis aqui mesmo · KPIs em
+// cards com ícone colorido · dossiê com timeline conectada, atividades com
+// concluir e negócios ricos. Define a linguagem da futura repaginação do
+// detalhe do negócio. Uma superfície, N portas (board · roster).
 // ─────────────────────────────────────────────────────────────────
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
@@ -41,9 +50,12 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab]     = useState<DossierTab>("historico")
   const [info, setInfo]   = useState<InfoTab>("perfil")
+  const [pending, start]  = useTransition()
 
   useEffect(() => {
     if (!contactId) return
+    // Reset síncrono intencional: novo contato → limpa o sheet antes do fetch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setData(null); setError(null); setTab("historico"); setInfo("perfil")
     let alive = true
     getContactSheet(contactId)
@@ -74,23 +86,58 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
     }
   }, [data])
 
+  // ── mutações inline (tags · listas · concluir tarefa) ──────────
+  function toggleTag(tagId: string, next: boolean) {
+    if (!data || !contactId) return
+    const tag = data.allTags.find((t) => t.id === tagId)
+    if (!tag) return
+    setData({ ...data, tags: next ? [...data.tags, tag].sort((a, b) => a.name.localeCompare(b.name)) : data.tags.filter((t) => t.id !== tagId) })
+    start(async () => {
+      try { if (next) await applyTag(tagId, "contact", contactId); else await removeTag(tagId, "contact", contactId) }
+      catch (e) { alert((e as Error).message) }
+    })
+  }
+
+  function toggleList(listId: string, next: boolean) {
+    if (!data || !contactId) return
+    setData({ ...data, memberListIds: next ? [...data.memberListIds, listId] : data.memberListIds.filter((id) => id !== listId) })
+    start(async () => {
+      try { if (next) await addContactsToList(listId, [contactId]); else await removeContactFromList(listId, contactId) }
+      catch (e) { alert((e as Error).message) }
+    })
+  }
+
+  function doneTask(taskId: string) {
+    if (!data) return
+    setData({
+      ...data,
+      record: { ...data.record, deals: data.record.deals.map((d) => d.next_task?.id === taskId ? { ...d, next_task: null } : d) },
+    })
+    start(async () => {
+      const r = await setTaskDone(taskId, true)
+      if (r && "error" in r && r.error) alert(r.error)
+    })
+  }
+
   if (!contactId) return null
   const c    = data?.record.contact
   const name = c ? (c.custom_name?.trim() || c.push_name?.trim() || (c.phone_number ? formatPhoneDisplay(c.phone_number) : "Contato")) : ""
   const life = c?.lifecycle_stage ? LIFE[c.lifecycle_stage] : null
   const openConv = data?.record.conversations?.[0]?.id ?? null
   const pendingTasks = (data?.record.deals ?? []).flatMap((d) => d.next_task ? [{ ...d.next_task, dealName: d.name }] : [])
+  const memberLists = (data?.lists ?? []).filter((l) => data?.memberListIds.includes(l.id))
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/40 backdrop-blur-[2px]" onClick={onClose}>
       <aside
         onClick={(e) => e.stopPropagation()}
-        className="h-full w-full sm:max-w-[880px] bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-200"
+        className="h-full w-full sm:max-w-[1100px] bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-200"
       >
         {/* topo */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 shrink-0">
           <h2 className="text-sm font-bold text-slate-900">Contato</h2>
           <div className="flex items-center gap-2">
+            {pending && <Loader2 className="size-4 animate-spin text-slate-300" />}
             {c && (
               <Link href={`/contatos/${c.id}`} onClick={onClose}
                 className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-semibold text-slate-600 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors">
@@ -115,29 +162,76 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
         )}
 
         {data && c && (
-          <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[300px_1fr]">
+          <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-[320px_1fr]">
             {/* ── identidade (esquerda) ── */}
             <div className="min-h-0 overflow-y-auto border-b md:border-b-0 md:border-r border-slate-100">
-              {/* faixa + avatar (referência) */}
-              <div className="bg-gradient-to-b from-primary-50 to-white pt-6 pb-3 px-5 text-center">
-                <span className="mx-auto size-16 rounded-full overflow-hidden grid place-items-center text-lg font-bold text-white ring-4 ring-white shadow-sm" style={{ background: "#004add" }}>
-                  <ContactPic pic={c.profile_pic_url} imgClass="size-full object-cover" fallback={<span>{initials(name)}</span>} />
-                </span>
-                <p className="mt-2 text-base font-bold text-slate-900 leading-tight">{name}</p>
-                <div className="mt-1.5 flex items-center justify-center gap-1 flex-wrap">
-                  {life && <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${life.cls}`}>{life.label}</span>}
-                  {data.tags.map((t) => (
-                    <span key={t.id} className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ backgroundColor: `color-mix(in srgb, ${t.color} 16%, transparent)`, color: t.color }}>{t.name}</span>
-                  ))}
+              {/* banda + avatar GRANDE (referência) */}
+              <div className="relative">
+                <div className="h-20 bg-gradient-to-r from-primary-100 via-sky-100 to-primary-50" />
+                <div className="px-5 -mt-10 text-center">
+                  <span className="mx-auto size-20 rounded-full overflow-hidden grid place-items-center text-2xl font-bold text-white ring-4 ring-white shadow-md" style={{ background: "#004add" }}>
+                    <ContactPic pic={c.profile_pic_url} imgClass="size-full object-cover" fallback={<span>{initials(name)}</span>} />
+                  </span>
+                  <p className="mt-2 text-lg font-bold text-slate-900 leading-tight">{name}</p>
+
+                  {/* tags + "+" gerenciável aqui mesmo */}
+                  <div className="mt-2 flex items-center justify-center gap-1 flex-wrap">
+                    {life && <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${life.cls}`}>{life.label}</span>}
+                    {data.tags.map((t) => (
+                      <span key={t.id} className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ backgroundColor: `color-mix(in srgb, ${t.color} 16%, transparent)`, color: t.color }}>{t.name}</span>
+                    ))}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger title="Adicionar/remover tags"
+                        className="size-5 rounded-full grid place-items-center border border-dashed border-slate-300 text-slate-400 hover:border-primary hover:text-primary transition-colors">
+                        <Plus className="size-3" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="center" className="w-52">
+                        <div className="px-1.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1"><TagIcon className="size-3" /> Tags</div>
+                        {data.allTags.length === 0 && <p className="px-2 py-1.5 text-[11px] text-slate-400">Nenhuma tag criada.</p>}
+                        {data.allTags.map((t) => (
+                          <DropdownMenuCheckboxItem key={t.id} checked={data.tags.some((x) => x.id === t.id)} closeOnClick={false}
+                            onCheckedChange={(v) => toggleTag(t.id, v)}>
+                            <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
+                            <span className="truncate">{t.name}</span>
+                          </DropdownMenuCheckboxItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+
+                  {/* listas + "+ Adicionar listas" (referência, funcionando) */}
+                  <div className="mt-1.5 flex items-center justify-center gap-1 flex-wrap">
+                    {memberLists.map((l) => (
+                      <span key={l.id} className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 border border-primary-100">
+                        <ListChecks className="size-2.5" /> {l.name}
+                      </span>
+                    ))}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border border-dashed border-slate-300 text-slate-400 hover:border-primary hover:text-primary transition-colors">
+                        <Plus className="size-2.5" /> Adicionar listas
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="center" className="w-52">
+                        <div className="px-1.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1"><ListChecks className="size-3" /> Listas estáticas</div>
+                        {data.lists.length === 0 && <p className="px-2 py-1.5 text-[11px] text-slate-400">Crie listas em Configurações → Comercial.</p>}
+                        {data.lists.map((l) => (
+                          <DropdownMenuCheckboxItem key={l.id} checked={data.memberListIds.includes(l.id)} closeOnClick={false}
+                            onCheckedChange={(v) => toggleList(l.id, v)}>
+                            <span className="truncate">{l.name}</span>
+                          </DropdownMenuCheckboxItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
                 </div>
               </div>
 
-              {/* KPIs comerciais 2×2 (referência: ticket · total · ciclo · última compra) */}
-              <div className="px-4 pb-4 grid grid-cols-2 gap-2">
-                <KpiChip icon={TrendingUp}  label="Ticket médio"    value={commerce.ticket != null ? brl(commerce.ticket) : "R$ 0"} />
-                <KpiChip icon={Wallet}      label="Total"           value={brl(commerce.total)} />
-                <KpiChip icon={RefreshCcw}  label="Ciclo de compra" value={commerce.ciclo != null ? `${commerce.ciclo}d` : "0d"} />
-                <KpiChip icon={ShoppingBag} label="Última compra"   value={commerce.ultimaDias != null ? `${commerce.ultimaDias}d` : "—"} sub={`${commerce.compras} compra${commerce.compras !== 1 ? "s" : ""}`} />
+              {/* KPIs 2×2 — cards com ícone colorido (referência) */}
+              <div className="px-4 pt-4 pb-4 grid grid-cols-2 gap-2">
+                <KpiCard icon={TrendingUp}  tint="#004add" label="Ticket médio"    value={commerce.ticket != null ? brl(commerce.ticket) : "R$ 0"} />
+                <KpiCard icon={Wallet}      tint="#059669" label="Total"           value={brl(commerce.total)} />
+                <KpiCard icon={RefreshCcw}  tint="#0284c7" label="Ciclo de compra" value={commerce.ciclo != null ? `${commerce.ciclo}d` : "0d"} />
+                <KpiCard icon={ShoppingBag} tint="#7c3aed" label="Última compra"   value={commerce.ultimaDias != null ? `${commerce.ultimaDias}d` : "—"} sub={`${commerce.compras} compra${commerce.compras !== 1 ? "s" : ""}`} />
               </div>
 
               {/* Perfil | Endereço | Campos adicionais */}
@@ -182,7 +276,7 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
 
             {/* ── dossiê (direita) ── */}
             <div className="min-h-0 flex flex-col">
-              <div className="flex items-center gap-1 px-4 pt-3 border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-1 px-5 pt-3 border-b border-slate-100 shrink-0">
                 {(["historico", "atividades", "negocios"] as DossierTab[]).map((t) => (
                   <button key={t} type="button" onClick={() => setTab(t)}
                     className={`px-3 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors ${tab === t ? "border-primary text-primary-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}>
@@ -191,53 +285,54 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
                 ))}
               </div>
 
-              <div className="flex-1 min-h-0 overflow-y-auto p-4">
+              {/* título + subtítulo do dossiê (referência) */}
+              <div className="px-5 pt-4 pb-1 shrink-0">
+                <h3 className="text-sm font-bold text-slate-900">{tab === "historico" ? "Histórico" : tab === "atividades" ? "Atividades" : "Negócios"}</h3>
+                <p className="text-[11px] text-slate-400">
+                  {tab === "historico" ? "Tudo que aconteceu com este contato, em ordem." : tab === "atividades" ? "Follow-ups pendentes dos negócios." : "A participação do contato no funil."}
+                </p>
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
                 {tab === "historico" && (
                   data.activity.length === 0 ? <Empty text="Sem eventos ainda." /> : (
-                    <div className="space-y-0.5">
-                      {data.activity.map((a) => <HistoryRow key={a.id} a={a} />)}
+                    /* timeline CONECTADA — círculos coloridos + linha (referência) */
+                    <div className="relative">
+                      <div className="absolute left-5 top-3 bottom-3 w-px bg-slate-200" aria-hidden />
+                      <div className="space-y-2">
+                        {data.activity.map((a) => <HistoryRow key={a.id} a={a} />)}
+                      </div>
                     </div>
                   )
                 )}
 
                 {tab === "atividades" && (
                   pendingTasks.length === 0 ? <Empty text="Nenhuma atividade pendente. Crie follow-ups na ficha do negócio." /> : (
-                    <div className="divide-y divide-slate-100">
-                      {pendingTasks.map((t) => (
-                        <div key={t.id} className="flex items-center gap-3 py-2.5">
-                          <span className="size-7 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><CheckSquare className="size-3.5" /></span>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-xs font-semibold text-slate-800 truncate">{t.title}</p>
-                            {t.dealName && <p className="text-[10.5px] text-slate-400 truncate">{t.dealName}</p>}
-                          </div>
-                          {t.due_at && (
-                            <span className={`text-[10.5px] tabular-nums shrink-0 inline-flex items-center gap-1 ${new Date(t.due_at) < new Date() ? "text-red-600 font-semibold" : "text-slate-400"}`}>
-                              <Clock className="size-3" />{new Date(t.due_at).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
-                            </span>
-                          )}
-                        </div>
-                      ))}
+                    <div className="space-y-2">
+                      {pendingTasks.map((t) => <TaskCard key={t.id} t={t} pending={pending} onDone={() => doneTask(t.id)} />)}
                     </div>
                   )
                 )}
 
                 {tab === "negocios" && (
                   data.record.deals.length === 0 ? <Empty text="Nenhum negócio ainda." /> : (
-                    <div className="divide-y divide-slate-100">
+                    <div className="space-y-2">
                       {data.record.deals.map((d) => (
                         <button key={d.id} type="button" onClick={() => { onClose(); router.push(`/negocios/${d.id}`) }}
-                          className="w-full flex items-center gap-3 py-2.5 text-left hover:bg-slate-50 rounded-lg px-2 -mx-2 transition-colors">
+                          className="w-full flex items-center gap-3 rounded-xl border border-slate-200 hover:border-slate-300 hover:shadow-soft px-3.5 py-3 text-left transition-all">
                           <StatusBadge status={d.status} />
                           <div className="min-w-0 flex-1">
-                            <p className="text-xs font-semibold text-slate-800 truncate">{d.name?.trim() || "Negócio"}</p>
-                            <p className="text-[10.5px] text-slate-400 truncate">
-                              {d.pipeline_name ?? "—"}{d.stage?.name ? ` · ${d.stage.name}` : ""}
-                            </p>
+                            <p className="text-xs font-bold text-slate-900 truncate">{d.name?.trim() || "Negócio"}</p>
+                            <p className="text-[10.5px] text-slate-400 truncate">{d.pipeline_name ?? "—"}{d.stage?.name ? ` · ${d.stage.name}` : ""}</p>
                           </div>
+                          <DateBox iso={d.created_at} />
                           {d.status === "open" && d.stage_entered_at && (
-                            <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{daysBetween(d.stage_entered_at, new Date().toISOString())}d na etapa</span>
+                            <span className="hidden sm:block text-center shrink-0">
+                              <span className="block text-xs font-bold text-slate-700 tabular-nums">{daysBetween(d.stage_entered_at, new Date().toISOString())}d</span>
+                              <span className="block text-[9.5px] text-slate-400">na etapa</span>
+                            </span>
                           )}
-                          <span className="text-xs font-bold text-slate-800 tabular-nums shrink-0">{d.estimated_value ? brl(Number(d.estimated_value)) : "—"}</span>
+                          <span className="text-sm font-bold text-slate-900 tabular-nums shrink-0 w-24 text-right">{d.estimated_value ? brl(Number(d.estimated_value)) : "—"}</span>
                         </button>
                       ))}
                     </div>
@@ -252,12 +347,18 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
   )
 }
 
-function KpiChip({ icon: Icon, label, value, sub }: { icon: typeof Wallet; label: string; value: string; sub?: string }) {
+// ── primitivas ────────────────────────────────────────────────────
+function KpiCard({ icon: Icon, tint, label, value, sub }: { icon: typeof Wallet; tint: string; label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-lg border border-slate-200 px-3 py-2">
-      <p className="text-[10px] text-slate-400 flex items-center gap-1"><Icon className="size-3 text-slate-300" /> {label}</p>
-      <p className="text-sm font-bold text-slate-900 tabular-nums mt-0.5">{value}</p>
-      {sub && <p className="text-[9.5px] text-slate-400">{sub}</p>}
+    <div className="rounded-xl border border-slate-200 p-2.5 flex items-center gap-2.5">
+      <span className="size-9 rounded-lg grid place-items-center shrink-0" style={{ background: `color-mix(in srgb, ${tint} 12%, transparent)`, color: tint }}>
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0">
+        <p className="text-[10px] text-slate-400 leading-tight truncate">{label}</p>
+        <p className="text-sm font-bold text-slate-900 tabular-nums leading-tight">{value}</p>
+        {sub && <p className="text-[9px] text-slate-400 leading-tight">{sub}</p>}
+      </div>
     </div>
   )
 }
@@ -275,32 +376,101 @@ function Empty({ text }: { text: string }) {
   return <p className="text-xs text-slate-400 text-center py-10">{text}</p>
 }
 
+function DateBox({ iso }: { iso: string }) {
+  const d = new Date(iso)
+  return (
+    <span className="hidden sm:flex flex-col items-center justify-center size-10 rounded-lg border border-slate-200 shrink-0 leading-none">
+      <span className="text-sm font-bold text-slate-800 tabular-nums">{d.getDate()}</span>
+      <span className="text-[8.5px] uppercase text-slate-400 mt-0.5">{d.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "")}</span>
+    </span>
+  )
+}
+
 const HIST_ICON: Record<ActivityItem["kind"], { icon: typeof User; cls: string }> = {
-  deal_won:     { icon: Trophy,        cls: "bg-emerald-50 text-emerald-600" },
-  deal_lost:    { icon: XCircle,       cls: "bg-red-50 text-red-500" },
-  deal:         { icon: Briefcase,     cls: "bg-primary-50 text-primary-600" },
-  conversation: { icon: MessageSquare, cls: "bg-slate-100 text-slate-500" },
-  appointment:  { icon: Calendar,      cls: "bg-violet-50 text-violet-500" },
-  lifecycle:    { icon: User,          cls: "bg-amber-50 text-amber-600" },
-  task:         { icon: CheckSquare,   cls: "bg-sky-50 text-sky-600" },
+  deal_won:     { icon: Trophy,        cls: "bg-emerald-500 text-white" },
+  deal_lost:    { icon: XCircle,       cls: "bg-red-400 text-white" },
+  deal:         { icon: Briefcase,     cls: "bg-primary text-white" },
+  conversation: { icon: MessageSquare, cls: "bg-slate-300 text-white" },
+  appointment:  { icon: Calendar,      cls: "bg-violet-400 text-white" },
+  lifecycle:    { icon: User,          cls: "bg-sky-400 text-white" },
+  task:         { icon: CheckSquare,   cls: "bg-amber-400 text-white" },
 }
 
 function HistoryRow({ a }: { a: ActivityItem }) {
   const m = HIST_ICON[a.kind] ?? HIST_ICON.lifecycle
   const I = m.icon
+  const when = new Date(a.at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })
   return (
-    <div className="flex items-start gap-3 py-2">
-      <span className={`size-7 rounded-full grid place-items-center shrink-0 ${m.cls}`}><I className="size-3.5" /></span>
-      <div className="min-w-0 flex-1 pt-0.5">
-        <p className="text-xs text-slate-700 leading-snug">{a.title}{a.sub ? <span className="text-slate-400"> · {a.sub}</span> : null}</p>
+    <div className="relative flex items-start gap-3">
+      <span className={`relative z-10 size-10 rounded-full grid place-items-center shrink-0 ring-4 ring-white ${m.cls}`}><I className="size-4" /></span>
+      <div className="flex-1 min-w-0 rounded-xl border border-slate-200 bg-white overflow-hidden">
+        {/* corpo — texto rico: valores/mudança em destaque (referência) */}
+        <div className="px-4 pt-2.5 pb-2">
+          <p className="text-xs text-slate-800 leading-snug">
+            {a.title}
+            {a.change && (
+              <> {" "}<span className="font-semibold text-primary-600 tabular-nums">{a.change.from ?? "—"}</span>
+                <span className="text-slate-400"> para </span>
+                <span className="font-semibold text-primary-600 tabular-nums">{a.change.to ?? "—"}</span></>
+            )}
+          </p>
+          {a.sub && <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{a.sub}</p>}
+        </div>
+        {/* rodapé — autor + data (referência) */}
+        <div className="px-4 py-1.5 border-t border-slate-100 bg-slate-50/50 flex items-center gap-2">
+          {a.by ? (
+            <span className="inline-flex items-center gap-1.5 text-[10.5px] text-slate-500 min-w-0">
+              {a.byKind === "human" ? (
+                <span className="size-4 rounded-full grid place-items-center text-[7px] font-bold text-white shrink-0" style={{ background: "#004add" }}>{initials(a.by)}</span>
+              ) : (
+                <span className="size-4 rounded-full grid place-items-center bg-slate-200 text-slate-500 shrink-0"><Bot className="size-2.5" /></span>
+              )}
+              <span className="truncate font-medium">{a.by}</span>
+            </span>
+          ) : <span />}
+          <span className="ml-auto text-[10px] text-slate-400 tabular-nums shrink-0">{when}</span>
+        </div>
       </div>
-      <span className="text-[10px] text-slate-400 tabular-nums shrink-0 pt-1">{new Date(a.at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+    </div>
+  )
+}
+
+function TaskCard({ t, pending, onDone }: { t: { id: string; title: string; due_at: string | null; dealName: string | null }; pending: boolean; onDone: () => void }) {
+  const due = t.due_at ? new Date(t.due_at) : null
+  const now = new Date()
+  const overdue = !!due && due < now
+  const today   = !!due && due.toDateString() === now.toDateString()
+  const tone = overdue ? "text-red-600" : today ? "text-amber-600" : "text-slate-600"
+  const weekday = due ? due.toLocaleDateString("pt-BR", { weekday: "long" }).replace("-feira", "") : null
+
+  return (
+    <div className="flex items-center gap-3.5 rounded-xl border border-slate-200 px-3.5 py-3">
+      {due ? (
+        <div className={`text-center shrink-0 w-16 ${tone}`}>
+          <p className="text-[10px] font-semibold capitalize leading-tight">{weekday}</p>
+          <p className="text-lg font-bold tabular-nums leading-tight">{due.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}</p>
+        </div>
+      ) : (
+        <div className="text-center shrink-0 w-16 text-slate-300"><Clock className="size-5 mx-auto" /></div>
+      )}
+      <div className="min-w-0 flex-1 border-l border-slate-100 pl-3.5">
+        <p className="text-xs font-bold text-slate-900 truncate">{t.title}</p>
+        <div className="flex items-center gap-2.5 mt-0.5 text-[10.5px] text-slate-400">
+          {due && <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {due.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>}
+          {t.dealName && <span className="truncate">{t.dealName}</span>}
+          {overdue && <span className="text-red-600 font-semibold">atrasada</span>}
+        </div>
+      </div>
+      <button type="button" disabled={pending} onClick={onDone} title="Concluir"
+        className="size-8 rounded-full border-2 border-slate-200 text-transparent hover:border-emerald-400 hover:text-emerald-500 grid place-items-center transition-colors disabled:opacity-50 shrink-0">
+        <Check className="size-4" strokeWidth={3} />
+      </button>
     </div>
   )
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "won")  return <span className="size-7 rounded-full bg-emerald-50 text-emerald-600 grid place-items-center shrink-0"><Trophy className="size-3.5" /></span>
-  if (status === "lost") return <span className="size-7 rounded-full bg-red-50 text-red-500 grid place-items-center shrink-0"><XCircle className="size-3.5" /></span>
-  return <span className="size-7 rounded-full bg-primary-50 text-primary-600 grid place-items-center shrink-0"><Briefcase className="size-3.5" /></span>
+  if (status === "won")  return <span className="size-9 rounded-lg bg-emerald-50 text-emerald-600 grid place-items-center shrink-0"><Trophy className="size-4" /></span>
+  if (status === "lost") return <span className="size-9 rounded-lg bg-red-50 text-red-500 grid place-items-center shrink-0"><XCircle className="size-4" /></span>
+  return <span className="size-9 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><Briefcase className="size-4" /></span>
 }

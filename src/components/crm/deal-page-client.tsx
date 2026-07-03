@@ -9,9 +9,14 @@ import Link from "next/link"
 import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
-  TrendingUp, TrendingDown, Briefcase, Calendar, AlertCircle, ChevronDown, Route, ArrowRightLeft,
-  Package, Wrench, Repeat, Trash2, Search,
+  TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
+  Package, Wrench, Repeat, Trash2, Search, MoreHorizontal, Hourglass,
 } from "lucide-react"
+import { lifecycleMeta } from "@/lib/lifecycle"
+import { ContactSheet } from "@/components/crm/contact-sheet"
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu"
 import {
   moveDeal, moveDealById, openDeal, cancelDeal, reopenDeal, updateDeal, addDealNote,
   addDealItem, updateDealItem, removeDealItem, getCatalogForPicker,
@@ -90,14 +95,87 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   const [shown, setShown] = useState(8)
   const [openProtocol, setOpenProtocol] = useState<Protocol | null>(null)
   const [flowModal, setFlowModal] = useState<null | "handoff" | "reclass">(null)
-  const [showDone, setShowDone] = useState(false)
-  const [fabOpen, setFabOpen] = useState(false)
   const [activeModal, setActiveModal] = useState<"note" | "task" | null>(null)
   const [itemModal, setItemModal] = useState<null | { mode: "add" } | { mode: "edit"; item: DealItemView }>(null)
+  const [editPrev, setEditPrev]   = useState(false)                       // previsão inline
+  const [sheetContact, setSheetContact] = useState<string | null>(null)   // Ver 360
+  const [composerTab, setComposerTab]   = useState<"nota" | "tarefa">("nota")
+  const [composerText, setComposerText] = useState("")
+  const [ctTitle, setCtTitle] = useState(""); const [ctDate, setCtDate] = useState(""); const [ctTime, setCtTime] = useState("09:00")
+  const [rescheduleOf, setRescheduleOf] = useState<{ id: string; title: string } | null>(null)
 
   // Com itens, o valor é DERIVADO (composição do catálogo) — edição manual sai de cena.
   const hasItems = deal.items.length > 0
   const valueSummary = hasItems ? computeDealValue(deal.items) : null
+
+  // ── Régua de gestão (mockup): probabilidade → valor ponderado · saúde · jornada ──
+  const curProb  = curStageId ? ((pipeline?.stages ?? []).find((s) => s.id === curStageId)?.probability_pct ?? 0) : 0
+  const weighted = deal.status === "open" && deal.estimated_value && deal.estimated_value > 0 && curProb > 0
+    ? (deal.estimated_value * curProb) / 100 : null
+
+  // Jornada no funil: segmentos de tempo por etapa a partir dos eventos (asc).
+  const journey = (() => {
+    const entries = deal.events.filter((e) => (e.type === "created" || e.type === "stage_changed" || e.type === "reopened") && e.to_stage)
+    const closedAt = deal.won_at ?? deal.lost_at ?? deal.canceled_at ?? null
+    const byName = new Map((pipeline?.stages ?? []).map((s) => [s.name, s]))
+    return entries.map((e, i) => {
+      const stop = entries[i + 1]?.at ?? closedAt ?? new Date().toISOString()
+      const days = Math.max(0, Math.round((new Date(stop).getTime() - new Date(e.at).getTime()) / 86400000))
+      return { name: e.to_stage as string, color: byName.get(e.to_stage as string)?.color ?? "#94a3b8", days, current: deal.status === "open" && i === entries.length - 1 }
+    })
+  })()
+  const daysByStage = (() => {
+    const m = new Map<string, number>()
+    for (const s of journey) m.set(s.name, (m.get(s.name) ?? 0) + s.days)
+    return m
+  })()
+
+  // Saúde: dias sem interação (só em aberto). ≥10 frio · ≥5 esfriando.
+  const staleDays = (() => {
+    const last = deal.lastMessageAt ?? deal.events[deal.events.length - 1]?.at ?? deal.created_at
+    return Math.floor((new Date().getTime() - new Date(last).getTime()) / 86400000)
+  })()
+  const health = deal.status === "open" && staleDays >= 5
+    ? { label: `${staleDays >= 10 ? "Frio" : "Esfriando"} · ${staleDays}d sem interação`, bad: staleDays >= 10 }
+    : null
+
+  // Mini-360 do contato: compras (negócios ganhos, incluindo este se ganho).
+  const wonAll = [
+    ...deal.otherDeals.filter((o) => o.status === "won"),
+    ...(deal.status === "won" ? [{ estimated_value: deal.estimated_value, won_at: deal.won_at }] : []),
+  ]
+  const contactWonTotal = wonAll.reduce((s, d) => s + Number(d.estimated_value ?? 0), 0)
+  const lastWonAt = wonAll.map((d) => d.won_at).filter(Boolean).sort().reverse()[0] ?? null
+  const contactLastWonDays = lastWonAt ? Math.floor((new Date().getTime() - new Date(lastWonAt as string).getTime()) / 86400000) : null
+
+  const CHANNEL_PT: Record<string, string> = { whatsapp: "WhatsApp", instagram: "Instagram", site: "Site", webform: "Site" }
+  const lastChannelLabel = deal.lastChannel ? (CHANNEL_PT[deal.lastChannel] ?? deal.lastChannel) : null
+  const lc = deal.contact?.lifecycle_stage ? lifecycleMeta(deal.contact.lifecycle_stage) : null
+
+  function savePrev(dateISO: string) {
+    setEditPrev(false)
+    run(() => updateDeal(deal.id, { expectedClose: dateISO || null }))
+  }
+  function submitComposerNota() {
+    if (!convId || !composerText.trim()) return
+    const text = composerText.trim(); setComposerText("")
+    run(() => addDealNote(convId, deal.id, text))
+  }
+  function submitComposerTarefa() {
+    if (!ctTitle.trim()) return
+    const dueAt = ctDate ? new Date(`${ctDate}T${ctTime || "09:00"}:00`).toISOString() : null
+    const title = ctTitle.trim(); setCtTitle(""); setCtDate("")
+    run(() => createTask({ dealId: deal.id, title, dueAt }))
+  }
+  function doReschedule(title: string, dueAt: string | null) {
+    const old = rescheduleOf; setRescheduleOf(null); setActiveModal(null)
+    start(async () => {
+      const r = await createTask({ dealId: deal.id, title: title.trim(), dueAt })
+      if (r && "error" in r && r.error) { alert(r.error); return }
+      if (old) await setTaskDone(old.id, true)
+      router.refresh()
+    })
+  }
 
   const isOpen = deal.status === "open"
   const st     = STATUS_META[deal.status] ?? STATUS_META.open
@@ -111,7 +189,6 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   const visibleFeed  = feed.slice(0, shown)
   const pendingTasks = tasks.filter((t) => t.status === "pending")
     .sort((a, b) => (a.due_at ?? "9999").localeCompare(b.due_at ?? "9999"))
-  const doneTasks    = tasks.filter((t) => t.status !== "pending")
 
   function saveName() {
     setEditName(false)
@@ -203,48 +280,64 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
 
   return (
     <div className="min-h-[calc(100dvh-3.5rem)] bg-canvas">
-      {/* ── Cabeçalho vivo (full-width) ── */}
+      {/* ── HEADER DE COMANDO (mockup negocio-detalhe) ── */}
       <div className="bg-white border-b border-slate-200">
-        <div className="px-6 py-4">
-          <Link href="/negocios" className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 mb-3">
-            <ArrowLeft className="size-3.5" /> Negócios
-          </Link>
+        <div className="px-6 pt-3.5">
+          <div className="flex items-start gap-3.5">
+            <Link href="/negocios" title="Voltar ao pipeline" className="size-8 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0 mt-1">
+              <ArrowLeft className="size-4" />
+            </Link>
 
-          <div className="flex items-center justify-between gap-x-8 gap-y-4 flex-wrap">
-            {/* Identidade + valor lado a lado (pessoa primeiro, WhatsApp-native) */}
-            <div className="flex items-center gap-x-6 gap-y-2 min-w-0 flex-wrap">
-              <div className="flex items-center gap-3.5 min-w-0">
-                <div className="size-14 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0 ring-1 ring-slate-200/70">
-                  <ContactPic pic={deal.contact?.profile_pic_url} imgClass="size-14 object-cover" fallback={<User className="size-6 text-slate-400" />} />
-                </div>
-                <div className="min-w-0">
+            {/* identidade: foto · contato · chips · nome do negócio · saúde */}
+            <div className="flex items-start gap-3 min-w-0 flex-1">
+              <div className="size-11 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0 ring-2 ring-white shadow-[0_0_0_2px_#b7c8ff]">
+                <ContactPic pic={deal.contact?.profile_pic_url} imgClass="size-11 object-cover" fallback={<User className="size-5 text-slate-400" />} />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
                   {deal.contact ? (
-                    <Link href={`/contatos/${deal.contact.id}`} className="block text-xl font-bold text-slate-900 hover:text-primary-700 truncate leading-tight">{contactName}</Link>
-                  ) : <h1 className="text-xl font-bold text-slate-900 truncate leading-tight">{contactName}</h1>}
+                    <Link href={`/contatos/${deal.contact.id}`} className="text-[15px] font-extrabold tracking-tight text-slate-900 hover:text-primary-700 truncate leading-tight">{contactName}</Link>
+                  ) : <h1 className="text-[15px] font-extrabold tracking-tight text-slate-900 truncate leading-tight">{contactName}</h1>}
+                  {lc && <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${lc.bg} ${lc.text}`}>{lc.label}</span>}
+                  {(deal.contact?.tags ?? []).slice(0, 2).map((t) => (
+                    <span key={t.name} className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ backgroundColor: `color-mix(in srgb, ${t.color} 16%, transparent)`, color: t.color }}>{t.name}</span>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 mt-1 flex-wrap min-w-0">
                   {editName ? (
-                    <div className="flex items-center gap-1.5 mt-1">
+                    <span className="inline-flex items-center gap-1.5">
                       <input autoFocus value={nameVal} onChange={(e) => setNameVal(e.target.value)}
                         onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditName(false) }}
-                        className="text-sm text-slate-600 border-b-2 border-primary-300 focus:outline-none bg-transparent" />
+                        className="text-xs font-bold text-primary-700 border-b-2 border-primary-300 focus:outline-none bg-transparent" />
                       <button onClick={saveName} className="text-emerald-600"><Check className="size-3.5" /></button>
                       <button onClick={() => setEditName(false)} className="text-slate-400"><X className="size-3.5" /></button>
-                    </div>
+                    </span>
                   ) : (
-                    <button onClick={() => { setNameVal(deal.name ?? ""); setEditName(true) }} className="group inline-flex items-center gap-1.5 text-left mt-0.5">
-                      <span className="text-sm text-slate-500 truncate">{deal.name?.trim() || "Negócio sem nome"}</span>
+                    <button onClick={() => { setNameVal(deal.name ?? ""); setEditName(true) }} className="group inline-flex items-center gap-1.5 text-left min-w-0">
+                      <span className="text-xs font-bold text-primary truncate">{deal.name?.trim() || "Negócio sem nome"}</span>
                       <Pencil className="size-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
                     </button>
                   )}
+                  <span className="text-[10px] font-extrabold text-slate-400 tabular-nums">#{deal.id.slice(0, 4).toUpperCase()}</span>
+                  {health && (
+                    <span className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${health.bad ? "bg-red-50 text-red-600 border-red-200" : "bg-amber-50 text-amber-700 border-amber-200"}`}>
+                      <span className={`size-1.5 rounded-full animate-pulse ${health.bad ? "bg-red-500" : "bg-amber-500"}`} />
+                      {health.label}
+                    </span>
+                  )}
                 </div>
               </div>
+            </div>
 
-              {/* Valor + status, ao lado do nome. Com itens → derivado (sem edição manual). */}
-              <div className="flex items-center gap-2.5 shrink-0">
+            {/* valor em destaque + status + ações (mockup) */}
+            <div className="flex items-start gap-3 shrink-0">
+              <div className="text-right">
                 {hasItems ? (
                   <span className="inline-flex flex-col items-end" title="Valor composto pelos itens do negócio">
-                    <span className="text-[28px] leading-none font-bold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
-                    <span className="text-[10px] text-slate-400 leading-none mt-1 inline-flex items-center gap-1">
-                      <Package className="size-2.5" /> composto por {deal.items.length} {deal.items.length === 1 ? "item" : "itens"}
+                    <span className="text-[26px] leading-none font-extrabold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
+                    <span className="text-[10px] text-slate-400 leading-none mt-1.5 inline-flex items-center gap-1">
+                      composto por {deal.items.length} {deal.items.length === 1 ? "item" : "itens"}
+                      {valueSummary && valueSummary.mrr > 0 && <> · <b className="text-emerald-600 font-bold">MRR {brl(valueSummary.mrr)}/mês</b></>}
                     </span>
                   </span>
                 ) : editValue ? (
@@ -254,63 +347,107 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
                   </span>
                 ) : (
                   <button onClick={() => { setValueVal(deal.estimated_value != null ? String(deal.estimated_value) : ""); setEditValue(true) }} className="group inline-flex items-center gap-1.5">
-                    <span className="text-[28px] leading-none font-bold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
+                    <span className="text-[26px] leading-none font-extrabold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
                     <Pencil className="size-3.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
                   </button>
                 )}
-                <span className={`inline-flex items-center text-[11px] font-semibold px-2.5 py-1 rounded-full border ${st.cls}`}>{st.label}</span>
+              </div>
+              <span className={`inline-flex items-center text-[11px] font-semibold px-3 py-1.5 rounded-full border self-center ${st.cls}`}>{st.label}</span>
+
+              <div className="flex items-center gap-2 self-center">
+                {pending && <Loader2 className="size-4 animate-spin text-slate-400" />}
+                {convId && <Link href={`/inbox?conversation=${convId}`} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><MessageSquare className="size-3.5 text-primary-500" /> Conversa</Link>}
+                {isOpen && wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><Trophy className="size-3.5 text-emerald-500" /> Ganhar</button>}
+                {!isOpen && deal.status === "won" && convId && deal.pipelines.length > 1 && (
+                  <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary-200 text-primary-700 bg-primary-50 hover:bg-primary-100`}><Route className="size-3.5" /> Próximo fluxo</button>
+                )}
+                {!isOpen && (
+                  <button onClick={() => convId && run(() => reopenDeal(convId, deal.id))} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><RotateCcw className="size-3.5 text-primary-500" /> Reabrir</button>
+                )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger title="Mais ações"
+                    className="size-[34px] rounded-lg border border-slate-200 bg-white text-slate-500 grid place-items-center hover:border-slate-300 transition-colors data-[popup-open]:bg-slate-50">
+                    <MoreHorizontal className="size-4" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    {isOpen && (
+                      <>
+                        <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}>
+                          <XCircle className="size-3.5 text-red-500" /> Marcar como perdido
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }}>
+                          <Ban className="size-3.5 text-slate-400" /> Cancelar negócio
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                    {deal.pipelines.length > 1 && isOpen && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem disabled={pending} onClick={() => setFlowModal("reclass")}>
+                          <ArrowRightLeft className="size-3.5 text-slate-400" /> Mover para outro funil
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => deal.contact && setSheetContact(deal.contact.id)}>
+                      <User className="size-3.5 text-slate-400" /> Ver contato 360
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
+          </div>
 
-            {/* Ações — outline calmo, ícone carrega o tom */}
-            <div className="flex items-center gap-2 shrink-0">
-              {pending && <Loader2 className="size-4 animate-spin text-slate-400" />}
-              {convId && <Link href={`/inbox?conversation=${convId}`} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><MessageSquare className="size-3.5 text-primary-500" /> Abrir conversa</Link>}
-              {isOpen ? (
-                <>
-                  {wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><Trophy className="size-3.5 text-emerald-500" /> Ganhar</button>}
-                  {deal.pipelines.length > 1 && <button onClick={() => setFlowModal("reclass")} disabled={pending} title="Mover para outro funil" className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><ArrowRightLeft className="size-3.5 text-slate-400" /></button>}
-                  <EncerrarMenu disabled={!convId || pending}
-                    onLose={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}
-                    onCancel={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }} />
-                </>
-              ) : (
-                <>
-                  {deal.status === "won" && convId && deal.pipelines.length > 1 && (
-                    <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary-200 text-primary-700 bg-primary-50 hover:bg-primary-100`}><Route className="size-3.5" /> Próximo fluxo</button>
+          {/* Stepper — tempo por etapa + probabilidade da atual (mockup) */}
+          <div className="mt-4 pt-3.5 border-t border-slate-100 flex items-start overflow-x-auto pb-1">
+            {stepStages.map((s, i) => {
+              const active = s.id === curStageId
+              const done   = curIdx >= 0 && i < curIdx && !s.is_won && !s.is_lost
+              const tdays  = daysByStage.get(s.name)
+              return (
+                <button key={s.id} onClick={() => clickStage(s)} disabled={!convId || pending || active}
+                  className="group/step relative flex-1 min-w-[104px] text-center pt-4 disabled:cursor-default">
+                  {active && curProb > 0 && !s.is_won && !s.is_lost && (
+                    <span className="absolute top-0 left-1/2 -translate-x-1/2 text-[9px] font-extrabold text-primary bg-primary-50 border border-primary-100 rounded-full px-2 py-px whitespace-nowrap">{curProb}% de chance</span>
                   )}
-                  <button onClick={() => convId && run(() => reopenDeal(convId, deal.id))} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><RotateCcw className="size-3.5 text-primary-500" /> Reabrir</button>
-                </>
-              )}
-            </div>
+                  <span className={`block h-[5px] rounded mx-0.5 transition-colors ${active ? "" : done ? "bg-primary" : "bg-slate-200 group-hover/step:bg-primary-200"}`}
+                    style={active ? { background: `linear-gradient(90deg, ${s.color ?? "#004add"} 55%, #dbe4ff 55%)` } : undefined} />
+                  <span className={`block text-[10.5px] font-bold mt-1.5 truncate px-1 ${active || done ? "text-slate-900" : s.is_won ? "text-emerald-600" : s.is_lost ? "text-red-500" : "text-slate-400"}`}>
+                    {s.is_won ? "🏆 " : ""}{s.name}
+                  </span>
+                  <span className={`block text-[9.5px] mt-px tabular-nums ${active && (stageAging ?? 0) >= 4 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
+                    {active ? `${stageAging ?? 0}d${(stageAging ?? 0) >= 4 ? " — parado" : ""}` : tdays != null && tdays > 0 ? `${tdays}d` : "—"}
+                  </span>
+                </button>
+              )
+            })}
           </div>
 
-          {/* Stepper do funil + KPIs */}
-          <div className="mt-5 pt-4 border-t border-slate-100 flex items-end justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-1 overflow-x-auto pb-1 min-w-0">
-              {stepStages.map((s, i) => {
-                const active = s.id === curStageId
-                const done   = curIdx >= 0 && i < curIdx && !s.is_won && !s.is_lost
-                return (
-                  <button key={s.id} onClick={() => clickStage(s)} disabled={!convId || pending || active}
-                    className={`shrink-0 inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] font-semibold border transition-colors ${
-                      active ? "text-white border-transparent" : done ? "bg-slate-100 text-slate-500 border-slate-200" : "bg-white text-slate-600 border-slate-200 hover:border-primary-300 disabled:hover:border-slate-200"
-                    }`}
-                    style={active ? { backgroundColor: s.color ?? "#004add" } : undefined}>
-                    {s.is_won ? <Trophy className="size-3" /> : s.is_lost ? <XCircle className="size-3" /> : null}{s.name}
+          {/* Régua de gestão — 5 células (mockup) */}
+          <div className="mt-2 border-t border-slate-100 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+            <Gauge icon={Clock} tint="t-blue" label={isOpen ? "Em aberto" : "Duração"} value={daysOpen != null ? `${daysOpen} dias` : "—"} />
+            <Gauge icon={Hourglass} tint="t-amber" label="Na etapa atual" value={stageAging != null ? `${stageAging} dias` : "—"} warn={(stageAging ?? 0) >= 4 && isOpen} />
+            <div className="flex items-center gap-2.5 px-4 py-3 border-r border-slate-100 last:border-r-0">
+              <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-violet-50 text-violet-600"><Calendar className="size-4" /></span>
+              <div className="min-w-0">
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Previsão</p>
+                {editPrev ? (
+                  <input autoFocus type="date" defaultValue={deal.expected_close_date ?? ""}
+                    onBlur={(e) => savePrev(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") savePrev((e.target as HTMLInputElement).value); if (e.key === "Escape") setEditPrev(false) }}
+                    className="text-xs font-bold text-slate-800 border-b border-primary-300 focus:outline-none bg-transparent" />
+                ) : (
+                  <button onClick={() => setEditPrev(true)} className="text-sm font-extrabold text-slate-900 tabular-nums border-b border-dashed border-slate-300 hover:border-primary leading-tight">
+                    {deal.expected_close_date ? shortDate(deal.expected_close_date) : "definir"}
                   </button>
-                )
-              })}
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-5 shrink-0">
-              <Kpi label={isOpen ? "Dias aberto" : "Duração"} value={daysOpen != null ? `${daysOpen}` : "—"} />
-              <span className="w-px h-7 bg-slate-200" />
-              <Kpi label="Previsão" value={shortDate(deal.expected_close_date)} />
-              <span className="w-px h-7 bg-slate-200" />
-              <Kpi label="Última interação" value={relTime(lastTouch)} />
-            </div>
+            <Gauge icon={TrendingUp} tint="t-green" label="Valor ponderado" value={weighted != null ? brl(weighted) : "—"} good={weighted != null}
+              hint={weighted != null ? `${brl(deal.estimated_value as number)} × ${curProb}% da etapa` : isOpen ? "defina a % da etapa no funil" : undefined} />
+            <Gauge icon={MessageSquare} tint="t-sky" label="Última interação" value={relTime(lastTouch)} hint={lastChannelLabel ?? undefined} />
           </div>
-          {!convId && <p className="mt-2 text-[11px] text-amber-600">Negócio sem conversa vinculada — mover/ganhar/perder/observar ficam indisponíveis nesta tela.</p>}
+          {!convId && <p className="pb-2 text-[11px] text-amber-600">Negócio sem conversa vinculada — mover/ganhar/perder/observar ficam indisponíveis nesta tela.</p>}
 
           {(losing || canceling) && (
             <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 max-w-md">
@@ -337,11 +474,79 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
         </div>
       </div>
 
-      {/* ── Corpo (3 colunas) ── */}
-      <div className="px-6 py-6 grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-        {/* Linha do tempo única — movimentações + notas + tarefas */}
-        <div className="xl:col-span-2">
-          <section className="bg-white rounded-xl border border-slate-200 p-5">
+      {/* ── Corpo (principal + lateral) ── */}
+      <div className="px-6 py-5 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-5 items-start">
+        <div className="min-w-0 space-y-4">
+          {/* PRÓXIMA AÇÃO — herói: negócio vivo tem próximo passo */}
+          {isOpen && (pendingTasks[0] ? (
+            <div className="rounded-2xl border border-amber-200 bg-gradient-to-b from-amber-50 to-white px-4 py-3.5 flex items-center gap-3.5">
+              <span className="size-10 rounded-xl bg-amber-100 text-amber-600 grid place-items-center shrink-0"><Bell className="size-4.5" /></span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-extrabold text-slate-900 truncate">{pendingTasks[0].title}</p>
+                <p className={`text-[11px] font-bold mt-0.5 ${pendingTasks[0].due_at && new Date(pendingTasks[0].due_at) < new Date() ? "text-red-600" : "text-amber-600"}`}>
+                  {pendingTasks[0].due_at ? fmtDateTime(pendingTasks[0].due_at) : "sem prazo"}
+                  {pendingTasks[0].due_at && new Date(pendingTasks[0].due_at) < new Date() && " · atrasada"}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => run(() => setTaskDone(pendingTasks[0].id, true))} disabled={pending}
+                  className="h-8 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold inline-flex items-center gap-1.5 disabled:opacity-50">
+                  <Check className="size-3.5" strokeWidth={3} /> Concluir
+                </button>
+                <button onClick={() => { setRescheduleOf({ id: pendingTasks[0].id, title: pendingTasks[0].title }); setActiveModal("task") }} disabled={pending}
+                  className="h-8 px-3 rounded-lg bg-white border border-slate-200 text-slate-600 text-[11px] font-bold hover:bg-slate-50 disabled:opacity-50">
+                  Reagendar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-3.5 flex items-center gap-3.5">
+              <span className="size-10 rounded-xl bg-slate-100 text-slate-400 grid place-items-center shrink-0"><Bell className="size-4.5" /></span>
+              <p className="text-xs text-slate-500 flex-1">Todo negócio vivo tem um <b>próximo passo</b> — este está sem nenhum agendado.</p>
+              <button onClick={() => { setRescheduleOf(null); setActiveModal("task") }}
+                className="h-8 px-3.5 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold shrink-0">
+                Agendar agora
+              </button>
+            </div>
+          ))}
+
+          {/* COMPOSER — registrar sem sair (nota | tarefa) */}
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="flex gap-1 px-2.5 pt-2">
+              {(["nota", "tarefa"] as const).map((t) => (
+                <button key={t} onClick={() => setComposerTab(t)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-t-lg transition-colors ${composerTab === t ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`}>
+                  {t === "nota" ? <StickyNote className="size-3" /> : <CheckSquare className="size-3" />}
+                  {t === "nota" ? "Nota" : "Tarefa"}
+                </button>
+              ))}
+            </div>
+            {composerTab === "nota" ? (
+              <div className="bg-primary-50/60">
+                <textarea value={composerText} onChange={(e) => setComposerText(e.target.value)} rows={2}
+                  placeholder={convId ? "Escreva uma nota sobre este negócio… (fica na linha do tempo, com sua assinatura)" : "Sem conversa vinculada — notas indisponíveis"}
+                  disabled={!convId}
+                  className="w-full px-3.5 py-2.5 text-xs bg-transparent resize-none focus:outline-none disabled:opacity-50" />
+                <div className="flex px-2.5 pb-2.5">
+                  <button onClick={submitComposerNota} disabled={!convId || !composerText.trim() || pending}
+                    className="ml-auto h-7.5 px-4 py-1.5 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold disabled:opacity-40">Registrar</button>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-primary-50/60 px-3.5 py-2.5 flex items-center gap-2 flex-wrap">
+                <input value={ctTitle} onChange={(e) => setCtTitle(e.target.value)} placeholder="Ex: Ligar pra fechar a proposta"
+                  onKeyDown={(e) => { if (e.key === "Enter") submitComposerTarefa() }}
+                  className="flex-1 min-w-[180px] h-8 px-3 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                <input type="date" value={ctDate} onChange={(e) => setCtDate(e.target.value)} className="h-8 px-2 text-[11px] bg-white border border-slate-200 rounded-lg text-slate-600 focus:outline-none" />
+                <input type="time" value={ctTime} onChange={(e) => setCtTime(e.target.value)} className="h-8 px-2 text-[11px] bg-white border border-slate-200 rounded-lg text-slate-600 focus:outline-none" />
+                <button onClick={submitComposerTarefa} disabled={!ctTitle.trim() || pending}
+                  className="h-8 px-4 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold disabled:opacity-40">Criar</button>
+              </div>
+            )}
+          </div>
+
+          {/* Linha do tempo única — movimentações + notas + tarefas */}
+          <section className="bg-white rounded-2xl border border-slate-200 p-5">
             <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
               <h2 className="text-base font-bold text-slate-900">Linha do tempo</h2>
               <div className="inline-flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
@@ -372,25 +577,42 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
           </section>
         </div>
 
-        {/* Lateral — ação + fatos */}
-        <div className="space-y-5">
-          {/* Próximos follow-ups */}
-          <section className="bg-white rounded-xl border border-slate-200 p-4">
-            <h2 className="text-sm font-bold text-slate-900 mb-2">Próximos follow-ups</h2>
-            {pendingTasks.length === 0 && (!showDone || doneTasks.length === 0) ? (
-              <p className="text-xs text-slate-400 py-2">Nenhum follow-up agendado. Crie um no botão flutuante.</p>
-            ) : (
-              <div className="divide-y divide-slate-100">
-                {pendingTasks.map((t) => <FollowUpRow key={t.id} t={t} responsible={deal.responsible} pending={pending} onToggle={() => run(() => setTaskDone(t.id, true))} />)}
-                {showDone && doneTasks.map((t) => <FollowUpRow key={t.id} t={t} responsible={deal.responsible} pending={pending} onToggle={() => run(() => setTaskDone(t.id, false))} />)}
+        {/* Lateral — fatos & dinheiro (mockup) */}
+        <div className="space-y-4">
+          {/* Contato mini-360 */}
+          {deal.contact && (
+            <section className="bg-white rounded-2xl border border-slate-200 p-4">
+              <div className="flex items-center gap-3">
+                <div className="size-12 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0">
+                  <ContactPic pic={deal.contact.profile_pic_url} imgClass="size-12 object-cover" fallback={<User className="size-5 text-slate-400" />} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[13px] font-extrabold text-slate-900 truncate">{contactName}</p>
+                  {deal.contact.phone_number && <p className="text-[11px] text-slate-400 mt-0.5">{deal.contact.phone_number}</p>}
+                </div>
               </div>
-            )}
-            {doneTasks.length > 0 && (
-              <button onClick={() => setShowDone((v) => !v)} className="mt-2 text-[11px] font-semibold text-primary-600 hover:text-primary-700">
-                {showDone ? "Ocultar concluídas" : `Ver concluídas (${doneTasks.length})`}
-              </button>
-            )}
-          </section>
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                <div className="rounded-lg border border-slate-200 px-2.5 py-2">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Total comprado</p>
+                  <p className="text-[13px] font-extrabold text-slate-900 tabular-nums mt-0.5">{brl(contactWonTotal)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-200 px-2.5 py-2">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Última compra</p>
+                  <p className="text-[13px] font-extrabold text-slate-900 tabular-nums mt-0.5">{contactLastWonDays != null ? `${contactLastWonDays}d` : "—"}</p>
+                </div>
+              </div>
+              <div className="flex gap-2 mt-3">
+                {convId && (
+                  <Link href={`/inbox?conversation=${convId}`} className="flex-1 h-8 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold inline-flex items-center justify-center gap-1.5">
+                    <MessageSquare className="size-3" /> Conversa
+                  </Link>
+                )}
+                <button onClick={() => setSheetContact(deal.contact!.id)} className="flex-1 h-8 rounded-lg bg-white border border-slate-200 text-slate-600 text-[11px] font-bold hover:bg-slate-50">
+                  Ver 360
+                </button>
+              </div>
+            </section>
+          )}
 
           {/* Itens do negócio — composição de valor (catálogo) */}
           <DealItemsCard
@@ -402,16 +624,48 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
             onRemove={(item) => run(() => removeDealItem(deal.id, item.id))}
           />
 
+          {/* Jornada no funil — tempo por etapa (mini-gantt do mockup) */}
+          {journey.length > 0 && journey.some((s) => s.days > 0) && (
+            <section className="bg-white rounded-2xl border border-slate-200 p-4">
+              <h2 className="text-sm font-bold text-slate-900 mb-3">Jornada no funil</h2>
+              <div className="flex h-3.5 gap-0.5">
+                {journey.map((s, i) => (
+                  <div key={i} title={`${s.name} · ${s.days}d`} className="rounded-[4px] min-w-[6px]"
+                    style={{ flex: Math.max(s.days, 0.5), background: `color-mix(in srgb, ${s.color} 55%, white)` }} />
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-2.5">
+                {journey.map((s, i) => (
+                  <span key={i} className="inline-flex items-center gap-1.5 text-[10px] text-slate-500">
+                    <i className="size-2 rounded-[3px]" style={{ background: `color-mix(in srgb, ${s.color} 55%, white)` }} />
+                    {s.name} {s.days}d{s.current && s.days >= 4 ? <span className="text-amber-600 font-bold">⚠</span> : null}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Detalhes */}
           <Card title="Detalhes">
             <dl className="space-y-2 text-xs">
-              <Row label="Valor"><span className="font-semibold text-slate-800">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span></Row>
-              <Row label="Etapa">{deal.stage?.name ?? "—"}</Row>
-              {stageAging != null && <Row label="Dias na etapa">{stageAging}d</Row>}
-              <Row label="Previsão">{shortDate(deal.expected_close_date)}</Row>
-              <Row label="Responsável">{deal.responsible ?? "—"}</Row>
-              {deal.contact?.phone_number && <Row label="Telefone">{deal.contact.phone_number}</Row>}
-              <Row label="Criado">{shortDate(deal.created_at)}</Row>
+              <Row label="Responsável">
+                {deal.responsible ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="size-[18px] rounded-full overflow-hidden grid place-items-center bg-primary text-white text-[7px] font-extrabold shrink-0">
+                      <ContactPic pic={deal.responsible_id ? `/api/user-avatar/${deal.responsible_id}` : null} imgClass="size-full object-cover" fallback={<span>{deal.responsible.trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase()}</span>} />
+                    </span>
+                    {deal.responsible}
+                  </span>
+                ) : "—"}
+              </Row>
+              <Row label="Funil">{[deal.pipeline_name, deal.stage?.name].filter(Boolean).join(" · ") || "—"}</Row>
+              {deal.contact?.source && <Row label="Origem do contato">{deal.contact.source}</Row>}
+              <Row label="Criado em">{shortDate(deal.created_at)}</Row>
+              <Row label="Previsão">
+                <button onClick={() => setEditPrev(true)} className="border-b border-dashed border-slate-300 hover:border-primary text-slate-700">
+                  {deal.expected_close_date ? shortDate(deal.expected_close_date) : "definir"} ✎
+                </button>
+              </Row>
               {deal.status === "won" && deal.won_at && <Row label="Ganho em">{shortDate(deal.won_at)}</Row>}
               {deal.status === "lost" && <Row label="Perdido em">{`${shortDate(deal.lost_at)}${deal.lost_reason ? ` · ${deal.lost_reason}` : ""}`}</Row>}
               {deal.status === "canceled" && <Row label="Cancelado em">{shortDate(deal.canceled_at ?? null)}</Row>}
@@ -421,12 +675,19 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
           {/* Outros negócios */}
           {deal.otherDeals.length > 0 && (
             <Card title={`Outros negócios (${deal.otherDeals.length})`}>
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 {deal.otherDeals.map((o) => (
-                  <Link key={o.id} href={`/negocios/${o.id}`} className="flex items-center gap-2 text-xs py-1 px-1 rounded hover:bg-slate-50">
-                    <StatusIcon status={o.status} />
-                    <span className="flex-1 min-w-0 truncate text-slate-600">{o.name?.trim() || "Negócio"}</span>
-                    {o.estimated_value != null && o.estimated_value > 0 && <span className="tabular-nums text-slate-400 shrink-0">{brl(o.estimated_value)}</span>}
+                  <Link key={o.id} href={`/negocios/${o.id}`} className="flex items-center gap-2.5 text-xs py-1.5 px-1.5 -mx-1.5 rounded-lg hover:bg-slate-50">
+                    <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${o.status === "won" ? "bg-emerald-50 text-emerald-600" : o.status === "lost" ? "bg-red-50 text-red-500" : "bg-primary-50 text-primary-600"}`}>
+                      {o.status === "won" ? <Trophy className="size-3" /> : o.status === "lost" ? <XCircle className="size-3" /> : <Briefcase className="size-3" />}
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block truncate font-semibold text-slate-700">{o.name?.trim() || "Negócio"}</span>
+                      <span className="block text-[10px] text-slate-400">
+                        {o.status === "won" ? `Ganho${o.won_at ? ` · ${shortDate(o.won_at)}` : ""}` : o.status === "lost" ? `Perdido${o.lost_at ? ` · ${shortDate(o.lost_at)}` : ""}` : "Em aberto"}
+                      </span>
+                    </span>
+                    {o.estimated_value != null && o.estimated_value > 0 && <span className="tabular-nums font-bold text-slate-700 shrink-0">{brl(o.estimated_value)}</span>}
                   </Link>
                 ))}
               </div>
@@ -456,13 +717,18 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
         />
       )}
 
-      {/* Botão flutuante — Nota / Tarefa */}
-      <DealFab open={fabOpen} onToggle={() => setFabOpen((v) => !v)}
-        onNote={() => { setFabOpen(false); setActiveModal("note") }}
-        onTask={() => { setFabOpen(false); setActiveModal("task") }}
-        noteDisabled={!convId} />
-      {activeModal === "note" && <NoteModal onSubmit={doAddNote} onClose={() => setActiveModal(null)} pending={pending} />}
-      {activeModal === "task" && <TaskModal onSubmit={doAddTask} onClose={() => setActiveModal(null)} pending={pending} />}
+      {/* Tarefa via modal: "Agendar agora" (herói vazio) e "Reagendar" (troca a pendente) */}
+      {activeModal === "task" && (
+        <TaskModal
+          initialTitle={rescheduleOf?.title}
+          onSubmit={(title, dueAt) => (rescheduleOf ? doReschedule(title, dueAt) : doAddTask(title, dueAt))}
+          onClose={() => { setActiveModal(null); setRescheduleOf(null) }}
+          pending={pending}
+        />
+      )}
+
+      {/* Contato 360 (mesma superfície do board/roster) */}
+      <ContactSheet contactId={sheetContact} onClose={() => setSheetContact(null)} />
 
       {itemModal && (
         <DealItemModal
@@ -481,33 +747,22 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   )
 }
 
-// ── KPI do header ──
-function Kpi({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="text-right">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="text-sm font-bold text-slate-800 tabular-nums">{value}</p>
-    </div>
-  )
+// ── Célula da régua de gestão (header) ──
+const GAUGE_TINT: Record<string, string> = {
+  "t-blue": "bg-primary-50 text-primary", "t-amber": "bg-amber-50 text-amber-600",
+  "t-green": "bg-emerald-50 text-emerald-600", "t-sky": "bg-sky-50 text-sky-600",
 }
-
-// Ações secundárias (Perder / Cancelar) recolhidas — desafoga o header.
-function EncerrarMenu({ disabled, onLose, onCancel }: { disabled?: boolean; onLose: () => void; onCancel: () => void }) {
-  const [open, setOpen] = useState(false)
+function Gauge({ icon: Icon, tint, label, value, hint, warn, good }: {
+  icon: typeof Clock; tint: string; label: string; value: string; hint?: string; warn?: boolean; good?: boolean
+}) {
   return (
-    <div className="relative">
-      <button onClick={() => setOpen((v) => !v)} disabled={disabled} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}>
-        Encerrar <ChevronDown className={`size-3.5 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <>
-          <button className="fixed inset-0 z-40 cursor-default" onClick={() => setOpen(false)} aria-hidden tabIndex={-1} />
-          <div className="absolute right-0 top-full mt-1.5 z-50 w-48 bg-white rounded-xl border border-slate-200 shadow-lg overflow-hidden py-1">
-            <button onClick={() => { setOpen(false); onLose() }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"><XCircle className="size-3.5 text-red-500 shrink-0" /> Marcar como perdido</button>
-            <button onClick={() => { setOpen(false); onCancel() }} className="w-full text-left px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"><Ban className="size-3.5 text-slate-400 shrink-0" /> Cancelar negócio</button>
-          </div>
-        </>
-      )}
+    <div className="flex items-center gap-2.5 px-4 py-3 border-r border-slate-100 last:border-r-0">
+      <span className={`size-8 rounded-lg grid place-items-center shrink-0 ${GAUGE_TINT[tint]}`}><Icon className="size-4" /></span>
+      <div className="min-w-0">
+        <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 truncate">{label}</p>
+        <p className={`text-sm font-extrabold tabular-nums leading-tight truncate ${warn ? "text-amber-600" : good ? "text-emerald-600" : "text-slate-900"}`}>{value}</p>
+        {hint && <p className="text-[9.5px] text-slate-400 truncate">{hint}</p>}
+      </div>
     </div>
   )
 }
@@ -711,53 +966,7 @@ function TaskBody({ t, pending, onToggle }: { t: TaskRow; pending: boolean; onTo
   )
 }
 
-// Follow-up na lateral — urgência por cor (atrasado = vermelho).
-function FollowUpRow({ t, responsible, pending, onToggle }: { t: TaskRow; responsible: string | null; pending: boolean; onToggle: () => void }) {
-  const s = taskState(t)
-  return (
-    <div className="flex items-start gap-2.5 py-2.5 first:pt-0 last:pb-0">
-      <span className={`size-9 rounded-full grid place-items-center shrink-0 ${s.overdue ? "bg-red-50 text-red-500" : s.done ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500"}`}>
-        {s.overdue ? <AlertCircle className="size-4" /> : s.done ? <CheckSquare className="size-4" /> : <Calendar className="size-4" />}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between gap-2">
-          <p className={`text-sm font-semibold truncate ${s.done ? "text-slate-400 line-through" : "text-slate-800"}`}>{t.title}</p>
-          {s.overdue && <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-red-600">Atrasado</span>}
-        </div>
-        <p className="text-[11px] text-slate-400 inline-flex items-center gap-1"><Clock className="size-2.5" /> {t.due_at ? fmtDateTime(t.due_at) : "sem prazo"}</p>
-        {responsible && <p className="text-[11px] text-slate-400">Responsável: {responsible}</p>}
-      </div>
-      <button onClick={onToggle} disabled={pending} title={s.done ? "Reabrir" : "Concluir"} className="shrink-0 text-slate-300 hover:text-emerald-600 disabled:opacity-50">
-        {s.done ? <Square className="size-4" /> : <CheckSquare className="size-4" />}
-      </button>
-    </div>
-  )
-}
 
-function DealFab({ open, onToggle, onNote, onTask, noteDisabled }: {
-  open: boolean; onToggle: () => void; onNote: () => void; onTask: () => void; noteDisabled?: boolean
-}) {
-  return (
-    <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-2">
-      {open && (
-        <>
-          <button onClick={onTask} className="inline-flex items-center gap-2 h-10 pl-3 pr-4 rounded-full bg-white border border-slate-200 shadow-lg text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-            <span className="size-6 rounded-full grid place-items-center bg-primary-50"><Bell className="size-3.5 text-primary-600" /></span> Tarefa
-          </button>
-          {!noteDisabled && (
-            <button onClick={onNote} className="inline-flex items-center gap-2 h-10 pl-3 pr-4 rounded-full bg-white border border-slate-200 shadow-lg text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              <span className="size-6 rounded-full grid place-items-center bg-violet-50"><StickyNote className="size-3.5 text-violet-600" /></span> Nota
-            </button>
-          )}
-        </>
-      )}
-      <button onClick={onToggle} title="Adicionar"
-        className="size-14 rounded-full bg-primary text-white shadow-xl grid place-items-center hover:bg-primary-700 transition-colors">
-        <Plus className={`size-6 transition-transform duration-200 ${open ? "rotate-45" : ""}`} />
-      </button>
-    </div>
-  )
-}
 
 function ModalShell({ title, desc, icon: Icon, accent, onClose, children }: {
   title: string; desc?: string; icon: typeof Bell; accent: string; onClose: () => void; children: React.ReactNode
@@ -778,27 +987,9 @@ function ModalShell({ title, desc, icon: Icon, accent, onClose, children }: {
   )
 }
 
-function NoteModal({ onSubmit, onClose, pending }: { onSubmit: (t: string) => void; onClose: () => void; pending?: boolean }) {
-  const [text, setText] = useState("")
-  return (
-    <ModalShell title="Nova nota" desc="Registro qualitativo — fica no histórico e aparece no chat" icon={StickyNote} accent="#7c3aed" onClose={onClose}>
-      <div className="px-5 py-4">
-        <textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={4}
-          placeholder="Ex: cliente pediu desconto de 10%, decisor é a esposa…"
-          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 resize-none" />
-      </div>
-      <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-100 bg-slate-50/50">
-        <button type="button" onClick={onClose} disabled={pending} className="h-9 px-4 text-sm font-semibold text-slate-600 hover:bg-slate-200/60 rounded-lg disabled:opacity-50">Cancelar</button>
-        <button type="button" onClick={() => onSubmit(text)} disabled={!text.trim() || pending} className="inline-flex items-center gap-1.5 h-9 px-5 text-sm font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg disabled:opacity-50">
-          {pending && <Loader2 className="size-4 animate-spin" />} Registrar nota
-        </button>
-      </div>
-    </ModalShell>
-  )
-}
 
-function TaskModal({ onSubmit, onClose, pending }: { onSubmit: (title: string, dueAt: string | null) => void; onClose: () => void; pending?: boolean }) {
-  const [title, setTitle] = useState("")
+function TaskModal({ onSubmit, onClose, pending, initialTitle }: { onSubmit: (title: string, dueAt: string | null) => void; onClose: () => void; pending?: boolean; initialTitle?: string }) {
+  const [title, setTitle] = useState(initialTitle ?? "")
   const [date, setDate]   = useState("")
   const [time, setTime]   = useState("09:00")
   function quick(days: number) { const d = new Date(); d.setDate(d.getDate() + days); setDate(d.toISOString().slice(0, 10)) }
