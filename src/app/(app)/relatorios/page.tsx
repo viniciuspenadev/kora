@@ -47,13 +47,14 @@ export default async function RelatoriosPage({
 
         <ReportsTabs hasKanban={hasKanban} hasAi={hasAi} />
 
-        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
           <KpiCard
             label="Conversas"
             value={formatNumber(data.conversations.current)}
             current={data.conversations.current}
             previous={data.conversations.previous}
             icon={<Inbox className="size-4" />}
+            compact
           />
           <KpiCard
             label="Mensagens trocadas"
@@ -61,6 +62,7 @@ export default async function RelatoriosPage({
             current={data.totalMessages.current}
             previous={data.totalMessages.previous}
             icon={<MessageSquare className="size-4" />}
+            compact
           />
           <KpiCard
             label="Contatos novos"
@@ -68,6 +70,7 @@ export default async function RelatoriosPage({
             current={data.newContacts.current}
             previous={data.newContacts.previous}
             icon={<UserPlus className="size-4" />}
+            compact
           />
           <KpiCard
             label="Resolvidas"
@@ -75,6 +78,7 @@ export default async function RelatoriosPage({
             current={data.resolvedCount.current}
             previous={data.resolvedCount.previous}
             icon={<CheckCircle2 className="size-4" />}
+            compact
           />
           <KpiCard
             label="Tempo 1ª resposta"
@@ -83,6 +87,7 @@ export default async function RelatoriosPage({
             previous={data.avgFirstResponseSec.previous}
             inverted
             icon={<Clock className="size-4" />}
+            compact
           />
           <KpiCard
             label="Pipeline ativo"
@@ -90,6 +95,7 @@ export default async function RelatoriosPage({
             current={data.pipelineValueCents.current}
             previous={data.pipelineValueCents.previous}
             icon={<TrendingUp className="size-4" />}
+            compact
           />
         </div>
 

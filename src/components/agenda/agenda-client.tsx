@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useMemo } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -254,11 +255,8 @@ export function AgendaClient({
                 </div>
               )}
               {view !== "overview" && activeResources.length > 1 && (
-                <select value={resourceFilter} onChange={(e) => setResourceFilter(e.target.value)}
-                  className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-700">
-                  <option value="">Todas as agendas</option>
-                  {activeResources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
+                <div className="w-44"><SimpleSelect value={resourceFilter} onChange={setResourceFilter} className="h-8"
+                  options={[{ value: "", label: "Todas as agendas" }, ...activeResources.map((r) => ({ value: r.id, label: r.name }))]} /></div>
               )}
               <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
                 {([["overview", "Visão geral"], ["dia", "Dia"], ["semana", "Semana"], ["lista", "Lista"]] as const).map(([v, label]) => (
@@ -518,10 +516,8 @@ function ParticipantsSection({ appointmentId, conversationId, canEdit }: {
           {canEdit && available.length > 0 ? (
             <div className="space-y-1.5">
               <div className="flex items-center gap-2">
-                <select value={pick} onChange={(e) => setPick(e.target.value)} className="h-8 flex-1 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-700">
-                  <option value="">Incluir um colega…</option>
-                  {available.map((a) => <option key={a.user_id} value={a.user_id}>{a.full_name ?? "—"}</option>)}
-                </select>
+                <SimpleSelect value={pick} onChange={setPick} placeholder="Incluir um colega…" className="h-8 flex-1"
+                  options={available.map((a) => ({ value: a.user_id, label: a.full_name ?? "—" }))} />
                 <Button size="sm" onClick={add} disabled={!pick || busy}>{busy ? <Loader2 className="size-4 animate-spin" /> : <UserPlus className="size-4" />}</Button>
               </div>
               {conversationId && pick && (

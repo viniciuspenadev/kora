@@ -1,7 +1,5 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
-import { Briefcase } from "lucide-react"
-import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
 import { getDealsPage, getDealPipelines } from "@/lib/actions/deals"
 import { NegociosClient } from "./negocios-client"
@@ -16,9 +14,6 @@ export default async function NegociosPage() {
   const [data, pipelines] = await Promise.all([getDealsPage(), getDealPipelines()])
   if ("error" in data) redirect("/inbox")
 
-  return (
-    <PageShell title="Negócios" description="Gerencie negócios, clientes e o funil de vendas." icon={Briefcase}>
-      <NegociosClient data={data} pipelines={pipelines} />
-    </PageShell>
-  )
+  // Board ocupa a viewport inteira (o client controla a altura); os KPIs foram pra /negocios/painel.
+  return <NegociosClient data={data} pipelines={pipelines} />
 }

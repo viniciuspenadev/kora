@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react"
 import { Building2, Users, X, Loader2, ArrowRight } from "lucide-react"
+import { SimpleSelect } from "@/components/ui/select"
 
 interface DepartmentMini { id: string; name: string; color: string }
 interface AgentMini      { id: string; full_name: string | null; department_id?: string | null }
@@ -104,9 +105,8 @@ export function TransferDialog({ open, onClose, departments, agents, currentAssi
           {mode === "department" ? (
             <>
               <Field label="Departamento">
-                <select value={departmentId} onChange={(e) => { setDepartmentId(e.target.value); setDeptAgentId("") }} className={selectCls}>
-                  {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                </select>
+                <SimpleSelect value={departmentId} onChange={(v) => { setDepartmentId(v); setDeptAgentId("") }}
+                  options={departments.map((d) => ({ value: d.id, label: d.name }))} />
               </Field>
 
               <Field label="Quem atende?">
@@ -126,10 +126,8 @@ export function TransferDialog({ open, onClose, departments, agents, currentAssi
                     />
                     {deptAssign === "agent" && deptAgents.length > 0 && (
                       <div className="px-3 pb-2.5 -mt-1">
-                        <select value={deptAgentId} onChange={(e) => setDeptAgentId(e.target.value)} className={selectCls}>
-                          <option value="">— Selecionar —</option>
-                          {deptAgents.map((a) => <option key={a.id} value={a.id}>{a.full_name ?? "—"}</option>)}
-                        </select>
+                        <SimpleSelect value={deptAgentId} onChange={setDeptAgentId} placeholder="— Selecionar —"
+                          options={deptAgents.map((a) => ({ value: a.id, label: a.full_name ?? "—" }))} />
                       </div>
                     )}
                   </div>
@@ -138,10 +136,8 @@ export function TransferDialog({ open, onClose, departments, agents, currentAssi
             </>
           ) : (
             <Field label="Atendente">
-              <select value={directAgentId} onChange={(e) => setDirectAgentId(e.target.value)} className={selectCls}>
-                <option value="">— Selecionar atendente —</option>
-                {agents.map((a) => <option key={a.id} value={a.id}>{a.full_name ?? "—"}</option>)}
-              </select>
+              <SimpleSelect value={directAgentId} onChange={setDirectAgentId} placeholder="— Selecionar atendente —"
+                options={agents.map((a) => ({ value: a.id, label: a.full_name ?? "—" }))} />
             </Field>
           )}
 

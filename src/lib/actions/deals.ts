@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, openDealOf, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
+import { computeDealValue } from "@/lib/crm/value"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM Negócios — Server actions (Fase 1)
@@ -207,6 +208,35 @@ export async function getDealPipelines(): Promise<DealPipeline[]> {
   }))
 }
 
+/**
+ * Cria um negócio direto do BOARD (footer "Adicionar negócio" de uma coluna).
+ * Diferente de `openDeal` (que parte de uma conversa), aqui o gestor escolhe o
+ * CONTATO — a conversa mais recente dele (se houver) é vinculada pro botão de
+ * WhatsApp funcionar. Gated: módulo crm + owner/admin (centro de gestão).
+ */
+export async function createDealFromBoard(input: {
+  contactId: string; pipelineId: string; stageId: string; name?: string | null; estimatedValue?: number | null
+}): Promise<{ id: string } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
+  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
+  const t = session.user.tenantId
+
+  // Ownership do contato + resolve conversa mais recente (não-arquivada) pra vincular.
+  const { data: contact } = await supabaseAdmin.from("chat_contacts").select("id").eq("id", input.contactId).eq("tenant_id", t).maybeSingle()
+  if (!contact) return { error: "Contato inválido" }
+  const { data: conv } = await supabaseAdmin.from("chat_conversations")
+    .select("id").eq("tenant_id", t).eq("contact_id", input.contactId).is("archived_at", null)
+    .order("last_message_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle()
+
+  return createDeal({
+    tenantId: t, contactId: input.contactId, conversationId: (conv as { id: string } | null)?.id ?? null,
+    pipelineId: input.pipelineId, stageId: input.stageId,
+    name: input.name?.trim() || null, estimatedValue: input.estimatedValue ?? null, by: session.user.id,
+  })
+}
+
 // ── Página de Negócios (centro de gestão do dono) ───────────────
 
 export interface DealRow {
@@ -226,6 +256,14 @@ export interface DealRow {
   updated_at:       string
   responsible:      string | null
   next_task:        { title: string; due_at: string | null } | null
+  /** Conversa mais recente do contato — pro botão "abrir no WhatsApp" do card. */
+  conversation_id:  string | null
+  /** Foto do contato (CDN); ContactPic cai pra inicial se 403/vazio. */
+  contact_pic:      string | null
+  /** Cliente chamou e ninguém leu → bolinha pulsando no card. */
+  conversation_unread: boolean
+  /** Tags do CONTATO (tags de negócio virão depois). */
+  tags:             { id: string; name: string; color: string }[]
 }
 export interface DealsKpis {
   openValue: number; openCount: number
@@ -237,6 +275,8 @@ export interface DealsPageData {
   deals:     DealRow[]
   pipelines: { id: string; name: string }[]
   agents:    { id: string; name: string }[]
+  /** Todas as tags do tenant — pro menu "adicionar tag" do card. */
+  allTags:   { id: string; name: string; color: string }[]
   period:    { from: string; to: string }
 }
 
@@ -257,7 +297,7 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
   const [{ data }, { data: pipes }, { data: members }] = await Promise.all([
     supabaseAdmin.from("tenant_deals").select(`
       id, name, contact_id, pipeline_id, status, estimated_value, won_at, lost_at, stage_entered_at, updated_at, created_by,
-      chat_contacts ( push_name, custom_name ),
+      chat_contacts ( push_name, custom_name, profile_pic_url ),
       deal_pipelines ( name ),
       deal_pipeline_stages ( id, name, color, is_won, is_lost )
     `).eq("tenant_id", t).order("updated_at", { ascending: false }).limit(2000),
@@ -274,7 +314,7 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
   }
 
   const deals: DealRow[] = rows.map((r) => {
-    const c = r.chat_contacts as { push_name: string | null; custom_name: string | null } | null
+    const c = r.chat_contacts as { push_name: string | null; custom_name: string | null; profile_pic_url: string | null } | null
     return {
       id:               r.id as string,
       name:             (r.name as string | null) ?? null,
@@ -292,6 +332,10 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
       updated_at:       r.updated_at as string,
       responsible:      r.created_by ? (nameMap.get(r.created_by as string) ?? null) : null,
       next_task:        null,
+      conversation_id:  null,
+      contact_pic:      c?.profile_pic_url ?? null,
+      conversation_unread: false,
+      tags:             [],
     }
   })
 
@@ -305,6 +349,45 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
     for (const r of (tk ?? []) as { deal_id: string; title: string; due_at: string | null }[])
       if (r.deal_id && !nextMap.has(r.deal_id)) nextMap.set(r.deal_id, { title: r.title, due_at: r.due_at })
     for (const d of deals) d.next_task = nextMap.get(d.id) ?? null
+  }
+
+  // Catálogo de tags do tenant (pro menu "adicionar" + join em memória — mesmo
+  // padrão do inbox, que evita embed PostgREST via taggings).
+  const { data: allTagRows } = await supabaseAdmin.from("tags").select("id, name, color").eq("tenant_id", t).order("name")
+  const allTags = (allTagRows ?? []) as { id: string; name: string; color: string }[]
+  const tagById = new Map(allTags.map((tg) => [tg.id, tg]))
+
+  // Conversa (mais recente, não-arquivada) de cada contato → botão "abrir no
+  // WhatsApp" + bolinha de não-lida (cliente chamou). E tags do contato.
+  const contactIds = Array.from(new Set(deals.map((d) => d.contact_id).filter(Boolean))) as string[]
+  if (contactIds.length) {
+    const [{ data: convs }, { data: tgs }] = await Promise.all([
+      supabaseAdmin.from("chat_conversations")
+        .select("id, contact_id, last_message_at, unread_count").eq("tenant_id", t)
+        .in("contact_id", contactIds).is("archived_at", null)
+        .order("last_message_at", { ascending: false }),
+      supabaseAdmin.from("taggings")
+        .select("tag_id, taggable_id").eq("tenant_id", t).eq("taggable_type", "contact").in("taggable_id", contactIds),
+    ])
+
+    const convMap = new Map<string, { id: string; unread: boolean }>()
+    for (const c of (convs ?? []) as { id: string; contact_id: string | null; unread_count: number | null }[])
+      if (c.contact_id && !convMap.has(c.contact_id)) convMap.set(c.contact_id, { id: c.id, unread: (c.unread_count ?? 0) > 0 })
+
+    const tagMap = new Map<string, { id: string; name: string; color: string }[]>()
+    for (const row of (tgs ?? []) as { tag_id: string; taggable_id: string }[]) {
+      const tg = tagById.get(row.tag_id)
+      if (!tg) continue
+      const arr = tagMap.get(row.taggable_id) ?? []
+      arr.push(tg); tagMap.set(row.taggable_id, arr)
+    }
+
+    for (const d of deals) {
+      const cv = d.contact_id ? convMap.get(d.contact_id) : undefined
+      d.conversation_id = cv?.id ?? null
+      d.conversation_unread = cv?.unread ?? false
+      d.tags = d.contact_id ? (tagMap.get(d.contact_id) ?? []) : []
+    }
   }
 
   const inPeriod = (ts: string | null) => ts != null && ts.slice(0, 10) >= from && ts.slice(0, 10) <= to
@@ -326,7 +409,7 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
     .map((m) => { const p = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles; return { id: m.user_id, name: p?.full_name ?? "—" } })
     .filter((a) => a.name !== "—")
 
-  return { kpis, deals, pipelines, agents, period: { from, to } }
+  return { kpis, deals, pipelines, agents, allTags, period: { from, to } }
 }
 
 // ── Ficha do Negócio (drawer) ───────────────────────────────────
@@ -359,6 +442,41 @@ export interface DealDetail {
   events: DealEventView[]
   otherDeals: { id: string; name: string | null; status: string; estimated_value: number | null }[]
   nextTask: { id: string; title: string; due_at: string | null } | null
+  /** Composição de valor (tenant_deal_items). Vazio = valor manual (legado). */
+  items: DealItemView[]
+  /** Motivos de perda GOVERNADOS (catálogo do tenant; fallback = lista padrão). */
+  lostReasons: { label: string; requireNote: boolean }[]
+}
+
+/** Fallback pré-catálogo — mesma lista que era hardcoded na página do negócio. */
+const FALLBACK_LOST_REASONS = ["Preço", "Sem resposta", "Comprou concorrente", "Fora do perfil", "Sem orçamento", "Outro"]
+
+/**
+ * Política do motivo de perda (fail-closed no SERVER — UI é manipulável): se o
+ * motivo está no catálogo com `require_note`, a justificativa é obrigatória.
+ * Motivo fora do catálogo / tabela ausente (migration pendente) = sem política (legado).
+ */
+async function enforceLostReasonPolicy(tenantId: string, reason: string | null, note: string | null | undefined): Promise<string | null> {
+  if (!reason?.trim()) return null
+  const { data } = await supabaseAdmin.from("deal_outcome_reasons")
+    .select("require_note").eq("tenant_id", tenantId).eq("kind", "lost").eq("active", true)
+    .ilike("label", reason.trim()).maybeSingle()
+  if (data && (data as { require_note: boolean }).require_note && !note?.trim()) {
+    return "Este motivo exige justificativa — escreva o contexto antes de confirmar."
+  }
+  return null
+}
+
+/** Linha de item do negócio — SNAPSHOT (nome/preço congelados na adição). */
+export interface DealItemView {
+  id:          string
+  name:        string
+  type:        "product" | "service"
+  billing:     "one_time" | "monthly" | "yearly"
+  unit_price:  number
+  quantity:    number
+  discount:    number
+  term_months: number | null
 }
 
 export async function getDeal(dealId: string): Promise<DealDetail | { error: string }> {
@@ -378,7 +496,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   if (!(await canAccessDeal(t, deal.contact_id as string | null))) return { error: "Sem acesso a este negócio" }
   const contactId = deal.contact_id as string | null
 
-  const [{ data: evs }, { data: convs }, { data: pipes }, { data: others }, { data: tasks }] = await Promise.all([
+  const [{ data: evs }, { data: convs }, { data: pipes }, { data: others }, { data: tasks }, { data: itemRows }] = await Promise.all([
     supabaseAdmin.from("tenant_deal_events").select("id, type, at, by, from_stage, to_stage, meta").eq("tenant_id", t).eq("deal_id", dealId).order("at", { ascending: true }),
     // Conversa do CONTATO (não só a do negócio ativo): a que tem este negócio como ativo,
     // senão a mais recente — pra a página poder mover/anotar mesmo em negócio secundário.
@@ -390,7 +508,14 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       ? supabaseAdmin.from("tenant_deals").select("id, name, status, estimated_value").eq("tenant_id", t).eq("contact_id", contactId).neq("id", dealId).order("created_at", { ascending: false }).limit(20)
       : Promise.resolve({ data: [] as unknown[] }),
     supabaseAdmin.from("tenant_tasks").select("id, title, due_at").eq("tenant_id", t).eq("deal_id", dealId).eq("status", "pending").order("due_at", { ascending: true, nullsFirst: false }).limit(1),
+    // Itens do negócio — gracioso se a migration ainda não foi aplicada (data null → []).
+    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, discount, term_months").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
   ])
+  // Motivos de perda governados (fallback = lista padrão; gracioso sem migration).
+  const { data: reasonRows } = await supabaseAdmin.from("deal_outcome_reasons")
+    .select("label, require_note").eq("tenant_id", t).eq("kind", "lost").eq("active", true)
+    .order("created_at", { ascending: false })
+  const lostReasons = (reasonRows?.length ? (reasonRows as { label: string; require_note: boolean }[]).map((r) => ({ label: r.label, requireNote: r.require_note })) : FALLBACK_LOST_REASONS.map((label) => ({ label, requireNote: false })))
 
   const evRows   = (evs ?? []) as Record<string, unknown>[]
   const stageIds = Array.from(new Set(evRows.flatMap((e) => [e.from_stage, e.to_stage]).filter(Boolean))) as string[]
@@ -443,6 +568,13 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     pipelines, events,
     otherDeals: ((others ?? []) as Record<string, unknown>[]).map((o) => ({ id: o.id as string, name: (o.name as string | null) ?? null, status: o.status as string, estimated_value: (o.estimated_value as number | null) ?? null })),
     nextTask: (tasks && (tasks as unknown[])[0]) ? (() => { const tk = (tasks as Record<string, unknown>[])[0]; return { id: tk.id as string, title: tk.title as string, due_at: (tk.due_at as string | null) ?? null } })() : null,
+    items: ((itemRows ?? []) as Record<string, unknown>[]).map((i) => ({
+      id: i.id as string, name: i.name as string,
+      type: i.type as DealItemView["type"], billing: i.billing as DealItemView["billing"],
+      unit_price: Number(i.unit_price ?? 0), quantity: Number(i.quantity ?? 1),
+      discount: Number(i.discount ?? 0), term_months: (i.term_months as number | null) ?? null,
+    })),
+    lostReasons,
   }
 }
 
@@ -487,6 +619,139 @@ export async function updateDeal(dealId: string, fields: { name?: string; estima
   return { ok: true }
 }
 
+// ── Itens do negócio (composição de valor via catálogo) ─────────────────────
+// Regra: com itens, `estimated_value` vira CACHE DERIVADO (recomputado a cada
+// mutação) — board/painel/KPIs continuam lendo a mesma coluna sem mudança.
+// Sem itens (removeu todos), o valor volta a NULL (edição manual reabre).
+
+async function dealItemGate(dealId: string): Promise<{ t: string; userId: string; oldValue: number | null } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
+  const t = session.user.tenantId
+  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, estimated_value").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  if (!deal) return { error: "Negócio não encontrado" }
+  const d = deal as { contact_id: string | null; estimated_value: number | null }
+  if (!(await canAccessDeal(t, d.contact_id))) return { error: "Sem acesso" }
+  return { t, userId: session.user.id, oldValue: d.estimated_value != null ? Number(d.estimated_value) : null }
+}
+
+/** Recalcula o valor a partir dos itens + audita no dossiê (sem cartão no chat). */
+async function recomputeDealValueFromItems(t: string, dealId: string, by: string, note: string, oldValue: number | null): Promise<void> {
+  const { data: rows } = await supabaseAdmin.from("tenant_deal_items")
+    .select("billing, unit_price, quantity, discount, term_months").eq("tenant_id", t).eq("deal_id", dealId)
+  const items = ((rows ?? []) as Record<string, unknown>[]).map((r) => ({
+    billing: r.billing as "one_time" | "monthly" | "yearly",
+    unit_price: Number(r.unit_price ?? 0), quantity: Number(r.quantity ?? 1),
+    discount: Number(r.discount ?? 0), term_months: (r.term_months as number | null) ?? null,
+  }))
+  const total = items.length ? computeDealValue(items).total : null
+
+  await supabaseAdmin.from("tenant_deals")
+    .update({ estimated_value: total, updated_at: new Date().toISOString() })
+    .eq("id", dealId).eq("tenant_id", t)
+
+  const fmt = (v: number | null) => v != null ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }) : "—"
+  await recordDealEvent({
+    tenantId: t, dealId, type: "field_changed", by, note,
+    change: { label: "Valor", from: fmt(oldValue), to: fmt(total) }, postCard: false,
+  })
+}
+
+/** Catálogo ativo pro picker de itens (qualquer membro com acesso ao negócio compõe valor). */
+export interface CatalogPickerItem { id: string; name: string; sku: string | null; category: string | null; price: number; billing: "one_time" | "monthly" | "yearly"; type: "product" | "service" }
+export async function getCatalogForPicker(): Promise<CatalogPickerItem[]> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return []
+  try { await requireModule("crm") } catch { return [] }
+  const { data } = await supabaseAdmin.from("catalog_items")
+    .select("id, name, sku, category, price, billing, type")
+    .eq("tenant_id", session.user.tenantId).eq("active", true).order("name")
+  return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+    id: r.id as string, name: r.name as string, sku: (r.sku as string | null) ?? null,
+    category: (r.category as string | null) ?? null, price: Number(r.price ?? 0),
+    billing: r.billing as CatalogPickerItem["billing"], type: r.type as CatalogPickerItem["type"],
+  }))
+}
+
+export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null }): Promise<{ ok: true } | { error: string }> {
+  const gate = await dealItemGate(dealId)
+  if ("error" in gate) return gate
+  const qty = Number(input.quantity)
+  if (!Number.isFinite(qty) || qty <= 0) return { error: "Quantidade inválida" }
+  const discount = input.discount != null ? Number(input.discount) : 0
+  if (!Number.isFinite(discount) || discount < 0) return { error: "Desconto inválido" }
+  const term = input.termMonths != null ? Math.floor(Number(input.termMonths)) : null
+  if (term != null && term <= 0) return { error: "Prazo inválido" }
+  // Preço NEGOCIADO (verticais de orçamento): o do catálogo é sugestão; a linha manda.
+  const unitPrice = input.unitPrice != null ? Number(input.unitPrice) : null
+  if (unitPrice != null && (!Number.isFinite(unitPrice) || unitPrice < 0)) return { error: "Preço inválido" }
+
+  // Item do catálogo (do tenant, ativo) → SNAPSHOT congelado na linha.
+  const { data: cat } = await supabaseAdmin.from("catalog_items")
+    .select("id, name, type, billing, price")
+    .eq("id", input.catalogItemId).eq("tenant_id", gate.t).eq("active", true).maybeSingle()
+  if (!cat) return { error: "Item do catálogo não encontrado" }
+  const ci = cat as { id: string; name: string; type: string; billing: string; price: number }
+
+  const { count } = await supabaseAdmin.from("tenant_deal_items")
+    .select("id", { count: "exact", head: true }).eq("tenant_id", gate.t).eq("deal_id", dealId)
+  const { error } = await supabaseAdmin.from("tenant_deal_items").insert({
+    tenant_id: gate.t, deal_id: dealId, catalog_item_id: ci.id,
+    name: ci.name, type: ci.type, billing: ci.billing,
+    unit_price: unitPrice ?? Number(ci.price ?? 0), quantity: qty, discount,
+    term_months: ci.billing === "one_time" ? null : term,
+    position: count ?? 0,
+  })
+  if (error) return { error: error.message }
+
+  await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item adicionado: ${qty !== 1 ? `${qty}× ` : ""}${ci.name}`, gate.oldValue)
+  return { ok: true }
+}
+
+export async function updateDealItem(dealId: string, itemId: string, input: { quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null }): Promise<{ ok: true } | { error: string }> {
+  const gate = await dealItemGate(dealId)
+  if ("error" in gate) return gate
+  const qty = Number(input.quantity)
+  if (!Number.isFinite(qty) || qty <= 0) return { error: "Quantidade inválida" }
+  const discount = input.discount != null ? Number(input.discount) : 0
+  if (!Number.isFinite(discount) || discount < 0) return { error: "Desconto inválido" }
+  const term = input.termMonths != null ? Math.floor(Number(input.termMonths)) : null
+  if (term != null && term <= 0) return { error: "Prazo inválido" }
+  const unitPrice = input.unitPrice != null ? Number(input.unitPrice) : null
+  if (unitPrice != null && (!Number.isFinite(unitPrice) || unitPrice < 0)) return { error: "Preço inválido" }
+
+  const { data: it } = await supabaseAdmin.from("tenant_deal_items")
+    .select("id, name, billing").eq("id", itemId).eq("tenant_id", gate.t).eq("deal_id", dealId).maybeSingle()
+  if (!it) return { error: "Item não encontrado" }
+  const item = it as { id: string; name: string; billing: string }
+
+  const patch: Record<string, unknown> = { quantity: qty, discount, term_months: item.billing === "one_time" ? null : term }
+  if (unitPrice != null) patch.unit_price = unitPrice
+  const { error } = await supabaseAdmin.from("tenant_deal_items")
+    .update(patch)
+    .eq("id", itemId).eq("tenant_id", gate.t)
+  if (error) return { error: error.message }
+
+  await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item ajustado: ${qty !== 1 ? `${qty}× ` : ""}${item.name}`, gate.oldValue)
+  return { ok: true }
+}
+
+export async function removeDealItem(dealId: string, itemId: string): Promise<{ ok: true } | { error: string }> {
+  const gate = await dealItemGate(dealId)
+  if ("error" in gate) return gate
+  const { data: it } = await supabaseAdmin.from("tenant_deal_items")
+    .select("name").eq("id", itemId).eq("tenant_id", gate.t).eq("deal_id", dealId).maybeSingle()
+  if (!it) return { error: "Item não encontrado" }
+
+  const { error } = await supabaseAdmin.from("tenant_deal_items")
+    .delete().eq("id", itemId).eq("tenant_id", gate.t)
+  if (error) return { error: error.message }
+
+  await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item removido: ${(it as { name: string }).name}`, gate.oldValue)
+  return { ok: true }
+}
+
 /**
  * Move um negócio por dealId — o mover CANÔNICO (Kanban de Negócios + qualquer caminho
  * sem conversationId à mão). Resolve a conversa do negócio (pro espelho + card), atualiza
@@ -522,6 +787,12 @@ export async function moveDealById(dealId: string, stageId: string, opts?: { not
   const now    = new Date().toISOString()
   const status = st.is_won ? "won" : st.is_lost ? "lost" : "open"
   const reason = st.is_lost ? (opts?.lostReason?.trim() || null) : null
+
+  // Perda: política do motivo (justificativa obrigatória — fail-closed no server).
+  if (st.is_lost) {
+    const policyErr = await enforceLostReasonPolicy(t, reason, opts?.note)
+    if (policyErr) return { error: policyErr }
+  }
 
   await supabaseAdmin.from("tenant_deals").update({
     pipeline_id: st.pipeline_id, stage_id: st.id, status,
@@ -765,9 +1036,18 @@ export async function moveDeal(conversationId: string, dealId: string, stageId: 
   const status = st.is_won ? "won" : st.is_lost ? "lost" : "open"
   const fromStage = (deal as { stage_id: string | null }).stage_id
 
+  // Perda: política do motivo (justificativa obrigatória — fail-closed no server).
+  if (st.is_lost) {
+    const policyErr = await enforceLostReasonPolicy(tenantId, reason ?? null, note)
+    if (policyErr) return { error: policyErr }
+  }
+
   await supabaseAdmin.from("tenant_deals").update({
     pipeline_id: st.pipeline_id, stage_id: st.id, status,
     won_at: st.is_won ? now : null, lost_at: st.is_lost ? now : null,
+    // Snapshot do motivo na COLUNA (alimenta o donut de vazamento do painel) — antes
+    // só ia pro evento e a coluna ficava órfã neste caminho.
+    lost_reason: st.is_lost ? (reason?.trim() || null) : null,
     stage_entered_at: now, updated_at: now,
   }).eq("id", dealId).eq("tenant_id", tenantId)
 

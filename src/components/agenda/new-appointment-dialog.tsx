@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
+import { SimpleSelect } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { FormRow } from "@/components/ui/form-row"
 import {
@@ -157,15 +157,12 @@ export function NewAppointmentDialog({
           {/* Recurso + serviço */}
           <div className="grid grid-cols-2 gap-3">
             <FormRow label="Agenda">
-              <Select value={resourceId} onChange={(e) => { setResourceId(e.target.value); setServiceId("") }}>
-                {resources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </Select>
+              <SimpleSelect value={resourceId} onChange={(v) => { setResourceId(v); setServiceId("") }}
+                options={resources.map((r) => ({ value: r.id, label: r.name }))} />
             </FormRow>
             <FormRow label="Serviço">
-              <Select value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
-                <option value="">— (slot padrão)</option>
-                {eligibleServices.map((s) => <option key={s.id} value={s.id}>{s.name} · {s.duration_minutes}min</option>)}
-              </Select>
+              <SimpleSelect value={serviceId} onChange={setServiceId} placeholder="— (slot padrão)"
+                options={[{ value: "", label: "— (slot padrão)" }, ...eligibleServices.map((s) => ({ value: s.id, label: s.name + " · " + s.duration_minutes + "min" }))]} />
             </FormRow>
           </div>
 

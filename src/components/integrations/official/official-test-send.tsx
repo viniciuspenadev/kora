@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Send, Loader2, CheckCircle2, AlertCircle, FlaskConical } from "lucide-react"
 import { sendOfficialTest } from "@/lib/actions/whatsapp-official"
 import type { MetaTemplate } from "@/lib/providers/meta-cloud-provider"
@@ -53,9 +54,8 @@ export function OfficialTestSend({ templates, instanceId }: { templates: MetaTem
             {approved.length === 0 ? (
               <p className="text-xs text-slate-400">Nenhum template aprovado ainda.</p>
             ) : (
-              <select value={tpl} onChange={(e) => setTpl(e.target.value)} className={INPUT.replace("px-3", "px-2")}>
-                {approved.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.language})</option>)}
-              </select>
+              <SimpleSelect value={tpl} onChange={setTpl}
+                options={approved.map((t) => ({ value: t.name, label: t.name + " (" + t.language + ")" }))} />
             )}
           </FormRow>
         ) : (

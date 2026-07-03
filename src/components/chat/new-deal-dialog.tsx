@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { X, Loader2, Sparkles } from "lucide-react"
 import { openDeal, type DealPipeline } from "@/lib/actions/deals"
 
@@ -80,9 +81,8 @@ export function NewDealDialog({ conversationId, pipelines, contactName, initialS
           {/* Trilha (só com 2+) */}
           {pipelines.length > 1 && (
             <Field label="Trilha">
-              <select value={pipelineId} onChange={(e) => changePipeline(e.target.value)} className={inputCls}>
-                {pipelines.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <SimpleSelect value={pipelineId} onChange={changePipeline}
+                options={pipelines.map((p) => ({ value: p.id, label: p.name }))} />
             </Field>
           )}
 

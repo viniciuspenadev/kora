@@ -87,6 +87,9 @@ export interface CapabilityResult {
   routedDepartmentId?: string | null
   /** Conteúdo a devolver à LLM como resultado da tool (retrieval). */
   toolMessage?:        string | null
+  /** Transfer: Plano B "manter IA" disparou — NÃO encaminhou; a IA segue na frente.
+   *  O runtime trata como turno respondido (senão o hand-back derrubaria a IA). */
+  keptAI?:             boolean
   /** Dado estruturado produzido (ex: resposta de um nó HTTP) → vira variável do fluxo. */
   data?:               unknown
   /** Erro legível (vai pra studio_runs.error). */

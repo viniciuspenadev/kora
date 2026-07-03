@@ -5,7 +5,7 @@ import { toast } from "sonner"
 import { Share2, Loader2, Users } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Select } from "@/components/ui/select"
+import { SimpleSelect } from "@/components/ui/select"
 import {
   listResourceShares, upsertResourceShare, removeResourceShare, setResourceEveryoneLevel, listAppointmentAgents,
   type ResourceRow, type ResourceShareRow, type ShareLevel,
@@ -103,13 +103,10 @@ function AgendaShareBlock({ resource, agents, multi }: { resource: ResourceRow; 
 
       {available.length > 0 && (
         <div className="flex items-center gap-2">
-          <Select value={pick} onChange={(e) => setPick(e.target.value)} className="h-8 flex-1">
-            <option value="">Adicionar pessoa…</option>
-            {available.map((a) => <option key={a.user_id} value={a.user_id}>{a.full_name ?? "—"}</option>)}
-          </Select>
-          <Select value={pickLevel} onChange={(e) => setPickLvl(e.target.value as ShareLevel)} className="h-8 w-28">
-            {LEVELS.filter((l) => l.v !== "none").map((l) => <option key={l.v} value={l.v}>{l.l}</option>)}
-          </Select>
+          <SimpleSelect value={pick} onChange={setPick} placeholder="Adicionar pessoa…" className="h-8 flex-1"
+            options={available.map((a) => ({ value: a.user_id, label: a.full_name ?? "—" }))} />
+          <SimpleSelect value={pickLevel} onChange={(v) => setPickLvl(v as ShareLevel)} className="h-8 w-28"
+            options={LEVELS.filter((l) => l.v !== "none").map((l) => ({ value: l.v, label: l.l }))} />
           <Button size="sm" onClick={add} disabled={!pick || busy}>{busy ? <Loader2 className="size-4 animate-spin" /> : "Add"}</Button>
         </div>
       )}

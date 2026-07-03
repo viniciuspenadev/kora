@@ -14,6 +14,7 @@ interface Props {
   selfPause:      { paused: boolean; paused_until: string | null }
   hasOfficial?:   boolean
   pipelines?:      PipelineMini[]
+  dealPipelines?:  PipelineMini[]
 }
 
 /**

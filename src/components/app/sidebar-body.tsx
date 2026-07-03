@@ -6,10 +6,10 @@ import { usePathname, useSearchParams } from "next/navigation"
 import { signOut } from "next-auth/react"
 import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react"
 import {
-  LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, Briefcase,
+  LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked, IdCard,
-  Plug, PanelLeftClose, PanelLeftOpen,
+  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -38,6 +38,8 @@ interface NavGroup {
   module?:    string
   /** Só aparece se o tenant tem instância WhatsApp API Oficial (meta_cloud). */
   officialOnly?: boolean
+  /** Abre painel FLYOUT ao lado do menu em vez do accordion (só no rail desktop). */
+  flyout?:    boolean
   /** Filhos: leaves OU sub-grupos (accordion aninhado, ex: Templates dentro de Configurações). */
   children:   NavItem[]
 }
@@ -62,7 +64,19 @@ const NAV: NavItem[] = [
       { href: "/contatos",     label: "Contatos",      icon: <Contact  className={subIcon} strokeWidth={1.75} />, module: "contacts" },
     ],
   },
-  { href: "/negocios",   label: "Negócios",   icon: <Briefcase    className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "crm", adminOnly: true },
+  {
+    key:       "negocios",
+    label:     "Negócios",
+    icon:      <Briefcase className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    module:    "crm",
+    adminOnly: true,
+    children: [
+      // "Pipeline" vira switcher com os funis de venda ativos (2+) — injeção igual ao kanban.
+      { href: "/negocios",        label: "Pipeline", icon: <Columns3           className={subIcon} strokeWidth={1.75} /> },
+      { href: "/negocios/painel", label: "Painel",   icon: <BarChart3          className={subIcon} strokeWidth={1.75} /> },
+      { href: "/negocios/funis",  label: "Funis",    icon: <SlidersHorizontal  className={subIcon} strokeWidth={1.75} /> },
+    ],
+  },
   { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "agenda"  },
   { href: "/relatorios", label: "Relatórios", icon: <BarChart3    className="w-5 h-5 shrink-0" strokeWidth={1.75} /> },
   { href: "/automacao/ia", label: "Kora IA",  icon: <Sparkles     className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "ai_atendente" },
@@ -83,9 +97,19 @@ const NAV: NavItem[] = [
     label:     "Configurações",
     icon:      <Settings className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
     adminOnly: true,
+    flyout:    true,
     children: [
       { href: "/configuracoes/atendimento",    label: "Atendimento",       icon: <Headset      className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/tags",           label: "Tags",              icon: <TagIcon      className={subIcon} strokeWidth={1.75} /> },
+      {
+        key:   "comercial",
+        label: "Comercial",
+        icon:  <Briefcase className={subIcon} strokeWidth={1.75} />,
+        children: [
+          { href: "/configuracoes/catalogo", label: "Catálogo", icon: <Package       className={subIcon} strokeWidth={1.75} />, module: "crm" },
+          { href: "/configuracoes/motivos",  label: "Motivos de perda", icon: <ClipboardList className={subIcon} strokeWidth={1.75} />, module: "crm" },
+          { href: "/configuracoes/tags",     label: "Tags",     icon: <TagIcon       className={subIcon} strokeWidth={1.75} /> },
+        ],
+      },
       { href: "/configuracoes/cadastro",       label: "Campos do cadastro", icon: <IdCard       className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/equipe",         label: "Equipe",            icon: <Users        className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/relatorios",     label: "Relatórios automáticos", icon: <Mail    className={subIcon} strokeWidth={1.75} /> },
@@ -118,6 +142,8 @@ interface Props {
   expanded?:       boolean
   /** Pipelines ativos → "Pipelines" vira sub-menu (switcher) quando há 2+. */
   pipelines?:      PipelineMini[]
+  /** Funis de VENDA ativos → "Pipeline" (Negócios) vira switcher quando há 2+. */
+  dealPipelines?:  PipelineMini[]
   /** Sidebar desktop recolhido (só ícones). Undefined = não é o rail desktop (drawer). */
   collapsed?:      boolean
   /** Alterna recolher/expandir (só desktop). */
@@ -136,7 +162,7 @@ interface Props {
  */
 export function SidebarBody({
   userName, userEmail, tenantName, userRole, enabledModules, selfPause, hasOfficial,
-  pipelines, expanded = false, collapsed = false, onToggleCollapse, onExpand, onNavigate,
+  pipelines, dealPipelines, expanded = false, collapsed = false, onToggleCollapse, onExpand, onNavigate,
 }: Props) {
   const pathname              = usePathname()
   const searchParams          = useSearchParams()
@@ -179,32 +205,47 @@ export function SidebarBody({
     return (pipelines.find((p) => p.is_default) ?? pipelines[0]).id
   }, [pathname, pipelines, searchParams])
 
-  // Injeta os pipelines como filhos do item "Pipelines" (só com 2+ → vale a pena
-  // o switcher; 1 pipeline continua link direto pro board).
+  // Funil de VENDA atual (destaque no sub-menu de Negócios): só no board /negocios.
+  const currentDealPipelineId = useMemo(() => {
+    if (pathname !== "/negocios") return null
+    if (!dealPipelines?.length) return null
+    const q = searchParams.get("pipeline")
+    if (q && dealPipelines.some((p) => p.id === q)) return q
+    return (dealPipelines.find((p) => p.is_default) ?? dealPipelines[0]).id
+  }, [pathname, dealPipelines, searchParams])
+
+  // Injeta pipelines como switcher (só com 2+ → vale a pena; 1 continua link direto).
+  // Vale pros dois boards: atendimento (/kanban) e vendas (/negocios).
   const nav = useMemo(() => {
-    if (!pipelines || pipelines.length <= 1) return filteredNav
+    const switchers = [
+      { targetHref: "/kanban",   key: "pipelines",      list: pipelines,     currentId: currentPipelineId,     toHref: (p: PipelineMini) => `/kanban?pipeline=${p.id}` },
+      { targetHref: "/negocios", key: "deal-pipelines", list: dealPipelines, currentId: currentDealPipelineId, toHref: (p: PipelineMini) => `/negocios?pipeline=${p.id}` },
+    ].filter((s) => (s.list?.length ?? 0) > 1)
+    if (!switchers.length) return filteredNav
+
     const inject = (items: NavItem[]): NavItem[] =>
       items.map((it) => {
         if (isGroup(it)) return { ...it, children: inject(it.children) }
-        if (it.href !== "/kanban") return it
+        const sw = switchers.find((s) => s.targetHref === it.href)
+        if (!sw) return it
         return {
-          key:   "pipelines",
+          key:   sw.key,
           label: it.label,
           icon:  it.icon,
-          children: pipelines.map((p) => ({
-            href:  `/kanban?pipeline=${p.id}`,
+          children: (sw.list as PipelineMini[]).map((p) => ({
+            href:  sw.toHref(p),
             label: p.name,
             icon:  (
               <span className="flex size-4 items-center justify-center">
                 <span className="size-2 rounded-full" style={{ backgroundColor: p.color }} />
               </span>
             ),
-            activeOverride: p.id === currentPipelineId,
+            activeOverride: p.id === sw.currentId,
           })),
         } as NavGroup
       })
     return inject(filteredNav)
-  }, [filteredNav, pipelines, currentPipelineId])
+  }, [filteredNav, pipelines, currentPipelineId, dealPipelines, currentDealPipelineId])
 
   const allHrefs = useMemo(() => {
     const out: string[] = []
@@ -264,8 +305,51 @@ export function SidebarBody({
     })
   }
 
-  // Clique num grupo top-level: recolhido → expande e abre; expandido → toggle.
-  function onGroupClick(key: string) {
+  // ── Flyout (grupos com `flyout`, ex: Configurações) ─────────────────────
+  // Abre um MENU DO MENU: segunda coluna de altura total, colada no rail — não
+  // um popover (decisão do owner 2026-07-03). Só no rail desktop; no drawer
+  // mobile cai pro accordion. No rail recolhido abre direto, sem expandir.
+  const isDesktopRail = onToggleCollapse !== undefined
+  const [flyoutKey, setFlyoutKey] = useState<string | null>(null)
+  const flyoutRef = useRef<HTMLDivElement>(null)
+  const [flyoutX, setFlyoutX] = useState(0)
+
+  function openFlyout(key: string) {
+    // Colado na borda direita do rail (flush) — parece extensão do próprio menu.
+    setFlyoutX(navRef.current?.getBoundingClientRect().right ?? 56)
+    setFlyoutKey(key)
+  }
+
+  useEffect(() => {
+    if (!flyoutKey) return
+    function onDown(e: MouseEvent) {
+      const t = e.target as Element
+      if (flyoutRef.current?.contains(t)) return
+      if (t.closest?.("[data-flyout-trigger]")) return   // o toggle do botão cuida
+      setFlyoutKey(null)
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") setFlyoutKey(null) }
+    function onResize() { setFlyoutKey(null) }   // âncora (borda do rail) muda de lugar
+    document.addEventListener("mousedown", onDown)
+    document.addEventListener("keydown", onKey)
+    window.addEventListener("resize", onResize)
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); window.removeEventListener("resize", onResize) }
+  }, [flyoutKey])
+
+  // Fecha ao recolher/expandir o rail (a âncora muda de lugar) e ao trocar de rota.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFlyoutKey(null)
+  }, [collapsed, pathname])
+
+  // Clique num grupo top-level: flyout → painel lateral; senão, recolhido →
+  // expande e abre; expandido → toggle accordion.
+  function onGroupClick(key: string, flyout?: boolean) {
+    if (flyout && isDesktopRail) {
+      if (flyoutKey === key) setFlyoutKey(null)
+      else openFlyout(key)
+      return
+    }
     if (!expanded) {
       onExpand?.()
       setOpen((prev) => new Set(prev).add(key))
@@ -358,6 +442,31 @@ export function SidebarBody({
           <span className={`whitespace-nowrap rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 uppercase tracking-wider ${reveal}`}>
             breve
           </span>
+        )}
+      </Link>
+    )
+  }
+
+  // Leaf dentro do painel flyout — labels sempre visíveis (independe do rail).
+  function renderFlyoutLeaf(sub: NavLeaf) {
+    const active = sub.activeOverride ?? isLeafActive(sub.href)
+    return (
+      <Link
+        key={sub.href}
+        href={sub.soon ? "#" : sub.href}
+        onClick={() => { if (!sub.soon) { setFlyoutKey(null); onNavigate?.() } }}
+        className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${
+          active
+            ? "bg-primary-100 text-primary-700 font-semibold"
+            : sub.soon
+            ? "text-slate-300 cursor-default"
+            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+        }`}
+      >
+        <span className={`shrink-0 ${active ? "text-primary-600" : sub.soon ? "text-slate-300" : "text-slate-400"}`}>{sub.icon}</span>
+        <span className="flex-1 whitespace-nowrap">{sub.label}</span>
+        {sub.soon && (
+          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 uppercase tracking-wider">breve</span>
         )}
       </Link>
     )
@@ -463,15 +572,15 @@ export function SidebarBody({
         {nav.map((item) => {
           if (!isGroup(item)) {
             const active    = isLeafActive(item.href)
+            // Bolinha de "tem mensagem" — só sinaliza presença, sem contador (decisão do owner).
             const showBadge = item.href === "/inbox" && unread > 0
-            const badgeText = unread > 99 ? "99+" : String(unread)
 
             return (
               <Link
                 key={item.href}
                 href={item.soon ? "#" : item.href}
                 onClick={() => { if (!item.soon) onNavigate?.() }}
-                title={showBadge ? `${item.label} · ${unread} não lidas` : item.label}
+                title={showBadge ? `${item.label} · mensagens não lidas` : item.label}
                 className={`group/item relative flex items-center gap-3 rounded-xl py-1.5 pr-3 ${item.soon ? "cursor-default" : ""}`}
               >
                 <span ref={(el) => setChipRef(item.href, el)} className={`
@@ -485,9 +594,7 @@ export function SidebarBody({
                 `}>
                   {item.icon}
                   {showBadge && (
-                    <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center ring-2 ring-white tabular-nums">
-                      {badgeText}
-                    </span>
+                    <span className="absolute top-1 right-1 size-2.5 rounded-full bg-red-500 ring-2 ring-white" aria-label="Mensagens não lidas" />
                   )}
                 </span>
                 <span className={`
@@ -497,9 +604,7 @@ export function SidebarBody({
                   {item.label}
                 </span>
                 {showBadge && (
-                  <span className={`whitespace-nowrap rounded-full bg-red-500 text-white px-2 py-0.5 text-[10px] font-bold tabular-nums ${reveal}`}>
-                    {badgeText}
-                  </span>
+                  <span className={`size-2 rounded-full bg-red-500 shrink-0 ${reveal}`} aria-hidden />
                 )}
                 {item.soon && (
                   <span className={`whitespace-nowrap rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 uppercase tracking-wider ${reveal}`}>
@@ -511,19 +616,17 @@ export function SidebarBody({
           }
 
           const groupActive = isGroupActive(item)
-          const isOpen      = open.has(item.key)
-          // "Configurações" ancora no rodapé (acima do Play de atendimento) via mt-auto.
-          // Dropup: o submenu renderiza ACIMA do botão → o botão fica fixo embaixo e a
-          // lista abre pra cima (não "pula"). Chevron invertido pra apontar o sentido.
-          const pinBottom   = item.key === "config"
+          const asFlyout    = !!item.flyout && isDesktopRail
+          const isOpen      = asFlyout ? flyoutKey === item.key : open.has(item.key)
 
           const groupButton = (
             <button
               type="button"
-              onClick={() => onGroupClick(item.key)}
+              onClick={() => onGroupClick(item.key, item.flyout)}
               aria-expanded={isOpen}
               title={item.label}
-              className="group/item relative w-full flex items-center gap-3 rounded-xl py-1.5 pr-3"
+              data-flyout-trigger={asFlyout ? item.key : undefined}
+              className={`group/item relative w-full flex items-center gap-3 rounded-xl py-1.5 pr-3 ${asFlyout && isOpen ? "bg-slate-100" : ""}`}
             >
               <span ref={(el) => setChipRef(item.key, el)} className={`
                 flex size-9 items-center justify-center rounded-xl shrink-0 transition-colors duration-150
@@ -540,16 +643,21 @@ export function SidebarBody({
               `}>
                 {item.label}
               </span>
-              <ChevronDown
-                className={`size-3.5 text-slate-400 shrink-0 transition-transform duration-200 ${reveal} ${
-                  pinBottom ? (isOpen ? "" : "rotate-180") : (isOpen ? "rotate-180" : "")
-                }`}
-                strokeWidth={2.5}
-              />
+              {asFlyout ? (
+                <ChevronRight
+                  className={`size-3.5 shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "translate-x-0.5 text-primary-600" : "text-slate-400"}`}
+                  strokeWidth={2.5}
+                />
+              ) : (
+                <ChevronDown
+                  className={`size-3.5 text-slate-400 shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "rotate-180" : ""}`}
+                  strokeWidth={2.5}
+                />
+              )}
             </button>
           )
 
-          const groupSubmenu = (
+          const groupSubmenu = asFlyout ? null : (
             <div className={`overflow-hidden transition-[max-height,opacity] duration-200 ease-in-out ${isOpen && expanded ? "max-h-[34rem] opacity-100" : "max-h-0 opacity-0"}`}>
               <div className="my-1 ml-5 pl-3 border-l border-slate-200 space-y-0.5">
                 {item.children.map((c) => (isGroup(c) ? renderSubGroup(c) : renderSubLeaf(c)))}
@@ -558,14 +666,56 @@ export function SidebarBody({
           )
 
           return (
-            <div key={item.key} className={pinBottom ? "mt-auto pt-2" : undefined}>
-              {pinBottom
-                ? <>{groupSubmenu}{groupButton}</>
-                : <>{groupButton}{groupSubmenu}</>}
+            <div key={item.key}>
+              {groupButton}
+              {groupSubmenu}
             </div>
           )
         })}
       </nav>
+
+      {/* MENU DO MENU — segunda coluna de altura total, colada no rail. `fixed`
+          escapa o overflow-hidden do <aside> (sem transform no ancestral). */}
+      {flyoutKey && isDesktopRail && (() => {
+        const g = nav.find((i): i is NavGroup => isGroup(i) && i.key === flyoutKey)
+        if (!g) return null
+        return (
+          <div
+            ref={flyoutRef}
+            style={{ left: flyoutX }}
+            className="fixed inset-y-0 z-40 w-64 flex flex-col bg-white border-r border-slate-200 shadow-[12px_0_32px_-18px_rgba(15,23,42,0.25)] animate-in slide-in-from-left-4 fade-in-0 duration-150"
+          >
+            {/* cabeçalho — espelha o do menu principal (h-14 + divisor) */}
+            <div className="flex items-center gap-2.5 h-14 px-4 border-b border-slate-200 shrink-0">
+              <span className="flex size-8 items-center justify-center rounded-lg bg-primary-50 text-primary-600 shrink-0">{g.icon}</span>
+              <span className="text-sm font-bold text-slate-900 flex-1 truncate">{g.label}</span>
+              <button
+                type="button"
+                onClick={() => setFlyoutKey(null)}
+                title="Fechar"
+                className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0"
+              >
+                <PanelLeftClose className="size-4" strokeWidth={2} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-0.5">
+              {g.children.map((c) =>
+                isGroup(c) ? (
+                  <div key={c.key} className="pt-2 mt-2 border-t border-slate-100">
+                    <p className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">{c.label}</p>
+                    <div className="space-y-0.5">
+                      {c.children.map((l) => (isGroup(l) ? null : renderFlyoutLeaf(l)))}
+                    </div>
+                  </div>
+                ) : (
+                  renderFlyoutLeaf(c)
+                )
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       <SidebarSelfPause
         initialPaused={selfPause.paused}

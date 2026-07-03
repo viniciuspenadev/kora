@@ -101,6 +101,38 @@ export async function applyTag(tagId: string, taggableType: TaggableType, taggab
   revalidatePath("/contatos")
 }
 
+/**
+ * Aplica uma tag a VÁRIOS contatos (seleção em massa do roster). Anti-IDOR:
+ * valida a tag E filtra os contatos pro tenant do chamador antes de escrever.
+ * Idempotente: pula os que já têm a tag. Cap 500 por chamada.
+ */
+export async function applyTagToContacts(tagId: string, contactIds: string[]): Promise<{ applied: number }> {
+  const session = await requireSession()
+  const tenantId = session.user.tenantId
+  const wanted = Array.from(new Set(contactIds)).slice(0, 500)
+  if (wanted.length === 0) return { applied: 0 }
+
+  const [tagRow, owned, existing] = await Promise.all([
+    supabaseAdmin.from("tags").select("id").eq("id", tagId).eq("tenant_id", tenantId).maybeSingle(),
+    supabaseAdmin.from("chat_contacts").select("id").eq("tenant_id", tenantId).in("id", wanted),
+    supabaseAdmin.from("taggings").select("taggable_id")
+      .eq("tenant_id", tenantId).eq("tag_id", tagId).eq("taggable_type", "contact").in("taggable_id", wanted),
+  ])
+  if (!tagRow.data) throw new Error("Tag não encontrada.")
+
+  const has = new Set(((existing.data ?? []) as { taggable_id: string }[]).map((r) => r.taggable_id))
+  const ids = ((owned.data ?? []) as { id: string }[]).map((r) => r.id).filter((id) => !has.has(id))
+  if (ids.length === 0) return { applied: 0 }
+
+  const { error } = await supabaseAdmin.from("taggings").insert(ids.map((id) => ({
+    tag_id: tagId, tenant_id: tenantId, taggable_type: "contact", taggable_id: id, tagged_by: session.user.id,
+  })))
+  if (error && !error.message.includes("duplicate")) throw new Error(error.message)
+
+  revalidatePath("/contatos")
+  return { applied: ids.length }
+}
+
 export async function removeTag(tagId: string, taggableType: TaggableType, taggableId: string) {
   const session = await requireSession()
 

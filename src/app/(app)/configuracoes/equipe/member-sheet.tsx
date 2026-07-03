@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Loader2, Power, RotateCcw, CalendarDays, BadgeCheck, Smartphone } from "lucide-react"
 import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
@@ -174,33 +175,19 @@ export function MemberSheet({ member, departments, numbers, currentUserId, curre
             label="Papel"
             hint={!canEditRole ? "Apenas o owner pode mudar papéis" : "Define o que essa pessoa pode fazer no sistema"}
           >
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value as TenantRole)}
-              disabled={!canEditRole || isSelf}
-              className={`${inputCls} disabled:opacity-60 disabled:cursor-not-allowed`}
-            >
-              <option value="agent">Atendente — atende conversas</option>
-              <option value="admin">Admin — gerencia equipe e config</option>
-              <option value="owner" disabled>Owner — só um por tenant</option>
-            </select>
+            <SimpleSelect value={role} onChange={(v) => setRole(v as TenantRole)} disabled={!canEditRole || isSelf} options={[
+              { value: "agent", label: "Atendente — atende conversas" },
+              { value: "admin", label: "Admin — gerencia equipe e config" },
+              { value: "owner", label: "Owner — só um por tenant", disabled: true },
+            ]} />
           </FormRow>
 
           <FormRow
             label="Departamento"
             hint="Habilita a fila do setor: a pessoa passa a ver as conversas não-atribuídas deste departamento (além das atribuídas a ela)."
           >
-            <select
-              value={departmentId}
-              onChange={(e) => setDepartment(e.target.value)}
-              disabled={!canEditOther}
-              className={`${inputCls} disabled:opacity-60`}
-            >
-              <option value="">— Sem departamento —</option>
-              {departments.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-            </select>
+            <SimpleSelect value={departmentId} onChange={setDepartment} disabled={!canEditOther}
+              options={[{ value: "", label: "— Sem departamento —" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]} />
           </FormRow>
 
           <div className="pt-4 border-t border-slate-100">

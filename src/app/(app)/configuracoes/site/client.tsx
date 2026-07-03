@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition, useEffect, useRef } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import {
   Save, Loader2, AlertCircle, CheckCircle2, Code2, Eye, EyeOff,
   Plus, Trash2, GripVertical, Copy, Check, Globe,
@@ -280,14 +281,10 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, detec
                     />
                   </FormRow>
                   <FormRow label="Posição">
-                    <select
-                      value={cfg.button_position}
-                      onChange={(e) => patch({ button_position: e.target.value as WidgetConfig["button_position"] })}
-                      className={inputCls}
-                    >
-                      <option value="bottom-right">Inferior direita</option>
-                      <option value="bottom-left">Inferior esquerda</option>
-                    </select>
+                    <SimpleSelect value={cfg.button_position} onChange={(v) => patch({ button_position: v as WidgetConfig["button_position"] })} options={[
+                      { value: "bottom-right", label: "Inferior direita" },
+                      { value: "bottom-left",  label: "Inferior esquerda" },
+                    ]} />
                   </FormRow>
                 </div>
 
@@ -384,29 +381,13 @@ export function SiteWidgetClient({ initial, tenantSlug, departments, tags, detec
             <SectionCard title="Roteamento padrão" description="Aplicado automaticamente nos leads que entrarem por aqui">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <FormRow label="Departamento (futuro routing)">
-                  <select
-                    value={cfg.default_department_id ?? ""}
-                    onChange={(e) => patch({ default_department_id: e.target.value || null })}
-                    className={inputCls}
-                  >
-                    <option value="">— Sem departamento padrão —</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </select>
+                  <SimpleSelect value={cfg.default_department_id ?? ""} onChange={(v) => patch({ default_department_id: v || null })}
+                    options={[{ value: "", label: "— Sem departamento padrão —" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]} />
                 </FormRow>
 
                 <FormRow label="Tag aplicada automaticamente">
-                  <select
-                    value={cfg.default_tag_id ?? ""}
-                    onChange={(e) => patch({ default_tag_id: e.target.value || null })}
-                    className={inputCls}
-                  >
-                    <option value="">— Sem tag automática —</option>
-                    {tags.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </select>
+                  <SimpleSelect value={cfg.default_tag_id ?? ""} onChange={(v) => patch({ default_tag_id: v || null })}
+                    options={[{ value: "", label: "— Sem tag automática —" }, ...tags.map((t) => ({ value: t.id, label: t.name }))]} />
                 </FormRow>
               </div>
             </SectionCard>
@@ -865,23 +846,21 @@ function QuestionRow({
             maxLength={120}
             className="h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
           />
-          <select
-            value={question.type}
-            onChange={(e) => {
-              const next = e.target.value as WidgetQuestion["type"]
+          <div className="w-40"><SimpleSelect value={question.type} className="h-9 text-xs"
+            onChange={(v) => {
+              const next = v as WidgetQuestion["type"]
               onChange({
                 type:    next,
                 options: next === "select" ? (question.options ?? []) : undefined,
               })
             }}
-            className="h-9 px-3 text-xs border border-slate-200 rounded-lg bg-white"
-          >
-            <option value="text">Texto curto</option>
-            <option value="longtext">Texto longo</option>
-            <option value="email">Email</option>
-            <option value="phone">Telefone</option>
-            <option value="select">Opções (chips)</option>
-          </select>
+            options={[
+              { value: "text",     label: "Texto curto" },
+              { value: "longtext", label: "Texto longo" },
+              { value: "email",    label: "Email" },
+              { value: "phone",    label: "Telefone" },
+              { value: "select",   label: "Opções (chips)" },
+            ]} /></div>
 
           <div className="flex items-center gap-2">
             <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap">

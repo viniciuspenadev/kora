@@ -52,6 +52,8 @@ export interface AtendimentoMetrics {
   avgFirstResponseSec: DeltaNumber
   avgResolutionSec:    DeltaNumber
   withinSLA5min:       DeltaNumber
+  /** Meta de 1ª resposta usada no % acima (Configurações → Atendimento; 5 = default legado). */
+  slaTargetMin:        number
   resolvedCount:       DeltaNumber
   firstResponseDaily:  { date: string; avgSec: number }[]
   resolutionDaily:     { date: string; avgSec: number }[]
@@ -424,7 +426,7 @@ async function avgResolutionSec(t: string, r: RangeOpts, f: HelperFilters): Prom
   return Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length)
 }
 
-async function withinSLA5min(t: string, r: RangeOpts, f: HelperFilters): Promise<{ rate: number }> {
+async function withinSLA5min(t: string, r: RangeOpts, f: HelperFilters, targetSec = 300): Promise<{ rate: number }> {
   let q = supabaseAdmin.from("chat_conversations").select("id")
     .eq("tenant_id", t)
     .gte("created_at", r.from.toISOString()).lt("created_at", r.to.toISOString())
@@ -453,7 +455,7 @@ async function withinSLA5min(t: string, r: RangeOpts, f: HelperFilters): Promise
   for (const e of byConv.values()) {
     if (e.firstContact === undefined || e.firstAgent === undefined) continue
     total++
-    if ((e.firstAgent - e.firstContact) / 1000 <= 300) withSLA++
+    if ((e.firstAgent - e.firstContact) / 1000 <= targetSec) withSLA++
   }
   if (total === 0) return { rate: 0 }
   return { rate: Math.round((withSLA / total) * 1000) / 10 }
@@ -613,6 +615,13 @@ export async function getAtendimentoMetrics(filters: ReportFilters): Promise<Ate
   const prev: RangeOpts  = shiftRange(range)
   const hf = await resolveFilters(t, filters)
 
+  // SLA usa a META do tenant (Configurações → Atendimento) — mesma régua da vista
+  // "Por atendente". Sem meta configurada → 5 min (o default histórico do card).
+  const { data: slaCfg } = await supabaseAdmin
+    .from("tenant_config").select("sla_first_response_minutes").eq("tenant_id", t).maybeSingle()
+  const slaTargetMin = (slaCfg?.sla_first_response_minutes as number | null | undefined) ?? 5
+  const slaTargetSec = slaTargetMin * 60
+
   const [
     frtCur, frtPrev,
     resTimeCur, resTimePrev,
@@ -626,7 +635,7 @@ export async function getAtendimentoMetrics(filters: ReportFilters): Promise<Ate
   ] = await Promise.all([
     avgFirstResponseSec(t, range, hf),  avgFirstResponseSec(t, prev, hf),
     avgResolutionSec(t, range, hf),     avgResolutionSec(t, prev, hf),
-    withinSLA5min(t, range, hf),        withinSLA5min(t, prev, hf),
+    withinSLA5min(t, range, hf, slaTargetSec), withinSLA5min(t, prev, hf, slaTargetSec),
     countResolvedConversations(t, range, hf), countResolvedConversations(t, prev, hf),
     dailyAvgFirstResponse(t, range, hf),
     dailyAvgResolution(t, range, hf),
@@ -640,6 +649,7 @@ export async function getAtendimentoMetrics(filters: ReportFilters): Promise<Ate
     avgFirstResponseSec: { current: frtCur,     previous: frtPrev },
     avgResolutionSec:    { current: resTimeCur, previous: resTimePrev },
     withinSLA5min:       { current: slaCur.rate, previous: slaPrev.rate },
+    slaTargetMin,
     resolvedCount:       { current: resCur,     previous: resPrev },
     firstResponseDaily:  frtDaily,
     resolutionDaily:     resDaily,

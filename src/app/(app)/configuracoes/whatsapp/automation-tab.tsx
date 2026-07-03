@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition, useRef } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import {
   Save, Loader2, AlertCircle, CheckCircle2, MessageSquare, Clock, Sparkles, ChevronDown,
 } from "lucide-react"
@@ -294,15 +295,8 @@ function BusinessHoursCard({ initial }: { initial: AutomationConfig | null }) {
             <label className="block text-xs font-semibold text-slate-700 mb-1.5">
               Fuso horário
             </label>
-            <select
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
-            >
-              {TIMEZONES.map((tz) => (
-                <option key={tz.value} value={tz.value}>{tz.label}</option>
-              ))}
-            </select>
+            <SimpleSelect value={timezone} onChange={setTimezone}
+              options={TIMEZONES.map((tz) => ({ value: tz.value, label: tz.label }))} />
           </div>
 
           <div className="mt-4">

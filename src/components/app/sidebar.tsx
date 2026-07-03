@@ -12,6 +12,7 @@ interface Props {
   selfPause:      { paused: boolean; paused_until: string | null }
   hasOfficial?:   boolean     // tenant tem instância WhatsApp API Oficial
   pipelines?:      PipelineMini[]   // pipelines ativos → sub-menu de Pipelines
+  dealPipelines?:  PipelineMini[]   // funis de venda → switcher em Negócios
   /** Estado inicial vindo do cookie (server) — evita flash de largura no load. */
   initialCollapsed?: boolean
 }

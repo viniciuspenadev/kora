@@ -6,13 +6,19 @@ import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
 import {
   Search, Filter, Inbox, Tag as TagIcon, Plus, Ban, Phone, MessageCircle, Loader2, Check,
-  Mail, Building2, Pencil,
+  Pencil, X, MoreHorizontal, ExternalLink,
 } from "lucide-react"
-import { createTag, applyTag, removeTag } from "@/lib/actions/tags"
+import { useRouter, useSearchParams } from "next/navigation"
+import { createTag, applyTag, removeTag, applyTagToContacts } from "@/lib/actions/tags"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { ContactEditSheet } from "./contact-edit-sheet"
 import { SourceLogo } from "@/components/chat/source-logo"
+import { ContactSheet } from "@/components/crm/contact-sheet"
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSeparator, DropdownMenuCheckboxItem,
+} from "@/components/ui/dropdown-menu"
 
 // Canal (contact_identities) → fonte do logo de marca.
 const CHANNEL_SOURCE: Record<string, string> = { whatsapp: "whatsapp_inbound", instagram: "instagram", site: "webform" }
@@ -36,6 +42,8 @@ interface Contact {
   updated_at:      string
   tag_ids:         string[]
   channels:        string[]   // canais que o contato tem no cadastro (whatsapp/instagram/site)
+  /** Dados comerciais (negócios GANHOS) — null sem compras / sem módulo crm. */
+  commerce:        { total: number; compras: number; ciclo: number | null; ultimaDias: number | null; ticket: number | null } | null
 }
 
 interface Tag {
@@ -55,6 +63,8 @@ interface Props {
   contacts: Contact[]
   tags:     Tag[]
   stats:    Stats
+  /** Módulo crm ligado → mostra os dados comerciais (roster) e o Contato 360. */
+  crmEnabled?: boolean
 }
 
 const inputBase = "h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40"
@@ -76,18 +86,35 @@ function formatPhone(phone: string | null | undefined): string {
   return phone
 }
 
-export function ContatosList({ contacts: initialContacts, tags: initialTags, stats }: Props) {
+export function ContatosList({ contacts: initialContacts, tags: initialTags, stats, crmEnabled = false }: Props) {
+  // Deep-link de SEGMENTO: /contatos?tag=<id> chega com o público já filtrado
+  // (contagem clicável em Configurações → Tags).
+  const urlTag = useSearchParams().get("tag")
   const [contacts, setContacts] = useState(initialContacts)
   const [tags, setTags]         = useState(initialTags)
   const [search, setSearch]     = useState("")
   const [filter, setFilter]     = useState<"all" | "blocked" | "with_tags" | "with_email" | "with_company" | "no_custom_name">("all")
-  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set())
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(
+    () => new Set(urlTag && initialTags.some((t) => t.id === urlTag) ? [urlTag] : [])
+  )
   const [editing, setEditing]   = useState<Contact | null>(null)
   const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string } | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())        // seleção em massa
+  const [sheetContact, setSheetContact] = useState<string | null>(null)   // Contato 360
 
   function flash(kind: "ok" | "error", text: string) {
     setFeedback({ kind, text })
     setTimeout(() => setFeedback(null), 3000)
+  }
+
+  // ── Seleção em massa ──────────────────────────────────────────
+  function toggleSelect(id: string) {
+    setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  }
+  function bulkTagApplied(tagId: string, ids: Set<string>) {
+    setContacts((prev) => prev.map((c) =>
+      ids.has(c.id) && !c.tag_ids.includes(tagId) ? { ...c, tag_ids: [...c.tag_ids, tagId] } : c
+    ))
   }
 
   const filtered = useMemo(() => {
@@ -239,20 +266,65 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-slate-100">
-            {filtered.map((c) => (
-              <ContactRow
-                key={c.id}
-                contact={c}
-                allTags={tags}
-                onTagApplied={handleTagApplied}
-                onTagRemoved={handleTagRemoved}
-                onEdit={() => setEditing(c)}
+          /* Colunas do roster NUNCA comprimem: se a tela for menor que o necessário,
+             a lista rola horizontal DENTRO do card (padrão do design system). */
+          <div className="overflow-x-auto">
+          <div className="lg:min-w-[980px] xl:min-w-[1080px]">
+            {/* header do roster: selecionar tudo (filtrado) */}
+            <div className="flex items-center gap-3 px-5 py-2 border-b border-slate-100 bg-slate-50/60">
+              <RowCheckbox
+                checked={filtered.length > 0 && filtered.every((c) => selected.has(c.id))}
+                onToggle={() => setSelected(filtered.every((c) => selected.has(c.id)) ? new Set() : new Set(filtered.map((c) => c.id)))}
+                title="Selecionar todos (filtro atual)"
               />
-            ))}
+              <span className="w-10 shrink-0" />
+              <span className="text-[11px] font-medium text-slate-400 w-64 xl:w-72 shrink-0">Nome</span>
+              <span className="hidden md:block text-[11px] font-medium text-slate-400 flex-1">Tags</span>
+              {crmEnabled && <span className="hidden lg:block text-[11px] font-medium text-slate-400 w-[384px] shrink-0">Dados</span>}
+              <span className="hidden xl:block text-[11px] font-medium text-slate-400 w-20 text-right shrink-0">Criado em</span>
+              <span className="w-8 shrink-0" />
+            </div>
+            <div className="divide-y divide-slate-100">
+              {filtered.map((c) => (
+                <ContactRow
+                  key={c.id}
+                  contact={c}
+                  allTags={tags}
+                  crmEnabled={crmEnabled}
+                  checked={selected.has(c.id)}
+                  onToggleSelect={() => toggleSelect(c.id)}
+                  onOpenSheet={() => setSheetContact(c.id)}
+                  onTagApplied={handleTagApplied}
+                  onTagRemoved={handleTagRemoved}
+                  onEdit={() => setEditing(c)}
+                />
+              ))}
+            </div>
+          </div>
           </div>
         )}
       </div>
+
+      {/* barra de ações em massa */}
+      {selected.size > 0 && (
+        <BulkBar
+          count={selected.size}
+          tags={tags}
+          onApply={async (tagId) => {
+            const ids = new Set(selected)
+            try {
+              const r = await applyTagToContacts(tagId, Array.from(ids))
+              bulkTagApplied(tagId, ids)
+              flash("ok", r.applied > 0 ? `Tag aplicada a ${r.applied} contato${r.applied !== 1 ? "s" : ""}.` : "Todos os selecionados já tinham essa tag.")
+              setSelected(new Set())
+            } catch (err) { flash("error", (err as Error).message) }
+          }}
+          onClear={() => setSelected(new Set())}
+        />
+      )}
+
+      {/* Contato 360 — mesma superfície do board (1 sheet, N portas) */}
+      <ContactSheet contactId={sheetContact} onClose={() => setSheetContact(null)} />
 
       {feedback && (
         <div className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-3 py-2 rounded-lg shadow-soft text-xs ${
@@ -283,21 +355,26 @@ export function ContatosList({ contacts: initialContacts, tags: initialTags, sta
 }
 
 function ContactRow({
-  contact, allTags, onTagApplied, onTagRemoved, onEdit,
+  contact, allTags, crmEnabled, checked, onToggleSelect, onOpenSheet, onTagApplied, onTagRemoved, onEdit,
 }: {
   contact:      Contact
   allTags:      Tag[]
+  crmEnabled:   boolean
+  checked:      boolean
+  onToggleSelect: () => void
+  onOpenSheet:  () => void
   onTagApplied: (cId: string, tId: string) => void
   onTagRemoved: (cId: string, tId: string) => void
   onEdit:       () => void
 }) {
-  const [showTagPicker, setShowTagPicker] = useState(false)
+  const router = useRouter()
   const [pending, startTransition] = useTransition()
 
   const name        = displayContactName(contact)
   const initial     = displayContactInitial(contact)
   const contactTags = allTags.filter((t) => contact.tag_ids.includes(t.id))
   const lc          = lifecycleMeta(contact.lifecycle_stage)
+  const com         = contact.commerce
 
   function handleToggleTag(tagId: string, currentlyApplied: boolean) {
     startTransition(async () => {
@@ -315,129 +392,127 @@ function ContactRow({
     })
   }
 
+  // Nome já É o telefone formatado? Não repete no subtítulo (contato phone-only).
+  const nameIsPhone = !!contact.phone_number && name.replace(/\D/g, "") === contact.phone_number.replace(/\D/g, "")
+  const isDefaultLifecycle = !contact.lifecycle_stage || contact.lifecycle_stage === "contact"
+
   return (
-    <div className="group flex items-center gap-3 px-5 py-3.5 hover:bg-slate-50/60 transition-colors">
+    <div
+      onClick={crmEnabled ? onOpenSheet : undefined}
+      className={`group flex items-center gap-3 px-5 py-3 hover:bg-slate-50/60 transition-colors ${crmEnabled ? "cursor-pointer" : ""} ${checked ? "bg-primary-50/40" : ""}`}
+    >
+      <RowCheckbox checked={checked} onToggle={onToggleSelect} />
+
       <div className="size-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0 overflow-hidden">
         <ContactPic pic={contact.profile_pic_url} initial={initial} imgClass="size-10 object-cover" fallbackClass="text-sm font-bold text-slate-500" />
       </div>
 
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Link href={`/contatos/${contact.id}`} className="block text-sm font-semibold text-slate-900 truncate hover:text-primary-700 transition-colors">{name}</Link>
+      {/* Col NOME — identidade compacta (largura fixa → estrutura as colunas) */}
+      <div className="w-64 xl:w-72 min-w-0 shrink-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <Link href={`/contatos/${contact.id}`} onClick={(e) => e.stopPropagation()} className="block text-sm font-semibold text-slate-900 truncate hover:text-primary-700 transition-colors">{name}</Link>
           {contact.channels.length > 0 && (
-            <span className="inline-flex items-center gap-1" title={`Canais: ${contact.channels.join(", ")}`}>
+            <span className="inline-flex items-center gap-1 shrink-0" title={`Canais: ${contact.channels.join(", ")}`}>
               {contact.channels.map((ch) => CHANNEL_SOURCE[ch] && (
-                <SourceLogo key={ch} source={CHANNEL_SOURCE[ch]} size={15} />
+                <SourceLogo key={ch} source={CHANNEL_SOURCE[ch]} size={14} />
               ))}
             </span>
           )}
-          {contact.is_blocked && (
-            <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-50 text-red-600">
-              <Ban className="size-2.5" /> Bloqueado
-            </span>
-          )}
-          <span
-            className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`}
-            title={lc.label}
-          >
-            {lc.icon} {lc.label}
-          </span>
-          {contactTags.map((t) => (
-            <span
-              key={t.id}
-              className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-              style={{
-                backgroundColor: t.color + "20",
-                color: t.color,
-                border: `1px solid ${t.color}30`,
-              }}
-            >
-              <span className="size-1 rounded-full" style={{ backgroundColor: t.color }} />
-              {t.name}
-            </span>
-          ))}
         </div>
-        <div className="flex items-center gap-3 mt-0.5 flex-wrap">
-          {contact.phone_number ? (
-            <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-              <Phone className="size-2.5" /> {formatPhone(contact.phone_number)}
+        {crmEnabled && com?.ticket != null && (
+          <p className="text-[10.5px] font-semibold text-emerald-600 tabular-nums mt-0.5">Ticket médio {brlFmt(com.ticket)}</p>
+        )}
+        {/* Só telefone — email/empresa saíram da linha (despoluir; vivem na ficha/360). */}
+        <div className="flex items-center gap-3 mt-0.5 min-w-0">
+          {contact.phone_number && !nameIsPhone ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 truncate">
+              <Phone className="size-2.5 shrink-0" /> {formatPhone(contact.phone_number)}
             </span>
-          ) : (
+          ) : !contact.phone_number ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-slate-300 italic">
               <Phone className="size-2.5" /> sem telefone
             </span>
-          )}
-          {contact.email && (
-            <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-              <Mail className="size-2.5" /> {contact.email}
-            </span>
-          )}
-          {contact.company && (
-            <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-              <Building2 className="size-2.5" /> {contact.company}
-            </span>
-          )}
+          ) : null}
         </div>
       </div>
 
-      <div className="flex items-center gap-1 shrink-0">
-        <button
-          onClick={onEdit}
-          title="Editar contato"
-          className="size-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors"
-        >
-          <Pencil className="size-3.5" />
-        </button>
-        <div className="relative">
-          <button
-            onClick={() => setShowTagPicker((v) => !v)}
-            title="Gerenciar tags"
-            className="size-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors"
+      {/* Col TAGS — preenche o meio (nunca colapsa abaixo de 120px) */}
+      <div className="hidden md:flex items-center gap-1.5 flex-wrap flex-1 min-w-[120px] content-center">
+        {contact.is_blocked && (
+          <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-50 text-red-600">
+            <Ban className="size-2.5" /> Bloqueado
+          </span>
+        )}
+        {!isDefaultLifecycle && (
+          <span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${lc.bg} ${lc.text}`} title={lc.label}>
+            {lc.icon} {lc.label}
+          </span>
+        )}
+        {contactTags.map((t) => (
+          <span
+            key={t.id}
+            className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+            style={{ backgroundColor: t.color + "20", color: t.color, border: `1px solid ${t.color}30` }}
           >
-            <TagIcon className="size-3.5" />
-          </button>
+            <span className="size-1 rounded-full" style={{ backgroundColor: t.color }} />
+            {t.name}
+          </span>
+        ))}
+      </div>
 
-          {showTagPicker && (
-            <>
-              <div className="fixed inset-0 z-10" onClick={() => setShowTagPicker(false)} />
-              <div className="absolute top-full right-0 mt-1 w-56 bg-white border border-slate-200 rounded-xl shadow-lg z-20 max-h-72 overflow-y-auto">
-                <div className="p-2 border-b border-slate-100">
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-2">Tags</p>
-                </div>
-                {allTags.length === 0 ? (
-                  <p className="text-xs text-slate-400 p-3 text-center">Nenhuma tag criada.</p>
-                ) : (
-                  <ul className="py-1">
-                    {allTags.map((t) => {
-                      const applied = contact.tag_ids.includes(t.id)
-                      return (
-                        <li key={t.id}>
-                          <button
-                            disabled={pending}
-                            onClick={() => handleToggleTag(t.id, applied)}
-                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 flex items-center gap-2 transition-colors disabled:opacity-50"
-                          >
-                            <span className="size-2.5 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
-                            <span className="flex-1 truncate text-slate-700">{t.name}</span>
-                            {applied && <Check className="size-3 text-primary-600" />}
-                          </button>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                )}
-              </div>
-            </>
-          )}
+      {/* Col DADOS — GRID de colunas fixas: o valor cresce DENTRO da célula,
+          nada empurra nada; todas as linhas alinham na vertical. Zero = mudo. */}
+      {crmEnabled && (
+        <div className="hidden lg:grid grid-cols-[104px_80px_88px_88px] items-center gap-2 w-[384px] shrink-0">
+          <MiniStat label="Total"           value={com ? brlFmt(com.total) : "R$ 0"} strong={!!com} tone={com ? undefined : "muted"} />
+          <PurchasesRing count={com?.compras ?? 0} />
+          <MiniStat label="Ciclo de compra" value={com?.ciclo != null ? `${com.ciclo}d` : "—"} tone={com?.ciclo != null ? undefined : "muted"} />
+          <MiniStat
+            label="Última compra"
+            value={com?.ultimaDias != null ? `${com.ultimaDias}d` : "—"}
+            tone={com?.ultimaDias == null ? "muted" : com.ultimaDias <= 30 ? "ok" : com.ultimaDias <= 90 ? "warn" : "bad"}
+          />
         </div>
+      )}
 
-        <Link
-          href={`/inbox?contact=${contact.id}`}
-          title="Abrir no inbox"
-          className="size-8 rounded-lg text-slate-400 hover:text-primary-700 hover:bg-primary-50 flex items-center justify-center transition-colors"
-        >
-          <MessageCircle className="size-3.5" />
-        </Link>
+      <span className="hidden xl:block text-[11px] text-slate-400 w-20 text-right tabular-nums shrink-0">
+        {new Date(contact.created_at).toLocaleDateString("pt-BR")}
+      </span>
+
+      {/* Ações num "…" só — economiza ~70px pra informação respirar */}
+      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            title="Ações"
+            className="size-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 grid place-items-center transition-colors data-[popup-open]:bg-slate-100 data-[popup-open]:text-slate-700"
+          >
+            <MoreHorizontal className="size-4" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuItem onClick={() => router.push(`/inbox?contact=${contact.id}`)}>
+              <MessageCircle className="size-3.5 text-primary-500" /> Abrir conversa
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push(`/contatos/${contact.id}`)}>
+              <ExternalLink className="size-3.5 text-slate-400" /> Ficha completa
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onEdit}>
+              <Pencil className="size-3.5 text-slate-400" /> Editar contato
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <div className="px-1.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Tags</div>
+            {allTags.length === 0 && <p className="px-2 py-1.5 text-[11px] text-slate-400">Nenhuma tag criada.</p>}
+            {allTags.map((t) => {
+              const applied = contact.tag_ids.includes(t.id)
+              return (
+                <DropdownMenuCheckboxItem key={t.id} checked={applied} closeOnClick={false} disabled={pending}
+                  onCheckedChange={() => handleToggleTag(t.id, applied)}>
+                  <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
+                  <span className="truncate">{t.name}</span>
+                </DropdownMenuCheckboxItem>
+              )
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   )
@@ -529,6 +604,111 @@ function TagManagerButton({ tags, onTagCreated }: { tags: Tag[]; onTagCreated: (
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+// ── Roster comercial — primitivas ────────────────────────────────
+const brlFmt = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: v >= 100 ? 0 : 2 })
+
+function RowCheckbox({ checked, onToggle, title }: { checked: boolean; onToggle: () => void; title?: string }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      title={title}
+      onClick={(e) => { e.stopPropagation(); onToggle() }}
+      className={`size-4 rounded border grid place-items-center shrink-0 transition-colors ${
+        checked ? "bg-primary border-primary text-white" : "border-slate-300 bg-white hover:border-primary/50"
+      }`}
+    >
+      {checked && <Check className="size-3" strokeWidth={3} />}
+    </button>
+  )
+}
+
+function MiniStat({ label, value, strong = false, tone }: { label: string; value: string; strong?: boolean; tone?: "ok" | "warn" | "bad" | "muted" }) {
+  const color =
+    tone === "ok"   ? "text-emerald-600"
+    : tone === "warn" ? "text-amber-600"
+    : tone === "bad"  ? "text-red-600"
+    : tone === "muted" ? "text-slate-300"
+    : strong ? "text-slate-800" : "text-slate-600"
+  return (
+    <div className="min-w-0">
+      <p className={`text-xs font-bold tabular-nums leading-tight truncate ${color}`} title={value}>{value}</p>
+      <p className="text-[10px] text-slate-400 leading-tight whitespace-nowrap">{label}</p>
+    </div>
+  )
+}
+
+/** Anel de compras (referência): círculo com o nº de compras dentro. */
+function PurchasesRing({ count }: { count: number }) {
+  const active = count > 0
+  return (
+    <div className="flex items-center gap-1.5 shrink-0" title={`${count} compra${count !== 1 ? "s" : ""}`}>
+      <span className={`size-8 rounded-full border-2 grid place-items-center text-[11px] font-bold tabular-nums shrink-0 ${
+        active ? "border-emerald-400 text-emerald-600" : "border-slate-200 text-slate-300"
+      }`}>
+        {count}
+      </span>
+      <span className="text-[10px] text-slate-400 leading-tight whitespace-nowrap">Compras</span>
+    </div>
+  )
+}
+
+/** Barra flutuante da seleção em massa — a segmentação virando AÇÃO. */
+function BulkBar({ count, tags, onApply, onClear }: {
+  count: number
+  tags: Tag[]
+  onApply: (tagId: string) => Promise<void>
+  onClear: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [pending, startTransition] = useTransition()
+
+  return (
+    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-slate-900 text-white rounded-xl pl-4 pr-2 py-2 shadow-2xl animate-in slide-in-from-bottom-2 fade-in-0 duration-150">
+      <span className="text-xs font-semibold tabular-nums">{count} selecionado{count !== 1 ? "s" : ""}</span>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          disabled={pending || tags.length === 0}
+          className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold bg-white/10 hover:bg-white/20 rounded-lg transition-colors disabled:opacity-50"
+        >
+          {pending ? <Loader2 className="size-3.5 animate-spin" /> : <TagIcon className="size-3.5" />}
+          Aplicar tag
+        </button>
+        {open && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+            <div className="absolute bottom-full left-0 mb-2 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-20 max-h-64 overflow-y-auto py-1">
+              {tags.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  disabled={pending}
+                  onClick={() => { setOpen(false); startTransition(async () => { await onApply(t.id) }) }}
+                  className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-colors disabled:opacity-50"
+                >
+                  <span className="size-2.5 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
+                  <span className="truncate">{t.name}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onClear}
+        title="Limpar seleção"
+        className="size-8 grid place-items-center rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+      >
+        <X className="size-4" />
+      </button>
     </div>
   )
 }

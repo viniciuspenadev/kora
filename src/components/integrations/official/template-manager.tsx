@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Plus, Trash2, Loader2, X, AlertCircle, CheckCircle2, FileText } from "lucide-react"
 import { createOfficialTemplate, deleteOfficialTemplate } from "@/lib/actions/whatsapp-official"
 import type { MetaTemplate } from "@/lib/providers/meta-cloud-provider"
@@ -94,17 +95,17 @@ export function TemplateManager({ templates }: { templates: MetaTemplate[] }) {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <FormRow label="Nome"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="boas_vindas" className={INPUT} /></FormRow>
               <FormRow label="Categoria">
-                <select value={category} onChange={(e) => setCategory(e.target.value as "MARKETING" | "UTILITY")} className={INPUT.replace("px-3", "px-2")}>
-                  <option value="MARKETING">Marketing</option>
-                  <option value="UTILITY">Utilidade</option>
-                </select>
+                <SimpleSelect value={category} onChange={(v) => setCategory(v as "MARKETING" | "UTILITY")} options={[
+                  { value: "MARKETING", label: "Marketing" },
+                  { value: "UTILITY",   label: "Utilidade" },
+                ]} />
               </FormRow>
               <FormRow label="Idioma">
-                <select value={language} onChange={(e) => setLanguage(e.target.value)} className={INPUT.replace("px-3", "px-2")}>
-                  <option value="pt_BR">Português (BR)</option>
-                  <option value="en_US">English (US)</option>
-                  <option value="es_ES">Español</option>
-                </select>
+                <SimpleSelect value={language} onChange={setLanguage} options={[
+                  { value: "pt_BR", label: "Português (BR)" },
+                  { value: "en_US", label: "English (US)" },
+                  { value: "es_ES", label: "Español" },
+                ]} />
               </FormRow>
             </div>
             <FormRow label="Corpo da mensagem" hint="Use {{1}}, {{2}}… para campos dinâmicos (ex: nome do cliente).">

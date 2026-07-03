@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { useRouter } from "next/navigation"
 import {
   Plus, CheckCircle2, FileText,
@@ -77,19 +78,13 @@ export function TemplatesClient({ templates, error, created, koraByName = {} }: 
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nome ou conteúdo…"
             className={`${INPUT} pl-9`} />
         </div>
-        <select value={fStatus} onChange={(e) => setFStatus(e.target.value)} className="h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
-          <option value="all">Todos os status</option>
-          {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
-        <select value={fCat} onChange={(e) => setFCat(e.target.value)} className="h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" title="Categoria da Meta">
-          <option value="all">Todas categorias</option>
-          {Object.entries(CATEGORY).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-        </select>
+        <div className="w-44"><SimpleSelect value={fStatus} onChange={setFStatus}
+          options={[{ value: "all", label: "Todos os status" }, ...Object.entries(STATUS).map(([k, v]) => ({ value: k, label: v.label }))]} /></div>
+        <div className="w-44" title="Categoria da Meta"><SimpleSelect value={fCat} onChange={setFCat}
+          options={[{ value: "all", label: "Todas categorias" }, ...Object.entries(CATEGORY).map(([k, v]) => ({ value: k, label: v }))]} /></div>
         {hasKora && (
-          <select value={fKora} onChange={(e) => setFKora(e.target.value)} className="h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" title="Categoria do Kora (propósito)">
-            <option value="all">Todos os propósitos</option>
-            {Object.entries(KORA_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
+          <div className="w-48" title="Categoria do Kora (propósito)"><SimpleSelect value={fKora} onChange={setFKora}
+            options={[{ value: "all", label: "Todos os propósitos" }, ...Object.entries(KORA_LABELS).map(([k, v]) => ({ value: k, label: v }))]} /></div>
         )}
         <div className="inline-flex rounded-lg border border-slate-200 p-0.5">
           <button onClick={() => setView("grid")} className={`size-7 inline-flex items-center justify-center rounded-md ${view === "grid" ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`} title="Grade"><LayoutGrid className="size-4" /></button>

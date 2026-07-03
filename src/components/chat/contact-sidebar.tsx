@@ -1,6 +1,7 @@
 "use client"
 
 import { ContactPic } from "@/components/chat/contact-pic"
+import { SimpleSelect } from "@/components/ui/select"
 
 import Link from "next/link"
 import { useState, useTransition, useEffect, useCallback } from "react"
@@ -657,19 +658,11 @@ function PipelineCard({
         <p className="text-[11px] text-slate-400 italic mb-2">Sem etapa atribuída</p>
       )}
 
-      <select
-        value={conversation.stage_id ?? ""}
-        onChange={(e) => changeStage(e.target.value)}
-        className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
-      >
-        <option value="">— Selecionar etapa —</option>
-        {pipelineStages
+      <SimpleSelect value={conversation.stage_id ?? ""} onChange={changeStage} placeholder="— Selecionar etapa —" className="h-8 text-xs pl-2"
+        options={pipelineStages
           .filter((s) => !s.is_won && !s.is_lost)
           .sort((a, b) => a.position - b.position)
-          .map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
-          ))}
-      </select>
+          .map((s) => ({ value: s.id, label: s.name }))} />
 
       <div className="grid grid-cols-2 gap-2 mt-2">
         <button
@@ -1519,11 +1512,9 @@ function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange, onReclassif
         {deal.pipeline_name && <span className="text-[10px] text-slate-400 truncate">· {deal.pipeline_name}</span>}
       </div>
       <div className="mt-2 flex items-center gap-1.5">
-        <select value={deal.stage?.id ?? ""} disabled={moving}
-          onChange={(e) => { const s = stages.find((x) => x.id === e.target.value); if (s && s.id !== deal.stage?.id) onMove(deal.id, s.id, s.name, deal.stage?.name ?? null, deal.name ?? null, deal.stage_entered_at ? Math.floor((Date.now() - new Date(deal.stage_entered_at).getTime()) / 86400000) : null, deal.estimated_value ?? null) }}
-          className="flex-1 h-7 px-2 text-[11px] border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50">
-          {stages.map((s) => <option key={s.id} value={s.id}>{s.is_won ? "🏆 " : s.is_lost ? "✕ " : ""}{s.name}</option>)}
-        </select>
+        <div className="flex-1 min-w-0"><SimpleSelect value={deal.stage?.id ?? ""} disabled={moving} className="h-7 text-[11px] pl-2"
+          onChange={(v) => { const s = stages.find((x) => x.id === v); if (s && s.id !== deal.stage?.id) onMove(deal.id, s.id, s.name, deal.stage?.name ?? null, deal.name ?? null, deal.stage_entered_at ? Math.floor((Date.now() - new Date(deal.stage_entered_at).getTime()) / 86400000) : null, deal.estimated_value ?? null) }}
+          options={stages.map((s) => ({ value: s.id, label: (s.is_won ? "🏆 " : s.is_lost ? "✕ " : "") + s.name }))} /></div>
         {onReclassify && (
           <button type="button" onClick={onReclassify} disabled={moving} title="Mover para outro funil"
             className="size-7 shrink-0 grid place-items-center rounded-lg border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 disabled:opacity-50">

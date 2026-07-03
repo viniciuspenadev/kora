@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { useRouter } from "next/navigation"
 import { Plus, Trash2, Loader2, Check, X } from "lucide-react"
 import {
@@ -55,9 +56,8 @@ export function CamposClient({ fields }: { fields: ContactFieldDef[] }) {
               </label>
               <label className="block">
                 <span className="block text-[11px] font-semibold text-slate-600 mb-1">Tipo</span>
-                <select value={type} onChange={(e) => setType(e.target.value as ContactFieldType)} className={inputCls}>
-                  {TYPES.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
-                </select>
+                <SimpleSelect value={type} onChange={(v) => setType(v as ContactFieldType)}
+                  options={TYPES.map((t) => ({ value: t.v, label: t.label }))} />
               </label>
             </div>
             {type === "select" && (

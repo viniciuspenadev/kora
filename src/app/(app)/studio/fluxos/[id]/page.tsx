@@ -16,7 +16,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }, { data: tagList }, { data: svcList }, { data: resList }] = await Promise.all([
+  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }, { data: tagList }, { data: svcList }, { data: resList }, { data: agentRows }] = await Promise.all([
     supabaseAdmin.from("studio_flows")
       .select("id, name, status, active, version, trigger, graph")
       .eq("tenant_id", tenantId).eq("id", id).maybeSingle(),
@@ -33,8 +33,20 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     // Serviços + agendas pro destino da agenda no nó de IA ("em qual agenda cai").
     supabaseAdmin.from("tenant_services").select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name"),
     supabaseAdmin.from("tenant_resources").select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name"),
+    // Atendentes ativos pro destino "Atendente específico" do nó Transferir (F1).
+    supabaseAdmin.from("tenant_users")
+      .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
+      .eq("tenant_id", tenantId).eq("active", true),
   ])
   if (!flow) redirect("/studio/fluxos")
+
+  // Normaliza o embed (PostgREST pode tipar como array) → { id, name } ordenado.
+  const agents = ((agentRows ?? []) as { user_id: string; profiles: { full_name: string | null } | { full_name: string | null }[] | null }[])
+    .map((r) => {
+      const p = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles
+      return { id: r.user_id, name: p?.full_name ?? "Atendente" }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
 
   // Gate (god mode): binding "Dono da conversa" nos nós de agendamento (beta).
   // + opções de canal/instância pro filtro do gatilho (derivadas do tenant).
@@ -49,6 +61,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     <FlowEditorCanvas
       flow={flow as StudioFlowFull}
       departments={(depts ?? []) as { id: string; name: string }[]}
+      agents={agents}
       flows={(flowList ?? []) as { id: string; name: string }[]}
       stages={(stageList ?? []) as { id: string; name: string }[]}
       tags={(tagList ?? []) as { id: string; name: string }[]}

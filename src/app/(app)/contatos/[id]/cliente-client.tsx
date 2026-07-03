@@ -1,6 +1,7 @@
 "use client"
 
 import { ContactPic } from "@/components/chat/contact-pic"
+import { SimpleSelect } from "@/components/ui/select"
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -423,10 +424,8 @@ function CustomFieldEdit({ def, value, onChange }: { def: ContactFieldDef; value
   )
   if (def.type === "select") return (
     <L label={def.label}>
-      <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} className={editInput}>
-        <option value="">—</option>
-        {(def.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
-      </select>
+      <SimpleSelect value={String(value ?? "")} onChange={onChange} placeholder="—"
+        options={[{ value: "", label: "—" }, ...(def.options ?? []).map((o) => ({ value: o, label: o }))]} />
     </L>
   )
   const inputType = def.type === "number" ? "number" : def.type === "date" ? "date" : "text"

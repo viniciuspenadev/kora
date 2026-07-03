@@ -4,6 +4,7 @@
 import { useRef } from "react"
 import { Trash2, Plus, Settings2, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone } from "lucide-react"
 import { SourceLogo } from "@/components/chat/source-logo"
+import { SimpleSelect } from "@/components/ui/select"
 import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
@@ -72,11 +73,11 @@ function RenderSelect({ value, onChange }: { value: RenderMode; onChange: (v: Re
   return (
     <div>
       <label className={LABEL}>Estilo das opções</label>
-      <select className={INPUT} value={value} onChange={(e) => onChange(e.target.value as RenderMode)}>
-        <option value="auto">Automático (recomendado)</option>
-        <option value="interactive">Botões / lista nativa</option>
-        <option value="numbered">Lista numerada (texto)</option>
-      </select>
+      <SimpleSelect value={value} onChange={(v) => onChange(v as RenderMode)} options={[
+        { value: "auto",        label: "Automático (recomendado)" },
+        { value: "interactive", label: "Botões / lista nativa" },
+        { value: "numbered",    label: "Lista numerada (texto)" },
+      ]} />
       <p className="text-[11px] text-slate-400 mt-1">
         {value === "numbered"
           ? "Sempre texto numerado — o cliente responde com o número, em qualquer canal."
@@ -87,10 +88,11 @@ function RenderSelect({ value, onChange }: { value: RenderMode; onChange: (v: Re
 }
 
 export function ConfigPanel({
-  node, departments, flows, stages, tags, services, resources, ownerRouting, flowVars = [], onChange, onDelete,
+  node, departments, agents = [], flows, stages, tags, services, resources, ownerRouting, flowVars = [], onChange, onDelete,
 }: {
   node: RFNode
   departments: { id: string; name: string }[]
+  agents?: { id: string; name: string }[]
   flows: { id: string; name: string }[]
   stages: { id: string; name: string }[]
   tags: { id: string; name: string }[]
@@ -130,12 +132,12 @@ export function ConfigPanel({
         <div className="space-y-3">
           <div>
             <label className={LABEL}>Tipo de mídia</label>
-            <select className={INPUT} value={String(cfg.mediaType ?? "image")} onChange={(e) => set({ mediaType: e.target.value })}>
-              <option value="image">Imagem</option>
-              <option value="video">Vídeo</option>
-              <option value="audio">Áudio</option>
-              <option value="document">Documento</option>
-            </select>
+            <SimpleSelect value={String(cfg.mediaType ?? "image")} onChange={(v) => set({ mediaType: v })} options={[
+              { value: "image",    label: "Imagem" },
+              { value: "video",    label: "Vídeo" },
+              { value: "audio",    label: "Áudio" },
+              { value: "document", label: "Documento" },
+            ]} />
           </div>
           <div>
             <label className={LABEL}>URL da mídia (pública)</label>
@@ -169,9 +171,8 @@ export function ConfigPanel({
           </div>
           <div>
             <label className={LABEL}>Método</label>
-            <select className={INPUT} value={String(cfg.method ?? "GET")} onChange={(e) => set({ method: e.target.value })}>
-              <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
-            </select>
+            <SimpleSelect value={String(cfg.method ?? "GET")} onChange={(v) => set({ method: v })}
+              options={["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({ value: m, label: m }))} />
           </div>
           <div>
             <label className={LABEL}>Corpo (JSON) <span className="text-slate-400 font-normal">(opcional)</span></label>
@@ -200,12 +201,12 @@ export function ConfigPanel({
           </div>
           <div>
             <label className={LABEL}>Validação</label>
-            <select className={INPUT} value={String(cfg.validate ?? "text")} onChange={(e) => set({ validate: e.target.value })}>
-              <option value="text">Texto livre</option>
-              <option value="email">E-mail</option>
-              <option value="phone">Telefone</option>
-              <option value="number">Número</option>
-            </select>
+            <SimpleSelect value={String(cfg.validate ?? "text")} onChange={(v) => set({ validate: v })} options={[
+              { value: "text",   label: "Texto livre" },
+              { value: "email",  label: "E-mail" },
+              { value: "phone",  label: "Telefone" },
+              { value: "number", label: "Número" },
+            ]} />
           </div>
           <p className="text-[11px] text-slate-400">O fluxo espera a resposta e guarda na variável. Use depois com <code className="bg-slate-100 px-1 rounded">{"{{nome}}"}</code> ou pelo Agente IA.</p>
         </div>
@@ -222,17 +223,15 @@ export function ConfigPanel({
           <p className="text-xs text-slate-400">Executa outro fluxo a partir daqui — reaproveite blocos (ex: &quot;Qualificar lead&quot;).</p>
           <div>
             <label className={LABEL}>Fluxo a executar</label>
-            <select className={INPUT} value={String(cfg.flowId ?? "")} onChange={(e) => set({ flowId: e.target.value })}>
-              <option value="">— selecione —</option>
-              {flows.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </select>
+            <SimpleSelect value={String(cfg.flowId ?? "")} onChange={(v) => set({ flowId: v })}
+              options={flows.map((f) => ({ value: f.id, label: f.name }))} />
           </div>
           <div>
             <label className={LABEL}>Modo</label>
-            <select className={INPUT} value={String(cfg.mode ?? "subflow")} onChange={(e) => set({ mode: e.target.value })}>
-              <option value="subflow">Sub-fluxo (executa e VOLTA pra cá)</option>
-              <option value="goto">Ir para (troca de fluxo, não volta)</option>
-            </select>
+            <SimpleSelect value={String(cfg.mode ?? "subflow")} onChange={(v) => set({ mode: v })} options={[
+              { value: "subflow", label: "Sub-fluxo (executa e VOLTA pra cá)" },
+              { value: "goto",    label: "Ir para (troca de fluxo, não volta)" },
+            ]} />
           </div>
           <p className="text-[11px] text-slate-400">
             {cfg.mode === "goto"
@@ -250,10 +249,10 @@ export function ConfigPanel({
         <div className="space-y-3">
           <div>
             <label className={LABEL}>Ação</label>
-            <select className={INPUT} value={String(cfg.action ?? "add")} onChange={(e) => set({ action: e.target.value })}>
-              <option value="add">Adicionar etiqueta</option>
-              <option value="remove">Remover etiqueta</option>
-            </select>
+            <SimpleSelect value={String(cfg.action ?? "add")} onChange={(v) => set({ action: v })} options={[
+              { value: "add",    label: "Adicionar etiqueta" },
+              { value: "remove", label: "Remover etiqueta" },
+            ]} />
           </div>
           <div>
             <label className={LABEL}>Etiqueta</label>
@@ -273,10 +272,8 @@ export function ConfigPanel({
       {type === "move_stage" && (
         <div>
           <label className={LABEL}>Mover para a etapa</label>
-          <select className={INPUT} value={String(cfg.stage ?? "")} onChange={(e) => set({ stage: e.target.value })}>
-            <option value="">— selecione —</option>
-            {stages.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
-          </select>
+          <SimpleSelect value={String(cfg.stage ?? "")} onChange={(v) => set({ stage: v })}
+            options={stages.map((s) => ({ value: s.name, label: s.name }))} />
           {stages.length === 0 && <p className="text-[11px] text-amber-700 mt-1">Nenhuma etapa de pipeline configurada ainda.</p>}
         </div>
       )}
@@ -288,21 +285,61 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "transfer" && (
+      {type === "transfer" && (() => {
+        // Nó antigo (sem target salvo) mostra "department" mas SÓ grava target
+        // quando o autor mexe — publicado antigo continua com a semântica clássica.
+        const target = String(cfg.target ?? "department")
+        const fallback = String(cfg.whenUnavailable ?? "queue")
+        return (
         <div className="space-y-3">
           <div>
-            <label className={LABEL}>Departamento</label>
-            <select className={INPUT} value={String(cfg.department ?? "")} onChange={(e) => set({ department: e.target.value })}>
-              <option value="">— selecione —</option>
-              {departments.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
-            </select>
+            <label className={LABEL}>Pra quem vai</label>
+            <SimpleSelect value={target} onChange={(v) => set({ target: v })} options={[
+              { value: "department", label: "Fila do setor" },
+              { value: "agent",      label: "Atendente específico" },
+              { value: "owner",      label: "Devolver ao responsável (carteira)" },
+              { value: "pool",       label: "Fila geral" },
+            ]} />
           </div>
+          {target === "department" && (
+            <div>
+              <label className={LABEL}>Departamento</label>
+              <SimpleSelect value={String(cfg.department ?? "")} onChange={(v) => set({ department: v })}
+                options={departments.map((d) => ({ value: d.name, label: d.name }))} />
+            </div>
+          )}
+          {target === "agent" && (
+            <div>
+              <label className={LABEL}>Atendente</label>
+              <SimpleSelect value={String(cfg.agentId ?? "")} onChange={(v) => set({ agentId: v })}
+                options={agents.map((a) => ({ value: a.id, label: a.name }))} />
+            </div>
+          )}
+          {target === "owner" && (
+            <p className="text-[11px] text-slate-500 leading-relaxed">Volta pro atendente que já é dono deste cliente. Sem responsável ativo → cai na fila geral.</p>
+          )}
           <div>
             <label className={LABEL}>Mensagem de transição <span className="text-slate-400 font-normal">(opcional)</span></label>
             <input className={INPUT} value={String(cfg.handoff ?? "")} onChange={(e) => set({ handoff: e.target.value })} placeholder="Vou te passar pro time…" />
           </div>
+          <div>
+            <label className={LABEL}>Se ninguém estiver disponível</label>
+            <SimpleSelect value={fallback} onChange={(v) => set({ whenUnavailable: v })} options={[
+              { value: "queue",        label: "Enfileirar mesmo assim (o time vê quando voltar)" },
+              { value: "wait_message", label: "Avisar o cliente e enfileirar" },
+              { value: "keep_ai",      label: "Manter a IA atendendo" },
+            ]} />
+            <p className="mt-1 text-[10.5px] text-slate-400 leading-relaxed">Vale quando o destino está fora do horário comercial ou sem gente ativa (pausada/ausente).</p>
+          </div>
+          {(fallback === "wait_message" || fallback === "keep_ai") && (
+            <div>
+              <label className={LABEL}>Mensagem de espera <span className="text-slate-400 font-normal">(opcional)</span></label>
+              <input className={INPUT} value={String(cfg.waitMessage ?? "")} onChange={(e) => set({ waitMessage: e.target.value })} placeholder="Estamos fora do horário — te respondo assim que o time voltar!" />
+            </div>
+          )}
         </div>
-      )}
+        )
+      })()}
 
       {type === "end" && (
         <div>
@@ -428,30 +465,23 @@ function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set
     <div className="space-y-3">
       <div>
         <label className={LABEL}>Checar</label>
-        <select className={INPUT} value={check} onChange={(e) => onCheck(e.target.value)}>
-          <optgroup label="Relacionamento">
-            <option value="lifecycle_is">Lifecycle é…</option>
-            <option value="has_tag">Tem a etiqueta…</option>
-          </optgroup>
-          <optgroup label="Canal">
-            <option value="channel_is">Veio do canal…</option>
-          </optgroup>
-          <optgroup label="Dados do contato">
-            <option value="has_name">Tem nome?</option>
-            <option value="has_phone">Tem telefone?</option>
-            <option value="has_email">Tem e-mail?</option>
-            <option value="has_document">Tem CPF/CNPJ?</option>
-            <option value="has_company">Tem empresa?</option>
-          </optgroup>
-        </select>
+        <SimpleSelect value={check} onChange={(v) => onCheck(v)} options={[
+          { value: "lifecycle_is", label: "Lifecycle é…",     group: "Relacionamento" },
+          { value: "has_tag",      label: "Tem a etiqueta…",  group: "Relacionamento" },
+          { value: "channel_is",   label: "Veio do canal…",   group: "Canal" },
+          { value: "has_name",     label: "Tem nome?",        group: "Dados do contato" },
+          { value: "has_phone",    label: "Tem telefone?",    group: "Dados do contato" },
+          { value: "has_email",    label: "Tem e-mail?",      group: "Dados do contato" },
+          { value: "has_document", label: "Tem CPF/CNPJ?",    group: "Dados do contato" },
+          { value: "has_company",  label: "Tem empresa?",     group: "Dados do contato" },
+        ]} />
       </div>
 
       {check === "lifecycle_is" && (
         <div>
           <label className={LABEL}>Lifecycle</label>
-          <select className={INPUT} value={String(cfg.value ?? "contact")} onChange={(e) => set({ value: e.target.value })}>
-            {LIFECYCLE_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-          </select>
+          <SimpleSelect value={String(cfg.value ?? "contact")} onChange={(v) => set({ value: v })}
+            options={LIFECYCLE_OPTS.map((o) => ({ value: o.v, label: o.label }))} />
           <p className="text-[11px] text-slate-400 mt-1">Ex: <b>Novo (contato)</b> = ainda não qualificado.</p>
         </div>
       )}
@@ -465,9 +495,8 @@ function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set
       {check === "channel_is" && (
         <div>
           <label className={LABEL}>Canal</label>
-          <select className={INPUT} value={String(cfg.value ?? "whatsapp")} onChange={(e) => set({ value: e.target.value })}>
-            {CHANNEL_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-          </select>
+          <SimpleSelect value={String(cfg.value ?? "whatsapp")} onChange={(v) => set({ value: v })}
+            options={CHANNEL_OPTS.map((o) => ({ value: o.v, label: o.label }))} />
         </div>
       )}
 
@@ -484,11 +513,11 @@ function SwitchConfig({ cfg, set }: { cfg: SwitchNodeConfig; set: (patch: Record
       <p className="text-xs text-slate-400">Ramifica por valor (sem diferenciar maiúsculas). Cada caso vira uma <b>saída</b> do nó (+ &quot;senão&quot;).</p>
       <div>
         <label className={LABEL}>Comparar por</label>
-        <select className={INPUT} value={source} onChange={(e) => set({ source: e.target.value })}>
-          <option value="variable">Variável de fluxo</option>
-          <option value="channel">Canal (WhatsApp / Site / …)</option>
-          <option value="lifecycle">Lifecycle (novo / lead / cliente / …)</option>
-        </select>
+        <SimpleSelect value={source} onChange={(v) => set({ source: v })} options={[
+          { value: "variable",  label: "Variável de fluxo" },
+          { value: "channel",   label: "Canal (WhatsApp / Site / …)" },
+          { value: "lifecycle", label: "Lifecycle (novo / lead / cliente / …)" },
+        ]} />
       </div>
       {source === "variable" && (
         <div>
@@ -576,11 +605,11 @@ function WaitConfig({ cfg, set }: { cfg: WaitNodeConfig; set: (patch: Record<str
         </div>
         <div className="flex-1">
           <label className={LABEL}>Unidade</label>
-          <select className={INPUT} value={String(cfg.unit ?? "hours")} onChange={(e) => set({ unit: e.target.value })}>
-            <option value="minutes">Minutos</option>
-            <option value="hours">Horas</option>
-            <option value="days">Dias</option>
-          </select>
+          <SimpleSelect value={String(cfg.unit ?? "hours")} onChange={(v) => set({ unit: v })} options={[
+            { value: "minutes", label: "Minutos" },
+            { value: "hours",   label: "Horas" },
+            { value: "days",    label: "Dias" },
+          ]} />
         </div>
       </div>
     </div>
@@ -624,21 +653,17 @@ function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
       {agendaOn && (
         <div className="mt-2 rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
           <label className={LABEL}>Em qual agenda cai?</label>
-          <select className={INPUT} value={target.mode} onChange={(e) => setTarget({ mode: e.target.value as AgendaBinding["mode"] })}>
-            <option value="fixed">Agenda/serviço específico</option>
-            <option value="owner" disabled={!ownerRouting}>Dono da conversa (carteira){ownerRouting ? "" : " — em breve"}</option>
-            <option value="ai">Deixar a IA decidir</option>
-          </select>
+          <SimpleSelect value={target.mode} onChange={(v) => setTarget({ mode: v as AgendaBinding["mode"] })} options={[
+            { value: "fixed", label: "Agenda/serviço específico" },
+            { value: "owner", label: `Dono da conversa (carteira)${ownerRouting ? "" : " — em breve"}`, disabled: !ownerRouting },
+            { value: "ai",    label: "Deixar a IA decidir" },
+          ]} />
           {target.mode === "fixed" && (
             <div className="space-y-1.5">
-              <select className={INPUT} value={target.resourceId ?? ""} onChange={(e) => setTarget({ resourceId: e.target.value || null })}>
-                <option value="">— Agenda: qualquer do serviço —</option>
-                {resources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
-              <select className={INPUT} value={target.serviceId ?? ""} onChange={(e) => setTarget({ serviceId: e.target.value || null })}>
-                <option value="">— Serviço: (opcional) —</option>
-                {services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
+              <SimpleSelect value={target.resourceId ?? ""} onChange={(v) => setTarget({ resourceId: v || null })}
+                options={[{ value: "", label: "— Agenda: qualquer do serviço —" }, ...resources.map((r) => ({ value: r.id, label: r.name }))]} />
+              <SimpleSelect value={target.serviceId ?? ""} onChange={(v) => setTarget({ serviceId: v || null })}
+                options={[{ value: "", label: "— Serviço: (opcional) —" }, ...services.map((s) => ({ value: s.id, label: s.name }))]} />
               <p className="text-[11px] text-slate-400">Escolha a <b>agenda</b> (cai sempre nela) ou só o <b>serviço</b> (cai em qualquer profissional dele).</p>
             </div>
           )}
@@ -675,20 +700,16 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
 
       <div className="rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
         <label className={LABEL}>Em qual agenda cai?</label>
-        <select className={INPUT} value={target.mode === "owner" ? "owner" : "fixed"} onChange={(e) => setTarget({ mode: e.target.value as AgendaBinding["mode"] })}>
-          <option value="fixed">Agenda/serviço específico</option>
-          <option value="owner" disabled={!ownerRouting}>Dono da conversa (carteira){ownerRouting ? "" : " — em breve"}</option>
-        </select>
+        <SimpleSelect value={target.mode === "owner" ? "owner" : "fixed"} onChange={(v) => setTarget({ mode: v as AgendaBinding["mode"] })} options={[
+          { value: "fixed", label: "Agenda/serviço específico" },
+          { value: "owner", label: `Dono da conversa (carteira)${ownerRouting ? "" : " — em breve"}`, disabled: !ownerRouting },
+        ]} />
         {target.mode !== "owner" && (
           <div className="space-y-1.5">
-            <select className={INPUT} value={target.resourceId ?? ""} onChange={(e) => setTarget({ resourceId: e.target.value || null })}>
-              <option value="">— Agenda: qualquer do serviço —</option>
-              {resources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-            <select className={INPUT} value={target.serviceId ?? ""} onChange={(e) => setTarget({ serviceId: e.target.value || null })}>
-              <option value="">— Serviço: (opcional) —</option>
-              {services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <SimpleSelect value={target.resourceId ?? ""} onChange={(v) => setTarget({ resourceId: v || null })}
+              options={[{ value: "", label: "— Agenda: qualquer do serviço —" }, ...resources.map((r) => ({ value: r.id, label: r.name }))]} />
+            <SimpleSelect value={target.serviceId ?? ""} onChange={(v) => setTarget({ serviceId: v || null })}
+              options={[{ value: "", label: "— Serviço: (opcional) —" }, ...services.map((s) => ({ value: s.id, label: s.name }))]} />
             <p className="text-[11px] text-slate-400">
               {aiParse
                 ? <>Com <b>Entender com IA</b>, o <b>serviço vem da conversa</b> — deixe o serviço aberto aqui (a <b>agenda/profissional</b> ainda vale como restrição).</>
@@ -701,10 +722,10 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
 
       <div>
         <label className={LABEL}>Como oferecer</label>
-        <select className={INPUT} value={offerMode} onChange={(e) => set({ offerMode: e.target.value })}>
-          <option value="slots">Próximos horários (lista direta)</option>
-          <option value="by_day">Escolher o dia primeiro</option>
-        </select>
+        <SimpleSelect value={offerMode} onChange={(v) => set({ offerMode: v })} options={[
+          { value: "slots",  label: "Próximos horários (lista direta)" },
+          { value: "by_day", label: "Escolher o dia primeiro" },
+        ]} />
         <p className="text-[11px] text-slate-400 mt-1">
           {offerMode === "by_day"
             ? "Mostra os próximos dias com vaga → o cliente escolhe o dia e depois o horário (com \"ver mais dias\"). Bom pra agenda cheia."
@@ -920,10 +941,8 @@ function RouterConfig({ cfg, set }: { cfg: Record<string, unknown>; set: (patch:
       </div>
       <div>
         <label className={LABEL}>Se nada casar, ir para</label>
-        <select className={INPUT} value={String(cfg.fallback ?? "")} onChange={(e) => set({ fallback: e.target.value })}>
-          <option value="">saída &quot;senão&quot;</option>
-          {routes.map((r) => <option key={r.id} value={r.id}>{r.label || "—"}</option>)}
-        </select>
+        <SimpleSelect value={String(cfg.fallback ?? "")} onChange={(v) => set({ fallback: v })}
+          options={[{ value: "", label: 'saída "senão"' }, ...routes.map((r) => ({ value: r.id, label: r.label || "—" }))]} />
       </div>
     </div>
   )
@@ -1003,13 +1022,13 @@ export function FlowSettingsPanel({
         <>
           <div>
             <label className={LABEL}>Quando dispara</label>
-            <select className={INPUT} value={triggerType} onChange={(e) => onType(e.target.value)}>
-              <option value="keyword">Palavra-chave</option>
-              <option value="any_message">Qualquer mensagem</option>
-              <option value="new_contact">Contato novo</option>
-              <option value="reopened">Retornou (conversa reaberta)</option>
-              <option value="from_ad">Veio de anúncio (Meta)</option>
-            </select>
+            <SimpleSelect value={triggerType} onChange={(v) => onType(v)} options={[
+              { value: "keyword",     label: "Palavra-chave" },
+              { value: "any_message", label: "Qualquer mensagem" },
+              { value: "new_contact", label: "Contato novo" },
+              { value: "reopened",    label: "Retornou (conversa reaberta)" },
+              { value: "from_ad",     label: "Veio de anúncio (Meta)" },
+            ]} />
           </div>
           {triggerType === "keyword" && (
             <div>

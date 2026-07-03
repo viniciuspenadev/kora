@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2, Plus, MapPin, User as UserIcon, Users, Search, Reply, Sticker } from "lucide-react"
 import { EmojiPicker } from "./emoji-picker"
 import { VoiceRecorder } from "./voice-recorder"
@@ -812,9 +813,8 @@ function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName, o
         <div className="space-y-3">
           <div>
             <label className="block text-[11px] font-semibold text-slate-600 mb-1">Template</label>
-            <select value={selected} onChange={(e) => pick(e.target.value)} className={TPL_INPUT.replace("px-3", "px-2")}>
-              {templates.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.language})</option>)}
-            </select>
+            <SimpleSelect value={selected} onChange={pick}
+              options={templates.map((t) => ({ value: t.name, label: t.name + " (" + t.language + ")" }))} />
           </div>
 
           {tpl && tpl.vars.length > 0 && (

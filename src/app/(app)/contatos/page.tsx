@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { hasModule } from "@/lib/modules"
 import Link from "next/link"
 import { ContatosList } from "@/components/chat/contatos-list"
 import { NewContactButton } from "@/components/chat/new-contact-dialog"
@@ -11,8 +12,9 @@ export default async function ContatosPage() {
   if (!session) redirect("/auth/signin")
 
   const tenantId = session.user.tenantId
+  const crmEnabled = await hasModule(tenantId, "crm")
 
-  const [{ data: contacts }, { data: tags }, { data: taggings }, { data: identities }] = await Promise.all([
+  const [{ data: contacts }, { data: tags }, { data: taggings }, { data: identities }, wonRes] = await Promise.all([
     supabaseAdmin
       .from("chat_contacts")
       .select(`
@@ -39,6 +41,14 @@ export default async function ContatosPage() {
       .select("contact_id, channel")
       .eq("tenant_id", tenantId)
       .in("channel", ["whatsapp", "instagram", "site"]),
+    // Negócios GANHOS → dados comerciais por contato (Total · Compras · Ciclo · Última compra).
+    crmEnabled
+      ? supabaseAdmin
+          .from("tenant_deals")
+          .select("contact_id, estimated_value, created_at, won_at")
+          .eq("tenant_id", tenantId).eq("status", "won").not("won_at", "is", null)
+          .limit(5000)
+      : Promise.resolve({ data: null }),
   ])
 
   const tagsByContact = new Map<string, string[]>()
@@ -57,10 +67,35 @@ export default async function ContatosPage() {
   }
   const CHANNEL_ORDER = ["whatsapp", "instagram", "site"]
 
+  // Agrega compras por contato (em memória — won deals são poucos por tenant).
+  const dayMs = 86_400_000
+  const commerceByContact = new Map<string, { total: number; compras: number; ciclo: number | null; ultimaDias: number | null; ticket: number | null }>()
+  {
+    const buckets = new Map<string, { total: number; n: number; cicloSum: number; last: string }>()
+    for (const w of ((wonRes.data ?? []) as { contact_id: string | null; estimated_value: number | null; created_at: string; won_at: string }[])) {
+      if (!w.contact_id) continue
+      const b = buckets.get(w.contact_id) ?? { total: 0, n: 0, cicloSum: 0, last: w.won_at }
+      b.total += Number(w.estimated_value ?? 0)
+      b.n += 1
+      b.cicloSum += Math.max(0, Math.round((new Date(w.won_at).getTime() - new Date(w.created_at).getTime()) / dayMs))
+      if (w.won_at > b.last) b.last = w.won_at
+      buckets.set(w.contact_id, b)
+    }
+    for (const [id, b] of buckets) {
+      commerceByContact.set(id, {
+        total: b.total, compras: b.n,
+        ciclo: Math.round(b.cicloSum / b.n),
+        ultimaDias: Math.max(0, Math.round((new Date().getTime() - new Date(b.last).getTime()) / dayMs)),
+        ticket: b.total / b.n,
+      })
+    }
+  }
+
   const enrichedContacts = (contacts ?? []).map((c) => ({
     ...c,
     tag_ids:  tagsByContact.get(c.id) ?? [],
     channels: CHANNEL_ORDER.filter((ch) => channelsByContact.get(c.id)?.has(ch)),
+    commerce: commerceByContact.get(c.id) ?? null,
   }))
 
   const total    = enrichedContacts.length
@@ -95,6 +130,7 @@ export default async function ContatosPage() {
           contacts={enrichedContacts}
           tags={tags ?? []}
           stats={{ total, blocked, withTags }}
+          crmEnabled={crmEnabled}
         />
       </div>
     </div>

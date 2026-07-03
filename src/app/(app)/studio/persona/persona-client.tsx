@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { FormRow } from "@/components/ui/form-row"
@@ -62,9 +63,8 @@ export function StudioPersonaClient({ config }: Props) {
                   <input className={INPUT_CLASS} value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Amanda" />
                 </FormRow>
                 <FormRow label="Tom de voz">
-                  <select className={INPUT_CLASS} value={tone} onChange={(e) => setTone(e.target.value as AITone)}>
-                    {TONES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
+                  <SimpleSelect value={tone} onChange={(v) => setTone(v as AITone)}
+                    options={TONES.map((t) => ({ value: t.value, label: t.label }))} />
                 </FormRow>
               </div>
 

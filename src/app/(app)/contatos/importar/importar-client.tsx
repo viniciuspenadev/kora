@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition, useRef } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { UploadCloud, ClipboardPaste, Loader2, CheckCircle2, ArrowLeft, History, ChevronRight } from "lucide-react"
@@ -132,9 +133,8 @@ export function ImportarClient({ tags, imports }: { tags: { id: string; name: st
             {tags.length > 0 && (
               <label className="block">
                 <span className="block text-[11px] font-semibold text-slate-600 mb-1">Etiqueta no lote <span className="font-normal text-slate-400">· opcional</span></span>
-                <select value={tagId} onChange={(e) => setTagId(e.target.value)} className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20">
-                  <option value="">Nenhuma</option>{tags.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
+                <SimpleSelect value={tagId} onChange={setTagId} placeholder="Nenhuma"
+                  options={[{ value: "", label: "Nenhuma" }, ...tags.map((t) => ({ value: t.id, label: t.name }))]} />
               </label>
             )}
             <label className="flex items-start gap-2 text-xs text-slate-700">

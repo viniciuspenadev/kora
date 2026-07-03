@@ -15,6 +15,7 @@ import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { Switch } from "@/components/ui/switch"
+import { SimpleSelect } from "@/components/ui/select"
 import type { ChatConversation } from "@/types/chat"
 
 interface PipelineMini { id: string; name: string; color: string; is_default: boolean }
@@ -297,42 +298,18 @@ export function ConversationList({
         {showFilters && (
           <div className="space-y-1.5 mb-2 p-2.5 rounded-lg border border-slate-200 bg-slate-50/50">
             {pipelines.length > 0 && (
-              <select
-                value={pipelineFilter}
-                onChange={(e) => onPipelineFilterChange(e.target.value)}
-                className="w-full h-7 px-2 text-[11px] rounded border border-slate-200 bg-white"
-              >
-                <option value="">Todos os funis</option>
-                {pipelines.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <SimpleSelect value={pipelineFilter} onChange={onPipelineFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
+                options={[{ value: "", label: "Todos os funis" }, ...pipelines.map((p) => ({ value: p.id, label: p.name }))]} />
             )}
             {tags.length > 0 && (
-              <select
-                value={tagFilter}
-                onChange={(e) => onTagFilterChange(e.target.value)}
-                className="w-full h-7 px-2 text-[11px] rounded border border-slate-200 bg-white"
-              >
-                <option value="">Todas as tags</option>
-                {tags.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <SimpleSelect value={tagFilter} onChange={onTagFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
+                options={[{ value: "", label: "Todas as tags" }, ...tags.map((t) => ({ value: t.id, label: t.name }))]} />
             )}
-            <select
-              value={agentFilter}
-              onChange={(e) => onAgentFilterChange(e.target.value)}
-              className="w-full h-7 px-2 text-[11px] rounded border border-slate-200 bg-white"
-            >
-              <option value="">Todos os agentes</option>
-              {agents.map((a) => <option key={a.id} value={a.id}>{a.full_name ?? "—"}</option>)}
-            </select>
+            <SimpleSelect value={agentFilter} onChange={onAgentFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
+              options={[{ value: "", label: "Todos os agentes" }, ...agents.map((a) => ({ value: a.id, label: a.full_name ?? "—" }))]} />
             {departments.length > 0 && (
-              <select
-                value={departmentFilter}
-                onChange={(e) => onDepartmentFilterChange(e.target.value)}
-                className="w-full h-7 px-2 text-[11px] rounded border border-slate-200 bg-white"
-              >
-                <option value="">Todos os departamentos</option>
-                {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-              </select>
+              <SimpleSelect value={departmentFilter} onChange={onDepartmentFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
+                options={[{ value: "", label: "Todos os departamentos" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]} />
             )}
             <div className="pt-1">
               <Switch

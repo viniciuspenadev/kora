@@ -1,7 +1,8 @@
 "use client"
 
-import { useState, useTransition } from "react"
-import { Plus, Pencil, Trash2, Tag as TagIcon, Loader2, X, Check } from "lucide-react"
+import { useMemo, useState, useTransition } from "react"
+import Link from "next/link"
+import { Plus, Pencil, Trash2, Tag as TagIcon, Loader2, X, Check, Search, Users } from "lucide-react"
 import { createTag, updateTag, deleteTag } from "@/lib/actions/tags"
 import { EmptyState } from "@/components/ui/empty-state"
 import { useConfirm } from "@/components/ui/confirm-dialog"
@@ -11,6 +12,9 @@ interface Tag {
   name:        string
   color:       string
   description: string | null
+  created_at:  string
+  /** Contatos com a tag — a contagem CLICÁVEL que transforma tag em segmento. */
+  contacts:    number
 }
 
 interface Props {
@@ -23,55 +27,108 @@ const TAG_COLORS = [
 ]
 
 export function TagsConfigClient({ tags }: Props) {
-  const [editing, setEditing] = useState<Tag | null>(null)
+  const [editing, setEditing]   = useState<Tag | null>(null)
   const [creating, setCreating] = useState(false)
+  const [search, setSearch]     = useState("")
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return tags
+    return tags.filter((t) => t.name.toLowerCase().includes(q) || (t.description ?? "").toLowerCase().includes(q))
+  }, [tags, search])
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-500">
-          {tags.length === 0 ? "Nenhuma tag criada ainda." : `${tags.length} ${tags.length === 1 ? "tag" : "tags"}`}
-        </p>
+      {/* busca + contagem + criar — layout da referência */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative w-64 max-w-full">
+          <Search className="size-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Pesquisar…"
+            className="w-full h-9 pl-9 pr-9 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
+          {search && (
+            <button type="button" onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 size-5 grid place-items-center rounded text-slate-400 hover:bg-slate-100"><X className="size-3" /></button>
+          )}
+        </div>
+        <span className="text-xs text-slate-400 tabular-nums">{filtered.length} resultado{filtered.length !== 1 ? "s" : ""}</span>
         <button
           type="button"
           onClick={() => setCreating(true)}
-          className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors"
+          className="ml-auto inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors"
         >
-          <Plus className="size-3.5" />
-          Nova tag
+          <Plus className="size-3.5" /> Criar
         </button>
       </div>
 
-      {tags.length === 0 && !creating ? (
+      {filtered.length === 0 ? (
         <EmptyState
           icon={TagIcon}
-          title="Você ainda não tem tags"
-          description="Tags ajudam a organizar contatos e conversas. Crie a primeira pra começar."
+          title={search ? "Nada encontrado" : "Você ainda não tem tags"}
+          description={search ? "Tente outro termo." : "Tags organizam E segmentam: cada tag vira um público que você abre e aciona."}
+          action={!search ? (
+            <button type="button" onClick={() => setCreating(true)}
+              className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
+              <Plus className="size-3.5" /> Criar tag
+            </button>
+          ) : undefined}
         />
       ) : (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-card divide-y divide-slate-100 overflow-hidden">
-          {tags.map((tag) => (
-            <div key={tag.id} className="flex items-center gap-3 px-4 py-3">
-              <span
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold text-white shrink-0"
-                style={{ backgroundColor: tag.color }}
-              >
-                {tag.name}
-              </span>
-              <p className="flex-1 text-xs text-slate-500 truncate">
-                {tag.description || <span className="text-slate-300">Sem descrição</span>}
-              </p>
-              <button
-                type="button"
-                onClick={() => setEditing(tag)}
-                className="size-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-                title="Editar"
-              >
-                <Pencil className="size-3.5" />
-              </button>
-              <DeleteButton tag={tag} />
-            </div>
-          ))}
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-[11px] text-slate-500 bg-slate-50/60">
+                  <th className="text-left font-medium py-2.5 px-4">Tag</th>
+                  <th className="text-left font-medium py-2.5 px-3 hidden md:table-cell">Descrição</th>
+                  <th className="text-left font-medium py-2.5 px-3">Contatos</th>
+                  <th className="text-left font-medium py-2.5 px-3 hidden sm:table-cell">Data de criação</th>
+                  <th className="text-right font-medium py-2.5 px-4">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((tag) => (
+                  <tr key={tag.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/50 transition-colors">
+                    <td className="py-2.5 px-4">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full"
+                        style={{ backgroundColor: tag.color + "20", color: tag.color, border: `1px solid ${tag.color}40` }}>
+                        <span className="size-1.5 rounded-full" style={{ backgroundColor: tag.color }} />
+                        {tag.name}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-3 hidden md:table-cell">
+                      <span className="text-xs text-slate-500 block truncate max-w-[320px]">{tag.description || <span className="text-slate-300">—</span>}</span>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {tag.contacts > 0 ? (
+                        <Link
+                          href={`/contatos?tag=${tag.id}`}
+                          title="Ver este público em Contatos"
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-primary-600 hover:text-primary-700 hover:underline underline-offset-2 tabular-nums"
+                        >
+                          <Users className="size-3" /> {tag.contacts} contato{tag.contacts !== 1 ? "s" : ""}
+                        </Link>
+                      ) : (
+                        <span className="text-xs text-slate-300 tabular-nums">0 contatos</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 text-xs text-slate-500 hidden sm:table-cell">{new Date(tag.created_at).toLocaleDateString("pt-BR")}</td>
+                    <td className="py-2.5 px-4">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(tag)}
+                          className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+                          title="Editar"
+                        >
+                          <Pencil className="size-3.5" />
+                        </button>
+                        <DeleteButton tag={tag} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

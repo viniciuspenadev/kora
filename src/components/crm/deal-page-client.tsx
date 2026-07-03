@@ -1,19 +1,23 @@
 "use client"
 
 import { ContactPic } from "@/components/chat/contact-pic"
+import { SimpleSelect } from "@/components/ui/select"
 
-import { useState, useTransition } from "react"
+import { useState, useEffect, useMemo, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, AlertCircle, ChevronDown, Route, ArrowRightLeft,
+  Package, Wrench, Repeat, Trash2, Search,
 } from "lucide-react"
 import {
   moveDeal, moveDealById, openDeal, cancelDeal, reopenDeal, updateDeal, addDealNote,
-  type DealDetail, type DealEventView,
+  addDealItem, updateDealItem, removeDealItem, getCatalogForPicker,
+  type DealDetail, type DealEventView, type DealItemView, type CatalogPickerItem,
 } from "@/lib/actions/deals"
+import { computeDealValue, lineSubtotal, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
 import { createTask, setTaskDone, type TaskRow } from "@/lib/actions/tasks"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
@@ -28,7 +32,6 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   canceled: { label: "Cancelado",     cls: "bg-slate-100 text-slate-500 border-slate-200" },
 }
 const CANCEL_REASONS = ["Criado por engano", "Duplicado", "Cliente desistiu", "Fora do perfil", "Outro"]
-const LOST_REASONS   = ["Preço", "Sem resposta", "Comprou concorrente", "Fora do perfil", "Sem orçamento", "Outro"]
 
 const HBTN = "inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg border transition-colors disabled:opacity-50"
 
@@ -79,6 +82,7 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   const [canceling, setCanceling] = useState(false)
   const [reasonSel, setReasonSel] = useState("")
   const [reasonTxt, setReasonTxt] = useState("")
+  const [noteTxt, setNoteTxt]     = useState("")   // justificativa (motivos com require_note)
   const [pendingMove, setPendingMove] = useState<{ id: string; name: string } | null>(null)
 
   // Linha do tempo unificada (movimentações + notas + tarefas) + protocolo no modal + FAB.
@@ -89,6 +93,11 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   const [showDone, setShowDone] = useState(false)
   const [fabOpen, setFabOpen] = useState(false)
   const [activeModal, setActiveModal] = useState<"note" | "task" | null>(null)
+  const [itemModal, setItemModal] = useState<null | { mode: "add" } | { mode: "edit"; item: DealItemView }>(null)
+
+  // Com itens, o valor é DERIVADO (composição do catálogo) — edição manual sai de cena.
+  const hasItems = deal.items.length > 0
+  const valueSummary = hasItems ? computeDealValue(deal.items) : null
 
   const isOpen = deal.status === "open"
   const st     = STATUS_META[deal.status] ?? STATUS_META.open
@@ -117,7 +126,7 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   // Clicar numa etapa do stepper: perdido → motivo · ganho → direto · normal → ficha da movimentação.
   function clickStage(s: { id: string; name: string; is_won: boolean; is_lost: boolean }) {
     if (!convId || s.id === curStageId) return
-    if (s.is_lost) { setReasonSel(LOST_REASONS[0]); setCanceling(false); setPendingMove(null); setLosing(true); return }
+    if (s.is_lost) { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setPendingMove(null); setLosing(true); return }
     if (s.is_won)  { moveTo(s.id); return }
     setLosing(false); setCanceling(false); setPendingMove({ id: s.id, name: s.name })
   }
@@ -138,11 +147,16 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
       router.refresh()
     })
   }
+  // Motivo selecionado exige justificativa? (governança — o server valida de novo, fail-closed)
+  const selRequiresNote = losing && (deal.lostReasons.find((r) => r.label === reasonSel)?.requireNote ?? false)
+
   function confirmLose() {
     if (!convId || !lostStage) return
+    if (selRequiresNote && !noteTxt.trim()) return
     const reason = reasonSel === "Outro" ? (reasonTxt.trim() || "Outro") : reasonSel
-    setLosing(false); setReasonSel(""); setReasonTxt("")
-    run(() => moveDeal(convId, deal.id, lostStage.id, reason || null))
+    const note   = noteTxt.trim() || null
+    setLosing(false); setReasonSel(""); setReasonTxt(""); setNoteTxt("")
+    run(() => moveDeal(convId, deal.id, lostStage.id, reason || null, note))
   }
   function confirmCancel() {
     if (!convId) return
@@ -224,9 +238,16 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
                 </div>
               </div>
 
-              {/* Valor + status, ao lado do nome */}
+              {/* Valor + status, ao lado do nome. Com itens → derivado (sem edição manual). */}
               <div className="flex items-center gap-2.5 shrink-0">
-                {editValue ? (
+                {hasItems ? (
+                  <span className="inline-flex flex-col items-end" title="Valor composto pelos itens do negócio">
+                    <span className="text-[28px] leading-none font-bold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
+                    <span className="text-[10px] text-slate-400 leading-none mt-1 inline-flex items-center gap-1">
+                      <Package className="size-2.5" /> composto por {deal.items.length} {deal.items.length === 1 ? "item" : "itens"}
+                    </span>
+                  </span>
+                ) : editValue ? (
                   <span className="inline-flex items-center gap-1">
                     <input autoFocus value={valueVal} onChange={(e) => setValueVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveValue(); if (e.key === "Escape") setEditValue(false) }} className="w-32 h-9 px-2 text-2xl font-bold text-right border border-primary-300 rounded-lg focus:outline-none" />
                     <button onClick={saveValue} className="text-emerald-600"><Check className="size-4" /></button>
@@ -250,7 +271,7 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
                   {wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><Trophy className="size-3.5 text-emerald-500" /> Ganhar</button>}
                   {deal.pipelines.length > 1 && <button onClick={() => setFlowModal("reclass")} disabled={pending} title="Mover para outro funil" className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><ArrowRightLeft className="size-3.5 text-slate-400" /></button>}
                   <EncerrarMenu disabled={!convId || pending}
-                    onLose={() => { setReasonSel(LOST_REASONS[0]); setCanceling(false); setLosing(true) }}
+                    onLose={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}
                     onCancel={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }} />
                 </>
               ) : (
@@ -295,13 +316,20 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
             <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 max-w-md">
               <p className="text-xs font-semibold text-slate-700 mb-1.5">{losing ? "Marcar como perdido — motivo" : "Cancelar — motivo (anula, não conta como perda)"}</p>
               <div className="flex items-center gap-2">
-                <select value={reasonSel} onChange={(e) => setReasonSel(e.target.value)} className="h-8 px-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none flex-1">
-                  {(losing ? LOST_REASONS : CANCEL_REASONS).map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
+                <SimpleSelect value={reasonSel} onChange={setReasonSel} className="h-8 text-xs flex-1"
+                  options={(losing ? deal.lostReasons.map((r) => r.label) : CANCEL_REASONS).map((r) => ({ value: r, label: r }))} />
                 {reasonSel === "Outro" && <input value={reasonTxt} onChange={(e) => setReasonTxt(e.target.value)} placeholder="Motivo…" className="h-8 px-2 text-xs border border-slate-200 rounded-lg flex-1 focus:outline-none" />}
               </div>
+              {losing && selRequiresNote && (
+                <div className="mt-2">
+                  <textarea value={noteTxt} onChange={(e) => setNoteTxt(e.target.value)} rows={2}
+                    placeholder="Justificativa (obrigatória pra este motivo) — quanto, quem, contexto…"
+                    className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
+                </div>
+              )}
               <div className="flex items-center gap-2 mt-2">
-                <button onClick={losing ? confirmLose : confirmCancel} disabled={pending} className={`${ABTN} ${losing ? "border-red-200 text-white bg-red-600 hover:bg-red-700" : "border-slate-300 text-white bg-slate-600 hover:bg-slate-700"}`}>Confirmar</button>
+                <button onClick={losing ? confirmLose : confirmCancel} disabled={pending || (losing && selRequiresNote && !noteTxt.trim())}
+                  className={`${ABTN} ${losing ? "border-red-200 text-white bg-red-600 hover:bg-red-700" : "border-slate-300 text-white bg-slate-600 hover:bg-slate-700"}`}>Confirmar</button>
                 <button onClick={() => { setLosing(false); setCanceling(false) }} className="h-8 px-3 text-xs font-medium text-slate-500 hover:bg-slate-100 rounded-lg">Voltar</button>
               </div>
             </div>
@@ -364,6 +392,16 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
             )}
           </section>
 
+          {/* Itens do negócio — composição de valor (catálogo) */}
+          <DealItemsCard
+            items={deal.items}
+            summary={valueSummary}
+            pending={pending}
+            onAdd={() => setItemModal({ mode: "add" })}
+            onEdit={(item) => setItemModal({ mode: "edit", item })}
+            onRemove={(item) => run(() => removeDealItem(deal.id, item.id))}
+          />
+
           {/* Detalhes */}
           <Card title="Detalhes">
             <dl className="space-y-2 text-xs">
@@ -425,6 +463,20 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
         noteDisabled={!convId} />
       {activeModal === "note" && <NoteModal onSubmit={doAddNote} onClose={() => setActiveModal(null)} pending={pending} />}
       {activeModal === "task" && <TaskModal onSubmit={doAddTask} onClose={() => setActiveModal(null)} pending={pending} />}
+
+      {itemModal && (
+        <DealItemModal
+          edit={itemModal.mode === "edit" ? itemModal.item : null}
+          pending={pending}
+          onClose={() => setItemModal(null)}
+          onSubmit={(p) => {
+            const m = itemModal
+            setItemModal(null)
+            if (m.mode === "edit") run(() => updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths }))
+            else run(() => addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths }))
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -974,6 +1026,286 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-center justify-between gap-2">
       <dt className="text-slate-400 shrink-0">{label}</dt>
       <dd className="text-slate-700 text-right min-w-0 truncate">{children}</dd>
+    </div>
+  )
+}
+
+// ── Itens do negócio (composição de valor via catálogo) ──────────
+const BILLING_PT: Record<DealItemView["billing"], { label: string; suffix: string }> = {
+  one_time: { label: "Avulso", suffix: "" },
+  monthly:  { label: "Mensal", suffix: "/mês" },
+  yearly:   { label: "Anual",  suffix: "/ano" },
+}
+const fmtQty = (q: number) => (Number.isInteger(q) ? String(q) : q.toLocaleString("pt-BR"))
+/** "1.234,56" → número em reais (NaN se inválido). */
+function parseMoneyBR(s: string): number | null {
+  const t = s.trim()
+  if (!t) return null
+  const clean = t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t
+  const n = Number(clean)
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : NaN
+}
+
+function DealItemsCard({ items, summary, pending, onAdd, onEdit, onRemove }: {
+  items: DealItemView[]
+  summary: ReturnType<typeof computeDealValue> | null
+  pending: boolean
+  onAdd: () => void
+  onEdit: (item: DealItemView) => void
+  onRemove: (item: DealItemView) => void
+}) {
+  return (
+    <section className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-sm font-bold text-slate-900">Itens do negócio</h2>
+        <button onClick={onAdd} disabled={pending} className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-50">
+          <Plus className="size-3" /> Adicionar
+        </button>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="text-xs text-slate-400 py-2 leading-relaxed">
+          Componha o valor com produtos e serviços do catálogo — avulsos ou recorrentes (MRR).
+        </p>
+      ) : (
+        <>
+          <div className="divide-y divide-slate-100">
+            {items.map((it) => (
+              <div key={it.id} className="group flex items-start gap-2 py-2">
+                <span className={`size-6 rounded-md grid place-items-center shrink-0 mt-0.5 ${it.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+                  {it.type === "service" ? <Wrench className="size-3" /> : <Package className="size-3" />}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-slate-800 truncate">{it.quantity !== 1 ? `${fmtQty(it.quantity)}× ` : ""}{it.name}</p>
+                  <p className="text-[10.5px] text-slate-400">
+                    {BILLING_PT[it.billing].label}
+                    {it.billing !== "one_time" && ` · contrato ${it.term_months ?? DEFAULT_TERM_MONTHS}m${it.term_months == null ? " (padrão)" : ""}`}
+                    {it.discount > 0 && ` · desc. ${brl(it.discount)}`}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-xs font-bold text-slate-800 tabular-nums">
+                    {brl(lineSubtotal(it))}
+                    <span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[it.billing].suffix}</span>
+                  </p>
+                  <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => onEdit(it)} disabled={pending} title="Ajustar" className="size-5 grid place-items-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50"><Pencil className="size-3" /></button>
+                    <button onClick={() => onRemove(it)} disabled={pending} title="Remover" className="size-5 grid place-items-center rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"><Trash2 className="size-3" /></button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {summary && (
+            <div className="mt-2 pt-2 border-t border-slate-100 space-y-1 text-xs">
+              {summary.oneTime > 0 && (
+                <div className="flex items-center justify-between"><span className="text-slate-400">Avulso</span><span className="tabular-nums text-slate-700">{brl(summary.oneTime)}</span></div>
+              )}
+              {summary.mrr > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 inline-flex items-center gap-1"><Repeat className="size-2.5" /> Recorrente (MRR)</span>
+                  <span className="tabular-nums text-slate-700">{brl(summary.mrr)}<span className="text-[10px] text-slate-400">/mês</span></span>
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-1 border-t border-slate-100">
+                <span className="font-semibold text-slate-700">Valor do negócio</span>
+                <span className="font-bold text-slate-900 tabular-nums">{brl(summary.total)}</span>
+              </div>
+              {(summary.monthly > 0 || summary.yearly > 0) && (
+                <p className="text-[10px] text-slate-400 leading-snug">Recorrente entra no total × prazo do contrato (padrão {DEFAULT_TERM_MONTHS} meses).</p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+/** Modal de item — adicionar (picker do catálogo → configurar) ou ajustar (direto). */
+function DealItemModal({ edit, pending, onClose, onSubmit }: {
+  edit: DealItemView | null
+  pending: boolean
+  onClose: () => void
+  onSubmit: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null }) => void
+}) {
+  const [catalog, setCatalog]   = useState<CatalogPickerItem[] | null>(edit ? [] : null)   // null = carregando
+  const [search, setSearch]     = useState("")
+  const [picked, setPicked]     = useState<CatalogPickerItem | null>(null)
+  const [qty, setQty]           = useState(edit ? fmtQty(edit.quantity) : "1")
+  // Preço da LINHA (negociado) — o do catálogo entra como sugestão editável.
+  const [price, setPrice]       = useState(edit ? edit.unit_price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
+  const [discount, setDiscount] = useState(edit && edit.discount > 0 ? edit.discount.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
+  const [term, setTerm]         = useState(edit?.term_months != null ? String(edit.term_months) : "")
+  const [error, setError]       = useState<string | null>(null)
+
+  useEffect(() => {
+    if (edit) return
+    let alive = true
+    getCatalogForPicker().then((r) => { if (alive) setCatalog(r) }).catch(() => { if (alive) setCatalog([]) })
+    return () => { alive = false }
+  }, [edit])
+
+  // Item "ativo" da configuração: o escolhido no picker OU o snapshot em edição.
+  const active = useMemo(() => (
+    edit
+      ? { name: edit.name, billing: edit.billing, price: edit.unit_price, type: edit.type }
+      : picked
+        ? { name: picked.name, billing: picked.billing, price: picked.price, type: picked.type }
+        : null
+  ), [edit, picked])
+  const recurring = active != null && active.billing !== "one_time"
+
+  const filtered = useMemo(() => {
+    if (!catalog) return []
+    const q = search.trim().toLowerCase()
+    if (!q) return catalog
+    return catalog.filter((c) => c.name.toLowerCase().includes(q) || (c.sku ?? "").toLowerCase().includes(q) || (c.category ?? "").toLowerCase().includes(q))
+  }, [catalog, search])
+
+  // Preço efetivo da linha: o digitado; vazio = sugestão do catálogo/snapshot.
+  const effPrice = useMemo(() => {
+    if (!active) return null
+    if (!price.trim()) return active.price
+    const p = parseMoneyBR(price)
+    return p == null || Number.isNaN(p) ? null : p
+  }, [active, price])
+
+  // Preview ao vivo da linha (mesma matemática do server — lib compartilhada).
+  const preview = useMemo(() => {
+    if (!active || effPrice == null) return null
+    const q = Number(qty.replace(",", "."))
+    const d = discount.trim() ? parseMoneyBR(discount) : 0
+    if (!Number.isFinite(q) || q <= 0 || d == null || Number.isNaN(d)) return null
+    return lineSubtotal({ billing: active.billing, unit_price: effPrice, quantity: q, discount: d ?? 0, term_months: null })
+  }, [active, effPrice, qty, discount])
+
+  function submit() {
+    setError(null)
+    const q = Number(qty.replace(",", "."))
+    if (!Number.isFinite(q) || q <= 0) { setError("Quantidade inválida"); return }
+    if (effPrice == null) { setError("Preço inválido — use por exemplo 1.500,00"); return }
+    const d = discount.trim() ? parseMoneyBR(discount) : null
+    if (d != null && Number.isNaN(d)) { setError("Desconto inválido"); return }
+    const tm = term.trim() ? Math.floor(Number(term)) : null
+    if (tm != null && (!Number.isFinite(tm) || tm <= 0)) { setError("Prazo inválido"); return }
+    onSubmit({ catalogItemId: picked?.id, quantity: q, unitPrice: effPrice, discount: d, termMonths: recurring ? tm : null })
+  }
+
+  const field = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 shrink-0">
+          <h3 className="text-sm font-semibold text-slate-900">{edit ? "Ajustar item" : picked ? "Configurar item" : "Adicionar item do catálogo"}</h3>
+          <button type="button" onClick={onClose} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100"><X className="size-4" /></button>
+        </div>
+
+        {!active ? (
+          /* passo 1 — escolher no catálogo */
+          <div className="flex-1 overflow-y-auto p-4">
+            <div className="relative mb-3">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400" />
+              <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar produto ou serviço…"
+                className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
+            </div>
+            {catalog === null && <p className="text-[11px] text-slate-400 text-center py-8"><Loader2 className="size-4 animate-spin inline" /></p>}
+            {catalog !== null && catalog.length === 0 && (
+              <p className="text-[11px] text-slate-400 text-center py-8 leading-relaxed">
+                Seu catálogo está vazio.<br />
+                <Link href="/configuracoes/catalogo" className="text-primary-600 font-semibold hover:underline">Cadastre produtos e serviços</Link> pra compor o valor dos negócios.
+              </p>
+            )}
+            {filtered.length > 0 && (
+              <div className="space-y-1">
+                {filtered.map((c) => (
+                  <button key={c.id} type="button" onClick={() => { setPicked(c); setPrice(c.price > 0 ? c.price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "") }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-50 text-left transition-colors">
+                    <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${c.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+                      {c.type === "service" ? <Wrench className="size-3.5" /> : <Package className="size-3.5" />}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-slate-800 truncate">{c.name}</p>
+                      <p className="text-[10px] text-slate-400 truncate">{[c.sku, c.category].filter(Boolean).join(" · ") || (c.type === "service" ? "Serviço" : "Produto")}</p>
+                    </div>
+                    <span className="text-xs font-bold text-slate-700 tabular-nums shrink-0">
+                      {brl(c.price)}<span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[c.billing].suffix}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {catalog !== null && catalog.length > 0 && filtered.length === 0 && (
+              <p className="text-[11px] text-slate-400 text-center py-8">Nada encontrado com esse termo.</p>
+            )}
+          </div>
+        ) : (
+          /* passo 2 — configurar quantidade/desconto/prazo */
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {!edit && <button type="button" onClick={() => setPicked(null)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-700"><ArrowLeft className="size-3" /> trocar item</button>}
+            <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
+              <span className={`size-8 rounded-lg grid place-items-center shrink-0 ${active.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-100 text-primary-600"}`}>
+                {active.type === "service" ? <Wrench className="size-4" /> : <Package className="size-4" />}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-slate-800 truncate">{active.name}</p>
+                <p className="text-[10px] text-slate-400">{BILLING_PT[active.billing].label} · {brl(active.price)}{BILLING_PT[active.billing].suffix}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Preço unitário</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>
+                  <input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0,00"
+                    className={`${field} pl-8 tabular-nums`} />
+                </div>
+                {effPrice != null && effPrice !== active.price && (
+                  <p className="text-[10px] text-slate-400 mt-1">tabela: {brl(active.price)} — preço negociado nesta venda</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Quantidade</label>
+                <input value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" autoFocus className={field} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Desconto <span className="text-slate-300 font-normal">(R$, opcional)</span></label>
+                <input value={discount} onChange={(e) => setDiscount(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0,00" className={`${field} tabular-nums`} />
+              </div>
+              {recurring && (
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Prazo <span className="text-slate-300 font-normal">(meses)</span></label>
+                  <input value={term} onChange={(e) => setTerm(e.target.value.replace(/[^\d]/g, ""))} inputMode="numeric" placeholder={`${DEFAULT_TERM_MONTHS} (padrão)`} className={`${field} tabular-nums`} />
+                </div>
+              )}
+            </div>
+            {recurring && (
+              <p className="text-[10px] text-slate-400 -mt-1.5">Usado no valor total do negócio: {active.billing === "monthly" ? "mensalidade" : "anuidade"} × prazo.</p>
+            )}
+
+            {preview != null && (
+              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-primary-50/50 border border-primary-100 text-xs">
+                <span className="text-slate-500">Linha</span>
+                <span className="font-bold text-primary-700 tabular-nums">{brl(preview)}{BILLING_PT[active.billing].suffix}</span>
+              </div>
+            )}
+
+            {error && <p className="text-[11px] text-red-600 bg-red-50 border border-red-100 px-3 py-2 rounded-lg">{error}</p>}
+
+            <button type="button" disabled={pending} onClick={submit}
+              className="w-full flex items-center justify-center gap-2 py-2.5 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
+              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+              {edit ? "Salvar ajuste" : "Adicionar ao negócio"}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -33,6 +33,7 @@ import type { StudioFlowFull } from "@/types/studio"
 interface Props {
   flow:        StudioFlowFull
   departments: { id: string; name: string }[]
+  agents:      { id: string; name: string }[]
   flows:       { id: string; name: string }[]
   stages:      { id: string; name: string }[]
   tags:        { id: string; name: string }[]
@@ -96,7 +97,7 @@ export function FlowEditorCanvas(props: Props) {
   )
 }
 
-function EditorInner({ flow, departments, flows, stages, tags, services, resources, ownerRouting, channels, instances, ads }: Props) {
+function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, ownerRouting, channels, instances, ads }: Props) {
   const router = useRouter()
   const { fitView } = useReactFlow()
   const updateNodeInternals = useUpdateNodeInternals()
@@ -292,7 +293,7 @@ function EditorInner({ flow, departments, flows, stages, tags, services, resourc
         {/* Painel direito */}
         <div className="w-96 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
           {selectedNode && selectedNode.type !== "start"
-            ? <ConfigPanel node={selectedNode} departments={departments} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}
                 mode={mode} channels={trigChannels} instances={trigInstances}

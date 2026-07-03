@@ -54,15 +54,20 @@ async function maybeHandBackDecoupled(input: RunAITurnInput, result: RunAITurnRe
   if (!sc?.ai_control_decoupled) return
   // activeFlowRun já filtra active|waiting — se existe, a IA está no meio de um fluxo.
   if (await activeFlowRun(input.conversationId)) return
-  await supabaseAdmin
+  const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
     .update({ ai_handling: false, updated_at: new Date().toISOString() })
     .eq("id", input.conversationId)
     .eq("tenant_id", input.tenantId)
+    .select("assigned_to, department_id")
+    .maybeSingle()
 
   // Evento do ciclo (relatórios): a IA devolveu o controle pro humano.
+  // to_agent = o dono da carteira que recebe (null = caiu na fila/setor).
   await logConversationEvent({
     tenantId: input.tenantId, conversationId: input.conversationId,
     type: "ai_handback", actorKind: "ai",
+    toAgentId:    (conv as { assigned_to: string | null } | null)?.assigned_to ?? null,
+    departmentId: (conv as { department_id: string | null } | null)?.department_id ?? null,
   })
 }

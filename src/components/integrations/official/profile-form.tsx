@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Loader2, Save, CheckCircle2, AlertCircle, Building2 } from "lucide-react"
 import { updateOfficialProfile } from "@/lib/actions/whatsapp-official"
 import type { MetaBusinessProfile } from "@/lib/providers/meta-cloud-provider"
@@ -79,9 +80,8 @@ export function ProfileForm({ profile, instanceId }: { profile: MetaBusinessProf
             <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="contato@empresa.com.br" className={INPUT} />
           </FormRow>
           <FormRow label="Segmento">
-            <select value={vertical} onChange={(e) => setVertical(e.target.value)} className={INPUT.replace("px-3", "px-2")}>
-              {VERTICALS.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
-            </select>
+            <SimpleSelect value={vertical} onChange={setVertical}
+              options={VERTICALS.map((v) => ({ value: v.value, label: v.label }))} />
           </FormRow>
         </div>
         <FormRow label="Endereço">

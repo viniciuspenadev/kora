@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import {
   Loader2, Copy, Check, Mail, AlertCircle, MessageCircle,
 } from "lucide-react"
@@ -128,14 +129,10 @@ export function InviteSheet({ departments, onClose, onFeedback }: Props) {
         </FormRow>
 
         <FormRow label="Papel" required>
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value as TenantRole)}
-            className={inputCls}
-          >
-            <option value="agent">Atendente — atende conversas</option>
-            <option value="admin">Admin — gerencia equipe e config</option>
-          </select>
+          <SimpleSelect value={role} onChange={(v) => setRole(v as TenantRole)} options={[
+            { value: "agent", label: "Atendente — atende conversas" },
+            { value: "admin", label: "Admin — gerencia equipe e config" },
+          ]} />
           <div className="mt-2 text-[11px] text-slate-500 space-y-1">
             <p><strong className="text-slate-700">Atendente:</strong> responde mensagens, move kanban, aplica tags. Não mexe em config.</p>
             <p><strong className="text-slate-700">Admin:</strong> tudo de atendente + convida equipe + edita automações + WhatsApp.</p>
@@ -143,16 +140,8 @@ export function InviteSheet({ departments, onClose, onFeedback }: Props) {
         </FormRow>
 
         <FormRow label="Departamento (opcional)">
-          <select
-            value={departmentId}
-            onChange={(e) => setDept(e.target.value)}
-            className={inputCls}
-          >
-            <option value="">— Sem departamento —</option>
-            {departments.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
+          <SimpleSelect value={departmentId} onChange={setDept}
+            options={[{ value: "", label: "— Sem departamento —" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]} />
         </FormRow>
 
         {error && (

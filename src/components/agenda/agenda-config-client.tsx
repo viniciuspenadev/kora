@@ -7,7 +7,7 @@ import { CalendarCog, Plus, Pencil, ArrowLeft, Users2, Clock, BellRing, MessageS
 import { PageShell } from "@/components/ui/page-shell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
+import { SimpleSelect } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { FormRow } from "@/components/ui/form-row"
 import { PremiumGate } from "@/components/ui/premium-gate"
@@ -296,10 +296,8 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
           </FormRow>
 
           <FormRow label="De quem é esta agenda?" hint="o atendente DONO pode compartilhá-la e recebe os avisos. Vazio = agenda compartilhada (sala, equipamento).">
-            <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-              <option value="">Compartilhada (sala, equipamento)</option>
-              {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </Select>
+            <SimpleSelect value={agentId} onChange={setAgentId}
+              options={[{ value: "", label: "Compartilhada (sala, equipamento)" }, ...agents.map((a) => ({ value: a.id, label: a.name }))]} />
           </FormRow>
 
           <div>
@@ -337,19 +335,16 @@ function ResourceDialog({ resource, agents, onClose, onSaved }: {
                   <Input type="number" min={1} value={capacity} onChange={(e) => setCapacity(+e.target.value)} className="h-9" />
                 </FormRow>
                 <FormRow label="Intervalo entre horários" hint="de quanto em quanto aparece um horário">
-                  <Select value={slot} onChange={(e) => setSlot(+e.target.value)}>
-                    {SLOT_OPTS.map((s) => <option key={s} value={s}>{s} min</option>)}
-                  </Select>
+                  <SimpleSelect value={String(slot)} onChange={(v) => setSlot(+v)}
+                    options={SLOT_OPTS.map((s) => ({ value: String(s), label: s + " min" }))} />
                 </FormRow>
                 <FormRow label="Antecedência mínima pra marcar" hint="evita marcar em cima da hora">
-                  <Select value={minLead} onChange={(e) => setMinLead(+e.target.value)}>
-                    {LEAD_OPTS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
-                  </Select>
+                  <SimpleSelect value={String(minLead)} onChange={(v) => setMinLead(+v)}
+                    options={LEAD_OPTS.map((o) => ({ value: String(o.v), label: o.l }))} />
                 </FormRow>
                 <FormRow label="Até quando dá pra marcar" hint="quão longe no futuro">
-                  <Select value={horizon} onChange={(e) => setHorizon(+e.target.value)}>
-                    {HORIZON_OPTS.map((d) => <option key={d} value={d}>{d} dias</option>)}
-                  </Select>
+                  <SimpleSelect value={String(horizon)} onChange={(v) => setHorizon(+v)}
+                    options={HORIZON_OPTS.map((d) => ({ value: String(d), label: d + " dias" }))} />
                 </FormRow>
               </div>
             )}
@@ -485,14 +480,12 @@ function ServiceDialog({ service, resources, remindersModule, isMeta, confirmSta
             {showFolga && (
               <div className="mt-2 grid grid-cols-2 gap-3">
                 <FormRow label="Antes" hint="tempo de preparo">
-                  <Select value={before} onChange={(e) => setBefore(+e.target.value)}>
-                    {BUFFERS.map((b) => <option key={b} value={b}>{b === 0 ? "Sem folga" : `${b} min`}</option>)}
-                  </Select>
+                  <SimpleSelect value={String(before)} onChange={(v) => setBefore(+v)}
+                    options={BUFFERS.map((b) => ({ value: String(b), label: b === 0 ? "Sem folga" : b + " min" }))} />
                 </FormRow>
                 <FormRow label="Depois" hint="finalização / limpeza">
-                  <Select value={after} onChange={(e) => setAfter(+e.target.value)}>
-                    {BUFFERS.map((b) => <option key={b} value={b}>{b === 0 ? "Sem folga" : `${b} min`}</option>)}
-                  </Select>
+                  <SimpleSelect value={String(after)} onChange={(v) => setAfter(+v)}
+                    options={BUFFERS.map((b) => ({ value: String(b), label: b === 0 ? "Sem folga" : b + " min" }))} />
                 </FormRow>
                 <p className="col-span-2 text-[11px] text-slate-400 -mt-1">O sistema não marca outro cliente nesse intervalo.</p>
               </div>
@@ -727,12 +720,8 @@ function ReminderEditorDialog({ draft, exampleVars, isMeta, confirmStatus, appro
                   <>
                     <div className="space-y-1">
                       <label className="text-[11px] font-medium text-slate-500">Modelo a enviar</label>
-                      <select value={selectedName} onChange={(e) => onChange({ ...draft, templateName: e.target.value })}
-                        className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40">
-                        {agendaTemplates.map((t) => (
-                          <option key={t.name} value={t.name}>{t.name === SYSTEM_AGENDA_TEMPLATE ? `${t.name} · do sistema` : t.name}</option>
-                        ))}
-                      </select>
+                      <SimpleSelect value={selectedName} onChange={(v) => onChange({ ...draft, templateName: v })}
+                        options={agendaTemplates.map((t) => ({ value: t.name, label: t.name === SYSTEM_AGENDA_TEMPLATE ? t.name + " · do sistema" : t.name }))} />
                       <p className="text-[10px] text-slate-400">Só modelos <strong>aprovados</strong> na categoria <strong>Agenda</strong>.</p>
                     </div>
                     {selectedTpl && !isSystemSel && selectedTpl.quickReplies < 2 && (

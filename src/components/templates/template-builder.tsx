@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition, useRef } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply, Save, Lock } from "lucide-react"
 import { createOfficialTemplate, editOfficialTemplate, type TemplateButton } from "@/lib/actions/whatsapp-official"
 import type { MetaTemplate, MetaTemplateComponent } from "@/lib/providers/meta-cloud-provider"
@@ -150,31 +151,26 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
                   </div>
                 </Field>
                 <Field label="Categoria">
-                  <select value={category} onChange={(e) => setCategory(e.target.value as "MARKETING" | "UTILITY")} className={SELECT}>
-                    <option value="MARKETING">Marketing</option>
-                    <option value="UTILITY">Utilidade</option>
-                  </select>
+                  <SimpleSelect value={category} onChange={(v) => setCategory(v as "MARKETING" | "UTILITY")} options={[
+                    { value: "MARKETING", label: "Marketing" },
+                    { value: "UTILITY",   label: "Utilidade" },
+                  ]} />
                 </Field>
                 <Field label="Idioma" hint={isEdit ? "imutável" : undefined}>
                   <div className="relative">
-                    <select value={language} onChange={(e) => setLanguage(e.target.value)} disabled={isEdit}
-                      className={`${SELECT} ${isEdit ? "bg-slate-50 text-slate-500 pr-8 cursor-not-allowed" : ""}`}>
-                      <option value="pt_BR">Português (BR)</option>
-                      <option value="en_US">English (US)</option>
-                      <option value="es_ES">Español</option>
-                    </select>
+                    <SimpleSelect value={language} onChange={setLanguage} disabled={isEdit} options={[
+                      { value: "pt_BR", label: "Português (BR)" },
+                      { value: "en_US", label: "English (US)" },
+                      { value: "es_ES", label: "Español" },
+                    ]} />
                     {isEdit && <Lock className="size-3.5 text-slate-300 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />}
                   </div>
                 </Field>
                 {/* Propósito = categoria INTERNA do Kora (etiqueta nossa, não vai à Meta).
                     Organiza a lista e habilita usos por escopo (ex: lembrete da Agenda). */}
                 <Field label="Propósito" hint="categoria interna">
-                  <select value={koraCategory} onChange={(e) => setKoraCategory(e.target.value)} className={SELECT}>
-                    <option value="">— nenhum —</option>
-                    {(Object.entries(KORA_CATEGORY_LABELS) as [KoraCategory, string][]).map(([v, label]) => (
-                      <option key={v} value={v}>{label}</option>
-                    ))}
-                  </select>
+                  <SimpleSelect value={koraCategory} onChange={setKoraCategory}
+                    options={[{ value: "", label: "— nenhum —" }, ...(Object.entries(KORA_CATEGORY_LABELS) as [KoraCategory, string][]).map(([v, label]) => ({ value: v, label }))]} />
                 </Field>
               </div>
               <Hint>
@@ -199,11 +195,10 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
               <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
                 <div className="inline-flex items-center gap-1.5">
                   <span className="text-[11px] text-slate-500">Variáveis:</span>
-                  <select value={varMode} onChange={(e) => setVarMode(e.target.value as "number" | "name")}
-                    className="h-7 pl-2 pr-7 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40">
-                    <option value="name">{"Nome — {{nome}}"}</option>
-                    <option value="number">{"Número — {{1}}, {{2}}"}</option>
-                  </select>
+                  <SimpleSelect value={varMode} onChange={(v) => setVarMode(v as "number" | "name")} className="h-7 w-auto min-w-44 text-[11px] font-semibold pl-2" options={[
+                    { value: "name",   label: "Nome — {{nome}}" },
+                    { value: "number", label: "Número — {{1}}, {{2}}" },
+                  ]} />
                 </div>
                 <div className="inline-flex items-center gap-2">
                   <span className="text-[11px] text-slate-400">{body.length}/1024</span>

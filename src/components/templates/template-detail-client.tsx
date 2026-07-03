@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { useRouter } from "next/navigation"
 import {
   AlertCircle, AlertTriangle, BarChart3, ExternalLink, History, Phone,
@@ -163,11 +164,8 @@ export function TemplateDetailClient({
         <Facet label="Idioma"><span className="text-sm font-medium text-slate-800">{template.language}</span></Facet>
         <Facet label="Variáveis"><span className="text-sm font-medium text-slate-800">{nVars}</span></Facet>
         <Facet label="Propósito (interno)">
-          <select value={kora} onChange={(e) => changeKora(e.target.value)} disabled={savingKora}
-            className="h-7 -ml-1 pl-1 pr-6 text-sm font-medium text-slate-800 rounded-md border border-transparent hover:border-slate-200 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20 bg-transparent disabled:opacity-50">
-            <option value="">— nenhum —</option>
-            {KORA_OPTS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-          </select>
+          <SimpleSelect value={kora} onChange={changeKora} disabled={savingKora} className="h-7 -ml-1 text-sm border-transparent hover:border-slate-200 bg-transparent"
+            options={[{ value: "", label: "— nenhum —" }, ...KORA_OPTS.map((o) => ({ value: o.v, label: o.label }))]} />
         </Facet>
       </div>
 

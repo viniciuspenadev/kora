@@ -566,16 +566,23 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // quando há campos do `collect` (mas não decide o byAI).
         const collectHint = Array.isArray(variables["__collect"]) ? (variables["__collect"] as string[]) : []
         const r = await cap?.run(ctx, {
-          department:      cfg.department,
-          summary:         summary || undefined,
-          handoff_message: cfg.handoff ?? null,
-          collect_hint:    collectHint,
-          byAI:            variables["__ai_touched"] === true,
+          target:           cfg.target,               // undefined = nó legado (semântica clássica)
+          department:       cfg.department,
+          agent_id:         cfg.agentId ?? null,
+          summary:          summary || undefined,
+          handoff_message:  cfg.handoff ?? null,
+          when_unavailable: cfg.whenUnavailable,
+          wait_message:     cfg.waitMessage ?? null,
+          collect_hint:     collectHint,
+          byAI:             variables["__ai_touched"] === true,
         })
         await finishRun(run.id)
+        // Plano B "manter IA": NÃO encaminhou de propósito — a IA segue na frente.
+        // Conta como respondido (senão o hand-back do dispatch derrubaria a IA).
+        if (r?.keptAI) return { status: "responded", departmentId: null, error: null, agent: lastAgent }
         await restoreReopenOwner(ctx)   // carteira: fluxo terminou em transfer → devolve o dono (ou fila se ele saiu)
-        if (r?.routedDepartmentId) return { status: "routed", departmentId: r.routedDepartmentId, error: null, agent: lastAgent }
-        // departamento inválido na config → não encaminhou; registra pro admin ver.
+        if (r?.ok) return { status: "routed", departmentId: r.routedDepartmentId ?? null, error: null, agent: lastAgent }
+        // destino inválido na config → não encaminhou; nota interna já registrou pro admin.
         return { status: responded ? "responded" : "no_action", departmentId: null, error: r?.error ?? null, agent: lastAgent }
       }
       case "return":

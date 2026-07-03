@@ -29,8 +29,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!tenant.active) redirect("/auth/signin")
 
   // Onboarding só pra owner/admin — atendentes não veem
-  const showOnboarding = ["owner", "admin"].includes(session.user.role)
-  const [setup, enabledModules, selfPause, officialRes, pipelinesRes] = await Promise.all([
+  const isManager = ["owner", "admin"].includes(session.user.role)
+  const showOnboarding = isManager
+  const [setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes] = await Promise.all([
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
     getEnabledModuleSlugs(session.user.tenantId),
     getSelfPause(),
@@ -48,9 +49,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       .eq("tenant_id", session.user.tenantId)
       .eq("active", true)
       .order("position"),
+    // Funis de VENDA → switcher em Negócios (menu é adminOnly; não enviar pra agente).
+    isManager
+      ? supabaseAdmin
+          .from("deal_pipelines")
+          .select("id, name, color, is_default")
+          .eq("tenant_id", session.user.tenantId)
+          .eq("active", true)
+          .order("position")
+      : Promise.resolve({ data: null }),
   ])
   const hasOfficial = !!officialRes.data
   const pipelines = (pipelinesRes.data ?? []) as { id: string; name: string; color: string; is_default: boolean }[]
+  const dealPipelines = (dealPipelinesRes.data ?? []) as { id: string; name: string; color: string; is_default: boolean }[]
 
   // Estado do rail (recolhido/expandido) persistido em cookie — lido no server
   // pra o Sidebar já renderizar na largura certa (sem flash no load).
@@ -65,6 +76,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     selfPause,
     hasOfficial,
     pipelines,
+    dealPipelines,
   }
 
   return (

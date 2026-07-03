@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useTransition } from "react"
+import { SimpleSelect } from "@/components/ui/select"
 import { Loader2, X } from "lucide-react"
 import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
@@ -191,15 +192,11 @@ export function TriggerSheet({ trigger, tags, onClose, onFeedback }: Props) {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <FormRow label="Tipo de match">
-            <select
-              value={matchType}
-              onChange={(e) => setMatchType(e.target.value as MatchType)}
-              className={inputCls}
-            >
-              <option value="contains">Contém — a mensagem contém a palavra</option>
-              <option value="exact">Idêntica — mensagem é exatamente a palavra</option>
-              <option value="starts_with">Começa com — a mensagem começa com a palavra</option>
-            </select>
+            <SimpleSelect value={matchType} onChange={(v) => setMatchType(v as MatchType)} options={[
+              { value: "contains",    label: "Contém — a mensagem contém a palavra" },
+              { value: "exact",       label: "Idêntica — mensagem é exatamente a palavra" },
+              { value: "starts_with", label: "Começa com — a mensagem começa com a palavra" },
+            ]} />
           </FormRow>
 
           <FormRow label="Cooldown" hint="Mínimo de minutos entre disparos pro mesmo contato">
@@ -265,16 +262,8 @@ export function TriggerSheet({ trigger, tags, onClose, onFeedback }: Props) {
           label="Aplicar tag no contato"
           hint="Útil pra segmentar quem perguntou sobre cada assunto."
         >
-          <select
-            value={applyTagId}
-            onChange={(e) => setApplyTagId(e.target.value)}
-            className={inputCls}
-          >
-            <option value="">— Não aplicar tag —</option>
-            {tags.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
+          <SimpleSelect value={applyTagId} onChange={setApplyTagId}
+            options={[{ value: "", label: "— Não aplicar tag —" }, ...tags.map((t) => ({ value: t.id, label: t.name }))]} />
           {tags.length === 0 && (
             <p className="text-[11px] text-slate-400 mt-1">
               Nenhuma tag criada. Vá em <strong>Configurações → Tags</strong> pra criar.

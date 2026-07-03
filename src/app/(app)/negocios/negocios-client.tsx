@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useMemo } from "react"
-import { useRouter } from "next/navigation"
+import { SimpleSelect } from "@/components/ui/select"
+import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
-import { Search, X, LayoutGrid, List, SlidersHorizontal } from "lucide-react"
+import { Search, X, LayoutGrid, List, SlidersHorizontal, Briefcase, BarChart3 } from "lucide-react"
 import type { DealsPageData, DealRow, DealPipeline } from "@/lib/actions/deals"
 import { DealsBoard } from "@/components/crm/deals-board"
 
@@ -25,8 +26,6 @@ function dueChip(iso: string): { label: string; overdue: boolean } {
   return { label: d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }), overdue: false }
 }
 
-const selCls = "h-9 px-3 text-xs border border-slate-200 rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
-
 export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipelines: DealPipeline[] }) {
   const [view, setView]     = useState<"board" | "list">("board")
   const [search, setSearch] = useState("")
@@ -34,6 +33,8 @@ export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipel
   const [status, setStatus] = useState("")
   const [agent, setAgent]   = useState("")
   const router = useRouter()
+  // Deep-link do menu (switcher de funis): /negocios?pipeline=<id>
+  const urlPipelineId = useSearchParams().get("pipeline")
 
   const deals = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -46,28 +47,35 @@ export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipel
     })
   }, [data.deals, search, pipe, status, agent])
 
-  const k = data.kpis
   return (
-    <div className="space-y-5">
-      {/* KPIs */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi label="Em aberto"         value={brl(k.openValue)} sub={`${k.openCount} negócio${k.openCount !== 1 ? "s" : ""}`} accent />
-        <Kpi label="Ganho no período"  value={brl(k.wonValue)}  sub={`${k.wonCount} ganho${k.wonCount !== 1 ? "s" : ""}`} />
-        <Kpi label="Conversão"         value={`${k.conversionPct}%`} sub="ganhos / fechados" />
-        <Kpi label="Ticket médio"      value={brl(k.avgTicket)} sub="por negócio ganho" />
-      </div>
+    <div className="h-[calc(100dvh-3.5rem)] bg-canvas flex flex-col overflow-hidden">
+      {/* header + toolbar (fixo) */}
+      <div className="shrink-0 bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2.5 mr-1">
+          <span className="size-8 rounded-lg bg-primary/10 grid place-items-center shrink-0"><Briefcase className="size-4 text-primary" /></span>
+          <div className="min-w-0">
+            <h1 className="text-sm font-bold text-slate-900 leading-tight tracking-tight">Negócios</h1>
+            <p className="text-[11px] text-slate-400 leading-tight">Pipeline de vendas</p>
+          </div>
+        </div>
 
-      {/* Toolbar: visão + filtros (lista) */}
-      <div className="flex items-center gap-2 flex-wrap">
         <div className="inline-flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg shrink-0">
           <ViewBtn active={view === "board"} onClick={() => setView("board")} icon={LayoutGrid} label="Quadro" />
           <ViewBtn active={view === "list"}  onClick={() => setView("list")}  icon={List}       label="Lista" />
         </div>
-        <Link href="/negocios/funis" className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-600 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors shrink-0">
-          <SlidersHorizontal className="size-3.5" /> Funis
-        </Link>
+
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <Link href="/negocios/painel" className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-600 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors">
+            <BarChart3 className="size-3.5" /> <span className="hidden sm:inline">Painel</span>
+          </Link>
+          <Link href="/negocios/funis" className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-600 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors">
+            <SlidersHorizontal className="size-3.5" /> <span className="hidden sm:inline">Funis</span>
+          </Link>
+        </div>
+
+        {/* filtros só na Lista — ocupam a linha inteira abaixo */}
         {view === "list" && (
-          <>
+          <div className="w-full flex items-center gap-2 flex-wrap pt-1">
             <div className="relative flex-1 min-w-[220px] max-w-md">
               <Search className="size-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar negócio ou cliente…"
@@ -75,52 +83,50 @@ export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipel
               {search && <button type="button" onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 size-5 grid place-items-center rounded text-slate-400 hover:bg-slate-100"><X className="size-3" /></button>}
             </div>
             {data.pipelines.length > 1 && (
-              <select value={pipe} onChange={(e) => setPipe(e.target.value)} className={selCls}>
-                <option value="">Todas as trilhas</option>
-                {data.pipelines.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <SimpleSelect value={pipe} onChange={setPipe}
+                options={[{ value: "", label: "Todas as trilhas" }, ...data.pipelines.map((p) => ({ value: p.id, label: p.name }))]} />
             )}
-            <select value={status} onChange={(e) => setStatus(e.target.value)} className={selCls}>
-              <option value="">Todos os status</option>
-              <option value="open">Aberto</option>
-              <option value="won">Ganho</option>
-              <option value="lost">Perdido</option>
-            </select>
+            <SimpleSelect value={status} onChange={setStatus} options={[
+              { value: "",     label: "Todos os status" },
+              { value: "open", label: "Aberto" },
+              { value: "won",  label: "Ganho" },
+              { value: "lost", label: "Perdido" },
+            ]} />
             {data.agents.length > 0 && (
-              <select value={agent} onChange={(e) => setAgent(e.target.value)} className={selCls}>
-                <option value="">Todos responsáveis</option>
-                {data.agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
+              <SimpleSelect value={agent} onChange={setAgent}
+                options={[{ value: "", label: "Todos responsáveis" }, ...data.agents.map((a) => ({ value: a.id, label: a.name }))]} />
             )}
             <span className="text-[11px] text-slate-400 ml-auto tabular-nums shrink-0">{deals.length} de {data.deals.length}</span>
-          </>
+          </div>
         )}
       </div>
 
       {view === "board" ? (
-        <DealsBoard pipelines={pipelines} deals={data.deals} />
+        <DealsBoard pipelines={pipelines} deals={data.deals} allTags={data.allTags} urlPipelineId={urlPipelineId} />
       ) : (
-        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-200 text-[11px] text-slate-500 bg-slate-50/60">
-                  <th className="text-left font-medium py-2.5 px-3">Negócio</th>
-                  <th className="text-left font-medium py-2.5 px-3">Cliente</th>
-                  <th className="text-left font-medium py-2.5 px-3 hidden md:table-cell">Trilha</th>
-                  <th className="text-left font-medium py-2.5 px-3">Etapa / status</th>
-                  <th className="text-left font-medium py-2.5 px-3 hidden md:table-cell">Próxima ação</th>
-                  <th className="text-right font-medium py-2.5 px-3">Valor</th>
-                  <th className="text-left font-medium py-2.5 px-3 hidden lg:table-cell">Responsável</th>
-                  <th className="text-left font-medium py-2.5 px-3 hidden sm:table-cell">Atualizado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {deals.length === 0 ? (
-                  <tr><td colSpan={8} className="text-center text-xs text-slate-400 py-12">Nenhum negócio encontrado.</td></tr>
-                ) : deals.map((d) => <DealTableRow key={d.id} d={d} onOpen={() => router.push(`/negocios/${d.id}`)} />)}
-              </tbody>
-            </table>
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-4">
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-[11px] text-slate-500 bg-slate-50/60">
+                    <th className="text-left font-medium py-2.5 px-3">Negócio</th>
+                    <th className="text-left font-medium py-2.5 px-3">Cliente</th>
+                    <th className="text-left font-medium py-2.5 px-3 hidden md:table-cell">Trilha</th>
+                    <th className="text-left font-medium py-2.5 px-3">Etapa / status</th>
+                    <th className="text-left font-medium py-2.5 px-3 hidden md:table-cell">Próxima ação</th>
+                    <th className="text-right font-medium py-2.5 px-3">Valor</th>
+                    <th className="text-left font-medium py-2.5 px-3 hidden lg:table-cell">Responsável</th>
+                    <th className="text-left font-medium py-2.5 px-3 hidden sm:table-cell">Atualizado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deals.length === 0 ? (
+                    <tr><td colSpan={8} className="text-center text-xs text-slate-400 py-12">Nenhum negócio encontrado.</td></tr>
+                  ) : deals.map((d) => <DealTableRow key={d.id} d={d} onOpen={() => router.push(`/negocios/${d.id}`)} />)}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -134,16 +140,6 @@ function ViewBtn({ active, onClick, icon: Icon, label }: { active: boolean; onCl
       className={`inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-md transition-colors ${active ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
       <Icon className="size-3.5" /> {label}
     </button>
-  )
-}
-
-function Kpi({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: boolean }) {
-  return (
-    <div className={`rounded-xl border px-4 py-3 ${accent ? "border-primary-200 bg-primary-50/30" : "border-slate-200 bg-white"}`}>
-      <p className="text-[11px] font-medium text-slate-400">{label}</p>
-      <p className={`text-xl font-bold tabular-nums mt-0.5 ${accent ? "text-primary-700" : "text-slate-900"}`}>{value}</p>
-      {sub && <p className="text-[11px] text-slate-400 mt-0.5">{sub}</p>}
-    </div>
   )
 }
 

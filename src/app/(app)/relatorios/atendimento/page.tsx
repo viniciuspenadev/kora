@@ -1,33 +1,40 @@
-import { getAtendimentoMetrics, listAgentsForFilter } from "@/lib/actions/reports"
+import { getAgentReport } from "@/lib/reports/agents"
 import { PeriodPicker } from "@/components/relatorios/period-picker"
-import { Filters } from "@/components/relatorios/filters"
-import { KpiCard } from "@/components/relatorios/kpi-card"
+import { AgentReport } from "@/components/relatorios/agent-report"
 import { ReportsTabs } from "../tabs"
-import { AtendimentoCharts } from "./charts"
-import { InstanceBreakdown } from "@/components/relatorios/instance-breakdown"
-import { parseFilters, getTenantChannels, getTenantInstances, formatSec, formatNumber } from "../_helpers"
+import { parseFilters } from "../_helpers"
 import { auth } from "@/auth"
-import { Clock, CheckCircle2, Timer, Zap } from "lucide-react"
+import { redirect } from "next/navigation"
 import { hasModule } from "@/lib/modules"
 
+// Relatórios → Atendimento = o painel POR ATENDENTE (decisão do owner 2026-07-02:
+// a antiga "Visão geral" foi eliminada — KPIs/heatmap migraram pra cá; leaderboard
+// é a fonte única de carga por pessoa). Atendente (não-gestor) vê SÓ a própria
+// ficha — performance dos colegas é visão de gestão.
 export default async function AtendimentoReportPage({
   searchParams,
 }: {
-  searchParams: Promise<{ from?: string; to?: string; agent?: string; channel?: string }>
+  searchParams: Promise<{ from?: string; to?: string }>
 }) {
-  const sp       = await searchParams
-  const filters  = parseFilters(sp)
-  const session  = await auth()
-  const tenantId = session?.user?.tenantId
+  const sp      = await searchParams
+  const filters = parseFilters(sp)
+  const session = await auth()
+  if (!session?.user?.tenantId) redirect("/auth/signin")
 
-  const [data, agents, availableChannels, availableInstances, hasKanban, hasAi] = await Promise.all([
-    getAtendimentoMetrics(filters),
-    listAgentsForFilter(),
-    tenantId ? getTenantChannels(tenantId) : Promise.resolve([]),
-    tenantId ? getTenantInstances(tenantId) : Promise.resolve([]),
-    tenantId ? hasModule(tenantId, "kanban")       : Promise.resolve(false),
-    tenantId ? hasModule(tenantId, "ai_atendente") : Promise.resolve(false),
+  const tenantId  = session.user.tenantId
+  const isManager = ["owner", "admin"].includes(session.user.role)
+
+  const [report, hasKanban, hasAi] = await Promise.all([
+    getAgentReport(tenantId, filters.from, filters.to),
+    hasModule(tenantId, "kanban"),
+    hasModule(tenantId, "ai_atendente"),
   ])
+
+  // Não-gestor: enxerga apenas os próprios números (filtro no SERVER — nada dos
+  // colegas chega ao client).
+  const data = isManager
+    ? report
+    : { ...report, agents: report.agents.filter((a) => a.id === session.user.id) }
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -39,57 +46,12 @@ export default async function AtendimentoReportPage({
               Performance de atendimento, SLA e carga por agente
             </p>
           </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <Filters agents={agents} availableChannels={availableChannels} availableInstances={availableInstances} />
-            <PeriodPicker />
-          </div>
+          <PeriodPicker />
         </div>
 
         <ReportsTabs hasKanban={hasKanban} hasAi={hasAi} />
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <KpiCard
-            label="Tempo 1ª resposta"
-            value={formatSec(data.avgFirstResponseSec.current)}
-            current={data.avgFirstResponseSec.current}
-            previous={data.avgFirstResponseSec.previous}
-            inverted
-            icon={<Clock className="size-4" />}
-          />
-          <KpiCard
-            label="Tempo até resolver"
-            value={formatSec(data.avgResolutionSec.current)}
-            current={data.avgResolutionSec.current}
-            previous={data.avgResolutionSec.previous}
-            inverted
-            icon={<Timer className="size-4" />}
-          />
-          <KpiCard
-            label="SLA < 5min"
-            value={`${data.withinSLA5min.current}%`}
-            current={data.withinSLA5min.current}
-            previous={data.withinSLA5min.previous}
-            icon={<Zap className="size-4" />}
-          />
-          <KpiCard
-            label="Resolvidas"
-            value={formatNumber(data.resolvedCount.current)}
-            current={data.resolvedCount.current}
-            previous={data.resolvedCount.previous}
-            icon={<CheckCircle2 className="size-4" />}
-          />
-        </div>
-
-        <AtendimentoCharts
-          firstResponseDaily={data.firstResponseDaily}
-          resolutionDaily={data.resolutionDaily}
-          heatmap={data.heatmap}
-          agentLoad={data.agentLoad}
-        />
-
-        {availableInstances.length > 1 && (
-          <InstanceBreakdown rows={data.byInstance} instances={availableInstances} subtitle="Volume e resolução por número de WhatsApp" />
-        )}
+        <AgentReport data={data} />
       </div>
     </div>
   )

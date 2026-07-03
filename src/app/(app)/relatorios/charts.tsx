@@ -1,7 +1,7 @@
 "use client"
 
 import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   PieChart, Pie, Cell,
 } from "recharts"
 import { sourceMeta } from "@/lib/lifecycle"
@@ -30,11 +30,11 @@ export function OverviewCharts({ daily, channels }: Props) {
       {/* Volume diário (barras agrupadas) */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-soft lg:col-span-2">
         <h3 className="text-sm font-semibold text-slate-900 mb-1">Volume por dia</h3>
-        <p className="text-xs text-slate-500 mb-4">Conversas e contatos novos por dia</p>
+        <p className="text-xs text-slate-500 mb-4">Conversas e contatos novos por dia — linhas sobrepostas</p>
         <div style={{ width: "100%", height: 280 }}>
           <ResponsiveContainer>
-            <BarChart data={daily} margin={{ top: 5, right: 10, bottom: 0, left: -20 }} barGap={2} maxBarSize={28}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+            <LineChart data={daily} margin={{ top: 5, right: 10, bottom: 0, left: -20 }}>
+              <CartesianGrid stroke="#f1f5f9" vertical={false} />
               <XAxis
                 dataKey="date"
                 tickFormatter={formatShortDate}
@@ -45,12 +45,12 @@ export function OverviewCharts({ daily, channels }: Props) {
               <Tooltip
                 contentStyle={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 8, fontSize: 12 }}
                 labelFormatter={formatShortDate}
-                cursor={{ fill: "#f1f5f9" }}
+                cursor={{ stroke: "#94a3b8", strokeWidth: 1 }}
               />
-              <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} iconType="circle" />
-              <Bar dataKey="conversas" name="Conversas"      fill="#004add" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="contatos"  name="Contatos novos" fill="#10b981" radius={[4, 4, 0, 0]} />
-            </BarChart>
+              <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} iconType="plainline" />
+              <Line type="monotone" dataKey="conversas" name="Conversas"      stroke="#004add" strokeWidth={2} dot={false} activeDot={{ r: 4, strokeWidth: 2, stroke: "#fff" }} />
+              <Line type="monotone" dataKey="contatos"  name="Contatos novos" stroke="#0d9488" strokeWidth={2} dot={false} activeDot={{ r: 4, strokeWidth: 2, stroke: "#fff" }} />
+            </LineChart>
           </ResponsiveContainer>
         </div>
       </div>
