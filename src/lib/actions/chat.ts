@@ -1564,6 +1564,8 @@ export interface ContactInfoInput {
   consent_opt_in?:   boolean | null
   consent_source?:   string | null
   marketing_opt_in?: boolean | null
+  /** Tabela de preço do cliente (T2 — "esse cliente é atacado"). Null = padrão. */
+  price_table_id?: string | null
 }
 
 export async function updateContactInfo(
@@ -1598,6 +1600,16 @@ export async function updateContactInfo(
   }
   if (input.consent_source   !== undefined) payload.consent_source   = input.consent_source?.trim() || null
   if (input.marketing_opt_in !== undefined) payload.marketing_opt_in = input.marketing_opt_in
+  // Tabela de preço (T2) — anti-IDOR: a tabela tem que ser DO tenant.
+  if (input.price_table_id !== undefined) {
+    const next = input.price_table_id || null
+    if (next) {
+      const { data: tb } = await supabaseAdmin.from("price_tables")
+        .select("id").eq("id", next).eq("tenant_id", session.user.tenantId).maybeSingle()
+      if (!tb) return { error: "Tabela de preço inválida" }
+    }
+    payload.price_table_id = next
+  }
 
   // Validação rápida — email no formato básico (não vamos rodar regex perfeita)
   if (payload.email && typeof payload.email === "string" && !payload.email.includes("@")) {

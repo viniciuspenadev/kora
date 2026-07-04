@@ -18,7 +18,7 @@ export interface DashDeal {
   contact_name:     string | null
   contact_pic:      string | null
   value:            number
-  status:           "open" | "won" | "lost"
+  status:           "open" | "won" | "lost" | "canceled"
   stage_id:         string | null
   created_at:       string
   won_at:           string | null

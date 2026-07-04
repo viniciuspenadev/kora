@@ -1259,7 +1259,7 @@ function DealsCard({ conversationId, contactName, panel, onReload }: {
   const [showNew, setShowNew]       = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [moving, setMoving]         = useState<string | null>(null)
-  const [moveReq, setMoveReq]       = useState<{ dealId: string; stageId: string; toName: string; fromName: string | null; dealName: string | null; fromDays: number | null; currentValue: number | null } | null>(null)
+  const [moveReq, setMoveReq]       = useState<{ dealId: string; stageId: string; toName: string; toLost: boolean; fromName: string | null; dealName: string | null; fromDays: number | null; currentValue: number | null } | null>(null)
   const [blocked, setBlocked]       = useState<PanelDeal | null>(null)   // negócio aberto que impede abrir outro
   const [flowModal, setFlowModal]   = useState<{ mode: "handoff" | "reclass"; dealId: string } | null>(null)
 
@@ -1277,8 +1277,8 @@ function DealsCard({ conversationId, contactName, panel, onReload }: {
   }
 
   // Mover negócio ABERTO → abre a ficha da movimentação (mesma UX do kanban/página).
-  function requestMove(dealId: string, stageId: string, toName: string, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) {
-    setMoveReq({ dealId, stageId, toName, fromName, dealName, fromDays, currentValue })
+  function requestMove(dealId: string, stageId: string, toName: string, toLost: boolean, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) {
+    setMoveReq({ dealId, stageId, toName, toLost, fromName, dealName, fromDays, currentValue })
   }
   async function commitMove(res: MoveDealResult) {
     if (!moveReq) return
@@ -1288,7 +1288,7 @@ function DealsCard({ conversationId, contactName, panel, onReload }: {
       valueChange: valueChanged ? { from: moveReq.currentValue != null && moveReq.currentValue > 0 ? dealBrl(moveReq.currentValue) : "—", to: dealBrl(res.value as number) } : null,
       followUp: res.task ? { title: res.task.title, due: res.task.dueAt ? new Date(res.task.dueAt).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : null } : null,
     }
-    const r = await moveDeal(conversationId, moveReq.dealId, moveReq.stageId, null, res.note || null, extras)
+    const r = await moveDeal(conversationId, moveReq.dealId, moveReq.stageId, res.lostReason ?? null, res.note || null, extras)
     if (!("error" in r) && valueChanged) await updateDeal(moveReq.dealId, { estimatedValue: res.value }, { silentCard: true })
     if (!("error" in r) && res.task) await createTask({ dealId: moveReq.dealId, title: res.task.title, dueAt: res.task.dueAt })
     setMoving(null); setMoveReq(null)
@@ -1296,8 +1296,16 @@ function DealsCard({ conversationId, contactName, panel, onReload }: {
   }
 
   async function reopen(dealId: string) {
+    // Regra: reabrir GANHO = só gestor + justificativa (o server valida de novo, fail-closed).
+    const target = panel?.deals.find((d) => d.id === dealId) ?? null
+    let note: string | null = null
+    if (target?.status === "won") {
+      const typed = window.prompt("Reabrir um GANHO desfaz receita já reportada (só gestores). Por quê?")
+      if (typed == null || !typed.trim()) return
+      note = typed.trim()
+    }
     setMoving(dealId)
-    const r = await reopenDeal(conversationId, dealId)
+    const r = await reopenDeal(conversationId, dealId, { note })
     setMoving(null)
     if ("error" in r) alert(r.error); else { load(); bumpTimeline() }
   }
@@ -1400,7 +1408,7 @@ function DealsCard({ conversationId, contactName, panel, onReload }: {
       {moveReq && (
         <MoveDealDialog
           dealName={moveReq.dealName} fromStageName={moveReq.fromName} fromStageDays={moveReq.fromDays}
-          toStageName={moveReq.toName} currentValue={moveReq.currentValue}
+          toStageName={moveReq.toName} toStageLost={moveReq.toLost} currentValue={moveReq.currentValue}
           pending={moving === moveReq.dealId} onConfirm={commitMove} onClose={() => setMoveReq(null)}
         />
       )}
@@ -1489,7 +1497,7 @@ function NextAction({ deal, onChange }: { deal: PanelDeal; onChange: () => void 
 
 function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange, onReclassify }: {
   deal: PanelDeal; pipelines: DealPipeline[]
-  onMove: (dealId: string, stageId: string, toName: string, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) => void
+  onMove: (dealId: string, stageId: string, toName: string, toLost: boolean, fromName: string | null, dealName: string | null, fromDays: number | null, currentValue: number | null) => void
   moving: boolean; onTaskChange: () => void; onReclassify?: () => void
 }) {
   const pipeline = pipelines.find((p) => p.id === deal.pipeline_id)
@@ -1513,7 +1521,7 @@ function ActiveDeal({ deal, pipelines, onMove, moving, onTaskChange, onReclassif
       </div>
       <div className="mt-2 flex items-center gap-1.5">
         <div className="flex-1 min-w-0"><SimpleSelect value={deal.stage?.id ?? ""} disabled={moving} className="h-7 text-[11px] pl-2"
-          onChange={(v) => { const s = stages.find((x) => x.id === v); if (s && s.id !== deal.stage?.id) onMove(deal.id, s.id, s.name, deal.stage?.name ?? null, deal.name ?? null, deal.stage_entered_at ? Math.floor((Date.now() - new Date(deal.stage_entered_at).getTime()) / 86400000) : null, deal.estimated_value ?? null) }}
+          onChange={(v) => { const s = stages.find((x) => x.id === v); if (s && s.id !== deal.stage?.id) onMove(deal.id, s.id, s.name, s.is_lost, deal.stage?.name ?? null, deal.name ?? null, deal.stage_entered_at ? Math.floor((new Date().getTime() - new Date(deal.stage_entered_at).getTime()) / 86400000) : null, deal.estimated_value ?? null) }}
           options={stages.map((s) => ({ value: s.id, label: (s.is_won ? "🏆 " : s.is_lost ? "✕ " : "") + s.name }))} /></div>
         {onReclassify && (
           <button type="button" onClick={onReclassify} disabled={moving} title="Mover para outro funil"

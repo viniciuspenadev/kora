@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation"
 import { X, Search, Loader2, User, MessageCircle, RotateCcw, ArrowLeft, Briefcase } from "lucide-react"
 import { searchContacts } from "@/lib/actions/chat"
 import { createDealFromBoard } from "@/lib/actions/deals"
+import { getPriceTablesForSelect } from "@/lib/actions/price-lists"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
+import { SimpleSelect } from "@/components/ui/select"
 
 interface ContactResult {
   id: string
@@ -33,9 +35,20 @@ export function AddDealDialog({ target, onClose }: { target: AddDealTarget | nul
   const [value, setValue]         = useState("")
   const [error, setError]         = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  // Multi-tabela (T2): quem abre o negócio escolhe a tabela; "" = automático
+  // (herda a do cliente, senão a padrão). Só aparece com 2+ tabelas.
+  const [priceTables, setPriceTables] = useState<{ id: string; name: string; is_default: boolean }[]>([])
+  const [priceTableId, setPriceTableId] = useState("")
 
   useEffect(() => {
-    if (target) { setSearch(""); setContacts([]); setPicked(null); setName(""); setValue(""); setError(null) }
+    if (target) { setSearch(""); setContacts([]); setPicked(null); setName(""); setValue(""); setError(null); setPriceTableId("") }
+  }, [target])
+
+  useEffect(() => {
+    if (!target) return
+    let alive = true
+    getPriceTablesForSelect().then((r) => { if (alive) setPriceTables(r) }).catch(() => {})
+    return () => { alive = false }
   }, [target])
 
   useEffect(() => {
@@ -59,6 +72,7 @@ export function AddDealDialog({ target, onClose }: { target: AddDealTarget | nul
       const r = await createDealFromBoard({
         contactId: picked.id, pipelineId: target.pipelineId, stageId: target.stageId,
         name: name.trim() || null, estimatedValue: cents ? Number(cents) : null,
+        priceTableId: priceTableId || null,
       })
       if ("error" in r) { setError(r.error); return }
       onClose()
@@ -135,6 +149,16 @@ export function AddDealDialog({ target, onClose }: { target: AddDealTarget | nul
                   className="w-full pl-8 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
               </div>
             </div>
+            {priceTables.length > 1 && (
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Tabela de preço</label>
+                <SimpleSelect value={priceTableId} onChange={setPriceTableId} className="h-8 text-xs"
+                  options={[
+                    { value: "", label: "Automática (a do cliente, senão a padrão)" },
+                    ...priceTables.map((p) => ({ value: p.id, label: `${p.name}${p.is_default ? " (padrão)" : ""}` })),
+                  ]} />
+              </div>
+            )}
             {error && <p className="text-[11px] text-red-600 bg-red-50 border border-red-100 px-3 py-2 rounded-lg">{error}</p>}
             <button type="button" disabled={pending} onClick={submit}
               className="w-full flex items-center justify-center gap-2 py-2.5 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">

@@ -168,7 +168,17 @@ interface CreateDealArgs {
   isWon?:          boolean
   isLost?:         boolean
   parentDealId?:   string | null   // handoff: negócio anterior da jornada (carimbo + vínculo)
+  /** Tabela de preço explícita (T2) — escolhida na abertura. Null = herda do cliente. */
+  priceTableId?:   string | null
   by:              string | null
+}
+
+/** Dias de validade da proposta — política do tenant (crm_policies), default 30. */
+async function proposalValidityDays(tenantId: string): Promise<number> {
+  const { data } = await supabaseAdmin.from("tenant_config")
+    .select("crm_policies").eq("tenant_id", tenantId).maybeSingle()
+  const d = Number((data?.crm_policies as Record<string, unknown> | null)?.proposal_validity_days)
+  return Number.isInteger(d) && d >= 1 && d <= 365 ? d : 30
 }
 
 /**
@@ -225,6 +235,36 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
     .single()
   if (error || !data) return { error: error?.message ?? "Falha ao criar negócio" }
   const dealId = (data as { id: string }).id
+
+  // Validade da proposta: criação + dias da política (default 30). Best-effort —
+  // update separado roda OK mesmo antes da migration N2 (só loga se a coluna faltar).
+  const validityDays = await proposalValidityDays(args.tenantId)
+  const expires = new Date(Date.now() + validityDays * 86_400_000).toISOString().slice(0, 10)
+  const { error: expErr } = await supabaseAdmin.from("tenant_deals")
+    .update({ proposal_expires_at: expires }).eq("id", dealId).eq("tenant_id", args.tenantId)
+  if (expErr) console.error("[crm.createDeal] proposal_expires_at (migration pendente?):", expErr.message)
+
+  // Tabela de preço (T2): escolha EXPLÍCITA na abertura vence; senão o negócio
+  // HERDA a tabela do cliente ("esse cliente é atacado"). Anti-IDOR + só tabela
+  // ATIVA (desativada não preça negócio novo — cai na padrão).
+  const activeTable = async (id: string): Promise<boolean> => {
+    const { data: tb } = await supabaseAdmin.from("price_tables")
+      .select("id").eq("id", id).eq("tenant_id", args.tenantId).eq("active", true).maybeSingle()
+    return !!tb
+  }
+  let dealTable: string | null = null
+  if (args.priceTableId && (await activeTable(args.priceTableId))) dealTable = args.priceTableId
+  if (!dealTable) {
+    const { data: ctPt } = await supabaseAdmin.from("chat_contacts")
+      .select("price_table_id").eq("id", args.contactId).eq("tenant_id", args.tenantId).maybeSingle()
+    const inherited = (ctPt as { price_table_id?: string | null } | null)?.price_table_id ?? null
+    if (inherited && (await activeTable(inherited))) dealTable = inherited
+  }
+  if (dealTable) {
+    const { error: ptErr } = await supabaseAdmin.from("tenant_deals")
+      .update({ price_table_id: dealTable }).eq("id", dealId).eq("tenant_id", args.tenantId)
+    if (ptErr) console.error("[crm.createDeal] price_table_id:", ptErr.message)
+  }
 
   if (args.conversationId) {
     // Liga o negócio à conversa (ativo) — SEM espelhar etapa. O funil de venda mora no

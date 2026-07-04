@@ -16,5 +16,8 @@ export default async function DealDetailPage({ params }: { params: Promise<{ id:
   const [deal, tasks] = await Promise.all([getDeal(id), listDealTasks(id)])
   if ("error" in deal) redirect("/negocios")
 
-  return <DealPageClient deal={deal} tasks={tasks} />
+  // Gestor vê custo/margem e edita a validade da proposta (o server revalida tudo).
+  const isManager = ["owner", "admin"].includes(session.user.role)
+
+  return <DealPageClient deal={deal} tasks={tasks} isManager={isManager} />
 }

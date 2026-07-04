@@ -1,40 +1,119 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import {
-  Plus, Pencil, Trash2, Loader2, X, Search, Package, Wrench,
-  Archive, ArchiveRestore, Repeat,
+  Loader2, X, Search, Package, Wrench, Repeat, History, Table2,
+  TrendingUp, TrendingDown, Minus,
 } from "lucide-react"
 import {
-  createCatalogItem, updateCatalogItem, setCatalogItemActive, deleteCatalogItem,
-  type CatalogItem, type CatalogType, type CatalogBilling, type CatalogItemInput,
+  getCatalogItemHistory,
+  type CatalogItem, type CatalogBilling, type CatalogItemEvent,
 } from "@/lib/actions/catalog"
-import { SimpleSelect } from "@/components/ui/select"
 import { EmptyState } from "@/components/ui/empty-state"
-import { useConfirm } from "@/components/ui/confirm-dialog"
 
 const BRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 })
-/** "1.234,56" | "1234,56" | "1234.56" → número (reais). */
-function parseMoney(s: string): number | null {
-  const t = s.trim()
-  if (!t) return null
-  const clean = t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t
-  const n = Number(clean)
-  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : NaN
-}
-const moneyToInput = (v: number | null) =>
-  v == null ? "" : v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
 const BILLING_LABEL: Record<CatalogBilling, string> = { one_time: "Avulso", monthly: "Mensal", yearly: "Anual" }
 const BILLING_SUFFIX: Record<CatalogBilling, string> = { one_time: "", monthly: "/mês", yearly: "/ano" }
 
+export type PriceTrend = { points: number[]; delta: number }
+
+// ── Histórico de alterações do item (auditoria) ────────
+const FIELD_PT: Record<string, string> = {
+  created: "Item criado", price: "Preço", cost: "Custo",
+  max_discount_pct: "Desconto máximo", valid_until: "Validade (legado)",
+}
+function fmtEventValue(field: string, v: string | null): string {
+  if (v == null || v === "") return "—"
+  if (field === "price" || field === "cost" || field === "created") return Number(v).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+  if (field === "max_discount_pct") return `${v}%`
+  if (field === "valid_until") return new Date(v + "T12:00:00").toLocaleDateString("pt-BR")
+  return v
+}
+
+function HistoryDialog({ item, onClose }: { item: CatalogItem; onClose: () => void }) {
+  const [events, setEvents] = useState<CatalogItemEvent[] | null>(null)
+  useEffect(() => {
+    let alive = true
+    getCatalogItemHistory(item.id).then((r) => { if (alive) setEvents(r) }).catch(() => { if (alive) setEvents([]) })
+    return () => { alive = false }
+  }, [item.id])
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2.5 px-5 py-4 border-b border-slate-100 shrink-0">
+          <span className="size-8 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><History className="size-4" /></span>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-slate-900 truncate">Histórico — {item.name}</h3>
+            <p className="text-[11px] text-slate-400">Toda alteração de preço, custo e teto fica registrada, por tabela.</p>
+          </div>
+          <button type="button" onClick={onClose} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100"><X className="size-4" /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {events === null && <p className="text-center py-8"><Loader2 className="size-4 animate-spin inline text-slate-300" /></p>}
+          {events?.length === 0 && <p className="text-xs text-slate-400 text-center py-8">Nenhuma alteração registrada ainda (o histórico passa a contar a partir de agora).</p>}
+          {!!events?.length && (
+            <div className="divide-y divide-slate-100">
+              {events.map((e) => (
+                <div key={e.id} className="py-2.5 flex items-start gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-slate-800">
+                      {FIELD_PT[e.field] ?? e.field}
+                      {e.table_label && <span className="ml-1.5 text-[10px] font-bold text-sky-600">· {e.table_label}</span>}
+                    </p>
+                    <p className="text-xs text-slate-500 tabular-nums mt-0.5">
+                      {e.field === "created"
+                        ? <>criado com preço <b className="text-slate-700">{fmtEventValue("price", e.to_value)}</b></>
+                        : <><span className="text-slate-400">{fmtEventValue(e.field, e.from_value)}</span> → <b className="text-primary-600">{fmtEventValue(e.field, e.to_value)}</b></>}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-[10px] text-slate-400 tabular-nums">{new Date(e.at).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
+                    {e.by_name && <p className="text-[10px] text-slate-500 font-medium">{e.by_name}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Mini-gráfico de tendência (série vem da auditoria) ──────────
+function Sparkline({ trend }: { trend: PriceTrend | undefined }) {
+  if (!trend || trend.points.length < 2) {
+    return <span className="inline-flex items-center gap-1 text-[10px] text-slate-300"><Minus className="size-3" /> estável</span>
+  }
+  const pts = trend.points
+  const min = Math.min(...pts), max = Math.max(...pts)
+  const range = max - min || 1
+  const w = 56, h = 16
+  const path = pts.map((v, i) => `${(i / (pts.length - 1)) * w},${h - 2 - ((v - min) / range) * (h - 4)}`).join(" ")
+  const up = trend.delta > 0
+  const pct = pts[pts.length - 2] ? Math.abs((trend.delta / pts[pts.length - 2]) * 100) : 0
+  return (
+    <span className="inline-flex items-center gap-1.5" title={`Últimos preços: ${pts.map((p) => BRL(p)).join(" → ")}`}>
+      <svg width={w} height={h} className="shrink-0">
+        <polyline points={path} fill="none" strokeWidth={1.5} className={trend.delta === 0 ? "stroke-slate-300" : up ? "stroke-emerald-500" : "stroke-red-400"} />
+      </svg>
+      {trend.delta === 0
+        ? <Minus className="size-3 text-slate-300" />
+        : up
+          ? <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-emerald-600"><TrendingUp className="size-3" />{pct >= 0.1 ? `+${pct.toFixed(pct >= 10 ? 0 : 1)}%` : ""}</span>
+          : <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-red-500"><TrendingDown className="size-3" />{pct >= 0.1 ? `−${pct.toFixed(pct >= 10 ? 0 : 1)}%` : ""}</span>}
+    </span>
+  )
+}
+
 type Tab = "all" | "product" | "service"
 
-export function CatalogClient({ items }: { items: CatalogItem[] }) {
+export function CatalogClient({ items, trends }: { items: CatalogItem[]; trends: Record<string, PriceTrend> }) {
   const [tab, setTab]         = useState<Tab>("all")
   const [search, setSearch]   = useState("")
-  const [editing, setEditing] = useState<CatalogItem | null>(null)
-  const [creating, setCreating] = useState(false)
+  const [historyOf, setHistoryOf] = useState<CatalogItem | null>(null)
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -45,18 +124,11 @@ export function CatalogClient({ items }: { items: CatalogItem[] }) {
     })
   }, [items, tab, search])
 
-  const categories = useMemo(
-    () => Array.from(new Set(items.map((i) => i.category).filter(Boolean))) as string[],
-    [items],
-  )
-
   const counts = useMemo(() => ({
     all:     items.length,
     product: items.filter((i) => i.type === "product").length,
     service: items.filter((i) => i.type === "service").length,
   }), [items])
-
-  const newLabel = tab === "service" ? "Novo serviço" : tab === "product" ? "Novo produto" : "Novo item"
 
   return (
     <div className="space-y-4">
@@ -77,23 +149,23 @@ export function CatalogClient({ items }: { items: CatalogItem[] }) {
             </button>
           )}
         </div>
-        <button type="button" onClick={() => setCreating(true)}
-          className="ml-auto inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors shrink-0">
-          <Plus className="size-3.5" /> {newLabel}
-        </button>
+        <Link href="/configuracoes/catalogo/tabelas"
+          className="ml-auto inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors shrink-0">
+          <Table2 className="size-3.5" /> Gerenciar nas tabelas
+        </Link>
       </div>
 
-      {/* lista */}
+      {/* vitrine — leitura apenas; criar/editar/preço mora nas tabelas */}
       {filtered.length === 0 ? (
         <EmptyState
           icon={tab === "service" ? Wrench : Package}
-          title={search ? "Nada encontrado" : tab === "service" ? "Nenhum serviço cadastrado" : tab === "product" ? "Nenhum produto cadastrado" : "Seu catálogo está vazio"}
-          description={search ? "Tente outro termo de busca." : "Itens do catálogo compõem o valor dos negócios — com preço avulso ou recorrente (mensal/anual)."}
+          title={search ? "Nada encontrado" : "Seu catálogo está vazio"}
+          description={search ? "Tente outro termo de busca." : "Cadastre produtos e serviços na tabela de preço — o catálogo mostra tudo aqui, com histórico e tendência."}
           action={!search ? (
-            <button type="button" onClick={() => setCreating(true)}
+            <Link href="/configuracoes/catalogo/tabelas"
               className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
-              <Plus className="size-3.5" /> {newLabel}
-            </button>
+              <Table2 className="size-3.5" /> Abrir tabelas de preço
+            </Link>
           ) : undefined}
         />
       ) : (
@@ -106,28 +178,26 @@ export function CatalogClient({ items }: { items: CatalogItem[] }) {
                   <th className="text-left font-medium py-2.5 px-3 hidden sm:table-cell">Identificador</th>
                   <th className="text-left font-medium py-2.5 px-3">Cobrança</th>
                   <th className="text-right font-medium py-2.5 px-3">Preço</th>
+                  <th className="text-left font-medium py-2.5 px-3 hidden md:table-cell">Tendência</th>
+                  <th className="text-left font-medium py-2.5 px-3 hidden md:table-cell">Desc. máx</th>
                   <th className="text-left font-medium py-2.5 px-3 hidden lg:table-cell">Uso</th>
-                  <th className="text-right font-medium py-2.5 px-4">Ações</th>
+                  <th className="text-right font-medium py-2.5 px-4">Histórico</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((item) => (
-                  <Row key={item.id} item={item} onEdit={() => setEditing(item)} />
+                  <Row key={item.id} item={item} trend={trends[item.id]} onHistory={() => setHistoryOf(item)} />
                 ))}
               </tbody>
             </table>
           </div>
+          <p className="text-[11px] text-slate-400 px-4 py-2.5 border-t border-slate-100 bg-slate-50/40">
+            O catálogo é a <b className="text-slate-500">vitrine</b> — pra criar, editar preço ou arquivar, use <Link href="/configuracoes/catalogo/tabelas" className="text-primary-600 font-semibold hover:underline">as tabelas de preço</Link>. Tudo auditado.
+          </p>
         </div>
       )}
 
-      {(creating || editing) && (
-        <ItemDialog
-          item={editing}
-          defaultType={tab === "service" ? "service" : "product"}
-          categories={categories}
-          onClose={() => { setCreating(false); setEditing(null) }}
-        />
-      )}
+      {historyOf && <HistoryDialog item={historyOf} onClose={() => setHistoryOf(null)} />}
     </div>
   )
 }
@@ -142,38 +212,22 @@ function TabBtn({ active, onClick, label, count }: { active: boolean; onClick: (
   )
 }
 
-function Row({ item, onEdit }: { item: CatalogItem; onEdit: () => void }) {
-  const [pending, startTransition] = useTransition()
-  const { confirm, confirmDialog } = useConfirm()
+function Row({ item, trend, onHistory }: { item: CatalogItem; trend: PriceTrend | undefined; onHistory: () => void }) {
   const TypeIcon  = item.type === "service" ? Wrench : Package
   const recurring = item.billing !== "one_time"
-
-  function toggleActive() {
-    startTransition(async () => {
-      const r = await setCatalogItemActive(item.id, !item.active)
-      if ("error" in r) alert(r.error)
-    })
-  }
-
-  async function handleDelete() {
-    if (!(await confirm({
-      title: `Excluir "${item.name}"?`,
-      body: "O item nunca entrou num negócio, então pode ser excluído de vez. Esta ação não pode ser desfeita.",
-      confirmLabel: "Excluir",
-    }))) return
-    startTransition(async () => {
-      const r = await deleteCatalogItem(item.id)
-      if ("error" in r) alert(r.error)
-    })
-  }
 
   return (
     <tr className={`border-b border-slate-100 last:border-0 transition-colors ${item.active ? "hover:bg-slate-50/50" : "bg-slate-50/40 opacity-60"}`}>
       <td className="py-2.5 px-4">
         <div className="flex items-center gap-2.5 min-w-0">
-          <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${item.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
-            <TypeIcon className="size-3.5" />
-          </span>
+          {item.image_path ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img src={`/api/catalog-image/${item.id}`} alt="" className="size-8 rounded-lg object-cover shrink-0 ring-1 ring-slate-200" />
+          ) : (
+            <span className={`size-8 rounded-lg grid place-items-center shrink-0 ${item.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+              <TypeIcon className="size-3.5" />
+            </span>
+          )}
           <div className="min-w-0">
             <p className="text-[13px] font-semibold text-slate-900 truncate leading-tight">
               {item.name}
@@ -196,178 +250,25 @@ function Row({ item, onEdit }: { item: CatalogItem; onEdit: () => void }) {
         <span className="font-semibold text-slate-800 tabular-nums">{BRL(item.price)}</span>
         {BILLING_SUFFIX[item.billing] && <span className="text-[10px] text-slate-400">{BILLING_SUFFIX[item.billing]}</span>}
       </td>
+      <td className="py-2.5 px-3 hidden md:table-cell"><Sparkline trend={trend} /></td>
+      <td className="py-2.5 px-3 hidden md:table-cell">
+        {item.max_discount_pct > 0
+          ? <span className="text-[11px] font-semibold text-slate-600 tabular-nums">até {item.max_discount_pct}%</span>
+          : <span className="text-[11px] text-slate-300">sem desconto</span>}
+      </td>
       <td className="py-2.5 px-3 hidden lg:table-cell">
         {item.in_use > 0
           ? <span className="text-[11px] text-slate-500 tabular-nums">{item.in_use} negócio{item.in_use !== 1 ? "s" : ""}</span>
           : <span className="text-[11px] text-slate-300">—</span>}
       </td>
       <td className="py-2.5 px-4">
-        <div className="flex items-center justify-end gap-1">
-          <button type="button" onClick={onEdit} title="Editar"
+        <div className="flex items-center justify-end">
+          <button type="button" onClick={onHistory} title="Histórico de alterações (preço, custo, teto — por tabela)"
             className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-colors">
-            <Pencil className="size-3.5" />
+            <History className="size-3.5" />
           </button>
-          <button type="button" onClick={toggleActive} disabled={pending}
-            title={item.active ? "Arquivar (sai das opções, histórico preservado)" : "Restaurar"}
-            className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-colors disabled:opacity-50">
-            {pending ? <Loader2 className="size-3.5 animate-spin" /> : item.active ? <Archive className="size-3.5" /> : <ArchiveRestore className="size-3.5" />}
-          </button>
-          {item.in_use === 0 && (
-            <button type="button" onClick={handleDelete} disabled={pending} title="Excluir"
-              className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50">
-              <Trash2 className="size-3.5" />
-            </button>
-          )}
         </div>
-        {confirmDialog}
       </td>
     </tr>
-  )
-}
-
-// ── Dialog criar/editar ──────────────────────────────────────────
-function ItemDialog({ item, defaultType, categories, onClose }: {
-  item: CatalogItem | null
-  defaultType: CatalogType
-  categories: string[]
-  onClose: () => void
-}) {
-  const [type, setType]         = useState<CatalogType>(item?.type ?? defaultType)
-  const [name, setName]         = useState(item?.name ?? "")
-  const [sku, setSku]           = useState(item?.sku ?? "")
-  const [category, setCategory] = useState(item?.category ?? "")
-  const [price, setPrice]       = useState(moneyToInput(item?.price ?? null))
-  const [cost, setCost]         = useState(moneyToInput(item?.cost ?? null))
-  const [billing, setBilling]   = useState<CatalogBilling>(item?.billing ?? "one_time")
-  const [description, setDescription] = useState(item?.description ?? "")
-  const [error, setError]       = useState<string | null>(null)
-  const [pending, startTransition] = useTransition()
-
-  function handleSave() {
-    setError(null)
-    if (!name.trim()) { setError("Nome é obrigatório"); return }
-    const p = parseMoney(price)
-    if (p == null || Number.isNaN(p)) { setError("Preço inválido — use por exemplo 1.500,00"); return }
-    const c = cost.trim() ? parseMoney(cost) : null
-    if (c != null && Number.isNaN(c)) { setError("Custo inválido"); return }
-
-    const input: CatalogItemInput = {
-      type, name, sku: sku || null, category: category || null,
-      description: description || null, price: p, cost: c, billing,
-    }
-    startTransition(async () => {
-      const r = item ? await updateCatalogItem(item.id, input) : await createCatalogItem(input)
-      if ("error" in r) { setError(r.error); return }
-      onClose()
-    })
-  }
-
-  const money = "w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
-  const field = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <h3 className="text-sm font-semibold text-slate-900">
-            {item ? "Editar item" : type === "service" ? "Novo serviço" : "Novo produto"}
-          </h3>
-          <button type="button" onClick={onClose} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100">
-            <X className="size-4" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          {/* tipo */}
-          <div className="inline-flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg">
-            {(["product", "service"] as const).map((t) => (
-              <button key={t} type="button" onClick={() => setType(t)}
-                className={`inline-flex items-center gap-1.5 h-8 px-3.5 text-xs font-semibold rounded-md transition-colors ${type === t ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-                {t === "product" ? <Package className="size-3.5" /> : <Wrench className="size-3.5" />}
-                {t === "product" ? "Produto" : "Serviço"}
-              </button>
-            ))}
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Nome <span className="text-red-500">*</span></label>
-            <input type="text" value={name} onChange={(e) => setName(e.target.value)} autoFocus maxLength={80}
-              placeholder={type === "service" ? "Ex: Assessoria de Tráfego — Plano Gold" : "Ex: Pacote Chatbot Bronze"} className={field} />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">Identificador</label>
-              <input type="text" value={sku} onChange={(e) => setSku(e.target.value)} maxLength={30}
-                placeholder="Ex: TGOLD" className={`${field} font-mono uppercase placeholder:normal-case placeholder:font-sans`} />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">Categoria</label>
-              <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} maxLength={40}
-                list="catalog-categories" placeholder="Ex: Assessoria" className={field} />
-              <datalist id="catalog-categories">
-                {categories.map((c) => <option key={c} value={c} />)}
-              </datalist>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">Preço <span className="text-red-500">*</span></label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>
-                <input type="text" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ""))}
-                  placeholder="0,00" className={money} />
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">Cobrança</label>
-              <SimpleSelect value={billing} onChange={(v) => setBilling(v as CatalogBilling)} options={[
-                { value: "one_time", label: "Avulso (uma vez)" },
-                { value: "monthly",  label: "Mensal (recorrente)" },
-                { value: "yearly",   label: "Anual (recorrente)" },
-              ]} />
-            </div>
-          </div>
-
-          {billing !== "one_time" && (
-            <p className="flex items-start gap-1.5 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
-              <Repeat className="size-3 shrink-0 mt-0.5" />
-              Item recorrente: no negócio, entra como {billing === "monthly" ? "mensalidade" : "anuidade"} × prazo do contrato.
-            </p>
-          )}
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Custo <span className="text-slate-300 font-normal">(opcional)</span></label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>
-              <input type="text" inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value.replace(/[^\d.,]/g, ""))}
-                placeholder="0,00" className={money} />
-            </div>
-            <p className="text-[10px] text-slate-400 mt-1">Usado no cálculo de margem — nunca aparece pro cliente.</p>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Descrição <span className="text-slate-300 font-normal">(opcional)</span></label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} maxLength={200}
-              placeholder="O que está incluso, condições, observações internas" className={`${field} resize-none`} />
-          </div>
-
-          {error && <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
-        </div>
-
-        <div className="flex items-center justify-end gap-2 px-5 py-3 bg-slate-50 border-t border-slate-100">
-          <button type="button" onClick={onClose} disabled={pending}
-            className="h-9 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50">
-            Cancelar
-          </button>
-          <button type="button" onClick={handleSave} disabled={pending}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-50">
-            {pending && <Loader2 className="size-3.5 animate-spin" />}
-            {item ? "Salvar" : "Criar item"}
-          </button>
-        </div>
-      </div>
-    </div>
   )
 }

@@ -78,7 +78,11 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
   }
 
   const L = LENS[lens]
-  const { deals, stages } = data
+  const { stages } = data
+  // Cancelado = anulado: fora de TODAS as lentes e métricas (não é aberto nem perdido).
+  // Fica só o rastro no chip "N cancelados no período".
+  const deals = useMemo(() => data.deals.filter((d) => d.status !== "canceled"), [data.deals])
+  const canceledCount = data.deals.length - deals.length
 
   // Conjunto da lente (KPIs = sempre sobre TODOS os criados no período).
   const set = useMemo(() => {
@@ -230,6 +234,11 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
           <KpiLens label="Total perdidos" k={kpi.lost} active={lens === "lost"} lens="lost" icon={TrendingDown} onClick={() => setLens("lost")} />
           <KpiLens label="Total em aberto" k={kpi.open} active={lens === "open"} lens="open" icon={Activity}    onClick={() => setLens("open")} />
         </div>
+        {canceledCount > 0 && (
+          <p className="text-[11px] text-slate-400 -mt-2">
+            {canceledCount} negócio{canceledCount !== 1 ? "s" : ""} cancelado{canceledCount !== 1 ? "s" : ""} no período — anulados não entram em nenhuma métrica.
+          </p>
+        )}
 
         {/* Funil + donut atendente */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 items-stretch">

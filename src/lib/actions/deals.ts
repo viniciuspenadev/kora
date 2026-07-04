@@ -6,6 +6,7 @@ import { requireModule, hasModule } from "@/lib/modules"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, openDealOf, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
 import { computeDealValue } from "@/lib/crm/value"
+import { resolveDealPricing } from "@/lib/crm/pricing"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM Negócios — Server actions (Fase 1)
@@ -216,6 +217,8 @@ export async function getDealPipelines(): Promise<DealPipeline[]> {
  */
 export async function createDealFromBoard(input: {
   contactId: string; pipelineId: string; stageId: string; name?: string | null; estimatedValue?: number | null
+  /** Tabela de preço explícita (T2). Undefined/null = herda do cliente. */
+  priceTableId?: string | null
 }): Promise<{ id: string } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
@@ -234,6 +237,7 @@ export async function createDealFromBoard(input: {
     tenantId: t, contactId: input.contactId, conversationId: (conv as { id: string } | null)?.id ?? null,
     pipelineId: input.pipelineId, stageId: input.stageId,
     name: input.name?.trim() || null, estimatedValue: input.estimatedValue ?? null, by: session.user.id,
+    priceTableId: input.priceTableId ?? null,
   })
 }
 
@@ -449,10 +453,34 @@ export interface DealDetail {
   items: DealItemView[]
   /** Motivos de perda GOVERNADOS (catálogo do tenant; fallback = lista padrão). */
   lostReasons: { label: string; requireNote: boolean }[]
+  /** Termos da proposta (N2). Null = não definidos / migration pendente. */
+  paymentMethod: string | null
+  installments: number | null
+  proposalExpiresAt: string | null
+  /** Tabela de preço do negócio (T2). Null = tabela padrão. */
+  priceTable: { id: string; name: string } | null
+  /** Tabelas disponíveis pro switcher (>1 = multi-tabela em uso; senão UI esconde). */
+  priceTables: { id: string; name: string; is_default: boolean; active: boolean }[]
 }
 
 /** Fallback pré-catálogo — mesma lista que era hardcoded na página do negócio. */
 const FALLBACK_LOST_REASONS = ["Preço", "Sem resposta", "Comprou concorrente", "Fora do perfil", "Sem orçamento", "Outro"]
+
+/**
+ * Motivos de perda GOVERNADOS pro fluxo unificado (board/sidebar/página) —
+ * qualquer membro com CRM (vendedor também perde negócio). Fallback = padrão.
+ */
+export async function getLostReasons(): Promise<{ label: string; requireNote: boolean }[]> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return []
+  try { await requireModule("crm") } catch { return [] }
+  const { data } = await supabaseAdmin.from("deal_outcome_reasons")
+    .select("label, require_note").eq("tenant_id", session.user.tenantId).eq("kind", "lost").eq("active", true)
+    .order("created_at", { ascending: false })
+  return data?.length
+    ? (data as { label: string; require_note: boolean }[]).map((r) => ({ label: r.label, requireNote: r.require_note }))
+    : FALLBACK_LOST_REASONS.map((label) => ({ label, requireNote: false }))
+}
 
 /**
  * Política do motivo de perda (fail-closed no SERVER — UI é manipulável): se o
@@ -460,7 +488,9 @@ const FALLBACK_LOST_REASONS = ["Preço", "Sem resposta", "Comprou concorrente", 
  * Motivo fora do catálogo / tabela ausente (migration pendente) = sem política (legado).
  */
 async function enforceLostReasonPolicy(tenantId: string, reason: string | null, note: string | null | undefined): Promise<string | null> {
-  if (!reason?.trim()) return null
+  // Perder SEM motivo não passa (fail-closed) — senão o donut de motivos fica cego.
+  // Todo caminho de UI (página, board, sidebar) coleta o motivo pela lista governada.
+  if (!reason?.trim()) return "Escolha o motivo da perda antes de confirmar."
   const { data } = await supabaseAdmin.from("deal_outcome_reasons")
     .select("require_note").eq("tenant_id", tenantId).eq("kind", "lost").eq("active", true)
     .ilike("label", reason.trim()).maybeSingle()
@@ -470,7 +500,8 @@ async function enforceLostReasonPolicy(tenantId: string, reason: string | null, 
   return null
 }
 
-/** Linha de item do negócio — SNAPSHOT (nome/preço congelados na adição). */
+/** Linha de item do negócio — SNAPSHOT (nome/preço/teto congelados na adição).
+ *  `cost` NÃO sai por aqui (interno — margem de gestor é payload à parte). */
 export interface DealItemView {
   id:          string
   name:        string
@@ -480,6 +511,15 @@ export interface DealItemView {
   quantity:    number
   discount:    number
   term_months: number | null
+  category:    string | null
+  /** Preço de TABELA no dia (piso do desconto). */
+  list_price:  number | null
+  /** Teto de desconto snapshotado (0–100). */
+  max_discount_pct: number
+  /** Rótulo da tabela que preçou a linha (snapshot T2). Null = padrão/pré-T2. */
+  price_table_label?: string | null
+  /** Custo snapshotado — SÓ presente pra owner/admin (margem); vendedor recebe undefined. */
+  cost?: number | null
 }
 
 export async function getDeal(dealId: string): Promise<DealDetail | { error: string }> {
@@ -512,8 +552,23 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       : Promise.resolve({ data: [] as unknown[] }),
     supabaseAdmin.from("tenant_tasks").select("id, title, due_at").eq("tenant_id", t).eq("deal_id", dealId).eq("status", "pending").order("due_at", { ascending: true, nullsFirst: false }).limit(1),
     // Itens do negócio — gracioso se a migration ainda não foi aplicada (data null → []).
-    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, discount, term_months").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
+    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, discount, term_months, category, list_price, max_discount_pct, cost").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
   ])
+  // Termos da proposta (N2) — query separada e graciosa (migration pendente não derruba a página).
+  const { data: termRow } = await supabaseAdmin.from("tenant_deals")
+    .select("payment_method, installments, proposal_expires_at").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  const termsD = (termRow ?? {}) as { payment_method?: string | null; installments?: number | null; proposal_expires_at?: string | null }
+  // Tabela de preço do negócio + tabelas do tenant (T2) — separadas e graciosas.
+  const [{ data: ptRow }, { data: ptAll }, { data: lineLabels }] = await Promise.all([
+    supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", t).maybeSingle(),
+    supabaseAdmin.from("price_tables").select("id, name, is_default, active").eq("tenant_id", t).order("is_default", { ascending: false }).order("name"),
+    supabaseAdmin.from("tenant_deal_items").select("id, price_table_label").eq("tenant_id", t).eq("deal_id", dealId),
+  ])
+  const priceTables = ((ptAll ?? []) as { id: string; name: string; is_default: boolean; active: boolean }[])
+  const dealTableId = (ptRow as { price_table_id?: string | null } | null)?.price_table_id ?? null
+  const priceTable = dealTableId ? (priceTables.find((p) => p.id === dealTableId) ?? null) : null
+  const labelByLine = new Map(((lineLabels ?? []) as { id: string; price_table_label: string | null }[]).map((l) => [l.id, l.price_table_label]))
+  const isManager = ["owner", "admin"].includes(session.user.role)
   // Motivos de perda governados (fallback = lista padrão; gracioso sem migration).
   const { data: reasonRows } = await supabaseAdmin.from("deal_outcome_reasons")
     .select("label, require_note").eq("tenant_id", t).eq("kind", "lost").eq("active", true)
@@ -593,13 +648,27 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       type: i.type as DealItemView["type"], billing: i.billing as DealItemView["billing"],
       unit_price: Number(i.unit_price ?? 0), quantity: Number(i.quantity ?? 1),
       discount: Number(i.discount ?? 0), term_months: (i.term_months as number | null) ?? null,
+      category: (i.category as string | null) ?? null,
+      list_price: i.list_price != null ? Number(i.list_price) : null,
+      max_discount_pct: Number(i.max_discount_pct ?? 0),
+      price_table_label: labelByLine.get(i.id as string) ?? null,
+      // Custo é INTERNO: só gestor recebe (margem). Vendedor: campo ausente.
+      ...(isManager ? { cost: i.cost != null ? Number(i.cost) : null } : {}),
     })),
     lostReasons,
+    paymentMethod: termsD.payment_method ?? null,
+    installments: termsD.installments ?? null,
+    proposalExpiresAt: termsD.proposal_expires_at ?? null,
+    priceTable: priceTable ? { id: priceTable.id, name: priceTable.name } : null,
+    priceTables,
   }
 }
 
-/** Edita nome, valor e/ou previsão do negócio. Gated + visibilidade herdada. */
-export async function updateDeal(dealId: string, fields: { name?: string; estimatedValue?: number | null; expectedClose?: string | null }, opts?: { silentCard?: boolean }): Promise<{ ok: true } | { error: string }> {
+/** Formas de pagamento fixas do v1 (configurável por tenant = futuro, nas Políticas). */
+const PAYMENT_METHODS = ["Pix", "Cartão de crédito", "Cartão de débito", "Boleto", "Dinheiro", "Transferência", "Outro"]
+
+/** Edita nome, valor, previsão e/ou termos da proposta. Gated + visibilidade herdada. */
+export async function updateDeal(dealId: string, fields: { name?: string; estimatedValue?: number | null; expectedClose?: string | null; paymentMethod?: string | null; installments?: number | null; proposalExpiresAt?: string | null; priceTableId?: string | null }, opts?: { silentCard?: boolean }): Promise<{ ok: true } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
@@ -608,6 +677,9 @@ export async function updateDeal(dealId: string, fields: { name?: string; estima
   if (!deal) return { error: "Negócio não encontrado" }
   const d = deal as { contact_id: string | null; name: string | null; estimated_value: number | null; expected_close_date: string | null }
   if (!(await canAccessDeal(t, d.contact_id))) return { error: "Sem acesso" }
+  // Termos da proposta lidos à parte (colunas da N2 — gracioso se migration pendente).
+  const { data: terms } = await supabaseAdmin.from("tenant_deals").select("payment_method, installments, proposal_expires_at").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  const dt = (terms ?? {}) as { payment_method?: string | null; installments?: number | null; proposal_expires_at?: string | null }
 
   // Detecta o que MUDOU de fato (pra auditar antes→depois e não gravar evento à toa).
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -630,6 +702,53 @@ export async function updateDeal(dealId: string, fields: { name?: string; estima
       patch.expected_close_date = next
       const fmtD = (v: string | null) => v ? new Date(v + "T12:00:00").toLocaleDateString("pt-BR") : "—"
       changes.push({ label: "Previsão", from: fmtD(d.expected_close_date), to: fmtD(next) })
+    }
+  }
+  if (fields.paymentMethod !== undefined) {
+    const next = fields.paymentMethod || null
+    if (next != null && !PAYMENT_METHODS.includes(next)) return { error: "Forma de pagamento inválida" }
+    if (next !== (dt.payment_method ?? null)) {
+      patch.payment_method = next
+      changes.push({ label: "Pagamento", from: dt.payment_method ?? "—", to: next ?? "—" })
+    }
+  }
+  if (fields.installments !== undefined) {
+    const next = fields.installments ?? null
+    if (next != null && (!Number.isInteger(next) || next < 1 || next > 60)) return { error: "Parcelamento inválido (1 a 60)" }
+    if (next !== (dt.installments ?? null)) {
+      patch.installments = next
+      changes.push({ label: "Parcelas", from: dt.installments != null ? `${dt.installments}×` : "—", to: next != null ? `${next}×` : "—" })
+    }
+  }
+  if (fields.proposalExpiresAt !== undefined) {
+    // Validade é governança: só owner/admin altera (vendedor herda o default). Spec §5.
+    if (!["owner", "admin"].includes(session.user.role)) return { error: "Só gestores alteram a validade da proposta" }
+    const next = fields.proposalExpiresAt || null
+    if (next !== (dt.proposal_expires_at ?? null)) {
+      patch.proposal_expires_at = next
+      const fmtD = (v: string | null) => v ? new Date(v + "T12:00:00").toLocaleDateString("pt-BR") : "—"
+      changes.push({ label: "Validade da proposta", from: fmtD(dt.proposal_expires_at ?? null), to: fmtD(next) })
+    }
+  }
+  if (fields.priceTableId !== undefined) {
+    // Troca de tabela (T2): itens JÁ lançados não re-preçam (snapshot é lei);
+    // só itens novos usam a tabela nova. Anti-IDOR: tabela tem que ser DO tenant.
+    const { data: curRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+    const cur = (curRow as { price_table_id?: string | null } | null)?.price_table_id ?? null
+    const next = fields.priceTableId || null
+    if (next !== cur) {
+      const nameOf = async (id: string | null): Promise<string> => {
+        if (!id) return "Padrão"
+        const { data: tb } = await supabaseAdmin.from("price_tables").select("name").eq("id", id).eq("tenant_id", t).maybeSingle()
+        return (tb as { name: string } | null)?.name ?? "?"
+      }
+      if (next) {
+        // Anti-IDOR + só tabela ATIVA (desativada não recebe negócio).
+        const { data: tb } = await supabaseAdmin.from("price_tables").select("id").eq("id", next).eq("tenant_id", t).eq("active", true).maybeSingle()
+        if (!tb) return { error: "Tabela de preço inválida ou desativada" }
+      }
+      patch.price_table_id = next
+      changes.push({ label: "Tabela de preço", from: await nameOf(cur), to: await nameOf(next) })
     }
   }
   if (changes.length === 0) return { ok: true }   // nada mudou de fato
@@ -686,20 +805,56 @@ async function recomputeDealValueFromItems(t: string, dealId: string, by: string
   })
 }
 
-/** Catálogo ativo pro picker de itens (qualquer membro com acesso ao negócio compõe valor). */
-export interface CatalogPickerItem { id: string; name: string; sku: string | null; category: string | null; price: number; billing: "one_time" | "monthly" | "yearly"; type: "product" | "service" }
-export async function getCatalogForPicker(): Promise<CatalogPickerItem[]> {
+/** Catálogo ativo pro picker de itens (qualquer membro com acesso ao negócio compõe valor).
+ *  NUNCA envia `cost` — custo é informação interna (só gestor, no catálogo).
+ *  T2: com `dealId`, os preços/tetos vêm da TABELA do negócio (Atacado…); sem
+ *  linha na tabela, o item cai no preço da padrão (cache do catálogo). */
+export interface CatalogPickerItem { id: string; name: string; sku: string | null; category: string | null; price: number; billing: "one_time" | "monthly" | "yearly"; type: "product" | "service"; max_discount_pct: number; image_path: string | null; table_label: string | null }
+export async function getCatalogForPicker(dealId?: string): Promise<CatalogPickerItem[] | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return []
   try { await requireModule("crm") } catch { return [] }
+  const t = session.user.tenantId
   const { data } = await supabaseAdmin.from("catalog_items")
-    .select("id, name, sku, category, price, billing, type")
-    .eq("tenant_id", session.user.tenantId).eq("active", true).order("name")
-  return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
-    id: r.id as string, name: r.name as string, sku: (r.sku as string | null) ?? null,
-    category: (r.category as string | null) ?? null, price: Number(r.price ?? 0),
-    billing: r.billing as CatalogPickerItem["billing"], type: r.type as CatalogPickerItem["type"],
-  }))
+    .select("id, name, sku, category, price, billing, type, max_discount_pct, image_path")
+    .eq("tenant_id", t).eq("active", true).order("name")
+
+  // Tabela do negócio (query separada e graciosa — pré-migration cai na padrão).
+  let overlay: Awaited<ReturnType<typeof resolveDealPricing>> = { usesDefault: true, table: null }
+  if (dealId) {
+    const { data: dRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+    overlay = await resolveDealPricing(t, (dRow as { price_table_id?: string | null } | null)?.price_table_id ?? null)
+  }
+  // Fail-closed: tabela do negócio sem grade → NÃO mostrar preço da padrão.
+  if ("error" in overlay) return { error: overlay.error }
+  const nonDefault = !overlay.usesDefault ? overlay : null
+
+  return ((data ?? []) as Record<string, unknown>[]).map((r) => {
+    const row = nonDefault?.rows.get(r.id as string) ?? null
+    return {
+      id: r.id as string, name: r.name as string, sku: (r.sku as string | null) ?? null,
+      category: (r.category as string | null) ?? null,
+      price: row ? row.price : Number(r.price ?? 0),
+      billing: r.billing as CatalogPickerItem["billing"], type: r.type as CatalogPickerItem["type"],
+      max_discount_pct: row ? row.max_discount_pct : Number(r.max_discount_pct ?? 0),
+      image_path: (r.image_path as string | null) ?? null,
+      table_label: row ? nonDefault!.table.name : null,
+    }
+  })
+}
+
+/**
+ * Piso da linha (anti-burla): unitário negociado × qtd − desconto NUNCA abaixo de
+ * `list_price × qtd × (1 − teto)`. O teto/tabela são SNAPSHOTS do dia da adição.
+ * Vale pra desconto E pra preço negociado (senão baixar o unitário burlaria o teto).
+ */
+function lineFloorError(listPrice: number, maxPct: number, unitPrice: number, qty: number, discount: number): string | null {
+  const floor = listPrice * qty * (1 - maxPct / 100)
+  const line  = unitPrice * qty - discount
+  if (line >= floor - 0.01) return null
+  return maxPct > 0
+    ? `Desconto acima do permitido — este item aceita no máximo ${maxPct}% (valor mínimo da linha: ${floor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}).`
+    : "Este item não aceita desconto (teto 0% no catálogo)."
 }
 
 export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null }): Promise<{ ok: true } | { error: string }> {
@@ -717,21 +872,45 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
 
   // Item do catálogo (do tenant, ativo) → SNAPSHOT congelado na linha.
   const { data: cat } = await supabaseAdmin.from("catalog_items")
-    .select("id, name, type, billing, price")
+    .select("id, name, type, billing, price, category, cost, max_discount_pct")
     .eq("id", input.catalogItemId).eq("tenant_id", gate.t).eq("active", true).maybeSingle()
   if (!cat) return { error: "Item do catálogo não encontrado" }
-  const ci = cat as { id: string; name: string; type: string; billing: string; price: number }
+  const ci = cat as { id: string; name: string; type: string; billing: string; price: number; category: string | null; cost: number | null; max_discount_pct: number | null }
+
+  // T2: precificação pela TABELA do negócio (query separada e graciosa; padrão =
+  // cache do catálogo). Tabela sem grade → bloqueia (fail-closed).
+  const { data: dRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", gate.t).maybeSingle()
+  const pricing = await resolveDealPricing(gate.t, (dRow as { price_table_id?: string | null } | null)?.price_table_id ?? null)
+  if ("error" in pricing) return { error: pricing.error }
+  const tableRow = !pricing.usesDefault ? (pricing.rows.get(ci.id) ?? null) : null
+
+  // Teto de desconto (snapshot do dia) — piso vale pro desconto E pro preço negociado.
+  const listPrice = tableRow ? tableRow.price : Number(ci.price ?? 0)
+  const maxPct    = tableRow ? tableRow.max_discount_pct : Number(ci.max_discount_pct ?? 0)
+  const lineCost  = tableRow ? tableRow.cost : ci.cost
+  const floorErr  = lineFloorError(listPrice, maxPct, unitPrice ?? listPrice, qty, discount)
+  if (floorErr) return { error: floorErr }
 
   const { count } = await supabaseAdmin.from("tenant_deal_items")
     .select("id", { count: "exact", head: true }).eq("tenant_id", gate.t).eq("deal_id", dealId)
-  const { error } = await supabaseAdmin.from("tenant_deal_items").insert({
+  const { data: inserted, error } = await supabaseAdmin.from("tenant_deal_items").insert({
     tenant_id: gate.t, deal_id: dealId, catalog_item_id: ci.id,
     name: ci.name, type: ci.type, billing: ci.billing,
-    unit_price: unitPrice ?? Number(ci.price ?? 0), quantity: qty, discount,
+    unit_price: unitPrice ?? listPrice, quantity: qty, discount,
     term_months: ci.billing === "one_time" ? null : term,
+    list_price: listPrice, category: ci.category, cost: lineCost,
+    max_discount_pct: maxPct,
     position: count ?? 0,
-  })
+  }).select("id").single()
   if (error) return { error: error.message }
+
+  // Proveniência (T2): versão exata + rótulo da tabela — best-effort (pré-migration só loga).
+  if (tableRow && !pricing.usesDefault && inserted) {
+    const { error: provErr } = await supabaseAdmin.from("tenant_deal_items")
+      .update({ price_list_id: pricing.version.id, price_table_label: pricing.table.name })
+      .eq("id", (inserted as { id: string }).id).eq("tenant_id", gate.t)
+    if (provErr) console.error("[deals.addDealItem] proveniência (migration pendente?):", provErr.message)
+  }
 
   await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item adicionado: ${qty !== 1 ? `${qty}× ` : ""}${ci.name}`, gate.oldValue)
   return { ok: true }
@@ -750,9 +929,16 @@ export async function updateDealItem(dealId: string, itemId: string, input: { qu
   if (unitPrice != null && (!Number.isFinite(unitPrice) || unitPrice < 0)) return { error: "Preço inválido" }
 
   const { data: it } = await supabaseAdmin.from("tenant_deal_items")
-    .select("id, name, billing").eq("id", itemId).eq("tenant_id", gate.t).eq("deal_id", dealId).maybeSingle()
+    .select("id, name, billing, unit_price, list_price, max_discount_pct").eq("id", itemId).eq("tenant_id", gate.t).eq("deal_id", dealId).maybeSingle()
   if (!it) return { error: "Item não encontrado" }
-  const item = it as { id: string; name: string; billing: string }
+  const item = it as { id: string; name: string; billing: string; unit_price: number; list_price: number | null; max_discount_pct: number | null }
+
+  // Piso pelo SNAPSHOT da linha (teto e tabela do dia em que o item entrou).
+  const listPrice = Number(item.list_price ?? item.unit_price ?? 0)
+  const maxPct    = Number(item.max_discount_pct ?? 0)
+  const effUnit   = unitPrice != null ? unitPrice : Number(item.unit_price ?? 0)
+  const floorErr  = lineFloorError(listPrice, maxPct, effUnit, qty, discount)
+  if (floorErr) return { error: floorErr }
 
   const patch: Record<string, unknown> = { quantity: qty, discount, term_months: item.billing === "one_time" ? null : term }
   if (unitPrice != null) patch.unit_price = unitPrice
@@ -880,6 +1066,8 @@ export interface ContactRecordContact {
   address_state: string | null; address_country: string | null
   consent_opt_in: boolean | null; consent_at: string | null; consent_source: string | null; marketing_opt_in: boolean | null
   custom_fields: Record<string, unknown> | null
+  /** Tabela de preço do cliente (T2 — negócios herdam). Null = padrão. */
+  price_table_id: string | null
 }
 export interface ContactConversation {
   id: string; status: string; channel: string | null
@@ -1061,7 +1249,12 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
     lastInteraction,
   }
 
-  return { contact: c as ContactRecordContact, stats, deals, conversations, pipelines, crmEnabled }
+  // Tabela de preço do cliente (T2) — query separada e graciosa (pré-migration → null).
+  const { data: ptRow } = await supabaseAdmin.from("chat_contacts")
+    .select("price_table_id").eq("id", contactId).eq("tenant_id", t).maybeSingle()
+  const contact = { ...(c as ContactRecordContact), price_table_id: (ptRow as { price_table_id?: string | null } | null)?.price_table_id ?? null }
+
+  return { contact, stats, deals, conversations, pipelines, crmEnabled }
 }
 
 /**
@@ -1231,8 +1424,16 @@ export async function addDealNote(conversationId: string, dealId: string, text: 
  * REABRE um negócio fechado (perdido/cancelado/ganho) a partir da conversa. Volta pra
  * uma etapa de FUNIL (a atual se for de funil; senão a 1ª da trilha), reativa na conversa
  * + espelha (card volta ao board), limpa desfechos. Registra evento. Gated + visibilidade.
+ *
+ * REGRAS (fail-closed — decisão owner 2026-07-04):
+ *  • GANHO só gestor reabre, e com justificativa OBRIGATÓRIA — desfaz receita já
+ *    reportada (painel/KPIs mudam); vendedor não desfaz venda.
+ *  • Perdido/cancelado: qualquer um com acesso reabre (recuperar é desejável); nota opcional.
+ *  • O evento guarda o DESFECHO ANTERIOR ("Estava Perdido · Preço") — a trilha não se perde
+ *    mesmo com as colunas limpas.
+ *  • Trava "um aberto por vez" continua valendo.
  */
-export async function reopenDeal(conversationId: string, dealId: string): Promise<{ ok: true } | { error: string }> {
+export async function reopenDeal(conversationId: string, dealId: string, opts?: { note?: string | null }): Promise<{ ok: true } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
@@ -1242,10 +1443,24 @@ export async function reopenDeal(conversationId: string, dealId: string): Promis
   if (!conv || !conv.contact_id) return { error: "Sem acesso a esta conversa" }
 
   const { data: deal } = await supabaseAdmin.from("tenant_deals")
-    .select("contact_id, stage_id, pipeline_id, status").eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()
-  const d = deal as { contact_id: string; stage_id: string | null; pipeline_id: string | null; status: string } | null
+    .select("contact_id, stage_id, pipeline_id, status, won_at, lost_at, lost_reason, canceled_at").eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()
+  const d = deal as { contact_id: string; stage_id: string | null; pipeline_id: string | null; status: string; won_at: string | null; lost_at: string | null; lost_reason: string | null; canceled_at: string | null } | null
   if (!d || d.contact_id !== conv.contact_id) return { error: "Negócio inválido para esta conversa" }
   if (d.status === "open") return { error: "Negócio já está aberto" }
+
+  const note = opts?.note?.trim() || null
+  if (d.status === "won") {
+    if (!["owner", "admin"].includes(session.user.role)) return { error: "Reabrir um negócio GANHO desfaz receita já reportada — só gestores podem." }
+    if (!note) return { error: "Explique por que está desfazendo o ganho (justificativa obrigatória)." }
+  }
+  // Desfecho anterior vira parte do evento (a trilha sobrevive à limpeza das colunas).
+  const fmtBr = (iso: string | null) => iso ? new Date(iso).toLocaleDateString("pt-BR") : null
+  const previousOutcome = d.status === "won"
+    ? `Estava Ganho${fmtBr(d.won_at) ? ` desde ${fmtBr(d.won_at)}` : ""}`
+    : d.status === "lost"
+      ? `Estava Perdido${d.lost_reason ? ` · ${d.lost_reason}` : ""}${fmtBr(d.lost_at) ? ` desde ${fmtBr(d.lost_at)}` : ""}`
+      : `Estava Cancelado${fmtBr(d.canceled_at) ? ` desde ${fmtBr(d.canceled_at)}` : ""}`
+
   // Trava "um aberto por vez": não reabre se o contato já tem outro negócio aberto.
   const blockingOpen = await openDealOf(tenantId, conv.contact_id, dealId)
   if (blockingOpen) return { error: `Não é possível reabrir: este contato já tem outro negócio aberto${blockingOpen.name ? ` (“${blockingOpen.name}”)` : ""}. Finalize-o antes.` }
@@ -1276,6 +1491,6 @@ export async function reopenDeal(conversationId: string, dealId: string): Promis
     .update({ active_deal_id: dealId, updated_at: now })
     .eq("id", conversationId).eq("tenant_id", tenantId)
 
-  await recordDealEvent({ tenantId, dealId, type: "reopened", conversationId, toStageId: targetStage, by: session.user.id })
+  await recordDealEvent({ tenantId, dealId, type: "reopened", conversationId, toStageId: targetStage, by: session.user.id, reason: previousOutcome, note })
   return { ok: true }
 }

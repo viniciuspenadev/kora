@@ -42,7 +42,7 @@ const REL = {
   prospect:   { label: "Prospect",      cls: "bg-slate-100 text-slate-500 border-slate-200" },
 } as const
 
-export function ClienteRecord({ record, appointments, activity, canEditIdentity, customFields, channels }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean; customFields: ContactFieldDef[]; channels: ContactChannelRow[] }) {
+export function ClienteRecord({ record, appointments, activity, canEditIdentity, customFields, channels, priceTables = [] }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean; customFields: ContactFieldDef[]; channels: ContactChannelRow[]; priceTables?: { id: string; name: string; is_default: boolean }[] }) {
   const { contact, stats, deals, conversations } = record
   const name    = contact.custom_name?.trim() || contact.push_name?.trim() || fmtPhone(contact.phone_number) || "Sem nome"
   const initial = (name[0] ?? "?").toUpperCase()
@@ -95,7 +95,7 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
       {/* Body: identidade fixa + abas que rolam (escala com o crescimento) */}
       <div className="px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
         <div className="lg:col-span-2 space-y-5">
-          <IdentityCard contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} />
+          <IdentityCard contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} priceTables={priceTables} />
           <ChannelsCard channels={channels} contactId={contact.id} contactName={name} contactPic={contact.profile_pic_url} canMerge={canEditIdentity} />
         </div>
         <div className="lg:col-span-1 lg:sticky lg:top-4">
@@ -195,12 +195,14 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   )
 }
 
-function IdentityCard({ contact, canEditIdentity, customFields }: { contact: ContactRecordContact; canEditIdentity: boolean; customFields: ContactFieldDef[] }) {
+function IdentityCard({ contact, canEditIdentity, customFields, priceTables }: { contact: ContactRecordContact; canEditIdentity: boolean; customFields: ContactFieldDef[]; priceTables: { id: string; name: string; is_default: boolean }[] }) {
   const router = useRouter()
   const [editing, setEditing] = useState(false)
   const lc = lifecycleMeta(contact.lifecycle_stage)
+  // Multi-tabela (T2): conceito invisível até o tenant ter 2+ tabelas.
+  const contactTable = contact.price_table_id ? priceTables.find((p) => p.id === contact.price_table_id) ?? null : null
 
-  if (editing) return <IdentityEdit contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} onDone={() => { setEditing(false); router.refresh() }} onCancel={() => setEditing(false)} />
+  if (editing) return <IdentityEdit contact={contact} canEditIdentity={canEditIdentity} customFields={customFields} priceTables={priceTables} onDone={() => { setEditing(false); router.refresh() }} onCancel={() => setEditing(false)} />
 
   const cfFilled = customFields.filter((f) => { const v = contact.custom_fields?.[f.key]; return v !== undefined && v !== null && v !== "" })
 
@@ -262,6 +264,11 @@ function IdentityCard({ contact, canEditIdentity, customFields }: { contact: Con
             <SourceLogo source={contact.source} size={11} /> {sourceMeta(contact.source).label}
           </span>
         )}
+        {contactTable && !contactTable.is_default && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-700 px-1.5 py-0.5 rounded-full bg-sky-50 border border-sky-200" title="Tabela de preço deste cliente — negócios novos herdam">
+            Tabela {contactTable.name}
+          </span>
+        )}
       </div>
       {contact.notes && (
         <div className="mt-3 pt-3 border-t border-slate-100">
@@ -301,7 +308,7 @@ function Field({ icon: Icon, label, value }: { icon: typeof Phone; label: string
 // ── Edição completa do cadastro ─────────────────────────────────
 const editInput = "w-full h-8 px-2.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20"
 
-function IdentityEdit({ contact, canEditIdentity, customFields, onDone, onCancel }: { contact: ContactRecordContact; canEditIdentity: boolean; customFields: ContactFieldDef[]; onDone: () => void; onCancel: () => void }) {
+function IdentityEdit({ contact, canEditIdentity, customFields, priceTables, onDone, onCancel }: { contact: ContactRecordContact; canEditIdentity: boolean; customFields: ContactFieldDef[]; priceTables: { id: string; name: string; is_default: boolean }[]; onDone: () => void; onCancel: () => void }) {
   const [showIdentity, setShowIdentity] = useState(false)
   const [cf, setCf] = useState<Record<string, unknown>>(() => ({ ...(contact.custom_fields ?? {}) }))
   const setCfVal = (k: string, v: unknown) => setCf((s) => ({ ...s, [k]: v }))
@@ -314,6 +321,9 @@ function IdentityEdit({ contact, canEditIdentity, customFields, onDone, onCancel
     address_city: contact.address_city ?? "", address_state: contact.address_state ?? "",
     consent_opt_in: !!contact.consent_opt_in, marketing_opt_in: !!contact.marketing_opt_in, consent_source: contact.consent_source ?? "",
   })
+  // Tabela de preço (T2) — "" = padrão; select só existe com 2+ tabelas.
+  const defaultTableId = priceTables.find((p) => p.is_default)?.id
+  const [priceTableId, setPriceTableId] = useState(contact.price_table_id && contact.price_table_id !== defaultTableId ? contact.price_table_id : "")
   const set = (k: keyof typeof f, v: string | boolean) => setF((s) => ({ ...s, [k]: v }))
   const [cepLoading, setCepLoading] = useState(false)
   const [pending, start] = useTransition()
@@ -334,7 +344,7 @@ function IdentityEdit({ contact, canEditIdentity, customFields, onDone, onCancel
   function save() {
     setError(null)
     start(async () => {
-      const r = await updateContactInfo(contact.id, { ...f, birth_date: f.birth_date || null })
+      const r = await updateContactInfo(contact.id, { ...f, birth_date: f.birth_date || null, ...(priceTables.length > 1 ? { price_table_id: priceTableId || null } : {}) })
       if (r?.error) { setError(r.error); return }
       if (customFields.length) { const c = await setContactCustomFields(contact.id, cf); if ("error" in c) { setError(c.error); return } }
       onDone()
@@ -373,6 +383,12 @@ function IdentityEdit({ contact, canEditIdentity, customFields, onDone, onCancel
             <L label="Telefone 2"><input value={f.phone_secondary} onChange={(e) => set("phone_secondary", e.target.value)} className={editInput} placeholder="11 9…" /></L>
             <L label="Rótulo"><input value={f.phone_secondary_label} onChange={(e) => set("phone_secondary_label", e.target.value)} className={editInput} placeholder="Fixo, Resp.…" /></L>
           </div>
+          {priceTables.length > 1 && (
+            <L label="Tabela de preço · negócios novos deste cliente herdam">
+              <SimpleSelect value={priceTableId} onChange={setPriceTableId} className="h-8 text-xs"
+                options={priceTables.map((p) => ({ value: p.is_default ? "" : p.id, label: `${p.name}${p.is_default ? " (padrão)" : ""}` }))} />
+            </L>
+          )}
         </EditGroup>
 
         <EditGroup label="Endereço · digite o CEP que preenche sozinho">

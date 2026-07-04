@@ -1,9 +1,10 @@
 "use client"
 
 import { useMemo, useState, useTransition } from "react"
-import { Plus, Pencil, Trash2, Loader2, X, Search, ClipboardList } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { Plus, Pencil, Trash2, Loader2, X, Search, ClipboardList, Sparkles } from "lucide-react"
 import {
-  createOutcomeReason, updateOutcomeReason, deleteOutcomeReason,
+  createOutcomeReason, updateOutcomeReason, deleteOutcomeReason, seedDefaultOutcomeReasons,
   type OutcomeReason,
 } from "@/lib/actions/outcome-reasons"
 import { EmptyState } from "@/components/ui/empty-state"
@@ -12,9 +13,19 @@ import { useConfirm } from "@/components/ui/confirm-dialog"
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString("pt-BR")
 
 export function MotivosClient({ reasons }: { reasons: OutcomeReason[] }) {
+  const router = useRouter()
   const [search, setSearch]     = useState("")
   const [creating, setCreating] = useState(false)
   const [editing, setEditing]   = useState<OutcomeReason | null>(null)
+  const [seeding, startSeed]    = useTransition()
+
+  function seed() {
+    startSeed(async () => {
+      const r = await seedDefaultOutcomeReasons()
+      if ("error" in r) { alert(r.error); return }
+      router.refresh()
+    })
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -45,12 +56,18 @@ export function MotivosClient({ reasons }: { reasons: OutcomeReason[] }) {
         <EmptyState
           icon={ClipboardList}
           title={search ? "Nada encontrado" : "Nenhum motivo cadastrado"}
-          description={search ? "Tente outro termo." : "Motivos estruturados alimentam o relatório de vazamento — de onde o dinheiro escapa: preço, timing, concorrente."}
+          description={search ? "Tente outro termo." : "Motivos estruturados alimentam o relatório de vazamento — de onde o dinheiro escapa: preço, timing, concorrente. Sem motivos aqui, o app usa uma lista padrão embutida."}
           action={!search ? (
-            <button type="button" onClick={() => setCreating(true)}
-              className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
-              <Plus className="size-3.5" /> Criar motivo
-            </button>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={seed} disabled={seeding}
+                className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-50">
+                {seeding ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />} Criar motivos padrão
+              </button>
+              <button type="button" onClick={() => setCreating(true)}
+                className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50 rounded-lg transition-colors">
+                <Plus className="size-3.5" /> Criar do zero
+              </button>
+            </div>
           ) : undefined}
         />
       ) : (

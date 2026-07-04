@@ -56,6 +56,21 @@ export async function createOutcomeReason(kind: ReasonKind, label: string, requi
   return { id: (data as { id: string }).id }
 }
 
+/** Semeia os 6 motivos padrão de perda (1 clique na página vazia) — a lista embutida deixa de existir na prática. */
+export async function seedDefaultOutcomeReasons(): Promise<{ ok: true } | { error: string }> {
+  const gate = await requireManager()
+  if ("error" in gate) return gate
+  const { count } = await supabaseAdmin.from("deal_outcome_reasons")
+    .select("id", { count: "exact", head: true }).eq("tenant_id", gate.tenantId).eq("kind", "lost")
+  if ((count ?? 0) > 0) return { error: "Já existem motivos cadastrados" }
+  const defaults = ["Preço", "Sem resposta", "Comprou concorrente", "Fora do perfil", "Sem orçamento", "Outro"]
+  const { error } = await supabaseAdmin.from("deal_outcome_reasons")
+    .insert(defaults.map((label) => ({ tenant_id: gate.tenantId, kind: "lost", label, require_note: false })))
+  if (error) return { error: error.message }
+  revalidatePath("/configuracoes/motivos")
+  return { ok: true }
+}
+
 export async function updateOutcomeReason(id: string, patch: { label?: string; requireNote?: boolean }): Promise<{ ok: true } | { error: string }> {
   const gate = await requireManager()
   if ("error" in gate) return gate

@@ -50,7 +50,7 @@ export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }
   })
   const [activeId, setActiveId]     = useState<string | null>(null)
   const [pending, startTransition]  = useTransition()
-  const [moveDialog, setMoveDialog] = useState<{ dealId: string; stageId: string; toName: string; fromName: string | null; fromDays: number | null; dealName: string | null; currentValue: number | null } | null>(null)
+  const [moveDialog, setMoveDialog] = useState<{ dealId: string; stageId: string; toName: string; toLost: boolean; fromName: string | null; fromDays: number | null; dealName: string | null; currentValue: number | null } | null>(null)
   const [addTarget, setAddTarget]   = useState<AddDealTarget | null>(null)
   const [sheetContact, setSheetContact] = useState<string | null>(null)   // Contato 360 (clicar no nome)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
@@ -78,7 +78,8 @@ export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }
 
   function cardsFor(stageId: string): DealRow[] {
     return deals
-      .filter((d) => d.pipeline_id === pipeId && d.stage?.id === stageId)
+      // Cancelado = anulado: sai do funil (não é aberto nem perdido — não ocupa coluna).
+      .filter((d) => d.status !== "canceled" && d.pipeline_id === pipeId && d.stage?.id === stageId)
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
   }
 
@@ -104,7 +105,7 @@ export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }
       ? { ...x, stage: { id: target.id, name: target.name, color: target.color, is_won: target.is_won, is_lost: target.is_lost }, status, stage_entered_at: new Date().toISOString() }
       : x))
     setMoveDialog({
-      dealId, stageId, toName: target.name,
+      dealId, stageId, toName: target.name, toLost: target.is_lost,
       fromName: d.stage?.name ?? null,
       fromDays: d.stage_entered_at ? Math.floor((Date.now() - new Date(d.stage_entered_at).getTime()) / 86_400_000) : null,
       dealName: d.name, currentValue: d.estimated_value,
@@ -121,7 +122,7 @@ export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }
         valueChange: valueChanged ? { from: currentValue != null && currentValue > 0 ? BRL(currentValue) : "—", to: BRL(res.value as number) } : null,
         followUp: res.task ? { title: res.task.title, due: res.task.dueAt ? new Date(res.task.dueAt).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : null } : null,
       }
-      const r = await moveDealById(dealId, stageId, { note: res.note || null, extras })
+      const r = await moveDealById(dealId, stageId, { note: res.note || null, lostReason: res.lostReason ?? null, extras })
       if ("error" in r) { alert(r.error); router.refresh(); return }
       if (valueChanged) await updateDeal(dealId, { estimatedValue: res.value }, { silentCard: true })
       if (res.task) await createTask({ dealId, title: res.task.title, dueAt: res.task.dueAt })
@@ -187,7 +188,7 @@ export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }
       {moveDialog && (
         <MoveDealDialog
           dealName={moveDialog.dealName} fromStageName={moveDialog.fromName} fromStageDays={moveDialog.fromDays}
-          toStageName={moveDialog.toName} currentValue={moveDialog.currentValue}
+          toStageName={moveDialog.toName} toStageLost={moveDialog.toLost} currentValue={moveDialog.currentValue}
           pending={pending} onConfirm={confirmMove} onClose={cancelMove}
         />
       )}

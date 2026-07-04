@@ -10,7 +10,7 @@ import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
-  Package, Wrench, Repeat, Trash2, Search, MoreHorizontal, Hourglass,
+  Package, Wrench, Trash2, Search, MoreHorizontal, Hourglass, Bot,
 } from "lucide-react"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { ContactSheet } from "@/components/crm/contact-sheet"
@@ -60,7 +60,7 @@ function relTime(iso: string | null): string {
   return `há ${Math.floor(days / 30)} mês${days >= 60 ? "es" : ""}`
 }
 
-export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskRow[] }) {
+export function DealPageClient({ deal, tasks, isManager = false }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean }) {
   const router = useRouter()
   const [pending, start] = useTransition()
   const convId = deal.conversationId
@@ -85,6 +85,8 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
   const [valueVal, setValueVal]   = useState(deal.estimated_value != null ? String(deal.estimated_value) : "")
   const [losing, setLosing]       = useState(false)
   const [canceling, setCanceling] = useState(false)
+  const [reopening, setReopening] = useState(false)
+  const [reopenNote, setReopenNote] = useState("")
   const [reasonSel, setReasonSel] = useState("")
   const [reasonTxt, setReasonTxt] = useState("")
   const [noteTxt, setNoteTxt]     = useState("")   // justificativa (motivos com require_note)
@@ -241,11 +243,6 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
     setCanceling(false); setReasonSel(""); setReasonTxt("")
     run(() => cancelDeal(convId, deal.id, reason || null))
   }
-  function doAddNote(text: string) {
-    if (!convId || !text.trim()) return
-    setActiveModal(null)
-    run(() => addDealNote(convId, deal.id, text.trim()))
-  }
   function doAddTask(title: string, dueAt: string | null) {
     if (!title.trim()) return
     setActiveModal(null)
@@ -362,7 +359,9 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
                   <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary-200 text-primary-700 bg-primary-50 hover:bg-primary-100`}><Route className="size-3.5" /> Próximo fluxo</button>
                 )}
                 {!isOpen && (
-                  <button onClick={() => convId && run(() => reopenDeal(convId, deal.id))} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><RotateCcw className="size-3.5 text-primary-500" /> Reabrir</button>
+                  (deal.status !== "won" || isManager) && (
+                    <button onClick={() => { setReopenNote(""); setReopening(true) }} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><RotateCcw className="size-3.5 text-primary-500" /> Reabrir</button>
+                  )
                 )}
                 <DropdownMenu>
                   <DropdownMenuTrigger title="Mais ações"
@@ -423,12 +422,13 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
             })}
           </div>
 
-          {/* Régua de gestão — 5 células (mockup) */}
-          <div className="mt-2 border-t border-slate-100 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
-            <Gauge icon={Clock} tint="t-blue" label={isOpen ? "Em aberto" : "Duração"} value={daysOpen != null ? `${daysOpen} dias` : "—"} />
-            <Gauge icon={Hourglass} tint="t-amber" label="Na etapa atual" value={stageAging != null ? `${stageAging} dias` : "—"} warn={(stageAging ?? 0) >= 4 && isOpen} />
-            <div className="flex items-center gap-2.5 px-4 py-3 border-r border-slate-100 last:border-r-0">
-              <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-violet-50 text-violet-600"><Calendar className="size-4" /></span>
+          {/* Régua de gestão — 5 cards individuais ("quadradinhos"), monocromática na
+              identidade (azul), stroke editorial — decisão owner 2026-07-04. */}
+          <div className="mt-3 mb-3.5 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
+            <Gauge icon={Clock} label={isOpen ? "Em aberto" : "Duração"} value={daysOpen != null ? `${daysOpen} dias` : "—"} />
+            <Gauge icon={Hourglass} label="Na etapa atual" value={stageAging != null ? `${stageAging} dias` : "—"} warn={(stageAging ?? 0) >= 4 && isOpen} />
+            <div className="flex items-center gap-2.5 px-3.5 py-3 rounded-xl border border-slate-300 bg-white">
+              <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-primary-50 text-primary-600"><Calendar className="size-4" /></span>
               <div className="min-w-0">
                 <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Previsão</p>
                 {editPrev ? (
@@ -443,21 +443,21 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
                 )}
               </div>
             </div>
-            <Gauge icon={TrendingUp} tint="t-green" label="Valor ponderado" value={weighted != null ? brl(weighted) : "—"} good={weighted != null}
+            <Gauge icon={TrendingUp} label="Valor ponderado" value={weighted != null ? brl(weighted) : "—"}
               hint={weighted != null ? `${brl(deal.estimated_value as number)} × ${curProb}% da etapa` : isOpen ? "defina a % da etapa no funil" : undefined} />
-            <Gauge icon={MessageSquare} tint="t-sky" label="Última interação" value={relTime(lastTouch)} hint={lastChannelLabel ?? undefined} />
+            <Gauge icon={MessageSquare} label="Última interação" value={relTime(lastTouch)} hint={lastChannelLabel ?? undefined} />
           </div>
           {!convId && <p className="pb-2 text-[11px] text-amber-600">Negócio sem conversa vinculada — mover/ganhar/perder/observar ficam indisponíveis nesta tela.</p>}
 
-          {(losing || canceling) && (
-            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 max-w-md">
-              <p className="text-xs font-semibold text-slate-700 mb-1.5">{losing ? "Marcar como perdido — motivo" : "Cancelar — motivo (anula, não conta como perda)"}</p>
+          {losing && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50/50 p-3 max-w-md">
+              <p className="text-xs font-semibold text-red-700 mb-1.5 inline-flex items-center gap-1.5"><XCircle className="size-3.5" /> Marcar como perdido — motivo</p>
               <div className="flex items-center gap-2">
                 <SimpleSelect value={reasonSel} onChange={setReasonSel} className="h-8 text-xs flex-1"
-                  options={(losing ? deal.lostReasons.map((r) => r.label) : CANCEL_REASONS).map((r) => ({ value: r, label: r }))} />
+                  options={deal.lostReasons.map((r) => ({ value: r.label, label: r.label }))} />
                 {reasonSel === "Outro" && <input value={reasonTxt} onChange={(e) => setReasonTxt(e.target.value)} placeholder="Motivo…" className="h-8 px-2 text-xs border border-slate-200 rounded-lg flex-1 focus:outline-none" />}
               </div>
-              {losing && selRequiresNote && (
+              {selRequiresNote && (
                 <div className="mt-2">
                   <textarea value={noteTxt} onChange={(e) => setNoteTxt(e.target.value)} rows={2}
                     placeholder="Justificativa (obrigatória pra este motivo) — quanto, quem, contexto…"
@@ -465,9 +465,73 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
                 </div>
               )}
               <div className="flex items-center gap-2 mt-2">
-                <button onClick={losing ? confirmLose : confirmCancel} disabled={pending || (losing && selRequiresNote && !noteTxt.trim())}
-                  className={`${ABTN} ${losing ? "border-red-200 text-white bg-red-600 hover:bg-red-700" : "border-slate-300 text-white bg-slate-600 hover:bg-slate-700"}`}>Confirmar</button>
-                <button onClick={() => { setLosing(false); setCanceling(false) }} className="h-8 px-3 text-xs font-medium text-slate-500 hover:bg-slate-100 rounded-lg">Voltar</button>
+                <button onClick={confirmLose} disabled={pending || (selRequiresNote && !noteTxt.trim())}
+                  className={`${ABTN} border-red-200 text-white bg-red-600 hover:bg-red-700`}>Confirmar perda</button>
+                <button onClick={() => setLosing(false)} className="h-8 px-3 text-xs font-medium text-slate-500 hover:bg-slate-100 rounded-lg">Voltar</button>
+              </div>
+            </div>
+          )}
+
+          {/* Cancelar ≠ perder: anula o negócio (engano/duplicado/desistiu antes de negociar) —
+              modal próprio, tom neutro, e a copy diz o efeito nos números. */}
+          {canceling && (
+            <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4" onClick={() => setCanceling(false)}>
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2.5 px-5 py-4 border-b border-slate-100">
+                  <span className="size-8 rounded-lg bg-slate-100 text-slate-500 grid place-items-center shrink-0"><Ban className="size-4" /></span>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900">Cancelar negócio</h3>
+                    <p className="text-[11px] text-slate-400">Anula — <b>não conta como perda</b> nos relatórios e sai do funil.</p>
+                  </div>
+                </div>
+                <div className="p-5 space-y-3">
+                  <p className="text-[11px] text-slate-500 leading-relaxed">Use pra registro que não virou negociação de verdade: criado por engano, duplicado ou o cliente desistiu antes de negociar. Se houve disputa e o cliente disse não, o certo é <b>Marcar como perdido</b>.</p>
+                  <SimpleSelect value={reasonSel} onChange={setReasonSel} className="h-9 text-xs w-full"
+                    options={CANCEL_REASONS.map((r) => ({ value: r, label: r }))} />
+                  {reasonSel === "Outro" && <input value={reasonTxt} onChange={(e) => setReasonTxt(e.target.value)} placeholder="Motivo…" className="w-full h-9 px-3 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20" />}
+                </div>
+                <div className="flex items-center justify-end gap-2 px-5 py-3 bg-slate-50 border-t border-slate-100">
+                  <button onClick={() => setCanceling(false)} className="h-9 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Voltar</button>
+                  <button onClick={confirmCancel} disabled={pending}
+                    className="h-9 px-4 text-xs font-semibold text-white bg-slate-600 hover:bg-slate-700 rounded-lg disabled:opacity-50">Cancelar negócio</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Reabrir — regras: ganho só gestor + justificativa; perdido/cancelado nota opcional.
+              O desfecho anterior fica gravado no evento (o server carimba). */}
+          {reopening && (
+            <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4" onClick={() => setReopening(false)}>
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2.5 px-5 py-4 border-b border-slate-100">
+                  <span className="size-8 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><RotateCcw className="size-4" /></span>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-slate-900">Reabrir negócio</h3>
+                    <p className="text-[11px] text-slate-400">
+                      {deal.status === "won"
+                        ? "Desfaz um GANHO — a receita sai dos relatórios."
+                        : deal.status === "lost"
+                          ? `Estava perdido${deal.lost_reason ? ` (${deal.lost_reason})` : ""} — volta pro funil.`
+                          : "Estava cancelado — volta pro funil."}
+                    </p>
+                  </div>
+                </div>
+                <div className="p-5 space-y-2">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Por que está reabrindo? {deal.status === "won" ? <span className="text-red-500">*</span> : <span className="text-slate-300 font-normal">(opcional)</span>}
+                  </label>
+                  <textarea autoFocus value={reopenNote} onChange={(e) => setReopenNote(e.target.value)} rows={2}
+                    placeholder={deal.status === "won" ? "Obrigatório — ex: pagamento estornado, fechamento por engano…" : "Ex: cliente voltou a responder, retomamos a proposta…"}
+                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
+                  <p className="text-[10px] text-slate-400">Fica registrado na linha do tempo, junto do desfecho anterior.</p>
+                </div>
+                <div className="flex items-center justify-end gap-2 px-5 py-3 bg-slate-50 border-t border-slate-100">
+                  <button onClick={() => setReopening(false)} className="h-9 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Voltar</button>
+                  <button disabled={pending || (deal.status === "won" && !reopenNote.trim())}
+                    onClick={() => { if (!convId) return; const note = reopenNote.trim() || null; setReopening(false); run(() => reopenDeal(convId, deal.id, { note })) }}
+                    className="h-9 px-4 text-xs font-semibold text-white bg-primary hover:bg-primary-700 rounded-lg disabled:opacity-50">Reabrir</button>
+                </div>
               </div>
             </div>
           )}
@@ -509,6 +573,18 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
               </button>
             </div>
           ))}
+
+          {/* NEGOCIAÇÃO — itens + resumo + termos (spec: acima da linha do tempo) */}
+          <NegotiationCard
+            deal={deal}
+            summary={valueSummary}
+            isManager={isManager}
+            pending={pending}
+            onAdd={() => setItemModal({ mode: "add" })}
+            onEdit={(item) => setItemModal({ mode: "edit", item })}
+            onRemove={(item) => run(() => removeDealItem(deal.id, item.id))}
+            onTerms={(t) => run(() => updateDeal(deal.id, t))}
+          />
 
           {/* COMPOSER — registrar sem sair (nota | tarefa) */}
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
@@ -613,16 +689,6 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
               </div>
             </section>
           )}
-
-          {/* Itens do negócio — composição de valor (catálogo) */}
-          <DealItemsCard
-            items={deal.items}
-            summary={valueSummary}
-            pending={pending}
-            onAdd={() => setItemModal({ mode: "add" })}
-            onEdit={(item) => setItemModal({ mode: "edit", item })}
-            onRemove={(item) => run(() => removeDealItem(deal.id, item.id))}
-          />
 
           {/* Jornada no funil — tempo por etapa (mini-gantt do mockup) */}
           {journey.length > 0 && journey.some((s) => s.days > 0) && (
@@ -732,6 +798,7 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
 
       {itemModal && (
         <DealItemModal
+          dealId={deal.id}
           edit={itemModal.mode === "edit" ? itemModal.item : null}
           pending={pending}
           onClose={() => setItemModal(null)}
@@ -748,19 +815,17 @@ export function DealPageClient({ deal, tasks }: { deal: DealDetail; tasks: TaskR
 }
 
 // ── Célula da régua de gestão (header) ──
-const GAUGE_TINT: Record<string, string> = {
-  "t-blue": "bg-primary-50 text-primary", "t-amber": "bg-amber-50 text-amber-600",
-  "t-green": "bg-emerald-50 text-emerald-600", "t-sky": "bg-sky-50 text-sky-600",
-}
-function Gauge({ icon: Icon, tint, label, value, hint, warn, good }: {
-  icon: typeof Clock; tint: string; label: string; value: string; hint?: string; warn?: boolean; good?: boolean
+// Régua monocromática (identidade azul), cada célula no seu card — cor extra SÓ com
+// significado (warn = parado).
+function Gauge({ icon: Icon, label, value, hint, warn }: {
+  icon: typeof Clock; label: string; value: string; hint?: string; warn?: boolean
 }) {
   return (
-    <div className="flex items-center gap-2.5 px-4 py-3 border-r border-slate-100 last:border-r-0">
-      <span className={`size-8 rounded-lg grid place-items-center shrink-0 ${GAUGE_TINT[tint]}`}><Icon className="size-4" /></span>
+    <div className="flex items-center gap-2.5 px-3.5 py-3 rounded-xl border border-slate-300 bg-white">
+      <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-primary-50 text-primary-600"><Icon className="size-4" /></span>
       <div className="min-w-0">
         <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 truncate">{label}</p>
-        <p className={`text-sm font-extrabold tabular-nums leading-tight truncate ${warn ? "text-amber-600" : good ? "text-emerald-600" : "text-slate-900"}`}>{value}</p>
+        <p className={`text-sm font-extrabold tabular-nums leading-tight truncate ${warn ? "text-amber-600" : "text-slate-900"}`}>{value}</p>
         {hint && <p className="text-[9.5px] text-slate-400 truncate">{hint}</p>}
       </div>
     </div>
@@ -817,7 +882,7 @@ function describeEvent(e: DealEventView, protocol: Protocol | null): { title: st
     case "won":      desc = `Negócio ganho${e.to_stage ? ` em “${e.to_stage}”` : ""}.`; break
     case "lost":     desc = `Negócio perdido${e.reason ? ` · ${e.reason}` : ""}.`; break
     case "canceled": desc = `Negócio cancelado${e.reason ? ` · ${e.reason}` : ""}.`; break
-    case "reopened": desc = `Negócio reaberto${e.to_stage ? ` em “${e.to_stage}”` : ""}.`; break
+    case "reopened": desc = `Negócio reaberto${e.to_stage ? ` em “${e.to_stage}”` : ""}${e.reason ? ` — ${e.reason.toLowerCase()}` : ""}.`; break
     default:         desc = e.note ?? ""
   }
   return { title: label, no: protocol ? protocolNo(protocol.n) : null, desc }
@@ -830,13 +895,39 @@ function nodeIcon(node: FeedNode): typeof Clock {
   return PROTOCOL_STYLE[node.protocol?.kind ?? "mudanca"].Icon
 }
 
-// Acento único: movimentação = azul (fio condutor do negócio); nota/tarefa = neutro.
+// Círculos COLORIDOS sólidos (linguagem do sheet 360): o tipo carrega a cor.
 function nodeStyle(node: FeedNode): string {
-  if (node.kind === "event" && node.protocol) return "bg-primary-50 text-primary-600"
-  return "bg-slate-100 text-slate-400"
+  if (node.kind === "task") return node.t.status !== "pending" ? "bg-emerald-500 text-white" : "bg-amber-400 text-white"
+  const t = node.e.type
+  if (t === "won") return "bg-emerald-500 text-white"
+  if (t === "lost") return "bg-red-400 text-white"
+  if (t === "canceled") return "bg-slate-300 text-white"
+  if (t === "note") return "bg-violet-400 text-white"
+  if (t === "field_changed") return "bg-sky-400 text-white"
+  return "bg-primary text-white"
 }
 
-// Item da timeline — círculo monocromático + conector vertical (estilo editorial).
+/** Rodapé do cartão de evento — autor (humano/robô) + data (linguagem do sheet). */
+function CardFooter({ by, at }: { by: string | null; at: string }) {
+  const robotic = !!by && /^(automação|ia\b|sistema)/i.test(by)
+  return (
+    <div className="px-4 py-1.5 border-t border-slate-100 bg-slate-50/50 flex items-center gap-2">
+      {by ? (
+        <span className="inline-flex items-center gap-1.5 text-[10.5px] font-medium text-slate-500 min-w-0">
+          {robotic ? (
+            <span className="size-4 rounded-full grid place-items-center bg-slate-200 text-slate-500 shrink-0"><Bot className="size-2.5" /></span>
+          ) : (
+            <span className="size-4 rounded-full grid place-items-center text-[7px] font-extrabold text-white shrink-0" style={{ background: "#004add" }}>{by.trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase()}</span>
+          )}
+          <span className="truncate">{by}</span>
+        </span>
+      ) : <span />}
+      <span className="ml-auto text-[10px] text-slate-400 tabular-nums shrink-0">{fmtDateTime(at)}</span>
+    </div>
+  )
+}
+
+// Item da timeline — círculo colorido + conector + cartão em 2 andares (mockup).
 function FeedItem({ node, isLast, pending, onOpenProtocol, onToggleTask }: {
   node: FeedNode; isLast: boolean; pending: boolean
   onOpenProtocol?: () => void; onToggleTask?: () => void
@@ -846,10 +937,10 @@ function FeedItem({ node, isLast, pending, onOpenProtocol, onToggleTask }: {
   return (
     <li className="flex gap-3.5">
       <div className="flex flex-col items-center">
-        <span className={`size-8 rounded-full grid place-items-center shrink-0 ${nodeStyle(node)}`}><Icon className="size-3.5" /></span>
-        {!isLast && <span className="w-px flex-1 bg-slate-200/80 my-1.5" />}
+        <span className={`relative z-10 size-10 rounded-full grid place-items-center shrink-0 ring-4 ring-white ${nodeStyle(node)}`}><Icon className="size-4" /></span>
+        {!isLast && <span className="w-px flex-1 bg-slate-200 -mt-1" />}
       </div>
-      <div className="flex-1 min-w-0 pb-5 py-0.5">
+      <div className="flex-1 min-w-0 pb-4">
         {node.kind === "task" ? (
           <TaskBody t={node.t} pending={pending} onToggle={onToggleTask!} />
         ) : hasProtocol ? (
@@ -876,11 +967,7 @@ function MovimentacaoCard({ e, protocol, onOpenFull }: { e: DealEventView; proto
         <div className="min-w-0">
           <h4 className="text-sm font-semibold text-slate-800">{title}{no && <span className="ml-1.5 text-xs font-bold text-primary-600 tabular-nums">{no}</span>}</h4>
           {desc && <p className="text-[13px] text-slate-500 mt-0.5 break-words">{desc}</p>}
-          <div className="flex items-center gap-x-2 gap-y-0.5 mt-1.5 text-[11px] text-slate-400 flex-wrap">
-            <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {fmtDateTime(e.at)}</span>
-            {e.by && <span>· por {e.by}</span>}
-            {delta && <span className="font-semibold text-slate-600 tabular-nums">· {delta}</span>}
-          </div>
+          {delta && <p className="text-[11px] font-semibold text-slate-600 tabular-nums mt-1">{delta}</p>}
         </div>
         <div className="shrink-0 text-right">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Etapa</p>
@@ -912,6 +999,7 @@ function MovimentacaoCard({ e, protocol, onOpenFull }: { e: DealEventView; proto
           <button onClick={onOpenFull} className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700">Documento completo <ArrowRight className="size-3" /></button>
         </div>
       )}
+      <CardFooter by={e.by} at={e.at} />
     </div>
   )
 }
@@ -929,40 +1017,45 @@ function EventBody({ e, protocol, clickable }: { e: DealEventView; protocol: Pro
   const { title, no, desc } = describeEvent(e, protocol)
   const delta = valueDelta(e.extras?.valueChange ?? null)
   return (
-    <>
-      <div className="flex items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold text-slate-800 truncate">
-          {title}{no && <span className="ml-1.5 text-xs font-bold text-primary-600 tabular-nums">{no}</span>}
-        </h4>
-        {clickable && <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 opacity-0 group-hover:opacity-100 transition-opacity">Ver protocolo <ArrowRight className="size-3" /></span>}
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+      <div className="px-4 pt-2.5 pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <h4 className="text-[13px] font-bold text-slate-900 truncate">
+            {title}{no && <span className="ml-1.5 text-xs font-bold text-primary-600 tabular-nums">{no}</span>}
+          </h4>
+          {clickable && <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 opacity-0 group-hover:opacity-100 transition-opacity">Ver protocolo <ArrowRight className="size-3" /></span>}
+        </div>
+        {desc && <p className="text-xs text-slate-600 mt-0.5 break-words whitespace-pre-wrap leading-snug">{desc}</p>}
+        {(delta || e.extras?.followUp) && (
+          <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
+            {delta && <span className="font-semibold text-primary-600 tabular-nums">{delta}</span>}
+            {e.extras?.followUp && <span className="inline-flex items-center gap-1"><Bell className="size-3" /> follow-up</span>}
+          </div>
+        )}
       </div>
-      {desc && <p className="text-[13px] text-slate-500 mt-0.5 break-words whitespace-pre-wrap">{desc}</p>}
-      <div className="flex items-center gap-x-2 gap-y-0.5 mt-1.5 text-[11px] text-slate-400 flex-wrap">
-        <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {fmtDateTime(e.at)}</span>
-        {e.by && <span>· por {e.by}</span>}
-        {delta && <span className="font-semibold text-slate-600 tabular-nums">· {delta}</span>}
-        {e.extras?.followUp && <span className="inline-flex items-center gap-1 text-slate-500">· <Bell className="size-3" /> follow-up</span>}
-      </div>
-    </>
+      <CardFooter by={e.by} at={e.at} />
+    </div>
   )
 }
 
 function TaskBody({ t, pending, onToggle }: { t: TaskRow; pending: boolean; onToggle: () => void }) {
   const s = taskState(t)
   return (
-    <>
-      <div className="flex items-center justify-between gap-2">
-        <h4 className={`text-sm font-semibold truncate ${s.done ? "text-slate-400 line-through" : "text-slate-800"}`}>{s.done ? "Tarefa concluída" : "Tarefa agendada"}</h4>
-        <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${s.cls}`}>{s.label}</span>
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+      <div className="px-4 pt-2.5 pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <h4 className={`text-[13px] font-bold truncate ${s.done ? "text-slate-400 line-through" : "text-slate-900"}`}>{t.title}</h4>
+          <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full ${s.cls}`}>{s.label}</span>
+        </div>
+        <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
+          <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {t.due_at ? fmtDateTime(t.due_at) : "sem prazo"}</span>
+          <button onClick={(ev) => { ev.stopPropagation(); onToggle() }} disabled={pending} className="ml-1 inline-flex items-center gap-1 text-slate-400 hover:text-emerald-600 disabled:opacity-50 font-semibold">
+            {s.done ? <><Square className="size-3" /> reabrir</> : <><CheckSquare className="size-3" /> concluir</>}
+          </button>
+        </div>
       </div>
-      <p className={`text-[13px] mt-0.5 break-words ${s.done ? "text-slate-400" : "text-slate-500"}`}>{t.title}</p>
-      <div className="flex items-center gap-2 mt-1.5 text-[11px] text-slate-400">
-        <span className="inline-flex items-center gap-1"><Clock className="size-3" /> {t.due_at ? fmtDateTime(t.due_at) : "sem prazo"}</span>
-        <button onClick={(ev) => { ev.stopPropagation(); onToggle() }} disabled={pending} className="ml-1 inline-flex items-center gap-1 text-slate-400 hover:text-emerald-600 disabled:opacity-50">
-          {s.done ? <><Square className="size-3" /> reabrir</> : <><CheckSquare className="size-3" /> concluir</>}
-        </button>
-      </div>
-    </>
+      <CardFooter by={null} at={t.created_at} />
+    </div>
   )
 }
 
@@ -1198,10 +1291,6 @@ function DocStat({ label, value, sub }: { label: string; value: string; sub?: st
   )
 }
 
-function StatusIcon({ status }: { status: string }) {
-  const ds = dealEventStyle(status); const I = ds.Icon
-  return <I className="size-3 shrink-0" style={{ color: status === "open" ? "#94a3b8" : ds.accent }} />
-}
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -1237,91 +1326,186 @@ function parseMoneyBR(s: string): number | null {
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : NaN
 }
 
-function DealItemsCard({ items, summary, pending, onAdd, onEdit, onRemove }: {
-  items: DealItemView[]
+// ── NEGOCIAÇÃO — itens + resumo + termos da proposta (N2, spec do owner) ──
+const PAYMENT_OPTIONS = ["Pix", "Cartão de crédito", "Cartão de débito", "Boleto", "Dinheiro", "Transferência", "Outro"]
+
+/** Fator de contribuição no total (recorrente × prazo — mesma matemática da lib). */
+const termFactor = (it: DealItemView) =>
+  it.billing === "one_time" ? 1 : it.billing === "monthly" ? (it.term_months ?? DEFAULT_TERM_MONTHS) : (it.term_months ?? DEFAULT_TERM_MONTHS) / 12
+
+function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove, onTerms }: {
+  deal: DealDetail
   summary: ReturnType<typeof computeDealValue> | null
+  isManager: boolean
   pending: boolean
   onAdd: () => void
   onEdit: (item: DealItemView) => void
   onRemove: (item: DealItemView) => void
+  onTerms: (t: { paymentMethod?: string | null; installments?: number | null; proposalExpiresAt?: string | null; priceTableId?: string | null }) => void
 }) {
+  const items = deal.items
+  // Multi-tabela (T2): switcher só aparece quando há 2+ tabelas VISÍVEIS (ativas +
+  // a atual, mesmo desativada). Troca não re-preça itens já lançados.
+  const visibleTables = deal.priceTables.filter((p) => p.active || p.id === deal.priceTable?.id)
+  const multiTable = visibleTables.length > 1
+  const currentTableName = deal.priceTable?.name ?? deal.priceTables.find((p) => p.is_default)?.name ?? "Padrão"
+  // Valor do switcher: padrão vira "" (negócio com a default explícita = mesmo caso).
+  const tableSelectValue = deal.priceTable && !deal.priceTables.find((p) => p.id === deal.priceTable!.id)?.is_default ? deal.priceTable.id : ""
+  // Bruto = preço de TABELA × qtd × prazo; Final = negociado (lib); Desconto = diferença.
+  const bruto = items.reduce((s, it) => s + (it.list_price ?? it.unit_price) * it.quantity * termFactor(it), 0)
+  const final = summary?.total ?? 0
+  const descTotal = Math.max(0, bruto - final)
+  const descPct = bruto > 0 ? (descTotal / bruto) * 100 : 0
+  // Margem (só gestor): final − custo total (custo × qtd × prazo). Só quando há custo em algum item.
+  const hasCost = isManager && items.some((it) => it.cost != null && it.cost > 0)
+  const custoTotal = hasCost ? items.reduce((s, it) => s + (it.cost ?? 0) * it.quantity * termFactor(it), 0) : 0
+  const margem = final - custoTotal
+
+  const today = new Date().toISOString().slice(0, 10)
+  const expired = !!deal.proposalExpiresAt && deal.proposalExpiresAt < today && deal.status === "open"
+
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-4">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-sm font-bold text-slate-900">Itens do negócio</h2>
-        <button onClick={onAdd} disabled={pending} className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-50">
-          <Plus className="size-3" /> Adicionar
+    <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5">
+        <h2 className="text-sm font-bold text-slate-900">Negociação</h2>
+        {expired && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">
+            <Clock className="size-2.5" /> Proposta vencida
+          </span>
+        )}
+        {multiTable && (
+          <span className="inline-flex items-center gap-1.5 ml-1" title="Tabela de preço deste negócio — herdada do cliente; a troca fica na linha do tempo e só vale pra itens novos">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Tabela</span>
+            <SimpleSelect value={tableSelectValue} onChange={(v) => onTerms({ priceTableId: v || null })} className="h-7 text-[11px] w-32"
+              options={visibleTables.map((p) => ({ value: p.is_default ? "" : p.id, label: p.active ? p.name : `${p.name} (desativada)` }))} />
+          </span>
+        )}
+        <button onClick={onAdd} disabled={pending} className="ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-50">
+          <Plus className="size-3" /> Adicionar item
         </button>
       </div>
 
       {items.length === 0 ? (
-        <p className="text-xs text-slate-400 py-2 leading-relaxed">
-          Componha o valor com produtos e serviços do catálogo — avulsos ou recorrentes (MRR).
+        <p className="text-xs text-slate-400 px-4 pb-4 leading-relaxed">
+          Monte a oferta com produtos e serviços do catálogo — avulsos ou recorrentes (MRR). O valor do negócio passa a ser a soma dos itens.
         </p>
       ) : (
-        <>
-          <div className="divide-y divide-slate-100">
-            {items.map((it) => (
-              <div key={it.id} className="group flex items-start gap-2 py-2">
-                <span className={`size-6 rounded-md grid place-items-center shrink-0 mt-0.5 ${it.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
-                  {it.type === "service" ? <Wrench className="size-3" /> : <Package className="size-3" />}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-slate-800 truncate">{it.quantity !== 1 ? `${fmtQty(it.quantity)}× ` : ""}{it.name}</p>
-                  <p className="text-[10.5px] text-slate-400">
-                    {BILLING_PT[it.billing].label}
-                    {it.billing !== "one_time" && ` · contrato ${it.term_months ?? DEFAULT_TERM_MONTHS}m${it.term_months == null ? " (padrão)" : ""}`}
-                    {it.discount > 0 && ` · desc. ${brl(it.discount)}`}
-                  </p>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className="text-xs font-bold text-slate-800 tabular-nums">
-                    {brl(lineSubtotal(it))}
-                    <span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[it.billing].suffix}</span>
-                  </p>
-                  <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => onEdit(it)} disabled={pending} title="Ajustar" className="size-5 grid place-items-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50"><Pencil className="size-3" /></button>
-                    <button onClick={() => onRemove(it)} disabled={pending} title="Remover" className="size-5 grid place-items-center rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"><Trash2 className="size-3" /></button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[640px]">
+            <thead>
+              <tr className="border-y border-slate-100 text-[10px] uppercase tracking-wide text-slate-400 bg-slate-50/60">
+                <th className="text-left font-semibold py-2 px-4">Item</th>
+                <th className="text-right font-semibold py-2 px-2">Qtd</th>
+                <th className="text-right font-semibold py-2 px-2">Tabela</th>
+                <th className="text-right font-semibold py-2 px-2">Desconto</th>
+                <th className="text-right font-semibold py-2 px-3">Total</th>
+                <th className="w-14" />
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it) => {
+                const list = it.list_price ?? it.unit_price
+                const lineBase = list * it.quantity
+                const lineVal  = Math.max(0, it.unit_price * it.quantity - it.discount)
+                const dPct = lineBase > 0 ? Math.max(0, ((lineBase - lineVal) / lineBase) * 100) : 0
+                const f = termFactor(it)
+                return (
+                  <tr key={it.id} className="group border-b border-slate-50 last:border-0 hover:bg-slate-50/40">
+                    <td className="py-2 px-4">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`size-6 rounded-md grid place-items-center shrink-0 ${it.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+                          {it.type === "service" ? <Wrench className="size-3" /> : <Package className="size-3" />}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-900 truncate">{it.name}</p>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {it.category ?? BILLING_PT[it.billing].label}
+                            {it.billing !== "one_time" && ` · ${brl(lineVal)}/mês × ${it.term_months ?? DEFAULT_TERM_MONTHS}m`}
+                            {it.max_discount_pct > 0 && <span className="text-emerald-600"> · teto {it.max_discount_pct}%</span>}
+                            {it.price_table_label && it.price_table_label !== currentTableName && <span className="text-sky-600 font-semibold"> · {it.price_table_label}</span>}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-700">{fmtQty(it.quantity)}</td>
+                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-500">{brl(list)}</td>
+                    <td className="py-2 px-2 text-right text-xs tabular-nums">
+                      {dPct > 0.05
+                        ? <span className="text-amber-700 font-semibold">−{brl(lineBase - lineVal)} <span className="text-[10px] font-medium text-slate-400">({dPct.toFixed(dPct >= 10 ? 0 : 1)}%)</span></span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="py-2 px-3 text-right text-xs font-bold tabular-nums text-slate-900">{brl(lineVal * f)}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => onEdit(it)} disabled={pending} title="Ajustar" className="size-6 grid place-items-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50"><Pencil className="size-3" /></button>
+                        <button onClick={() => onRemove(it)} disabled={pending} title="Remover" className="size-6 grid place-items-center rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"><Trash2 className="size-3" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-          {summary && (
-            <div className="mt-2 pt-2 border-t border-slate-100 space-y-1 text-xs">
-              {summary.oneTime > 0 && (
-                <div className="flex items-center justify-between"><span className="text-slate-400">Avulso</span><span className="tabular-nums text-slate-700">{brl(summary.oneTime)}</span></div>
-              )}
-              {summary.mrr > 0 && (
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400 inline-flex items-center gap-1"><Repeat className="size-2.5" /> Recorrente (MRR)</span>
-                  <span className="tabular-nums text-slate-700">{brl(summary.mrr)}<span className="text-[10px] text-slate-400">/mês</span></span>
+      {items.length > 0 && summary && (
+        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40">
+          <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+            <div className="space-y-1 text-xs min-w-[220px]">
+              <div className="flex justify-between gap-8"><span className="text-slate-400">Total bruto</span><span className="tabular-nums text-slate-600">{brl(bruto)}</span></div>
+              <div className="flex justify-between gap-8"><span className="text-slate-400">Desconto total</span><span className={`tabular-nums ${descTotal > 0 ? "text-amber-700 font-semibold" : "text-slate-400"}`}>{descTotal > 0 ? `−${brl(descTotal)} (${descPct.toFixed(descPct >= 10 ? 0 : 1)}%)` : "—"}</span></div>
+              {summary.mrr > 0 && <div className="flex justify-between gap-8"><span className="text-slate-400">Recorrente (MRR)</span><span className="tabular-nums text-emerald-600 font-semibold">{brl(summary.mrr)}/mês</span></div>}
+              <div className="flex justify-between gap-8 pt-1 border-t border-slate-200/70"><span className="font-bold text-slate-800">Total final</span><span className="tabular-nums font-extrabold text-slate-900">{brl(final)}</span></div>
+              {hasCost && (
+                <div className="flex justify-between gap-8"><span className="text-slate-400 inline-flex items-center gap-1">Margem <span className="text-[9px] font-bold uppercase bg-slate-200 text-slate-500 rounded px-1">gestor</span></span>
+                  <span className={`tabular-nums font-bold ${margem >= 0 ? "text-emerald-600" : "text-red-600"}`}>{brl(margem)} <span className="text-[10px] font-medium text-slate-400">({final > 0 ? ((margem / final) * 100).toFixed(0) : 0}%)</span></span>
                 </div>
-              )}
-              <div className="flex items-center justify-between pt-1 border-t border-slate-100">
-                <span className="font-semibold text-slate-700">Valor do negócio</span>
-                <span className="font-bold text-slate-900 tabular-nums">{brl(summary.total)}</span>
-              </div>
-              {(summary.monthly > 0 || summary.yearly > 0) && (
-                <p className="text-[10px] text-slate-400 leading-snug">Recorrente entra no total × prazo do contrato (padrão {DEFAULT_TERM_MONTHS} meses).</p>
               )}
             </div>
-          )}
-        </>
+
+            {/* termos da proposta */}
+            <div className="flex items-end gap-3 flex-wrap">
+              <div>
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Pagamento</p>
+                <div className="w-40">
+                  <SimpleSelect value={deal.paymentMethod ?? ""} onChange={(v) => onTerms({ paymentMethod: v || null })} className="h-8 text-xs"
+                    options={[{ value: "", label: "Definir…" }, ...PAYMENT_OPTIONS.map((p) => ({ value: p, label: p }))]} />
+                </div>
+              </div>
+              <div>
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Parcelas</p>
+                <input type="number" min={1} max={60} defaultValue={deal.installments ?? ""} placeholder="1×"
+                  onBlur={(e) => { const v = e.target.value ? Math.floor(Number(e.target.value)) : null; if (v !== (deal.installments ?? null)) onTerms({ installments: v }) }}
+                  className="w-16 h-8 px-2 text-xs text-center border border-slate-200 rounded-lg bg-white tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20" />
+              </div>
+              <div>
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Validade da proposta</p>
+                <input type="date" defaultValue={deal.proposalExpiresAt ?? ""} disabled={!isManager}
+                  title={isManager ? undefined : "Definida pela política do tenant — só gestores alteram"}
+                  onBlur={(e) => { const v = e.target.value || null; if (isManager && v !== (deal.proposalExpiresAt ?? null)) onTerms({ proposalExpiresAt: v }) }}
+                  className={`h-8 px-2 text-xs border rounded-lg tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20 ${expired ? "border-red-300 text-red-600 bg-red-50" : "border-slate-200 bg-white text-slate-700"} disabled:opacity-60 disabled:cursor-not-allowed`} />
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   )
 }
 
+
+
 /** Modal de item — adicionar (picker do catálogo → configurar) ou ajustar (direto). */
-function DealItemModal({ edit, pending, onClose, onSubmit }: {
+function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
+  dealId: string
   edit: DealItemView | null
   pending: boolean
   onClose: () => void
   onSubmit: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null }) => void
 }) {
   const [catalog, setCatalog]   = useState<CatalogPickerItem[] | null>(edit ? [] : null)   // null = carregando
+  const [pickError, setPickError] = useState<string | null>(null)
   const [search, setSearch]     = useState("")
   const [picked, setPicked]     = useState<CatalogPickerItem | null>(null)
   const [qty, setQty]           = useState(edit ? fmtQty(edit.quantity) : "1")
@@ -1334,16 +1518,22 @@ function DealItemModal({ edit, pending, onClose, onSubmit }: {
   useEffect(() => {
     if (edit) return
     let alive = true
-    getCatalogForPicker().then((r) => { if (alive) setCatalog(r) }).catch(() => { if (alive) setCatalog([]) })
+    // T2: preços/tetos vêm da TABELA do negócio (Atacado…); tabela vencida → erro fail-closed.
+    getCatalogForPicker(dealId).then((r) => {
+      if (!alive) return
+      if (Array.isArray(r)) setCatalog(r)
+      else { setCatalog([]); setPickError(r.error) }
+    }).catch(() => { if (alive) setCatalog([]) })
     return () => { alive = false }
-  }, [edit])
+  }, [edit, dealId])
 
   // Item "ativo" da configuração: o escolhido no picker OU o snapshot em edição.
+  // listPrice/maxPct = base do PISO (teto de desconto snapshotado).
   const active = useMemo(() => (
     edit
-      ? { name: edit.name, billing: edit.billing, price: edit.unit_price, type: edit.type }
+      ? { name: edit.name, billing: edit.billing, price: edit.unit_price, type: edit.type, listPrice: edit.list_price ?? edit.unit_price, maxPct: edit.max_discount_pct ?? 0 }
       : picked
-        ? { name: picked.name, billing: picked.billing, price: picked.price, type: picked.type }
+        ? { name: picked.name, billing: picked.billing, price: picked.price, type: picked.type, listPrice: picked.price, maxPct: picked.max_discount_pct ?? 0 }
         : null
   ), [edit, picked])
   const recurring = active != null && active.billing !== "one_time"
@@ -1381,6 +1571,18 @@ function DealItemModal({ edit, pending, onClose, onSubmit }: {
     if (d != null && Number.isNaN(d)) { setError("Desconto inválido"); return }
     const tm = term.trim() ? Math.floor(Number(term)) : null
     if (tm != null && (!Number.isFinite(tm) || tm <= 0)) { setError("Prazo inválido"); return }
+    // Piso do teto (mesma regra do server — que valida de novo, fail-closed):
+    // vale pro desconto E pro preço negociado.
+    if (active) {
+      const floor = active.listPrice * q * (1 - (active.maxPct ?? 0) / 100)
+      const line  = effPrice * q - (d ?? 0)
+      if (line < floor - 0.01) {
+        setError(active.maxPct > 0
+          ? `Desconto acima do permitido — este item aceita no máximo ${active.maxPct}% (mínimo da linha: ${brl(floor)}).`
+          : "Este item não aceita desconto (teto 0% no catálogo).")
+        return
+      }
+    }
     onSubmit({ catalogItemId: picked?.id, quantity: q, unitPrice: effPrice, discount: d, termMonths: recurring ? tm : null })
   }
 
@@ -1403,7 +1605,10 @@ function DealItemModal({ edit, pending, onClose, onSubmit }: {
                 className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
             </div>
             {catalog === null && <p className="text-[11px] text-slate-400 text-center py-8"><Loader2 className="size-4 animate-spin inline" /></p>}
-            {catalog !== null && catalog.length === 0 && (
+            {pickError && (
+              <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5 leading-relaxed">{pickError}</p>
+            )}
+            {catalog !== null && catalog.length === 0 && !pickError && (
               <p className="text-[11px] text-slate-400 text-center py-8 leading-relaxed">
                 Seu catálogo está vazio.<br />
                 <Link href="/configuracoes/catalogo" className="text-primary-600 font-semibold hover:underline">Cadastre produtos e serviços</Link> pra compor o valor dos negócios.
@@ -1412,17 +1617,28 @@ function DealItemModal({ edit, pending, onClose, onSubmit }: {
             {filtered.length > 0 && (
               <div className="space-y-1">
                 {filtered.map((c) => (
-                  <button key={c.id} type="button" onClick={() => { setPicked(c); setPrice(c.price > 0 ? c.price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "") }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-slate-50 text-left transition-colors">
-                    <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${c.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
-                      {c.type === "service" ? <Wrench className="size-3.5" /> : <Package className="size-3.5" />}
-                    </span>
+                  <button key={c.id} type="button"
+                    onClick={() => { setPicked(c); setPrice(c.price > 0 ? c.price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "") }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors hover:bg-slate-50">
+                    {c.image_path ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={`/api/catalog-image/${c.id}`} alt="" className="size-7 rounded-lg object-cover shrink-0 ring-1 ring-slate-200" />
+                    ) : (
+                      <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${c.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+                        {c.type === "service" ? <Wrench className="size-3.5" /> : <Package className="size-3.5" />}
+                      </span>
+                    )}
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-semibold text-slate-800 truncate">{c.name}</p>
-                      <p className="text-[10px] text-slate-400 truncate">{[c.sku, c.category].filter(Boolean).join(" · ") || (c.type === "service" ? "Serviço" : "Produto")}</p>
+                      <p className="text-[10px] text-slate-400 truncate">
+                        {[c.sku, c.category].filter(Boolean).join(" · ") || (c.type === "service" ? "Serviço" : "Produto")}{c.max_discount_pct > 0 && <span className="text-emerald-600 font-semibold"> · até {c.max_discount_pct}% desc.</span>}
+                      </p>
                     </div>
-                    <span className="text-xs font-bold text-slate-700 tabular-nums shrink-0">
-                      {brl(c.price)}<span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[c.billing].suffix}</span>
+                    <span className="text-right shrink-0">
+                      <span className="text-xs font-bold text-slate-700 tabular-nums">
+                        {brl(c.price)}<span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[c.billing].suffix}</span>
+                      </span>
+                      {c.table_label && <span className="block text-[9px] font-semibold text-sky-600">{c.table_label}</span>}
                     </span>
                   </button>
                 ))}
@@ -1442,7 +1658,12 @@ function DealItemModal({ edit, pending, onClose, onSubmit }: {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-semibold text-slate-800 truncate">{active.name}</p>
-                <p className="text-[10px] text-slate-400">{BILLING_PT[active.billing].label} · {brl(active.price)}{BILLING_PT[active.billing].suffix}</p>
+                <p className="text-[10px] text-slate-400">
+                  {BILLING_PT[active.billing].label} · tabela {brl(active.listPrice)}{BILLING_PT[active.billing].suffix}
+                  {active.maxPct > 0
+                    ? <span className="text-emerald-600 font-semibold"> · pode chegar a {brl(active.listPrice * (1 - active.maxPct / 100))} (até {active.maxPct}%)</span>
+                    : <span className="text-slate-400"> · sem desconto</span>}
+                </p>
               </div>
             </div>
 
