@@ -15,7 +15,7 @@ export default async function PainelNegociosPage() {
 
   const DEFAULT_PERIOD = "365"   // "Último ano", como a referência
   const to   = new Date()
-  const from = new Date(Date.now() - Number(DEFAULT_PERIOD) * 86_400_000)
+  const from = new Date(to.getTime() - Number(DEFAULT_PERIOD) * 86_400_000)
   const data = await getPipelineDashboard({ from: from.toISOString(), to: to.toISOString() })
   if ("error" in data) redirect("/negocios")
 

@@ -14,7 +14,9 @@ interface MetaCloudConfig {
 
 export interface MetaTemplateComponent {
   type: string; text?: string; format?: string; example?: unknown
-  buttons?: Array<{ type: string; text?: string }>
+  buttons?: Array<{ type: string; text?: string; url?: string }>
+  /** CAROUSEL: cada card é um mini-template (HEADER de mídia + BODY + BUTTONS). */
+  cards?: Array<{ components: MetaTemplateComponent[] }>
 }
 export interface MetaTemplate {
   id?:        string
@@ -165,6 +167,35 @@ export class MetaCloudProvider implements WhatsAppProvider {
     return json.id
   }
 
+  /** Wrapper público de uploadMedia → media_id (cards de carrossel no ENVIO usam id, não link). */
+  async uploadMediaIdFromUrl(sourceUrl: string, type: ContentType, fileName?: string): Promise<string> {
+    return this.uploadMedia(sourceUrl, type, fileName)
+  }
+
+  /**
+   * Upload RESUMABLE (Upload API do APP, não do número) → `header_handle` usado como
+   * EXEMPLO de mídia na CRIAÇÃO de template (cards de carrossel / header de mídia).
+   * Fluxo Meta: abre sessão em /{app_id}/uploads → POST binário com `file_offset: 0`
+   * → devolve `{ h }`. Exige META_APP_ID (Tech Provider já configurado).
+   */
+  async uploadTemplateHeaderHandle(bytes: ArrayBuffer, mime: string): Promise<string> {
+    const appId = process.env.META_APP_ID
+    if (!appId) throw new Error("META_APP_ID não configurado — necessário pro upload de mídia de template")
+    const session = await this.graph<{ id: string }>(
+      `/${appId}/uploads?file_length=${bytes.byteLength}&file_type=${encodeURIComponent(mime)}`,
+      { method: "POST" },
+    )
+    // A sessão ("upload:XXX") é consumida com header OAuth + offset — fora do this.graph.
+    const res = await fetch(`${BASE}/${session.id}`, {
+      method: "POST",
+      headers: { Authorization: `OAuth ${this.config.meta_access_token}`, file_offset: "0" },
+      body: bytes,
+    })
+    const json = await res.json().catch(() => ({})) as { h?: string; error?: { message?: string } }
+    if (!res.ok || !json.h) throw new Error(`Upload da mídia do template falhou: ${json.error?.message ?? JSON.stringify(json)}`)
+    return json.h
+  }
+
   // ── Messaging ───────────────────────────────────────────────
   async sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult> {
     return this.sendMessage({
@@ -312,6 +343,8 @@ export class MetaCloudProvider implements WhatsAppProvider {
     phone: string, name: string, langCode = "en_US",
     bodyParams?: Array<{ paramName?: string; text: string }>,
     buttonParams?: Array<{ subType: "quick_reply" | "url"; index: number; payload?: string; url?: string }>,
+    /** Carrossel: no ENVIO cada card exige o header de mídia por media_id (o exemplo da aprovação não é usado). */
+    carouselCards?: Array<{ index: number; mediaType: "image" | "video"; mediaId: string; bodyParams?: Array<{ paramName?: string; text: string }> }>,
   ): Promise<SendResult> {
     const template: Record<string, unknown> = { name, language: { code: langCode } }
     const components: Array<Record<string, unknown>> = []
@@ -335,6 +368,20 @@ export class MetaCloudProvider implements WhatsAppProvider {
           : [{ type: "text",    text:    b.url ?? "" }],
       })
     }
+    if (carouselCards && carouselCards.length > 0) {
+      components.push({
+        type: "carousel",
+        cards: carouselCards.map((c) => ({
+          card_index: c.index,
+          components: [
+            { type: "header", parameters: [{ type: c.mediaType, [c.mediaType]: { id: c.mediaId } }] },
+            ...(c.bodyParams && c.bodyParams.length > 0
+              ? [{ type: "body", parameters: c.bodyParams.map((p) => p.paramName ? { type: "text", parameter_name: p.paramName, text: p.text } : { type: "text", text: p.text }) }]
+              : []),
+          ],
+        })),
+      })
+    }
     if (components.length > 0) template.components = components
     return this.sendMessage({ ...this.recipientFields(phone), type: "template", template })
   }
@@ -353,6 +400,14 @@ export class MetaCloudProvider implements WhatsAppProvider {
     footer?:        string
     buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
     parameterFormat?: "NAMED" | "POSITIONAL"
+    /** Carrossel: 2–10 cards; headerHandle = exemplo de mídia (Upload API). */
+    carouselCards?: Array<{
+      headerFormat: "IMAGE" | "VIDEO"
+      headerHandle: string
+      body: string
+      bodyExamples?: Record<string, string>
+      buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
+    }>
   }): { components: Array<Record<string, unknown>>; parameterFormat: "NAMED" | "POSITIONAL" } {
     const components: Array<Record<string, unknown>> = []
 
@@ -390,6 +445,37 @@ export class MetaCloudProvider implements WhatsAppProvider {
       })
     }
 
+    // CAROUSEL: cada card = HEADER de mídia (handle de exemplo) + BODY + botões.
+    if (opts.carouselCards && opts.carouselCards.length > 0) {
+      components.push({
+        type: "CAROUSEL",
+        cards: opts.carouselCards.map((card) => {
+          const cardComponents: Array<Record<string, unknown>> = [
+            { type: "HEADER", format: card.headerFormat, example: { header_handle: [card.headerHandle] } },
+          ]
+          const cardBody: Record<string, unknown> = { type: "BODY", text: card.body }
+          const cardVars = parseVars(card.body)
+          if (cardVars.length > 0 && card.bodyExamples) {
+            cardBody.example = cardVars.some((v) => v.named)
+              ? { body_text_named_params: cardVars.map((v) => ({ param_name: v.key, example: card.bodyExamples![v.key] ?? "" })) }
+              : { body_text: [cardVars.map((v) => card.bodyExamples![v.key] ?? "")] }
+          }
+          cardComponents.push(cardBody)
+          if (card.buttons && card.buttons.length > 0) {
+            cardComponents.push({
+              type: "BUTTONS",
+              buttons: card.buttons.map((b) =>
+                b.type === "URL"          ? { type: "URL",          text: b.text, url: b.url }
+                : b.type === "PHONE_NUMBER" ? { type: "PHONE_NUMBER", text: b.text, phone_number: b.phone }
+                :                             { type: "QUICK_REPLY",  text: b.text },
+              ),
+            })
+          }
+          return { components: cardComponents }
+        }),
+      })
+    }
+
     // A Meta exige declarar o formato das variáveis no nível do request. O default
     // da API é POSITIONAL — sem isto, {{nome}} é rejeitado com "Invalid parameter".
     // (a UI já barra mistura de tipos, então body/header concordam no formato.)
@@ -417,6 +503,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     bodyExamples?:  Record<string, string>   // key da variável (número ou nome) → exemplo
     footer?:        string
     buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
+    carouselCards?: Array<{ headerFormat: "IMAGE" | "VIDEO"; headerHandle: string; body: string; bodyExamples?: Record<string, string>; buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }> }>
   }): Promise<{ id: string; status: string }> {
     const { components, parameterFormat } = this.buildTemplatePayload(opts)
 
@@ -449,6 +536,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     bodyExamples?:  Record<string, string>
     footer?:        string
     buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }>
+    carouselCards?: Array<{ headerFormat: "IMAGE" | "VIDEO"; headerHandle: string; body: string; bodyExamples?: Record<string, string>; buttons?: Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }> }>
   }): Promise<{ success: boolean }> {
     const { components, parameterFormat } = this.buildTemplatePayload(opts)
 

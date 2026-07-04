@@ -185,6 +185,18 @@ function validateTemplateVars(body: string): string | null {
 
 export interface TemplateButton { type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone?: string }
 
+/** Card de carrossel (C2 — docs/campanhas-waba-design.md). Mídia sobe ANTES via
+ *  `uploadTemplateCardMedia` (storage nosso) — na criação vira header_handle (exemplo);
+ *  no envio vira media_id. Path fica em `wa_templates.card_assets`. */
+export interface TemplateCarouselCard {
+  format:    "IMAGE" | "VIDEO"
+  assetPath: string
+  assetMime: string
+  body:      string
+  examples?: Record<string, string>
+  buttons?:  TemplateButton[]
+}
+
 /** Shape comum de criação/edição (edição só acrescenta `templateId`). */
 export interface TemplateInput {
   name: string
@@ -198,6 +210,8 @@ export interface TemplateInput {
   examples: Record<string, string>   // key da variável (número OU nome) → exemplo
   footer?:  string
   buttons?: TemplateButton[]
+  /** Carrossel: 2–10 cards (todos com o MESMO formato de mídia — regra da Meta). */
+  carousel?: TemplateCarouselCard[]
 }
 
 /** Opts já validados/normalizados, no shape que `createTemplate`/`editTemplate` aceitam. */
@@ -310,6 +324,64 @@ export async function setTemplateKoraCategory(input: { name: string; language: s
   return { ok: true }
 }
 
+const TEMPLATE_MEDIA_BUCKET = "chat-attachments"
+const CARD_IMAGE_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png" }
+const CARD_VIDEO_TYPES: Record<string, string> = { "video/mp4": "mp4" }
+
+/** Sobe a mídia de UM card pro nosso storage (antes de criar o template). owner/admin. */
+export async function uploadTemplateCardMedia(formData: FormData): Promise<{ path: string; mime: string; format: "IMAGE" | "VIDEO" } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
+
+  const file = formData.get("file") as File | null
+  if (!file || !file.size) return { error: "Nenhum arquivo enviado" }
+  const isImage = file.type in CARD_IMAGE_TYPES
+  const isVideo = file.type in CARD_VIDEO_TYPES
+  if (!isImage && !isVideo) return { error: "Formato inválido — cards aceitam JPG/PNG ou MP4" }
+  if (isImage && file.size > 5 * 1024 * 1024) return { error: "Imagem do card acima de 5MB" }
+  if (isVideo && file.size > 16 * 1024 * 1024) return { error: "Vídeo do card acima de 16MB" }
+
+  const ext = isImage ? CARD_IMAGE_TYPES[file.type] : CARD_VIDEO_TYPES[file.type]
+  const path = `templates/${session.user.tenantId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+  const buffer = Buffer.from(await file.arrayBuffer())
+  const { error } = await supabaseAdmin.storage.from(TEMPLATE_MEDIA_BUCKET)
+    .upload(path, buffer, { contentType: file.type, upsert: true })
+  if (error) return { error: `Falha no upload: ${error.message}` }
+  return { path, mime: file.type, format: isImage ? "IMAGE" : "VIDEO" }
+}
+
+/** Valida o carrossel (regras da Meta) — null = ok. */
+function validateCarousel(cards: TemplateCarouselCard[]): string | null {
+  if (cards.length < 2 || cards.length > 10) return "Carrossel precisa de 2 a 10 cards."
+  const fmt = cards[0].format
+  if (cards.some((c) => c.format !== fmt)) return "Todos os cards devem usar o mesmo formato de mídia (só imagem OU só vídeo)."
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i]
+    if (!c.assetPath) return `Card ${i + 1}: envie a mídia.`
+    if (!c.body?.trim()) return `Card ${i + 1}: escreva o texto.`
+    if ((c.buttons ?? []).length > 2) return `Card ${i + 1}: no máximo 2 botões por card.`
+    for (const b of c.buttons ?? []) {
+      if (!b.text.trim()) return `Card ${i + 1}: botão sem texto.`
+      if (b.type === "URL" && !b.url?.trim()) return `Card ${i + 1}: botão "${b.text}" sem URL.`
+    }
+  }
+  return null
+}
+
+/** Persiste o mapa de mídia dos cards no cache (envio de carrossel lê daqui). Best-effort. */
+async function persistCardAssets(tenantId: string, name: string, language: string, cards: TemplateCarouselCard[]): Promise<void> {
+  try {
+    await supabaseAdmin.from("wa_templates").upsert({
+      tenant_id: tenantId, name, language,
+      card_assets: cards.map((c) => ({ path: c.assetPath, mime: c.assetMime, format: c.format })),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "tenant_id,name,language" })
+  } catch (e) {
+    console.error("[wa] persistCardAssets", (e as Error).message)
+  }
+}
+
 export async function createOfficialTemplate(input: TemplateInput): Promise<Result> {
   const r = await tenantMetaProvider()
   if ("error" in r) return { ok: false, error: r.error }
@@ -317,12 +389,37 @@ export async function createOfficialTemplate(input: TemplateInput): Promise<Resu
   const v = validateTemplateInput(input)
   if ("error" in v) return { ok: false, error: v.error }
 
+  // Carrossel: valida, baixa cada mídia do storage e troca por header_handle (Upload API).
+  let carouselCards: Array<{ headerFormat: "IMAGE" | "VIDEO"; headerHandle: string; body: string; bodyExamples?: Record<string, string>; buttons?: TemplateButton[] }> | undefined
+  if (input.carousel && input.carousel.length > 0) {
+    const cErr = validateCarousel(input.carousel)
+    if (cErr) return { ok: false, error: cErr }
+    try {
+      carouselCards = []
+      for (const card of input.carousel) {
+        const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(TEMPLATE_MEDIA_BUCKET).download(card.assetPath)
+        if (dlErr || !blob) return { ok: false, error: `Mídia de um card não encontrada — reenvie (${dlErr?.message ?? "download falhou"})` }
+        const handle = await r.provider.uploadTemplateHeaderHandle(await blob.arrayBuffer(), card.assetMime)
+        carouselCards.push({
+          headerFormat: card.format, headerHandle: handle, body: card.body.trim(),
+          bodyExamples: card.examples, buttons: card.buttons?.length ? card.buttons : undefined,
+        })
+      }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  }
+
   try {
-    const res = await r.provider.createTemplate(v.build)
+    const res = await r.provider.createTemplate({ ...v.build, carouselCards })
     // Propósito (categoria interna) — persiste no cache, fora do round-trip Meta.
-    if (input.koraCategory !== undefined) {
-      const session = await auth()
-      if (session) await persistKoraCategory(session.user.tenantId, v.build.name, v.build.language, input.koraCategory)
+    const session = await auth()
+    if (input.koraCategory !== undefined && session) {
+      await persistKoraCategory(session.user.tenantId, v.build.name, v.build.language, input.koraCategory)
+    }
+    // Mapa de mídia dos cards (o ENVIO usa nossa cópia — o exemplo da aprovação não serve).
+    if (input.carousel?.length && session) {
+      await persistCardAssets(session.user.tenantId, v.build.name, v.build.language, input.carousel)
     }
     revalidatePath(PAGE)
     return { ok: true, id: res.id }
@@ -540,25 +637,71 @@ export async function updateOfficialProfile(profile: Partial<MetaBusinessProfile
   }
 }
 
+/** Botão de card (leitura — pra preview e bolha do chat). */
+export interface InboxTemplateButton { type: string; text: string; url?: string }
+/** Um card de carrossel pronto pra renderizar (corpo + botões da Meta; formato do cache). */
+export interface InboxCarouselCard {
+  format:  "IMAGE" | "VIDEO"
+  body:    string
+  vars:    TemplateVar[]
+  buttons: InboxTemplateButton[]
+}
+
 export interface InboxTemplate {
-  name:     string
-  language: string
-  body:     string
-  vars:     TemplateVar[]   // ordenadas; posicionais ({{1}}) ou nomeadas ({{nome}})
+  name:      string
+  language:  string
+  category:  "MARKETING" | "UTILITY"
+  body:      string
+  vars:      TemplateVar[]   // ordenadas; posicionais ({{1}}) ou nomeadas ({{nome}})
+  /** Presente só em templates de CARROSSEL — os cards na ordem de aprovação. */
+  carousel?: InboxCarouselCard[]
+}
+
+/**
+ * Extrai os cards de um componente CAROUSEL da Meta. O corpo/botões vêm dos
+ * componentes; o formato da mídia (IMAGE/VIDEO) vem do HEADER de cada card
+ * (fallback no `card_assets` do cache quando a Meta omite).
+ */
+function parseCarouselCards(components: MetaTemplate["components"], assets: { format?: string }[] | null): InboxCarouselCard[] {
+  const carousel = components?.find((c) => c.type === "CAROUSEL")
+  if (!carousel?.cards?.length) return []
+  return carousel.cards.map((card, i) => {
+    const header = card.components.find((c) => c.type === "HEADER")
+    const body   = card.components.find((c) => c.type === "BODY")?.text ?? ""
+    const btns   = card.components.find((c) => c.type === "BUTTONS")?.buttons ?? []
+    const fmt    = (header?.format ?? assets?.[i]?.format ?? "IMAGE").toUpperCase()
+    return {
+      format:  fmt === "VIDEO" ? "VIDEO" : "IMAGE",
+      body,
+      vars:    parseVars(body),
+      buttons: btns.map((b) => ({ type: b.type, text: b.text ?? "", url: b.url })),
+    }
+  })
 }
 
 /** Templates APROVADOS do tenant — pro seletor do composer quando a janela fecha. */
 export async function getInboxTemplates(): Promise<InboxTemplate[]> {
   const r = await tenantMetaProvider()
   if ("error" in r) return []
+  const session = await auth()
   try {
-    const tpls = await r.provider.listTemplates()
-    return tpls
-      .filter((t) => t.status === "APPROVED")
-      .map((t) => {
-        const body = t.components?.find((c) => c.type === "BODY")?.text ?? ""
-        return { name: t.name, language: t.language, body, vars: parseVars(body) }
-      })
+    const tpls = (await r.provider.listTemplates()).filter((t) => t.status === "APPROVED")
+    // Carrega o mapa de mídia dos cards (card_assets) de todos os carrosséis de uma vez.
+    const carouselNames = tpls.filter((t) => t.components?.some((c) => c.type === "CAROUSEL")).map((t) => t.name)
+    const assetsByKey = new Map<string, { format?: string }[]>()
+    if (carouselNames.length && session) {
+      const { data: rows } = await supabaseAdmin.from("wa_templates")
+        .select("name, language, card_assets").eq("tenant_id", session.user.tenantId).in("name", carouselNames)
+      for (const row of (rows ?? []) as { name: string; language: string; card_assets: { format?: string }[] | null }[]) {
+        if (row.card_assets) assetsByKey.set(`${row.name}|${row.language}`, row.card_assets)
+      }
+    }
+    return tpls.map((t) => {
+      const body = t.components?.find((c) => c.type === "BODY")?.text ?? ""
+      const cards = parseCarouselCards(t.components, assetsByKey.get(`${t.name}|${t.language}`) ?? null)
+      const category = (t.category?.toUpperCase() === "UTILITY" ? "UTILITY" : "MARKETING") as "MARKETING" | "UTILITY"
+      return { name: t.name, language: t.language, category, body, vars: parseVars(body), ...(cards.length ? { carousel: cards } : {}) }
+    })
   } catch {
     return []
   }

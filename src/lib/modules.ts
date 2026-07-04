@@ -20,6 +20,7 @@
 //   - `expires_at` é respeitado pela função SQL (override temporário expira)
 
 import "server-only"
+import { cache } from "react"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 
@@ -70,8 +71,10 @@ export interface TenantModuleStatus {
 /**
  * Verifica se o tenant tem o módulo habilitado.
  * Core modules sempre retornam true.
+ * Memoizado POR REQUEST (React cache): page + actions + gates repetidos na mesma
+ * renderização custam 1 RPC só — corte direto de latência de navegação.
  */
-export async function hasModule(tenantId: string, slug: ModuleSlug): Promise<boolean> {
+export const hasModule = cache(async (tenantId: string, slug: ModuleSlug): Promise<boolean> => {
   const { data, error } = await supabaseAdmin
     .rpc("tenant_has_module", { p_tenant_id: tenantId, p_slug: slug })
 
@@ -80,7 +83,7 @@ export async function hasModule(tenantId: string, slug: ModuleSlug): Promise<boo
     return false
   }
   return !!data
-}
+})
 
 /**
  * Throws se o tenant da sessão atual NÃO tem o módulo. Use em server actions.

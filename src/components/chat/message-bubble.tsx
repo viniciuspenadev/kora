@@ -61,6 +61,10 @@ interface MessageMeta {
   flow_id?:           string | null
   flow_run_id?:       string | null
   node_id?:           string | null
+  // Template oficial / Carrossel (Cloud API)
+  template?:          string
+  language?:          string
+  carousel?:          Array<{ body: string; buttons: Array<{ type: string; text: string; url?: string }> }>
 }
 
 interface Props {
@@ -760,6 +764,10 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
           </p>
         )}
 
+        {meta.carousel && meta.carousel.length > 0 && meta.template && (
+          <CarouselCards templateName={meta.template} language={meta.language ?? "pt_BR"} cards={meta.carousel} />
+        )}
+
         <div className={`flex items-center justify-end gap-1 mt-1 ${
           isIncoming ? "text-slate-400" : "text-slate-500"
         }`}>
@@ -897,6 +905,39 @@ function getMediaIcon(type: string) {
     case "location": return <MapPin className="size-3.5" />
     default:         return null
   }
+}
+
+// ── Carrossel (Cloud API): tira de cards com scroll horizontal ──────────
+// Mídia servida por /api/template-card (tenant-gated). Botões são visuais
+// (não clicáveis na bolha — refletem o que o cliente recebe).
+function CarouselCards({ templateName, language, cards }: {
+  templateName: string
+  language: string
+  cards: Array<{ body: string; buttons: Array<{ type: string; text: string; url?: string }> }>
+}) {
+  const src = (i: number) => `/api/template-card?name=${encodeURIComponent(templateName)}&lang=${encodeURIComponent(language)}&i=${i}`
+  return (
+    <div className="mt-1.5 -mx-1 flex gap-2 overflow-x-auto pb-1 snap-x">
+      {cards.map((card, i) => (
+        <div key={i} className="snap-start shrink-0 w-44 rounded-xl overflow-hidden border border-slate-200 bg-white">
+          <div className="aspect-video bg-slate-100 overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={src(i)} alt="" className="w-full h-full object-cover" loading="lazy" />
+          </div>
+          {card.body && <p className="px-2.5 py-2 text-[11px] leading-snug text-slate-700 whitespace-pre-wrap break-words">{card.body}</p>}
+          {card.buttons.length > 0 && (
+            <div className="border-t border-slate-100">
+              {card.buttons.map((b, j) => (
+                <div key={j} className="px-2.5 py-1.5 text-[11px] font-semibold text-sky-600 text-center border-b border-slate-50 last:border-0 truncate">
+                  {b.text}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function QuotedReplyCard({ quoted, incoming }: { quoted: QuotedMeta | null; incoming: boolean }) {

@@ -9,7 +9,7 @@ import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked, IdCard,
-  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList, ListChecks,
+  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -75,6 +75,18 @@ const NAV: NavItem[] = [
       { href: "/negocios",        label: "Pipeline", icon: <Columns3           className={subIcon} strokeWidth={1.75} /> },
       { href: "/negocios/painel", label: "Painel",   icon: <BarChart3          className={subIcon} strokeWidth={1.75} /> },
       { href: "/negocios/funis",  label: "Funis",    icon: <SlidersHorizontal  className={subIcon} strokeWidth={1.75} /> },
+    ],
+  },
+  {
+    key:       "marketing",
+    label:     "Marketing",
+    icon:      <Megaphone className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    module:    "broadcasts",
+    adminOnly: true,
+    children: [
+      { href: "/campanhas",            label: "Campanhas",       icon: <Send      className={subIcon} strokeWidth={1.75} /> },
+      { href: "/templates",            label: "Templates",       icon: <FileText  className={subIcon} strokeWidth={1.75} /> },
+      { href: "/templates/biblioteca", label: "Biblioteca",      icon: <BookMarked className={subIcon} strokeWidth={1.75} /> },
     ],
   },
   { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "agenda"  },

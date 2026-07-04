@@ -528,8 +528,11 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
 
+  // Select ÚNICO: termos (N2) e tabela (T2) fundidos — as queries "graciosas"
+  // separadas eram transição pré-migration; migrations aplicadas = round-trips a menos.
   const { data: d } = await supabaseAdmin.from("tenant_deals").select(`
     id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, canceled_at, stage_entered_at, created_at, created_by, contact_id, pipeline_id,
+    payment_method, installments, proposal_expires_at, price_table_id,
     chat_contacts ( id, push_name, custom_name, profile_pic_url, phone_number, lifecycle_stage, source ),
     deal_pipelines ( name ),
     deal_pipeline_stages ( id, name, color, is_won, is_lost )
@@ -539,7 +542,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   if (!(await canAccessDeal(t, deal.contact_id as string | null))) return { error: "Sem acesso a este negócio" }
   const contactId = deal.contact_id as string | null
 
-  const [{ data: evs }, { data: convs }, { data: pipes }, { data: others }, { data: tasks }, { data: itemRows }] = await Promise.all([
+  const [{ data: evs }, { data: convs }, { data: pipes }, { data: others }, { data: tasks }, { data: itemRows }, { data: ptAll }] = await Promise.all([
     supabaseAdmin.from("tenant_deal_events").select("id, type, at, by, from_stage, to_stage, meta").eq("tenant_id", t).eq("deal_id", dealId).order("at", { ascending: true }),
     // Conversa do CONTATO (não só a do negócio ativo): a que tem este negócio como ativo,
     // senão a mais recente — pra a página poder mover/anotar mesmo em negócio secundário.
@@ -551,23 +554,14 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       ? supabaseAdmin.from("tenant_deals").select("id, name, status, estimated_value, won_at, lost_at").eq("tenant_id", t).eq("contact_id", contactId).neq("id", dealId).order("created_at", { ascending: false }).limit(20)
       : Promise.resolve({ data: [] as unknown[] }),
     supabaseAdmin.from("tenant_tasks").select("id, title, due_at").eq("tenant_id", t).eq("deal_id", dealId).eq("status", "pending").order("due_at", { ascending: true, nullsFirst: false }).limit(1),
-    // Itens do negócio — gracioso se a migration ainda não foi aplicada (data null → []).
-    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, discount, term_months, category, list_price, max_discount_pct, cost").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
-  ])
-  // Termos da proposta (N2) — query separada e graciosa (migration pendente não derruba a página).
-  const { data: termRow } = await supabaseAdmin.from("tenant_deals")
-    .select("payment_method, installments, proposal_expires_at").eq("id", dealId).eq("tenant_id", t).maybeSingle()
-  const termsD = (termRow ?? {}) as { payment_method?: string | null; installments?: number | null; proposal_expires_at?: string | null }
-  // Tabela de preço do negócio + tabelas do tenant (T2) — separadas e graciosas.
-  const [{ data: ptRow }, { data: ptAll }, { data: lineLabels }] = await Promise.all([
-    supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", t).maybeSingle(),
+    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, discount, term_months, category, list_price, max_discount_pct, cost, price_table_label").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
+    // Tabelas do tenant (T2) pro switcher.
     supabaseAdmin.from("price_tables").select("id, name, is_default, active").eq("tenant_id", t).order("is_default", { ascending: false }).order("name"),
-    supabaseAdmin.from("tenant_deal_items").select("id, price_table_label").eq("tenant_id", t).eq("deal_id", dealId),
   ])
+  const termsD = deal as { payment_method?: string | null; installments?: number | null; proposal_expires_at?: string | null }
   const priceTables = ((ptAll ?? []) as { id: string; name: string; is_default: boolean; active: boolean }[])
-  const dealTableId = (ptRow as { price_table_id?: string | null } | null)?.price_table_id ?? null
+  const dealTableId = (deal.price_table_id as string | null) ?? null
   const priceTable = dealTableId ? (priceTables.find((p) => p.id === dealTableId) ?? null) : null
-  const labelByLine = new Map(((lineLabels ?? []) as { id: string; price_table_label: string | null }[]).map((l) => [l.id, l.price_table_label]))
   const isManager = ["owner", "admin"].includes(session.user.role)
   // Motivos de perda governados (fallback = lista padrão; gracioso sem migration).
   const { data: reasonRows } = await supabaseAdmin.from("deal_outcome_reasons")
@@ -651,7 +645,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       category: (i.category as string | null) ?? null,
       list_price: i.list_price != null ? Number(i.list_price) : null,
       max_discount_pct: Number(i.max_discount_pct ?? 0),
-      price_table_label: labelByLine.get(i.id as string) ?? null,
+      price_table_label: (i.price_table_label as string | null) ?? null,
       // Custo é INTERNO: só gestor recebe (margem). Vendedor: campo ausente.
       ...(isManager ? { cost: i.cost != null ? Number(i.cost) : null } : {}),
     })),
@@ -673,13 +667,13 @@ export async function updateDeal(dealId: string, fields: { name?: string; estima
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
-  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, name, estimated_value, expected_close_date").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  const { data: deal } = await supabaseAdmin.from("tenant_deals")
+    .select("contact_id, name, estimated_value, expected_close_date, payment_method, installments, proposal_expires_at, price_table_id")
+    .eq("id", dealId).eq("tenant_id", t).maybeSingle()
   if (!deal) return { error: "Negócio não encontrado" }
-  const d = deal as { contact_id: string | null; name: string | null; estimated_value: number | null; expected_close_date: string | null }
+  const d = deal as { contact_id: string | null; name: string | null; estimated_value: number | null; expected_close_date: string | null; price_table_id: string | null }
   if (!(await canAccessDeal(t, d.contact_id))) return { error: "Sem acesso" }
-  // Termos da proposta lidos à parte (colunas da N2 — gracioso se migration pendente).
-  const { data: terms } = await supabaseAdmin.from("tenant_deals").select("payment_method, installments, proposal_expires_at").eq("id", dealId).eq("tenant_id", t).maybeSingle()
-  const dt = (terms ?? {}) as { payment_method?: string | null; installments?: number | null; proposal_expires_at?: string | null }
+  const dt = deal as { payment_method?: string | null; installments?: number | null; proposal_expires_at?: string | null }
 
   // Detecta o que MUDOU de fato (pra auditar antes→depois e não gravar evento à toa).
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -733,8 +727,7 @@ export async function updateDeal(dealId: string, fields: { name?: string; estima
   if (fields.priceTableId !== undefined) {
     // Troca de tabela (T2): itens JÁ lançados não re-preçam (snapshot é lei);
     // só itens novos usam a tabela nova. Anti-IDOR: tabela tem que ser DO tenant.
-    const { data: curRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
-    const cur = (curRow as { price_table_id?: string | null } | null)?.price_table_id ?? null
+    const cur = d.price_table_id ?? null
     const next = fields.priceTableId || null
     if (next !== cur) {
       const nameOf = async (id: string | null): Promise<string> => {
@@ -1192,7 +1185,7 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
   const t = session.user.tenantId
 
   const { data: c } = await supabaseAdmin.from("chat_contacts")
-    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, wp_username, ig_username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in, custom_fields")
+    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, wp_username, ig_username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in, custom_fields, price_table_id")
     .eq("id", contactId).eq("tenant_id", t).maybeSingle()
   if (!c) return { error: "Contato não encontrado" }
 
@@ -1249,12 +1242,7 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
     lastInteraction,
   }
 
-  // Tabela de preço do cliente (T2) — query separada e graciosa (pré-migration → null).
-  const { data: ptRow } = await supabaseAdmin.from("chat_contacts")
-    .select("price_table_id").eq("id", contactId).eq("tenant_id", t).maybeSingle()
-  const contact = { ...(c as ContactRecordContact), price_table_id: (ptRow as { price_table_id?: string | null } | null)?.price_table_id ?? null }
-
-  return { contact, stats, deals, conversations, pipelines, crmEnabled }
+  return { contact: c as ContactRecordContact, stats, deals, conversations, pipelines, crmEnabled }
 }
 
 /**

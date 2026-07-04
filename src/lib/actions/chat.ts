@@ -507,6 +507,9 @@ export async function sendOfficialTemplate(
   language:       string,
   params:         Array<{ paramName?: string; text: string }>,
   displayText:    string,
+  /** Carrossel: corpo/botões por card (pra bolha). A MÍDIA é carregada do storage
+   *  server-side por templateName+language — nunca confiada do cliente. */
+  carousel?:      Array<{ body: string; buttons: Array<{ type: string; text: string; url?: string }> }>,
 ): Promise<{ id: string }> {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
@@ -519,6 +522,15 @@ export async function sendOfficialTemplate(
     .eq("tenant_id", tenantId)
     .single()
   if (!conv) throw new Error("Conversa não encontrada")
+
+  // Carrossel: mídia dos cards mora no NOSSO storage (card_assets) — carrega server-side.
+  let cardAssets: Array<{ path: string; mime: string; format: "IMAGE" | "VIDEO" }> | null = null
+  if (carousel?.length) {
+    const { data: tpl } = await supabaseAdmin.from("wa_templates")
+      .select("card_assets").eq("tenant_id", tenantId).eq("name", templateName).eq("language", language).maybeSingle()
+    cardAssets = (tpl as { card_assets: Array<{ path: string; mime: string; format: "IMAGE" | "VIDEO" }> | null } | null)?.card_assets ?? null
+    if (!cardAssets?.length) throw new Error("Mídia do carrossel não encontrada — recrie o template.")
+  }
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
@@ -547,7 +559,8 @@ export async function sendOfficialTemplate(
       content:         displayText,
       status:          "pending",
       is_private_note: false,
-      metadata:        { template: templateName, language },
+      // metadata.carousel → a bolha renderiza os cards; mídia via /api/template-card.
+      metadata:        { template: templateName, language, ...(carousel?.length ? { carousel } : {}) },
     })
     .select("id")
     .single()
@@ -556,7 +569,21 @@ export async function sendOfficialTemplate(
   try {
     const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
     if (!provider.sendTemplate) throw new Error("Esta instância não suporta templates (use o canal oficial).")
-    const result   = await provider.sendTemplate(contact.phone_number ?? contact.bsuid ?? "", templateName, language, params.length > 0 ? params : undefined)
+    // Carrossel: sobe a mídia de cada card → media_id, na ordem dos cards.
+    let carouselCards: Array<{ index: number; mediaType: "image" | "video"; mediaId: string }> | undefined
+    if (carousel?.length && cardAssets?.length) {
+      carouselCards = []
+      for (let i = 0; i < carousel.length; i++) {
+        const asset = cardAssets[i]
+        if (!asset) throw new Error(`Card ${i + 1} sem mídia.`)
+        const { data: signed } = await supabaseAdmin.storage.from(CHAT_BUCKET).createSignedUrl(asset.path, 300)
+        if (!signed?.signedUrl) throw new Error(`Falha ao ler a mídia do card ${i + 1}.`)
+        const mediaType = asset.format === "VIDEO" ? "video" as const : "image" as const
+        const mediaId = await (provider as unknown as { uploadMediaIdFromUrl: (u: string, t: "image" | "video") => Promise<string> }).uploadMediaIdFromUrl(signed.signedUrl, mediaType)
+        carouselCards.push({ index: i, mediaType, mediaId })
+      }
+    }
+    const result   = await provider.sendTemplate(contact.phone_number ?? contact.bsuid ?? "", templateName, language, params.length > 0 ? params : undefined, undefined, carouselCards)
     await supabaseAdmin.from("chat_messages")
       .update({ whatsapp_msg_id: result.messageId || null, status: "sent" })
       .eq("id", msg.id)

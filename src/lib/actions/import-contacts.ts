@@ -54,6 +54,8 @@ export async function commitImport(input: {
   rows: ImportRow[]
   tagId?:   string | null
   consent?: boolean
+  /** Declaração do cliente: esta base autorizou receber MARKETING (habilita campanhas). */
+  marketingConsent?: boolean
   source?:  "paste" | "csv"
 }): Promise<{ importId: string; criados: number; atualizados: number; invalidos: number } | { error: string }> {
   const session = await auth()
@@ -61,6 +63,10 @@ export async function commitImport(input: {
   if (input.rows.length > MAX_ROWS) return { error: `Máximo ${MAX_ROWS} contatos por vez.` }
   const tenantId = session.user.tenantId
   const now = new Date().toISOString()
+  // Marketing implica contatável; a origem carimba QUEM declarou (auditoria/LGPD).
+  const wantMarketing = !!input.marketingConsent
+  const wantConsent   = wantMarketing || !!input.consent
+  const consentSource = `import — declarado por ${session.user.name ?? session.user.email ?? "gestor"}${wantMarketing ? " (marketing)" : ""}`
 
   let criados = 0, atualizados = 0, invalidos = 0
   const items: { contact_id: string; status: "created" | "updated" }[] = []
@@ -74,8 +80,12 @@ export async function commitImport(input: {
       if (input.tagId) {
         await supabaseAdmin.from("taggings").insert({ tenant_id: tenantId, tag_id: input.tagId, taggable_type: "contact", taggable_id: res.id }).then(() => {}, () => {})
       }
-      if (input.consent) {
-        await supabaseAdmin.from("chat_contacts").update({ consent_opt_in: true, consent_at: now, consent_source: "import", updated_at: now }).eq("id", res.id).eq("tenant_id", tenantId)
+      if (wantConsent) {
+        await supabaseAdmin.from("chat_contacts").update({
+          consent_opt_in: true, consent_at: now, consent_source: consentSource,
+          ...(wantMarketing ? { marketing_opt_in: true } : {}),
+          updated_at: now,
+        }).eq("id", res.id).eq("tenant_id", tenantId)
       }
     } catch (e) {
       console.error("[import] linha falhou:", e instanceof Error ? e.message : e)

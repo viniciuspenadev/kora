@@ -2,8 +2,8 @@
 
 import { useState, useTransition, useRef } from "react"
 import { SimpleSelect } from "@/components/ui/select"
-import { Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply, Save, Lock } from "lucide-react"
-import { createOfficialTemplate, editOfficialTemplate, type TemplateButton } from "@/lib/actions/whatsapp-official"
+import { Plus, Loader2, AlertCircle, Trash2, Info, ExternalLink, Phone, Reply, Save, Lock, ImagePlus, GalleryHorizontalEnd } from "lucide-react"
+import { createOfficialTemplate, editOfficialTemplate, uploadTemplateCardMedia, type TemplateButton, type TemplateCarouselCard } from "@/lib/actions/whatsapp-official"
 import type { MetaTemplate, MetaTemplateComponent } from "@/lib/providers/meta-cloud-provider"
 import { parseVars, isNamed } from "@/lib/whatsapp/template-vars"
 import { varsForContext } from "@/lib/variables/registry"
@@ -15,6 +15,17 @@ const SELECT = INPUT.replace("px-3", "px-2")
 
 type BtnType = "QUICK_REPLY" | "URL" | "PHONE_NUMBER"
 const BTN_LABEL: Record<BtnType, string> = { QUICK_REPLY: "Resposta rápida", URL: "Link (URL)", PHONE_NUMBER: "Ligar" }
+
+/** Card em edição: mídia já subida (assetPath) + preview local + corpo + botões. */
+interface CardDraft {
+  format:     "IMAGE" | "VIDEO"
+  assetPath:  string | null
+  assetMime:  string | null
+  previewUrl: string | null   // objectURL local (imagem) — só pra preview do editor
+  uploading:  boolean
+  body:       string
+  buttons:    TemplateButton[]
+}
 
 // Variáveis sugeridas no corpo — do cérebro único (registry), contexto genérico.
 const COMMON_VARS = varsForContext("generic").map((v) => ({ token: v.token, label: v.label }))
@@ -62,6 +73,10 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   const [examples, setExamples]   = useState<Record<string, string>>(initial?.examples ?? {})
   const [footer, setFooter]       = useState(initial?.footer ?? "")
   const [buttons, setButtons]     = useState<TemplateButton[]>(initial?.buttons ?? [])
+  // Carrossel (C2) — só criação (edição de carrossel é v2). Cada card: mídia (já
+  // subida pro storage → assetPath) + corpo + até 2 botões.
+  const [cards, setCards]         = useState<CardDraft[]>([])
+  const carouselOn                = cards.length > 0
   const [err, setErr]             = useState<string | null>(null)
   const [pending, startT]         = useTransition()
 
@@ -100,13 +115,56 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
   function patchButton(i: number, patch: Partial<TemplateButton>) { setButtons((b) => b.map((x, j) => (j === i ? { ...x, ...patch } : x))) }
   function removeButton(i: number) { setButtons((b) => b.filter((_, j) => j !== i)) }
 
+  // ── Carrossel ──────────────────────────────────────────────
+  function addCard() {
+    if (cards.length >= 10) return
+    setCards((c) => [...c, { format: "IMAGE", assetPath: null, assetMime: null, previewUrl: null, uploading: false, body: "", buttons: [] }])
+  }
+  function removeCard(i: number) { setCards((c) => c.filter((_, j) => j !== i)) }
+  function patchCard(i: number, patch: Partial<CardDraft>) { setCards((c) => c.map((x, j) => (j === i ? { ...x, ...patch } : x))) }
+
+  async function uploadCard(i: number, file: File) {
+    patchCard(i, { uploading: true, previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null })
+    const fd = new FormData(); fd.append("file", file)
+    const r = await uploadTemplateCardMedia(fd)
+    if ("error" in r) { setErr(r.error); patchCard(i, { uploading: false }); return }
+    // Todos os cards herdam o formato do 1º com mídia (regra Meta: formato único).
+    patchCard(i, { uploading: false, assetPath: r.path, assetMime: r.mime, format: r.format })
+    if (i === 0) setCards((c) => c.map((x, j) => (j === 0 ? x : { ...x, format: r.format })))
+  }
+
+  function addCardButton(i: number, type: BtnType) {
+    setCards((c) => c.map((x, j) => (j === i && x.buttons.length < 2 ? { ...x, buttons: [...x.buttons, { type, text: "" }] } : x)))
+  }
+  function patchCardButton(ci: number, bi: number, patch: Partial<TemplateButton>) {
+    setCards((c) => c.map((x, j) => (j === ci ? { ...x, buttons: x.buttons.map((b, k) => (k === bi ? { ...b, ...patch } : b)) } : x)))
+  }
+  function removeCardButton(ci: number, bi: number) {
+    setCards((c) => c.map((x, j) => (j === ci ? { ...x, buttons: x.buttons.filter((_, k) => k !== bi) } : x)))
+  }
+
   function submit() {
     setErr(null)
     if (mixedVars) {
       setErr("Não misture variáveis nomeadas ({{nome}}) com numeradas ({{1}}) no mesmo template.")
       return
     }
+    if (carouselOn) {
+      if (cards.length < 2) { setErr("Carrossel precisa de pelo menos 2 cards."); return }
+      if (cards.some((c) => c.uploading)) { setErr("Aguarde o upload das mídias terminar."); return }
+      for (let i = 0; i < cards.length; i++) {
+        if (!cards[i].assetPath) { setErr(`Card ${i + 1}: envie a mídia.`); return }
+        if (!cards[i].body.trim()) { setErr(`Card ${i + 1}: escreva o texto.`); return }
+      }
+    }
     startT(async () => {
+      const carousel: TemplateCarouselCard[] | undefined = carouselOn
+        ? cards.map((c) => ({
+            format: c.format, assetPath: c.assetPath!, assetMime: c.assetMime!,
+            body: c.body.trim(),
+            buttons: c.buttons.filter((b) => b.text.trim()),
+          }))
+        : undefined
       const payload = {
         name, category, language,
         koraCategory: (koraCategory || null) as KoraCategory | null,
@@ -116,6 +174,7 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
         body, examples,
         footer: footer.trim() || undefined,
         buttons,
+        carousel,
       }
       const r = isEdit
         ? await editOfficialTemplate({ ...payload, templateId: templateId! })
@@ -288,6 +347,68 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
               )}
               <Hint>Opcional. Até 10 botões, texto até 25 caracteres. Link abre URL; Ligar disca um número.</Hint>
             </Section>
+
+            {!isEdit && (
+              <Section title="Carrossel" optional>
+                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-3">
+                  <div className="flex items-start gap-2.5">
+                    <span className="size-8 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><GalleryHorizontalEnd className="size-4" /></span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        Vitrine de <strong>2 a 10 cards</strong>, cada um com mídia + texto + até 2 botões. O corpo acima aparece como bolha antes dos cards. Todos os cards usam o <strong>mesmo formato</strong> de mídia (só imagem ou só vídeo).
+                      </p>
+                    </div>
+                  </div>
+
+                  {cards.map((card, i) => (
+                    <div key={i} className="rounded-lg border border-slate-200 bg-slate-50/50 p-2.5 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Card {i + 1}</span>
+                        <button type="button" onClick={() => removeCard(i)} className="size-6 grid place-items-center rounded text-slate-400 hover:text-red-600 hover:bg-red-50"><Trash2 className="size-3.5" /></button>
+                      </div>
+                      <div className="flex gap-2.5">
+                        <div className="shrink-0">
+                          <label className="block size-20 rounded-lg overflow-hidden border border-dashed border-slate-300 bg-white cursor-pointer hover:border-primary-300 transition-colors relative">
+                            {card.uploading ? (
+                              <span className="absolute inset-0 grid place-items-center"><Loader2 className="size-4 animate-spin text-slate-400" /></span>
+                            ) : card.previewUrl ? (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img src={card.previewUrl} alt="" className="w-full h-full object-cover" />
+                            ) : card.assetPath ? (
+                              <span className="absolute inset-0 grid place-items-center text-[10px] font-semibold text-emerald-600 text-center px-1">{card.format === "VIDEO" ? "Vídeo ✓" : "Imagem ✓"}</span>
+                            ) : (
+                              <span className="absolute inset-0 grid place-items-center text-slate-300"><ImagePlus className="size-5" /></span>
+                            )}
+                            <input type="file" accept={cards.some((c) => c.format === "VIDEO" && c.assetPath) ? "video/mp4" : cards.some((c) => c.assetPath) ? "image/jpeg,image/png" : "image/jpeg,image/png,video/mp4"} className="hidden"
+                              onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadCard(i, f) }} />
+                          </label>
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <textarea value={card.body} onChange={(e) => patchCard(i, { body: e.target.value.slice(0, 160) })} rows={2}
+                            placeholder="Texto do card…" className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-white resize-none focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                          {card.buttons.map((b, bi) => (
+                            <div key={bi} className="flex items-center gap-1.5">
+                              <SimpleSelect value={b.type} onChange={(v) => patchCardButton(i, bi, { type: v as BtnType })} className="h-7 text-[11px] w-28"
+                                options={(["QUICK_REPLY", "URL"] as BtnType[]).map((t) => ({ value: t, label: BTN_LABEL[t] }))} />
+                              <input value={b.text} onChange={(e) => patchCardButton(i, bi, { text: e.target.value.slice(0, 25) })} placeholder="Texto" className="h-7 flex-1 px-2 text-[11px] rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                              {b.type === "URL" && <input value={b.url ?? ""} onChange={(e) => patchCardButton(i, bi, { url: e.target.value })} placeholder="https://" className="h-7 flex-1 px-2 text-[11px] rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-primary/20" />}
+                              <button type="button" onClick={() => removeCardButton(i, bi)} className="size-6 grid place-items-center rounded text-slate-400 hover:text-red-600"><Trash2 className="size-3" /></button>
+                            </div>
+                          ))}
+                          {card.buttons.length < 2 && (
+                            <button type="button" onClick={() => addCardButton(i, "QUICK_REPLY")} className="text-[10px] font-semibold text-primary-600 hover:text-primary-700 inline-flex items-center gap-1"><Plus className="size-3" /> Botão</button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  {cards.length < 10 && (
+                    <AddBtn onClick={addCard} icon={<GalleryHorizontalEnd className="size-3" />}>{cards.length === 0 ? "Ativar carrossel (add card)" : "Adicionar card"}</AddBtn>
+                  )}
+                </div>
+              </Section>
+            )}
           </div>
 
           {/* Prévia + regras */}
@@ -295,6 +416,24 @@ export function TemplateBuilder({ onClose, onDone, mode = "create", templateId, 
             <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
               <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Prévia (WhatsApp)</p>
               <TemplatePreview t={preview} />
+              {carouselOn && (
+                <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                  {cards.map((card, i) => (
+                    <div key={i} className="shrink-0 w-28 rounded-lg overflow-hidden border border-slate-200 bg-white">
+                      <div className="aspect-video bg-slate-100 grid place-items-center overflow-hidden">
+                        {card.previewUrl
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          ? <img src={card.previewUrl} alt="" className="w-full h-full object-cover" />
+                          : <span className="text-[9px] text-slate-400">{card.format === "VIDEO" ? "Vídeo" : "Card"} {i + 1}</span>}
+                      </div>
+                      {card.body && <p className="px-1.5 py-1 text-[9px] leading-snug text-slate-600 line-clamp-2">{card.body}</p>}
+                      {card.buttons.filter((b) => b.text.trim()).map((b, j) => (
+                        <div key={j} className="px-1.5 py-0.5 text-[9px] font-semibold text-sky-600 text-center border-t border-slate-100 truncate">{b.text}</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="rounded-lg border border-slate-200 bg-white p-3">
               <p className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5 mb-1.5"><Info className="size-3.5 text-primary-600" /> Regras pra aprovar</p>

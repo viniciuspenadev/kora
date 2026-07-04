@@ -775,16 +775,20 @@ function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName, o
     setError(null); setOk(false)
   }
 
+  const isCarousel = !!tpl?.carousel?.length
+
   function send() {
     if (!tpl) return
     if (tpl.vars.some((v) => !(params[v.key] ?? "").trim())) { setError("Preencha as variáveis do template."); return }
     setError(null); setOk(false)
-    const displayText = renderTemplate(tpl.body, params)
+    const displayText = tpl.body ? renderTemplate(tpl.body, params) : `Carrossel • ${tpl.carousel?.length ?? 0} cards`
     // Monta os params na ORDEM das variáveis; nomeadas levam parameter_name.
     const bodyParams = tpl.vars.map((v) => ({ paramName: v.named ? v.key : undefined, text: (params[v.key] ?? "").trim() }))
+    // Carrossel: corpo/botões por card (a mídia é resolvida server-side).
+    const carousel = tpl.carousel?.map((c) => ({ body: c.body, buttons: c.buttons }))
     startSend(async () => {
       try {
-        await sendOfficialTemplate(conversationId, tpl.name, tpl.language, bodyParams, displayText)
+        await sendOfficialTemplate(conversationId, tpl.name, tpl.language, bodyParams, displayText, carousel)
         setOk(true)
         setParams(initParams(tpl.vars))
       } catch (e) {
@@ -841,8 +845,26 @@ function ClosedWindowComposer({ conversationId, neverOpened, contactFirstName, o
 
           {tpl && (
             <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5">
-              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Prévia</span>
-              <p className="mt-1 text-xs text-slate-700 whitespace-pre-wrap">{renderTemplate(tpl.body, params)}</p>
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                Prévia{isCarousel && <span className="ml-1 text-sky-600">· carrossel de {tpl.carousel!.length} cards</span>}
+              </span>
+              {tpl.body && <p className="mt-1 text-xs text-slate-700 whitespace-pre-wrap">{renderTemplate(tpl.body, params)}</p>}
+              {isCarousel && (
+                <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                  {tpl.carousel!.map((card, i) => (
+                    <div key={i} className="shrink-0 w-36 rounded-lg overflow-hidden border border-slate-200 bg-white">
+                      <div className="aspect-video bg-slate-100 overflow-hidden">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={`/api/template-card?name=${encodeURIComponent(tpl.name)}&lang=${encodeURIComponent(tpl.language)}&i=${i}`} alt="" className="w-full h-full object-cover" loading="lazy" />
+                      </div>
+                      {card.body && <p className="px-2 py-1.5 text-[10px] leading-snug text-slate-600 line-clamp-3">{card.body}</p>}
+                      {card.buttons.map((b, j) => (
+                        <div key={j} className="px-2 py-1 text-[10px] font-semibold text-sky-600 text-center border-t border-slate-100 truncate">{b.text}</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

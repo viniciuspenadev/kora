@@ -125,6 +125,7 @@ export interface WhatsAppProvider {
     phone: string, name: string, langCode?: string,
     bodyParams?: Array<{ paramName?: string; text: string }>,
     buttonParams?: Array<{ subType: "quick_reply" | "url"; index: number; payload?: string; url?: string }>,
+    carouselCards?: Array<{ index: number; mediaType: "image" | "video"; mediaId: string; bodyParams?: Array<{ paramName?: string; text: string }> }>,
   ): Promise<SendResult>
 
   // ── Mensagens ricas / interativas (Cloud API; Baileys não suporta nativo) ──

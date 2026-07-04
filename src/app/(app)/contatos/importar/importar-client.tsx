@@ -54,6 +54,7 @@ export function ImportarClient({ tags, imports }: { tags: { id: string; name: st
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [tagId, setTagId] = useState("")
   const [consent, setConsent] = useState(false)
+  const [mktConsent, setMktConsent] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [report, setReport] = useState<{ importId: string; criados: number; atualizados: number; invalidos: number } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -72,7 +73,7 @@ export function ImportarClient({ tags, imports }: { tags: { id: string; name: st
   }
   function confirm() {
     setError(null)
-    start(async () => { const r = await commitImport({ rows, tagId: tagId || null, consent, source }); if ("error" in r) { setError(r.error); return } setReport(r); setStep("done") })
+    start(async () => { const r = await commitImport({ rows, tagId: tagId || null, consent, marketingConsent: mktConsent, source }); if ("error" in r) { setError(r.error); return } setReport(r); setStep("done") })
   }
 
   // ── Relatório ──
@@ -86,7 +87,7 @@ export function ImportarClient({ tags, imports }: { tags: { id: string; name: st
           <Num n={report.atualizados} label="atualizados" c="text-primary-600" />
           <Num n={report.invalidos} label="inválidos" c="text-slate-400" />
         </div>
-        <p className="text-[11px] text-slate-400 mt-3">Os "atualizados" já existiam — <strong>nada foi duplicado</strong>.</p>
+        <p className="text-[11px] text-slate-400 mt-3">Os &quot;atualizados&quot; já existiam — <strong>nada foi duplicado</strong>.</p>
         <div className="flex items-center justify-center gap-3 mt-5">
           {report.importId && <Link href={`/contatos/importar/${report.importId}`} className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg">Ver os {report.criados + report.atualizados} contatos</Link>}
           <Link href="/contatos" className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-600 hover:text-slate-900"><ArrowLeft className="size-4" /> Contatos</Link>
@@ -138,8 +139,15 @@ export function ImportarClient({ tags, imports }: { tags: { id: string; name: st
               </label>
             )}
             <label className="flex items-start gap-2 text-xs text-slate-700">
-              <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="size-4 rounded border-slate-300 text-primary focus:ring-primary/20 mt-0.5" />
+              <input type="checkbox" checked={consent} onChange={(e) => { setConsent(e.target.checked); if (!e.target.checked) setMktConsent(false) }} className="size-4 rounded border-slate-300 text-primary focus:ring-primary/20 mt-0.5" />
               <span>Tenho <strong>permissão</strong> de contatar esses números (LGPD).</span>
+            </label>
+            <label className={`flex items-start gap-2 text-xs rounded-lg border p-2.5 transition-colors ${mktConsent ? "border-violet-200 bg-violet-50/50 text-slate-700" : "border-slate-200 text-slate-600"} ${!consent ? "opacity-50" : "cursor-pointer"}`}>
+              <input type="checkbox" checked={mktConsent} disabled={!consent} onChange={(e) => setMktConsent(e.target.checked)} className="size-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500/20 mt-0.5" />
+              <span>
+                Esta base <strong>autorizou receber ofertas/marketing</strong> — liberar para campanhas.
+                <span className="block text-[10px] text-slate-400 mt-0.5">Fica registrado que você declarou o consentimento. Sem isto, os contatos entram só para atendimento, não para campanhas de marketing.</span>
+              </span>
             </label>
             {error && <p className="text-[11px] text-red-700 bg-red-50 border border-red-100 rounded-md px-2 py-1.5">{error}</p>}
             <button type="button" onClick={confirm} disabled={pending || !consent || s.novos + s.existentes === 0}

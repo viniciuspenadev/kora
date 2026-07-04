@@ -19,19 +19,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   if (!session.user.tenantId) redirect("/admin")
 
-  const { data: tenant } = await supabaseAdmin
-    .from("tenants")
-    .select("name, plan, active")
-    .eq("id", session.user.tenantId)
-    .single()
-
-  if (!tenant) redirect("/auth/signin")
-  if (!tenant.active) redirect("/auth/signin")
-
   // Onboarding só pra owner/admin — atendentes não veem
   const isManager = ["owner", "admin"].includes(session.user.role)
   const showOnboarding = isManager
-  const [setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes] = await Promise.all([
+  // Tudo em UM round-trip paralelo (tenant validado logo abaixo) — latência de navegação.
+  const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes] = await Promise.all([
+    supabaseAdmin
+      .from("tenants")
+      .select("name, plan, active")
+      .eq("id", session.user.tenantId)
+      .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
     getEnabledModuleSlugs(session.user.tenantId),
     getSelfPause(),
@@ -59,6 +56,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           .order("position")
       : Promise.resolve({ data: null }),
   ])
+  if (!tenant) redirect("/auth/signin")
+  if (!tenant.active) redirect("/auth/signin")
   const hasOfficial = !!officialRes.data
   const pipelines = (pipelinesRes.data ?? []) as { id: string; name: string; color: string; is_default: boolean }[]
   const dealPipelines = (dealPipelinesRes.data ?? []) as { id: string; name: string; color: string; is_default: boolean }[]
