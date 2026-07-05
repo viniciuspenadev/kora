@@ -1,8 +1,9 @@
 "use client"
 
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
-import { useRef } from "react"
-import { Trash2, Plus, Settings2, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone } from "lucide-react"
+import { useRef, useState, useEffect } from "react"
+import { Trash2, Plus, Settings2, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2 } from "lucide-react"
+import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { SimpleSelect } from "@/components/ui/select"
 import { genId, type RFNode } from "./graph-sync"
@@ -245,6 +246,8 @@ export function ConfigPanel({
         <p className="text-xs text-slate-400">Volta ao fluxo que chamou este (pop da pilha). Se este já for o fluxo raiz, encerra a conversa.</p>
       )}
 
+      {type === "template" && <TemplateConfig cfg={cfg} set={set} flowVars={flowVars} />}
+
       {type === "tag" && (
         <div className="space-y-3">
           <div>
@@ -454,6 +457,59 @@ const CHANNEL_OPTS: { v: string; label: string }[] = [
   { v: "whatsapp", label: "WhatsApp" },
   { v: "site", label: "Site (chat)" },
 ]
+
+// Nó Template — escolhe um template APROVADO + preenche as variáveis do corpo
+// (aceita {{var}} do fluxo). Válido a qualquer momento (abre janela / re-engaja).
+function TemplateConfig({ cfg, set, flowVars }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void; flowVars: string[] }) {
+  const [tpls, setTpls] = useState<InboxTemplate[] | null>(null)
+  useEffect(() => { let alive = true; getInboxTemplates().then((r) => { if (alive) setTpls(r) }).catch(() => { if (alive) setTpls([]) }); return () => { alive = false } }, [])
+
+  const name = String(cfg.name ?? "")
+  const language = String(cfg.language ?? "")
+  const params = Array.isArray(cfg.params) ? (cfg.params as string[]) : []
+  const chosen = tpls?.find((t) => t.name === name && (!language || t.language === language)) ?? tpls?.find((t) => t.name === name) ?? null
+
+  function pick(v: string) {
+    const t = tpls?.find((x) => `${x.name}|${x.language}` === v)
+    if (!t) return
+    set({ name: t.name, language: t.language, params: t.vars.map(() => "") })
+  }
+
+  if (tpls === null) return <p className="text-xs text-slate-400 py-2"><Loader2 className="size-3.5 animate-spin inline mr-1.5" /> Carregando templates aprovados…</p>
+  if (tpls.length === 0) return (
+    <p className="text-xs text-slate-400 leading-relaxed">Nenhum template aprovado ainda. Crie um em <b>Marketing → Templates</b> e volte aqui. O template abre a conversa (canal oficial) — depois o fluxo continua livremente.</p>
+  )
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className={LABEL}>Template aprovado</label>
+        <SimpleSelect value={chosen ? `${chosen.name}|${chosen.language}` : ""} onChange={pick} placeholder="Escolha o template…"
+          options={tpls.map((t) => ({ value: `${t.name}|${t.language}`, label: `${t.name} (${t.language})${t.category === "MARKETING" ? " · mkt" : ""}` }))} />
+        <p className="text-[11px] text-slate-400 mt-1">Envia um template oficial. Use pra <b>abrir a conversa</b> (fora da janela 24h) ou re-engajar no meio do fluxo.</p>
+      </div>
+      {chosen && chosen.vars.length > 0 && (
+        <div className="space-y-2">
+          <label className={LABEL}>Variáveis do corpo</label>
+          {chosen.vars.map((v, i) => (
+            <div key={v.key}>
+              <span className="text-[10px] font-mono text-slate-400">{`{{${v.key}}}`}</span>
+              <VarField value={params[i] ?? ""} flowVars={flowVars}
+                onChange={(val) => { const next = [...params]; next[i] = val; set({ params: next }) }}
+                placeholder="valor ou {{variável}}" />
+            </div>
+          ))}
+        </div>
+      )}
+      {chosen && chosen.body && (
+        <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5">
+          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Corpo do template</span>
+          <p className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">{chosen.body}</p>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void; tags: { id: string; name: string }[] }) {
   const check = String(cfg.check ?? "has_phone")
@@ -1135,7 +1191,7 @@ const TITLE: Record<string, string> = {
   set_variable: "Definir variável", switch: "Desviar (switch)", business_hours: "Horário comercial",
   wait: "Esperar",
   http: "Requisição HTTP", collect: "Coletar dado", schedule: "Agendar", ai_agent: "Agente IA",
-  ai_router: "Roteador IA", call_flow: "Executar fluxo",
+  ai_router: "Roteador IA", call_flow: "Executar fluxo", template: "Enviar template",
   tag: "Etiquetar", move_stage: "Mover etapa", assign: "Distribuir",
   transfer: "Transferir", return: "Voltar", end: "Encerrar",
 }

@@ -46,12 +46,16 @@ export async function getFlow(id: string): Promise<StudioFlowFull | null> {
   return (data as StudioFlowFull | null) ?? null
 }
 
-export async function createFlow(name: string): Promise<{ id?: string; error?: string }> {
+export async function createFlow(name: string, purpose: "atendimento" | "marketing" = "atendimento"): Promise<{ id?: string; error?: string }> {
   const session = await requireAdmin()
-  const clean = name.trim() || "Novo fluxo"
+  const clean = name.trim() || (purpose === "marketing" ? "Novo fluxo de marketing" : "Novo fluxo")
   // Semente: só o nó start. O editor insere os passos a partir dele.
   const graph: FlowGraph = { nodes: [{ id: "start", type: "start", config: {} }], edges: [] }
-  const trigger: FlowTrigger = { type: "keyword", keywords: [] }
+  // Marketing = disparo ATIVO (campanha/agente) por default; atendimento = receptivo.
+  // É só o DEFAULT — o editor troca o gatilho livremente (nunca engessa — decisão owner).
+  const trigger: FlowTrigger = purpose === "marketing"
+    ? { type: "keyword", keywords: [], mode: "active" }
+    : { type: "keyword", keywords: [] }
 
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
@@ -61,6 +65,7 @@ export async function createFlow(name: string): Promise<{ id?: string; error?: s
       status:    "draft",
       version:   1,
       active:    false,
+      purpose,
       trigger,
       graph,
     })

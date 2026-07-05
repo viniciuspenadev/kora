@@ -23,6 +23,7 @@ export type FlowNodeType =
   | "ai_agent"   // a IA conduz a etapa, extrai dados e DEVOLVE o controle (§11.3)
   | "ai_router"  // a IA classifica a intenção e ramifica (§11.4)
   | "call_flow"  // chama outro fluxo (sub-fluxo que volta, ou "ir para") (§11.2)
+  | "template"   // envia um TEMPLATE aprovado (Meta oficial) e avança — abre janela/re-engaja
   | "tag"        // adiciona/remove etiqueta no contato e avança
   | "move_stage" // move a conversa de etapa no pipeline e avança
   | "assign"     // distribui a conversa (round-robin) — ramifica atribuído/pool
@@ -188,6 +189,13 @@ export interface CallFlowNodeConfig {
   flowId: string
   /** subflow = empilha e VOLTA · goto = troca o frame ativo (pai sai). */
   mode:   "subflow" | "goto"
+}
+export interface TemplateNodeConfig {
+  /** Nome + idioma do template APROVADO na Meta. */
+  name:     string
+  language: string
+  /** Variáveis do corpo, na ordem (texto fixo ou {{var}} do fluxo — interpolado). */
+  params?:  string[]
 }
 export interface TagNodeConfig {
   tag:    string

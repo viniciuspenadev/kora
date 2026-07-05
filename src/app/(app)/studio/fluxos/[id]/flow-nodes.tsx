@@ -9,9 +9,9 @@
 
 import { createContext, useContext } from "react"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
-import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig } from "@/lib/ai-v2/flow/types"
+import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
 const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
 const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
@@ -448,6 +448,21 @@ function ReturnNode(p: NodeProps) {
   )
 }
 
+function TemplateNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as TemplateNodeConfig
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={FileBadge} accent="bg-emerald-100 text-emerald-700" title="Enviar template" selected={p.selected}>
+        {cfg.name?.trim()
+          ? <span className="font-mono text-[11px]">{cfg.name}<span className="text-slate-400"> · {cfg.language || "pt_BR"}</span></span>
+          : "escolha o template aprovado"}
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
 function TagNode(p: NodeProps) {
   const cfg = cfgOf(p) as unknown as TagNodeConfig
   const isRemove = cfg.action === "remove"
@@ -532,6 +547,7 @@ export const nodeTypes = {
   ai_agent:  AgentNode,
   ai_router: AiRouterNode,
   call_flow: CallFlowNode,
+  template:   TemplateNode,
   tag:        TagNode,
   move_stage: MoveStageNode,
   assign:     AssignNode,

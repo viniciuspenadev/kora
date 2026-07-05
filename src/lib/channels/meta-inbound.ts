@@ -14,6 +14,7 @@ import { notifyInboundMessage } from "@/lib/push/send"
 import { upsertTemplateCache, logTemplateEvent } from "@/lib/channels/template-cache"
 import { HEALTH_FIELDS, processHealthWebhook } from "@/lib/channels/health"
 import { slimAdMeta } from "@/lib/ad-reply"
+import { handleCampaignInbound } from "@/lib/campaigns/engine"
 import type { ExternalAdReply } from "@/types/chat"
 
 /**
@@ -569,6 +570,11 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     after(async () => { try { await assignNextAgent(instance.tenant_id, conv.id) } catch (e) { console.error("[meta auto-assign]", e) } })
   }
 
+  // Campanha (F2b): opt-out global "SAIR" + marca "respondeu" no funil da Transmissão.
+  if (routable) {
+    after(async () => { try { await handleCampaignInbound(instance.tenant_id, contact.id, routable) } catch (e) { console.error("[meta campaign inbound]", e) } })
+  }
+
   // Cadeia: keyword (sync) → IA (debounce) → automações fixas (fallback). Pulada
   // quando a Agenda já consumiu a resposta (Camada 0 acima).
   if (!agendaHandled) {
@@ -641,6 +647,21 @@ async function processStatus(tenantId: string, st: MetaStatus) {
       update.metadata = { ...meta, error: { code: e.code ?? null, title: e.title ?? null, message: e.message ?? null } }
     }
     await supabaseAdmin.from("chat_messages").update(update).eq("whatsapp_msg_id", st.id).eq("tenant_id", tenantId)
+
+    // Campanha: casa o status pelo wamid (funil da Transmissão). Forward-only —
+    // filtra pelos status ANTERIORES pra webhook fora de ordem nunca regredir.
+    const crNow = new Date().toISOString()
+    if (st.status === "delivered") {
+      await supabaseAdmin.from("campaign_recipients").update({ status: "delivered", delivered_at: crNow })
+        .eq("tenant_id", tenantId).eq("wamid", st.id).in("status", ["sent"])
+    } else if (st.status === "read") {
+      await supabaseAdmin.from("campaign_recipients").update({ status: "read", read_at: crNow })
+        .eq("tenant_id", tenantId).eq("wamid", st.id).in("status", ["sent", "delivered"])
+    } else if (st.status === "failed") {
+      const e = st.errors?.[0]
+      await supabaseAdmin.from("campaign_recipients").update({ status: "failed", error: (e?.message ?? e?.title ?? "falha").slice(0, 300) })
+        .eq("tenant_id", tenantId).eq("wamid", st.id).in("status", ["sent", "queued"])
+    }
   }
 
   // Fundação do financeiro: categoria/cobrança da conversa (dedup por conversation.id

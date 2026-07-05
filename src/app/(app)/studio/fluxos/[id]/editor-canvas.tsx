@@ -19,7 +19,7 @@ import {
   ArrowLeft, Loader2, CheckCircle2, AlertCircle,
   MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag,
   GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon,
-  CalendarPlus, Sparkles, MoveHorizontal, MoveVertical,
+  CalendarPlus, Sparkles, MoveHorizontal, MoveVertical, FileBadge,
 } from "lucide-react"
 import { nodeTypes, OrientationContext, TriggerSummaryContext } from "./flow-nodes"
 import { edgeTypes, EdgeActionsContext } from "./flow-edge"
@@ -60,6 +60,7 @@ const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ 
   { type: "ai_router", label: "Roteador IA", icon: GitFork, ai: true },
   { type: "http",      label: "Requisição HTTP", icon: Globe },
   { type: "call_flow", label: "Executar fluxo", icon: Workflow },
+  { type: "template",   label: "Enviar template", icon: FileBadge },
   { type: "tag",        label: "Etiquetar",   icon: Tag },
   { type: "move_stage", label: "Mover etapa", icon: Columns3 },
   { type: "assign",     label: "Distribuir",  icon: UserPlus },

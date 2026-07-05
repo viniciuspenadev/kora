@@ -18,6 +18,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { runAgentTurn, type AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
 import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, type MatchSignals } from "./flow/triggers"
+import { campaignFlowToTrigger, markRecipientReplied } from "@/lib/campaigns/engine"
 import type { PersonaInput } from "./prompt"
 import type { ExecCtx } from "./capabilities"
 import { gatherPromptContext, type ConvRow, type ContactRow } from "@/lib/ai/context"
@@ -215,10 +216,19 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
       }
     }
   } else {
-    // "Contato novo" = é a 1ª mensagem da conversa. O histórico JÁ inclui a
-    // mensagem que acabou de chegar, então a 1ª vez vem com length <= 1.
-    const isNewContact = history.length <= 1
-    const flow = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
+    // 6b) ENGAJAMENTO DE CAMPANHA (precede os gatilhos de atendimento, per-conversa,
+    // consome-uma-vez): o contato respondeu a um opener de campanha que tem fluxo?
+    // → roda ESSE fluxo. Sem conflito: só campanha COM flow_id; se o fluxo sumiu/
+    // despublicou, degrada pro atendimento normal (loadStartableFlow → null).
+    const camp = await campaignFlowToTrigger(tenantId, contact.id)
+    let flow = camp ? await loadStartableFlow(tenantId, camp.flowId) : null
+    if (camp && flow) {
+      await markRecipientReplied(tenantId, camp.recipientId)
+    } else {
+      // Atendimento normal: "contato novo" = 1ª mensagem (history <= 1).
+      const isNewContact = history.length <= 1
+      flow = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
+    }
     if (flow) {
       const run    = await startFlowRun(tenantId, conversationId, flow)
       activeFlowId = flow.id

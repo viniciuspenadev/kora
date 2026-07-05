@@ -18,7 +18,7 @@ export default async function FluxosPage() {
 
   const { data } = await supabaseAdmin
     .from("studio_flows")
-    .select("id, name, status, active, version, trigger, updated_at")
+    .select("id, name, status, active, version, purpose, trigger, updated_at")
     .eq("tenant_id", tenantId)
     .neq("status", "archived")
     .order("updated_at", { ascending: false })

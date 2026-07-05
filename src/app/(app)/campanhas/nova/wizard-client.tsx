@@ -20,21 +20,26 @@ const STEPS = [
   { n: 4, label: "Revisão",    icon: ClipboardCheck },
 ]
 
-export function WizardClient({ audiences, templates, numbers }: {
+export function WizardClient({ audiences, templates, numbers, flows }: {
   audiences: AudienceOption[]
   templates: InboxTemplate[]
   numbers:   { id: string; label: string }[]
+  flows:     { id: string; name: string }[]
 }) {
   const router = useRouter()
   const [step, setStep] = useState(1)
 
   const [aud, setAud]         = useState<AudienceOption | null>(null)
   const [tplName, setTplName] = useState("")
+  const [flowId, setFlowId]   = useState("")   // campanha-por-fluxo (opcional)
   const [instanceId, setInstanceId] = useState(numbers[0]?.id ?? "")
   const [scheduleOn, setScheduleOn] = useState(false)
   const [date, setDate]       = useState("")
   const [time, setTime]       = useState("09:00")
-  const [pacing, setPacing]   = useState("20")
+  // Ritmo (2 eixos): presets prontos + manual (lote × intervalo).
+  const [pace, setPace]       = useState<"safe" | "balanced" | "fast" | "manual">("balanced")
+  const [batchSize, setBatchSize] = useState("10")
+  const [batchInterval, setBatchInterval] = useState("30")
   const [optOut, setOptOut]   = useState(true)
   const [name, setName]       = useState("")
 
@@ -44,6 +49,16 @@ export function WizardClient({ audiences, templates, numbers }: {
   const [pending, startTransition] = useTransition()
 
   const tpl = templates.find((t) => t.name === tplName) ?? null
+
+  // Presets de ritmo → (lote, intervalo). "manual" usa os inputs.
+  const PACE_PRESETS: Record<"safe" | "balanced" | "fast", { size: number; interval: number; label: string; hint: string }> = {
+    safe:     { size: 5,  interval: 45, label: "Seguro",      hint: "5 msg / 45s — o mais gentil com o número" },
+    balanced: { size: 10, interval: 30, label: "Equilibrado", hint: "10 msg / 30s — recomendado" },
+    fast:     { size: 25, interval: 20, label: "Rápido",      hint: "25 msg / 20s — pra bases já aquecidas" },
+  }
+  const effBatch    = pace === "manual" ? Math.max(1, Number(batchSize) || 10) : PACE_PRESETS[pace].size
+  const effInterval = pace === "manual" ? Math.max(1, Number(batchInterval) || 30) : PACE_PRESETS[pace].interval
+  const effRate     = Math.round((effBatch / effInterval) * 60)   // msg/min efetivo
 
   const canNext = step === 1 ? !!aud : step === 2 ? !!tpl : step === 3 ? !!instanceId && (!scheduleOn || !!date) : true
 
@@ -70,7 +85,8 @@ export function WizardClient({ audiences, templates, numbers }: {
       const r = await createCampaign({
         name, templateName: tpl.name, templateLanguage: tpl.language, templateCategory: tpl.category,
         instanceId, audienceKind: aud.kind, audienceId: aud.id, audienceLabel: aud.label,
-        scheduledAt, pacingPerMin: Number(pacing) || 20, optOutEnabled: optOut, estCost: preview?.estCost ?? null,
+        scheduledAt, batchSize: effBatch, batchIntervalSeconds: effInterval, optOutEnabled: optOut, estCost: preview?.estCost ?? null,
+        flowId: flowId || null,
       })
       if ("error" in r) { setError(r.error); return }
       router.push("/campanhas"); router.refresh()
@@ -168,6 +184,22 @@ export function WizardClient({ audiences, templates, numbers }: {
                     {tpl.vars.length > 0 && <p className="text-[10px] text-amber-600">Este template tem variáveis ({tpl.vars.map((v) => `{{${v.key}}}`).join(", ")}) — no v1 elas serão preenchidas com o nome do contato quando possível; personalização por campo chega em breve.</p>}
                   </div>
                 )}
+
+                {/* Campanha-por-fluxo: o que roda QUANDO o cliente engaja (opcional) */}
+                {tpl && flows.length > 0 && (
+                  <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 space-y-2">
+                    <div className="flex items-center gap-1.5">
+                      <Zap className="size-3.5 text-violet-500" />
+                      <span className="text-xs font-bold text-slate-800">Quando o cliente responder</span>
+                      <span className="text-[10px] text-slate-400">opcional</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      O template acima <b>abre a conversa</b>. Se você anexar um fluxo, ele <b>assume quando o cliente engajar</b> (responde/toca um botão) — texto livre, mídia, carrossel, IA. Sem fluxo, a resposta cai no atendimento normal.
+                    </p>
+                    <SimpleSelect value={flowId} onChange={setFlowId} className="h-9 text-xs"
+                      options={[{ value: "", label: "Nenhum — cai no atendimento normal" }, ...flows.map((f) => ({ value: f.id, label: f.name }))]} />
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -186,15 +218,47 @@ export function WizardClient({ audiences, templates, numbers }: {
                 <SimpleSelect value={instanceId} onChange={setInstanceId} options={numbers.map((n) => ({ value: n.id, label: n.label }))} />
                 <p className="text-[10px] text-slate-400 mt-1">Recomendado usar um número <b>dedicado a marketing</b> — protege o número de atendimento.</p>
               </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Ritmo</label>
-                <div className="relative">
-                  <input value={pacing} onChange={(e) => setPacing(e.target.value.replace(/[^\d]/g, "").slice(0, 3))} inputMode="numeric"
-                    className="w-full h-9 px-3 pr-20 text-sm border border-slate-200 rounded-lg bg-white tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20" />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-slate-400">msg/min</span>
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1">Envio gradual evita bloqueio. Padrão 20/min.</p>
+            </div>
+
+            {/* Ritmo — presets + manual (lote × intervalo + jitter no motor) */}
+            <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700">Ritmo de disparo</span>
+                <span className="text-[10px] text-slate-400 tabular-nums">≈ {effRate} msg/min</span>
               </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(["safe", "balanced", "fast"] as const).map((k) => {
+                  const on = pace === k
+                  return (
+                    <button key={k} type="button" onClick={() => setPace(k)}
+                      className={`rounded-lg border px-2.5 py-2 text-left transition-colors ${on ? "border-primary bg-primary-50/50 ring-1 ring-primary/20" : "border-slate-200 hover:bg-slate-50"}`}>
+                      <p className="text-xs font-bold text-slate-800">{PACE_PRESETS[k].label}</p>
+                      <p className="text-[9.5px] text-slate-400 leading-tight mt-0.5">{PACE_PRESETS[k].hint}</p>
+                    </button>
+                  )
+                })}
+                <button type="button" onClick={() => setPace("manual")}
+                  className={`rounded-lg border px-2.5 py-2 text-left transition-colors ${pace === "manual" ? "border-primary bg-primary-50/50 ring-1 ring-primary/20" : "border-slate-200 hover:bg-slate-50"}`}>
+                  <p className="text-xs font-bold text-slate-800">Manual</p>
+                  <p className="text-[9.5px] text-slate-400 leading-tight mt-0.5">defina lote e intervalo</p>
+                </button>
+              </div>
+              {pace === "manual" && (
+                <div className="flex items-end gap-3 pt-1">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Mensagens por lote</label>
+                    <input value={batchSize} onChange={(e) => setBatchSize(e.target.value.replace(/[^\d]/g, "").slice(0, 3))} inputMode="numeric"
+                      className="w-24 h-8 px-2.5 text-xs border border-slate-200 rounded-lg tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                  </div>
+                  <span className="text-[11px] text-slate-400 pb-2">a cada</span>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Intervalo (segundos)</label>
+                    <input value={batchInterval} onChange={(e) => setBatchInterval(e.target.value.replace(/[^\d]/g, "").slice(0, 4))} inputMode="numeric"
+                      className="w-24 h-8 px-2.5 text-xs border border-slate-200 rounded-lg tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20" />
+                  </div>
+                </div>
+              )}
+              <p className="text-[10px] text-slate-400 inline-flex items-start gap-1"><ShieldCheck className="size-3 text-emerald-500 shrink-0 mt-px" /> O motor espalha as mensagens com variação (anti-spam) e <b>nunca ultrapassa o limite diário do número</b> na Meta — protege o disparo.</p>
             </div>
 
             <div className="rounded-lg border border-slate-200 p-3 space-y-3">
@@ -268,6 +332,7 @@ export function WizardClient({ audiences, templates, numbers }: {
               <SummaryLine label="Template" value={`${tpl.name} · ${tpl.category === "MARKETING" ? "Marketing" : "Utilidade"}`} />
               <SummaryLine label="Número" value={numbers.find((n) => n.id === instanceId)?.label ?? "—"} />
               <SummaryLine label="Quando" value={scheduleOn && date ? new Date(`${date}T${time}:00`).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "Rascunho (manual)"} />
+              {flowId && <SummaryLine label="Ao engajar" value={`Fluxo: ${flows.find((f) => f.id === flowId)?.name ?? "—"}`} />}
             </div>
             {preview && preview.eligible > 0 && (
               <div className="flex items-center justify-between rounded-lg bg-primary-50 border border-primary-100 px-3 py-2.5">

@@ -8,6 +8,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { sendChannelText, sendChannelMedia, sendChannelInteractive } from "@/lib/channels/reply"
+import { getProvider } from "@/lib/providers"
 import type { InteractivePayload } from "@/lib/providers/types"
 import type { ExecCtx } from "./capabilities/types"
 
@@ -136,5 +137,41 @@ export async function sendBotMedia(
       updated_at:           new Date().toISOString(),
     })
     .eq("id", ctx.conversationId)
+  return { messageId: sent.messageId }
+}
+
+/**
+ * Envia um TEMPLATE aprovado (nó Template — Meta oficial) + persiste. Provider
+ * resolvido de ctx.instance (só meta_cloud tem sendTemplate; Baileys = no-op).
+ * `params` já vêm interpolados do runtime. v1: variáveis POSICIONAIS.
+ */
+export async function sendBotTemplate(
+  ctx:  Pick<ExecCtx, "tenantId" | "conversationId" | "contact" | "instance" | "dryRun" | "captured">,
+  tpl:  { name: string; language: string; params?: string[] },
+  meta: Record<string, unknown> = {},
+): Promise<{ messageId: string | null }> {
+  const display = `[template: ${tpl.name}]`
+  if (ctx.dryRun) { ctx.captured?.push({ kind: "text", content: display }); return { messageId: null } }
+
+  const provider = getProvider(ctx.instance)
+  if (!provider.sendTemplate) return { messageId: null }   // canal sem template (Baileys) → no-op
+  const bodyParams = (tpl.params ?? []).filter((p) => p.trim() !== "").map((p) => ({ text: p }))
+  const sent = await provider.sendTemplate(ctx.contact.phone_number ?? "", tpl.name, tpl.language, bodyParams.length ? bodyParams : undefined)
+
+  await supabaseAdmin.from("chat_messages").insert({
+    conversation_id: ctx.conversationId,
+    tenant_id:       ctx.tenantId,
+    sender_type:     "bot",
+    content_type:    "text",
+    content:         display,
+    status:          "sent",
+    whatsapp_msg_id: sent.messageId || null,
+    is_private_note: false,
+    metadata:        { ai: true, studio: true, template: tpl.name, language: tpl.language, ...meta },
+  })
+  await supabaseAdmin.from("chat_conversations").update({
+    last_message_at: new Date().toISOString(), last_message_preview: display,
+    last_message_dir: "out", ai_handling: true, updated_at: new Date().toISOString(),
+  }).eq("id", ctx.conversationId)
   return { messageId: sent.messageId }
 }

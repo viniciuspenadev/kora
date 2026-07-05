@@ -45,6 +45,8 @@ export interface StudioFlowSummary {
   status:     "draft" | "published" | "archived"
   active:     boolean
   version:    number
+  /** Organização: atendimento (responde inbound) | marketing (campanha dispara). */
+  purpose:    "atendimento" | "marketing"
   trigger:    _FlowTrigger | null
   updated_at: string
 }

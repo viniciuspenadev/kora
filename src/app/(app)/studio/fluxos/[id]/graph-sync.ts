@@ -34,6 +34,7 @@ const DEFAULT_CONFIG: Record<FlowNodeType, () => Record<string, unknown>> = {
   ai_agent:  () => ({ instruction: "", collect: [], outcomes: [] }),
   ai_router: () => ({ instruction: "", routes: [{ id: genId(), label: "Vendas", description: "quer comprar / contratar" }], fallback: "" }),
   call_flow: () => ({ flowId: "", mode: "subflow" }),
+  template:   () => ({ name: "", language: "pt_BR", params: [] }),
   tag:        () => ({ tag: "", action: "add" }),
   move_stage: () => ({ stage: "" }),
   assign:     () => ({}),

@@ -4,7 +4,7 @@ import Link from "next/link"
 import { ArrowLeft, Megaphone } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
-import { getCampaignAudiences, getOutboundNumbers } from "@/lib/actions/campaigns"
+import { getCampaignAudiences, getOutboundNumbers, getMarketingFlows } from "@/lib/actions/campaigns"
 import { getInboxTemplates } from "@/lib/actions/whatsapp-official"
 import { WizardClient } from "./wizard-client"
 
@@ -14,10 +14,11 @@ export default async function NovaCampanhaPage() {
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
   if (!(await hasModule(session.user.tenantId, "broadcasts"))) redirect("/inbox")
 
-  const [audiences, templates, numbers] = await Promise.all([
+  const [audiences, templates, numbers, flows] = await Promise.all([
     getCampaignAudiences(),
     getInboxTemplates(),
     getOutboundNumbers(),
+    getMarketingFlows(),
   ])
 
   if (numbers.length === 0) redirect("/integracoes/whatsapp-oficial")
@@ -33,7 +34,7 @@ export default async function NovaCampanhaPage() {
         </Link>
       }
     >
-      <WizardClient audiences={audiences} templates={templates} numbers={numbers} />
+      <WizardClient audiences={audiences} templates={templates} numbers={numbers} flows={flows} />
     </PageShell>
   )
 }

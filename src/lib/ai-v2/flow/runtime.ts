@@ -14,7 +14,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { normalizeLifecycle } from "@/lib/lifecycle-stage"
-import { sendBotText, sendBotMedia } from "../outbound"
+import { sendBotText, sendBotMedia, sendBotTemplate } from "../outbound"
 import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
 import type { PersonaInput } from "../prompt"
@@ -28,8 +28,28 @@ import type {
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
   HttpNodeConfig, CollectNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
   SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
-  WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig,
+  WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig,
 } from "./types"
+
+/**
+ * Log por passo (F2/§CC) — 1 linha por ENTRADA de nó. Best-effort e
+ * fire-and-forget: o app roda em Node/VPS (a promise completa), NUNCA bloqueia
+ * nem derruba o fluxo. Alimenta funil · CTR por ramo · métricas no canvas ·
+ * jornada→receita. `campaign_id` (coorte) é threaded pelo motor (F2b) via run.
+ */
+function logFlowStep(ctx: ExecCtx, run: FlowRunRow, flow: FlowRow, node: FlowNode, enteredFrom: string | null): void {
+  supabaseAdmin.from("studio_flow_steps").insert({
+    tenant_id:       ctx.tenantId,
+    flow_id:         flow.id,
+    run_id:          run.id,
+    conversation_id: ctx.conversationId,
+    contact_id:      ctx.contact?.id ?? null,
+    node_id:         node.id,
+    node_type:       node.type,
+    entered_from:    enteredFrom,
+    campaign_id:     (run as { campaign_id?: string | null }).campaign_id ?? null,
+  }).then(() => {}, (e: unknown) => console.error("[flow-step]", (e as Error)?.message ?? e))
+}
 
 function validateInput(v: string, type: string): boolean {
   const s = v.trim()
@@ -269,6 +289,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
   for (const [k, v] of Object.entries(contactVars)) if (v && !variables[k]) variables[k] = v
   const callStack: CallFrame[] = [...(run.call_stack ?? [])]
   let currentId: string | null = run.current_node_id
+  // Rastreio da jornada (log por passo): de qual nó viemos. No RESUME, o nó que
+  // esperava input é a origem do próximo passo (ele já foi logado quando entrou).
+  let stepFrom: string | null = run.status === "waiting" ? run.current_node_id : null
   let responded = false
   let lastAgent: AgentTurnResult | null = null
 
@@ -326,6 +349,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
     hops++
     const node = nodeById(graph, currentId)
     if (!node) break
+    logFlowStep(ctx, run, activeFlow, node, stepFrom)   // jornada (best-effort)
 
     switch (node.type) {
       case "start": {
@@ -536,6 +560,18 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         await persistRun(run.id, activeFlow, currentId, variables, callStack, "active")
         break
       }
+      case "template": {
+        const cfg = node.config as unknown as TemplateNodeConfig
+        if (cfg.name?.trim()) {
+          await sendBotTemplate(ctx, {
+            name: cfg.name.trim(), language: cfg.language?.trim() || "pt_BR",
+            params: (cfg.params ?? []).map((p) => interpolate(p ?? "", variables)),
+          }, { studio_flow: true })
+          responded = true
+        }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
       case "tag": {
         const cfg = node.config as unknown as TagNodeConfig
         await getCapability(TAG)?.run(ctx, { tag: cfg.tag, action: cfg.action })
@@ -608,6 +644,8 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         break
       }
     }
+    // Próximo nó foi entrado A PARTIR deste (casos que retornam não chegam aqui).
+    stepFrom = node.id
   }
 
   // Fim implícito (sem próximo nó ou estourou hops).
