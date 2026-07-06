@@ -8,7 +8,7 @@
 // o controle. transfer/return/end são terminais. start não tem entrada.
 
 import { createContext, useContext } from "react"
-import { Handle, Position, type NodeProps } from "@xyflow/react"
+import { Handle, Position, useNodeId, type NodeProps } from "@xyflow/react"
 import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
@@ -22,6 +22,36 @@ const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
 export type Orientation = "vertical" | "horizontal"
 export const OrientationContext = createContext<Orientation>("vertical")
 const useOrient = () => useContext(OrientationContext)
+
+// ── Overlay de JORNADA (F4): números sobre o fluxo que se edita ──
+// O editor injeta as métricas por contexto quando o botão "Jornada" está ligado;
+// cada nó mostra no cabeçalho quantos passaram (ou R$ ganho). null = overlay off.
+export interface JourneyMetrics {
+  mode:      "reach" | "ctr" | "revenue"
+  nodeReach: Record<string, number>
+  nodeRev:   Record<string, number>
+}
+export const JourneyMetricsContext = createContext<JourneyMetrics | null>(null)
+
+const fmtBRLc = (n: number) =>
+  n >= 1000 ? `R$ ${(n / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}k`
+            : `R$ ${n.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`
+
+/** Badge de alcance/receita no cabeçalho do nó — via useNodeId (cobre todos os tipos). */
+function NodeMetricBadge() {
+  const m  = useContext(JourneyMetricsContext)
+  const id = useNodeId()
+  if (!m || !id) return null
+  const reach = m.nodeReach[id] ?? 0
+  const rev   = m.nodeRev[id] ?? 0
+  const text  = m.mode === "revenue" ? fmtBRLc(rev) : String(reach)
+  return (
+    <span className="inline-flex items-center rounded bg-primary-50 px-1.5 py-px text-[10px] font-bold text-primary-700 ring-1 ring-primary-100 tabular-nums"
+      title={`${reach} passaram por aqui${rev ? ` · ${fmtBRLc(rev)} ganho a jusante` : ""}`}>
+      {text}
+    </span>
+  )
+}
 
 function TargetHandle() {
   const o = useOrient()
@@ -114,16 +144,15 @@ function Card({
           <Icon className="size-3.5" />
         </div>
         <span className="text-xs font-semibold text-slate-800">{title}</span>
-        {(ai || badge) && (
-          <span className="ml-auto inline-flex items-center gap-1">
-            {badge}
-            {ai && (
-              <span className="inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-px text-[9px] font-semibold text-violet-600 ring-1 ring-violet-100">
-                <Sparkles className="size-2.5" /> IA
-              </span>
-            )}
-          </span>
-        )}
+        <span className="ml-auto inline-flex items-center gap-1">
+          <NodeMetricBadge />
+          {badge}
+          {ai && (
+            <span className="inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-px text-[9px] font-semibold text-violet-600 ring-1 ring-violet-100">
+              <Sparkles className="size-2.5" /> IA
+            </span>
+          )}
+        </span>
       </div>
       <div className="px-3 py-2 text-[11px] text-slate-500 leading-snug min-h-[1.75rem]">{children}</div>
     </div>
