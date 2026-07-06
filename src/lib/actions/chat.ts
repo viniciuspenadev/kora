@@ -301,7 +301,13 @@ export async function disconnectWhatsApp(instanceId?: string) {
   if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
   const provider = getProvider(instance)
 
-  await provider.logout()
+  // Resiliente: se a sessão na Evolution já não existe (número meio-desconectado),
+  // o logout estoura — mas o "desconectar" local NÃO pode falhar por isso. Best-effort.
+  try {
+    await provider.logout()
+  } catch (e) {
+    console.error("[disconnectWhatsApp] logout falhou (segue marcando desconectado):", (e as Error).message)
+  }
 
   const now = new Date().toISOString()
   await supabaseAdmin

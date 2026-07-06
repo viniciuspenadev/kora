@@ -18,7 +18,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { runAgentTurn, type AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
 import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, startFlowRunAt, type MatchSignals } from "./flow/triggers"
-import { campaignFlowToTrigger, markRecipientReplied, isOptOut } from "@/lib/campaigns/engine"
+import { markRecipientReplied, isOptOut } from "@/lib/campaigns/engine"
 import { openerTemplateNode, templateNodeByName, nodeAfter } from "@/lib/campaigns/flow-opener"
 import type { PersonaInput } from "./prompt"
 import type { ExecCtx } from "./capabilities"
@@ -173,6 +173,13 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   if (opts?.forceFlowId) {
     const flow = await loadStartableFlow(tenantId, opts.forceFlowId)
     if (!flow) return { status: "skipped", reason: "flow_unavailable" }
+    // Safeguard: um fluxo manual assume a conversa → apaga o carimbo de campanha
+    // (senão o 1º reply seguinte rodaria a campanha por cima do fluxo manual).
+    if (convMeta.campaign_engage) {
+      const m = { ...convMeta }; delete m.campaign_engage
+      await supabaseAdmin.from("chat_conversations")
+        .update({ metadata: m }).eq("id", conversationId).eq("tenant_id", tenantId)
+    }
     const run    = await startFlowRun(tenantId, conversationId, flow)  // reseta o run por conversation_id
     activeFlowId = flow.id
     flowResult   = await runFlow(flowInput, flow, run)
@@ -181,6 +188,13 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   // 6a) Fluxo de retorno FIXADO (vínculo='ai' marcou metadata.ai_pinned_flow no
   // reopen). Tem precedência sobre run pendente e sobre o gatilho — o tenant
   // escolheu ESTE fluxo dedicado (sem o filtro de lifecycle do fluxo de captação).
+  // Carimbo de campanha (o motor fixou ao enviar o opener). Consome-uma-vez + expira 24h.
+  const ceRaw = convMeta.campaign_engage as { flowId?: string; recipientId?: string; templateName?: string; at?: string } | undefined
+  const ceFresh = ceRaw?.at ? (new Date().getTime() - new Date(ceRaw.at).getTime()) < 86_400_000 : true
+  const campaignEngage = ceRaw?.flowId && ceRaw.recipientId && ceFresh
+    ? { flowId: ceRaw.flowId, recipientId: ceRaw.recipientId, templateName: ceRaw.templateName ?? "" }
+    : null
+
   const pinnedFlowId = typeof convMeta.ai_pinned_flow === "string" ? convMeta.ai_pinned_flow : null
   if (pinnedFlowId) {
     // Consome o pin uma vez só (dê certo ou não) — não fica preso à conversa.
@@ -196,6 +210,34 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     // Fluxo sumiu/despublicou → flowResult null → cai direto no agente (degrada).
     // (De propósito NÃO re-tenta o gatilho aqui pra não cair no fluxo de captação
     //  com filtro de lifecycle, que é justamente o que o pin existe pra evitar.)
+  } else if (campaignEngage) {
+    // 6b) CARIMBO DE CAMPANHA — o motor fixou este fluxo na conversa ao enviar o
+    // opener. Precede ATÉ um run de BOT em andamento (o cliente respondeu à SUA
+    // campanha = intenção específica > atendimento genérico). Humano já foi barrado
+    // nos gates (§95-103), então superar o bot é seguro. Consome-uma-vez: apaga o
+    // carimbo agora, dê certo ou não. Opt-out ("SAIR") NÃO entra no fluxo.
+    const m = { ...convMeta }; delete m.campaign_engage
+    await supabaseAdmin.from("chat_conversations")
+      .update({ metadata: m }).eq("id", conversationId).eq("tenant_id", tenantId)
+    if (!isOptOut(incomingText)) {
+      const flow = await loadStartableFlow(tenantId, campaignEngage.flowId)
+      if (flow) {
+        await markRecipientReplied(tenantId, campaignEngage.recipientId)
+        // O opener JÁ foi enviado a frio → retoma DEPOIS dele (casa o nó pelo NOME do
+        // template; fallback posicional). Fail-SAFE: nunca começa do start (reenviaria).
+        const startNode = flow.graph.nodes.find((n) => n.type === "start")
+        const openerId  = templateNodeByName(flow.graph, campaignEngage.templateName)
+          ?? openerTemplateNode(flow.graph)?.nodeId ?? null
+        const startAt = openerId
+          ? nodeAfter(flow.graph, openerId)
+          : (startNode ? nodeAfter(flow.graph, startNode.id) : null)
+        // startFlowRunAt faz upsert por conversation_id → substitui um run de bot em curso.
+        const run    = await startFlowRunAt(tenantId, conversationId, flow, startAt)
+        activeFlowId = flow.id
+        flowResult   = await runFlow(flowInput, flow, run)
+      }
+      // Fluxo despublicado → flowResult null → cai no agente (degrada). Carimbo já consumido.
+    }
   } else if (existingRun) {
     // Resume SÓ se o fluxo ainda está PUBLICADO + ATIVO (loadStartableFlow filtra).
     // Pausado/arquivado/sumido → o run NÃO pode sequestrar a conversa.
@@ -217,38 +259,13 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
       }
     }
   } else {
-    // 6b) ENGAJAMENTO DE CAMPANHA (precede os gatilhos de atendimento, per-conversa,
-    // consome-uma-vez): o contato respondeu a um opener de campanha que tem fluxo?
-    // → roda ESSE fluxo. Sem conflito: só campanha COM flow_id; se o fluxo sumiu/
-    // despublicou, degrada pro atendimento normal (loadStartableFlow → null).
-    // Opt-out ("SAIR") NUNCA entra no fluxo — deixa o handleCampaignInbound descadastrar.
-    const camp = isOptOut(incomingText) ? null : await campaignFlowToTrigger(tenantId, contact.id)
-    let flow = camp ? await loadStartableFlow(tenantId, camp.flowId) : null
-    let startAt: string | null | undefined = undefined   // undefined = do início
-    if (camp && flow) {
-      await markRecipientReplied(tenantId, camp.recipientId)
-      // O template de acionamento JÁ foi enviado a frio pelo motor → o fluxo retoma
-      // DEPOIS dele, sem duplicar. Casa o nó pelo NOME do template enviado (robusto a
-      // edição do fluxo); fallback posicional (start→template). Fail-SAFE: se não achar
-      // o opener, pula o 1º nó após o start — NUNCA começa do start (reenviaria o template).
-      const startNode = flow.graph.nodes.find((n) => n.type === "start")
-      const openerId = templateNodeByName(flow.graph, camp.templateName)
-        ?? openerTemplateNode(flow.graph)?.nodeId
-        ?? null
-      startAt = openerId
-        ? nodeAfter(flow.graph, openerId)
-        : (startNode ? nodeAfter(flow.graph, startNode.id) : null)
-    } else {
-      // Atendimento normal: "contato novo" = 1ª mensagem (history <= 1).
-      const isNewContact = history.length <= 1
-      flow = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
-    }
-    if (flow) {
-      const run    = startAt !== undefined
-        ? await startFlowRunAt(tenantId, conversationId, flow, startAt)
-        : await startFlowRun(tenantId, conversationId, flow)
-      activeFlowId = flow.id
-      flowResult   = await runFlow(flowInput, flow, run)
+    // Atendimento normal: gatilhos receptivos ("contato novo" = 1ª mensagem).
+    const isNewContact = history.length <= 1
+    const fresh = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
+    if (fresh) {
+      const run    = await startFlowRun(tenantId, conversationId, fresh)
+      activeFlowId = fresh.id
+      flowResult   = await runFlow(flowInput, fresh, run)
     }
   }
   } // fim do bloco receptivo (não-forçado)

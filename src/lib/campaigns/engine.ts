@@ -2,6 +2,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { parseVars } from "@/lib/whatsapp/template-vars"
+import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { resolveAudienceContacts, classifyRecipient } from "./audience"
 
 // ─────────────────────────────────────────────────────────────────
@@ -60,18 +61,19 @@ interface CampaignTickRow {
   id: string; tenant_id: string; instance_id: string
   template_name: string; template_language: string
   batch_size: number; batch_interval_seconds: number; tier_limit: number | null
+  flow_id: string | null
 }
 
 /** Corpo do template (var keys) do cache `wa_templates` + status. `transient` distingue
  *  ERRO de query (blip de DB) de template AUSENTE — pra o tick não pausar por engano. */
-async function loadTemplateBody(t: string, name: string, language: string): Promise<{ varKeys: string[]; approved: boolean } | { transient: true } | null> {
+async function loadTemplateBody(t: string, name: string, language: string): Promise<{ varKeys: string[]; approved: boolean; body: string } | { transient: true } | null> {
   const { data, error } = await supabaseAdmin.from("wa_templates")
     .select("components, status").eq("tenant_id", t).eq("name", name).eq("language", language).maybeSingle()
   if (error) return { transient: true }
   if (!data) return null
   const d = data as { components: Array<{ type?: string; text?: string }> | null; status: string | null }
   const body = d.components?.find((c) => (c.type ?? "").toUpperCase() === "BODY")?.text ?? ""
-  return { varKeys: parseVars(body).map((v) => v.key), approved: (d.status ?? "").toUpperCase() === "APPROVED" }
+  return { varKeys: parseVars(body).map((v) => v.key), approved: (d.status ?? "").toUpperCase() === "APPROVED", body }
 }
 
 /** Quantas mensagens de campanha o NÚMERO já enviou nas últimas 24h (teto de tier).
@@ -120,10 +122,10 @@ async function tickCampaign(c: CampaignTickRow): Promise<number> {
 
   const limit = Math.min(c.batch_size, room, MAX_BATCH_HARD)
   const { data: batch } = await supabaseAdmin.from("campaign_recipients")
-    .select("id, phone, chat_contacts(custom_name, push_name)")
+    .select("id, phone, contact_id, chat_contacts(custom_name, push_name)")
     .eq("tenant_id", t).eq("campaign_id", c.id).eq("status", "queued")
     .order("created_at", { ascending: true }).limit(limit)
-  const recips = (batch ?? []) as unknown as { id: string; phone: string | null; chat_contacts: { custom_name: string | null; push_name: string | null } | null }[]
+  const recips = (batch ?? []) as unknown as { id: string; phone: string | null; contact_id: string | null; chat_contacts: { custom_name: string | null; push_name: string | null } | null }[]
 
   if (recips.length === 0) {
     // Fila vazia → concluída.
@@ -153,6 +155,13 @@ async function tickCampaign(c: CampaignTickRow): Promise<number> {
       await supabaseAdmin.from("campaign_recipients")
         .update({ status: "sent", wamid: res.messageId || null, sent_at: nowIso() })
         .eq("id", r.id).eq("tenant_id", t)
+      // Grava o opener na CONVERSA (aparece no chat) + fixa o carimbo de campanha
+      // (campanha-por-fluxo: o run.ts consome no 1º reply). Best-effort — nunca falha o envio.
+      if (r.contact_id) {
+        const display = (tpl.body.replace(/\{\{[^}]+\}\}/g, name).trim()) || `Template: ${c.template_name}`
+        await recordCampaignOpener(t, c.instance_id, r.contact_id, display, res.messageId || null,
+          { name: c.template_name, language: c.template_language }, { id: c.id, flowId: c.flow_id }, r.id)
+      }
       sent++
     } catch (e) {
       await supabaseAdmin.from("campaign_recipients")
@@ -170,6 +179,40 @@ async function tickCampaign(c: CampaignTickRow): Promise<number> {
 
   await supabaseAdmin.from("whatsapp_instances").update({ last_outbound_message_at: nowIso() }).eq("id", c.instance_id)
   return sent
+}
+
+/**
+ * Grava o opener enviado como mensagem NA CONVERSA (aparece no inbox) e — se a
+ * campanha tem fluxo — fixa o "carimbo de engajamento" (`metadata.campaign_engage`)
+ * naquela conversa. O run.ts consome o carimbo no 1º reply do cliente (roda o fluxo
+ * de campanha, supera bot, cede a humano). Best-effort: nunca derruba o envio.
+ * O carimbo é consome-uma-vez e expira (24h); qualquer ação humana/manual o apaga.
+ */
+async function recordCampaignOpener(
+  t: string, instanceId: string, contactId: string, display: string, wamid: string | null,
+  tpl: { name: string; language: string }, campaign: { id: string; flowId: string | null }, recipientId: string,
+): Promise<void> {
+  try {
+    const conv = await createInboundConversation({ tenantId: t, contactId, instanceId, channel: "whatsapp" })
+    const now = new Date().toISOString()
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conv.id, tenant_id: t,
+      sender_type: "bot", content_type: "text", content: display,
+      status: "sent", whatsapp_msg_id: wamid, is_private_note: false,
+      metadata: { campaign: true, campaign_id: campaign.id, template: tpl.name, language: tpl.language },
+    })
+    const patch: Record<string, unknown> = {
+      last_message_at: now, last_message_preview: display.slice(0, 100), last_message_dir: "out", updated_at: now,
+    }
+    if (campaign.flowId) {
+      const { data: cRow } = await supabaseAdmin.from("chat_conversations").select("metadata").eq("id", conv.id).maybeSingle()
+      const meta = ((cRow as { metadata?: Record<string, unknown> } | null)?.metadata ?? {})
+      patch.metadata = { ...meta, campaign_engage: { flowId: campaign.flowId, recipientId, templateName: tpl.name, at: now } }
+    }
+    await supabaseAdmin.from("chat_conversations").update(patch).eq("id", conv.id).eq("tenant_id", t)
+  } catch (e) {
+    console.error("[campaign opener persist]", (e as Error).message)
+  }
 }
 
 /** Palavras de descadastro (opt-out global). 1ª palavra da resposta OU a msg inteira. */
@@ -259,7 +302,7 @@ export async function markRecipientReplied(t: string, recipientId: string): Prom
 export async function runCampaignTick(): Promise<{ processed: number; sent: number }> {
   const now = new Date().toISOString()
   const { data: due } = await supabaseAdmin.from("campaigns")
-    .select("id, tenant_id, instance_id, template_name, template_language, batch_size, batch_interval_seconds, tier_limit")
+    .select("id, tenant_id, instance_id, template_name, template_language, batch_size, batch_interval_seconds, tier_limit, flow_id")
     .eq("status", "running").not("next_batch_at", "is", null).lte("next_batch_at", now)
     .order("next_batch_at", { ascending: true }).limit(20)
   const camps = (due ?? []) as CampaignTickRow[]
