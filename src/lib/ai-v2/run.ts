@@ -17,8 +17,9 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { runAgentTurn, type AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
-import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, type MatchSignals } from "./flow/triggers"
-import { campaignFlowToTrigger, markRecipientReplied } from "@/lib/campaigns/engine"
+import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, startFlowRunAt, type MatchSignals } from "./flow/triggers"
+import { campaignFlowToTrigger, markRecipientReplied, isOptOut } from "@/lib/campaigns/engine"
+import { openerTemplateNode, templateNodeByName, nodeAfter } from "@/lib/campaigns/flow-opener"
 import type { PersonaInput } from "./prompt"
 import type { ExecCtx } from "./capabilities"
 import { gatherPromptContext, type ConvRow, type ContactRow } from "@/lib/ai/context"
@@ -220,17 +221,32 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     // consome-uma-vez): o contato respondeu a um opener de campanha que tem fluxo?
     // → roda ESSE fluxo. Sem conflito: só campanha COM flow_id; se o fluxo sumiu/
     // despublicou, degrada pro atendimento normal (loadStartableFlow → null).
-    const camp = await campaignFlowToTrigger(tenantId, contact.id)
+    // Opt-out ("SAIR") NUNCA entra no fluxo — deixa o handleCampaignInbound descadastrar.
+    const camp = isOptOut(incomingText) ? null : await campaignFlowToTrigger(tenantId, contact.id)
     let flow = camp ? await loadStartableFlow(tenantId, camp.flowId) : null
+    let startAt: string | null | undefined = undefined   // undefined = do início
     if (camp && flow) {
       await markRecipientReplied(tenantId, camp.recipientId)
+      // O template de acionamento JÁ foi enviado a frio pelo motor → o fluxo retoma
+      // DEPOIS dele, sem duplicar. Casa o nó pelo NOME do template enviado (robusto a
+      // edição do fluxo); fallback posicional (start→template). Fail-SAFE: se não achar
+      // o opener, pula o 1º nó após o start — NUNCA começa do start (reenviaria o template).
+      const startNode = flow.graph.nodes.find((n) => n.type === "start")
+      const openerId = templateNodeByName(flow.graph, camp.templateName)
+        ?? openerTemplateNode(flow.graph)?.nodeId
+        ?? null
+      startAt = openerId
+        ? nodeAfter(flow.graph, openerId)
+        : (startNode ? nodeAfter(flow.graph, startNode.id) : null)
     } else {
       // Atendimento normal: "contato novo" = 1ª mensagem (history <= 1).
       const isNewContact = history.length <= 1
       flow = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
     }
     if (flow) {
-      const run    = await startFlowRun(tenantId, conversationId, flow)
+      const run    = startAt !== undefined
+        ? await startFlowRunAt(tenantId, conversationId, flow, startAt)
+        : await startFlowRun(tenantId, conversationId, flow)
       activeFlowId = flow.id
       flowResult   = await runFlow(flowInput, flow, run)
     }

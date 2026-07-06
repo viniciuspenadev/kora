@@ -6,6 +6,8 @@ import { requireModule } from "@/lib/modules"
 import { type SegmentRules } from "@/lib/crm/segment-rules"
 import { resolveAudienceContacts, classifyRecipient, CONV_PRICE } from "@/lib/campaigns/audience"
 import { materializeRecipients } from "@/lib/campaigns/engine"
+import { openerTemplateNode } from "@/lib/campaigns/flow-opener"
+import type { FlowGraph } from "@/lib/ai-v2/flow/types"
 import { revalidatePath } from "next/cache"
 
 // ─────────────────────────────────────────────────────────────────
@@ -297,14 +299,42 @@ export async function deleteCampaign(id: string): Promise<{ ok: true } | { error
   return { ok: true }
 }
 
-/** Fluxos de MARKETING publicados — pro picker de campanha-por-fluxo. */
-export async function getMarketingFlows(): Promise<{ id: string; name: string }[]> {
+export interface CampaignFlowOption {
+  id: string; name: string
+  /** true = começa com nó Template (pode virar campanha). */
+  ready: boolean
+  openerName: string | null; openerLanguage: string | null; openerCategory: "MARKETING" | "UTILITY" | null
+}
+
+/**
+ * Fluxos de MARKETING publicados pro picker de campanha-por-fluxo — com o
+ * "template de acionamento" (1º nó) resolvido. `ready=false` = não começa com
+ * template (não pode virar campanha; a UI explica e induz o ajuste no Studio).
+ */
+export async function getCampaignReadyFlows(): Promise<CampaignFlowOption[]> {
   const gate = await requireManager()
   if ("error" in gate) return []
+  const t = gate.tenantId
   const { data } = await supabaseAdmin.from("studio_flows")
-    .select("id, name").eq("tenant_id", gate.tenantId).eq("purpose", "marketing").eq("status", "published")
+    .select("id, name, graph").eq("tenant_id", t).eq("purpose", "marketing").eq("status", "published")
     .order("updated_at", { ascending: false })
-  return ((data ?? []) as { id: string; name: string }[])
+  const flows = (data ?? []) as { id: string; name: string; graph: FlowGraph }[]
+  const openers = flows.map((f) => ({ f, op: openerTemplateNode(f.graph) }))
+
+  // Categoria dos openers via cache wa_templates (consent gate).
+  const names = Array.from(new Set(openers.map((o) => o.op?.name).filter(Boolean))) as string[]
+  const catBy = new Map<string, "MARKETING" | "UTILITY">()
+  if (names.length) {
+    const { data: tpls } = await supabaseAdmin.from("wa_templates").select("name, language, category").eq("tenant_id", t).in("name", names)
+    for (const r of (tpls ?? []) as { name: string; language: string; category: string | null }[]) {
+      catBy.set(`${r.name}|${r.language}`, (r.category ?? "").toUpperCase() === "UTILITY" ? "UTILITY" : "MARKETING")
+    }
+  }
+  return openers.map(({ f, op }) => ({
+    id: f.id, name: f.name, ready: !!op,
+    openerName: op?.name ?? null, openerLanguage: op?.language ?? null,
+    openerCategory: op ? (catBy.get(`${op.name}|${op.language}`) ?? "MARKETING") : null,
+  }))
 }
 
 /** Números oficiais (meta_cloud) do tenant pro seletor de saída. */

@@ -137,12 +137,18 @@ export async function activeFlowRun(conversationId: string): Promise<FlowRunRow 
 /** Cria/zera o run da conversa (upsert por conversation_id, UNIQUE). */
 export async function startFlowRun(tenantId: string, conversationId: string, flow: FlowRow): Promise<FlowRunRow> {
   const startNode = flow.graph.nodes.find((n) => n.type === "start") ?? flow.graph.nodes[0] ?? null
+  return startFlowRunAt(tenantId, conversationId, flow, startNode?.id ?? null)
+}
+
+/** Como startFlowRun, mas começa num nó específico (campanha-por-fluxo: retoma DEPOIS
+ *  do template de acionamento, já enviado a frio — sem duplicar o opener). */
+export async function startFlowRunAt(tenantId: string, conversationId: string, flow: FlowRow, nodeId: string | null): Promise<FlowRunRow> {
   const row = {
     tenant_id: tenantId,
     conversation_id: conversationId,
     flow_id: flow.id,
     flow_version: flow.version,
-    current_node_id: startNode?.id ?? null,
+    current_node_id: nodeId,
     variables: {},
     call_stack: [],
     status: "active" as const,

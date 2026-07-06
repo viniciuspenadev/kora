@@ -4,11 +4,12 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import {
   Users, MessageSquareText, Send, ClipboardCheck, Check, Loader2, ChevronRight, ChevronLeft,
-  List, Tag as TagIcon, Zap, AlertTriangle, ShieldCheck, Clock,
+  List, Tag as TagIcon, Zap, AlertTriangle, ShieldCheck, Clock, FileBadge, Workflow, Plus,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { createCampaign, previewAudience, type AudienceOption, type AudiencePreview } from "@/lib/actions/campaigns"
+import { createCampaign, previewAudience, type AudienceOption, type AudiencePreview, type CampaignFlowOption } from "@/lib/actions/campaigns"
+import { createFlow } from "@/lib/actions/studio/flows"
 import type { InboxTemplate } from "@/lib/actions/whatsapp-official"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -24,14 +25,16 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
   audiences: AudienceOption[]
   templates: InboxTemplate[]
   numbers:   { id: string; label: string }[]
-  flows:     { id: string; name: string }[]
+  flows:     CampaignFlowOption[]
 }) {
   const router = useRouter()
   const [step, setStep] = useState(1)
 
   const [aud, setAud]         = useState<AudienceOption | null>(null)
+  // Ponto de partida: template simples OU fluxo (que começa com template de acionamento).
+  const [mode, setMode]       = useState<"template" | "flow">("template")
   const [tplName, setTplName] = useState("")
-  const [flowId, setFlowId]   = useState("")   // campanha-por-fluxo (opcional)
+  const [flowId, setFlowId]   = useState("")
   const [instanceId, setInstanceId] = useState(numbers[0]?.id ?? "")
   const [scheduleOn, setScheduleOn] = useState(false)
   const [date, setDate]       = useState("")
@@ -48,7 +51,14 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
   const [error, setError]     = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
-  const tpl = templates.find((t) => t.name === tplName) ?? null
+  const tpl     = templates.find((t) => t.name === tplName) ?? null
+  const selFlow = flows.find((f) => f.id === flowId) ?? null
+  // "Opener efetivo" — a porta da campanha, seja o template escolhido (modo template)
+  // ou o template de acionamento do fluxo (modo fluxo). Fonte única pro resto do wizard.
+  const opener: { name: string; language: string; category: "MARKETING" | "UTILITY" } | null =
+    mode === "template"
+      ? (tpl ? { name: tpl.name, language: tpl.language, category: tpl.category } : null)
+      : (selFlow?.ready && selFlow.openerName ? { name: selFlow.openerName, language: selFlow.openerLanguage || "pt_BR", category: selFlow.openerCategory ?? "MARKETING" } : null)
 
   // Presets de ritmo → (lote, intervalo). "manual" usa os inputs.
   const PACE_PRESETS: Record<"safe" | "balanced" | "fast", { size: number; interval: number; label: string; hint: string }> = {
@@ -60,16 +70,16 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
   const effInterval = pace === "manual" ? Math.max(1, Number(batchInterval) || 30) : PACE_PRESETS[pace].interval
   const effRate     = Math.round((effBatch / effInterval) * 60)   // msg/min efetivo
 
-  const canNext = step === 1 ? !!aud : step === 2 ? !!tpl : step === 3 ? !!instanceId && (!scheduleOn || !!date) : true
+  const canNext = step === 1 ? !!aud : step === 2 ? !!opener : step === 3 ? !!instanceId && (!scheduleOn || !!date) : true
 
   // Avança; ao ENTRAR na revisão, calcula elegíveis/skips/custo (consent pela categoria).
   function goNext() {
     if (!canNext) return
     const next = step + 1
     setStep(next)
-    if (next === 4 && aud && tpl) {
+    if (next === 4 && aud && opener) {
       setError(null); setPreviewing(true); setPreview(null)
-      previewAudience({ kind: aud.kind, id: aud.id, category: tpl.category }).then((r) => {
+      previewAudience({ kind: aud.kind, id: aud.id, category: opener.category }).then((r) => {
         if ("error" in r) setError(r.error); else setPreview(r)
         setPreviewing(false)
       })
@@ -77,22 +87,32 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
   }
 
   function create() {
-    if (!aud || !tpl) return
+    if (!aud || !opener) return
     setError(null)
     if (!name.trim()) { setError("Dê um nome à campanha"); return }
     const scheduledAt = scheduleOn && date ? new Date(`${date}T${time || "09:00"}:00`).toISOString() : null
     startTransition(async () => {
       const r = await createCampaign({
-        name, templateName: tpl.name, templateLanguage: tpl.language, templateCategory: tpl.category,
+        name, templateName: opener.name, templateLanguage: opener.language, templateCategory: opener.category,
         instanceId, audienceKind: aud.kind, audienceId: aud.id, audienceLabel: aud.label,
         scheduledAt, batchSize: effBatch, batchIntervalSeconds: effInterval, optOutEnabled: optOut, estCost: preview?.estCost ?? null,
-        flowId: flowId || null,
+        flowId: mode === "flow" ? flowId : null,
       })
       if ("error" in r) { setError(r.error); return }
       router.push("/campanhas"); router.refresh()
     })
   }
 
+  // Induzir criação: nasce um fluxo de marketing JÁ com o nó Template de acionamento
+  // ligado (start → template) e abre o Kora Studio pra montar. (owner: "induzir na criação")
+  function induceFlow() {
+    startTransition(async () => {
+      const r = await createFlow("Campanha — novo fluxo", "marketing", { seedCampaign: true })
+      if (r.id) router.push(`/studio/fluxos/${r.id}`)
+    })
+  }
+
+  const readyFlows = flows.filter((f) => f.ready)
   const lists = audiences.filter((a) => a.kind === "list")
   const tags  = audiences.filter((a) => a.kind === "tag")
 
@@ -146,14 +166,32 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
           </div>
         )}
 
-        {/* STEP 2 — Mensagem */}
+        {/* STEP 2 — Mensagem: template simples OU fluxo (que abre com template) */}
         {step === 2 && (
           <div className="space-y-4">
             <div>
-              <h3 className="text-sm font-bold text-slate-900">Qual mensagem?</h3>
-              <p className="text-[11px] text-slate-400 mt-0.5">Só templates <b>aprovados</b> pela Meta. A categoria define quem pode receber: Marketing exige opt-in de marketing; Utilidade exige consentimento simples.</p>
+              <h3 className="text-sm font-bold text-slate-900">Como essa campanha funciona?</h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">Um disparo simples de template, ou um fluxo que conversa depois que o cliente engaja.</p>
             </div>
-            {templates.length === 0 ? (
+
+            {/* Toggle do ponto de partida */}
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setMode("template")}
+                className={`text-left rounded-xl border p-3 transition-colors ${mode === "template" ? "border-primary bg-primary-50/40 ring-1 ring-primary/20" : "border-slate-200 hover:bg-slate-50"}`}>
+                <FileBadge className={`size-4 mb-1 ${mode === "template" ? "text-primary-600" : "text-slate-400"}`} />
+                <p className="text-xs font-bold text-slate-800">Enviar um template</p>
+                <p className="text-[10px] text-slate-400 leading-tight mt-0.5">Um disparo direto. A resposta cai no atendimento.</p>
+              </button>
+              <button type="button" onClick={() => setMode("flow")}
+                className={`text-left rounded-xl border p-3 transition-colors ${mode === "flow" ? "border-violet-400 bg-violet-50/40 ring-1 ring-violet-300/40" : "border-slate-200 hover:bg-slate-50"}`}>
+                <Workflow className={`size-4 mb-1 ${mode === "flow" ? "text-violet-600" : "text-slate-400"}`} />
+                <p className="text-xs font-bold text-slate-800">Rodar um fluxo</p>
+                <p className="text-[10px] text-slate-400 leading-tight mt-0.5">O template abre; o fluxo conversa quando o cliente engaja.</p>
+              </button>
+            </div>
+
+            {/* MODO TEMPLATE */}
+            {mode === "template" && (templates.length === 0 ? (
               <p className="text-xs text-slate-400 py-6 text-center">Nenhum template aprovado ainda. Crie um em <b>Marketing → Templates</b>.</p>
             ) : (
               <>
@@ -181,27 +219,52 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
                         ))}
                       </div>
                     )}
-                    {tpl.vars.length > 0 && <p className="text-[10px] text-amber-600">Este template tem variáveis ({tpl.vars.map((v) => `{{${v.key}}}`).join(", ")}) — no v1 elas serão preenchidas com o nome do contato quando possível; personalização por campo chega em breve.</p>}
-                  </div>
-                )}
-
-                {/* Campanha-por-fluxo: o que roda QUANDO o cliente engaja (opcional) */}
-                {tpl && flows.length > 0 && (
-                  <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 space-y-2">
-                    <div className="flex items-center gap-1.5">
-                      <Zap className="size-3.5 text-violet-500" />
-                      <span className="text-xs font-bold text-slate-800">Quando o cliente responder</span>
-                      <span className="text-[10px] text-slate-400">opcional</span>
-                    </div>
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      O template acima <b>abre a conversa</b>. Se você anexar um fluxo, ele <b>assume quando o cliente engajar</b> (responde/toca um botão) — texto livre, mídia, carrossel, IA. Sem fluxo, a resposta cai no atendimento normal.
-                    </p>
-                    <SimpleSelect value={flowId} onChange={setFlowId} className="h-9 text-xs"
-                      options={[{ value: "", label: "Nenhum — cai no atendimento normal" }, ...flows.map((f) => ({ value: f.id, label: f.name }))]} />
+                    {tpl.vars.length > 0 && <p className="text-[10px] text-amber-600">Este template tem variáveis ({tpl.vars.map((v) => `{{${v.key}}}`).join(", ")}) — no v1 preenchidas com o nome do contato; personalização por campo em breve.</p>}
                   </div>
                 )}
               </>
-            )}
+            ))}
+
+            {/* MODO FLUXO */}
+            {mode === "flow" && (readyFlows.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-violet-300 bg-violet-50/40 p-5 text-center">
+                <Workflow className="size-8 text-violet-400 mx-auto mb-2" />
+                <p className="text-sm font-bold text-slate-800">Você ainda não tem um fluxo pronto pra campanha</p>
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed max-w-md mx-auto">
+                  Um fluxo de campanha precisa <b>começar com um template de acionamento</b> (a porta que abre a conversa no oficial). Crie um agora — já monto o começo pra você no Kora Studio.
+                </p>
+                <button type="button" onClick={induceFlow} disabled={pending}
+                  className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors disabled:opacity-50">
+                  {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Criar fluxo de campanha no Studio
+                </button>
+                {flows.length > readyFlows.length && (
+                  <p className="text-[10px] text-slate-400 mt-2">Você tem fluxos de marketing, mas nenhum começa com um nó Template. Abra-os no Studio e coloque um template como 1º passo.</p>
+                )}
+              </div>
+            ) : (
+              <>
+                <SimpleSelect value={flowId} onChange={setFlowId} placeholder="Escolha o fluxo…"
+                  options={readyFlows.map((f) => ({ value: f.id, label: f.name }))} />
+                {selFlow?.ready && (
+                  <div className="rounded-lg border border-violet-200 bg-violet-50/40 p-3 space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Zap className="size-3.5 text-violet-500" />
+                      <span className="text-xs font-bold text-slate-800">Template de acionamento</span>
+                    </div>
+                    <p className="text-[11px] text-slate-600">
+                      Abre com <b className="font-mono">{selFlow.openerName}</b>
+                      <span className="text-slate-400"> ({selFlow.openerLanguage})</span>
+                      {selFlow.openerCategory && <span className={selFlow.openerCategory === "MARKETING" ? "text-violet-600" : "text-sky-600"}> · {selFlow.openerCategory === "MARKETING" ? "Marketing" : "Utilidade"}</span>}
+                    </p>
+                    <p className="text-[10px] text-slate-400 leading-relaxed">Esse template é enviado a frio. Quando o cliente engaja, o fluxo assume a partir do próximo passo — texto livre, mídia, IA, tudo.</p>
+                  </div>
+                )}
+                <button type="button" onClick={induceFlow} disabled={pending}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-violet-600 hover:text-violet-700">
+                  <Plus className="size-3" /> Criar outro fluxo de campanha
+                </button>
+              </>
+            ))}
           </div>
         )}
 
@@ -289,7 +352,7 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
         )}
 
         {/* STEP 4 — Revisão */}
-        {step === 4 && aud && tpl && (
+        {step === 4 && aud && opener && (
           <div className="space-y-4">
             <div>
               <h3 className="text-sm font-bold text-slate-900">Revisão</h3>
@@ -315,12 +378,12 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
                   </div>
                   {(preview.skips.no_consent > 0 || preview.skips.no_phone > 0) && (
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-                      {preview.skips.no_consent > 0 && <span>· {preview.skips.no_consent} sem opt-in de {tpl.category === "MARKETING" ? "marketing" : "contato"}</span>}
+                      {preview.skips.no_consent > 0 && <span>· {preview.skips.no_consent} sem opt-in de {opener.category === "MARKETING" ? "marketing" : "contato"}</span>}
                       {preview.skips.no_phone > 0 && <span>· {preview.skips.no_phone} sem telefone</span>}
                     </div>
                   )}
                   {preview.eligible === 0 && (
-                    <p className="text-[11px] text-amber-600 inline-flex items-start gap-1"><AlertTriangle className="size-3 shrink-0 mt-px" /> Ninguém elegível — esta audiência não tem contatos com {tpl.category === "MARKETING" ? "opt-in de marketing" : "consentimento"}. Importe/atualize o consentimento dos contatos.</p>
+                    <p className="text-[11px] text-amber-600 inline-flex items-start gap-1"><AlertTriangle className="size-3 shrink-0 mt-px" /> Ninguém elegível — esta audiência não tem contatos com {opener.category === "MARKETING" ? "opt-in de marketing" : "consentimento"}. Importe/atualize o consentimento dos contatos.</p>
                   )}
                 </div>
               ) : null}
@@ -329,10 +392,10 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
             {/* Resumo + custo */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <SummaryLine label="Audiência" value={aud.label} />
-              <SummaryLine label="Template" value={`${tpl.name} · ${tpl.category === "MARKETING" ? "Marketing" : "Utilidade"}`} />
+              <SummaryLine label={mode === "flow" ? "Abre com" : "Template"} value={`${opener.name} · ${opener.category === "MARKETING" ? "Marketing" : "Utilidade"}`} />
               <SummaryLine label="Número" value={numbers.find((n) => n.id === instanceId)?.label ?? "—"} />
               <SummaryLine label="Quando" value={scheduleOn && date ? new Date(`${date}T${time}:00`).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "Rascunho (manual)"} />
-              {flowId && <SummaryLine label="Ao engajar" value={`Fluxo: ${flows.find((f) => f.id === flowId)?.name ?? "—"}`} />}
+              {mode === "flow" && selFlow && <SummaryLine label="Ao engajar" value={`Fluxo: ${selFlow.name}`} />}
             </div>
             {preview && preview.eligible > 0 && (
               <div className="flex items-center justify-between rounded-lg bg-primary-50 border border-primary-100 px-3 py-2.5">

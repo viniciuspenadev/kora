@@ -46,11 +46,24 @@ export async function getFlow(id: string): Promise<StudioFlowFull | null> {
   return (data as StudioFlowFull | null) ?? null
 }
 
-export async function createFlow(name: string, purpose: "atendimento" | "marketing" = "atendimento"): Promise<{ id?: string; error?: string }> {
+export async function createFlow(
+  name: string,
+  purpose: "atendimento" | "marketing" = "atendimento",
+  opts?: { seedCampaign?: boolean },
+): Promise<{ id?: string; error?: string }> {
   const session = await requireAdmin()
   const clean = name.trim() || (purpose === "marketing" ? "Novo fluxo de marketing" : "Novo fluxo")
-  // Semente: só o nó start. O editor insere os passos a partir dele.
-  const graph: FlowGraph = { nodes: [{ id: "start", type: "start", config: {} }], edges: [] }
+  // Semente: só o nó start. Campanha-por-fluxo nasce com o nó TEMPLATE de acionamento
+  // já ligado (start → template) — a regra "campanha começa por template" vira ponto de partida.
+  const graph: FlowGraph = opts?.seedCampaign
+    ? {
+        nodes: [
+          { id: "start", type: "start", config: {}, position: { x: 0, y: 0 } },
+          { id: "opener", type: "template", config: { name: "", language: "pt_BR", params: [] }, position: { x: 0, y: 160 } },
+        ],
+        edges: [{ from: "start", to: "opener" }],
+      }
+    : { nodes: [{ id: "start", type: "start", config: {} }], edges: [] }
   // Marketing = disparo ATIVO (campanha/agente) por default; atendimento = receptivo.
   // É só o DEFAULT — o editor troca o gatilho livremente (nunca engessa — decisão owner).
   const trigger: FlowTrigger = purpose === "marketing"
