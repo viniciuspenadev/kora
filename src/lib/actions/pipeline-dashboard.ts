@@ -133,8 +133,10 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
   const deals: DashDeal[] = rows.map((r) => {
     const c = r.chat_contacts as { push_name: string | null; custom_name: string | null; profile_pic_url: string | null } | null
     const path = pathMap.get(r.id as string) ?? []
-    // Garantia: negócio sem eventos (legado) ao menos "entrou" na etapa atual.
-    if (path.length === 0 && r.stage_id) path.push({ stage: r.stage_id as string, at: (r.stage_entered_at as string | null) ?? (r.created_at as string) })
+    // Garantia: garante que a etapa atual do negócio esteja sempre na trilha (essencial se faltar evento de transição).
+    if (r.stage_id && (path.length === 0 || path[path.length - 1].stage !== r.stage_id)) {
+      path.push({ stage: r.stage_id as string, at: (r.stage_entered_at as string | null) ?? (r.created_at as string) })
+    }
     return {
       id: r.id as string, name: (r.name as string | null) ?? null,
       contact_name: c ? (c.custom_name?.trim() || c.push_name?.trim() || null) : null,
