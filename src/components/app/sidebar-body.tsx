@@ -6,10 +6,10 @@ import { usePathname, useSearchParams } from "next/navigation"
 import { signOut } from "next-auth/react"
 import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react"
 import {
-  LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, Briefcase,
+  LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked, IdCard,
-  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send,
+  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send, Funnel, Plus,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -28,6 +28,8 @@ interface NavLeaf {
   officialOnly?: boolean
   /** Sobrescreve a detecção de ativo (ex: itens com querystring que o pathname não pega). */
   activeOverride?: boolean
+  /** "Funil de Vendas": link ao board + botão dedicado que expande os funis de venda ativos. */
+  dealSwitcher?: boolean
 }
 
 interface NavGroup {
@@ -61,9 +63,9 @@ const NAV: NavItem[] = [
     children: [
       { href: "/kanban",       label: "Pipelines",     icon: <Workflow className={subIcon} strokeWidth={1.75} />, module: "kanban"   },
       { href: "/atendimentos", label: "Departamentos", icon: <Columns3 className={subIcon} strokeWidth={1.75} />, module: "inbox"    },
-      { href: "/contatos",     label: "Contatos",      icon: <Contact  className={subIcon} strokeWidth={1.75} />, module: "contacts" },
     ],
   },
+  { href: "/contatos", label: "Contatos", icon: <Contact className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts" },
   {
     key:       "negocios",
     label:     "Negócios",
@@ -71,10 +73,10 @@ const NAV: NavItem[] = [
     module:    "crm",
     adminOnly: true,
     children: [
-      // "Pipeline" vira switcher com os funis de venda ativos (2+) — injeção igual ao kanban.
-      { href: "/negocios",        label: "Pipeline", icon: <Columns3           className={subIcon} strokeWidth={1.75} /> },
-      { href: "/negocios/painel", label: "Painel",   icon: <BarChart3          className={subIcon} strokeWidth={1.75} /> },
-      { href: "/negocios/funis",  label: "Funis",    icon: <SlidersHorizontal  className={subIcon} strokeWidth={1.75} /> },
+      { href: "/negocios/painel", label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} /> },
+      // "Funil de Vendas" = link ao board + botão dedicado que expande os funis ativos.
+      { href: "/negocios",        label: "Funil de Vendas", icon: <Funnel   className={subIcon} strokeWidth={1.75} />, dealSwitcher: true },
+      { href: "/configuracoes/catalogo", label: "Catálogo", icon: <Package   className={subIcon} strokeWidth={1.75} /> },
     ],
   },
   {
@@ -84,9 +86,8 @@ const NAV: NavItem[] = [
     module:    "broadcasts",
     adminOnly: true,
     children: [
-      { href: "/campanhas",            label: "Campanhas",       icon: <Send      className={subIcon} strokeWidth={1.75} /> },
-      { href: "/templates",            label: "Templates",       icon: <FileText  className={subIcon} strokeWidth={1.75} /> },
-      { href: "/templates/biblioteca", label: "Biblioteca",      icon: <BookMarked className={subIcon} strokeWidth={1.75} /> },
+      { href: "/campanhas",            label: "Campanhas", icon: <Send       className={subIcon} strokeWidth={1.75} /> },
+      { href: "/configuracoes/listas", label: "Listas",    icon: <ListChecks className={subIcon} strokeWidth={1.75} /> },
     ],
   },
   { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "agenda"  },
@@ -111,18 +112,10 @@ const NAV: NavItem[] = [
     adminOnly: true,
     flyout:    true,
     children: [
-      { href: "/configuracoes/atendimento",    label: "Atendimento",       icon: <Headset      className={subIcon} strokeWidth={1.75} /> },
-      {
-        key:   "comercial",
-        label: "Comercial",
-        icon:  <Briefcase className={subIcon} strokeWidth={1.75} />,
-        children: [
-          { href: "/configuracoes/catalogo", label: "Catálogo", icon: <Package       className={subIcon} strokeWidth={1.75} />, module: "crm" },
-          { href: "/configuracoes/motivos",  label: "Motivos de perda", icon: <ClipboardList className={subIcon} strokeWidth={1.75} />, module: "crm" },
-          { href: "/configuracoes/tags",     label: "Tags",     icon: <TagIcon       className={subIcon} strokeWidth={1.75} /> },
-          { href: "/configuracoes/listas",   label: "Listas",   icon: <ListChecks    className={subIcon} strokeWidth={1.75} /> },
-        ],
-      },
+      { href: "/configuracoes/atendimento",    label: "Atendimento",       icon: <Headset          className={subIcon} strokeWidth={1.75} /> },
+      { href: "/negocios/funis",               label: "Config. Funis",     icon: <SlidersHorizontal className={subIcon} strokeWidth={1.75} />, module: "crm" },
+      { href: "/configuracoes/motivos",        label: "Motivos de perda",  icon: <ClipboardList    className={subIcon} strokeWidth={1.75} />, module: "crm" },
+      { href: "/configuracoes/tags",           label: "Tags",              icon: <TagIcon          className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/cadastro",       label: "Campos do cadastro", icon: <IdCard       className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/equipe",         label: "Equipe",            icon: <Users        className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/relatorios",     label: "Relatórios automáticos", icon: <Mail    className={subIcon} strokeWidth={1.75} /> },
@@ -155,7 +148,7 @@ interface Props {
   expanded?:       boolean
   /** Pipelines ativos → "Pipelines" vira sub-menu (switcher) quando há 2+. */
   pipelines?:      PipelineMini[]
-  /** Funis de VENDA ativos → "Pipeline" (Negócios) vira switcher quando há 2+. */
+  /** Funis de VENDA ativos → "Funil de Vendas" (Negócios) ganha expander (1+). */
   dealPipelines?:  PipelineMini[]
   /** Sidebar desktop recolhido (só ícones). Undefined = não é o rail desktop (drawer). */
   collapsed?:      boolean
@@ -230,9 +223,9 @@ export function SidebarBody({
   // Injeta pipelines como switcher (só com 2+ → vale a pena; 1 continua link direto).
   // Vale pros dois boards: atendimento (/kanban) e vendas (/negocios).
   const nav = useMemo(() => {
+    // /negocios NÃO entra aqui: "Funil de Vendas" é link + expander dedicado (dealSwitcher).
     const switchers = [
-      { targetHref: "/kanban",   key: "pipelines",      list: pipelines,     currentId: currentPipelineId,     toHref: (p: PipelineMini) => `/kanban?pipeline=${p.id}` },
-      { targetHref: "/negocios", key: "deal-pipelines", list: dealPipelines, currentId: currentDealPipelineId, toHref: (p: PipelineMini) => `/negocios?pipeline=${p.id}` },
+      { targetHref: "/kanban", key: "pipelines", list: pipelines, currentId: currentPipelineId, toHref: (p: PipelineMini) => `/kanban?pipeline=${p.id}` },
     ].filter((s) => (s.list?.length ?? 0) > 1)
     if (!switchers.length) return filteredNav
 
@@ -258,7 +251,7 @@ export function SidebarBody({
         } as NavGroup
       })
     return inject(filteredNav)
-  }, [filteredNav, pipelines, currentPipelineId, dealPipelines, currentDealPipelineId])
+  }, [filteredNav, pipelines, currentPipelineId])
 
   const allHrefs = useMemo(() => {
     const out: string[] = []
@@ -386,6 +379,12 @@ export function SidebarBody({
     if (el) chipRefs.current.set(key, el); else chipRefs.current.delete(key)
   }, [])
   const [pill, setPill] = useState<{ x: number; y: number; show: boolean }>({ x: 0, y: 0, show: false })
+  // Borda direita do rail (x) — âncora da aba fixa "expandir funis" (segue collapse/expand).
+  const [railRight, setRailRight] = useState(0)
+  // Y do item "Funil de Vendas" — a aba fixa fica na MESMA altura dele (não no topo).
+  const dealItemRef = useRef<HTMLAnchorElement | null>(null)
+  const [dealItemY, setDealItemY] = useState<number | null>(null)
+  const setDealItemEl = useCallback((el: HTMLAnchorElement | null) => { dealItemRef.current = el }, [])
 
   const activeKey = useMemo(() => {
     for (const item of nav) {
@@ -398,6 +397,9 @@ export function SidebarBody({
 
   const measurePill = useCallback(() => {
     const navEl = navRef.current
+    if (navEl) setRailRight(navEl.getBoundingClientRect().right)
+    const de = dealItemRef.current?.getBoundingClientRect()
+    setDealItemY(de && de.height > 0 ? de.top + de.height / 2 : null)
     const chip  = activeKey ? chipRefs.current.get(activeKey) : null
     if (!navEl || !chip) { setPill((p) => ({ ...p, show: false })); return }
     const n = navEl.getBoundingClientRect(), c = chip.getBoundingClientRect()
@@ -460,6 +462,62 @@ export function SidebarBody({
     )
   }
 
+  // Link de um funil (na lista do flyout ou no accordion mobile) — ícone de funil.
+  function renderPipeLink(p: PipelineMini, inFlyout: boolean) {
+    const pActive = p.id === currentDealPipelineId
+    return (
+      <Link key={p.id} href={`/negocios?pipeline=${p.id}`}
+        onClick={() => { if (inFlyout) setFlyoutKey(null); onNavigate?.() }} title={p.name}
+        className={`group/sub flex items-center gap-2.5 rounded-lg ${inFlyout ? "px-2.5 py-2" : "pl-2 pr-3 py-1.5"} text-[13px] transition-colors overflow-hidden ${
+          pActive ? "bg-primary-100 text-primary-700 font-semibold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"}`}>
+        <Funnel className="size-4 shrink-0" strokeWidth={1.75} style={pActive ? undefined : { color: p.color }} />
+        <span className={`whitespace-nowrap flex-1 ${inFlyout ? "" : reveal}`}>{p.name}</span>
+      </Link>
+    )
+  }
+
+  // "Funil de Vendas" = link pro board. No DESKTOP o menu dedicado dos funis é aberto
+  // pela ABA FIXA na borda do rail (renderizada abaixo) — não por seta dentro do item.
+  // No drawer MOBILE (sem flyout) fica o accordion inline com chevron. 0 funis = link.
+  function renderDealSwitch(leaf: NavLeaf) {
+    const list = dealPipelines ?? []
+    if (list.length < 1) return renderSubLeaf(leaf)
+    const active = isLeafActive(leaf.href)
+    // Desktop: link simples (mesma cara dos outros), MAS com ref pra a aba fixa
+    // se ancorar na altura dele. O toggle do menu dedicado é a aba na borda do rail.
+    if (isDesktopRail) {
+      return (
+        <Link key={leaf.href} ref={setDealItemEl} href={leaf.href} onClick={() => onNavigate?.()} title={leaf.label}
+          className={`group/sub flex items-center gap-2.5 rounded-lg pl-2 pr-3 py-1.5 text-[13px] transition-colors overflow-hidden ${
+            active ? "bg-primary-100 text-primary-700 font-semibold" : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"}`}>
+          <span className={`shrink-0 ${active ? "text-primary-600" : "text-slate-400 group-hover/sub:text-slate-600"}`}>{leaf.icon}</span>
+          <span className={`whitespace-nowrap flex-1 ${reveal}`}>{leaf.label}</span>
+        </Link>
+      )
+    }
+    const isOpen = open.has("deal-pipes")
+    return (
+      <div key={leaf.href}>
+        <div className={`group/sub flex items-center gap-1 rounded-lg pl-2 pr-1 py-0.5 transition-colors ${active ? "bg-primary-100" : "hover:bg-slate-50"}`}>
+          <Link href={leaf.href} onClick={() => onNavigate?.()} title={leaf.label}
+            className="flex items-center gap-2.5 flex-1 min-w-0 py-1 text-[13px] overflow-hidden">
+            <span className={`shrink-0 ${active ? "text-primary-600" : "text-slate-400 group-hover/sub:text-slate-600"}`}>{leaf.icon}</span>
+            <span className={`whitespace-nowrap flex-1 ${reveal} ${active ? "text-primary-700 font-semibold" : "text-slate-500"}`}>{leaf.label}</span>
+          </Link>
+          <button type="button" onClick={() => toggleGroup("deal-pipes")} aria-expanded={isOpen} title="Funis de venda"
+            className={`shrink-0 size-6 grid place-items-center rounded-md text-slate-400 hover:bg-slate-200/60 hover:text-slate-600 transition-colors ${reveal}`}>
+            <ChevronDown className={`size-3.5 transition-transform duration-200 ${isOpen ? "rotate-180 text-primary-600" : ""}`} strokeWidth={2.5} />
+          </button>
+        </div>
+        <div className={`overflow-hidden transition-[max-height,opacity] duration-200 ease-in-out ${isOpen && expanded ? "max-h-72 opacity-100" : "max-h-0 opacity-0"}`}>
+          <div className="mt-0.5 mb-1 ml-4 pl-2.5 border-l border-slate-200 space-y-0.5">
+            {list.map((p) => renderPipeLink(p, false))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // Leaf dentro do painel flyout — labels sempre visíveis (independe do rail).
   function renderFlyoutLeaf(sub: NavLeaf) {
     const active = sub.activeOverride ?? isLeafActive(sub.href)
@@ -510,7 +568,7 @@ export function SidebarBody({
         </button>
         <div className={`overflow-hidden transition-[max-height,opacity] duration-200 ease-in-out ${isOpen && expanded ? "max-h-60 opacity-100" : "max-h-0 opacity-0"}`}>
           <div className="mt-0.5 mb-1 ml-4 pl-2.5 border-l border-slate-200 space-y-0.5">
-            {group.children.map((c) => (isGroup(c) ? renderSubGroup(c) : renderSubLeaf(c)))}
+            {group.children.map((c) => (isGroup(c) ? renderSubGroup(c) : c.dealSwitcher ? renderDealSwitch(c) : renderSubLeaf(c)))}
           </div>
         </div>
       </div>
@@ -673,7 +731,7 @@ export function SidebarBody({
           const groupSubmenu = asFlyout ? null : (
             <div className={`overflow-hidden transition-[max-height,opacity] duration-200 ease-in-out ${isOpen && expanded ? "max-h-[34rem] opacity-100" : "max-h-0 opacity-0"}`}>
               <div className="my-1 ml-5 pl-3 border-l border-slate-200 space-y-0.5">
-                {item.children.map((c) => (isGroup(c) ? renderSubGroup(c) : renderSubLeaf(c)))}
+                {item.children.map((c) => (isGroup(c) ? renderSubGroup(c) : c.dealSwitcher ? renderDealSwitch(c) : renderSubLeaf(c)))}
               </div>
             </div>
           )
@@ -690,6 +748,46 @@ export function SidebarBody({
       {/* MENU DO MENU — segunda coluna de altura total, colada no rail. `fixed`
           escapa o overflow-hidden do <aside> (sem transform no ancestral). */}
       {flyoutKey && isDesktopRail && (() => {
+        // Menu DEDICADO dos funis de venda (2ª coluna) — botão "Novo funil" + lista.
+        if (flyoutKey === "deal-pipes") {
+          const list = dealPipelines ?? []
+          return (
+            <div
+              ref={flyoutRef}
+              style={{ left: flyoutX }}
+              className="fixed inset-y-0 z-40 w-64 flex flex-col bg-white border-r border-slate-200 shadow-[12px_0_32px_-18px_rgba(15,23,42,0.25)] animate-in slide-in-from-left-4 fade-in-0 duration-150"
+            >
+              {/* setinha na borda EXTERNA — recolhe o menu dedicado (mesma altura do item) */}
+              <button
+                type="button"
+                onClick={() => setFlyoutKey(null)}
+                title="Recolher"
+                style={{ top: dealItemY ?? 96 }}
+                className="absolute -right-3 -translate-y-1/2 z-10 size-6 grid place-items-center rounded-full border border-slate-200 bg-white text-slate-400 shadow-sm hover:text-slate-700 hover:border-slate-300 transition-colors"
+              >
+                <ChevronLeft className="size-3.5" strokeWidth={2.5} />
+              </button>
+              <div className="flex items-center gap-2.5 h-14 px-4 border-b border-slate-200 shrink-0">
+                <span className="flex size-8 items-center justify-center rounded-lg bg-primary-50 text-primary-600 shrink-0"><Funnel className="size-4" strokeWidth={1.75} /></span>
+                <span className="text-sm font-bold text-slate-900 flex-1 truncate">Funis de Vendas</span>
+              </div>
+              <div className="p-2.5 border-b border-slate-100 shrink-0">
+                <Link
+                  href="/negocios/funis"
+                  onClick={() => { setFlyoutKey(null); onNavigate?.() }}
+                  className="flex items-center justify-center gap-1.5 h-9 rounded-lg bg-primary hover:bg-primary-700 text-white text-xs font-semibold transition-colors"
+                >
+                  <Plus className="size-3.5" strokeWidth={2.5} /> Novo funil
+                </Link>
+              </div>
+              <div className="flex-1 overflow-y-auto px-2.5 py-2 space-y-0.5">
+                {list.length === 0
+                  ? <p className="px-2.5 py-6 text-xs text-slate-400 text-center">Nenhum funil ativo.</p>
+                  : list.map((p) => renderPipeLink(p, true))}
+              </div>
+            </div>
+          )
+        }
         const g = nav.find((i): i is NavGroup => isGroup(i) && i.key === flyoutKey)
         if (!g) return null
         return (
@@ -729,6 +827,21 @@ export function SidebarBody({
           </div>
         )
       })()}
+
+      {/* ABA FIXA na borda do rail — abre o menu dedicado dos funis. Sempre visível
+          no contexto de Negócios (desktop) com o painel recolhido; "›" pra expandir. */}
+      {isDesktopRail && (dealPipelines?.length ?? 0) > 0 && pathname === "/negocios" && flyoutKey !== "deal-pipes" && (
+        <button
+          type="button"
+          data-flyout-trigger="deal-pipes"
+          onClick={() => openFlyout("deal-pipes")}
+          title="Funis de venda"
+          style={{ left: railRight, top: dealItemY ?? 96 }}
+          className="fixed z-30 -translate-x-1/2 -translate-y-1/2 flex size-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm hover:text-primary-600 hover:border-primary-200 transition-colors animate-in fade-in-0 zoom-in-75 duration-150"
+        >
+          <ChevronRight className="size-3.5" strokeWidth={2.5} />
+        </button>
+      )}
 
       <SidebarSelfPause
         initialPaused={selfPause.paused}

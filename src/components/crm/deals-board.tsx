@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react"
-import { SimpleSelect } from "@/components/ui/select"
 import { useRouter } from "next/navigation"
 import {
   Trophy, XCircle, FileText, Clock, User, Loader2, MessageCircle, Plus, Calendar,
@@ -37,17 +36,13 @@ function aging(d: DealRow): number | null {
   return days >= 3 ? days : null
 }
 
-export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }: {
+export function DealsBoard({ pipelines, deals: initial, allTags, pipeId }: {
   pipelines: DealPipeline[]; deals: DealRow[]; allTags: TagLite[]
-  /** Deep-link do menu: seleciona o funil via /negocios?pipeline=<id>. */
-  urlPipelineId?: string | null
+  /** Funil ativo (controlado pelo header do NegociosClient). */
+  pipeId: string
 }) {
   const router = useRouter()
   const [deals, setDeals]   = useState(initial)
-  const [pipeId, setPipeId] = useState(() => {
-    if (urlPipelineId && pipelines.some((p) => p.id === urlPipelineId)) return urlPipelineId
-    return (pipelines.find((p) => p.is_default) ?? pipelines[0])?.id ?? ""
-  })
   const [activeId, setActiveId]     = useState<string | null>(null)
   const [pending, startTransition]  = useTransition()
   const [moveDialog, setMoveDialog] = useState<{ dealId: string; stageId: string; toName: string; toLost: boolean; fromName: string | null; fromDays: number | null; dealName: string | null; currentValue: number | null } | null>(null)
@@ -57,21 +52,6 @@ export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }
   const draggedRef = useRef(false)
 
   useEffect(() => { setDeals(initial) }, [initial])
-
-  // Menu → board: troca de funil via querystring (client nav não remonta o componente).
-  useEffect(() => {
-    if (urlPipelineId && urlPipelineId !== pipeId && pipelines.some((p) => p.id === urlPipelineId)) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPipeId(urlPipelineId)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlPipelineId])
-
-  // Board → menu: seleção interna reflete na URL (destaque do switcher acompanha).
-  function selectPipeline(id: string) {
-    setPipeId(id)
-    window.history.replaceState(null, "", `/negocios?pipeline=${id}`)
-  }
 
   const pipeline = useMemo(() => pipelines.find((p) => p.id === pipeId) ?? pipelines[0], [pipelines, pipeId])
   const columns  = useMemo(() => (pipeline?.stages ?? []).filter((s) => s.show_in_kanban), [pipeline])
@@ -155,14 +135,6 @@ export function DealsBoard({ pipelines, deals: initial, allTags, urlPipelineId }
 
   return (
     <div className="flex flex-col min-h-0 flex-1">
-      {pipelines.length > 1 && (
-        <div className="flex items-center gap-2 px-4 sm:px-6 pt-3 shrink-0">
-          <span className="text-xs text-slate-400">Funil:</span>
-          <div className="w-48"><SimpleSelect value={pipeId} onChange={selectPipeline} className="h-8 text-xs"
-            options={pipelines.map((p) => ({ value: p.id, label: p.name + (p.is_default ? " · padrão" : "") }))} /></div>
-        </div>
-      )}
-
       <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
         <div className="flex-1 min-h-0 flex gap-3 overflow-x-auto px-4 sm:px-6 py-3">
           {columns.map((stage) => (

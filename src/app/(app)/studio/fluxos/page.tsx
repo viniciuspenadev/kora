@@ -16,12 +16,31 @@ export default async function FluxosPage() {
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const { data } = await supabaseAdmin
-    .from("studio_flows")
-    .select("id, name, status, active, version, purpose, trigger, updated_at")
-    .eq("tenant_id", tenantId)
-    .neq("status", "archived")
-    .order("updated_at", { ascending: false })
+  const [{ data }, { data: steps }] = await Promise.all([
+    supabaseAdmin
+      .from("studio_flows")
+      .select("id, name, status, active, version, purpose, trigger, updated_at")
+      .eq("tenant_id", tenantId)
+      .neq("status", "archived")
+      .order("updated_at", { ascending: false }),
+    // Acionamentos por fluxo: cada run loga 1 passo de entrada (entered_from null).
+    // Dedup por run_id (belt-and-suspenders). Cap defensivo no volume.
+    supabaseAdmin
+      .from("studio_flow_steps")
+      .select("flow_id, run_id")
+      .eq("tenant_id", tenantId)
+      .is("entered_from", null)
+      .limit(50000),
+  ])
+
+  const activations: Record<string, number> = {}
+  const seen = new Map<string, Set<string>>()
+  for (const s of (steps ?? []) as { flow_id: string; run_id: string }[]) {
+    let set = seen.get(s.flow_id)
+    if (!set) { set = new Set(); seen.set(s.flow_id, set) }
+    set.add(s.run_id)
+  }
+  for (const [f, set] of seen) activations[f] = set.size
 
   return (
     <PageShell
@@ -37,7 +56,7 @@ export default async function FluxosPage() {
         </Link>
       }
     >
-      <FlowsClient flows={(data ?? []) as StudioFlowSummary[]} />
+      <FlowsClient flows={(data ?? []) as StudioFlowSummary[]} activations={activations} />
     </PageShell>
   )
 }

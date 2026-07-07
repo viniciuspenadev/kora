@@ -75,44 +75,53 @@ function TriggerMeta({ trigger }: { trigger: FlowTrigger | null }) {
   )
 }
 
-function FlowCard({ f, busy, onToggle, onClone, onDelete }: {
-  f: StudioFlowSummary; busy: boolean; onToggle: () => void; onClone: () => void; onDelete: () => void
+function FlowRow({ f, count, maxAct, busy, onToggle, onClone, onDelete }: {
+  f: StudioFlowSummary; count: number; maxAct: number; busy: boolean; onToggle: () => void; onClone: () => void; onDelete: () => void
 }) {
   const st = flowState(f)
   const pm = PURPOSE_META[purposeOf(f)]
   const PIcon = pm.icon
   const iconBtn = "inline-flex items-center justify-center size-8 rounded-lg text-slate-400 transition-colors disabled:opacity-50 hover:bg-slate-100"
+  const pct = maxAct > 0 && count > 0 ? Math.max(6, Math.round((count / maxAct) * 100)) : 0
   return (
-    <div className="group flex flex-col rounded-2xl border border-slate-200 bg-white p-5 hover:border-slate-300 hover:shadow-card transition-all">
-      <div className="flex items-start gap-3">
-        <div className={`size-11 rounded-xl flex items-center justify-center shrink-0 ${pm.tint}`}>
-          <PIcon className="size-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <Link href={`/studio/fluxos/${f.id}`} className="text-[15px] font-bold text-slate-900 hover:text-primary-600 truncate block leading-tight">
+    <div className="group flex items-center gap-4 px-4 py-3.5 hover:bg-slate-50/70 transition-colors">
+      <div className={`size-10 rounded-xl flex items-center justify-center shrink-0 ${pm.tint}`}>
+        <PIcon className="size-5" />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link href={`/studio/fluxos/${f.id}`} className="text-sm font-bold text-slate-900 hover:text-primary-600 truncate leading-tight">
             {f.name}
           </Link>
-          <div className="flex items-center gap-2 mt-1.5">
-            <span className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-bold ring-1 ${pm.badge}`}>
-              <PIcon className="size-2.5" /> {pm.label}
-            </span>
-            <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
-              st === "published" ? "text-emerald-600" : st === "paused" ? "text-slate-400" : "text-amber-600"}`}>
-              <span className={`size-1.5 rounded-full ${st === "published" ? "bg-emerald-500" : st === "paused" ? "bg-slate-300" : "bg-amber-400"}`} />
-              {st === "published" ? "Publicado" : st === "paused" ? "Pausado" : "Rascunho"}
-            </span>
-          </div>
+          <span className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-bold ring-1 ${pm.badge}`}>
+            <PIcon className="size-2.5" /> {pm.label}
+          </span>
+          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
+            st === "published" ? "text-emerald-600" : st === "paused" ? "text-slate-400" : "text-amber-600"}`}>
+            <span className={`size-1.5 rounded-full ${st === "published" ? "bg-emerald-500" : st === "paused" ? "bg-slate-300" : "bg-amber-400"}`} />
+            {st === "published" ? "Publicado" : st === "paused" ? "Pausado" : "Rascunho"}
+          </span>
+        </div>
+        <div className="mt-1.5"><TriggerMeta trigger={f.trigger} /></div>
+      </div>
+
+      {/* Acionamentos — o número que o owner pediu, com barra relativa entre os fluxos */}
+      <div className="hidden sm:block w-36 shrink-0">
+        <div className="flex items-baseline gap-1">
+          <span className="text-lg font-bold tabular-nums text-slate-900 leading-none">{count.toLocaleString("pt-BR")}</span>
+          <span className="text-[10px] text-slate-400">acionamentos</span>
+        </div>
+        <div className="h-1.5 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
+          <div className="h-full bg-primary/60 rounded-full transition-all" style={{ width: `${pct}%` }} />
         </div>
       </div>
 
-      <div className="mt-3.5 flex items-center justify-between gap-2">
-        <TriggerMeta trigger={f.trigger} />
-        <span className="text-[10px] text-slate-400 shrink-0 tabular-nums">{relTime(f.updated_at)}</span>
-      </div>
+      <span className="hidden lg:block text-[11px] text-slate-400 tabular-nums w-14 shrink-0 text-right">{relTime(f.updated_at)}</span>
 
-      <div className="flex items-center gap-1.5 mt-4 pt-3 border-t border-slate-100">
+      <div className="flex items-center gap-0.5 shrink-0">
         <Link href={`/studio/fluxos/${f.id}`}
-          className="inline-flex items-center gap-1.5 h-8 px-3 flex-1 text-xs font-semibold text-slate-700 border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors">
+          className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold text-slate-700 border border-slate-200 hover:bg-white hover:border-slate-300 rounded-lg transition-colors">
           <Pencil className="size-3.5" /> Editar
         </Link>
         {f.status === "published" && (
@@ -129,7 +138,7 @@ function FlowCard({ f, busy, onToggle, onClone, onDelete }: {
   )
 }
 
-export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
+export function FlowsClient({ flows, activations }: { flows: StudioFlowSummary[]; activations: Record<string, number> }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [busyId, setBusyId]   = useState<string | null>(null)
@@ -147,6 +156,10 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
     for (const f of flows) c[purposeOf(f)]++
     return c
   }, [flows])
+
+  const maxAct    = useMemo(() => Math.max(0, ...flows.map((f) => activations[f.id] ?? 0)), [flows, activations])
+  const totalAct  = useMemo(() => flows.reduce((a, f) => a + (activations[f.id] ?? 0), 0), [flows, activations])
+  const publishedCount = useMemo(() => flows.filter((f) => flowState(f) === "published").length, [flows])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -189,6 +202,23 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
 
   return (
     <div className="space-y-5">
+      {/* Faixa de resumo — o total de acionamentos em destaque */}
+      {flows.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-2xl border border-slate-200 bg-white px-5 py-4">
+          <div>
+            <div className="text-[11px] font-medium text-slate-400">Fluxos ativos</div>
+            <div className="text-2xl font-bold text-slate-900 tabular-nums leading-tight">
+              {publishedCount}<span className="text-sm font-medium text-slate-400">/{flows.length}</span>
+            </div>
+          </div>
+          <div className="h-10 w-px bg-slate-100" />
+          <div>
+            <div className="flex items-center gap-1 text-[11px] font-medium text-slate-400"><Zap className="size-3 text-primary-500" /> Acionamentos no total</div>
+            <div className="text-2xl font-bold text-primary-700 tabular-nums leading-tight">{totalAct.toLocaleString("pt-BR")}</div>
+          </div>
+        </div>
+      )}
+
       {/* Eixo primário: PROPÓSITO (segmented control grande) + criar */}
       <div className="flex flex-col lg:flex-row lg:items-center gap-3">
         <div className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-full lg:w-auto">
@@ -284,9 +314,9 @@ export function FlowsClient({ flows }: { flows: StudioFlowSummary[] }) {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100 overflow-hidden">
           {visible.map((f) => (
-            <FlowCard key={f.id} f={f} busy={busyId === f.id}
+            <FlowRow key={f.id} f={f} count={activations[f.id] ?? 0} maxAct={maxAct} busy={busyId === f.id}
               onToggle={() => handleToggleActive(f.id, !f.active)}
               onClone={() => handleClone(f.id)} onDelete={() => setDeleting(f.id)} />
           ))}

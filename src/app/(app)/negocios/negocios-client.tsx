@@ -1,10 +1,10 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { SimpleSelect } from "@/components/ui/select"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
-import { Search, X, LayoutGrid, List, SlidersHorizontal, Briefcase, BarChart3 } from "lucide-react"
+import { Search, X, LayoutGrid, List, SlidersHorizontal, Briefcase, BarChart3, Funnel } from "lucide-react"
 import type { DealsPageData, DealRow, DealPipeline } from "@/lib/actions/deals"
 import { DealsBoard } from "@/components/crm/deals-board"
 
@@ -36,6 +36,21 @@ export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipel
   // Deep-link do menu (switcher de funis): /negocios?pipeline=<id>
   const urlPipelineId = useSearchParams().get("pipeline")
 
+  // Funil ATIVO do board — seletor mora no header (movido de dentro do kanban).
+  const [pipeId, setPipeId] = useState(() => {
+    if (urlPipelineId && pipelines.some((p) => p.id === urlPipelineId)) return urlPipelineId
+    return (pipelines.find((p) => p.is_default) ?? pipelines[0])?.id ?? ""
+  })
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (urlPipelineId && urlPipelineId !== pipeId && pipelines.some((p) => p.id === urlPipelineId)) setPipeId(urlPipelineId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlPipelineId])
+  function selectPipe(id: string) {
+    setPipeId(id)
+    window.history.replaceState(null, "", `/negocios?pipeline=${id}`)
+  }
+
   const deals = useMemo(() => {
     const q = search.trim().toLowerCase()
     return data.deals.filter((d) => {
@@ -63,6 +78,17 @@ export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipel
           <ViewBtn active={view === "board"} onClick={() => setView("board")} icon={LayoutGrid} label="Quadro" />
           <ViewBtn active={view === "list"}  onClick={() => setView("list")}  icon={List}       label="Lista" />
         </div>
+
+        {/* Seletor de FUNIL — só no Quadro e com 2+ funis (a Lista tem o próprio filtro). */}
+        {view === "board" && pipelines.length > 1 && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Funnel className="size-3.5 text-slate-400 hidden sm:block" />
+            <div className="w-48">
+              <SimpleSelect value={pipeId} onChange={selectPipe}
+                options={pipelines.map((p) => ({ value: p.id, label: p.name + (p.is_default ? " · padrão" : "") }))} />
+            </div>
+          </div>
+        )}
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <Link href="/negocios/painel" className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-600 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors">
@@ -102,7 +128,7 @@ export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipel
       </div>
 
       {view === "board" ? (
-        <DealsBoard pipelines={pipelines} deals={data.deals} allTags={data.allTags} urlPipelineId={urlPipelineId} />
+        <DealsBoard pipelines={pipelines} deals={data.deals} allTags={data.allTags} pipeId={pipeId} />
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-4">
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
