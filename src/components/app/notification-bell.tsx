@@ -147,7 +147,7 @@ export function NotificationBell({
         type="button"
         onClick={toggle}
         aria-label={`Notificações${unread ? ` · ${unread} não lidas` : ""}`}
-        className="relative size-9 flex items-center justify-center rounded-lg text-nav-dim hover:bg-nav-hover hover:text-white transition-colors"
+        className="relative size-9 flex items-center justify-center rounded-lg text-nav-dim hover:bg-nav-hover hover:text-nav-strong transition-colors"
       >
         <Bell className="size-5" strokeWidth={1.75} />
         {unread > 0 && (

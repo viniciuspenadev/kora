@@ -14,6 +14,8 @@ import {
 } from "lucide-react"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { ContactSheet } from "@/components/crm/contact-sheet"
+import { CustomFieldInputs, CustomFieldsView } from "@/components/crm/custom-field-inputs"
+import { setEntityCustomFields, type CustomFieldDef } from "@/lib/actions/custom-fields"
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
@@ -60,7 +62,7 @@ function relTime(iso: string | null): string {
   return `há ${Math.floor(days / 30)} mês${days >= 60 ? "es" : ""}`
 }
 
-export function DealPageClient({ deal, tasks, isManager = false }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean }) {
+export function DealPageClient({ deal, tasks, isManager = false, dealFields = [] }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[] }) {
   const router = useRouter()
   const [pending, start] = useTransition()
   const convId = deal.conversationId
@@ -690,6 +692,11 @@ export function DealPageClient({ deal, tasks, isManager = false }: { deal: DealD
             </section>
           )}
 
+          {/* Campos personalizados do negócio (tenant_custom_fields entity='deal') */}
+          {dealFields.length > 0 && (
+            <CustomFieldsCard dealId={deal.id} defs={dealFields} values={deal.custom_fields} />
+          )}
+
           {/* Jornada no funil — tempo por etapa (mini-gantt do mockup) */}
           {journey.length > 0 && journey.some((s) => s.days > 0) && (
             <section className="bg-white rounded-2xl border border-slate-200 p-4">
@@ -817,6 +824,50 @@ export function DealPageClient({ deal, tasks, isManager = false }: { deal: DealD
 // ── Célula da régua de gestão (header) ──
 // Régua monocromática (identidade azul), cada célula no seu card — cor extra SÓ com
 // significado (warn = parado).
+function CustomFieldsCard({ dealId, defs, values }: { dealId: string; defs: CustomFieldDef[]; values: Record<string, string> }) {
+  const router = useRouter()
+  const [pending, start] = useTransition()
+  const [editing, setEditing] = useState(false)
+  const initial = () => Object.fromEntries(defs.map((d) => [d.key, String(values[d.key] ?? "")]))
+  const [vals, setVals] = useState<Record<string, string>>(initial)
+
+  function save() {
+    start(async () => {
+      const r = await setEntityCustomFields("deal", dealId, vals)
+      if ("error" in r) { alert(r.error); return }
+      setEditing(false); router.refresh()
+    })
+  }
+
+  const hasAny = defs.some((d) => (values[d.key] ?? "").trim() !== "")
+
+  return (
+    <section className="bg-white rounded-2xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold text-slate-900">Campos personalizados</h2>
+        {!editing && (
+          <button onClick={() => setEditing(true)} className="text-[11px] font-semibold text-primary-600 hover:text-primary-700">Editar</button>
+        )}
+      </div>
+      {editing ? (
+        <div className="space-y-3">
+          <CustomFieldInputs defs={defs} values={vals} onChange={(k, v) => setVals((p) => ({ ...p, [k]: v }))} />
+          <div className="flex items-center gap-2 pt-1">
+            <button onClick={save} disabled={pending} className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg disabled:opacity-50">
+              {pending && <Loader2 className="size-3.5 animate-spin" />} Salvar
+            </button>
+            <button onClick={() => { setEditing(false); setVals(initial()) }} className="h-8 px-2 text-xs text-slate-500">Cancelar</button>
+          </div>
+        </div>
+      ) : hasAny ? (
+        <CustomFieldsView defs={defs} values={values} />
+      ) : (
+        <p className="text-[11px] text-slate-400">Nenhum campo preenchido. <button onClick={() => setEditing(true)} className="text-primary-600 font-semibold">Preencher</button></p>
+      )}
+    </section>
+  )
+}
+
 function Gauge({ icon: Icon, label, value, hint, warn }: {
   icon: typeof Clock; label: string; value: string; hint?: string; warn?: boolean
 }) {

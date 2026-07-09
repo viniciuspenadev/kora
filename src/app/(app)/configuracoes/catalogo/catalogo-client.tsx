@@ -10,6 +10,7 @@ import {
   getCatalogItemHistory,
   type CatalogItem, type CatalogBilling, type CatalogItemEvent,
 } from "@/lib/actions/catalog"
+import { unitSpec } from "@/lib/crm/units"
 import { EmptyState } from "@/components/ui/empty-state"
 
 const BRL = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2 })
@@ -248,7 +249,9 @@ function Row({ item, trend, onHistory }: { item: CatalogItem; trend: PriceTrend 
       </td>
       <td className="py-2.5 px-3 text-right whitespace-nowrap">
         <span className="font-semibold text-slate-800 tabular-nums">{BRL(item.price)}</span>
-        {BILLING_SUFFIX[item.billing] && <span className="text-[10px] text-slate-400">{BILLING_SUFFIX[item.billing]}</span>}
+        {item.unit && item.unit !== "un"
+          ? <span className="text-[10px] text-slate-400">/{unitSpec(item.unit).symbol}</span>
+          : BILLING_SUFFIX[item.billing] && <span className="text-[10px] text-slate-400">{BILLING_SUFFIX[item.billing]}</span>}
       </td>
       <td className="py-2.5 px-3 hidden md:table-cell"><Sparkline trend={trend} /></td>
       <td className="py-2.5 px-3 hidden md:table-cell">

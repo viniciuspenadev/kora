@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { hasModule } from "@/lib/modules"
 import { getDeal } from "@/lib/actions/deals"
 import { listDealTasks } from "@/lib/actions/tasks"
+import { listCustomFields } from "@/lib/actions/custom-fields"
 import { DealPageClient } from "@/components/crm/deal-page-client"
 
 export const dynamic = "force-dynamic"
@@ -13,11 +14,11 @@ export default async function DealDetailPage({ params }: { params: Promise<{ id:
   const { id } = await params
   if (!(await hasModule(session.user.tenantId, "crm"))) redirect("/inbox")
 
-  const [deal, tasks] = await Promise.all([getDeal(id), listDealTasks(id)])
+  const [deal, tasks, dealFields] = await Promise.all([getDeal(id), listDealTasks(id), listCustomFields("deal")])
   if ("error" in deal) redirect("/negocios")
 
   // Gestor vê custo/margem e edita a validade da proposta (o server revalida tudo).
   const isManager = ["owner", "admin"].includes(session.user.role)
 
-  return <DealPageClient deal={deal} tasks={tasks} isManager={isManager} />
+  return <DealPageClient deal={deal} tasks={tasks} isManager={isManager} dealFields={dealFields} />
 }

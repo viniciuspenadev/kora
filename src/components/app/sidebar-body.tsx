@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
+import { AnimatedLogoKoraVetor } from "@/components/app/logo-kora-vetor"
 
 export interface PipelineMini { id: string; name: string; color: string; is_default: boolean }
 
@@ -442,10 +443,10 @@ export function SidebarBody({
         className={`
           group/sub flex items-center gap-2.5 rounded-lg pl-2 pr-3 py-1.5 text-[13px] transition-colors overflow-hidden
           ${active
-            ? "bg-nav-active text-white font-semibold"
+            ? "bg-nav-active text-nav-accent font-semibold"
             : sub.soon
             ? "text-nav-dim cursor-default"
-            : "text-nav-dim hover:bg-nav-hover hover:text-white"
+            : "text-nav-dim hover:bg-nav-hover hover:text-nav-strong"
           }
         `}
       >
@@ -469,7 +470,7 @@ export function SidebarBody({
       <Link key={p.id} href={`/negocios?pipeline=${p.id}`}
         onClick={() => { if (inFlyout) setFlyoutKey(null); onNavigate?.() }} title={p.name}
         className={`group/sub flex items-center gap-2.5 rounded-lg ${inFlyout ? "px-2.5 py-2" : "pl-2 pr-3 py-1.5"} text-[13px] transition-colors overflow-hidden ${
-          pActive ? "bg-nav-active text-white font-semibold" : "text-nav-text hover:bg-nav-hover hover:text-white"}`}>
+          pActive ? "bg-nav-active text-nav-accent font-semibold" : "text-nav-text hover:bg-nav-hover hover:text-nav-strong"}`}>
         <Funnel className="size-4 shrink-0" strokeWidth={1.75} style={pActive ? undefined : { color: p.color }} />
         <span className={`whitespace-nowrap flex-1 ${inFlyout ? "" : reveal}`}>{p.name}</span>
       </Link>
@@ -489,7 +490,7 @@ export function SidebarBody({
       return (
         <Link key={leaf.href} ref={setDealItemEl} href={leaf.href} onClick={() => onNavigate?.()} title={leaf.label}
           className={`group/sub flex items-center gap-2.5 rounded-lg pl-2 pr-3 py-1.5 text-[13px] transition-colors overflow-hidden ${
-            active ? "bg-nav-active text-white font-semibold" : "text-nav-dim hover:bg-nav-hover hover:text-white"}`}>
+            active ? "bg-nav-active text-nav-accent font-semibold" : "text-nav-dim hover:bg-nav-hover hover:text-nav-strong"}`}>
           <span className={`shrink-0 ${active ? "text-nav-accent" : "text-nav-dim group-hover/sub:text-nav-text"}`}>{leaf.icon}</span>
           <span className={`whitespace-nowrap flex-1 ${reveal}`}>{leaf.label}</span>
         </Link>
@@ -502,7 +503,7 @@ export function SidebarBody({
           <Link href={leaf.href} onClick={() => onNavigate?.()} title={leaf.label}
             className="flex items-center gap-2.5 flex-1 min-w-0 py-1 text-[13px] overflow-hidden">
             <span className={`shrink-0 ${active ? "text-nav-accent" : "text-nav-dim group-hover/sub:text-nav-text"}`}>{leaf.icon}</span>
-            <span className={`whitespace-nowrap flex-1 ${reveal} ${active ? "text-white font-semibold" : "text-nav-dim"}`}>{leaf.label}</span>
+            <span className={`whitespace-nowrap flex-1 ${reveal} ${active ? "text-nav-accent font-semibold" : "text-nav-dim"}`}>{leaf.label}</span>
           </Link>
           <button type="button" onClick={() => toggleGroup("deal-pipes")} aria-expanded={isOpen} title="Funis de venda"
             className={`shrink-0 size-6 grid place-items-center rounded-md text-nav-dim hover:bg-nav-hover hover:text-nav-text transition-colors ${reveal}`}>
@@ -528,10 +529,10 @@ export function SidebarBody({
         onClick={() => { if (!sub.soon) { setFlyoutKey(null); onNavigate?.() } }}
         className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${
           active
-            ? "bg-nav-active text-white font-semibold"
+            ? "bg-nav-active text-nav-accent font-semibold"
             : sub.soon
             ? "text-nav-dim cursor-default"
-            : "text-nav-text hover:bg-nav-hover hover:text-white"
+            : "text-nav-text hover:bg-nav-hover hover:text-nav-strong"
         }`}
       >
         <span className={`shrink-0 ${active ? "text-nav-accent" : sub.soon ? "text-nav-dim" : "text-nav-dim"}`}>{sub.icon}</span>
@@ -558,7 +559,7 @@ export function SidebarBody({
           <span className={`shrink-0 ${groupActive ? "text-nav-accent" : "text-nav-dim group-hover/sub:text-nav-text"}`}>
             {group.icon}
           </span>
-          <span className={`whitespace-nowrap flex-1 text-left ${reveal} ${groupActive ? "text-white font-semibold" : "text-nav-dim"}`}>
+          <span className={`whitespace-nowrap flex-1 text-left ${reveal} ${groupActive ? "text-nav-accent font-semibold" : "text-nav-dim"}`}>
             {group.label}
           </span>
           <ChevronDown
@@ -578,16 +579,23 @@ export function SidebarBody({
   return (
     <>
       <div className="flex items-center h-14 border-b border-nav-line px-2.5 shrink-0 overflow-hidden">
-        {collapsed && onToggleCollapse ? (
-          // Recolhido: o logo curto GIRA em 3D no hover, revelando o botão de
-          // expandir. Clicar em qualquer parte expande (não depende de notar o flip).
-          <button
-            type="button"
-            onClick={onToggleCollapse}
-            title="Expandir menu"
-            className="group/logo flex size-9 items-center justify-center shrink-0 [perspective:600px]"
+        {/* ── Logo: crossfade ícone curto ↔ SVG vetorizado (só opacity, GPU) ── */}
+        <button
+          type="button"
+          onClick={collapsed ? onToggleCollapse : undefined}
+          title={collapsed ? "Expandir menu" : undefined}
+          className={`
+            group/logo relative shrink-0 transition-[width] duration-200 ease-in-out
+            ${collapsed ? "w-9 h-9 cursor-pointer" : "h-9 cursor-default"}
+          `}
+          style={collapsed ? undefined : { width: 78 }}
+          tabIndex={collapsed ? 0 : -1}
+        >
+          {/* Ícone curto — 3D flip no hover quando recolhido */}
+          <div
+            className={`absolute inset-0 flex items-center justify-center transition-opacity duration-200 ease-in-out [perspective:600px] ${collapsed ? "opacity-100" : "opacity-0 pointer-events-none"}`}
           >
-            <div className="relative size-8 transition-transform duration-500 ease-out [transform-style:preserve-3d] group-hover/logo:[transform:rotateY(180deg)]">
+            <div className={`relative size-8 transition-transform duration-500 ease-out [transform-style:preserve-3d] ${collapsed ? "group-hover/logo:[transform:rotateY(180deg)]" : ""}`}>
               <span className="absolute inset-0 flex items-center justify-center [backface-visibility:hidden]">
                 <Image
                   src="/logo_kora_curto.png"
@@ -602,31 +610,18 @@ export function SidebarBody({
                 <PanelLeftOpen className="size-5 text-nav-accent" strokeWidth={2} />
               </span>
             </div>
-          </button>
-        ) : (
-          <div className="flex size-9 items-center justify-center shrink-0">
-            <Image
-              src="/logo_kora_curto.png"
-              alt="Kora"
-              width={32}
-              height={32}
-              priority
-              className="size-8 rounded-lg shadow-sm shadow-primary/20"
-            />
           </div>
-        )}
 
-        <div className={`ml-3 flex flex-col min-w-0 flex-1 overflow-hidden ${reveal}`}>
-          <Image
-            src="/logo_kora_branco.png"
-            alt="Kora"
-            width={122}
-            height={60}
-            priority
-            className="h-5 w-auto object-contain object-left"
-          />
-          <span className="text-[11px] text-nav-dim whitespace-nowrap truncate leading-tight mt-1">{tenantName}</span>
-        </div>
+          {/* SVG vetorizado animado — aparece quando expandido */}
+          <div
+            className={`absolute inset-0 flex items-center ml-3 transition-opacity duration-200 ease-in-out ${collapsed ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+          >
+            <AnimatedLogoKoraVetor style={{ height: 28, width: 'auto' }} />
+          </div>
+        </button>
+
+        {/* Spacer */}
+        <div className="flex-1 min-w-0" />
 
         {expanded && onToggleCollapse && (
           <button
@@ -664,10 +659,10 @@ export function SidebarBody({
                 <span ref={(el) => setChipRef(item.href, el)} className={`
                   relative flex size-9 items-center justify-center rounded-xl shrink-0 transition-colors duration-150
                   ${active
-                    ? "text-white"
+                    ? "text-nav-accent"
                     : item.soon
                     ? "text-nav-dim"
-                    : "text-nav-dim group-hover/item:bg-nav-hover group-hover/item:text-white"
+                    : "text-nav-dim group-hover/item:bg-nav-hover group-hover/item:text-nav-strong"
                   }
                 `}>
                   {item.icon}
@@ -677,7 +672,7 @@ export function SidebarBody({
                 </span>
                 <span className={`
                   whitespace-nowrap text-sm font-medium flex-1 ${reveal}
-                  ${active ? "text-white" : item.soon ? "text-nav-dim" : "text-nav-text"}
+                  ${active ? "text-nav-accent" : item.soon ? "text-nav-dim" : "text-nav-text"}
                 `}>
                   {item.label}
                 </span>
@@ -709,15 +704,15 @@ export function SidebarBody({
               <span ref={(el) => setChipRef(item.key, el)} className={`
                 flex size-9 items-center justify-center rounded-xl shrink-0 transition-colors duration-150
                 ${groupActive
-                  ? "text-white"
-                  : "text-nav-dim group-hover/item:bg-nav-hover group-hover/item:text-white"
+                  ? "text-nav-accent"
+                  : "text-nav-dim group-hover/item:bg-nav-hover group-hover/item:text-nav-strong"
                 }
               `}>
                 {item.icon}
               </span>
               <span className={`
                 whitespace-nowrap text-sm font-medium flex-1 text-left ${reveal}
-                ${groupActive ? "text-white" : "text-nav-text"}
+                ${groupActive ? "text-nav-accent" : "text-nav-text"}
               `}>
                 {item.label}
               </span>
@@ -776,7 +771,7 @@ export function SidebarBody({
               </button>
               <div className="flex items-center gap-2.5 h-14 px-4 border-b border-nav-line shrink-0">
                 <span className="flex size-8 items-center justify-center rounded-lg bg-nav-active text-nav-accent shrink-0"><Funnel className="size-4" strokeWidth={1.75} /></span>
-                <span className="text-sm font-bold text-white flex-1 truncate">Funis de Vendas</span>
+                <span className="text-sm font-bold text-nav-strong flex-1 truncate">Funis de Vendas</span>
               </div>
               <div className="p-2.5 border-b border-nav-line shrink-0">
                 <Link
@@ -806,7 +801,7 @@ export function SidebarBody({
             {/* cabeçalho — espelha o do menu principal (h-14 + divisor) */}
             <div className="flex items-center gap-2.5 h-14 px-4 border-b border-nav-line shrink-0">
               <span className="flex size-8 items-center justify-center rounded-lg bg-nav-active text-nav-accent shrink-0">{g.icon}</span>
-              <span className="text-sm font-bold text-white flex-1 truncate">{g.label}</span>
+              <span className="text-sm font-bold text-nav-strong flex-1 truncate">{g.label}</span>
               <button
                 type="button"
                 onClick={() => setFlyoutKey(null)}
@@ -868,7 +863,7 @@ export function SidebarBody({
               <ProfileAvatar name={userName} />
             </div>
             <div className={`min-w-0 flex-1 overflow-hidden ${reveal}`}>
-              <p className="text-xs font-semibold text-nav-text truncate whitespace-nowrap group-hover/profile:text-white">{userName}</p>
+              <p className="text-xs font-semibold text-nav-text truncate whitespace-nowrap group-hover/profile:text-nav-strong">{userName}</p>
               <p className="text-[11px] text-nav-dim truncate whitespace-nowrap leading-none mt-0.5">{userEmail}</p>
             </div>
           </Link>

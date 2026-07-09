@@ -14,6 +14,9 @@ import {
   type CatalogType, type CatalogBilling,
 } from "@/lib/actions/catalog"
 import { SimpleSelect } from "@/components/ui/select"
+import { UNITS } from "@/lib/crm/units"
+import { CustomFieldInputs } from "@/components/crm/custom-field-inputs"
+import type { CustomFieldDef } from "@/lib/actions/custom-fields"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Switch } from "@/components/ui/switch"
 
@@ -29,7 +32,7 @@ const fmtInput = (v: number | null) => v == null ? "" : v.toFixed(2).replace("."
 interface EditRow { price: string; cost: string; pct: string }
 const BILLING_LABEL: Record<PriceListRow["billing"], string> = { one_time: "avulso", monthly: "/mês", yearly: "/ano" }
 
-export function TabelaGridClient({ grid }: { grid: PriceTableGrid }) {
+export function TabelaGridClient({ grid, productFields = [] }: { grid: PriceTableGrid; productFields?: CustomFieldDef[] }) {
   const router = useRouter()
   const { table, rows } = grid
 
@@ -182,6 +185,7 @@ export function TabelaGridClient({ grid }: { grid: PriceTableGrid }) {
         <ItemDialog
           row={itemDialog.mode === "edit" ? itemDialog.row : null}
           categories={Array.from(new Set(rows.map((r) => r.category).filter(Boolean))) as string[]}
+          productFields={productFields}
           onClose={() => setItemDialog(null)}
           onDone={() => { setItemDialog(null); router.refresh() }}
         />
@@ -332,9 +336,10 @@ function MassAdjustDialog({ count, total, filtered, onApply, onClose }: {
 
 // ── Dialog do ITEM — criar (identidade + valores-semente) / editar identidade ──
 // Dinheiro no dia a dia mora na GRADE; aqui só na criação (semente pra todas as tabelas).
-function ItemDialog({ row, categories, onClose, onDone }: {
+function ItemDialog({ row, categories, productFields, onClose, onDone }: {
   row: PriceListRow | null
   categories: string[]
+  productFields: CustomFieldDef[]
   onClose: () => void
   onDone: () => void
 }) {
@@ -344,8 +349,18 @@ function ItemDialog({ row, categories, onClose, onDone }: {
   const [sku, setSku]           = useState(row?.sku ?? "")
   const [category, setCategory] = useState(row?.category ?? "")
   const [billing, setBilling]   = useState<CatalogBilling>(row?.billing ?? "one_time")
+  const [unit, setUnit]         = useState<string>(row?.unit ?? "un")
   const [description, setDescription] = useState(row?.description ?? "")
-  const [attrs, setAttrs]       = useState<{ k: string; v: string }[]>(Object.entries(row?.attrs ?? {}).map(([k, v]) => ({ k, v })))
+  // Campos personalizados DEFINIDOS (tenant_custom_fields entity='product') → valores por chave.
+  const [cfValues, setCfValues] = useState<Record<string, string>>(() => {
+    const src = (row?.attrs ?? {}) as Record<string, string>
+    return Object.fromEntries(productFields.map((d) => [d.key, src[d.key] ?? ""]))
+  })
+  // "Outros campos" = attrs livres que NÃO são campos definidos (preserva dado antigo).
+  const [attrs, setAttrs]       = useState<{ k: string; v: string }[]>(() => {
+    const keys = new Set(productFields.map((d) => d.key))
+    return Object.entries(row?.attrs ?? {}).filter(([k]) => !keys.has(k)).map(([k, v]) => ({ k, v: v as string }))
+  })
   const [price, setPrice]       = useState("")
   const [cost, setCost]         = useState("")
   const [maxDisc, setMaxDisc]   = useState("0")
@@ -359,7 +374,9 @@ function ItemDialog({ row, categories, onClose, onDone }: {
   function handleSave() {
     setError(null)
     if (!name.trim()) { setError("Nome é obrigatório"); return }
-    const attrsObj = Object.fromEntries(attrs.filter((a) => a.k.trim() && a.v.trim()).map((a) => [a.k.trim(), a.v.trim()]))
+    const definedObj = Object.fromEntries(Object.entries(cfValues).filter(([, v]) => v.trim() !== "").map(([k, v]) => [k, v.trim()]))
+    const extrasObj = Object.fromEntries(attrs.filter((a) => a.k.trim() && a.v.trim()).map((a) => [a.k.trim(), a.v.trim()]))
+    const attrsObj = { ...definedObj, ...extrasObj }
 
     startTransition(async () => {
       let id = row?.item_id
@@ -370,11 +387,11 @@ function ItemDialog({ row, categories, onClose, onDone }: {
         if (c != null && !Number.isFinite(c)) { setError("Custo inválido"); return }
         const md = Math.floor(Number(maxDisc || "0"))
         if (!Number.isFinite(md) || md < 0 || md > 100) { setError("Desconto máximo inválido (0 a 100)"); return }
-        const r = await createCatalogItem({ type, name, sku: sku || null, category: category || null, description: description || null, price: Math.round(p * 100) / 100, cost: c != null ? Math.round(c * 100) / 100 : null, billing, maxDiscountPct: md, attrs: attrsObj })
+        const r = await createCatalogItem({ type, name, sku: sku || null, category: category || null, description: description || null, price: Math.round(p * 100) / 100, cost: c != null ? Math.round(c * 100) / 100 : null, billing, unit, maxDiscountPct: md, attrs: attrsObj })
         if ("error" in r) { setError(r.error); return }
         id = r.id
       } else {
-        const r = await updateCatalogIdentity(row!.item_id, { type, name, sku: sku || null, category: category || null, description: description || null, billing, attrs: attrsObj })
+        const r = await updateCatalogIdentity(row!.item_id, { type, name, sku: sku || null, category: category || null, description: description || null, billing, unit, attrs: attrsObj })
         if ("error" in r) { setError(r.error); return }
       }
       if (!id) return
@@ -430,6 +447,13 @@ function ItemDialog({ row, categories, onClose, onDone }: {
                 {categories.map((c) => <option key={c} value={c} />)}
               </datalist>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Unidade de medida</label>
+            <SimpleSelect value={unit} onChange={setUnit}
+              options={UNITS.map((u) => ({ value: u.code, label: `${u.label} (${u.symbol})` }))} />
+            <p className="text-[11px] text-slate-400 mt-1">Molda a digitação da quantidade (kg/L aceitam decimais) e o preço aparece por unidade (ex: “/kg”).</p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -514,8 +538,17 @@ function ItemDialog({ row, categories, onClose, onDone }: {
             </div>
           )}
 
+          {productFields.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-2">Campos personalizados</label>
+              <CustomFieldInputs defs={productFields} values={cfValues} onChange={(k, v) => setCfValues((p) => ({ ...p, [k]: v }))} />
+            </div>
+          )}
+
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">Campos personalizados <span className="text-slate-300 font-normal">(ex: material, garantia, marca)</span></label>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+              {productFields.length > 0 ? "Outros campos" : "Campos personalizados"} <span className="text-slate-300 font-normal">(ex: material, garantia, marca)</span>
+            </label>
             <div className="space-y-1.5">
               {attrs.map((a, i) => (
                 <div key={i} className="flex items-center gap-1.5">

@@ -5,6 +5,10 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule } from "@/lib/modules"
 import { revalidatePath } from "next/cache"
 import { getDefaultPriceTable } from "@/lib/crm/pricing"
+import { UNITS, DEFAULT_UNIT } from "@/lib/crm/units"
+
+const UNIT_CODES = new Set(UNITS.map((u) => u.code))
+const normalizeUnit = (u?: string | null) => (u && UNIT_CODES.has(u) ? u : DEFAULT_UNIT)
 
 // ─────────────────────────────────────────────────────────────────
 // Catálogo — pilar de VALOR do CRM (docs/crm-vision-capture.md, Slice 1).
@@ -26,6 +30,8 @@ export interface CatalogItem {
   price:       number
   cost:        number | null
   billing:     CatalogBilling
+  /** Unidade de medida (un·kg·L·m²…). Molda a digitação da quantidade. */
+  unit:        string
   /** Teto de desconto na negociação (0–100; default 0 = sem desconto). */
   max_discount_pct: number
   /** Foto (produtos) — servida por /api/catalog-image/[id]. */
@@ -53,7 +59,7 @@ export async function getCatalogItems(): Promise<CatalogItem[]> {
 
   const [{ data: items }, { data: usage }] = await Promise.all([
     supabaseAdmin.from("catalog_items")
-      .select("id, type, name, sku, category, description, price, cost, billing, max_discount_pct, image_path, attrs, active, created_at")
+      .select("id, type, name, sku, category, description, price, cost, billing, unit, max_discount_pct, image_path, attrs, active, created_at")
       .eq("tenant_id", gate.tenantId)
       .order("active", { ascending: false }).order("name"),
     supabaseAdmin.from("tenant_deal_items")
@@ -116,6 +122,8 @@ export interface CatalogItemInput {
   price:       number
   cost?:       number | null
   billing:     CatalogBilling
+  /** Unidade de medida (código da lista curada). Default 'un'. */
+  unit?:       string
   /** Teto de desconto (0–100). Default 0. */
   maxDiscountPct?: number
   /** Campos personalizados (chave/valor — sanitizados no server). */
@@ -185,6 +193,7 @@ export async function createCatalogItem(input: CatalogItemInput): Promise<{ id: 
     price:       input.price,
     cost:        input.cost ?? null,
     billing:     input.billing,
+    unit:        normalizeUnit(input.unit),
     max_discount_pct: input.maxDiscountPct ?? 0,
     attrs:       sanitizeAttrs(input.attrs),
     created_by:  gate.userId,
@@ -208,6 +217,7 @@ export interface CatalogIdentityInput {
   category?:   string | null
   description?: string | null
   billing:     CatalogBilling
+  unit?:       string
   attrs?:      Record<string, string>
 }
 
@@ -233,6 +243,7 @@ export async function updateCatalogIdentity(id: string, input: CatalogIdentityIn
     category:    input.category?.trim() || null,
     description: input.description?.trim() || null,
     billing:     input.billing,
+    unit:        normalizeUnit(input.unit),
     attrs:       sanitizeAttrs(input.attrs),
     updated_at:  new Date().toISOString(),
   }).eq("id", id).eq("tenant_id", gate.tenantId)

@@ -27,6 +27,7 @@ export interface PriceListRow {
   item_id: string
   name: string; sku: string | null; category: string | null
   type: "product" | "service"; billing: "one_time" | "monthly" | "yearly"
+  unit: string
   description: string | null
   attrs: Record<string, string>
   image_path: string | null
@@ -191,7 +192,7 @@ export async function getPriceTableGrid(tableId: string): Promise<PriceTableGrid
     supabaseAdmin.from("price_list_items")
       .select("item_id, price, cost, max_discount_pct").eq("tenant_id", gate.tenantId).eq("list_id", listId),
     supabaseAdmin.from("catalog_items")
-      .select("id, name, sku, category, type, billing, description, attrs, image_path, active, price, cost, max_discount_pct")
+      .select("id, name, sku, category, type, billing, unit, description, attrs, image_path, active, price, cost, max_discount_pct")
       .eq("tenant_id", gate.tenantId),
     supabaseAdmin.from("tenant_deal_items")
       .select("catalog_item_id").eq("tenant_id", gate.tenantId).not("catalog_item_id", "is", null),
@@ -207,6 +208,7 @@ export async function getPriceTableGrid(tableId: string): Promise<PriceTableGrid
         item_id: i.id as string, name: i.name as string, sku: (i.sku as string | null) ?? null,
         category: (i.category as string | null) ?? null, type: i.type as PriceListRow["type"],
         billing: i.billing as PriceListRow["billing"], image_path: (i.image_path as string | null) ?? null,
+        unit: (i.unit as string | null) ?? "un",
         description: (i.description as string | null) ?? null,
         attrs: (i.attrs as Record<string, string> | null) ?? {},
         active: !!i.active, in_use: useCount.get(i.id as string) ?? 0,

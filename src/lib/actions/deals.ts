@@ -461,6 +461,8 @@ export interface DealDetail {
   priceTable: { id: string; name: string } | null
   /** Tabelas disponíveis pro switcher (>1 = multi-tabela em uso; senão UI esconde). */
   priceTables: { id: string; name: string; is_default: boolean; active: boolean }[]
+  /** Valores dos campos personalizados do negócio (tenant_custom_fields entity='deal'). */
+  custom_fields: Record<string, string>
 }
 
 /** Fallback pré-catálogo — mesma lista que era hardcoded na página do negócio. */
@@ -532,7 +534,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   // separadas eram transição pré-migration; migrations aplicadas = round-trips a menos.
   const { data: d } = await supabaseAdmin.from("tenant_deals").select(`
     id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, canceled_at, stage_entered_at, created_at, created_by, contact_id, pipeline_id,
-    payment_method, installments, proposal_expires_at, price_table_id,
+    payment_method, installments, proposal_expires_at, price_table_id, custom_fields,
     chat_contacts ( id, push_name, custom_name, profile_pic_url, phone_number, lifecycle_stage, source ),
     deal_pipelines ( name ),
     deal_pipeline_stages ( id, name, color, is_won, is_lost )
@@ -655,6 +657,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     proposalExpiresAt: termsD.proposal_expires_at ?? null,
     priceTable: priceTable ? { id: priceTable.id, name: priceTable.name } : null,
     priceTables,
+    custom_fields: (deal.custom_fields as Record<string, string> | null) ?? {},
   }
 }
 

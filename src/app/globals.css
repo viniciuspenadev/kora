@@ -68,15 +68,20 @@
 @theme {
   --color-canvas: #eff4fd;
 
-  /* Chrome de navegação (sidebar + topbar) — MOLDURA escura. O design system claro
-     rege o CONTEÚDO; a navegação é a moldura. Acento no azul Kora (clareado pro escuro). */
-  --color-nav:        #0b1430;                 /* fundo do chrome */
-  --color-nav-hover:  rgb(255 255 255 / 0.06); /* hover de item */
-  --color-nav-active: rgb(77 124 255 / 0.16);  /* fundo do item ativo (azul Kora translúcido) */
-  --color-nav-text:   #c9d2ec;                 /* label */
-  --color-nav-dim:    #7c88b0;                 /* ícone / secundário */
-  --color-nav-line:   rgb(255 255 255 / 0.08); /* divisores */
-  --color-nav-accent: #4d7cff;                 /* acento (azul Kora claro) */
+  /* Chrome de navegação (sidebar + topbar) — TEMÁVEL via estes tokens. Só trocar os
+     valores aqui inverte todo o menu (claro ⇄ escuro), sem mexer em componente.
+     ATUAL: CLARO (branco + acento azul Kora). Variante escura comentada abaixo. */
+  --color-nav:        #ffffff;   /* fundo do chrome (branco) */
+  --color-nav-hover:  #f1f5f9;   /* hover de item (slate-100) */
+  --color-nav-active: #dbe4ff;   /* fundo do item ativo (primary-100) */
+  --color-nav-text:   #334155;   /* label (slate-700) */
+  --color-nav-dim:    #94a3b8;   /* ícone / secundário (slate-400) */
+  --color-nav-line:   #e2e8f0;   /* divisores (slate-200) */
+  --color-nav-accent: #004add;   /* acento / item ativo (primary) */
+  --color-nav-strong: #0f172a;   /* texto forte: título + hover (slate-900) */
+  /* Variante ESCURA (era o v1): nav #0b1430 · hover rgb(255 255 255/.06) · active
+     rgb(77 124 255/.16) · text #c9d2ec · dim #7c88b0 · line rgb(255 255 255/.08) ·
+     accent #4d7cff · strong #ffffff. (Logo volta pro wordmark branco no escuro.) */
 }
 
 :root {

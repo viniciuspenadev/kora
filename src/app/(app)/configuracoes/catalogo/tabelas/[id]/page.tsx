@@ -4,6 +4,7 @@ import { Table2 } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
 import { getPriceTableGrid } from "@/lib/actions/price-lists"
+import { listCustomFields } from "@/lib/actions/custom-fields"
 import { TabelaGridClient } from "./grid-client"
 
 export default async function TabelaDetalhePage({ params }: { params: Promise<{ id: string }> }) {
@@ -13,7 +14,10 @@ export default async function TabelaDetalhePage({ params }: { params: Promise<{ 
   if (!(await hasModule(session.user.tenantId, "crm"))) redirect("/inbox")
 
   const { id } = await params
-  const grid = await getPriceTableGrid(id)
+  const [grid, productFields] = await Promise.all([
+    getPriceTableGrid(id),
+    listCustomFields("product"),
+  ])
   if ("error" in grid) notFound()
 
   return (
@@ -24,7 +28,7 @@ export default async function TabelaDetalhePage({ params }: { params: Promise<{ 
         : `Grade viva do ${grid.table.name} — negócios nesta tabela preçam por aqui; tudo auditado. O catálogo segue espelhando a padrão.`}
       icon={Table2}
     >
-      <TabelaGridClient grid={grid} />
+      <TabelaGridClient grid={grid} productFields={productFields} />
     </PageShell>
   )
 }

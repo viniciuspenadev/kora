@@ -45,7 +45,7 @@ export function Topbar({
           type="button"
           onClick={() => setNavOpen(true)}
           aria-label="Abrir menu"
-          className="md:hidden -ml-1 mr-1 size-9 flex items-center justify-center rounded-lg text-nav-dim hover:bg-nav-hover hover:text-white transition-colors"
+          className="md:hidden -ml-1 mr-1 size-9 flex items-center justify-center rounded-lg text-nav-dim hover:bg-nav-hover hover:text-nav-strong transition-colors"
         >
           <Menu className="size-5" />
         </button>
@@ -68,7 +68,7 @@ export function Topbar({
           className="group/me flex items-center gap-2.5 rounded-lg px-1.5 py-1 -mr-1 hover:bg-nav-hover transition-colors"
         >
           <div className="text-right hidden sm:block">
-            <p className="text-xs font-semibold text-nav-text leading-none group-hover/me:text-white">{userName}</p>
+            <p className="text-xs font-semibold text-nav-text leading-none group-hover/me:text-nav-strong">{userName}</p>
             <p className="text-[11px] text-nav-dim leading-none mt-0.5">{ROLE_LABELS[userRole] ?? userRole}</p>
           </div>
           <MyAvatar name={userName} className="size-8" />
