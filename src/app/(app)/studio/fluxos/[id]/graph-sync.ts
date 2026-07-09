@@ -39,6 +39,7 @@ const DEFAULT_CONFIG: Record<FlowNodeType, () => Record<string, unknown>> = {
   move_stage: () => ({ stage: "" }),
   assign:     () => ({}),
   transfer:  () => ({ department: "", summary: "", handoff: "" }),
+  resolve:   () => ({}),
   return:    () => ({}),
   end:       () => ({}),
 }

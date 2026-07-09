@@ -2,7 +2,10 @@
 
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
 import { useRef, useState, useEffect } from "react"
-import { Trash2, Plus, Settings2, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2 } from "lucide-react"
+import {
+  Trash2, Plus, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2,
+  Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info,
+} from "lucide-react"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { SimpleSelect } from "@/components/ui/select"
@@ -244,6 +247,10 @@ export function ConfigPanel({
 
       {type === "return" && (
         <p className="text-xs text-slate-400">Volta ao fluxo que chamou este (pop da pilha). Se este já for o fluxo raiz, encerra a conversa.</p>
+      )}
+
+      {type === "resolve" && (
+        <p className="text-xs text-slate-400"><b>Conclui o atendimento</b> — marca a conversa como <b>resolvida</b> (some do inbox aberto) e encerra o fluxo. Se o cliente responder depois, a conversa reabre normalmente. Coloque uma <b>Mensagem</b> antes deste nó se quiser se despedir.</p>
       )}
 
       {type === "template" && <TemplateConfig cfg={cfg} set={set} flowVars={flowVars} />}
@@ -668,6 +675,12 @@ function WaitConfig({ cfg, set }: { cfg: WaitNodeConfig; set: (patch: Record<str
           ]} />
         </div>
       </div>
+      <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-[11px] text-slate-500 leading-relaxed">
+        Este passo tem <b className="text-slate-600">duas saídas</b>:
+        <span className="text-slate-500"> «no prazo»</span> segue quando o tempo acaba;
+        <span className="text-primary-600 font-medium"> «cliente voltou»</span> dispara na hora se ele responder antes.
+        Ligue a saída «cliente voltou» a um passo de saída (ex: entregar pro atendente) pra não concluir quem retornou.
+      </div>
     </div>
   )
 }
@@ -1015,12 +1028,12 @@ function toggle(list: string[], v: string): string[] {
 
 export function FlowSettingsPanel({
   triggerType, keywords, mode, channels, instances,
-  channelOptions, instanceOptions, keywordMatch, adIds, adOptions,
-  onType, onKeywords, onMode, onChannels, onInstances, onKeywordMatch, onAds,
+  channelOptions, instanceOptions, keywordMatch, adIds, adOptions, inactivityValue, inactivityUnit,
+  onType, onKeywords, onMode, onChannels, onInstances, onKeywordMatch, onAds, onInactivity,
 }: {
   triggerType: string
   keywords: string
-  mode: "receptive" | "active"
+  mode: "receptive" | "active" | "auto"
   channels: string[]
   instances: string[]
   channelOptions:  { key: string; label: string }[]
@@ -1028,160 +1041,232 @@ export function FlowSettingsPanel({
   keywordMatch: "contains" | "exact"
   adIds: string[]
   adOptions: { id: string; label: string }[]
+  inactivityValue: number
+  inactivityUnit: "minutes" | "hours"
   onType: (t: string) => void
   onKeywords: (k: string) => void
-  onMode: (m: "receptive" | "active") => void
+  onMode: (m: "receptive" | "active" | "auto") => void
   onChannels: (c: string[]) => void
   onInstances: (i: string[]) => void
   onKeywordMatch: (m: "contains" | "exact") => void
   onAds: (a: string[]) => void
+  onInactivity: (value: number, unit: "minutes" | "hours") => void
 }) {
+  const [q, setQ] = useState("")
   // Filtro só faz sentido com 2+ opções — quem tem 1 canal/1 número não escolhe nada.
   const showChannels  = channelOptions.length  > 1
   const showInstances = instanceOptions.length > 1
 
-  return (
-    <div className="space-y-4">
-      <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
-        <Settings2 className="size-3.5" /> Configuração do fluxo
-      </h3>
+  // Gatilho selecionado, derivado do modo + tipo (auto→inatividade · ativo→manual · senão o type).
+  const sel = mode === "auto" ? "inactivity" : mode === "active" ? "manual" : triggerType
+  function pick(id: string) {
+    if (id === "manual")     { onMode("active"); return }
+    if (id === "inactivity") { onMode("auto"); onType("inactivity"); return }
+    onMode("receptive"); onType(id)
+  }
 
-      {/* Modo: receptivo (escuta) vs ativo (disparo manual/campanha) */}
-      <div>
-        <label className={LABEL}>Modo</label>
+  type TrigItem = { id: string; label: string; desc: string; icon: typeof Inbox; soon?: boolean }
+  const GROUPS: { key: string; label: string; note?: string; tint: string; items: TrigItem[] }[] = [
+    { key: "recv", label: "Recebendo uma mensagem", tint: "text-sky-600 bg-sky-50", items: [
+      { id: "keyword",     label: "Palavra-chave",     desc: "quando a mensagem contém uma palavra", icon: MessageSquareText },
+      { id: "any_message", label: "Qualquer mensagem", desc: "toda mensagem que o cliente enviar", icon: MessagesSquare },
+      { id: "new_contact", label: "Contato novo",      desc: "a primeira vez que a pessoa fala", icon: UserPlus },
+      { id: "reopened",    label: "Retornou",          desc: "conversa reaberta depois de concluída", icon: RotateCcw },
+      { id: "from_ad",     label: "Veio de anúncio",   desc: "lead do Click-to-WhatsApp (Meta)", icon: Megaphone },
+    ] },
+    { key: "act", label: "Você dispara", tint: "text-violet-600 bg-violet-50", items: [
+      { id: "manual", label: "No chat ou por campanha", desc: "um agente aciona, ou uma campanha dispara", icon: Zap },
+    ] },
+    { key: "auto", label: "Automático", note: "· sem mensagem de entrada", tint: "text-emerald-600 bg-emerald-50", items: [
+      { id: "inactivity", label: "Inatividade",       desc: "após X horas sem resposta do cliente", icon: Clock },
+      { id: "scheduled",  label: "Agendado",          desc: "em data/hora ou intervalo", icon: CalendarClock, soon: true },
+      { id: "birthday",   label: "Data comemorativa", desc: "aniversário, renovação, vencimento…", icon: Gift, soon: true },
+    ] },
+  ]
+  const s = q.trim().toLowerCase()
+  const groups = s ? GROUPS.map((g) => ({ ...g, items: g.items.filter((it) => (it.label + " " + it.desc).toLowerCase().includes(s)) })).filter((g) => g.items.length) : GROUPS
+
+  const scope = (showChannels || showInstances) ? (
+    <>
+      {showChannels && (
+        <div>
+          <label className={LABEL}>Em quais canais</label>
+          <div className="flex flex-wrap gap-1.5">
+            {channelOptions.map((c) => {
+              const on = channels.includes(c.key)
+              return (
+                <button key={c.key} type="button" onClick={() => onChannels(toggle(channels, c.key))}
+                  className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium transition ${on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
+                  <SourceLogo source={CHANNEL_LOGO[c.key] ?? "manual"} size={14} /> {c.label}
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer canal.</p>
+        </div>
+      )}
+      {showInstances && (
+        <div>
+          <label className={LABEL}>Em quais números</label>
+          <div className="flex flex-wrap gap-1.5">
+            {instanceOptions.map((i) => {
+              const on = instances.includes(i.id)
+              const Badge = i.provider === "meta_cloud" ? BadgeCheck : Smartphone
+              return (
+                <button key={i.id} type="button" onClick={() => onInstances(toggle(instances, i.id))}
+                  className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium transition ${on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
+                  <Badge className={`size-3.5 ${i.provider === "meta_cloud" ? "text-sky-500" : "text-slate-400"}`} /> {i.label}
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer número.</p>
+        </div>
+      )}
+    </>
+  ) : null
+
+  function config(id: string) {
+    const box = "mt-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3.5 space-y-3"
+    if (id === "keyword") return (
+      <div className={box}>
+        <div>
+          <label className={LABEL}>Palavras-chave</label>
+          <input className={INPUT} value={keywords} onChange={(e) => onKeywords(e.target.value)} placeholder="oi, menu, começar" />
+          <p className="text-[11px] text-slate-400 mt-1">Separe por vírgula. Ignora acento (olá = ola).</p>
+        </div>
         <div className="grid grid-cols-2 gap-1.5">
-          {([
-            { v: "receptive", icon: Inbox,     title: "Receptivo", desc: "Responde mensagens" },
-            { v: "active",    icon: Megaphone,  title: "Ativo",     desc: "Disparo manual / campanha" },
-          ] as const).map((o) => {
-            const on = mode === o.v
+          {([{ v: "contains", title: "Contém", desc: "casa em qualquer parte" }, { v: "exact", title: "Palavra exata", desc: "a palavra inteira" }] as const).map((o) => {
+            const on = keywordMatch === o.v
             return (
-              <button key={o.v} type="button" onClick={() => onMode(o.v)}
-                className={`flex flex-col items-start gap-0.5 rounded-lg border px-2.5 py-2 text-left transition ${
-                  on ? "border-primary bg-primary-50/60 ring-1 ring-primary/20" : "border-slate-200 hover:border-slate-300"}`}>
-                <span className={`flex items-center gap-1.5 text-[13px] font-semibold ${on ? "text-primary-700" : "text-slate-700"}`}>
-                  <o.icon className="size-3.5" /> {o.title}
-                </span>
-                <span className="text-[11px] text-slate-400">{o.desc}</span>
+              <button key={o.v} type="button" onClick={() => onKeywordMatch(o.v)}
+                className={`flex flex-col items-start gap-0.5 rounded-lg border px-2.5 py-1.5 text-left transition ${on ? "border-primary bg-primary-50/60 ring-1 ring-primary/20" : "border-slate-200 hover:border-slate-300"}`}>
+                <span className={`text-[12px] font-semibold ${on ? "text-primary-700" : "text-slate-700"}`}>{o.title}</span>
+                <span className="text-[10px] text-slate-400">{o.desc}</span>
               </button>
             )
           })}
         </div>
+        {scope}
+      </div>
+    )
+    if (id === "from_ad") return (
+      <div className={box}>
+        <div>
+          <label className={LABEL}>De qual anúncio</label>
+          {adOptions.length === 0 ? (
+            <p className="text-[11px] text-slate-400 leading-relaxed">Dispara pra qualquer conversa vinda de anúncio Meta (Click-to-WhatsApp). Sem anúncios registrados pra mirar um específico.</p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {adOptions.map((a) => {
+                  const on = adIds.includes(a.id)
+                  return (
+                    <button key={a.id} type="button" onClick={() => onAds(toggle(adIds, a.id))} title={a.id}
+                      className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium max-w-full transition ${on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
+                      <Megaphone className="size-3.5 shrink-0" /> <span className="truncate">{a.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer anúncio.</p>
+            </>
+          )}
+        </div>
+        {scope}
+      </div>
+    )
+    if (id === "inactivity") return (
+      <div className={box}>
+        <div>
+          <label className={LABEL}>Disparar após</label>
+          <div className="flex items-center gap-2">
+            <input type="number" min={1} value={inactivityValue || (inactivityUnit === "minutes" ? 30 : 24)}
+              onChange={(e) => onInactivity(Math.max(1, Number(e.target.value) || 1), inactivityUnit)}
+              className="w-16 h-9 px-2 text-center text-sm font-bold tabular-nums border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200" />
+            <div className="w-28">
+              <SimpleSelect value={inactivityUnit} onChange={(v) => onInactivity(inactivityValue || (v === "minutes" ? 30 : 24), v as "minutes" | "hours")}
+                options={[{ value: "minutes", label: "minutos" }, { value: "hours", label: "horas" }]} />
+            </div>
+            <span className="text-[12.5px] text-slate-600">sem resposta</span>
+          </div>
+          <p className="text-[11px] text-slate-400 mt-1.5">Conta da última mensagem do cliente, com a conversa aberta. Se ele responder antes, o gatilho é cancelado.</p>
+        </div>
+        <div className="flex items-start gap-2 rounded-lg bg-white border border-slate-200 px-3 py-2 text-[11px] text-slate-500 leading-relaxed">
+          <Info className="size-3.5 shrink-0 mt-0.5 text-slate-400" />
+          <span>Fora da janela de 24h, o 1º passo precisa ser um <b className="text-slate-700 font-semibold">template aprovado</b> (regra da Meta). O motor de inatividade dispara a sequência.</span>
+        </div>
+        {scope}
+      </div>
+    )
+    if (id === "manual") return (
+      <div className="mt-2 flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3 text-[11.5px] text-slate-500 leading-relaxed">
+        <Info className="size-3.5 shrink-0 mt-0.5 text-slate-400" />
+        <span>Não responde sozinho — é acionado por um <b className="text-slate-700 font-semibold">atendente</b> na conversa ou por uma <b className="text-slate-700 font-semibold">campanha</b> (o template abre a porta, o fluxo assume).</span>
+      </div>
+    )
+    const notes: Record<string, string> = {
+      any_message: "Dispara em toda mensagem recebida. Bom pra um menu inicial ou um roteador de IA.",
+      new_contact: "Dispara só na primeira mensagem de um contato novo — boas-vindas e qualificação.",
+      reopened:    "Dispara quando o cliente volta depois de a conversa ter sido concluída.",
+    }
+    return (
+      <div className={box}>
+        {notes[id] && <p className="text-[11.5px] text-slate-500 leading-relaxed">{notes[id]}</p>}
+        {scope}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <div className="pb-3 border-b border-slate-100">
+        <h3 className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-slate-400">
+          <Zap className="size-3.5" /> Gatilho do fluxo
+        </h3>
+        <p className="mt-2 text-[15px] font-bold text-slate-900 tracking-tight">O que dispara este fluxo?</p>
+        <p className="text-xs text-slate-400 mt-0.5">O gatilho é o que faz o fluxo começar. Escolha um.</p>
       </div>
 
-      {mode === "active" ? (
-        <p className="text-[11px] text-slate-500 leading-relaxed rounded-lg bg-slate-50 border border-slate-200 px-3 py-2.5">
-          <Megaphone className="inline size-3.5 mr-1 -mt-0.5 text-slate-400" />
-          Não responde sozinho. É disparado por um atendente dentro da conversa ou por uma campanha.
-        </p>
-      ) : (
-        <>
-          <div>
-            <label className={LABEL}>Quando dispara</label>
-            <SimpleSelect value={triggerType} onChange={(v) => onType(v)} options={[
-              { value: "keyword",     label: "Palavra-chave" },
-              { value: "any_message", label: "Qualquer mensagem" },
-              { value: "new_contact", label: "Contato novo" },
-              { value: "reopened",    label: "Retornou (conversa reaberta)" },
-              { value: "from_ad",     label: "Veio de anúncio (Meta)" },
-            ]} />
+      <div className="relative py-3">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar gatilho…"
+          className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-200" />
+      </div>
+
+      <div className="-mx-1 pr-1">
+        {groups.length === 0 ? (
+          <p className="text-center text-xs text-slate-400 py-10">Nenhum gatilho com esse nome.</p>
+        ) : groups.map((g) => (
+          <div key={g.key}>
+            <p className="px-1.5 pt-3 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              {g.label}{g.note && <span className="font-medium normal-case tracking-normal text-slate-400/80"> {g.note}</span>}
+            </p>
+            {g.items.map((it) => {
+              const on = sel === it.id
+              return (
+                <div key={it.id}>
+                  <button type="button" disabled={it.soon} onClick={() => !it.soon && pick(it.id)} aria-pressed={on}
+                    className={`group/it w-full flex items-start gap-3 px-2 py-2 rounded-xl border transition-colors text-left ${
+                      it.soon ? "border-transparent opacity-60 cursor-default"
+                      : on ? "border-primary-200 bg-primary-50" : "border-transparent hover:bg-slate-50 hover:border-slate-200"}`}>
+                    <span className={`size-8 shrink-0 rounded-lg grid place-items-center ${g.tint}`}><it.icon className="size-4" /></span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800">
+                        {it.label}
+                        {it.soon && <span className="rounded-full bg-amber-50 text-amber-600 ring-1 ring-amber-100 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide">em breve</span>}
+                      </span>
+                      <span className="block text-[11.5px] text-slate-400 mt-0.5 leading-snug">{it.desc}</span>
+                    </span>
+                    {!it.soon && <ChevronRight className={`size-4 self-center shrink-0 transition ${on ? "text-primary-600 rotate-90" : "text-slate-300 opacity-0 group-hover/it:opacity-100"}`} />}
+                  </button>
+                  {on && config(it.id)}
+                </div>
+              )
+            })}
           </div>
-          {triggerType === "keyword" && (
-            <div>
-              <label className={LABEL}>Palavras-chave</label>
-              <input className={INPUT} value={keywords} onChange={(e) => onKeywords(e.target.value)} placeholder="oi, menu, começar" />
-              <p className="text-[11px] text-slate-400 mt-1">Separe por vírgula. Ignora acento (olá = ola).</p>
-              <div className="grid grid-cols-2 gap-1.5 mt-2">
-                {([
-                  { v: "contains", title: "Contém",      desc: "casa em qualquer parte" },
-                  { v: "exact",    title: "Palavra exata", desc: "a palavra inteira" },
-                ] as const).map((o) => {
-                  const on = keywordMatch === o.v
-                  return (
-                    <button key={o.v} type="button" onClick={() => onKeywordMatch(o.v)}
-                      className={`flex flex-col items-start gap-0.5 rounded-lg border px-2.5 py-1.5 text-left transition ${
-                        on ? "border-primary bg-primary-50/60 ring-1 ring-primary/20" : "border-slate-200 hover:border-slate-300"}`}>
-                      <span className={`text-[12px] font-semibold ${on ? "text-primary-700" : "text-slate-700"}`}>{o.title}</span>
-                      <span className="text-[10px] text-slate-400">{o.desc}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-          {triggerType === "from_ad" && (
-            <div>
-              <label className={LABEL}>De qual anúncio</label>
-              {adOptions.length === 0 ? (
-                <p className="text-[11px] text-slate-400 leading-relaxed rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
-                  Dispara pra qualquer conversa que vier de um anúncio Meta (Click-to-WhatsApp).
-                  Ainda não há anúncios registrados pra mirar um específico.
-                </p>
-              ) : (
-                <>
-                  <div className="flex flex-wrap gap-1.5">
-                    {adOptions.map((a) => {
-                      const on = adIds.includes(a.id)
-                      return (
-                        <button key={a.id} type="button" onClick={() => onAds(toggle(adIds, a.id))}
-                          title={a.id}
-                          className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium max-w-full transition ${
-                            on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
-                          <Megaphone className="size-3.5 shrink-0" /> <span className="truncate">{a.label}</span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer anúncio.</p>
-                </>
-              )}
-            </div>
-          )}
-
-          {showChannels && (
-            <div>
-              <label className={LABEL}>Em quais canais</label>
-              <div className="flex flex-wrap gap-1.5">
-                {channelOptions.map((c) => {
-                  const on = channels.includes(c.key)
-                  return (
-                    <button key={c.key} type="button" onClick={() => onChannels(toggle(channels, c.key))}
-                      className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium transition ${
-                        on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
-                      <SourceLogo source={CHANNEL_LOGO[c.key] ?? "manual"} size={14} /> {c.label}
-                    </button>
-                  )
-                })}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer canal.</p>
-            </div>
-          )}
-
-          {showInstances && (
-            <div>
-              <label className={LABEL}>Em quais números</label>
-              <div className="flex flex-wrap gap-1.5">
-                {instanceOptions.map((i) => {
-                  const on = instances.includes(i.id)
-                  const Badge = i.provider === "meta_cloud" ? BadgeCheck : Smartphone
-                  return (
-                    <button key={i.id} type="button" onClick={() => onInstances(toggle(instances, i.id))}
-                      className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-medium transition ${
-                        on ? "border-primary bg-primary-50/60 text-primary-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
-                      <Badge className={`size-3.5 ${i.provider === "meta_cloud" ? "text-sky-500" : "text-slate-400"}`} /> {i.label}
-                    </button>
-                  )
-                })}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Vazio = qualquer número.</p>
-            </div>
-          )}
-        </>
-      )}
-
-      <p className="text-[11px] text-slate-400 leading-relaxed border-t border-slate-100 pt-3">
-        Clique num nó pra configurá-lo. Arraste de uma bolinha à outra pra conectar os passos.
-      </p>
+        ))}
+      </div>
     </div>
   )
 }
@@ -1193,5 +1278,5 @@ const TITLE: Record<string, string> = {
   http: "Requisição HTTP", collect: "Coletar dado", schedule: "Agendar", ai_agent: "Agente IA",
   ai_router: "Roteador IA", call_flow: "Executar fluxo", template: "Enviar template",
   tag: "Etiquetar", move_stage: "Mover etapa", assign: "Distribuir",
-  transfer: "Transferir", return: "Voltar", end: "Encerrar",
+  transfer: "Transferir", resolve: "Concluir", return: "Voltar", end: "Encerrar",
 }

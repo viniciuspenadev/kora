@@ -9,7 +9,7 @@
 
 import { createContext, useContext } from "react"
 import { Handle, Position, useNodeId, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2 } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
@@ -88,15 +88,19 @@ function MetaBadge() {
 // (o editor injeta via contexto; o nó não tem esse dado no próprio config).
 export interface TriggerSummary {
   type:     string
-  mode:     "receptive" | "active"
+  mode:     "receptive" | "active" | "auto"
   channels: string[]   // keys (whatsapp/site)
   keywords: string
+  /** Só p/ inatividade (modo auto): quanto tempo sem resposta pra disparar. */
+  inactivityValue?: number
+  inactivityUnit?:  "minutes" | "hours"
 }
 export const TriggerSummaryContext = createContext<TriggerSummary>({ type: "keyword", mode: "receptive", channels: [], keywords: "" })
 
 const TRIGGER_LABEL: Record<string, string> = {
   any_message: "qualquer mensagem", keyword: "palavra-chave",
   new_contact: "novo contato", reopened: "retornou", from_ad: "veio de anúncio",
+  inactivity: "inatividade",
 }
 function ChannelIcon({ ch }: { ch: string }) {
   if (ch === "site") return <Globe className="size-3.5 text-slate-400" />
@@ -181,12 +185,16 @@ function StartNode(p: NodeProps) {
       <Card icon={Play} accent="bg-emerald-100 text-emerald-700" title="Início" selected={p.selected}
         badge={
           <span className={`inline-flex items-center rounded px-1 py-px text-[9px] font-semibold ring-1 ${
-            t.mode === "active" ? "bg-amber-50 text-amber-700 ring-amber-100" : "bg-emerald-50 text-emerald-700 ring-emerald-100"}`}>
-            {t.mode === "active" ? "Ativo" : "Receptivo"}
+            t.mode === "active" ? "bg-amber-50 text-amber-700 ring-amber-100"
+            : t.mode === "auto" ? "bg-sky-50 text-sky-700 ring-sky-100"
+            : "bg-emerald-50 text-emerald-700 ring-emerald-100"}`}>
+            {t.mode === "active" ? "Ativo" : t.mode === "auto" ? "Automático" : "Receptivo"}
           </span>
         }>
         <p className="text-[11px] text-slate-600">
-          {t.type === "keyword" && kw.length
+          {t.type === "inactivity"
+            ? <>inatividade: <span className="font-medium text-slate-700">após {t.inactivityValue ?? 24}{t.inactivityUnit === "minutes" ? "min" : "h"} sem resposta</span></>
+            : t.type === "keyword" && kw.length
             ? <>palavra-chave: <span className="font-medium text-slate-700">{kw[0]}{kw.length > 1 ? ` +${kw.length - 1}` : ""}</span></>
             : TRIGGER_LABEL[t.type] ?? "quando o fluxo começa"}
         </p>
@@ -344,8 +352,13 @@ function WaitNode(p: NodeProps) {
       <TargetHandle />
       <Card icon={Timer} accent="bg-slate-100 text-slate-600" title="Esperar" selected={p.selected}>
         esperar {amount} {amount === 1 ? one : many}
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-slate-400">no prazo</span>
+          <span className="text-primary-600">cliente voltou</span>
+        </div>
       </Card>
-      <SourceHandle />
+      <SourceHandle pct={28} />
+      <SourceHandle id="returned" pct={72} color="#004add" />
     </>
   )
 }
@@ -560,6 +573,17 @@ function EndNode(p: NodeProps) {
   )
 }
 
+function ResolveNode(p: NodeProps) {
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={CheckCircle2} accent="bg-emerald-100 text-emerald-700" title="Concluir" selected={p.selected}>
+        conclui o atendimento (marca resolvido)
+      </Card>
+    </>
+  )
+}
+
 export const nodeTypes = {
   start:      StartNode,
   message:    MessageNode,
@@ -581,6 +605,7 @@ export const nodeTypes = {
   move_stage: MoveStageNode,
   assign:     AssignNode,
   transfer:  TransferNode,
+  resolve:   ResolveNode,
   return:    ReturnNode,
   end:       EndNode,
 }

@@ -147,11 +147,11 @@ export function NotificationBell({
         type="button"
         onClick={toggle}
         aria-label={`Notificações${unread ? ` · ${unread} não lidas` : ""}`}
-        className="relative size-9 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+        className="relative size-9 flex items-center justify-center rounded-lg text-nav-dim hover:bg-nav-hover hover:text-white transition-colors"
       >
         <Bell className="size-5" strokeWidth={1.75} />
         {unread > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full bg-red-500 text-white text-[9px] font-semibold flex items-center justify-center ring-2 ring-white tabular-nums">
+          <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full bg-red-500 text-white text-[9px] font-semibold flex items-center justify-center ring-2 ring-nav tabular-nums">
             {badge}
           </span>
         )}

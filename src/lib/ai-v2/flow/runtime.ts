@@ -19,6 +19,7 @@ import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TA
 import { runAgentTurn, type AgentTurnResult } from "../agent"
 import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
+import { logConversationEvent } from "@/lib/atendimento/events"
 import { classifyIntent } from "./router"
 import { sendMenu, resolveMenuChoice } from "./menu"
 import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
@@ -186,6 +187,9 @@ async function persistRun(
       variables,
       call_stack:      callStack,
       status,
+      // Só o nó `wait` seta resume_at (update próprio). Qualquer outro persist limpa —
+      // senão um timer vencido acordaria uma espera de INPUT (menu/collect) pelo cron.
+      resume_at:       null,
       updated_at:      new Date().toISOString(),
     })
     .eq("id", runId)
@@ -301,6 +305,16 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
   // RESUME — estava esperando input. (ai_agent waiting cai direto no ADVANCE,
   // que re-roda o agente com a nova mensagem.)
   if (run.status === "waiting" && currentId) {
+    // Wait TEMPORIZADO (resume_at setado) acordado por INBOUND = o cliente VOLTOU
+    // antes do prazo. Se o nó de espera tem saída "returned", roteia por ela (ex:
+    // entrega pro humano e encerra). Sem essa saída → segue "no prazo" (backward-compat).
+    if (run.resume_at) {
+      const waitNodeId = typeof variables["__wait_node__"] === "string" ? variables["__wait_node__"] : null
+      delete variables["__wait_node__"]
+      const returned = waitNodeId ? edgeTarget(graph, waitNodeId, "returned") : null
+      if (returned) currentId = returned
+      // senão: currentId permanece = alvo "no prazo" (pré-avançado) → cai no ADVANCE.
+    } else {
     const node = nodeById(graph, currentId)
     if (node?.type === "menu") {
       const cfg = node.config as unknown as MenuNodeConfig
@@ -340,6 +354,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       if (out.responded) responded = true
       if (out.agendamento) variables["agendamento"] = out.agendamento
       currentId = edgeTarget(graph, node.id, out.branch)
+    }
     }
   }
 
@@ -419,8 +434,12 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         const factor = cfg.unit === "days" ? 86400 : cfg.unit === "hours" ? 3600 : 60
         const ms = Math.max(1, cfg.amount) * factor * 1000
         const resumeAt = new Date(Date.now() + ms).toISOString()
-        // Pré-avança pra UMA saída — ao acordar, o cron retoma deste nó-alvo.
+        // Pré-avança pra saída "no prazo" (aresta default) — o cron retoma deste alvo.
         const next = edgeTarget(graph, node.id)
+        // Marca ONDE dormimos: se um INBOUND chegar ANTES do prazo (cliente voltou), o
+        // resume roteia pela saída "returned" deste nó (ver bloco RESUME). Overwrite a
+        // cada wait → sempre aponta pro nó de espera atual.
+        variables["__wait_node__"] = node.id
         await supabaseAdmin
           .from("studio_flow_runs")
           .update({
@@ -620,6 +639,21 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         if (r?.ok) return { status: "routed", departmentId: r.routedDepartmentId ?? null, error: null, agent: lastAgent }
         // destino inválido na config → não encaminhou; nota interna já registrou pro admin.
         return { status: responded ? "responded" : "no_action", departmentId: null, error: r?.error ?? null, agent: lastAgent }
+      }
+      case "resolve": {
+        // CONCLUI a conversa (status=resolved) e encerra o fluxo — terminal duro
+        // (não faz pop de sub-fluxo: concluir fecha tudo). Reabre no próximo inbound.
+        if (!ctx.dryRun) {
+          const now = new Date().toISOString()
+          await supabaseAdmin.from("chat_conversations")
+            .update({ status: "resolved", resolved_at: now, updated_at: now })
+            .eq("id", ctx.conversationId).eq("tenant_id", ctx.tenantId)
+          try {
+            await logConversationEvent({ tenantId: ctx.tenantId, conversationId: ctx.conversationId, type: "resolved", actorKind: "ai" })
+          } catch { /* evento é best-effort — nunca derruba o fluxo */ }
+        }
+        await finishRun(run.id)
+        return done()
       }
       case "return":
       case "end": {

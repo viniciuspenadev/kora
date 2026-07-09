@@ -80,10 +80,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <AppShellProvider>
-      <div className="flex h-dvh overflow-hidden bg-slate-50">
+      <div className="flex h-dvh overflow-hidden bg-nav">
         <Sidebar {...navProps} initialCollapsed={initialCollapsed} />
         <MobileSidebar {...navProps} />
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-nav">
           <UpdateBanner />
           <Topbar
             userName={navProps.userName}
@@ -91,9 +91,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             userId={session.user.id}
             supabaseToken={session.user.supabaseToken}
           />
-          <PushPrompt />
-          {setup && !setup.allDone && <OnboardingBanner setup={setup} />}
-          <main className="flex-1 overflow-y-auto">{children}</main>
+          {/* Conteúdo = painel CLARO encaixado na moldura escura, com o canto
+              arredondado no encontro sidebar × topo (só md+; mobile é full-bleed). */}
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-canvas md:rounded-tl-[22px]">
+            <PushPrompt />
+            {setup && !setup.allDone && <OnboardingBanner setup={setup} />}
+            <main className="flex-1 overflow-y-auto">{children}</main>
+          </div>
         </div>
       </div>
     </AppShellProvider>

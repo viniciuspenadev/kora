@@ -457,23 +457,6 @@ export function ConversationList({
                         />
                       )}
                     </span>
-                    <span className="inline-flex items-center gap-1.5 shrink-0">
-                      {statusMeta && (
-                        <statusMeta.Icon className={`size-3.5 ${statusMeta.className}`} aria-label={statusMeta.label} />
-                      )}
-                      {isStale && (
-                        <AlertCircle className="size-3 text-red-500" />
-                      )}
-                      <span className={`text-[11px] ${isStale ? "text-red-500 font-semibold" : "text-slate-400"}`}>
-                        {timeLabel}
-                      </span>
-                      {hasUnread && (
-                        <span
-                          className="size-2 rounded-full bg-primary-600 shrink-0 animate-pulse"
-                          title={conv.unread_count > 0 ? `${conv.unread_count} não lida${conv.unread_count > 1 ? "s" : ""}` : "Marcada como pendente"}
-                        />
-                      )}
-                    </span>
                   </div>
 
                   <div className="flex items-center gap-1.5">
@@ -482,7 +465,6 @@ export function ConversationList({
                     <p className={`text-xs truncate flex-1 ${hasUnread ? "font-medium text-slate-700" : "text-slate-500"}`}>
                       {conv.last_message_preview ?? "Nova conversa"}
                     </p>
-                    {showChannel && <ChannelBadge provider={conv.whatsapp_instances?.provider ?? null} name={conv.whatsapp_instances?.display_name} />}
                   </div>
 
                   {isWaiting && (
@@ -507,11 +489,35 @@ export function ConversationList({
                   )}
                 </div>
 
-                {assignedTo && (
-                  <span className="absolute bottom-3 right-3" title={`Atribuído a ${assignedTo}`}>
-                    <AgentAvatar userId={conv.assigned_to} name={assignedTo} className="size-5" />
+                <div className="flex flex-col items-end justify-between self-stretch shrink-0 gap-1.5 ml-1.5 min-h-[44px]">
+                  <span className="inline-flex items-center gap-1.5 shrink-0">
+                    {statusMeta && (
+                      <statusMeta.Icon className={`size-3.5 ${statusMeta.className}`} aria-label={statusMeta.label} />
+                    )}
+                    {isStale && (
+                      <AlertCircle className="size-3 text-red-500" />
+                    )}
+                    <span className={`text-[11px] ${isStale ? "text-red-500 font-semibold" : "text-slate-400"}`}>
+                      {timeLabel}
+                    </span>
+                    {hasUnread && (
+                      <span
+                        className="size-2 rounded-full bg-primary-600 shrink-0 animate-pulse"
+                        title={conv.unread_count > 0 ? `${conv.unread_count} não lida${conv.unread_count > 1 ? "s" : ""}` : "Marcada como pendente"}
+                      />
+                    )}
                   </span>
-                )}
+
+                  {showChannel && (
+                    <ChannelBadge provider={conv.whatsapp_instances?.provider ?? null} name={conv.whatsapp_instances?.display_name} />
+                  )}
+
+                  {assignedTo && (
+                    <div title={`Atribuído a ${assignedTo}`} className="mt-auto pt-0.5">
+                      <AgentAvatar userId={conv.assigned_to} name={assignedTo} className="size-5" />
+                    </div>
+                  )}
+                </div>
               </button>
             )
           })}

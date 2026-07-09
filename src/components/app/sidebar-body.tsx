@@ -372,7 +372,7 @@ export function SidebarBody({
   // ── Indicador ativo deslizante ──────────────────────────────────────────
   // Um único realce que ESCORREGA (transform + transition) do item antigo até o
   // novo. Rastreia só o item TOP-LEVEL ativo (grupo ou leaf); itens aninhados
-  // usam realce estático (bg-primary-50).
+  // usam realce estático (bg-nav-active).
   const navRef     = useRef<HTMLElement>(null)
   const chipRefs   = useRef<Map<string, HTMLElement>>(new Map())
   const setChipRef = useCallback((key: string, el: HTMLElement | null) => {
@@ -442,19 +442,19 @@ export function SidebarBody({
         className={`
           group/sub flex items-center gap-2.5 rounded-lg pl-2 pr-3 py-1.5 text-[13px] transition-colors overflow-hidden
           ${active
-            ? "bg-primary-100 text-primary-700 font-semibold"
+            ? "bg-nav-active text-white font-semibold"
             : sub.soon
-            ? "text-slate-300 cursor-default"
-            : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+            ? "text-nav-dim cursor-default"
+            : "text-nav-dim hover:bg-nav-hover hover:text-white"
           }
         `}
       >
-        <span className={`shrink-0 ${active ? "text-primary-600" : sub.soon ? "text-slate-300" : "text-slate-400 group-hover/sub:text-slate-600"}`}>
+        <span className={`shrink-0 ${active ? "text-nav-accent" : sub.soon ? "text-nav-dim" : "text-nav-dim group-hover/sub:text-nav-text"}`}>
           {sub.icon}
         </span>
         <span className={`whitespace-nowrap flex-1 ${reveal}`}>{sub.label}</span>
         {sub.soon && (
-          <span className={`whitespace-nowrap rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 uppercase tracking-wider ${reveal}`}>
+          <span className={`whitespace-nowrap rounded-full bg-nav-hover px-1.5 py-0.5 text-[9px] font-semibold text-nav-dim uppercase tracking-wider ${reveal}`}>
             breve
           </span>
         )}
@@ -469,7 +469,7 @@ export function SidebarBody({
       <Link key={p.id} href={`/negocios?pipeline=${p.id}`}
         onClick={() => { if (inFlyout) setFlyoutKey(null); onNavigate?.() }} title={p.name}
         className={`group/sub flex items-center gap-2.5 rounded-lg ${inFlyout ? "px-2.5 py-2" : "pl-2 pr-3 py-1.5"} text-[13px] transition-colors overflow-hidden ${
-          pActive ? "bg-primary-100 text-primary-700 font-semibold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"}`}>
+          pActive ? "bg-nav-active text-white font-semibold" : "text-nav-text hover:bg-nav-hover hover:text-white"}`}>
         <Funnel className="size-4 shrink-0" strokeWidth={1.75} style={pActive ? undefined : { color: p.color }} />
         <span className={`whitespace-nowrap flex-1 ${inFlyout ? "" : reveal}`}>{p.name}</span>
       </Link>
@@ -489,8 +489,8 @@ export function SidebarBody({
       return (
         <Link key={leaf.href} ref={setDealItemEl} href={leaf.href} onClick={() => onNavigate?.()} title={leaf.label}
           className={`group/sub flex items-center gap-2.5 rounded-lg pl-2 pr-3 py-1.5 text-[13px] transition-colors overflow-hidden ${
-            active ? "bg-primary-100 text-primary-700 font-semibold" : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"}`}>
-          <span className={`shrink-0 ${active ? "text-primary-600" : "text-slate-400 group-hover/sub:text-slate-600"}`}>{leaf.icon}</span>
+            active ? "bg-nav-active text-white font-semibold" : "text-nav-dim hover:bg-nav-hover hover:text-white"}`}>
+          <span className={`shrink-0 ${active ? "text-nav-accent" : "text-nav-dim group-hover/sub:text-nav-text"}`}>{leaf.icon}</span>
           <span className={`whitespace-nowrap flex-1 ${reveal}`}>{leaf.label}</span>
         </Link>
       )
@@ -498,19 +498,19 @@ export function SidebarBody({
     const isOpen = open.has("deal-pipes")
     return (
       <div key={leaf.href}>
-        <div className={`group/sub flex items-center gap-1 rounded-lg pl-2 pr-1 py-0.5 transition-colors ${active ? "bg-primary-100" : "hover:bg-slate-50"}`}>
+        <div className={`group/sub flex items-center gap-1 rounded-lg pl-2 pr-1 py-0.5 transition-colors ${active ? "bg-nav-active" : "hover:bg-nav-hover"}`}>
           <Link href={leaf.href} onClick={() => onNavigate?.()} title={leaf.label}
             className="flex items-center gap-2.5 flex-1 min-w-0 py-1 text-[13px] overflow-hidden">
-            <span className={`shrink-0 ${active ? "text-primary-600" : "text-slate-400 group-hover/sub:text-slate-600"}`}>{leaf.icon}</span>
-            <span className={`whitespace-nowrap flex-1 ${reveal} ${active ? "text-primary-700 font-semibold" : "text-slate-500"}`}>{leaf.label}</span>
+            <span className={`shrink-0 ${active ? "text-nav-accent" : "text-nav-dim group-hover/sub:text-nav-text"}`}>{leaf.icon}</span>
+            <span className={`whitespace-nowrap flex-1 ${reveal} ${active ? "text-white font-semibold" : "text-nav-dim"}`}>{leaf.label}</span>
           </Link>
           <button type="button" onClick={() => toggleGroup("deal-pipes")} aria-expanded={isOpen} title="Funis de venda"
-            className={`shrink-0 size-6 grid place-items-center rounded-md text-slate-400 hover:bg-slate-200/60 hover:text-slate-600 transition-colors ${reveal}`}>
-            <ChevronDown className={`size-3.5 transition-transform duration-200 ${isOpen ? "rotate-180 text-primary-600" : ""}`} strokeWidth={2.5} />
+            className={`shrink-0 size-6 grid place-items-center rounded-md text-nav-dim hover:bg-nav-hover hover:text-nav-text transition-colors ${reveal}`}>
+            <ChevronDown className={`size-3.5 transition-transform duration-200 ${isOpen ? "rotate-180 text-nav-accent" : ""}`} strokeWidth={2.5} />
           </button>
         </div>
         <div className={`overflow-hidden transition-[max-height,opacity] duration-200 ease-in-out ${isOpen && expanded ? "max-h-72 opacity-100" : "max-h-0 opacity-0"}`}>
-          <div className="mt-0.5 mb-1 ml-4 pl-2.5 border-l border-slate-200 space-y-0.5">
+          <div className="mt-0.5 mb-1 ml-4 pl-2.5 border-l border-nav-line space-y-0.5">
             {list.map((p) => renderPipeLink(p, false))}
           </div>
         </div>
@@ -528,16 +528,16 @@ export function SidebarBody({
         onClick={() => { if (!sub.soon) { setFlyoutKey(null); onNavigate?.() } }}
         className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${
           active
-            ? "bg-primary-100 text-primary-700 font-semibold"
+            ? "bg-nav-active text-white font-semibold"
             : sub.soon
-            ? "text-slate-300 cursor-default"
-            : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+            ? "text-nav-dim cursor-default"
+            : "text-nav-text hover:bg-nav-hover hover:text-white"
         }`}
       >
-        <span className={`shrink-0 ${active ? "text-primary-600" : sub.soon ? "text-slate-300" : "text-slate-400"}`}>{sub.icon}</span>
+        <span className={`shrink-0 ${active ? "text-nav-accent" : sub.soon ? "text-nav-dim" : "text-nav-dim"}`}>{sub.icon}</span>
         <span className="flex-1 whitespace-nowrap">{sub.label}</span>
         {sub.soon && (
-          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 uppercase tracking-wider">breve</span>
+          <span className="rounded-full bg-nav-hover px-1.5 py-0.5 text-[9px] font-semibold text-nav-dim uppercase tracking-wider">breve</span>
         )}
       </Link>
     )
@@ -555,19 +555,19 @@ export function SidebarBody({
           title={group.label}
           className="group/sub w-full flex items-center gap-2.5 rounded-lg pl-2 pr-3 py-1.5 text-[13px] transition-colors"
         >
-          <span className={`shrink-0 ${groupActive ? "text-primary-600" : "text-slate-400 group-hover/sub:text-slate-600"}`}>
+          <span className={`shrink-0 ${groupActive ? "text-nav-accent" : "text-nav-dim group-hover/sub:text-nav-text"}`}>
             {group.icon}
           </span>
-          <span className={`whitespace-nowrap flex-1 text-left ${reveal} ${groupActive ? "text-primary-700 font-semibold" : "text-slate-500"}`}>
+          <span className={`whitespace-nowrap flex-1 text-left ${reveal} ${groupActive ? "text-white font-semibold" : "text-nav-dim"}`}>
             {group.label}
           </span>
           <ChevronDown
-            className={`size-3 text-slate-400 shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "rotate-180" : ""}`}
+            className={`size-3 text-nav-dim shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "rotate-180" : ""}`}
             strokeWidth={2.5}
           />
         </button>
         <div className={`overflow-hidden transition-[max-height,opacity] duration-200 ease-in-out ${isOpen && expanded ? "max-h-60 opacity-100" : "max-h-0 opacity-0"}`}>
-          <div className="mt-0.5 mb-1 ml-4 pl-2.5 border-l border-slate-200 space-y-0.5">
+          <div className="mt-0.5 mb-1 ml-4 pl-2.5 border-l border-nav-line space-y-0.5">
             {group.children.map((c) => (isGroup(c) ? renderSubGroup(c) : c.dealSwitcher ? renderDealSwitch(c) : renderSubLeaf(c)))}
           </div>
         </div>
@@ -577,7 +577,7 @@ export function SidebarBody({
 
   return (
     <>
-      <div className="flex items-center h-14 border-b border-slate-200 px-2.5 shrink-0 overflow-hidden">
+      <div className="flex items-center h-14 border-b border-nav-line px-2.5 shrink-0 overflow-hidden">
         {collapsed && onToggleCollapse ? (
           // Recolhido: o logo curto GIRA em 3D no hover, revelando o botão de
           // expandir. Clicar em qualquer parte expande (não depende de notar o flip).
@@ -599,7 +599,7 @@ export function SidebarBody({
                 />
               </span>
               <span className="absolute inset-0 flex items-center justify-center [backface-visibility:hidden] [transform:rotateY(180deg)]">
-                <PanelLeftOpen className="size-5 text-primary-600" strokeWidth={2} />
+                <PanelLeftOpen className="size-5 text-nav-accent" strokeWidth={2} />
               </span>
             </div>
           </button>
@@ -617,8 +617,15 @@ export function SidebarBody({
         )}
 
         <div className={`ml-3 flex flex-col min-w-0 flex-1 overflow-hidden ${reveal}`}>
-          <span className="text-sm font-bold text-slate-900 whitespace-nowrap leading-tight">Kora</span>
-          <span className="text-[11px] text-slate-400 whitespace-nowrap truncate leading-tight mt-0.5">{tenantName}</span>
+          <Image
+            src="/logo_kora_branco.png"
+            alt="Kora"
+            width={122}
+            height={60}
+            priority
+            className="h-5 w-auto object-contain object-left"
+          />
+          <span className="text-[11px] text-nav-dim whitespace-nowrap truncate leading-tight mt-1">{tenantName}</span>
         </div>
 
         {expanded && onToggleCollapse && (
@@ -626,18 +633,18 @@ export function SidebarBody({
             type="button"
             onClick={onToggleCollapse}
             title="Recolher menu"
-            className={`shrink-0 flex size-7 items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors ${reveal}`}
+            className={`shrink-0 flex size-7 items-center justify-center rounded-lg text-nav-dim hover:text-nav-text hover:bg-nav-hover transition-colors ${reveal}`}
           >
             <PanelLeftClose className="size-4" strokeWidth={2} />
           </button>
         )}
       </div>
 
-      <nav ref={navRef} className="relative flex flex-col gap-1 flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-3">
+      <nav ref={navRef} className="scrollbar-none relative flex flex-col gap-1 flex-1 overflow-y-auto overflow-x-hidden px-2.5 py-3">
         {/* Realce deslizante — escorrega até o item ativo. Fica atrás dos ícones. */}
         <span
           aria-hidden
-          className="pointer-events-none absolute left-0 top-0 size-9 rounded-xl bg-primary-100 transition-transform duration-300 ease-out"
+          className="pointer-events-none absolute left-0 top-0 size-9 rounded-xl bg-nav-active transition-transform duration-300 ease-out"
           style={{ transform: `translate(${pill.x}px, ${pill.y}px)`, opacity: pill.show ? 1 : 0 }}
         />
         {nav.map((item) => {
@@ -657,20 +664,20 @@ export function SidebarBody({
                 <span ref={(el) => setChipRef(item.href, el)} className={`
                   relative flex size-9 items-center justify-center rounded-xl shrink-0 transition-colors duration-150
                   ${active
-                    ? "text-primary-700"
+                    ? "text-white"
                     : item.soon
-                    ? "text-slate-300"
-                    : "text-slate-500 group-hover/item:bg-slate-100 group-hover/item:text-slate-900"
+                    ? "text-nav-dim"
+                    : "text-nav-dim group-hover/item:bg-nav-hover group-hover/item:text-white"
                   }
                 `}>
                   {item.icon}
                   {showBadge && (
-                    <span className="absolute top-1 right-1 size-2.5 rounded-full bg-red-500 ring-2 ring-white" aria-label="Mensagens não lidas" />
+                    <span className="absolute top-1 right-1 size-2.5 rounded-full bg-red-500 ring-2 ring-nav" aria-label="Mensagens não lidas" />
                   )}
                 </span>
                 <span className={`
                   whitespace-nowrap text-sm font-medium flex-1 ${reveal}
-                  ${active ? "text-primary-700" : item.soon ? "text-slate-300" : "text-slate-700"}
+                  ${active ? "text-white" : item.soon ? "text-nav-dim" : "text-nav-text"}
                 `}>
                   {item.label}
                 </span>
@@ -678,7 +685,7 @@ export function SidebarBody({
                   <span className={`size-2 rounded-full bg-red-500 shrink-0 ${reveal}`} aria-hidden />
                 )}
                 {item.soon && (
-                  <span className={`whitespace-nowrap rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-400 uppercase tracking-wider ${reveal}`}>
+                  <span className={`whitespace-nowrap rounded-full bg-nav-hover px-1.5 py-0.5 text-[9px] font-semibold text-nav-dim uppercase tracking-wider ${reveal}`}>
                     breve
                   </span>
                 )}
@@ -697,31 +704,31 @@ export function SidebarBody({
               aria-expanded={isOpen}
               title={item.label}
               data-flyout-trigger={asFlyout ? item.key : undefined}
-              className={`group/item relative w-full flex items-center gap-3 rounded-xl py-1.5 pr-3 ${asFlyout && isOpen ? "bg-slate-100" : ""}`}
+              className={`group/item relative w-full flex items-center gap-3 rounded-xl py-1.5 pr-3 ${asFlyout && isOpen ? "bg-nav-hover" : ""}`}
             >
               <span ref={(el) => setChipRef(item.key, el)} className={`
                 flex size-9 items-center justify-center rounded-xl shrink-0 transition-colors duration-150
                 ${groupActive
-                  ? "text-primary-700"
-                  : "text-slate-500 group-hover/item:bg-slate-100 group-hover/item:text-slate-900"
+                  ? "text-white"
+                  : "text-nav-dim group-hover/item:bg-nav-hover group-hover/item:text-white"
                 }
               `}>
                 {item.icon}
               </span>
               <span className={`
                 whitespace-nowrap text-sm font-medium flex-1 text-left ${reveal}
-                ${groupActive ? "text-primary-700" : "text-slate-700"}
+                ${groupActive ? "text-white" : "text-nav-text"}
               `}>
                 {item.label}
               </span>
               {asFlyout ? (
                 <ChevronRight
-                  className={`size-3.5 shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "translate-x-0.5 text-primary-600" : "text-slate-400"}`}
+                  className={`size-3.5 shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "translate-x-0.5 text-nav-accent" : "text-nav-dim"}`}
                   strokeWidth={2.5}
                 />
               ) : (
                 <ChevronDown
-                  className={`size-3.5 text-slate-400 shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "rotate-180" : ""}`}
+                  className={`size-3.5 text-nav-dim shrink-0 transition-transform duration-200 ${reveal} ${isOpen ? "rotate-180" : ""}`}
                   strokeWidth={2.5}
                 />
               )}
@@ -730,7 +737,7 @@ export function SidebarBody({
 
           const groupSubmenu = asFlyout ? null : (
             <div className={`overflow-hidden transition-[max-height,opacity] duration-200 ease-in-out ${isOpen && expanded ? "max-h-[34rem] opacity-100" : "max-h-0 opacity-0"}`}>
-              <div className="my-1 ml-5 pl-3 border-l border-slate-200 space-y-0.5">
+              <div className="my-1 ml-5 pl-3 border-l border-nav-line space-y-0.5">
                 {item.children.map((c) => (isGroup(c) ? renderSubGroup(c) : c.dealSwitcher ? renderDealSwitch(c) : renderSubLeaf(c)))}
               </div>
             </div>
@@ -755,7 +762,7 @@ export function SidebarBody({
             <div
               ref={flyoutRef}
               style={{ left: flyoutX }}
-              className="fixed inset-y-0 z-40 w-64 flex flex-col bg-white border-r border-slate-200 shadow-[12px_0_32px_-18px_rgba(15,23,42,0.25)] animate-in slide-in-from-left-4 fade-in-0 duration-150"
+              className="fixed inset-y-0 z-40 w-64 flex flex-col bg-nav border-r border-nav-line shadow-[12px_0_32px_-18px_rgba(15,23,42,0.25)] animate-in slide-in-from-left-4 fade-in-0 duration-150"
             >
               {/* setinha na borda EXTERNA — recolhe o menu dedicado (mesma altura do item) */}
               <button
@@ -763,15 +770,15 @@ export function SidebarBody({
                 onClick={() => setFlyoutKey(null)}
                 title="Recolher"
                 style={{ top: dealItemY ?? 96 }}
-                className="absolute -right-3 -translate-y-1/2 z-10 size-6 grid place-items-center rounded-full border border-slate-200 bg-white text-slate-400 shadow-sm hover:text-slate-700 hover:border-slate-300 transition-colors"
+                className="absolute -right-3 -translate-y-1/2 z-10 size-6 grid place-items-center rounded-full border border-nav-line bg-nav text-nav-dim shadow-sm hover:text-nav-text hover:border-nav-line transition-colors"
               >
                 <ChevronLeft className="size-3.5" strokeWidth={2.5} />
               </button>
-              <div className="flex items-center gap-2.5 h-14 px-4 border-b border-slate-200 shrink-0">
-                <span className="flex size-8 items-center justify-center rounded-lg bg-primary-50 text-primary-600 shrink-0"><Funnel className="size-4" strokeWidth={1.75} /></span>
-                <span className="text-sm font-bold text-slate-900 flex-1 truncate">Funis de Vendas</span>
+              <div className="flex items-center gap-2.5 h-14 px-4 border-b border-nav-line shrink-0">
+                <span className="flex size-8 items-center justify-center rounded-lg bg-nav-active text-nav-accent shrink-0"><Funnel className="size-4" strokeWidth={1.75} /></span>
+                <span className="text-sm font-bold text-white flex-1 truncate">Funis de Vendas</span>
               </div>
-              <div className="p-2.5 border-b border-slate-100 shrink-0">
+              <div className="p-2.5 border-b border-nav-line shrink-0">
                 <Link
                   href="/negocios/funis"
                   onClick={() => { setFlyoutKey(null); onNavigate?.() }}
@@ -780,9 +787,9 @@ export function SidebarBody({
                   <Plus className="size-3.5" strokeWidth={2.5} /> Novo funil
                 </Link>
               </div>
-              <div className="flex-1 overflow-y-auto px-2.5 py-2 space-y-0.5">
+              <div className="scrollbar-none flex-1 overflow-y-auto px-2.5 py-2 space-y-0.5">
                 {list.length === 0
-                  ? <p className="px-2.5 py-6 text-xs text-slate-400 text-center">Nenhum funil ativo.</p>
+                  ? <p className="px-2.5 py-6 text-xs text-nav-dim text-center">Nenhum funil ativo.</p>
                   : list.map((p) => renderPipeLink(p, true))}
               </div>
             </div>
@@ -794,27 +801,27 @@ export function SidebarBody({
           <div
             ref={flyoutRef}
             style={{ left: flyoutX }}
-            className="fixed inset-y-0 z-40 w-64 flex flex-col bg-white border-r border-slate-200 shadow-[12px_0_32px_-18px_rgba(15,23,42,0.25)] animate-in slide-in-from-left-4 fade-in-0 duration-150"
+            className="fixed inset-y-0 z-40 w-64 flex flex-col bg-nav border-r border-nav-line shadow-[12px_0_32px_-18px_rgba(15,23,42,0.25)] animate-in slide-in-from-left-4 fade-in-0 duration-150"
           >
             {/* cabeçalho — espelha o do menu principal (h-14 + divisor) */}
-            <div className="flex items-center gap-2.5 h-14 px-4 border-b border-slate-200 shrink-0">
-              <span className="flex size-8 items-center justify-center rounded-lg bg-primary-50 text-primary-600 shrink-0">{g.icon}</span>
-              <span className="text-sm font-bold text-slate-900 flex-1 truncate">{g.label}</span>
+            <div className="flex items-center gap-2.5 h-14 px-4 border-b border-nav-line shrink-0">
+              <span className="flex size-8 items-center justify-center rounded-lg bg-nav-active text-nav-accent shrink-0">{g.icon}</span>
+              <span className="text-sm font-bold text-white flex-1 truncate">{g.label}</span>
               <button
                 type="button"
                 onClick={() => setFlyoutKey(null)}
                 title="Fechar"
-                className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0"
+                className="size-7 grid place-items-center rounded-lg text-nav-dim hover:text-nav-text hover:bg-nav-hover transition-colors shrink-0"
               >
                 <PanelLeftClose className="size-4" strokeWidth={2} />
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-0.5">
+            <div className="scrollbar-none flex-1 overflow-y-auto px-2.5 py-3 space-y-0.5">
               {g.children.map((c) =>
                 isGroup(c) ? (
-                  <div key={c.key} className="pt-2 mt-2 border-t border-slate-100">
-                    <p className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400">{c.label}</p>
+                  <div key={c.key} className="pt-2 mt-2 border-t border-nav-line">
+                    <p className="px-2.5 pb-1.5 text-[10px] font-bold uppercase tracking-widest text-nav-dim">{c.label}</p>
                     <div className="space-y-0.5">
                       {c.children.map((l) => (isGroup(l) ? null : renderFlyoutLeaf(l)))}
                     </div>
@@ -837,7 +844,7 @@ export function SidebarBody({
           onClick={() => openFlyout("deal-pipes")}
           title="Funis de venda"
           style={{ left: railRight, top: dealItemY ?? 96 }}
-          className="fixed z-30 -translate-x-1/2 -translate-y-1/2 flex size-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm hover:text-primary-600 hover:border-primary-200 transition-colors animate-in fade-in-0 zoom-in-75 duration-150"
+          className="fixed z-30 -translate-x-1/2 -translate-y-1/2 flex size-6 items-center justify-center rounded-full border border-nav-line bg-nav text-nav-dim shadow-sm hover:text-nav-accent hover:border-primary-200 transition-colors animate-in fade-in-0 zoom-in-75 duration-150"
         >
           <ChevronRight className="size-3.5" strokeWidth={2.5} />
         </button>
@@ -849,20 +856,20 @@ export function SidebarBody({
         expanded={expanded}
       />
 
-      <div className="px-2.5 pb-3 pt-2 border-t border-slate-200 shrink-0 overflow-hidden">
+      <div className="px-2.5 pb-3 pt-2 border-t border-nav-line shrink-0 overflow-hidden">
         <div className="flex items-center gap-1 py-1 overflow-hidden">
           <Link
             href="/configuracoes/perfil"
             onClick={() => onNavigate?.()}
             title="Meu perfil"
-            className="group/profile flex items-center gap-2 min-w-0 flex-1 overflow-hidden rounded-lg hover:bg-slate-50 transition-colors"
+            className="group/profile flex items-center gap-2 min-w-0 flex-1 overflow-hidden rounded-lg hover:bg-nav-hover transition-colors"
           >
             <div className="flex size-9 items-center justify-center shrink-0">
               <ProfileAvatar name={userName} />
             </div>
             <div className={`min-w-0 flex-1 overflow-hidden ${reveal}`}>
-              <p className="text-xs font-semibold text-slate-700 truncate whitespace-nowrap group-hover/profile:text-primary-700">{userName}</p>
-              <p className="text-[11px] text-slate-400 truncate whitespace-nowrap leading-none mt-0.5">{userEmail}</p>
+              <p className="text-xs font-semibold text-nav-text truncate whitespace-nowrap group-hover/profile:text-white">{userName}</p>
+              <p className="text-[11px] text-nav-dim truncate whitespace-nowrap leading-none mt-0.5">{userEmail}</p>
             </div>
           </Link>
           <button
@@ -870,7 +877,7 @@ export function SidebarBody({
             onClick={handleSignOut}
             disabled={signing}
             title="Sair"
-            className={`shrink-0 size-7 items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-30 ${expanded ? "flex" : "hidden"}`}
+            className={`shrink-0 size-7 items-center justify-center rounded-lg text-nav-dim hover:text-nav-text hover:bg-nav-hover transition-colors disabled:opacity-30 ${expanded ? "flex" : "hidden"}`}
           >
             <LogOut className="size-3.5" />
           </button>
@@ -885,7 +892,7 @@ function ProfileAvatar({ name }: { name: string }) {
   const [err, setErr] = useState(false)
   if (err) {
     return (
-      <div className="size-8 rounded-full bg-primary flex items-center justify-center ring-2 ring-white shadow-sm shadow-primary/20">
+      <div className="size-8 rounded-full bg-primary flex items-center justify-center ring-2 ring-nav shadow-sm shadow-primary/20">
         <span className="text-xs font-bold text-white">{name?.[0]?.toUpperCase() ?? "U"}</span>
       </div>
     )
@@ -896,7 +903,7 @@ function ProfileAvatar({ name }: { name: string }) {
       src="/api/me/avatar"
       alt=""
       onError={() => setErr(true)}
-      className="size-8 rounded-full object-cover ring-2 ring-white shadow-sm"
+      className="size-8 rounded-full object-cover ring-2 ring-nav shadow-sm"
     />
   )
 }

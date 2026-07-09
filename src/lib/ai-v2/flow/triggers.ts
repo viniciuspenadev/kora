@@ -40,8 +40,9 @@ function matchesKeyword(t: FlowTrigger, text: string): boolean {
 
 function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boolean, sig: MatchSignals): boolean {
   if (!t) return false
-  // Gatilho ATIVO (manual/campanha) nunca casa com um inbound — só dispara sob demanda.
-  if ((t.mode ?? "receptive") === "active") return false
+  // Só o RECEPTIVO casa com um inbound. Ativo (manual/campanha) e Automático
+  // (inatividade — disparado pelo cron) nunca reagem a uma mensagem de entrada.
+  if ((t.mode ?? "receptive") !== "receptive") return false
   // Filtros de canal/instância (ausente/vazio = qualquer).
   if (t.channels?.length  && !t.channels.includes(sig.channel ?? "")) return false
   if (t.instances?.length && !t.instances.includes(sig.instanceId ?? "")) return false
@@ -121,7 +122,7 @@ export async function loadStartableFlow(tenantId: string, flowId: string): Promi
   return (data as FlowRow | null) ?? null
 }
 
-const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, variables, call_stack, status"
+const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, variables, call_stack, status, resume_at"
 
 /** Run ativo (active|waiting) da conversa, se houver. */
 export async function activeFlowRun(conversationId: string): Promise<FlowRunRow | null> {

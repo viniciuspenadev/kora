@@ -67,7 +67,7 @@ export function SidebarSelfPause({ initialPaused, initialPausedUntil, expanded =
   }
 
   return (
-    <div className="px-2.5 pt-2 pb-2 border-t border-slate-200 shrink-0 relative">
+    <div className="px-2.5 pt-2 pb-2 border-t border-nav-line shrink-0 relative">
       <div className="flex items-center gap-3 py-1 overflow-hidden">
         {/* Ícone (visível mesmo colapsado) */}
         <div className="flex size-9 items-center justify-center shrink-0">
@@ -87,10 +87,10 @@ export function SidebarSelfPause({ initialPaused, initialPausedUntil, expanded =
 
         {/* Texto + botão (expandido) */}
         <div className={`min-w-0 flex-1 overflow-hidden transition-opacity duration-150 ${reveal}`}>
-          <p className="text-[11px] font-semibold text-slate-700 truncate whitespace-nowrap">
+          <p className="text-[11px] font-semibold text-nav-text truncate whitespace-nowrap">
             {effectivelyPaused ? "Pausado" : "Recebendo"}
           </p>
-          <p className="text-[10px] text-slate-400 truncate whitespace-nowrap leading-none mt-0.5">
+          <p className="text-[10px] text-nav-dim truncate whitespace-nowrap leading-none mt-0.5">
             {effectivelyPaused
               ? formatPauseUntil(pausedUntil)
               : "novas conversas chegam"}
@@ -115,7 +115,7 @@ export function SidebarSelfPause({ initialPaused, initialPausedUntil, expanded =
               onClick={() => setShowMenu((v) => !v)}
               disabled={pending}
               title="Pausar atribuições"
-              className="size-7 inline-flex items-center justify-center rounded-md text-slate-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-30"
+              className="size-7 inline-flex items-center justify-center rounded-md text-nav-dim hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-30"
             >
               {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Pause className="size-3.5" />}
             </button>

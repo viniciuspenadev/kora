@@ -28,6 +28,7 @@ export type FlowNodeType =
   | "move_stage" // move a conversa de etapa no pipeline e avança
   | "assign"     // distribui a conversa (round-robin) — ramifica atribuído/pool
   | "transfer"   // encaminha pra departamento — terminal
+  | "resolve"    // CONCLUI a conversa (status=resolved) e encerra — terminal
   | "return"     // volta ao fluxo que chamou (pop); na raiz, encerra (§11.5)
   | "end"        // encerra o fluxo
 
@@ -208,12 +209,16 @@ export interface MoveStageNodeConfig {
 
 // ── Trigger (quando o fluxo dispara) ──
 export interface FlowTrigger {
-  type:       "any_message" | "keyword" | "new_contact" | "reopened" | "from_ad"
+  type:       "any_message" | "keyword" | "new_contact" | "reopened" | "from_ad" | "inactivity"
   keywords?:  string[]
   /** Match da palavra-chave: "contains" (default, substring) | "exact" (palavra inteira). Ambos ignoram acento. */
   keywordMatch?: "contains" | "exact"
-  /** receptivo (escuta inbound) | ativo (só disparo manual/campanha — NÃO casa no inbound). Default: receptive. */
-  mode?:      "receptive" | "active"
+  /** receptivo (escuta inbound) | ativo (disparo manual/campanha) | auto (o sistema dispara sozinho,
+   *  ex: inatividade — NÃO casa no inbound; quem aciona é o cron). Default: receptive. */
+  mode?:      "receptive" | "active" | "auto"
+  /** Só p/ type "inactivity" (modo auto): quanto tempo sem resposta do cliente pra disparar. */
+  inactivityValue?: number
+  inactivityUnit?:  "minutes" | "hours"
   /** Filtro de canal (ausente/vazio = qualquer). Ex: ["whatsapp", "site", "instagram"]. */
   channels?:  string[]
   /** Filtro de instância/número (ausente/vazio = qualquer). Ids de whatsapp_instances. */
@@ -249,4 +254,7 @@ export interface FlowRunRow {
   /** Pais suspensos (sub-fluxos). Topo do "stack" = frame ativo acima. */
   call_stack:      CallFrame[]
   status:          "active" | "waiting" | "done" | "failed"
+  /** Só setado quando dorme num nó `wait` (relógio). Ausente/null nas esperas por
+   *  input (menu/collect/schedule/ai_agent). Discrimina "voltou" de "espera de input". */
+  resume_at?:      string | null
 }

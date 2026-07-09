@@ -67,6 +67,16 @@
    não pode azular). Card/surface = white. Distinto do primary-50 pra chips continuarem evidentes. */
 @theme {
   --color-canvas: #eff4fd;
+
+  /* Chrome de navegação (sidebar + topbar) — MOLDURA escura. O design system claro
+     rege o CONTEÚDO; a navegação é a moldura. Acento no azul Kora (clareado pro escuro). */
+  --color-nav:        #0b1430;                 /* fundo do chrome */
+  --color-nav-hover:  rgb(255 255 255 / 0.06); /* hover de item */
+  --color-nav-active: rgb(77 124 255 / 0.16);  /* fundo do item ativo (azul Kora translúcido) */
+  --color-nav-text:   #c9d2ec;                 /* label */
+  --color-nav-dim:    #7c88b0;                 /* ícone / secundário */
+  --color-nav-line:   rgb(255 255 255 / 0.08); /* divisores */
+  --color-nav-accent: #4d7cff;                 /* acento (azul Kora claro) */
 }
 
 :root {
@@ -196,6 +206,8 @@
     scrollbar-color: var(--scrollbar-thumb) transparent;
   }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
+  /* Sem os botões de seta (setas do SO no topo/base da barra). */
+  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
     background: var(--scrollbar-thumb);
@@ -215,6 +227,11 @@
     box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.03), 0 2px 8px -2px rgba(0, 0, 0, 0.02);
   }
   .tabular-nums { font-variant-numeric: tabular-nums; }
+
+  /* Esconde a barra de rolagem (continua rolável na roda/trackpad). Usado no chrome
+     escuro (sidebar/flyouts) pra não reservar largura nem mostrar barra clara. */
+  .scrollbar-none { scrollbar-width: none; -ms-overflow-style: none; }
+  .scrollbar-none::-webkit-scrollbar { display: none; width: 0; height: 0; }
 }
 
 /* Fusão de contatos (diálogo Vincular): pontinhos fluindo do absorvido → sobrevivente. */

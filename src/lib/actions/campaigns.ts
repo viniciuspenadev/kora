@@ -7,6 +7,7 @@ import { type SegmentRules } from "@/lib/crm/segment-rules"
 import { resolveAudienceContacts, classifyRecipient, CONV_PRICE } from "@/lib/campaigns/audience"
 import { materializeRecipients } from "@/lib/campaigns/engine"
 import { openerTemplateNode } from "@/lib/campaigns/flow-opener"
+import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import type { FlowGraph } from "@/lib/ai-v2/flow/types"
 import { revalidatePath } from "next/cache"
 
@@ -152,6 +153,105 @@ export async function getCampaign(id: string): Promise<CampaignDetail | { error:
     est_cost: (C.est_cost as number | null) ?? null, created_at: C.created_at as string,
     recipients: Object.values(byStatus).reduce((a, b) => a + b, 0), byStatus,
   }
+}
+
+// ── Detalhe por DESTINATÁRIO (saber cada cliente) ───────────────
+export interface CampaignRecipientRow {
+  id: string; name: string; phone: string | null
+  status: string; skipReason: string | null; error: string | null
+  sentAt: string | null; deliveredAt: string | null; readAt: string | null; repliedAt: string | null
+  conversationId: string | null
+}
+export type RecipientFilter = "all" | "sent" | "replied" | "failed" | "skipped" | "queued"
+
+/** Lista paginada de destinatários da campanha + status/tempos + link pra conversa.
+ *  Cursor por id (estável). Filtro por grupo de status. */
+export async function getCampaignRecipients(
+  campaignId: string,
+  opts?: { filter?: RecipientFilter; cursor?: string | null; limit?: number },
+): Promise<{ items: CampaignRecipientRow[]; nextCursor: string | null; hasMore: boolean } | { error: string }> {
+  const gate = await requireManager()
+  if ("error" in gate) return gate
+  const t = gate.tenantId
+  const limit = Math.min(Math.max(opts?.limit ?? 40, 1), 100)
+
+  const { data: camp } = await supabaseAdmin.from("campaigns").select("instance_id").eq("id", campaignId).eq("tenant_id", t).maybeSingle()
+  if (!camp) return { error: "Campanha não encontrada" }
+  const instanceId = (camp as { instance_id: string | null }).instance_id
+
+  let q = supabaseAdmin.from("campaign_recipients")
+    .select("id, phone, status, skip_reason, error, sent_at, delivered_at, read_at, replied_at, contact_id, chat_contacts(custom_name, push_name)")
+    .eq("tenant_id", t).eq("campaign_id", campaignId)
+    .order("id", { ascending: true }).limit(limit + 1)
+  const f = opts?.filter ?? "all"
+  if (f === "sent")         q = q.in("status", ["sent", "delivered", "read", "replied"])
+  else if (f !== "all")     q = q.eq("status", f)
+  if (opts?.cursor) q = q.gt("id", opts.cursor)
+
+  const { data, error } = await q
+  if (error) return { error: error.message }
+  const rows = (data ?? []) as unknown as {
+    id: string; phone: string | null; status: string; skip_reason: string | null; error: string | null
+    sent_at: string | null; delivered_at: string | null; read_at: string | null; replied_at: string | null
+    contact_id: string | null; chat_contacts: { custom_name: string | null; push_name: string | null } | null
+  }[]
+
+  const hasMore = rows.length > limit
+  const page = hasMore ? rows.slice(0, limit) : rows
+
+  // Conversas desses contatos no número da campanha → link "abrir conversa".
+  const convByContact = new Map<string, string>()
+  const contactIds = page.map((r) => r.contact_id).filter(Boolean) as string[]
+  if (contactIds.length && instanceId) {
+    const { data: convs } = await supabaseAdmin.from("chat_conversations")
+      .select("id, contact_id").eq("tenant_id", t).eq("instance_id", instanceId).in("contact_id", contactIds)
+    for (const c of (convs ?? []) as { id: string; contact_id: string }[]) if (!convByContact.has(c.contact_id)) convByContact.set(c.contact_id, c.id)
+  }
+
+  const items: CampaignRecipientRow[] = page.map((r) => ({
+    id: r.id,
+    name: r.chat_contacts?.custom_name?.trim() || r.chat_contacts?.push_name?.trim() || r.phone || "Sem nome",
+    phone: r.phone, status: r.status, skipReason: r.skip_reason, error: r.error,
+    sentAt: r.sent_at, deliveredAt: r.delivered_at, readAt: r.read_at, repliedAt: r.replied_at,
+    conversationId: r.contact_id ? convByContact.get(r.contact_id) ?? null : null,
+  }))
+  return { items, nextCursor: hasMore ? page[page.length - 1].id : null, hasMore }
+}
+
+/** Materializa os destinatários de um RASCUNHO pra virarem lista selecionável
+ *  (antes do disparo). Idempotente — reusa se já materializou. */
+export async function materializeCampaignDraft(campaignId: string): Promise<{ queued: number; skipped: number } | { error: string }> {
+  const gate = await requireManager()
+  if ("error" in gate) return gate
+  const t = gate.tenantId
+  const { data: c } = await supabaseAdmin.from("campaigns")
+    .select("status, template_category, audience_kind, audience_id").eq("id", campaignId).eq("tenant_id", t).maybeSingle()
+  if (!c) return { error: "Campanha não encontrada" }
+  const C = c as { status: string; template_category: "MARKETING" | "UTILITY"; audience_kind: "list" | "tag"; audience_id: string }
+  if (!["draft", "scheduled"].includes(C.status)) return { error: "Os destinatários só podem ser selecionados antes do disparo." }
+  const mat = await materializeRecipients(t, campaignId, C.audience_kind, C.audience_id, C.template_category)
+  if ("error" in mat) return mat
+  revalidatePath(`/campanhas/${campaignId}`)
+  return mat
+}
+
+/** Inclui/exclui destinatários DA fila (queued ↔ excluded) — só antes do disparo.
+ *  NUNCA inclui um `skipped` (sem consentimento/telefone) — consent fail-closed. */
+export async function setRecipientsIncluded(campaignId: string, recipientIds: string[], included: boolean): Promise<{ ok: true } | { error: string }> {
+  const gate = await requireManager()
+  if ("error" in gate) return gate
+  const t = gate.tenantId
+  if (!recipientIds.length) return { ok: true }
+  const { data: c } = await supabaseAdmin.from("campaigns").select("status").eq("id", campaignId).eq("tenant_id", t).maybeSingle()
+  if (!c) return { error: "Campanha não encontrada" }
+  if (!["draft", "scheduled"].includes((c as { status: string }).status)) return { error: "Só dá pra selecionar antes do disparo." }
+  const from = included ? "excluded" : "queued"
+  const to   = included ? "queued" : "excluded"
+  const { error } = await supabaseAdmin.from("campaign_recipients")
+    .update({ status: to }).eq("tenant_id", t).eq("campaign_id", campaignId).in("id", recipientIds).eq("status", from)
+  if (error) return { error: error.message }
+  revalidatePath(`/campanhas/${campaignId}`)
+  return { ok: true }
 }
 
 export interface CreateCampaignInput {
@@ -335,6 +435,20 @@ export async function getCampaignReadyFlows(): Promise<CampaignFlowOption[]> {
     openerName: op?.name ?? null, openerLanguage: op?.language ?? null,
     openerCategory: op ? (catBy.get(`${op.name}|${op.language}`) ?? "MARKETING") : null,
   }))
+}
+
+/** Tudo que o wizard de criação precisa, sob demanda (pro modal abrir sem custo na lista). */
+export interface CampaignWizardData {
+  audiences: AudienceOption[]
+  templates: InboxTemplate[]
+  numbers:   { id: string; label: string }[]
+  flows:     CampaignFlowOption[]
+}
+export async function getCampaignWizardData(): Promise<CampaignWizardData> {
+  const [audiences, templates, numbers, flows] = await Promise.all([
+    getCampaignAudiences(), getInboxTemplates(), getOutboundNumbers(), getCampaignReadyFlows(),
+  ])
+  return { audiences, templates, numbers, flows }
 }
 
 /** Números oficiais (meta_cloud) do tenant pro seletor de saída. */

@@ -21,11 +21,14 @@ const STEPS = [
   { n: 4, label: "Revisão",    icon: ClipboardCheck },
 ]
 
-export function WizardClient({ audiences, templates, numbers, flows }: {
+export function WizardClient({ audiences, templates, numbers, flows, onClose, onCreated }: {
   audiences: AudienceOption[]
   templates: InboxTemplate[]
   numbers:   { id: string; label: string }[]
   flows:     CampaignFlowOption[]
+  /** Modo MODAL: sem trava de largura + conclui via callbacks (senão navega sozinho). */
+  onClose?:   () => void
+  onCreated?: (id: string) => void
 }) {
   const router = useRouter()
   const [step, setStep] = useState(1)
@@ -99,7 +102,8 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
         flowId: mode === "flow" ? flowId : null,
       })
       if ("error" in r) { setError(r.error); return }
-      router.push("/campanhas"); router.refresh()
+      if (onCreated) { onCreated(r.id) }
+      else { router.push("/campanhas"); router.refresh() }
     })
   }
 
@@ -117,7 +121,7 @@ export function WizardClient({ audiences, templates, numbers, flows }: {
   const tags  = audiences.filter((a) => a.kind === "tag")
 
   return (
-    <div className="max-w-3xl space-y-5">
+    <div className={onClose ? "space-y-5" : "max-w-3xl space-y-5"}>
       {/* stepper */}
       <div className="flex items-center">
         {STEPS.map((s, i) => {

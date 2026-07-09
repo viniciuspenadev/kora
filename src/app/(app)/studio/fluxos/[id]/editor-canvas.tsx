@@ -11,20 +11,19 @@ import { useState, useCallback, useTransition, useMemo, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
-  ReactFlow, ReactFlowProvider, Background, Controls, MiniMap,
+  ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Panel,
   useNodesState, useEdgesState, addEdge, useReactFlow, useUpdateNodeInternals, type OnConnect,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import {
-  ArrowLeft, Loader2, CheckCircle2, AlertCircle,
-  MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag,
-  GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon,
-  CalendarPlus, Sparkles, MoveHorizontal, MoveVertical, FileBadge, TrendingUp, X,
+  ArrowLeft, Loader2, CheckCircle2, AlertCircle, Plus,
+  MoveHorizontal, MoveVertical, TrendingUp, X,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { nodeTypes, OrientationContext, TriggerSummaryContext, JourneyMetricsContext } from "./flow-nodes"
 import { edgeTypes, EdgeActionsContext } from "./flow-edge"
 import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
+import { NodePicker } from "./node-picker"
 import { toRF, fromRF, newRFNode, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
 import { getFlowJourney, getFlowRevenue, getFlowCampaigns, type FlowJourney, type FlowRevenue } from "@/lib/actions/studio/flow-analytics"
@@ -46,30 +45,6 @@ interface Props {
   instances:   TriggerInstance[]
   ads:         TriggerAd[]
 }
-
-const PALETTE: { type: FlowNodeType; label: string; icon: React.ComponentType<{ className?: string }>; ai?: boolean }[] = [
-  { type: "message",   label: "Mensagem",   icon: MessageSquare },
-  { type: "send_media", label: "Enviar mídia", icon: ImageIcon },
-  { type: "menu",      label: "Menu",       icon: ListChecks },
-  { type: "condition", label: "Condição",   icon: GitBranch },
-  { type: "set_variable",   label: "Definir variável", icon: Braces },
-  { type: "switch",         label: "Desviar (switch)", icon: Split },
-  { type: "business_hours", label: "Horário comercial", icon: Clock },
-  { type: "wait",      label: "Esperar",     icon: Timer },
-  { type: "collect",   label: "Coletar dado", icon: ClipboardList },
-  { type: "schedule",  label: "Agendar",    icon: CalendarPlus },
-  { type: "ai_agent",  label: "Agente IA",  icon: Bot,     ai: true },
-  { type: "ai_router", label: "Roteador IA", icon: GitFork, ai: true },
-  { type: "http",      label: "Requisição HTTP", icon: Globe },
-  { type: "call_flow", label: "Executar fluxo", icon: Workflow },
-  { type: "template",   label: "Enviar template", icon: FileBadge },
-  { type: "tag",        label: "Etiquetar",   icon: Tag },
-  { type: "move_stage", label: "Mover etapa", icon: Columns3 },
-  { type: "assign",     label: "Distribuir",  icon: UserPlus },
-  { type: "transfer",  label: "Transferir", icon: ArrowRightLeft },
-  { type: "return",    label: "Voltar",     icon: CornerUpLeft },
-  { type: "end",       label: "Encerrar",   icon: Flag },
-]
 
 // Variáveis CRIADAS pelo cliente ao longo do fluxo (saída de Coletar/HTTP/Definir/
 // Agendar/IA) — viram chips no editor, ao lado dos campos de contato.
@@ -113,11 +88,13 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
   const [name, setName]             = useState(flow.name)
   const [triggerType, setTrigType]  = useState<FlowTrigger["type"]>(flow.trigger?.type ?? "keyword")
   const [keywords, setKeywords]     = useState((flow.trigger?.keywords ?? []).join(", "))
-  const [mode, setMode]             = useState<"receptive" | "active">(flow.trigger?.mode ?? "receptive")
+  const [mode, setMode]             = useState<"receptive" | "active" | "auto">(flow.trigger?.mode ?? "receptive")
   const [trigChannels, setChannels] = useState<string[]>(flow.trigger?.channels ?? [])
   const [trigInstances, setInsts]   = useState<string[]>(flow.trigger?.instances ?? [])
   const [trigAds, setAds]           = useState<string[]>(flow.trigger?.adIds ?? [])
   const [kwMatch, setKwMatch]       = useState<"contains" | "exact">(flow.trigger?.keywordMatch ?? "contains")
+  const [inactValue, setInactValue] = useState<number>(flow.trigger?.inactivityValue ?? 24)
+  const [inactUnit, setInactUnit]   = useState<"minutes" | "hours">(flow.trigger?.inactivityUnit ?? "hours")
   const [orientation, setOrientation] = useState<Orientation>(flow.graph.orientation ?? "vertical")
   const [addCount, setAddCount]     = useState(0)
   const [pending, startTransition]  = useTransition()
@@ -179,8 +156,8 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
   // Resumo do gatilho injetado no nó "Início" (modo + canais + tipo), ao vivo.
   const triggerSummary = useMemo(
-    () => ({ type: triggerType, mode, channels: trigChannels, keywords }),
-    [triggerType, mode, trigChannels, keywords],
+    () => ({ type: triggerType, mode, channels: trigChannels, keywords, inactivityValue: inactValue, inactivityUnit: inactUnit }),
+    [triggerType, mode, trigChannels, keywords, inactValue, inactUnit],
   )
   // Variáveis que o cliente CRIOU no fluxo (Coletar/Definir/HTTP/Agendar/IA) → viram
   // chips no editor, junto dos campos de contato. Atualiza ao vivo conforme monta.
@@ -248,7 +225,8 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
         ...(kwMatch === "exact" ? { keywordMatch: "exact" as const } : {}),
       } : {}),
       ...(triggerType === "from_ad" && trigAds.length ? { adIds: trigAds } : {}),
-      ...(mode === "active" ? { mode } : {}),          // receptivo é o default → não polui o JSON
+      ...(mode !== "receptive" ? { mode } : {}),       // receptivo é o default → não polui o JSON
+      ...(mode === "auto" ? { inactivityValue: inactValue, inactivityUnit: inactUnit } : {}),
       ...(trigChannels.length  ? { channels: trigChannels }   : {}),
       ...(trigInstances.length ? { instances: trigInstances } : {}),
     }
@@ -304,27 +282,8 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
         </div>
       </div>
 
-      {/* Body */}
+      {/* Body — sem paleta à esquerda: adicionar passo mora no painel direito */}
       <div className="flex-1 flex min-h-0">
-        {/* Paleta */}
-        <div className="w-48 shrink-0 border-r border-slate-200 bg-white p-2 space-y-0.5 overflow-y-auto hidden sm:block">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1">Adicionar passo</p>
-          {PALETTE.map((p) => (
-            <button key={p.type} type="button" onClick={() => addNode(p.type)}
-              className="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50 rounded-lg transition-colors">
-              <p.icon className={`size-4 ${p.ai ? "text-violet-500" : "text-slate-400"}`} /> {p.label}
-              {p.ai && (
-                <span className="ml-auto inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-px text-[9px] font-semibold text-violet-600 ring-1 ring-violet-100">
-                  <Sparkles className="size-2.5" /> IA
-                </span>
-              )}
-            </button>
-          ))}
-          <p className="flex items-center gap-1 text-[10px] text-slate-400 px-2 pt-2 mt-1 border-t border-slate-100">
-            <Sparkles className="size-2.5 text-violet-400" /> usa IA (consome tokens)
-          </p>
-        </div>
-
         {/* Canvas */}
         <div className="flex-1 min-w-0 relative">
           {/* Painel de Jornada (flutuante) — controles do overlay + KPIs */}
@@ -357,6 +316,16 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
             <Background color="#cbd5e1" gap={20} />
             <Controls showInteractive={false} />
             <MiniMap pannable zoomable />
+            {!showJourney && (
+              <Panel position="top-left">
+                <button type="button" onClick={() => setSelectedId(null)}
+                  title="Adicionar um passo ao fluxo"
+                  className={`inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-xl border shadow-card transition-colors ${
+                    selectedNode === null ? "bg-primary border-primary text-white" : "bg-white border-slate-200 text-slate-700 hover:border-primary-200 hover:text-primary-700"}`}>
+                  <Plus className="size-4" /> Adicionar passo
+                </button>
+              </Panel>
+            )}
           </ReactFlow>
           </JourneyMetricsContext.Provider>
           </TriggerSummaryContext.Provider>
@@ -364,18 +333,22 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
           </EdgeActionsContext.Provider>
         </div>
 
-        {/* Painel direito */}
+        {/* Painel direito — contextual: sem seleção = ADICIONAR PASSO · Início = GATILHO · nó = CONFIG */}
         <div className="w-96 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
-          {selectedNode && selectedNode.type !== "start"
+          {!selectedNode
+            ? <NodePicker onPick={addNode} />
+            : selectedNode.type !== "start"
             ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}
                 mode={mode} channels={trigChannels} instances={trigInstances}
                 channelOptions={channels} instanceOptions={instances}
                 keywordMatch={kwMatch} adIds={trigAds} adOptions={ads}
+                inactivityValue={inactValue} inactivityUnit={inactUnit}
                 onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords}
                 onMode={setMode} onChannels={setChannels} onInstances={setInsts}
-                onKeywordMatch={setKwMatch} onAds={setAds} />}
+                onKeywordMatch={setKwMatch} onAds={setAds}
+                onInactivity={(v, u) => { setInactValue(v); setInactUnit(u) }} />}
         </div>
       </div>
     </div>
