@@ -645,8 +645,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // (não faz pop de sub-fluxo: concluir fecha tudo). Reabre no próximo inbound.
         if (!ctx.dryRun) {
           const now = new Date().toISOString()
+          // Espelha o "Concluir" do header (updateConversationStatus): resolve + zera
+          // não-lidas/flag + tira a IA de cena (decouple) até o cliente voltar.
           await supabaseAdmin.from("chat_conversations")
-            .update({ status: "resolved", resolved_at: now, updated_at: now })
+            .update({ status: "resolved", resolved_at: now, updated_at: now, unread_count: 0, flagged_pending: false, ai_handling: false })
             .eq("id", ctx.conversationId).eq("tenant_id", ctx.tenantId)
           try {
             await logConversationEvent({ tenantId: ctx.tenantId, conversationId: ctx.conversationId, type: "resolved", actorKind: "ai" })

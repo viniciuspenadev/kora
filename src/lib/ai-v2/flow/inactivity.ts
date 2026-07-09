@@ -65,14 +65,18 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
     const insts = f.trigger.instances ?? []
     const coldSafe = flowColdOpenSafe(f.graph)   // pode disparar fora da janela?
 
-    // Conversas paradas: NOSSA última mensagem, antiga; abertas; SEM dono humano
-    // (não interrompe humano — doutrina do doc). Filtro de canal/número do gatilho.
+    // Conversas paradas: NOSSA última mensagem (dir=out — a bola está com o cliente),
+    // antiga; abertas; NÃO arquivadas (arquivar não muda o status → sem este filtro o
+    // motor re-engaja thread morta). AGE MESMO COM DONO HUMANO — decisão do owner
+    // (2026-07-09): o motor existe justamente pra re-engajar/concluir a conversa que o
+    // atendente atendeu e o cliente sumiu ("inatividade do cliente = concluir"); pular
+    // as atribuídas esvaziava o propósito. Filtro de canal/número do gatilho.
     let q = supabaseAdmin.from("chat_conversations")
       .select("id, channel, instance_id, last_inbound_at, metadata")
       .eq("tenant_id", f.tenant_id)
       .in("status", ["open", "pending"])
+      .is("archived_at", null)
       .eq("last_message_dir", "out")
-      .is("assigned_to", null)
       .lt("last_message_at", cutoff)
       .order("last_message_at", { ascending: true })
       .limit(SCAN_PER_FLOW)
