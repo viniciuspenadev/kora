@@ -2,7 +2,7 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { IdCard } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
-import { listContactFields } from "@/lib/actions/custom-fields"
+import { listCustomFields } from "@/lib/actions/custom-fields"
 import { CamposClient } from "./campos-client"
 
 export default async function CamposCadastroPage() {
@@ -10,15 +10,19 @@ export default async function CamposCadastroPage() {
   if (!session) redirect("/auth/signin")
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
 
-  const fields = await listContactFields({ includeInactive: true })
+  const [contact, deal, product] = await Promise.all([
+    listCustomFields("contact", { includeInactive: true }),
+    listCustomFields("deal", { includeInactive: true }),
+    listCustomFields("product", { includeInactive: true }),
+  ])
 
   return (
     <PageShell
-      title="Campos do cadastro"
-      description="Crie campos personalizados pro cadastro de contatos — do jeito do seu negócio (convênio, tamanho, área…). Aparecem na ficha de cada contato."
+      title="Campos de cadastro"
+      description="Monte a ficha do seu jeito. Defina o campo uma vez e ele aparece em todos os registros da entidade — pra todo o time."
       icon={IdCard}
     >
-      <CamposClient fields={fields} />
+      <CamposClient fields={{ contact, deal, product }} />
     </PageShell>
   )
 }
