@@ -4,6 +4,7 @@ import { Users } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { listTeamMembers, listPendingInvites, listDepartments, listTeamNumbers } from "@/lib/actions/team"
 import { checkLimit } from "@/lib/limits"
+import { hasModule } from "@/lib/modules"
 import { EquipeClient } from "./client"
 
 export default async function EquipePage() {
@@ -11,12 +12,13 @@ export default async function EquipePage() {
   if (!session) redirect("/auth/signin")
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
 
-  const [members, invites, departments, numbers, userLimit] = await Promise.all([
+  const [members, invites, departments, numbers, userLimit, hasInventory] = await Promise.all([
     listTeamMembers(),
     listPendingInvites(),
     listDepartments(),
     listTeamNumbers(),
     checkLimit(session.user.tenantId, "users"),
+    hasModule(session.user.tenantId, "inventory"),
   ])
 
   return (
@@ -32,6 +34,7 @@ export default async function EquipePage() {
         numbers={numbers}
         currentUserId={session.user.id}
         currentUserRole={session.user.role}
+        hasInventory={hasInventory}
         userLimit={{
           used:      userLimit.used,
           max:       userLimit.max,

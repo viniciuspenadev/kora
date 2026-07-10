@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
+import { getViewerScope, canOpenContacts, seesAllContacts, reachableContactIds } from "@/lib/visibility"
 import Link from "next/link"
 import { ContatosList } from "@/components/chat/contatos-list"
 import { NewContactButton } from "@/components/chat/new-contact-dialog"
@@ -12,19 +13,25 @@ export default async function ContatosPage() {
   if (!session) redirect("/auth/signin")
 
   const tenantId = session.user.tenantId
+  const scope = await getViewerScope()
+  if (!canOpenContacts(scope)) redirect("/inbox")
   const crmEnabled = await hasModule(tenantId, "crm")
 
+  // Escopo por RELAÇÃO: quem NÃO vê a base inteira (admin/supervisor/Gerenciar) enxerga só
+  // os contatos DELE — conversas dele + negócios dele. Fecha o vazamento da base.
+  const reachableIds = seesAllContacts(scope) ? null : await reachableContactIds(scope)
+  let contactsQuery = supabaseAdmin
+    .from("chat_contacts")
+    .select(`
+      id, whatsapp_id, phone_number, push_name, profile_pic_url,
+      custom_name, email, company, doc_id, birth_date,
+      is_blocked, notes, source, lifecycle_stage, created_at, updated_at
+    `)
+    .eq("tenant_id", tenantId)
+  if (reachableIds) contactsQuery = contactsQuery.in("id", reachableIds.length ? reachableIds : ["00000000-0000-0000-0000-000000000000"])
+
   const [{ data: contacts }, { data: tags }, { data: taggings }, { data: identities }, wonRes, listsRes, membersRes] = await Promise.all([
-    supabaseAdmin
-      .from("chat_contacts")
-      .select(`
-        id, whatsapp_id, phone_number, push_name, profile_pic_url,
-        custom_name, email, company, doc_id, birth_date,
-        is_blocked, notes, source, lifecycle_stage, created_at, updated_at
-      `)
-      .eq("tenant_id", tenantId)
-      .order("updated_at", { ascending: false })
-      .limit(500),
+    contactsQuery.order("updated_at", { ascending: false }).limit(500),
     supabaseAdmin
       .from("tags")
       .select("id, name, color, description")

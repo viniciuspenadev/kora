@@ -9,7 +9,7 @@ import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Sparkles, Blocks, FileText, Headset, BookMarked, IdCard,
-  Plug, PanelLeftClose, PanelLeftOpen, Package, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send, Funnel, Plus,
+  Plug, PanelLeftClose, PanelLeftOpen, Package, Boxes, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send, Funnel, Plus,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -25,6 +25,8 @@ interface NavLeaf {
   adminOnly?: boolean
   /** Slug do módulo. Se setado e tenant não tem habilitado, item é escondido. Omitir = sempre visível (core). */
   module?:   string
+  /** Capability granular (tenant_users): mostra pra owner/admin OU agente que tem essa capability. */
+  capability?: string
   /** Só aparece se o tenant tem instância WhatsApp API Oficial (meta_cloud). */
   officialOnly?: boolean
   /** Sobrescreve a detecção de ativo (ex: itens com querystring que o pathname não pega). */
@@ -38,6 +40,8 @@ interface NavGroup {
   label:      string
   icon:       React.ReactNode
   adminOnly?: boolean
+  /** Capability granular (tenant_users): mostra o grupo pra owner/admin OU agente que a tem. */
+  capability?: string
   module?:    string
   /** Só aparece se o tenant tem instância WhatsApp API Oficial (meta_cloud). */
   officialOnly?: boolean
@@ -66,20 +70,23 @@ const NAV: NavItem[] = [
       { href: "/atendimentos", label: "Departamentos", icon: <Columns3 className={subIcon} strokeWidth={1.75} />, module: "inbox"    },
     ],
   },
-  { href: "/contatos", label: "Contatos", icon: <Contact className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts" },
+  { href: "/contatos", label: "Contatos", icon: <Contact className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts", capability: "contacts_access" },
   {
-    key:       "negocios",
-    label:     "Negócios",
-    icon:      <Briefcase className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
-    module:    "crm",
-    adminOnly: true,
+    key:        "negocios",
+    label:      "Negócios",
+    icon:       <Briefcase className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    module:     "crm",
+    capability: "deals_access",   // owner/admin OU atendente com Ver+ de Negócios
     children: [
-      { href: "/negocios/painel", label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} /> },
+      { href: "/negocios/painel", label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, capability: "deals_manage" },
       // "Funil de Vendas" = link ao board + botão dedicado que expande os funis ativos.
       { href: "/negocios",        label: "Funil de Vendas", icon: <Funnel   className={subIcon} strokeWidth={1.75} />, dealSwitcher: true },
       { href: "/configuracoes/catalogo", label: "Catálogo", icon: <Package   className={subIcon} strokeWidth={1.75} /> },
     ],
   },
+  // Top-level: visível pra owner/admin OU agente com a capability inventory_access
+  // (não fica sob "Negócios" que é adminOnly — senão o atendente não veria).
+  { href: "/estoque", label: "Estoque", icon: <Boxes className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "inventory", capability: "inventory_access" },
   {
     key:       "marketing",
     label:     "Marketing",
@@ -143,6 +150,8 @@ interface Props {
   tenantName:      string
   userRole:        string
   enabledModules:  string[]
+  /** Capabilities granulares do usuário (tenant_users): ex. ["inventory_access"]. */
+  capabilities?:   string[]
   selfPause:      { paused: boolean; paused_until: string | null }
   hasOfficial?:   boolean
   /** Drawer mobile / sidebar destravado aberto: labels sempre visíveis. */
@@ -168,7 +177,7 @@ interface Props {
  * de accordion — ex: Templates dentro de Configurações).
  */
 export function SidebarBody({
-  userName, userEmail, tenantName, userRole, enabledModules, selfPause, hasOfficial,
+  userName, userEmail, tenantName, userRole, enabledModules, capabilities, selfPause, hasOfficial,
   pipelines, dealPipelines, expanded = false, collapsed = false, onToggleCollapse, onExpand, onNavigate,
 }: Props) {
   const pathname              = usePathname()
@@ -177,6 +186,7 @@ export function SidebarBody({
   const { unread }            = useAppShell()
   const isAdminOrOwner        = ["owner", "admin"].includes(userRole)
   const modulesSet            = useMemo(() => new Set(enabledModules), [enabledModules])
+  const capsSet               = useMemo(() => new Set(capabilities ?? []), [capabilities])
 
   // Labels: aparecem quando expandido; somem (opacity-0) quando recolhido. A
   // largura do rail (w-14, overflow-hidden) recorta o texto. Sem :hover.
@@ -191,6 +201,8 @@ export function SidebarBody({
       items.flatMap<NavItem>((item) => {
         if (item.adminOnly && !isAdminOrOwner) return []
         if (item.officialOnly && !hasOfficial) return []
+        // Capability granular: owner/admin sempre; agente só se tem a capability.
+        if (item.capability && !isAdminOrOwner && !capsSet.has(item.capability)) return []
         if (isGroup(item)) {
           if (item.module && !modulesSet.has(item.module)) return []
           const kids = walk(item.children)
@@ -200,7 +212,7 @@ export function SidebarBody({
         return [item]
       })
     return walk(NAV)
-  }, [modulesSet, hasOfficial, isAdminOrOwner])
+  }, [modulesSet, capsSet, hasOfficial, isAdminOrOwner])
 
   // Pipeline atual (pra destacar no sub-menu): SÓ quando se está no board (/kanban).
   // Fora dele (contatos, departamentos, etc.) nenhum pipeline fica ativo.

@@ -16,6 +16,7 @@ import { lifecycleMeta } from "@/lib/lifecycle"
 import { ContactSheet } from "@/components/crm/contact-sheet"
 import { CustomFieldInputs, CustomFieldsView } from "@/components/crm/custom-field-inputs"
 import { setEntityCustomFields, type CustomFieldDef } from "@/lib/actions/custom-fields"
+import { formatQuantityWithUnit, unitSpec } from "@/lib/crm/units"
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
@@ -1478,8 +1479,8 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                         </div>
                       </div>
                     </td>
-                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-700">{fmtQty(it.quantity)}</td>
-                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-500">{brl(list)}</td>
+                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-700">{it.unit && it.unit !== "un" ? formatQuantityWithUnit(it.quantity, it.unit) : fmtQty(it.quantity)}</td>
+                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-500">{brl(list)}{it.unit && it.unit !== "un" && <span className="text-[9px] text-slate-400">/{unitSpec(it.unit).symbol}</span>}</td>
                     <td className="py-2 px-2 text-right text-xs tabular-nums">
                       {dPct > 0.05
                         ? <span className="text-amber-700 font-semibold">−{brl(lineBase - lineVal)} <span className="text-[10px] font-medium text-slate-400">({dPct.toFixed(dPct >= 10 ? 0 : 1)}%)</span></span>
@@ -1582,9 +1583,9 @@ function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
   // listPrice/maxPct = base do PISO (teto de desconto snapshotado).
   const active = useMemo(() => (
     edit
-      ? { name: edit.name, billing: edit.billing, price: edit.unit_price, type: edit.type, listPrice: edit.list_price ?? edit.unit_price, maxPct: edit.max_discount_pct ?? 0 }
+      ? { name: edit.name, billing: edit.billing, price: edit.unit_price, type: edit.type, listPrice: edit.list_price ?? edit.unit_price, maxPct: edit.max_discount_pct ?? 0, unit: edit.unit }
       : picked
-        ? { name: picked.name, billing: picked.billing, price: picked.price, type: picked.type, listPrice: picked.price, maxPct: picked.max_discount_pct ?? 0 }
+        ? { name: picked.name, billing: picked.billing, price: picked.price, type: picked.type, listPrice: picked.price, maxPct: picked.max_discount_pct ?? 0, unit: picked.unit }
         : null
   ), [edit, picked])
   const recurring = active != null && active.billing !== "one_time"
@@ -1731,7 +1732,7 @@ function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
                 )}
               </div>
               <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Quantidade</label>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Quantidade{active.unit !== "un" ? ` · ${unitSpec(active.unit).symbol}` : ""}</label>
                 <input value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" autoFocus className={field} />
               </div>
             </div>

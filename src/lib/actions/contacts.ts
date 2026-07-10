@@ -3,7 +3,7 @@
 import { auth } from "@/auth"
 import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
-import { getViewerScope } from "@/lib/visibility"
+import { getViewerScope, canManageContacts } from "@/lib/visibility"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 
@@ -27,7 +27,7 @@ export async function updateContactIdentity(
   const scope = await getViewerScope()
   if (!scope.tenantId) return { error: "Não autenticado" }
   // 🔒 Gate fail-closed: só admin/owner ou supervisor (view_all).
-  if (!(scope.isAdmin || scope.viewAll)) return { error: "Você não tem permissão para alterar a identidade deste contato." }
+  if (!canManageContacts(scope)) return { error: "Você não tem permissão para alterar a identidade deste contato." }
   const tenantId = scope.tenantId
 
   const { data: cur } = await supabaseAdmin.from("chat_contacts")
@@ -214,7 +214,7 @@ export async function mergeContacts(
   const scope = await getViewerScope()
   if (!scope.tenantId) return { error: "Não autenticado" }
   // 🔒 Gate fail-closed: só admin/owner ou supervisor (view_all) — operação destrutiva.
-  if (!(scope.isAdmin || scope.viewAll)) return { error: "Você não tem permissão para vincular contatos." }
+  if (!canManageContacts(scope)) return { error: "Você não tem permissão para vincular contatos." }
   if (survivorId === loserId) return { error: "Selecione dois contatos diferentes." }
 
   // Defense-in-depth: ambos precisam ser do tenant da sessão (a função SQL revalida).

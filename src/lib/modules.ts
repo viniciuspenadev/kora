@@ -40,7 +40,7 @@ export type ModuleSlug =
   // Multi-channel
   | "multi_instance" | "meta_cloud" | "instagram_direct"
   // Operational
-  | "audit_log_ui" | "webhook_outbound" | "api_access" | "white_label" | "sso"
+  | "audit_log_ui" | "webhook_outbound" | "api_access" | "white_label" | "sso" | "inventory"
   // Billing
   | "billing_panel" | "usage_limits"
 

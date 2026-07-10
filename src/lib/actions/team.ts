@@ -7,6 +7,7 @@ import { randomBytes } from "crypto"
 import { getProvider } from "@/lib/providers"
 import { sendEmail, buildInviteEmail } from "@/lib/email/send"
 import { checkLimit } from "@/lib/limits"
+import { normInventoryLevel, normAccessLevel, type InventoryAccessLevel, type AccessLevel } from "@/lib/visibility"
 
 export type TenantRole = "owner" | "admin" | "agent"
 
@@ -21,6 +22,9 @@ export interface TeamMember {
   instance_ids:  string[] | null   // números que atende (Fase D); null/[] = todos
   department_id: string | null
   supervises_departments: string[]  // supervisão escopada: setores que vê por inteiro; [] = nenhum
+  inventory_access: InventoryAccessLevel   // capability granular: none | view | manage
+  deals_access:     AccessLevel            // Negócios: none | view | manage
+  contacts_access:  AccessLevel            // Contatos: none | view | manage
   department:    { id: string; name: string; color: string } | null
   joined_at:     string
 }
@@ -66,7 +70,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color )
     `)
@@ -90,10 +94,47 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       instance_ids:  (row.instance_ids as string[] | null) ?? null,
       department_id: row.department_id,
       supervises_departments: (row.supervises_departments as string[] | null) ?? [],
+      inventory_access: normInventoryLevel(row.inventory_access),
+      deals_access: normAccessLevel(row.deals_access),
+      contacts_access: normAccessLevel(row.contacts_access),
       department:    dept,
       joined_at:     row.joined_at,
     }
   })
+}
+
+/** Um membro do tenant (pra página de perfil). Anti-IDOR pelo tenant do admin. */
+export async function getTeamMember(userId: string): Promise<TeamMember | null> {
+  const session = await requireTenantAdmin()
+  const { data } = await supabaseAdmin
+    .from("tenant_users")
+    .select(`
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, joined_at,
+      profiles!tenant_users_user_id_fkey ( email, full_name ),
+      tenant_departments ( id, name, color )
+    `)
+    .eq("tenant_id", session.user.tenantId).eq("user_id", userId).maybeSingle()
+  if (!data) return null
+  const row = data as Record<string, unknown>
+  const profile = row.profiles as unknown as { email: string; full_name: string | null } | null
+  const dept    = row.tenant_departments as unknown as { id: string; name: string; color: string } | null
+  return {
+    user_id:       row.user_id as string,
+    email:         profile?.email ?? "—",
+    full_name:     profile?.full_name ?? null,
+    role:          row.role as TenantRole,
+    active:        row.active as boolean,
+    view_all:      row.view_all as boolean,
+    see_pool:      (row.see_pool as boolean | null) ?? true,
+    instance_ids:  (row.instance_ids as string[] | null) ?? null,
+    department_id: (row.department_id as string | null) ?? null,
+    supervises_departments: (row.supervises_departments as string[] | null) ?? [],
+    inventory_access: normInventoryLevel(row.inventory_access),
+    deals_access:  normAccessLevel(row.deals_access),
+    contacts_access: normAccessLevel(row.contacts_access),
+    department:    dept,
+    joined_at:     row.joined_at as string,
+  }
 }
 
 export async function listPendingInvites(): Promise<TeamInvite[]> {
@@ -332,6 +373,91 @@ export async function toggleMemberSeePool(userId: string, seePool: boolean): Pro
   const { error } = await supabaseAdmin
     .from("tenant_users")
     .update({ see_pool: seePool })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Edita os DADOS da pessoa (nome). E-mail é o login e não muda por aqui.
+ * Anti-IDOR: só edita quem é membro DO tenant do admin (profiles é global).
+ */
+export async function updateMemberProfile(userId: string, input: { fullName?: string }): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  const { data: member } = await supabaseAdmin
+    .from("tenant_users").select("user_id")
+    .eq("tenant_id", session.user.tenantId).eq("user_id", userId).maybeSingle()
+  if (!member) return { error: "Membro não encontrado neste tenant" }
+
+  const patch: Record<string, unknown> = {}
+  if (input.fullName !== undefined) {
+    const n = input.fullName.trim()
+    if (!n) return { error: "O nome não pode ficar vazio." }
+    patch.full_name = n.slice(0, 80)
+  }
+  if (Object.keys(patch).length === 0) return {}
+
+  const { error } = await supabaseAdmin.from("profiles").update(patch).eq("id", userId)
+  if (error) return { error: error.message }
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Capability granular: nível de acesso de um AGENTE ao Estoque (none|view|edit|manage).
+ * Owner/admin já têm manage via role. 1ª capability do padrão (financial_access, etc. virão).
+ */
+export async function setMemberInventoryAccess(userId: string, level: InventoryAccessLevel): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ inventory_access: level })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Nível de acesso ao módulo Negócios do atendente (escada Ver/Gerenciar; enum
+ * permissivo). Owner/admin já têm manage via role. Espelha setMemberInventoryAccess.
+ */
+export async function setMemberDealsAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ deals_access: level })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Nível de acesso ao módulo Contatos do atendente (Ver = por relação · Gerenciar = base toda +
+ * importar/mesclar). Owner/admin/supervisor = base via role. Espelha as demais.
+ */
+export async function setMemberContactsAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ contacts_access: level })
     .eq("tenant_id", session.user.tenantId)
     .eq("user_id", userId)
 

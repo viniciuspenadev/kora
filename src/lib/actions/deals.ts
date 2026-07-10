@@ -3,9 +3,11 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
-import { getViewerScope, canViewConversation } from "@/lib/visibility"
+import { getViewerScope, canViewConversation, canOpenDeals, seesAllDeals, applyDealScope } from "@/lib/visibility"
 import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, openDealOf, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
 import { computeDealValue } from "@/lib/crm/value"
+import { formatQuantityWithUnit } from "@/lib/crm/units"
+import { applyDealStock } from "@/lib/actions/inventory"
 import { resolveDealPricing } from "@/lib/crm/pricing"
 
 // ═══════════════════════════════════════════════════════════════
@@ -222,7 +224,8 @@ export async function createDealFromBoard(input: {
 }): Promise<{ id: string } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
+  const scope = await getViewerScope()
+  if (!canOpenDeals(scope)) return { error: "Sem permissão" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
 
@@ -289,28 +292,33 @@ export interface DealsPageData {
  * todos os negócios do tenant (filtro/busca client-side). Gated por módulo `crm`.
  */
 export async function getDealsPage(opts?: { from?: string; to?: string }): Promise<DealsPageData | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  let scope
+  try { scope = await getViewerScope() } catch { return { error: "Não autenticado" } }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
-  if (!["owner", "admin"].includes(session.user.role)) return { error: "Apenas owner/admin acessam a gestão de negócios" }
-  const t = session.user.tenantId
+  if (!canOpenDeals(scope)) return { error: "Sem acesso à gestão de negócios" }
+  const t = scope.tenantId
 
   const to   = opts?.to   ?? new Date().toISOString().slice(0, 10)
   const from = opts?.from ?? new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
 
-  const [{ data }, { data: pipes }, { data: members }] = await Promise.all([
+  // Alcance: manager (admin/view_all/Gerenciar) vê tudo; atendente Ver só os DELE.
+  const dealsQ = applyDealScope(
     supabaseAdmin.from("tenant_deals").select(`
-      id, name, contact_id, pipeline_id, status, estimated_value, won_at, lost_at, stage_entered_at, updated_at, created_by,
+      id, name, contact_id, pipeline_id, status, estimated_value, won_at, lost_at, stage_entered_at, updated_at, created_by, assigned_to,
       chat_contacts ( push_name, custom_name, profile_pic_url ),
       deal_pipelines ( name ),
       deal_pipeline_stages ( id, name, color, is_won, is_lost )
     `).eq("tenant_id", t).order("updated_at", { ascending: false }).limit(2000),
+    scope,
+  )
+  const [{ data }, { data: pipes }, { data: members }] = await Promise.all([
+    dealsQ,
     supabaseAdmin.from("deal_pipelines").select("id, name").eq("tenant_id", t).eq("active", true).order("position"),
     supabaseAdmin.from("tenant_users").select("user_id, profiles!tenant_users_user_id_fkey ( full_name )").eq("tenant_id", t).eq("active", true),
   ])
 
   const rows  = (data ?? []) as Record<string, unknown>[]
-  const byIds = Array.from(new Set(rows.map((r) => r.created_by as string | null).filter(Boolean))) as string[]
+  const byIds = Array.from(new Set(rows.map((r) => r.assigned_to as string | null).filter(Boolean))) as string[]
   const nameMap = new Map<string, string>()
   if (byIds.length) {
     const { data: profs } = await supabaseAdmin.from("profiles").select("id, full_name").in("id", byIds)
@@ -334,7 +342,7 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
       lost_at:          (r.lost_at as string | null) ?? null,
       stage_entered_at: (r.stage_entered_at as string | null) ?? null,
       updated_at:       r.updated_at as string,
-      responsible:      r.created_by ? (nameMap.get(r.created_by as string) ?? null) : null,
+      responsible:      r.assigned_to ? (nameMap.get(r.assigned_to as string) ?? null) : null,
       next_task:        null,
       conversation_id:  null,
       contact_pic:      c?.profile_pic_url ?? null,
@@ -511,6 +519,8 @@ export interface DealItemView {
   billing:     "one_time" | "monthly" | "yearly"
   unit_price:  number
   quantity:    number
+  /** Unidade snapshotada (un·kg·L…) — molda a exibição/edição da quantidade. */
+  unit:        string
   discount:    number
   term_months: number | null
   category:    string | null
@@ -533,7 +543,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   // Select ÚNICO: termos (N2) e tabela (T2) fundidos — as queries "graciosas"
   // separadas eram transição pré-migration; migrations aplicadas = round-trips a menos.
   const { data: d } = await supabaseAdmin.from("tenant_deals").select(`
-    id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, canceled_at, stage_entered_at, created_at, created_by, contact_id, pipeline_id,
+    id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, canceled_at, stage_entered_at, created_at, created_by, assigned_to, contact_id, pipeline_id,
     payment_method, installments, proposal_expires_at, price_table_id, custom_fields,
     chat_contacts ( id, push_name, custom_name, profile_pic_url, phone_number, lifecycle_stage, source ),
     deal_pipelines ( name ),
@@ -541,7 +551,9 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   `).eq("id", dealId).eq("tenant_id", t).maybeSingle()
   if (!d) return { error: "Negócio não encontrado" }
   const deal = d as Record<string, unknown>
-  if (!(await canAccessDeal(t, deal.contact_id as string | null))) return { error: "Sem acesso a este negócio" }
+  const scope = await getViewerScope()
+  const mineDeal = (deal.assigned_to as string | null) === scope.userId
+  if (!seesAllDeals(scope) && !mineDeal && !(await canAccessDeal(t, deal.contact_id as string | null))) return { error: "Sem acesso a este negócio" }
   const contactId = deal.contact_id as string | null
 
   const [{ data: evs }, { data: convs }, { data: pipes }, { data: others }, { data: tasks }, { data: itemRows }, { data: ptAll }] = await Promise.all([
@@ -556,7 +568,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       ? supabaseAdmin.from("tenant_deals").select("id, name, status, estimated_value, won_at, lost_at").eq("tenant_id", t).eq("contact_id", contactId).neq("id", dealId).order("created_at", { ascending: false }).limit(20)
       : Promise.resolve({ data: [] as unknown[] }),
     supabaseAdmin.from("tenant_tasks").select("id, title, due_at").eq("tenant_id", t).eq("deal_id", dealId).eq("status", "pending").order("due_at", { ascending: true, nullsFirst: false }).limit(1),
-    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, discount, term_months, category, list_price, max_discount_pct, cost, price_table_label").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
+    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, unit, discount, term_months, category, list_price, max_discount_pct, cost, price_table_label").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
     // Tabelas do tenant (T2) pro switcher.
     supabaseAdmin.from("price_tables").select("id, name, is_default, active").eq("tenant_id", t).order("is_default", { ascending: false }).order("name"),
   ])
@@ -643,6 +655,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       id: i.id as string, name: i.name as string,
       type: i.type as DealItemView["type"], billing: i.billing as DealItemView["billing"],
       unit_price: Number(i.unit_price ?? 0), quantity: Number(i.quantity ?? 1),
+      unit: (i.unit as string | null) ?? "un",
       discount: Number(i.discount ?? 0), term_months: (i.term_months as number | null) ?? null,
       category: (i.category as string | null) ?? null,
       list_price: i.list_price != null ? Number(i.list_price) : null,
@@ -805,14 +818,14 @@ async function recomputeDealValueFromItems(t: string, dealId: string, by: string
  *  NUNCA envia `cost` — custo é informação interna (só gestor, no catálogo).
  *  T2: com `dealId`, os preços/tetos vêm da TABELA do negócio (Atacado…); sem
  *  linha na tabela, o item cai no preço da padrão (cache do catálogo). */
-export interface CatalogPickerItem { id: string; name: string; sku: string | null; category: string | null; price: number; billing: "one_time" | "monthly" | "yearly"; type: "product" | "service"; max_discount_pct: number; image_path: string | null; table_label: string | null }
+export interface CatalogPickerItem { id: string; name: string; sku: string | null; category: string | null; price: number; billing: "one_time" | "monthly" | "yearly"; type: "product" | "service"; max_discount_pct: number; image_path: string | null; table_label: string | null; unit: string }
 export async function getCatalogForPicker(dealId?: string): Promise<CatalogPickerItem[] | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return []
   try { await requireModule("crm") } catch { return [] }
   const t = session.user.tenantId
   const { data } = await supabaseAdmin.from("catalog_items")
-    .select("id, name, sku, category, price, billing, type, max_discount_pct, image_path")
+    .select("id, name, sku, category, price, billing, type, max_discount_pct, image_path, unit")
     .eq("tenant_id", t).eq("active", true).order("name")
 
   // Tabela do negócio (query separada e graciosa — pré-migration cai na padrão).
@@ -835,6 +848,7 @@ export async function getCatalogForPicker(dealId?: string): Promise<CatalogPicke
       max_discount_pct: row ? row.max_discount_pct : Number(r.max_discount_pct ?? 0),
       image_path: (r.image_path as string | null) ?? null,
       table_label: row ? nonDefault!.table.name : null,
+      unit: (r.unit as string | null) ?? "un",
     }
   })
 }
@@ -868,10 +882,10 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
 
   // Item do catálogo (do tenant, ativo) → SNAPSHOT congelado na linha.
   const { data: cat } = await supabaseAdmin.from("catalog_items")
-    .select("id, name, type, billing, price, category, cost, max_discount_pct")
+    .select("id, name, type, billing, price, category, cost, max_discount_pct, unit")
     .eq("id", input.catalogItemId).eq("tenant_id", gate.t).eq("active", true).maybeSingle()
   if (!cat) return { error: "Item do catálogo não encontrado" }
-  const ci = cat as { id: string; name: string; type: string; billing: string; price: number; category: string | null; cost: number | null; max_discount_pct: number | null }
+  const ci = cat as { id: string; name: string; type: string; billing: string; price: number; category: string | null; cost: number | null; max_discount_pct: number | null; unit: string | null }
 
   // T2: precificação pela TABELA do negócio (query separada e graciosa; padrão =
   // cache do catálogo). Tabela sem grade → bloqueia (fail-closed).
@@ -893,6 +907,7 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
     tenant_id: gate.t, deal_id: dealId, catalog_item_id: ci.id,
     name: ci.name, type: ci.type, billing: ci.billing,
     unit_price: unitPrice ?? listPrice, quantity: qty, discount,
+    unit: ci.unit ?? "un",
     term_months: ci.billing === "one_time" ? null : term,
     list_price: listPrice, category: ci.category, cost: lineCost,
     max_discount_pct: maxPct,
@@ -925,9 +940,9 @@ export async function updateDealItem(dealId: string, itemId: string, input: { qu
   if (unitPrice != null && (!Number.isFinite(unitPrice) || unitPrice < 0)) return { error: "Preço inválido" }
 
   const { data: it } = await supabaseAdmin.from("tenant_deal_items")
-    .select("id, name, billing, unit_price, list_price, max_discount_pct").eq("id", itemId).eq("tenant_id", gate.t).eq("deal_id", dealId).maybeSingle()
+    .select("id, name, billing, unit_price, list_price, max_discount_pct, quantity, unit").eq("id", itemId).eq("tenant_id", gate.t).eq("deal_id", dealId).maybeSingle()
   if (!it) return { error: "Item não encontrado" }
-  const item = it as { id: string; name: string; billing: string; unit_price: number; list_price: number | null; max_discount_pct: number | null }
+  const item = it as { id: string; name: string; billing: string; unit_price: number; list_price: number | null; max_discount_pct: number | null; quantity: number; unit: string | null }
 
   // Piso pelo SNAPSHOT da linha (teto e tabela do dia em que o item entrou).
   const listPrice = Number(item.list_price ?? item.unit_price ?? 0)
@@ -943,7 +958,18 @@ export async function updateDealItem(dealId: string, itemId: string, input: { qu
     .eq("id", itemId).eq("tenant_id", gate.t)
   if (error) return { error: error.message }
 
-  await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item ajustado: ${qty !== 1 ? `${qty}× ` : ""}${item.name}`, gate.oldValue)
+  // Auditoria explícita da mudança de PESO/QUANTIDADE (o que o dono pediu: "de tanto pra tanto").
+  const oldQty = Number(item.quantity ?? 0)
+  if (qty !== oldQty) {
+    const u = item.unit ?? "un"
+    const isMass = u === "kg" || u === "g" || u === "t"
+    await recordDealEvent({
+      tenantId: gate.t, dealId, by: gate.userId, type: "field_changed", postCard: false,
+      change: { label: isMass ? "Peso" : "Quantidade", from: formatQuantityWithUnit(oldQty, u), to: formatQuantityWithUnit(qty, u) },
+    })
+  }
+
+  await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item ajustado: ${item.name}`, gate.oldValue)
   return { ok: true }
 }
 
@@ -1025,6 +1051,8 @@ export async function moveDealById(dealId: string, stageId: string, opts?: { not
   })
   // Lifecycle do contato: ganho→Cliente · aberto/trabalho→Lead · perdido→não-mexe (nunca rebaixa). Doc §5.
   if (d.contact_id) await syncContactLifecycleFromDeal(t, d.contact_id, st)
+  // Módulo Estoque escuta a transição: ganho→baixa · perdido/aberto→estorno (idempotente, nunca bloqueia).
+  try { await applyDealStock(t, dealId, status, session.user.id) } catch (e) { console.error("[applyDealStock move]", e) }
   return { ok: true }
 }
 
@@ -1046,6 +1074,7 @@ export async function reopenDealById(dealId: string): Promise<{ ok: true } | { e
   const now = new Date().toISOString()
   await supabaseAdmin.from("tenant_deals").update({ status: "open", won_at: null, lost_at: null, lost_reason: null, updated_at: now }).eq("id", dealId).eq("tenant_id", t)
   await supabaseAdmin.from("tenant_deal_events").insert({ tenant_id: t, deal_id: dealId, type: "reopened", to_stage: (deal as { stage_id: string | null }).stage_id, by: session.user.id })
+  try { await applyDealStock(t, dealId, "open", session.user.id) } catch (e) { console.error("[applyDealStock reopen]", e) }
   return { ok: true }
 }
 
@@ -1390,6 +1419,8 @@ export async function cancelDeal(conversationId: string, dealId: string, reason?
     tenantId, dealId, type: "canceled",
     conversationId, fromStageId: d.stage_id, by: session.user.id, reason: reason ?? null,
   })
+  // Estorno de estoque (se o negócio tinha baixado). Idempotente, nunca bloqueia.
+  try { await applyDealStock(tenantId, dealId, "canceled", session.user.id) } catch (e) { console.error("[applyDealStock cancel]", e) }
   return { ok: true }
 }
 

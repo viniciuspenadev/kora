@@ -24,6 +24,13 @@ import { supabaseAdmin } from "@/lib/supabase"
  * tem (maioria) fica idêntico ao comportamento clássico.
  */
 
+/** Escada genérica de capability por-atendente (Ver·Gerenciar exibidos; `edit` reservado
+ *  p/ módulo de recurso compartilhado que separe operar/configurar — ex. Financeiro futuro). */
+export type AccessLevel = "none" | "view" | "edit" | "manage"
+/** @deprecated alias — use AccessLevel. Mantido pros imports do Estoque. */
+export type InventoryAccessLevel = AccessLevel
+const INV_ORDER: Record<AccessLevel, number> = { none: 0, view: 1, edit: 2, manage: 3 }
+
 export interface ViewerScope {
   tenantId:     string
   userId:       string
@@ -33,6 +40,81 @@ export interface ViewerScope {
   departmentId: string | null    // departamento do atendente — habilita a fila do setor
   instanceIds:  string[] | null  // números que atende (Fase D); null = todos (sem restrição)
   supervisesDepartments: string[]  // supervisão ESCOPADA: vê tudo desses setores (qualquer dono); [] = nenhum
+  inventoryAccess: AccessLevel  // Estoque: none|view|manage (owner/admin = manage via role)
+  dealsAccess:     AccessLevel  // Negócios: none|view|manage (idem)
+  contactsAccess:  AccessLevel  // Contatos: none|view|manage (view=por relação; manage=base toda)
+}
+
+/** Normaliza o valor cru (aceita o boolean legado durante a transição). */
+export function normInventoryLevel(v: unknown): InventoryAccessLevel {
+  if (v === true || v === "manage") return "manage"
+  if (v === "edit") return "edit"
+  if (v === "view") return "view"
+  return "none"
+}
+/** VER o estoque (leitura: saldo, extrato). */
+export function canViewInventory(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.inventoryAccess] >= INV_ORDER.view
+}
+/** EDITAR o estoque (lançar entrada / ajustar / estornar). */
+export function canEditInventory(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.inventoryAccess] >= INV_ORDER.edit
+}
+/** GERENCIAR o estoque (configurar: mínimos, ligar/desligar controle). */
+export function canManageInventory(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.inventoryAccess] >= INV_ORDER.manage
+}
+
+/** Alias genérico do normalizador (aceita boolean legado + strings da escada). */
+export const normAccessLevel = normInventoryLevel
+
+// ── Negócios (capability por-atendente; escada Ver/Gerenciar) ──────────────────
+/** Vê TODOS os negócios (não só os dele)? admin, supervisor geral (view_all) ou Gerenciar. */
+export function seesAllDeals(scope: ViewerScope): boolean {
+  return scope.isAdmin || scope.viewAll || INV_ORDER[scope.dealsAccess] >= INV_ORDER.manage
+}
+/** Abre o board de Negócios (Ver = os dele; ou vê todos). */
+export function canOpenDeals(scope: ViewerScope): boolean {
+  return scope.isAdmin || scope.viewAll || INV_ORDER[scope.dealsAccess] >= INV_ORDER.view
+}
+/** Configura Negócios (funis/etapas/motivos) + vê painel/faturamento. */
+export function canManageDeals(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.dealsAccess] >= INV_ORDER.manage
+}
+/** Alcance de Negócios num query builder: manager vê tudo; senão só assigned_to = ele. */
+export function applyDealScope<T>(query: T, scope: ViewerScope): T {
+  if (seesAllDeals(scope)) return query
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (query as any).eq("assigned_to", scope.userId) as T
+}
+
+// ── Contatos (capability por-atendente; escada Ver/Gerenciar por RELAÇÃO) ──────
+/** Vê a base INTEIRA de contatos? admin, supervisor geral ou Gerenciar. Senão = só os dele. */
+export function seesAllContacts(scope: ViewerScope): boolean {
+  return scope.isAdmin || scope.viewAll || INV_ORDER[scope.contactsAccess] >= INV_ORDER.manage
+}
+/** Abre /contatos? (Ver = os dele por relação; ou a base toda.) */
+export function canOpenContacts(scope: ViewerScope): boolean {
+  return scope.isAdmin || scope.viewAll || INV_ORDER[scope.contactsAccess] >= INV_ORDER.view
+}
+/** Ações de base: importar em massa · mesclar (dedup) · mudar identidade. = dono da base. */
+export function canManageContacts(scope: ViewerScope): boolean {
+  return seesAllContacts(scope)
+}
+/** Contatos que o atendente ALCANÇA por relação: conversas dele (dono/participante) +
+ *  negócios dele. Usado no escopo de /contatos quando ele NÃO vê a base inteira. */
+export async function reachableContactIds(scope: ViewerScope): Promise<string[]> {
+  const [{ data: convs }, { data: deals }] = await Promise.all([
+    supabaseAdmin.from("chat_conversations").select("contact_id")
+      .eq("tenant_id", scope.tenantId)
+      .or(`assigned_to.eq.${scope.userId},participants.cs.{${scope.userId}}`),
+    supabaseAdmin.from("tenant_deals").select("contact_id")
+      .eq("tenant_id", scope.tenantId).eq("assigned_to", scope.userId),
+  ])
+  const ids = new Set<string>()
+  for (const c of (convs ?? []) as { contact_id: string | null }[]) if (c.contact_id) ids.add(c.contact_id)
+  for (const d of (deals ?? []) as { contact_id: string | null }[]) if (d.contact_id) ids.add(d.contact_id)
+  return [...ids]
 }
 
 export interface ConvVisibilityFields {
@@ -57,11 +139,14 @@ export async function getViewerScope(): Promise<ViewerScope> {
   let departmentId: string | null = null
   let instanceIds: string[] | null = null   // null = todos os números (sem restrição)
   let supervisesDepartments: string[] = []
+  let inventoryAccess: AccessLevel = "none"   // agente: default sem acesso (owner/admin = manage via role)
+  let dealsAccess: AccessLevel = "none"
+  let contactsAccess: AccessLevel = "none"
 
   if (!isAdmin) {
     const { data: tu } = await supabaseAdmin
       .from("tenant_users")
-      .select("view_all, see_pool, department_id, instance_ids, supervises_departments")
+      .select("view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access")
       .eq("tenant_id", session.user.tenantId)
       .eq("user_id", session.user.id)
       .maybeSingle()
@@ -72,9 +157,12 @@ export async function getViewerScope(): Promise<ViewerScope> {
     instanceIds = Array.isArray(arr) && arr.length > 0 ? arr : null   // {} / null → todos
     const sup = tu?.supervises_departments as string[] | null | undefined
     supervisesDepartments = Array.isArray(sup) ? sup : []
+    inventoryAccess = normInventoryLevel(tu?.inventory_access)
+    dealsAccess = normAccessLevel(tu?.deals_access)
+    contactsAccess = normAccessLevel(tu?.contacts_access)
   }
 
-  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments }
+  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments, inventoryAccess, dealsAccess, contactsAccess }
 }
 
 /**

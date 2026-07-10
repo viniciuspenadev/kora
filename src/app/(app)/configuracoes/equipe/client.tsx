@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import {
   Plus, UserPlus, Users, Pencil, AlertCircle, CheckCircle2,
   Copy, Check, X, Loader2, Building2, MessageCircle, Mail,
@@ -14,7 +15,6 @@ import {
   cancelInvite, sendInviteViaWhatsApp, sendInviteViaEmail,
   type TeamMember, type TeamInvite, type Department, type TenantRole,
 } from "@/lib/actions/team"
-import { MemberSheet } from "./member-sheet"
 import { InviteSheet } from "./invite-sheet"
 import { DepartmentDialog } from "./department-dialog"
 
@@ -32,6 +32,7 @@ interface Props {
   numbers:         { id: string; label: string; provider: string | null }[]
   currentUserId:   string
   currentUserRole: string
+  hasInventory?:   boolean
   userLimit:       UserLimit
 }
 
@@ -48,7 +49,7 @@ const ROLE_BADGE: Record<TenantRole, string> = {
 }
 
 export function EquipeClient({ members, invites, departments, numbers, currentUserId, currentUserRole, userLimit }: Props) {
-  const [editing, setEditing]       = useState<TeamMember | null>(null)
+  const router = useRouter()
   const [inviting, setInviting]     = useState(false)
   const [editingDept, setEditingDept] = useState<Department | null>(null)
   const [creatingDept, setCreatingDept] = useState(false)
@@ -151,7 +152,7 @@ export function EquipeClient({ members, invites, departments, numbers, currentUs
       cell: (m) => (
         <button
           type="button"
-          onClick={() => setEditing(m)}
+          onClick={() => router.push(`/configuracoes/equipe/${m.user_id}`)}
           aria-label="Editar atendente"
           className="size-7 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-900 hover:bg-slate-100 transition-colors"
         >
@@ -223,7 +224,7 @@ export function EquipeClient({ members, invites, departments, numbers, currentUs
               <button
                 key={m.user_id}
                 type="button"
-                onClick={() => setEditing(m)}
+                onClick={() => router.push(`/configuracoes/equipe/${m.user_id}`)}
                 className="w-full flex items-center gap-3 px-5 py-3 hover:bg-slate-50 text-left transition-colors"
               >
                 <div className="size-8 rounded-full bg-slate-100 flex items-center justify-center shrink-0 opacity-50">
@@ -298,17 +299,6 @@ export function EquipeClient({ members, invites, departments, numbers, currentUs
         )}
       </SectionCard>
 
-      {editing && (
-        <MemberSheet
-          member={editing}
-          departments={departments}
-          numbers={numbers}
-          currentUserId={currentUserId}
-          currentUserRole={currentUserRole}
-          onClose={() => setEditing(null)}
-          onFeedback={flash}
-        />
-      )}
 
       {inviting && (
         <InviteSheet

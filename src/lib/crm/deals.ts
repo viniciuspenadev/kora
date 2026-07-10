@@ -230,6 +230,7 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
       lost_at:             args.isLost ? now : null,
       stage_entered_at:    now,
       created_by:          args.by,
+      assigned_to:         args.by,   // dono = quem abre (owner: 2026-07-10); reatribuível
     })
     .select("id")
     .single()

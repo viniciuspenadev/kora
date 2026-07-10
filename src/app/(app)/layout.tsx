@@ -11,6 +11,7 @@ import { OnboardingBanner } from "@/components/app/onboarding-banner"
 import { UpdateBanner } from "@/components/app/update-banner"
 import { getSetupState } from "@/lib/onboarding"
 import { getEnabledModuleSlugs } from "@/lib/modules"
+import { getViewerScope } from "@/lib/visibility"
 import { getSelfPause } from "@/lib/actions/auto-assign"
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -23,7 +24,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const isManager = ["owner", "admin"].includes(session.user.role)
   const showOnboarding = isManager
   // Tudo em UM round-trip paralelo (tenant validado logo abaixo) — latência de navegação.
-  const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes] = await Promise.all([
+  const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes, scope] = await Promise.all([
     supabaseAdmin
       .from("tenants")
       .select("name, plan, active")
@@ -55,6 +56,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           .eq("active", true)
           .order("position")
       : Promise.resolve({ data: null }),
+    getViewerScope(),
   ])
   if (!tenant) redirect("/auth/signin")
   if (!tenant.active) redirect("/auth/signin")
@@ -72,6 +74,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     tenantName:     tenant.name,
     userRole:       session.user.role,
     enabledModules: Array.from(enabledModules),
+    capabilities: [
+      ...(scope.inventoryAccess !== "none" ? ["inventory_access"] : []),
+      ...(scope.dealsAccess !== "none" ? ["deals_access"] : []),
+      ...(scope.dealsAccess === "manage" ? ["deals_manage"] : []),
+      ...(scope.contactsAccess !== "none" ? ["contacts_access"] : []),
+    ],
     selfPause,
     hasOfficial,
     pipelines,
