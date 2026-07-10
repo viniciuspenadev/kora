@@ -43,6 +43,7 @@ export interface ViewerScope {
   inventoryAccess: AccessLevel  // Estoque: none|view|manage (owner/admin = manage via role)
   dealsAccess:     AccessLevel  // Negócios: none|view|manage (idem)
   contactsAccess:  AccessLevel  // Contatos: none|view|manage (view=por relação; manage=base toda)
+  marketingAccess: AccessLevel  // Marketing: none|view|manage (view=ver campanhas; manage=criar/disparar)
 }
 
 /** Normaliza o valor cru (aceita o boolean legado durante a transição). */
@@ -104,17 +105,31 @@ export function canManageContacts(scope: ViewerScope): boolean {
 /** Contatos que o atendente ALCANÇA por relação: conversas dele (dono/participante) +
  *  negócios dele. Usado no escopo de /contatos quando ele NÃO vê a base inteira. */
 export async function reachableContactIds(scope: ViewerScope): Promise<string[]> {
-  const [{ data: convs }, { data: deals }] = await Promise.all([
+  const [{ data: convs }, { data: deals }, { data: owned }] = await Promise.all([
     supabaseAdmin.from("chat_conversations").select("contact_id")
       .eq("tenant_id", scope.tenantId)
       .or(`assigned_to.eq.${scope.userId},participants.cs.{${scope.userId}}`),
     supabaseAdmin.from("tenant_deals").select("contact_id")
       .eq("tenant_id", scope.tenantId).eq("assigned_to", scope.userId),
+    // Carteira (F1): contatos de que ele é o DONO (owner_id) — vínculo persistente.
+    supabaseAdmin.from("chat_contacts").select("id")
+      .eq("tenant_id", scope.tenantId).eq("owner_id", scope.userId),
   ])
   const ids = new Set<string>()
   for (const c of (convs ?? []) as { contact_id: string | null }[]) if (c.contact_id) ids.add(c.contact_id)
   for (const d of (deals ?? []) as { contact_id: string | null }[]) if (d.contact_id) ids.add(d.contact_id)
+  for (const o of (owned ?? []) as { id: string }[]) ids.add(o.id)
   return [...ids]
+}
+
+// ── Marketing (capability por-atendente; recurso compartilhado de alto risco) ──
+/** Abre o Marketing (ver campanhas + resultados). = Ver. Domínio próprio (não herda view_all). */
+export function canOpenMarketing(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.marketingAccess] >= INV_ORDER.view
+}
+/** Cria/dispara campanha + configura listas. = Gerenciar (o verbo perigoso: enviar em massa). */
+export function canManageMarketing(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.marketingAccess] >= INV_ORDER.manage
 }
 
 export interface ConvVisibilityFields {
@@ -142,11 +157,12 @@ export async function getViewerScope(): Promise<ViewerScope> {
   let inventoryAccess: AccessLevel = "none"   // agente: default sem acesso (owner/admin = manage via role)
   let dealsAccess: AccessLevel = "none"
   let contactsAccess: AccessLevel = "none"
+  let marketingAccess: AccessLevel = "none"
 
   if (!isAdmin) {
     const { data: tu } = await supabaseAdmin
       .from("tenant_users")
-      .select("view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access")
+      .select("view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access")
       .eq("tenant_id", session.user.tenantId)
       .eq("user_id", session.user.id)
       .maybeSingle()
@@ -160,9 +176,10 @@ export async function getViewerScope(): Promise<ViewerScope> {
     inventoryAccess = normInventoryLevel(tu?.inventory_access)
     dealsAccess = normAccessLevel(tu?.deals_access)
     contactsAccess = normAccessLevel(tu?.contacts_access)
+    marketingAccess = normAccessLevel(tu?.marketing_access)
   }
 
-  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments, inventoryAccess, dealsAccess, contactsAccess }
+  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments, inventoryAccess, dealsAccess, contactsAccess, marketingAccess }
 }
 
 /**

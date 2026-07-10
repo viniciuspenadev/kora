@@ -88,23 +88,24 @@ const NAV: NavItem[] = [
   // (não fica sob "Negócios" que é adminOnly — senão o atendente não veria).
   { href: "/estoque", label: "Estoque", icon: <Boxes className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "inventory", capability: "inventory_access" },
   {
-    key:       "marketing",
-    label:     "Marketing",
-    icon:      <Megaphone className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
-    module:    "broadcasts",
-    adminOnly: true,
+    key:        "marketing",
+    label:      "Marketing",
+    icon:       <Megaphone className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    module:     "broadcasts",
+    capability: "marketing_access",   // owner/admin OU atendente com Ver+ de Marketing
     children: [
       { href: "/campanhas",            label: "Campanhas", icon: <Send       className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/listas", label: "Listas",    icon: <ListChecks className={subIcon} strokeWidth={1.75} /> },
+      { href: "/configuracoes/listas", label: "Listas",    icon: <ListChecks className={subIcon} strokeWidth={1.75} />, capability: "marketing_manage" },
     ],
   },
   { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "agenda"  },
-  { href: "/relatorios", label: "Relatórios", icon: <BarChart3    className="w-5 h-5 shrink-0" strokeWidth={1.75} /> },
-  { href: "/automacao/ia", label: "Kora IA",  icon: <Sparkles     className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "ai_atendente" },
+  { href: "/relatorios", label: "Relatórios", icon: <BarChart3    className="w-5 h-5 shrink-0" strokeWidth={1.75} />, adminOnly: true },
+  { href: "/automacao/ia", label: "Kora IA",  icon: <Sparkles     className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "ai_atendente", adminOnly: true },
   {
     key:   "automacao",
     label: "Automação",
     icon:  <Bot className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    adminOnly: true,   // toda a automação pesada é só-admin (páginas gateiam owner/admin). Respostas rápidas sai daqui na P6.
     children: [
       { href: "/studio",                   label: "Kora Studio",           icon: <Blocks       className={subIcon} strokeWidth={1.75} />, module: "ai_studio"       },
       { href: "/automacao/mensagens",      label: "Mensagens automáticas", icon: <Bell         className={subIcon} strokeWidth={1.75} />, module: "welcome_message"  },

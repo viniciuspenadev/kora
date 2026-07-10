@@ -17,7 +17,7 @@ import { SourceLogo } from "@/components/chat/source-logo"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { MergeContactButton } from "@/components/chat/merge-contact-dialog"
 import { updateContactInfo } from "@/lib/actions/chat"
-import { updateContactIdentity } from "@/lib/actions/contacts"
+import { updateContactIdentity, setContactOwner } from "@/lib/actions/contacts"
 import { setContactCustomFields, type ContactFieldDef } from "@/lib/actions/custom-fields"
 import type { ContactRecord, ContactRecordContact, PanelDeal, ActivityItem } from "@/lib/actions/deals"
 import type { ContactChannelRow } from "@/lib/contacts/channels"
@@ -42,7 +42,7 @@ const REL = {
   prospect:   { label: "Prospect",      cls: "bg-slate-100 text-slate-500 border-slate-200" },
 } as const
 
-export function ClienteRecord({ record, appointments, activity, canEditIdentity, customFields, channels, priceTables = [] }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean; customFields: ContactFieldDef[]; channels: ContactChannelRow[]; priceTables?: { id: string; name: string; is_default: boolean }[] }) {
+export function ClienteRecord({ record, appointments, activity, canEditIdentity, customFields, channels, priceTables = [], agents = [], canSetOwner = false }: { record: ContactRecord; appointments: Appt[] | null; activity: ActivityItem[]; canEditIdentity: boolean; customFields: ContactFieldDef[]; channels: ContactChannelRow[]; priceTables?: { id: string; name: string; is_default: boolean }[]; agents?: { id: string; name: string }[]; canSetOwner?: boolean }) {
   const { contact, stats, deals, conversations } = record
   const name    = contact.custom_name?.trim() || contact.push_name?.trim() || fmtPhone(contact.phone_number) || "Sem nome"
   const initial = (name[0] ?? "?").toUpperCase()
@@ -51,6 +51,18 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
   const router = useRouter()
   const [showNewDeal, setShowNewDeal] = useState(false)
   const canNewDeal = record.crmEnabled && record.pipelines.length > 0 && !!conversations[0]
+
+  // Dono da conta (carteira, F1) — reatribuível por Gerenciar-contatos/admin.
+  const [ownerId, setOwnerId] = useState(record.owner?.id ?? "")
+  const [ownerPending, startOwner] = useTransition()
+  function saveOwner(v: string) {
+    setOwnerId(v)
+    startOwner(async () => {
+      const r = await setContactOwner(contact.id, v || null)
+      if (r.error) setOwnerId(record.owner?.id ?? "")
+      else router.refresh()
+    })
+  }
 
   return (
     <div className="min-h-full bg-canvas">
@@ -68,6 +80,20 @@ export function ClienteRecord({ record, appointments, activity, canEditIdentity,
             <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">{name}</h1>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border ${rel.cls}`}>{rel.label}</span>
+              {/* Responsável (dono da conta / carteira — F1) */}
+              {record.crmEnabled && (canSetOwner ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Resp.</span>
+                  <SimpleSelect value={ownerId} onChange={saveOwner} className="h-7 text-xs"
+                    options={[{ value: "", label: "Sem dono" }, ...agents.map((a) => ({ value: a.id, label: a.name }))]} />
+                  {ownerPending && <Loader2 className="size-3 animate-spin text-slate-400" />}
+                </span>
+              ) : record.owner ? (
+                <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Resp.</span>
+                  <span className="font-semibold text-slate-700">{record.owner.name}</span>
+                </span>
+              ) : null)}
               <span className="text-xs text-slate-400 inline-flex items-center gap-1"><Phone className="size-3" />{fmtPhone(contact.phone_number)}</span>
             </div>
           </div>

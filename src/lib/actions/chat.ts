@@ -7,7 +7,7 @@ import { getProvider, type WhatsAppProvider } from "@/lib/providers"
 import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
-import { getViewerScope, canViewConversation } from "@/lib/visibility"
+import { getViewerScope, canViewConversation, seesAllContacts, reachableContactIds } from "@/lib/visibility"
 import { isWindowOpen } from "@/lib/channels/policy"
 import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
@@ -1377,23 +1377,28 @@ export async function setConversationPinned(conversationId: string, value: boole
 // normalizePhone unificado em phone-utils.ts → normalizeWhatsAppPhone (internacional, libphonenumber).
 
 export async function searchContacts(query: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const scope = await getViewerScope()
+  if (!scope.tenantId) throw new Error("Não autenticado")
 
   // Rate-limit: 30/min/sessão. Mitiga enumeração de contatos via PII.
-  const rl = rateLimit(`search:contacts:${session.user.id}`, 30, 60_000)
+  const rl = rateLimit(`search:contacts:${scope.userId}`, 30, 60_000)
   if (!rl.ok) return []
 
-  const tenantId = session.user.tenantId
+  const tenantId = scope.tenantId
   const q        = query.trim()
   if (q.length < 2) return []
 
-  const { data: contacts } = await supabaseAdmin
+  // Escopo de Contatos (MESMO motor de /contatos, sem paralelo): quem não vê a base
+  // inteira só acha os contatos DELE (por relação). Fecha o "puxar contato alheio"
+  // no novo negócio E na nova conversa — as duas telas passam por aqui.
+  const reachable = seesAllContacts(scope) ? null : await reachableContactIds(scope)
+  let cq = supabaseAdmin
     .from("chat_contacts")
     .select("id, phone_number, push_name, custom_name, email, company")
     .eq("tenant_id", tenantId)
     .or(`custom_name.ilike.%${q}%,push_name.ilike.%${q}%,phone_number.ilike.%${q}%,email.ilike.%${q}%,company.ilike.%${q}%`)
-    .limit(8)
+  if (reachable) cq = cq.in("id", reachable.length ? reachable : ["00000000-0000-0000-0000-000000000000"])
+  const { data: contacts } = await cq.limit(8)
 
   const list = contacts ?? []
   if (list.length === 0) return []

@@ -66,7 +66,7 @@ export async function getInventory(): Promise<InventoryItem[]> {
 
 export async function getStockMovements(itemId: string): Promise<StockMovement[]> {
   const scope = await getViewerScope()
-  if (!scope.tenantId) return []
+  if (!scope.tenantId || !canViewInventory(scope) || !(await hasModule(scope.tenantId, "inventory"))) return []
   const { data } = await supabaseAdmin.from("tenant_stock_movements")
     .select("id, kind, qty, balance, note, deal_id, by, at")
     .eq("tenant_id", scope.tenantId).eq("item_id", itemId)

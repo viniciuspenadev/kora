@@ -79,6 +79,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       ...(scope.dealsAccess !== "none" ? ["deals_access"] : []),
       ...(scope.dealsAccess === "manage" ? ["deals_manage"] : []),
       ...(scope.contactsAccess !== "none" ? ["contacts_access"] : []),
+      ...(scope.marketingAccess !== "none" ? ["marketing_access"] : []),
+      ...(scope.marketingAccess === "manage" ? ["marketing_manage"] : []),
     ],
     selfPause,
     hasOfficial,

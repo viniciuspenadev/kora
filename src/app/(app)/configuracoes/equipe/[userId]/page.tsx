@@ -12,13 +12,14 @@ export default async function MemberPage({ params }: { params: Promise<{ userId:
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
   const { userId } = await params
 
-  const [member, departments, numbers, hasInventory, hasCrm, hasContacts] = await Promise.all([
+  const [member, departments, numbers, hasInventory, hasCrm, hasContacts, hasMarketing] = await Promise.all([
     getTeamMember(userId),
     listDepartments(),
     listTeamNumbers(),
     hasModule(session.user.tenantId, "inventory"),
     hasModule(session.user.tenantId, "crm"),
     hasModule(session.user.tenantId, "contacts"),
+    hasModule(session.user.tenantId, "broadcasts"),
   ])
   if (!member) notFound()
 
@@ -32,6 +33,7 @@ export default async function MemberPage({ params }: { params: Promise<{ userId:
       hasInventory={hasInventory}
       hasCrm={hasCrm}
       hasContacts={hasContacts}
+      hasMarketing={hasMarketing}
     />
   )
 }

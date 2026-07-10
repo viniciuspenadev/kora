@@ -71,9 +71,14 @@ export function rateLimit(
 export function getClientIp(req: NextRequest | Request): string {
   const fwd = req.headers.get("x-forwarded-for")
   if (fwd) {
-    // X-Forwarded-For pode ter múltiplos IPs (cadeia de proxies). Primeiro é o cliente.
-    const first = fwd.split(",")[0]?.trim()
-    if (first) return first
+    // NÃO confiar no 1º IP do XFF (fornecido pelo cliente, spoofável). O proxy confiável
+    // (Traefik/EasyPanel/Cloudflare) ANEXA o IP real à DIREITA → pega o N-ésimo do fim,
+    // N = nº de proxies confiáveis (XFF_TRUSTED_HOPS, default 1). Espelha o signup.
+    const parts = fwd.split(",").map((s) => s.trim()).filter(Boolean)
+    if (parts.length) {
+      const hops = Math.max(1, parseInt(process.env.XFF_TRUSTED_HOPS ?? "1", 10) || 1)
+      return parts[Math.max(0, parts.length - hops)]
+    }
   }
   const real = req.headers.get("x-real-ip")
   if (real) return real

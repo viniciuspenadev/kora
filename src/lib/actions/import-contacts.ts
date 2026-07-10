@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
+import { getViewerScope, canManageContacts } from "@/lib/visibility"
 
 // ═══════════════════════════════════════════════════════════════
 // Importar contatos (F4) — prévia anti-duplicado + commit dedup-safe + registro
@@ -24,6 +25,8 @@ const MAX_ROWS = 500
 export async function previewImport(rows: ImportRow[]): Promise<ImportPreview | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  const scope = await getViewerScope()
+  if (!canManageContacts(scope)) return { error: "Só quem gerencia contatos pode importar." }
   if (rows.length === 0) return { error: "Nenhuma linha pra importar." }
   if (rows.length > MAX_ROWS) return { error: `Máximo ${MAX_ROWS} contatos por vez (lotes maiores em breve).` }
   const tenantId = session.user.tenantId
@@ -60,6 +63,8 @@ export async function commitImport(input: {
 }): Promise<{ importId: string; criados: number; atualizados: number; invalidos: number } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  const scope = await getViewerScope()
+  if (!canManageContacts(scope)) return { error: "Só quem gerencia contatos pode importar." }
   if (input.rows.length > MAX_ROWS) return { error: `Máximo ${MAX_ROWS} contatos por vez.` }
   const tenantId = session.user.tenantId
   const now = new Date().toISOString()
@@ -67,6 +72,13 @@ export async function commitImport(input: {
   const wantMarketing = !!input.marketingConsent
   const wantConsent   = wantMarketing || !!input.consent
   const consentSource = `import — declarado por ${session.user.name ?? session.user.email ?? "gestor"}${wantMarketing ? " (marketing)" : ""}`
+
+  // Valida a tag ao tenant (anti cross-tenant ref).
+  let validTagId: string | null = null
+  if (input.tagId) {
+    const { data: tg } = await supabaseAdmin.from("tags").select("id").eq("id", input.tagId).eq("tenant_id", tenantId).maybeSingle()
+    validTagId = tg ? input.tagId : null
+  }
 
   let criados = 0, atualizados = 0, invalidos = 0
   const items: { contact_id: string; status: "created" | "updated" }[] = []
@@ -77,8 +89,8 @@ export async function commitImport(input: {
       const res = await resolveOrCreateContact(tenantId, { jid: n.jid, phone: n.phone, email: r.email?.trim() || null }, { customName: r.name?.trim() || null, source: "import" })
       res.created ? criados++ : atualizados++
       items.push({ contact_id: res.id, status: res.created ? "created" : "updated" })
-      if (input.tagId) {
-        await supabaseAdmin.from("taggings").insert({ tenant_id: tenantId, tag_id: input.tagId, taggable_type: "contact", taggable_id: res.id }).then(() => {}, () => {})
+      if (validTagId) {
+        await supabaseAdmin.from("taggings").insert({ tenant_id: tenantId, tag_id: validTagId, taggable_type: "contact", taggable_id: res.id }).then(() => {}, () => {})
       }
       if (wantConsent) {
         await supabaseAdmin.from("chat_contacts").update({

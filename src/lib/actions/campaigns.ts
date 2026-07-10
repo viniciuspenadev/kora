@@ -1,6 +1,6 @@
 "use server"
 
-import { auth } from "@/auth"
+import { getViewerScope, canOpenMarketing, canManageMarketing } from "@/lib/visibility"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule } from "@/lib/modules"
 import { type SegmentRules } from "@/lib/crm/segment-rules"
@@ -37,12 +37,21 @@ export interface AudiencePreview {
   estCost: number
 }
 
-async function requireManager(): Promise<{ tenantId: string; userId: string } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  if (!["owner", "admin"].includes(session.user.role)) return { error: "Só owner/admin gerencia campanhas" }
+/** Gate de LEITURA de marketing (ver campanhas/resultados). = Ver. */
+async function requireMarketingView(): Promise<{ tenantId: string; userId: string } | { error: string }> {
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
   try { await requireModule("broadcasts") } catch { return { error: "Módulo de marketing não habilitado" } }
-  return { tenantId: session.user.tenantId, userId: session.user.id }
+  if (!canOpenMarketing(scope)) return { error: "Sem acesso ao marketing" }
+  return { tenantId: scope.tenantId, userId: scope.userId }
+}
+/** Gate de ESCRITA/gestão (criar, DISPARAR, configurar). = Gerenciar. */
+async function requireManager(): Promise<{ tenantId: string; userId: string } | { error: string }> {
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
+  try { await requireModule("broadcasts") } catch { return { error: "Módulo de marketing não habilitado" } }
+  if (!canManageMarketing(scope)) return { error: "Sem permissão para gerenciar campanhas" }
+  return { tenantId: scope.tenantId, userId: scope.userId }
 }
 
 /** Listas + tags como opções de audiência (com contagem bruta). */
@@ -97,7 +106,7 @@ export async function previewAudience(input: { kind: "list" | "tag"; id: string;
 
 /** Lista de campanhas do tenant (mais recentes primeiro) com contagem de destinatários. */
 export async function getCampaigns(): Promise<CampaignRow[]> {
-  const gate = await requireManager()
+  const gate = await requireMarketingView()
   if ("error" in gate) return []
   const t = gate.tenantId
   const [{ data: rows }, { data: recips }] = await Promise.all([
@@ -126,7 +135,7 @@ export interface CampaignDetail extends CampaignRow {
 }
 
 export async function getCampaign(id: string): Promise<CampaignDetail | { error: string }> {
-  const gate = await requireManager()
+  const gate = await requireMarketingView()
   if ("error" in gate) return gate
   const t = gate.tenantId
   const { data: c } = await supabaseAdmin.from("campaigns")
@@ -170,7 +179,7 @@ export async function getCampaignRecipients(
   campaignId: string,
   opts?: { filter?: RecipientFilter; cursor?: string | null; limit?: number },
 ): Promise<{ items: CampaignRecipientRow[]; nextCursor: string | null; hasMore: boolean } | { error: string }> {
-  const gate = await requireManager()
+  const gate = await requireMarketingView()
   if ("error" in gate) return gate
   const t = gate.tenantId
   const limit = Math.min(Math.max(opts?.limit ?? 40, 1), 100)

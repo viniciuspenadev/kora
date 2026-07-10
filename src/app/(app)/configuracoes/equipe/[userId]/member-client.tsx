@@ -5,13 +5,13 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   Loader2, Check, Power, RotateCcw, CalendarDays, BadgeCheck, Smartphone,
-  User, Contact, ShieldCheck, LayoutGrid, Settings2, Building2, Boxes, Briefcase, Landmark, FileText, AlertTriangle,
+  User, Contact, ShieldCheck, LayoutGrid, Settings2, Building2, Boxes, Briefcase, Megaphone, Landmark, FileText, AlertTriangle,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
   updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool,
-  updateMemberInstances, setMemberSupervises, setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, updateMemberProfile,
+  updateMemberInstances, setMemberSupervises, setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, updateMemberProfile,
   type TeamMember, type Department, type TenantRole,
 } from "@/lib/actions/team"
 import {
@@ -26,9 +26,9 @@ const inputCls = "w-full h-10 px-3 text-sm border border-slate-200 rounded-lg bg
 
 type Tab = "perfil" | "acesso" | "modulos" | "agenda" | "conta"
 
-export function MemberProfileClient({ member, departments, numbers, currentUserId, currentUserRole, hasInventory = false, hasCrm = false, hasContacts = false }: {
+export function MemberProfileClient({ member, departments, numbers, currentUserId, currentUserRole, hasInventory = false, hasCrm = false, hasContacts = false, hasMarketing = false }: {
   member: TeamMember; departments: Department[]; numbers: { id: string; label: string; provider: string | null }[]
-  currentUserId: string; currentUserRole: string; hasInventory?: boolean; hasCrm?: boolean; hasContacts?: boolean
+  currentUserId: string; currentUserRole: string; hasInventory?: boolean; hasCrm?: boolean; hasContacts?: boolean; hasMarketing?: boolean
 }) {
   const router = useRouter()
   const [tab, setTab] = useState<Tab>("perfil")
@@ -45,6 +45,7 @@ export function MemberProfileClient({ member, departments, numbers, currentUserI
   const [invAccess, setInvAccess]     = useState<InventoryAccessLevel>(member.inventory_access)
   const [dealsAccess, setDealsAccess] = useState<InventoryAccessLevel>(member.deals_access)
   const [contactsAccess, setContactsAccess] = useState<InventoryAccessLevel>(member.contacts_access)
+  const [marketingAccess, setMarketingAccess] = useState<InventoryAccessLevel>(member.marketing_access)
   const [instanceIds, setInstanceIds] = useState<string[]>(member.instance_ids ?? [])
 
   const [savePending, startSave]     = useTransition()
@@ -60,7 +61,7 @@ export function MemberProfileClient({ member, departments, numbers, currentUserI
   const dirty =
     fullName.trim() !== (member.full_name ?? "") || role !== member.role ||
     (departmentId || null) !== member.department_id || (supMode === "all") !== member.view_all ||
-    seePool !== member.see_pool || invAccess !== member.inventory_access || dealsAccess !== member.deals_access || contactsAccess !== member.contacts_access ||
+    seePool !== member.see_pool || invAccess !== member.inventory_access || dealsAccess !== member.deals_access || contactsAccess !== member.contacts_access || marketingAccess !== member.marketing_access ||
     !sameSet(supMode === "scoped" ? supDepts : [], member.supervises_departments) ||
     !sameSet(instanceIds, member.instance_ids ?? [])
 
@@ -79,6 +80,7 @@ export function MemberProfileClient({ member, departments, numbers, currentUserI
       if (invAccess !== member.inventory_access) await run(setMemberInventoryAccess(member.user_id, invAccess))
       if (dealsAccess !== member.deals_access) await run(setMemberDealsAccess(member.user_id, dealsAccess))
       if (contactsAccess !== member.contacts_access) await run(setMemberContactsAccess(member.user_id, contactsAccess))
+      if (marketingAccess !== member.marketing_access) await run(setMemberMarketingAccess(member.user_id, marketingAccess))
       if (!sameSet(instanceIds, member.instance_ids ?? [])) await run(updateMemberInstances(member.user_id, instanceIds))
 
       if (err) { setFlash("error", err); return }
@@ -112,6 +114,12 @@ export function MemberProfileClient({ member, departments, numbers, currentUserI
     if (!canEditOther) return
     if (INV_ORDER[contactsAccess] >= INV_ORDER[tier]) setContactsAccess(tier === "manage" ? "view" : "none")
     else setContactsAccess(tier)
+  }
+  // Marketing: Ver = ver campanhas/resultados · Gerenciar = criar/disparar + configurar listas.
+  function marketingClick(tier: InventoryAccessLevel) {
+    if (!canEditOther) return
+    if (INV_ORDER[marketingAccess] >= INV_ORDER[tier]) setMarketingAccess(tier === "manage" ? "view" : "none")
+    else setMarketingAccess(tier)
   }
 
   const TABS: { id: Tab; label: string; icon: typeof User }[] = [
@@ -287,6 +295,15 @@ export function MemberProfileClient({ member, departments, numbers, currentUserI
                         <div className="flex gap-2">
                           {([{ lvl: "view", l: "Ver" }, { lvl: "manage", l: "Gerenciar" }] as const).map(({ lvl, l }) => (
                             <PermBox key={lvl} label={l} on={INV_ORDER[invAccess] >= INV_ORDER[lvl]} disabled={!canEditOther} onClick={() => invClick(lvl)} />
+                          ))}
+                        </div>
+                      </ModuleRow>
+                    )}
+                    {hasMarketing && (
+                      <ModuleRow icon={Megaphone} iconCls="bg-primary-50 text-primary" name="Marketing" desc="Ver = ver campanhas e resultados · Gerenciar = criar, disparar e configurar listas.">
+                        <div className="flex gap-2">
+                          {([{ lvl: "view", l: "Ver" }, { lvl: "manage", l: "Gerenciar" }] as const).map(({ lvl, l }) => (
+                            <PermBox key={lvl} label={l} on={INV_ORDER[marketingAccess] >= INV_ORDER[lvl]} disabled={!canEditOther} onClick={() => marketingClick(lvl)} />
                           ))}
                         </div>
                       </ModuleRow>

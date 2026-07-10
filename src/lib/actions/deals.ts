@@ -3,7 +3,7 @@
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
-import { getViewerScope, canViewConversation, canOpenDeals, seesAllDeals, applyDealScope } from "@/lib/visibility"
+import { getViewerScope, canViewConversation, canOpenDeals, seesAllDeals, applyDealScope, seesAllContacts, reachableContactIds } from "@/lib/visibility"
 import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, openDealOf, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
 import { computeDealValue } from "@/lib/crm/value"
 import { formatQuantityWithUnit } from "@/lib/crm/units"
@@ -232,6 +232,11 @@ export async function createDealFromBoard(input: {
   // Ownership do contato + resolve conversa mais recente (não-arquivada) pra vincular.
   const { data: contact } = await supabaseAdmin.from("chat_contacts").select("id").eq("id", input.contactId).eq("tenant_id", t).maybeSingle()
   if (!contact) return { error: "Contato inválido" }
+  // Fail-closed: só abre negócio pra contato que o atendente ALCANÇA (mesmo motor de Contatos).
+  if (!seesAllContacts(scope)) {
+    const reach = await reachableContactIds(scope)
+    if (!reach.includes(input.contactId)) return { error: "Você não tem acesso a este contato." }
+  }
   const { data: conv } = await supabaseAdmin.from("chat_conversations")
     .select("id").eq("tenant_id", t).eq("contact_id", input.contactId).is("archived_at", null)
     .order("last_message_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle()
@@ -1093,6 +1098,8 @@ export interface ContactRecordContact {
   custom_fields: Record<string, unknown> | null
   /** Tabela de preço do cliente (T2 — negócios herdam). Null = padrão. */
   price_table_id: string | null
+  /** Dono da conta (carteira, F1). Null = sem dono. */
+  owner_id: string | null
 }
 export interface ContactConversation {
   id: string; status: string; channel: string | null
@@ -1110,6 +1117,8 @@ export interface ContactRecord {
   conversations: ContactConversation[]
   pipelines:     DealPipeline[]
   crmEnabled:    boolean
+  /** Dono da conta resolvido (nome) pro "Responsável" na ficha (F1). */
+  owner:         { id: string; name: string } | null
 }
 
 export interface ActivityItem {
@@ -1134,6 +1143,9 @@ export async function getContactActivity(contactId: string): Promise<ActivityIte
   const { data: c } = await supabaseAdmin.from("chat_contacts")
     .select("created_at, qualified_at").eq("id", contactId).eq("tenant_id", t).maybeSingle()
   if (!c) return []
+  // 🔒 Escopo por-atendente: só a atividade de contato que ele ALCANÇA (motor de /contatos).
+  const scope = await getViewerScope()
+  if (!seesAllContacts(scope) && !(await reachableContactIds(scope)).includes(contactId)) return []
   const crmOn = await hasModule(t, "crm")
 
   const [dealsRes, convRes, apptRes] = await Promise.all([
@@ -1217,9 +1229,12 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
   const t = session.user.tenantId
 
   const { data: c } = await supabaseAdmin.from("chat_contacts")
-    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, wp_username, ig_username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in, custom_fields, price_table_id")
+    .select("id, push_name, custom_name, phone_number, email, company, doc_id, birth_date, profile_pic_url, source, lifecycle_stage, qualified_at, notes, is_blocked, created_at, bsuid, username, wp_username, ig_username, phone_secondary, phone_secondary_label, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state, address_country, consent_opt_in, consent_at, consent_source, marketing_opt_in, custom_fields, price_table_id, owner_id")
     .eq("id", contactId).eq("tenant_id", t).maybeSingle()
   if (!c) return { error: "Contato não encontrado" }
+  // 🔒 Escopo por-atendente: só a ficha de contato que ele ALCANÇA (motor de /contatos).
+  const scope = await getViewerScope()
+  if (!seesAllContacts(scope) && !(await reachableContactIds(scope)).includes(contactId)) return { error: "Sem acesso a este contato" }
 
   const crmEnabled = await hasModule(t, "crm")
 
@@ -1274,7 +1289,14 @@ export async function getContactRecord(contactId: string): Promise<ContactRecord
     lastInteraction,
   }
 
-  return { contact: c as ContactRecordContact, stats, deals, conversations, pipelines, crmEnabled }
+  const ownerId = (c as { owner_id: string | null }).owner_id
+  let owner: { id: string; name: string } | null = null
+  if (ownerId) {
+    const { data: op } = await supabaseAdmin.from("profiles").select("full_name").eq("id", ownerId).maybeSingle()
+    owner = { id: ownerId, name: (op as { full_name: string | null } | null)?.full_name ?? "—" }
+  }
+
+  return { contact: c as ContactRecordContact, stats, deals, conversations, pipelines, crmEnabled, owner }
 }
 
 /**

@@ -30,6 +30,7 @@ import {
 } from "@/lib/actions/chat"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { sanitizeAdReply } from "@/lib/ad-reply"
+import { safeHref } from "@/lib/safe-href"
 import {
   moveConversation,
   markConversationWonLost,
@@ -1014,7 +1015,7 @@ function LeadSourceCard({
               {adReply.title && <p className="text-xs font-bold text-slate-900 line-clamp-2 leading-tight">{adReply.title}</p>}
               {adReply.body  && <p className="text-[11px] text-slate-600 line-clamp-2 mt-0.5">{adReply.body}</p>}
               {adReply.sourceUrl && (
-                <a href={adReply.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] font-semibold text-primary-600 hover:underline mt-1 inline-block">
+                <a href={safeHref(adReply.sourceUrl)} target="_blank" rel="noopener noreferrer" className="text-[10px] font-semibold text-primary-600 hover:underline mt-1 inline-block">
                   Abrir anúncio →
                 </a>
               )}

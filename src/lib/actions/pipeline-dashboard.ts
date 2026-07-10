@@ -66,7 +66,7 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
       .select("id, name, color, position, is_won, is_lost, show_in_kanban")
       .eq("tenant_id", t).eq("pipeline_id", pipeline.id).order("position"),
     supabaseAdmin.from("tenant_deals")
-      .select("id, name, status, estimated_value, stage_id, created_at, won_at, lost_at, lost_reason, stage_entered_at, created_by, chat_contacts ( push_name, custom_name, profile_pic_url )")
+      .select("id, name, status, estimated_value, stage_id, created_at, won_at, lost_at, lost_reason, stage_entered_at, assigned_to, chat_contacts ( push_name, custom_name, profile_pic_url )")
       .eq("tenant_id", t).eq("pipeline_id", pipeline.id)
       .gte("created_at", opts.from).lte("created_at", opts.to)
       .order("created_at", { ascending: false }).limit(1000),
@@ -88,7 +88,7 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
           .eq("tenant_id", t).in("deal_id", dealIds)
       : Promise.resolve({ data: [] as unknown[] }),
     (() => {
-      const ids = Array.from(new Set(rows.map((r) => r.created_by).filter(Boolean))) as string[]
+      const ids = Array.from(new Set(rows.map((r) => r.assigned_to).filter(Boolean))) as string[]
       return ids.length
         ? supabaseAdmin.from("profiles").select("id, full_name, email").in("id", ids)
         : Promise.resolve({ data: [] as unknown[] })
@@ -148,8 +148,8 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
       won_at: (r.won_at as string | null) ?? null,
       lost_at: (r.lost_at as string | null) ?? null,
       stage_entered_at: (r.stage_entered_at as string | null) ?? null,
-      responsible: r.created_by ? (profMap.get(r.created_by as string) ?? null) : null,
-      responsible_id: (r.created_by as string | null) ?? null,
+      responsible: r.assigned_to ? (profMap.get(r.assigned_to as string) ?? null) : null,
+      responsible_id: (r.assigned_to as string | null) ?? null,
       lost_reason: (r.lost_reason as string | null) ?? null,
       items: itemMap.get(r.id as string) ?? [],
       path,

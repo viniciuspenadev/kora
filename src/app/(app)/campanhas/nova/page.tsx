@@ -4,6 +4,7 @@ import Link from "next/link"
 import { ArrowLeft, Megaphone } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
+import { getViewerScope, canManageMarketing } from "@/lib/visibility"
 import { getCampaignAudiences, getOutboundNumbers, getCampaignReadyFlows } from "@/lib/actions/campaigns"
 import { getInboxTemplates } from "@/lib/actions/whatsapp-official"
 import { WizardClient } from "./wizard-client"
@@ -11,8 +12,9 @@ import { WizardClient } from "./wizard-client"
 export default async function NovaCampanhaPage() {
   const session = await auth()
   if (!session) redirect("/auth/signin")
-  if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
   if (!(await hasModule(session.user.tenantId, "broadcasts"))) redirect("/inbox")
+  const scope = await getViewerScope()
+  if (!canManageMarketing(scope)) redirect("/inbox")
 
   const [audiences, templates, numbers, flows] = await Promise.all([
     getCampaignAudiences(),

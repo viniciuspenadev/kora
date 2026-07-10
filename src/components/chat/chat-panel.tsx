@@ -9,6 +9,7 @@ import { MessageContextMenu } from "./message-context-menu"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { getChannelPolicy } from "@/lib/channels/policy"
+import { safeHref } from "@/lib/safe-href"
 import { toast } from "sonner"
 import {
   Phone, CheckCircle2, Clock, XCircle,
@@ -704,7 +705,7 @@ function AdSourceBanner({ ad: adRaw }: { ad: ExternalAdReply | null }) {
       </div>
       {ad.sourceUrl && (
         <a
-          href={ad.sourceUrl}
+          href={safeHref(ad.sourceUrl)}
           target="_blank"
           rel="noopener noreferrer"
           className="text-[11px] font-semibold text-primary-700 hover:text-primary-900 inline-flex items-center gap-1 shrink-0"
@@ -769,7 +770,7 @@ function SiteSourceBanner({ conversation }: { conversation: ChatConversation }) 
       </div>
       {siteLead?.page_url && (
         <a
-          href={siteLead.page_url}
+          href={safeHref(siteLead.page_url)}
           target="_blank"
           rel="noopener noreferrer"
           className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 inline-flex items-center gap-1 shrink-0"

@@ -2,7 +2,7 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
-import { getViewerScope } from "@/lib/visibility"
+import { getViewerScope, seesAllContacts, reachableContactIds, seesAllDeals } from "@/lib/visibility"
 
 // ═══════════════════════════════════════════════════════════════
 // Campos personalizados UNIFICADOS (por tenant) — Contato · Negócio · Empresa · Produto
@@ -137,9 +137,22 @@ export async function reorderCustomFields(entity: CustomFieldEntity, orderedIds:
 export async function setEntityCustomFields(
   entity: CustomFieldEntity, recordId: string, values: Record<string, unknown>,
 ): Promise<{ ok: true } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  const tenantId = session.user.tenantId
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
+  const tenantId = scope.tenantId
+
+  // 🔒 Só grava campo personalizado em registro que o atendente ALCANÇA (write IDOR fix).
+  let allowed = scope.isAdmin
+  if (!allowed && entity === "contact") allowed = seesAllContacts(scope) || (await reachableContactIds(scope)).includes(recordId)
+  else if (!allowed && entity === "deal") {
+    if (seesAllDeals(scope)) allowed = true
+    else {
+      const { data: d } = await supabaseAdmin.from("tenant_deals").select("assigned_to").eq("id", recordId).eq("tenant_id", tenantId).maybeSingle()
+      allowed = (d as { assigned_to: string | null } | null)?.assigned_to === scope.userId
+    }
+  }
+  if (!allowed) return { error: "Sem acesso a este registro" }
+
   const { table, column } = VALUE_STORE[entity]
   const { data: cur } = await supabaseAdmin.from(table).select(column).eq("id", recordId).eq("tenant_id", tenantId).maybeSingle()
   if (!cur) return { error: "Registro não encontrado" }

@@ -133,6 +133,9 @@ function isoDate(d: Date): string { return d.toISOString().slice(0, 10) }
 async function tenantId(): Promise<string> {
   const session = await auth()
   if (!session?.user?.tenantId) throw new Error("Não autenticado")
+  // Relatórios = só-admin (dado de negócio agregado). Choke-point de TODAS as leituras
+  // de métricas (owner: 2026-07-10). saveFunnelConfig gateia por fora.
+  if (!["owner", "admin"].includes(session.user.role)) throw new Error("Sem permissão")
   return session.user.tenantId
 }
 

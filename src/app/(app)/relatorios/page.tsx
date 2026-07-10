@@ -7,6 +7,7 @@ import { InstanceBreakdown } from "@/components/relatorios/instance-breakdown"
 import { ReportsTabs } from "./tabs"
 import { parseFilters, getTenantChannels, getTenantInstances, formatSec, formatMoneyBRL, formatNumber } from "./_helpers"
 import { auth } from "@/auth"
+import { redirect } from "next/navigation"
 import { MessageSquare, Inbox, UserPlus, CheckCircle2, Clock, TrendingUp } from "lucide-react"
 import { hasModule } from "@/lib/modules"
 
@@ -18,7 +19,9 @@ export default async function RelatoriosPage({
   const sp      = await searchParams
   const filters = parseFilters(sp)
   const session = await auth()
-  const tenantId = session?.user?.tenantId
+  if (!session) redirect("/auth/signin")
+  if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
+  const tenantId = session.user.tenantId
 
   const [data, agents, availableChannels, availableInstances, hasKanban, hasAi] = await Promise.all([
     getOverviewMetrics(filters),

@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
+import { safeHref } from "@/lib/safe-href"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { AudioPlayer } from "./audio-player"
 import { resolveMediaUrl } from "@/lib/media"
@@ -1154,7 +1155,7 @@ function AdReplyCard({ ad }: { ad: ExternalAdReply | null | undefined }) {
           <div className="mt-1 inline-flex items-center gap-3 flex-wrap">
             {ad.sourceUrl && (
               <a
-                href={ad.sourceUrl}
+                href={safeHref(ad.sourceUrl)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-[10px] font-semibold text-primary-600 hover:text-primary-700"
@@ -1164,7 +1165,7 @@ function AdReplyCard({ ad }: { ad: ExternalAdReply | null | undefined }) {
             )}
             {ad.mediaUrl && ad.mediaUrl !== ad.sourceUrl && (
               <a
-                href={ad.mediaUrl}
+                href={safeHref(ad.mediaUrl)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 hover:text-slate-700"

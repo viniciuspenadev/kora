@@ -25,6 +25,7 @@ export interface TeamMember {
   inventory_access: InventoryAccessLevel   // capability granular: none | view | manage
   deals_access:     AccessLevel            // Negócios: none | view | manage
   contacts_access:  AccessLevel            // Contatos: none | view | manage
+  marketing_access: AccessLevel            // Marketing: none | view | manage
   department:    { id: string; name: string; color: string } | null
   joined_at:     string
 }
@@ -70,7 +71,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color )
     `)
@@ -97,6 +98,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       inventory_access: normInventoryLevel(row.inventory_access),
       deals_access: normAccessLevel(row.deals_access),
       contacts_access: normAccessLevel(row.contacts_access),
+      marketing_access: normAccessLevel(row.marketing_access),
       department:    dept,
       joined_at:     row.joined_at,
     }
@@ -109,7 +111,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
   const { data } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color )
     `)
@@ -132,6 +134,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
     inventory_access: normInventoryLevel(row.inventory_access),
     deals_access:  normAccessLevel(row.deals_access),
     contacts_access: normAccessLevel(row.contacts_access),
+    marketing_access: normAccessLevel(row.marketing_access),
     department:    dept,
     joined_at:     row.joined_at as string,
   }
@@ -458,6 +461,26 @@ export async function setMemberContactsAccess(userId: string, level: AccessLevel
   const { error } = await supabaseAdmin
     .from("tenant_users")
     .update({ contacts_access: level })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Nível de acesso ao Marketing do atendente (Ver = ver campanhas/resultados · Gerenciar =
+ * criar/disparar + configurar listas). Owner/admin = via role. Espelha as demais.
+ */
+export async function setMemberMarketingAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ marketing_access: level })
     .eq("tenant_id", session.user.tenantId)
     .eq("user_id", userId)
 

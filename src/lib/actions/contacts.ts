@@ -3,7 +3,7 @@
 import { auth } from "@/auth"
 import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
-import { getViewerScope, canManageContacts } from "@/lib/visibility"
+import { getViewerScope, canManageContacts, seesAllContacts, reachableContactIds } from "@/lib/visibility"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 
@@ -87,9 +87,9 @@ export async function lookupContact(input: {
   phone?: string
   bsuid?: string
 }): Promise<{ id: string; name: string } | null> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return null
-  const tenantId = session.user.tenantId
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return null
+  const tenantId = scope.tenantId
 
   const jid   = input.phone?.trim() ? (normalizeWhatsAppPhone(input.phone)?.jid ?? null) : null
   const bsuid = input.bsuid?.trim() || null
@@ -103,6 +103,12 @@ export async function lookupContact(input: {
   if (!data) return null
 
   const d = data as { id: string; custom_name: string | null; push_name: string | null; phone_number: string | null }
+  // Escopo: só revela "já existe" se o contato é ALCANÇÁVEL pelo atendente (mesmo motor
+  // de /contatos). Senão retorna null — não vaza existência/nome de contato alheio.
+  if (!seesAllContacts(scope)) {
+    const reach = await reachableContactIds(scope)
+    if (!reach.includes(d.id)) return null
+  }
   return { id: d.id, name: d.custom_name?.trim() || d.push_name?.trim() || d.phone_number || "Contato" }
 }
 
@@ -245,9 +251,9 @@ export async function createContact(input: {
   bsuid?: string
   email?: string
 }): Promise<{ id: string; created: boolean } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  const tenantId = session.user.tenantId
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
+  const tenantId = scope.tenantId
 
   const bsuid = input.bsuid?.trim() || null
   const email = input.email?.trim() || null
@@ -263,10 +269,49 @@ export async function createContact(input: {
 
   if (!jid && !bsuid) return { error: "Informe um telefone ou um BSUID." }
 
+  // Fail-closed: se o número já pertence a um contato FORA do alcance do atendente,
+  // não revela quem é nem duplica — devolve neutro (mesmo motor de /contatos).
+  if (!seesAllContacts(scope)) {
+    let ex = supabaseAdmin.from("chat_contacts").select("id").eq("tenant_id", tenantId)
+    ex = jid ? ex.eq("whatsapp_id", jid) : ex.eq("bsuid", bsuid as string)
+    const { data: existing } = await ex.maybeSingle()
+    if (existing && !(await reachableContactIds(scope)).includes((existing as { id: string }).id)) {
+      return { error: "Esse número já está cadastrado na empresa. Peça a um supervisor para liberar o acesso." }
+    }
+  }
+
   const r = await resolveOrCreateContact(
     tenantId,
     { jid, phone, bsuid, email },
     { customName: input.name?.trim() || null, source: "manual" },
   )
   return r
+}
+
+/**
+ * Define/transfere o DONO da conta (carteira) de um contato — Gerenciar-contatos/admin (F1).
+ * owner_id = null tira o dono (volta pro pool). Anti-IDOR: contato do tenant + dono = atendente ativo.
+ */
+export async function setContactOwner(contactId: string, ownerId: string | null): Promise<{ error?: string }> {
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
+  if (!canManageContacts(scope)) return { error: "Só quem gerencia contatos pode definir o responsável." }
+
+  const { data: c } = await supabaseAdmin.from("chat_contacts").select("id")
+    .eq("id", contactId).eq("tenant_id", scope.tenantId).maybeSingle()
+  if (!c) return { error: "Contato inválido" }
+
+  if (ownerId) {
+    const { data: m } = await supabaseAdmin.from("tenant_users").select("user_id")
+      .eq("tenant_id", scope.tenantId).eq("user_id", ownerId).eq("active", true).maybeSingle()
+    if (!m) return { error: "Responsável inválido" }
+  }
+
+  const { error } = await supabaseAdmin.from("chat_contacts")
+    .update({ owner_id: ownerId, updated_at: new Date().toISOString() })
+    .eq("id", contactId).eq("tenant_id", scope.tenantId)
+  if (error) return { error: error.message }
+
+  revalidatePath(`/contatos/${contactId}`)
+  return {}
 }

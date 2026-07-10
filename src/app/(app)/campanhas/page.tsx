@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { Megaphone } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
+import { getViewerScope, canOpenMarketing } from "@/lib/visibility"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getCampaigns } from "@/lib/actions/campaigns"
 import { CampanhasClient } from "./campanhas-client"
@@ -10,8 +11,9 @@ import { CampanhasClient } from "./campanhas-client"
 export default async function CampanhasPage() {
   const session = await auth()
   if (!session) redirect("/auth/signin")
-  if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
   if (!(await hasModule(session.user.tenantId, "broadcasts"))) redirect("/inbox")
+  const scope = await getViewerScope()
+  if (!canOpenMarketing(scope)) redirect("/inbox")
 
   // Marketing exige número OFICIAL (Meta Cloud) — sem ele, a página orienta a conectar.
   const { data: inst } = await supabaseAdmin.from("whatsapp_instances")
