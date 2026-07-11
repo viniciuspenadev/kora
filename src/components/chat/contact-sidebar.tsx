@@ -7,30 +7,27 @@ import Link from "next/link"
 import { useState, useTransition, useEffect, useCallback } from "react"
 import {
   ChevronDown, ChevronLeft, ChevronRight, MoreHorizontal, Ban, Archive,
-  Users, Tag as TagIcon, FileText, Sparkles, Megaphone,
+  Users, Tag as TagIcon, FileText, Sparkles,
   Plus, X, Loader2, Trophy, Check, UserPlus, Target, Briefcase,
-  Pencil, Mail, Building2, IdCard, CalendarDays, CalendarClock, Flag, User as UserIcon,
-  Route, ArrowRightLeft,
+  CalendarClock, Flag, User as UserIcon,
+  Route, ArrowRightLeft, Search,
 } from "lucide-react"
 import { getContactAppointments, type ContactAppt } from "@/lib/actions/agenda"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
-import { lifecycleMeta, sourceMeta } from "@/lib/lifecycle"
-import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
+import { lifecycleMeta } from "@/lib/lifecycle"
+import { SourceLogo } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { StatusDot } from "@/components/ui/status-dot"
 import { useConfirm } from "@/components/ui/confirm-dialog"
 import {
   setContactBlocked,
   setContactNotes,
-  updateContactInfo,
   archiveConversation,
   addConversationParticipant,
   removeConversationParticipant,
 } from "@/lib/actions/chat"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
-import { sanitizeAdReply } from "@/lib/ad-reply"
-import { safeHref } from "@/lib/safe-href"
 import {
   moveConversation,
   markConversationWonLost,
@@ -121,7 +118,6 @@ export function ContactSidebar(props: Props) {
         <Hint icon={Users}         label="Participantes" />
         <Hint icon={TagIcon}       label="Tags" />
         <Hint icon={FileText}      label="Notas" />
-        <Hint icon={Megaphone}     label="Origem" />
         <Hint icon={Sparkles}      label="IA" />
       </aside>
     )
@@ -160,7 +156,7 @@ export function ContactSidebar(props: Props) {
 
       {/* ── Zona "Detalhes": referência, colapsada por padrão ── */}
       <ZoneLabel>Detalhes</ZoneLabel>
-      <ContactInfoCard contact={props.contact} />
+      <ContactInfoLink contactId={props.contact.id} />
       <PipelineCard
         conversation={props.conversation}
         pipelines={props.pipelines}
@@ -173,7 +169,6 @@ export function ContactSidebar(props: Props) {
         onTagChange={props.onTagChange}
       />
       <ParticipantsCard conversation={props.conversation} agents={props.agents} />
-      <LeadSourceCard contact={props.contact} adReply={props.externalAdReply ?? null} channel={props.conversation.channel} />
       <SiteLeadCard conversation={props.conversation} contact={props.contact} />
       <MovimentacoesCard conversationId={props.conversation.id} />
     </aside>
@@ -222,6 +217,25 @@ function ZoneLabel({ children }: { children: React.ReactNode }) {
     <div className="px-4 pt-3.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 select-none">
       {children}
     </div>
+  )
+}
+
+// "Informações" — não abre inline; LEVA pra ficha completa do contato (/contatos/[id]),
+// onde mora a edição. Visual espelha o header de Section, mas é um link de navegação.
+function ContactInfoLink({ contactId }: { contactId: string }) {
+  return (
+    <Link
+      href={`/contatos/${contactId}`}
+      className="group/sec flex items-center gap-2.5 px-3.5 h-11 border-b border-slate-100 hover:bg-slate-50 transition-colors"
+    >
+      <span className="size-6 rounded-lg bg-slate-100 grid place-items-center shrink-0 transition-colors group-hover/sec:bg-primary-50">
+        <UserIcon className="size-3.5 text-slate-500 transition-colors group-hover/sec:text-primary-600" strokeWidth={2} />
+      </span>
+      <span className="flex-1 text-[13px] font-semibold text-slate-700 group-hover/sec:text-slate-900 transition-colors">
+        Informações do contato
+      </span>
+      <ChevronRight className="size-4 text-slate-300 group-hover/sec:text-slate-600 transition-colors" />
+    </Link>
   )
 }
 
@@ -382,198 +396,6 @@ function HeaderCard({
 // Informações editáveis do contato
 // ═══════════════════════════════════════════════════════════════
 
-function formatDocBR(raw: string | null): string | null {
-  if (!raw) return null
-  const d = raw.replace(/\D/g, "")
-  if (d.length === 11) return `${d.slice(0,3)}.${d.slice(3,6)}.${d.slice(6,9)}-${d.slice(9)}`     // CPF
-  if (d.length === 14) return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}` // CNPJ
-  return d
-}
-
-function formatBirthBR(iso: string | null): string | null {
-  if (!iso) return null
-  const [y, m, d] = iso.split("-")
-  if (!y || !m || !d) return iso
-  return `${d}/${m}/${y}`
-}
-
-const fieldCls = "w-full h-8 px-2 text-xs border border-slate-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
-
-function ContactInfoCard({ contact }: { contact: ChatContact }) {
-  const [editing, setEditing] = useState(false)
-  const [pending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
-
-  const [customName, setCustomName] = useState(contact.custom_name ?? "")
-  const [email, setEmail]           = useState(contact.email ?? "")
-  const [company, setCompany]       = useState(contact.company ?? "")
-  const [docId, setDocId]           = useState(contact.doc_id ?? "")
-  const [birthDate, setBirthDate]   = useState(contact.birth_date ?? "")
-
-  function startEdit() {
-    setCustomName(contact.custom_name ?? "")
-    setEmail(contact.email ?? "")
-    setCompany(contact.company ?? "")
-    setDocId(contact.doc_id ?? "")
-    setBirthDate(contact.birth_date ?? "")
-    setError(null)
-    setEditing(true)
-  }
-
-  function cancel() {
-    setEditing(false)
-    setError(null)
-  }
-
-  function save() {
-    setError(null)
-    startTransition(async () => {
-      const result = await updateContactInfo(contact.id, {
-        custom_name: customName,
-        email,
-        company,
-        doc_id:      docId,
-        birth_date:  birthDate || null,
-      })
-      if ("error" in result && result.error) {
-        setError(result.error)
-        return
-      }
-      setEditing(false)
-    })
-  }
-
-  const isEmpty = !contact.custom_name && !contact.email && !contact.company && !contact.doc_id && !contact.birth_date
-
-  return (
-    <Section icon={UserIcon} title="Informações" defaultOpen={false} action={!editing && (
-      <button
-        type="button"
-        onClick={startEdit}
-        aria-label="Editar informações"
-        className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
-      >
-        <Pencil className="size-3" />
-      </button>
-    )}>
-      {editing ? (
-        <div className="space-y-2">
-          <Field icon={UserIcon} label="Nome">
-            <input
-              type="text"
-              value={customName}
-              onChange={(e) => setCustomName(e.target.value)}
-              placeholder={contact.push_name ?? "Como aparece pro time"}
-              maxLength={80}
-              className={fieldCls}
-            />
-          </Field>
-          <Field icon={Mail} label="Email">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="email@dominio.com"
-              className={fieldCls}
-            />
-          </Field>
-          <Field icon={Building2} label="Empresa">
-            <input
-              type="text"
-              value={company}
-              onChange={(e) => setCompany(e.target.value)}
-              placeholder="Onde trabalha"
-              maxLength={80}
-              className={fieldCls}
-            />
-          </Field>
-          <Field icon={IdCard} label="CPF/CNPJ">
-            <input
-              type="text"
-              value={docId}
-              onChange={(e) => setDocId(e.target.value)}
-              placeholder="Apenas números"
-              maxLength={18}
-              className={fieldCls}
-            />
-          </Field>
-          <Field icon={CalendarDays} label="Nascimento">
-            <input
-              type="date"
-              value={birthDate}
-              onChange={(e) => setBirthDate(e.target.value)}
-              className={fieldCls}
-            />
-          </Field>
-
-          {error && <p className="text-[11px] text-red-600 mt-1">{error}</p>}
-
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              type="button"
-              onClick={save}
-              disabled={pending}
-              className="inline-flex items-center gap-1 h-7 px-2.5 text-[11px] font-semibold bg-primary hover:bg-primary-700 text-white rounded-md disabled:opacity-50"
-            >
-              {pending && <Loader2 className="size-3 animate-spin" />}
-              Salvar
-            </button>
-            <button
-              type="button"
-              onClick={cancel}
-              disabled={pending}
-              className="h-7 px-2.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 rounded-md disabled:opacity-50"
-            >
-              Cancelar
-            </button>
-          </div>
-        </div>
-      ) : isEmpty ? (
-        <p className="text-[11px] text-slate-400 italic">
-          Nenhum dado adicional. Clique no ✏️ pra editar.
-        </p>
-      ) : (
-        <dl className="space-y-1.5">
-          {contact.custom_name && (
-            <Row icon={UserIcon} label="Nome">{contact.custom_name}</Row>
-          )}
-          {contact.email && (
-            <Row icon={Mail} label="Email">{contact.email}</Row>
-          )}
-          {contact.company && (
-            <Row icon={Building2} label="Empresa">{contact.company}</Row>
-          )}
-          {contact.doc_id && (
-            <Row icon={IdCard} label="CPF/CNPJ">{formatDocBR(contact.doc_id)}</Row>
-          )}
-          {contact.birth_date && (
-            <Row icon={CalendarDays} label="Nascimento">{formatBirthBR(contact.birth_date)}</Row>
-          )}
-        </dl>
-      )}
-    </Section>
-  )
-}
-
-function Field({ icon: Icon, label, children }: { icon: typeof UserIcon; label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-2">
-      <Icon className="size-3 text-slate-400 shrink-0" />
-      <span className="text-[10px] font-semibold text-slate-500 w-20 shrink-0">{label}</span>
-      <div className="flex-1 min-w-0">{children}</div>
-    </div>
-  )
-}
-
-function Row({ icon: Icon, label, children }: { icon: typeof UserIcon; label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-start gap-2 text-[11px]">
-      <Icon className="size-3 text-slate-400 shrink-0 mt-0.5" />
-      <span className="text-slate-400 w-20 shrink-0">{label}</span>
-      <span className="text-slate-700 break-all flex-1 min-w-0">{children}</span>
-    </div>
-  )
-}
 
 // ═══════════════════════════════════════════════════════════════
 // Lifecycle
@@ -723,20 +545,25 @@ function ParticipantsCard({
   agents:       AgentMini[]
 }) {
   const [, startTransition] = useTransition()
-  const [showAdd, setShowAdd] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [query, setQuery]   = useState("")
 
-  const participantIds = conversation.participants ?? []
-  const owner          = agents.find((a) => a.id === conversation.assigned_to)
-  const others         = participantIds
+  const participantIds  = conversation.participants ?? []
+  const dono            = agents.find((a) => a.id === conversation.owner_id)
+  const handler         = agents.find((a) => a.id === conversation.assigned_to)
+  const sameDonoHandler = !!(dono && handler && dono.id === handler.id)
+  const others          = participantIds
     .map((id) => agents.find((a) => a.id === id))
-    .filter((a): a is AgentMini => !!a && a.id !== conversation.assigned_to)
+    .filter((a): a is AgentMini => !!a && a.id !== conversation.assigned_to && a.id !== conversation.owner_id)
 
   const available = agents.filter((a) =>
-    a.id !== conversation.assigned_to && !participantIds.includes(a.id)
+    a.id !== conversation.assigned_to && a.id !== conversation.owner_id && !participantIds.includes(a.id)
   )
+  const q = query.trim().toLowerCase()
+  const filtered = q ? available.filter((a) => (a.full_name ?? "").toLowerCase().includes(q)) : available
 
   function add(id: string) {
-    setShowAdd(false)
+    setQuery(""); setAdding(false)
     startTransition(async () => {
       try { await addConversationParticipant(conversation.id, id) } catch (e) { alert((e as Error).message) }
     })
@@ -749,30 +576,35 @@ function ParticipantsCard({
   }
 
   return (
-    <Section icon={Users} title="Atendentes" defaultOpen={false} action={available.length > 0 && (
-      <button
-        type="button"
-        onClick={() => setShowAdd((v) => !v)}
-        aria-label="Adicionar"
-        className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
-      >
-        <UserPlus className="size-3.5" />
-      </button>
-    )}>
-      {owner ? (
+    <Section icon={Users} title="Atendentes" defaultOpen={false}>
+      {/* DONO da carteira (owner_id) — "de quem é o cliente". Se for a MESMA pessoa
+          que atende, junta o "Atendendo" no mesmo row (não duplica). */}
+      {dono && (
         <div className="flex items-center gap-2 mb-1.5">
-          <AgentAvatar userId={owner.id} name={owner.full_name} className="size-6" />
-          <span className="text-xs font-medium text-slate-700 truncate flex-1">{owner.full_name ?? "—"}</span>
-          <span className="text-[10px] font-bold uppercase tracking-wider text-primary-700">Resp.</span>
+          <AgentAvatar userId={dono.id} name={dono.full_name} className="size-6" />
+          <span className="text-xs font-medium text-slate-700 truncate flex-1">{dono.full_name ?? "—"}</span>
+          {sameDonoHandler && <StatusDot tone="success" label="Atendendo" />}
+          <span className="text-[10px] font-bold uppercase tracking-wider text-primary-700">Dono</span>
         </div>
-      ) : (
-        <p className="text-[11px] text-slate-400 italic mb-1.5">Sem atendente responsável</p>
       )}
+
+      {/* Quem ATENDE agora (assigned_to) — só aqui se for pessoa DIFERENTE do dono
+          (senão o "Atendendo" já apareceu no row do dono acima). */}
+      {handler && !sameDonoHandler ? (
+        <div className="flex items-center gap-2 mb-1.5">
+          <AgentAvatar userId={handler.id} name={handler.full_name} className="size-6" />
+          <span className="text-xs font-medium text-slate-700 truncate flex-1">{handler.full_name ?? "—"}</span>
+          <StatusDot tone="success" label="Atendendo" />
+        </div>
+      ) : !handler ? (
+        <p className="text-[11px] text-slate-400 italic mb-1.5">Na fila — ninguém atendendo</p>
+      ) : null}
 
       {others.map((p) => (
         <div key={p.id} className="flex items-center gap-2 mb-1.5 group">
           <AgentAvatar userId={p.id} name={p.full_name} className="size-6" />
           <span className="text-xs text-slate-600 truncate flex-1">{p.full_name ?? "—"}</span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-300 mr-0.5">Participante</span>
           <button
             type="button"
             onClick={() => remove(p.id)}
@@ -784,21 +616,53 @@ function ParticipantsCard({
         </div>
       ))}
 
-      {showAdd && available.length > 0 && (
-        <div className="mt-2 bg-slate-50 rounded-lg p-1 max-h-40 overflow-y-auto">
-          {available.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              onClick={() => add(a.id)}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-slate-700 hover:bg-white"
-            >
-              <AgentAvatar userId={a.id} name={a.full_name} className="size-5" />
-              <span className="truncate">{a.full_name ?? "—"}</span>
-            </button>
-          ))}
+      {/* Adicionar atendente — linha clara → campo de busca (digita o nome, acha na
+          hora). Substitui o ícone-dropdown do canto; escala pra time grande. */}
+      {available.length > 0 && (adding ? (
+        <div className="mt-2">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-slate-400 pointer-events-none" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoFocus
+              placeholder="Buscar atendente…"
+              className="w-full h-9 pl-8 pr-2.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
+            />
+          </div>
+          <div className="mt-1 max-h-44 overflow-y-auto rounded-lg border border-slate-100 divide-y divide-slate-50">
+            {filtered.length > 0 ? filtered.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => add(a.id)}
+                className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-slate-700 hover:bg-primary-50/50 transition-colors"
+              >
+                <AgentAvatar userId={a.id} name={a.full_name} className="size-5" />
+                <span className="truncate flex-1 text-left">{a.full_name ?? "—"}</span>
+                <Plus className="size-3.5 text-slate-300" />
+              </button>
+            )) : (
+              <p className="text-[11px] text-slate-400 px-2.5 py-2.5">Nenhum atendente encontrado.</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => { setAdding(false); setQuery("") }}
+            className="mt-1.5 text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors"
+          >
+            Cancelar
+          </button>
         </div>
-      )}
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="w-full mt-2 flex items-center justify-center gap-1.5 h-9 rounded-lg border border-dashed border-slate-200 text-slate-500 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50/40 transition-colors text-xs font-semibold"
+        >
+          <UserPlus className="size-3.5" /> Adicionar atendente
+        </button>
+      ))}
     </Section>
   )
 }
@@ -958,79 +822,6 @@ function TagsCard({
 // Lead source / ad reply
 // ═══════════════════════════════════════════════════════════════
 
-function LeadSourceCard({
-  contact, adReply: adReplyRaw, channel,
-}: {
-  contact: ChatContact
-  adReply: Props["externalAdReply"]
-  channel: string | null
-}) {
-  // Mostra o canal do FIO atual (não o `source` reducionista do contato — pós-merge
-  // o source é o do sobrevivente). Fallback p/ a origem quando o canal não mapeia.
-  const effSource = channelToSource(channel) ?? contact.source
-  const src = sourceMeta(effSource)
-  const adReply = sanitizeAdReply(adReplyRaw)
-  const [thumbBroken, setThumbBroken] = useState(false)
-
-  return (
-    <Section icon={Megaphone} title="Origem do contato" defaultOpen={false}>
-      <div className="flex items-center gap-2 mb-1">
-        <SourceLogo source={effSource} size={14} />
-        <span className="text-xs font-medium text-slate-700">{src.label}</span>
-      </div>
-
-      {adReply && (
-        <div className="mt-2 rounded-lg border border-slate-200 overflow-hidden bg-slate-50/60">
-          <div className="px-2.5 py-1.5 bg-amber-50/60 border-b border-amber-100 flex items-center gap-1.5">
-            <Megaphone className="size-3 text-amber-700" />
-            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800">Veio de anúncio</span>
-          </div>
-          <div className="p-2.5 flex gap-2">
-            {(() => {
-              const adThumb = adReply.thumbnailUrl
-                ?? adReply.originalImageUrl
-                ?? (typeof adReply.thumbnail === "string" ? `data:image/jpeg;base64,${adReply.thumbnail}` : null)
-              if (!adThumb || thumbBroken) {
-                // Fallback: thumb expirou ou nunca veio. Mostra placeholder.
-                return (
-                  <div
-                    className="size-12 rounded-md shrink-0 border border-slate-200 bg-slate-100 flex items-center justify-center"
-                    title="Thumbnail do anúncio indisponível"
-                  >
-                    <Megaphone className="size-4 text-slate-400" />
-                  </div>
-                )
-              }
-              return (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img
-                  src={adThumb}
-                  alt=""
-                  onError={() => setThumbBroken(true)}
-                  className="size-12 rounded-md object-cover shrink-0 border border-slate-200"
-                />
-              )
-            })()}
-            <div className="min-w-0">
-              {adReply.title && <p className="text-xs font-bold text-slate-900 line-clamp-2 leading-tight">{adReply.title}</p>}
-              {adReply.body  && <p className="text-[11px] text-slate-600 line-clamp-2 mt-0.5">{adReply.body}</p>}
-              {adReply.sourceUrl && (
-                <a href={safeHref(adReply.sourceUrl)} target="_blank" rel="noopener noreferrer" className="text-[10px] font-semibold text-primary-600 hover:underline mt-1 inline-block">
-                  Abrir anúncio →
-                </a>
-              )}
-            </div>
-          </div>
-          {adReply.sourceId && (
-            <p className="px-2.5 py-1 border-t border-slate-200 bg-slate-100 text-[10px] font-mono text-slate-500 truncate" title={adReply.sourceId}>
-              ID: {adReply.sourceId}
-            </p>
-          )}
-        </div>
-      )}
-    </Section>
-  )
-}
 
 // ═══════════════════════════════════════════════════════════════
 // Notas internas

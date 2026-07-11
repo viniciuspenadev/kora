@@ -18,6 +18,7 @@ import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 import { createNotification } from "@/lib/notifications"
 import { logConversationEvent } from "@/lib/atendimento/events"
+import { linkOwnerOnAssign } from "@/lib/carteira"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -359,7 +360,7 @@ export async function sendMessage(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid, primary_external_id)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, owner_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid, primary_external_id)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -368,7 +369,7 @@ export async function sendMessage(
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id, owner_id: (conv as { owner_id?: string | null }).owner_id })) {
     throw new Error("Sem permissão para responder nesta conversa. Peça para o atendente atribuído te adicionar como participante.")
   }
 
@@ -393,6 +394,8 @@ export async function sendMessage(
       .is("assigned_to", null)
     // Evento do ciclo (relatórios): pegou uma conversa da fila/pool.
     await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
+    // Auto-dono (carteira): 1º a responder vira dono, se Vínculo=carteira e cliente sem dono.
+    await linkOwnerOnAssign(tenantId, conversationId, session.user.id)
   }
 
   const contact = conv.chat_contacts as unknown as {
@@ -523,7 +526,7 @@ export async function sendOfficialTemplate(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
+    .select("id, instance_id, assigned_to, participants, department_id, owner_id, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -540,7 +543,7 @@ export async function sendOfficialTemplate(
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id, owner_id: (conv as { owner_id?: string | null }).owner_id })) {
     throw new Error("Sem permissão para responder nesta conversa.")
   }
   const isPool = assignedTo === null
@@ -550,6 +553,8 @@ export async function sendOfficialTemplate(
       .eq("id", conversationId)
       .is("assigned_to", null)
     await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
+    // Auto-dono (carteira): 1º a enviar template vira dono, se Vínculo=carteira e cliente sem dono.
+    await linkOwnerOnAssign(tenantId, conversationId, session.user.id)
   }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
@@ -666,7 +671,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, primary_channel, bsuid)")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, owner_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -723,7 +728,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
+  if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id, owner_id: (conv as { owner_id?: string | null }).owner_id })) {
     return { error: "Sem permissão para enviar mídia nesta conversa." }
   }
   const isPool = assignedTo === null
@@ -736,6 +741,8 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       .eq("id", conversationId)
       .is("assigned_to", null)
     await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
+    // Auto-dono (carteira): 1º a enviar mídia vira dono, se Vínculo=carteira e cliente sem dono.
+    await linkOwnerOnAssign(tenantId, conversationId, session.user.id)
   }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; bsuid: string | null }
@@ -860,7 +867,7 @@ async function resolveSendContext(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
+    .select("id, instance_id, assigned_to, participants, department_id, owner_id, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId).eq("tenant_id", tenantId).single()
   if (!conv) return { error: "Conversa não encontrada." }
 
@@ -871,6 +878,7 @@ async function resolveSendContext(
     participants: (conv as { participants?: string[] | null }).participants,
     department_id: (conv as { department_id?: string | null }).department_id,
     instance_id: (conv as { instance_id?: string | null }).instance_id,
+    owner_id: (conv as { owner_id?: string | null }).owner_id,
   })) return { error: "Sem permissão para esta conversa." }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
@@ -882,6 +890,8 @@ async function resolveSendContext(
       .eq("id", conversationId)
       .is("assigned_to", null)
     await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
+    // Auto-dono (carteira): 1º a enviar vira dono, se Vínculo=carteira e cliente sem dono.
+    await linkOwnerOnAssign(tenantId, conversationId, session.user.id)
   }
 
   return { tenantId, userId: session.user.id, instanceId: (conv as { instance_id: string }).instance_id, phone: contact.phone_number ?? contact.bsuid ?? "" }
@@ -1034,17 +1044,18 @@ export async function assignConversation(conversationId: string, agentId: string
   // enxerga — pool/setor). Participante NÃO troca o dono.
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("assigned_to, participants, department_id, instance_id")
+    .select("assigned_to, participants, department_id, instance_id, owner_id")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .maybeSingle()
   if (!conv) throw new Error("Conversa não encontrada")
 
   const scope = await getViewerScope()
-  const c = conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null }
+  const c = conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null; owner_id?: string | null }
   const canAssign =
     scope.isAdmin || scope.viewAll ||
     (c.department_id != null && scope.supervisesDepartments.includes(c.department_id)) ||  // supervisor escopado do setor
+    c.owner_id === scope.userId ||   // dono da carteira PUXA a conversa de volta (autoridade do "admin do cliente")
     c.assigned_to === scope.userId ||
     (c.assigned_to === null && canViewConversation(scope, c))
   if (!canAssign) throw new Error("Sem permissão para atribuir esta conversa.")
@@ -1077,6 +1088,10 @@ export async function assignConversation(conversationId: string, agentId: string
     reason:    "manual",
   })
 
+  // Auto-dono (carteira): atribuir a uma PESSOA carimba o dono se o cliente ainda não
+  // tem (fill-only-empty); "tirar dono" (agentId null) é no-op no helper.
+  await linkOwnerOnAssign(tenantId, conversationId, agentId)
+
   revalidatePath("/inbox")
 }
 
@@ -1108,7 +1123,7 @@ export async function transferConversation(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, metadata, contact_id, chat_contacts ( custom_name, push_name )")
+    .select("id, instance_id, assigned_to, participants, department_id, owner_id, metadata, contact_id, chat_contacts ( custom_name, push_name )")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -1116,7 +1131,7 @@ export async function transferConversation(
 
   // Só transfere quem pode ATUAR na conversa (gate de visibilidade único).
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null })) {
+  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null; owner_id?: string | null })) {
     return { error: "Sem permissão para transferir esta conversa." }
   }
 
@@ -1200,6 +1215,11 @@ export async function transferConversation(
     })
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
+
+  // Auto-dono (carteira): destino PESSOA (nextAssigned) carimba o dono se o cliente
+  // ainda não tem (fill-only-empty). Fila do setor / pool → nextAssigned null → no-op.
+  // (Passar a carteira num handoff com dono JÁ existente = SDR→Closer, é a F3.)
+  await linkOwnerOnAssign(tenantId, conversationId, nextAssigned)
 
   // Evento do ciclo (relatórios): transferência humana. actor = quem transferiu;
   // from/to = dono anterior → novo destino (atendente e/ou setor).

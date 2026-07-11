@@ -18,6 +18,9 @@ export interface TaskRow {
   status:     string          // 'pending' | 'done' | 'canceled'
   done_at:    string | null
   created_at: string
+  /** Responsável pela tarefa (assigned_to; default = quem criou). Nome + id pro avatar. */
+  responsible:    string | null
+  responsible_id: string | null
 }
 
 export async function createTask(input: {
@@ -102,12 +105,21 @@ export async function listDealTasks(dealId: string): Promise<TaskRow[]> {
   if (!deal || !(await canAccessDeal(t, (deal as { contact_id: string | null }).contact_id))) return []
 
   const { data } = await supabaseAdmin.from("tenant_tasks")
-    .select("id, title, due_at, status, done_at, created_at")
+    .select("id, title, due_at, status, done_at, created_at, assigned_to")
     .eq("tenant_id", t).eq("deal_id", dealId)
     .order("status", { ascending: true })
     .order("due_at", { ascending: true, nullsFirst: false })
-  return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+  const rows = (data ?? []) as Record<string, unknown>[]
+  const ids = Array.from(new Set(rows.map((r) => r.assigned_to as string | null).filter(Boolean))) as string[]
+  const nameMap = new Map<string, string>()
+  if (ids.length) {
+    const { data: profs } = await supabaseAdmin.from("profiles").select("id, full_name").in("id", ids)
+    for (const p of (profs ?? []) as { id: string; full_name: string | null }[]) nameMap.set(p.id, p.full_name ?? "—")
+  }
+  return rows.map((r) => ({
     id: r.id as string, title: r.title as string, due_at: (r.due_at as string | null) ?? null,
     status: r.status as string, done_at: (r.done_at as string | null) ?? null, created_at: r.created_at as string,
+    responsible: r.assigned_to ? (nameMap.get(r.assigned_to as string) ?? null) : null,
+    responsible_id: (r.assigned_to as string | null) ?? null,
   }))
 }

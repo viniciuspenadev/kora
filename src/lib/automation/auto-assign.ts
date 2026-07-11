@@ -31,6 +31,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { isWithinBusinessHours } from "@/lib/automation/business-hours"
+import { linkOwnerIfCarteira } from "@/lib/carteira"
 
 export interface AutoAssignResult {
   assigned:    boolean
@@ -63,7 +64,7 @@ export async function assignNextAgent(
       .maybeSingle(),
     supabaseAdmin
       .from("chat_conversations")
-      .select("id, channel, is_group, assigned_to, instance_id")
+      .select("id, channel, is_group, assigned_to, instance_id, contact_id")
       .eq("id", conversationId)
       .eq("tenant_id", tenantId)
       .maybeSingle(),
@@ -251,6 +252,10 @@ export async function assignNextAgent(
       metadata:        { kind: "auto_assign", strategy: cfg.auto_assign_strategy, agent_id: chosen.user_id },
     }),
   ])
+
+  // Auto-dono (carteira): o 1º humano que assume vira o dono, se o Vínculo é carteira
+  // e o cliente ainda não tem dono. No-op em pool ou se já há dono. Best-effort.
+  await linkOwnerIfCarteira(tenantId, (conv as { contact_id: string | null }).contact_id, chosen.user_id)
 
   return {
     assigned:   true,

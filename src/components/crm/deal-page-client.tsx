@@ -13,6 +13,7 @@ import {
   Package, Wrench, Trash2, Search, MoreHorizontal, Hourglass, Bot,
 } from "lucide-react"
 import { lifecycleMeta } from "@/lib/lifecycle"
+import { toast } from "sonner"
 import { ContactSheet } from "@/components/crm/contact-sheet"
 import { CustomFieldInputs, CustomFieldsView } from "@/components/crm/custom-field-inputs"
 import { setEntityCustomFields, type CustomFieldDef } from "@/lib/actions/custom-fields"
@@ -23,6 +24,7 @@ import {
 import {
   moveDeal, moveDealById, openDeal, cancelDeal, reopenDeal, updateDeal, addDealNote,
   addDealItem, updateDealItem, removeDealItem, getCatalogForPicker,
+  addDealParticipant, removeDealParticipant,
   type DealDetail, type DealEventView, type DealItemView, type CatalogPickerItem,
 } from "@/lib/actions/deals"
 import { computeDealValue, lineSubtotal, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
@@ -63,10 +65,36 @@ function relTime(iso: string | null): string {
   return `há ${Math.floor(days / 30)} mês${days >= 60 ? "es" : ""}`
 }
 
-export function DealPageClient({ deal, tasks, isManager = false, dealFields = [] }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[] }) {
+export function DealPageClient({ deal, tasks, isManager = false, dealFields = [], agents = [], currentUserId = "" }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[]; agents?: { id: string; name: string }[]; currentUserId?: string }) {
   const router = useRouter()
   const [pending, start] = useTransition()
   const convId = deal.conversationId
+
+  // Participantes (colaboradores) — dono do negócio ou gestor gerencia.
+  const canManageParticipants = isManager || deal.owner_id === currentUserId
+  const [participants, setParticipants] = useState(deal.participants)
+  const [partPending, startPart] = useTransition()
+  const [showAddPart, setShowAddPart] = useState(false)
+  const [pickAgent, setPickAgent] = useState("")
+  const [alsoConv, setAlsoConv] = useState(true)
+  const availableAgents = agents.filter((a) => a.id !== deal.owner_id && !participants.some((p) => p.id === a.id))
+  function submitAddPart() {
+    const userId = pickAgent
+    if (!userId) return
+    const agent = agents.find((a) => a.id === userId)
+    setParticipants((cur) => cur.some((p) => p.id === userId) ? cur : [...cur, { id: userId, name: agent?.name ?? "—" }])
+    setShowAddPart(false); setPickAgent("")
+    const also = alsoConv && !!deal.conversationId
+    startPart(async () => {
+      const r = await addDealParticipant(deal.id, userId, also)
+      if (r.error) { toast.error(r.error); router.refresh() }
+      else if (r.note) toast(r.note)
+    })
+  }
+  function removePart(userId: string) {
+    setParticipants((cur) => cur.filter((p) => p.id !== userId))
+    startPart(async () => { const r = await removeDealParticipant(deal.id, userId); if (r.error) { toast.error(r.error); router.refresh() } })
+  }
 
   function run(fn: () => Promise<{ ok: true } | { error: string } | { id: string }>) {
     start(async () => {
@@ -732,6 +760,53 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   </span>
                 ) : "—"}
               </Row>
+              <Row label="Participantes">
+                <div className="flex flex-col gap-1 items-start">
+                  {participants.length === 0 && !canManageParticipants && <span className="text-slate-400">—</span>}
+                  {participants.map((p) => (
+                    <span key={p.id} className="inline-flex items-center gap-1.5 group/pp">
+                      <span className="size-[18px] rounded-full overflow-hidden grid place-items-center bg-slate-400 text-white text-[7px] font-extrabold shrink-0">
+                        <ContactPic pic={`/api/user-avatar/${p.id}`} imgClass="size-full object-cover" fallback={<span>{p.name.trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase()}</span>} />
+                      </span>
+                      <span className="text-slate-700">{p.name}</span>
+                      {canManageParticipants && (
+                        <button onClick={() => removePart(p.id)} disabled={partPending} className="opacity-0 group-hover/pp:opacity-100 text-slate-300 hover:text-red-500 transition-colors" title="Remover">
+                          <X className="size-3" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                  {canManageParticipants && availableAgents.length > 0 && (
+                    <button onClick={() => { setPickAgent(""); setAlsoConv(true); setShowAddPart(true) }}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-800 mt-0.5">
+                      <Plus className="size-3" /> Adicionar participante
+                    </button>
+                  )}
+                  {showAddPart && (
+                    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4" onClick={() => setShowAddPart(false)}>
+                      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl border border-slate-200 p-5" onClick={(e) => e.stopPropagation()}>
+                        <h3 className="text-sm font-bold text-slate-900">Adicionar participante</h3>
+                        <p className="text-xs text-slate-500 mt-0.5">Colabora no negócio (vê no board dele). Sem poder de gestão.</p>
+                        <div className="mt-4">
+                          <label className="text-[11px] font-semibold text-slate-500">Quem</label>
+                          <SimpleSelect value={pickAgent} onChange={setPickAgent} placeholder="Escolha um atendente" className="mt-1"
+                            options={availableAgents.map((a) => ({ value: a.id, label: a.name }))} />
+                        </div>
+                        {deal.conversationId && (
+                          <label className="flex items-start gap-2 mt-4 cursor-pointer">
+                            <input type="checkbox" checked={alsoConv} onChange={(e) => setAlsoConv(e.target.checked)} className="mt-0.5 size-4 rounded border-slate-300 text-primary focus:ring-primary/30" />
+                            <span className="text-xs text-slate-600 leading-snug">Também na <b>conversa de atendimento</b> — pra falar com o cliente. <span className="text-slate-400">(Só se você for admin ou o responsável do atendimento.)</span></span>
+                          </label>
+                        )}
+                        <div className="flex justify-end gap-2 mt-5">
+                          <button onClick={() => setShowAddPart(false)} className="h-9 px-3.5 text-xs font-semibold rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Cancelar</button>
+                          <button onClick={submitAddPart} disabled={!pickAgent} className="h-9 px-3.5 text-xs font-semibold rounded-lg bg-primary text-white hover:bg-primary-600 disabled:opacity-50">Adicionar</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Row>
               <Row label="Funil">{[deal.pipeline_name, deal.stage?.name].filter(Boolean).join(" · ") || "—"}</Row>
               {deal.contact?.source && <Row label="Origem do contato">{deal.contact.source}</Row>}
               <Row label="Criado em">{shortDate(deal.created_at)}</Row>
@@ -925,7 +1000,12 @@ function taskState(t: TaskRow): { label: string; cls: string; overdue: boolean; 
 
 function describeEvent(e: DealEventView, protocol: Protocol | null): { title: string; no: string | null; desc: string } {
   if (e.type === "note") return { title: "Nota adicionada", no: null, desc: e.note ?? "—" }
-  if (e.type === "field_changed") return { title: `${e.change?.label ?? "Campo"} alterado`, no: null, desc: `${e.change?.from ?? "—"} → ${e.change?.to ?? "—"}` }
+  if (e.type === "field_changed") {
+    const valTxt = e.change ? `${e.change.from ?? "—"} → ${e.change.to ?? "—"}` : ""
+    // Item adicionado/removido: o `note` descreve O QUE mudou (senão só apareceria o valor).
+    if (e.note) return { title: e.note, no: null, desc: e.change ? `${e.change.label}: ${valTxt}` : "" }
+    return { title: `${e.change?.label ?? "Campo"} alterado`, no: null, desc: valTxt }
+  }
   const label = protocol ? PROTOCOL_STYLE[protocol.kind].label : dealEventStyle(e.type).label
   let desc: string
   switch (e.type) {
@@ -1106,7 +1186,7 @@ function TaskBody({ t, pending, onToggle }: { t: TaskRow; pending: boolean; onTo
           </button>
         </div>
       </div>
-      <CardFooter by={null} at={t.created_at} />
+      <CardFooter by={t.responsible} at={t.created_at} />
     </div>
   )
 }

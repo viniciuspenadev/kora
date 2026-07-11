@@ -15,6 +15,8 @@ import { supabaseAdmin } from "@/lib/supabase"
  *   • tem view_all=true (supervisor), OU
  *   • assigned_to = ele, OU
  *   • está em participants, OU
+ *   • é o DONO DA CARTEIRA do cliente (owner_id = ele) — "admin daquele cliente":
+ *     vê/atua no rastro mesmo após passar o atendimento, OU
  *   • a conversa está no pool (assigned_to IS NULL) E ele tem see_pool=true, OU
  *   • a conversa está na FILA DO SETOR dele (assigned_to IS NULL E
  *     department_id = o departamento do atendente).
@@ -27,7 +29,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 /** Escada genérica de capability por-atendente (Ver·Gerenciar exibidos; `edit` reservado
  *  p/ módulo de recurso compartilhado que separe operar/configurar — ex. Financeiro futuro). */
 export type AccessLevel = "none" | "view" | "edit" | "manage"
-/** @deprecated alias — use AccessLevel. Mantido pros imports do Estoque. */
+/** Alias legado — use AccessLevel. Mantido pros imports do Estoque. */
 export type InventoryAccessLevel = AccessLevel
 const INV_ORDER: Record<AccessLevel, number> = { none: 0, view: 1, edit: 2, manage: 3 }
 
@@ -85,8 +87,9 @@ export function canManageDeals(scope: ViewerScope): boolean {
 /** Alcance de Negócios num query builder: manager vê tudo; senão só assigned_to = ele. */
 export function applyDealScope<T>(query: T, scope: ViewerScope): T {
   if (seesAllDeals(scope)) return query
+  // Dono OR participante (colabora no negócio) — union, nunca subtrai.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (query as any).eq("assigned_to", scope.userId) as T
+  return (query as any).or(`assigned_to.eq.${scope.userId},participants.cs.{${scope.userId}}`) as T
 }
 
 // ── Contatos (capability por-atendente; escada Ver/Gerenciar por RELAÇÃO) ──────
@@ -110,7 +113,8 @@ export async function reachableContactIds(scope: ViewerScope): Promise<string[]>
       .eq("tenant_id", scope.tenantId)
       .or(`assigned_to.eq.${scope.userId},participants.cs.{${scope.userId}}`),
     supabaseAdmin.from("tenant_deals").select("contact_id")
-      .eq("tenant_id", scope.tenantId).eq("assigned_to", scope.userId),
+      .eq("tenant_id", scope.tenantId)
+      .or(`assigned_to.eq.${scope.userId},participants.cs.{${scope.userId}}`),
     // Carteira (F1): contatos de que ele é o DONO (owner_id) — vínculo persistente.
     supabaseAdmin.from("chat_contacts").select("id")
       .eq("tenant_id", scope.tenantId).eq("owner_id", scope.userId),
@@ -137,6 +141,9 @@ export interface ConvVisibilityFields {
   participants?:  string[] | null
   department_id?: string | null
   instance_id?:   string | null
+  /** Dono da carteira (owner_id denormalizado do contato). "Admin daquele cliente":
+   *  vê/atua no rastro mesmo após passar o atendimento. Grant explícito. */
+  owner_id?:      string | null
 }
 
 /**
@@ -195,6 +202,10 @@ export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFiel
   // ou ele é participante, vê — mesmo que seja de um número que ele não atende.
   if (conv.assigned_to === scope.userId) return true
   if ((conv.participants ?? []).includes(scope.userId)) return true
+  // Dono da carteira ("admin daquele cliente"): vê/atua no rastro do cliente dele
+  // mesmo depois de passar o atendimento pra outra pessoa/setor. Grant explícito
+  // (independe de número), como assigned/participant — nunca subtrai.
+  if (conv.owner_id != null && conv.owner_id === scope.userId) return true
   // Ramos de DESCOBERTA (pool / fila do setor): gated pelo número que ele atende.
   // instanceIds = null → atende todos (sem restrição).
   const numberOk = !scope.instanceIds || (conv.instance_id != null && scope.instanceIds.includes(conv.instance_id))
@@ -243,6 +254,8 @@ export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
   const clauses = [
     `assigned_to.eq.${scope.userId}`,
     `participants.cs.{${scope.userId}}`,
+    // Dono da carteira: vê o rastro do cliente dele (owner_id denormalizado na conversa).
+    `owner_id.eq.${scope.userId}`,
   ]
   if (scope.seePool) {
     clauses.unshift(scope.instanceIds ? `and(assigned_to.is.null${inInst})` : "assigned_to.is.null")

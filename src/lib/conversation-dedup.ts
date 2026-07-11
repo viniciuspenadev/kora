@@ -167,6 +167,12 @@ export async function findOrReopenConversation(
     const binding = legacyAi ? "pool" : rawBinding         // carteira | pool
     const reopenFlowId = (cfg?.reopen_flow_id as string | undefined) ?? null
     const prevOwner = ((resolved as { assigned_to?: string | null }).assigned_to) ?? null
+    // Unificação carteira↔owner_id: o retorno da carteira roteia pro DONO (owner_id
+    // denormalizado na conversa), não pro último handler — que pode ter sido um
+    // pit-stop (Ana do Financeiro). Fallback = último assigned_to (retrocompat: quando
+    // não há owner_id, ou owner_id == assigned_to, o comportamento é idêntico ao de hoje).
+    const ownerId = ((resolved as { owner_id?: string | null }).owner_id) ?? null
+    const carteiraTarget = ownerId ?? prevOwner
     const meta = ((resolved as { metadata?: Record<string, unknown> | null }).metadata) ?? {}
     // Flag do decouple (por-tenant): no modo desacoplado o dono da carteira FICA
     // (a IA tria por cima via ai_handling), em vez de ser zerado e restaurado no fim.
@@ -195,9 +201,14 @@ export async function findOrReopenConversation(
       const m: Record<string, unknown> = { ...meta }
       delete m.ai_routed
       if (reopenFlowId && !decoupled) m.ai_pinned_flow = reopenFlowId
-      if (binding === "carteira" && prevOwner) m.reopen_owner = prevOwner
+      // Backup do dono pro restore pós-IA = o DONO DA CARTEIRA (owner_id), não o último handler.
+      if (binding === "carteira" && carteiraTarget) m.reopen_owner = carteiraTarget
       else delete m.reopen_owner
-      if (!(decoupled && binding === "carteira" && prevOwner)) {
+      if (decoupled && binding === "carteira" && carteiraTarget) {
+        // Desacoplado + carteira: o DONO fica no assigned_to (a IA tria por cima via
+        // ai_handling). Roteia pro dono da CARTEIRA — não pro último que atendeu.
+        policy.assigned_to = carteiraTarget
+      } else {
         policy.assigned_to = null
       }
       policy.metadata = m
@@ -206,8 +217,12 @@ export async function findOrReopenConversation(
       policy.assigned_to = null
       policy.ai_handling = false
       if (!meta.ai_routed) policy.metadata = { ...meta, ai_routed: { at: now, via: "pool_reopen" } }
+    } else if (binding === "carteira" && carteiraTarget) {
+      // Carteira sem IA: o retorno vai pro DONO (owner_id), não pro último que atendeu.
+      // Quando owner_id == assigned_to atual (caso comum, auto-dono), é no-op = sticky clássico.
+      policy.assigned_to = carteiraTarget
     }
-    // carteira sem IA: nada — mantém assigned_to (sticky). Stage/lifecycle INTACTOS.
+    // carteira sem dono resolvível: nada — mantém o que estava (comportamento clássico).
 
     const { data: reopened, error: reopenErr } = await supabaseAdmin
       .from("chat_conversations")

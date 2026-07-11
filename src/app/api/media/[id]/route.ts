@@ -58,7 +58,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     .from("chat_messages")
     .select(`
       id, conversation_id, tenant_id, metadata, media_mime_type, media_file_name,
-      chat_conversations ( instance_id, assigned_to, participants, department_id )
+      chat_conversations ( instance_id, assigned_to, participants, department_id, owner_id )
     `)
     .eq("id", msgId)
     .eq("tenant_id", session.user.tenantId)
@@ -76,7 +76,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // ── 3. Visibilidade — regra única do sistema (@/lib/visibility) ─
-  const conv = msg.chat_conversations as unknown as { assigned_to: string | null; participants: string[] | null; department_id: string | null; instance_id: string | null } | null
+  const conv = msg.chat_conversations as unknown as { assigned_to: string | null; participants: string[] | null; department_id: string | null; instance_id: string | null; owner_id: string | null } | null
   if (!conv) {
     return NextResponse.json({ error: "Conversa não encontrada" }, { status: 404 })
   }

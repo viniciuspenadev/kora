@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, canManageContacts, seesAllContacts, reachableContactIds } from "@/lib/visibility"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
+import { syncConversationOwner } from "@/lib/carteira"
 
 // ═══════════════════════════════════════════════════════════════
 // Alterar IDENTIDADE do contato (telefone principal / BSUID) — protegido
@@ -311,6 +312,10 @@ export async function setContactOwner(contactId: string, ownerId: string | null)
     .update({ owner_id: ownerId, updated_at: new Date().toISOString() })
     .eq("id", contactId).eq("tenant_id", scope.tenantId)
   if (error) return { error: error.message }
+
+  // Posse muda → o rastro segue: propaga o dono pras conversas do contato
+  // (etiqueta owner_id na conversa = o que o dono enxerga). NÃO toca assigned_to.
+  await syncConversationOwner(scope.tenantId, contactId, ownerId)
 
   revalidatePath(`/contatos/${contactId}`)
   return {}

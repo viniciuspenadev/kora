@@ -89,6 +89,9 @@ export interface ChatConversation {
   contact_id:            string | null
   instance_id:           string
   assigned_to:           string | null
+  /** Dono da carteira (owner_id) denormalizado do contato — "de quem é o cliente".
+   *  Distinto de assigned_to (quem atende). Vem no `*` do CONVERSATION_SELECT. */
+  owner_id:              string | null
   department_id:         string | null
   status:                ConversationStatus
   priority:              ConversationPriority

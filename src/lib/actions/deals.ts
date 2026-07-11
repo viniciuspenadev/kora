@@ -9,6 +9,7 @@ import { computeDealValue } from "@/lib/crm/value"
 import { formatQuantityWithUnit } from "@/lib/crm/units"
 import { applyDealStock } from "@/lib/actions/inventory"
 import { resolveDealPricing } from "@/lib/crm/pricing"
+import { revalidatePath } from "next/cache"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM Negócios — Server actions (Fase 1)
@@ -434,12 +435,80 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
 /** Pode ver/agir no negócio? Manager (admin/view_all) OU vê alguma conversa do contato. */
 export async function canAccessDeal(tenantId: string, contactId: string | null): Promise<boolean> {
   const scope = await getViewerScope()
-  if (scope.isAdmin || scope.viewAll) return true
+  if (scope.isAdmin || scope.viewAll || seesAllDeals(scope)) return true
   if (!contactId) return false
-  const { data } = await supabaseAdmin
+  // Vê alguma conversa do contato?
+  const { data: convs } = await supabaseAdmin
     .from("chat_conversations").select("assigned_to, participants, department_id, instance_id")
     .eq("tenant_id", tenantId).eq("contact_id", contactId)
-  return ((data ?? []) as ConvVis[]).some((c) => canViewConversation(scope, c))
+  if (((convs ?? []) as ConvVis[]).some((c) => canViewConversation(scope, c))) return true
+  // OU é DONO / PARTICIPANTE de algum negócio do contato (posse do negócio) — senão o
+  // participante (e o dono sem conversa) leva "Sem acesso" ao agendar follow-up/tarefa.
+  const { data: deals } = await supabaseAdmin
+    .from("tenant_deals").select("assigned_to, participants")
+    .eq("tenant_id", tenantId).eq("contact_id", contactId)
+  return ((deals ?? []) as { assigned_to: string | null; participants: string[] | null }[])
+    .some((d) => d.assigned_to === scope.userId || (d.participants ?? []).includes(scope.userId))
+}
+
+/**
+ * Adiciona um colaborador ao negócio (dono do negócio OU manager). `alsoConversation`
+ * inclui também na conversa de atendimento mais recente — MAS a conversa tem gate próprio
+ * (admin OU dono do atendimento); se o autor não pode, adiciona só ao negócio e devolve `note`.
+ */
+export async function addDealParticipant(dealId: string, userId: string, alsoConversation = false): Promise<{ error?: string; note?: string }> {
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
+  const { data: d } = await supabaseAdmin.from("tenant_deals").select("assigned_to, participants, contact_id").eq("id", dealId).eq("tenant_id", scope.tenantId).maybeSingle()
+  if (!d) return { error: "Negócio não encontrado" }
+  const deal = d as { assigned_to: string | null; participants: string[] | null; contact_id: string | null }
+  if (!seesAllDeals(scope) && deal.assigned_to !== scope.userId) return { error: "Só o dono do negócio ou um gestor adiciona participantes." }
+  const { data: m } = await supabaseAdmin.from("tenant_users").select("user_id").eq("tenant_id", scope.tenantId).eq("user_id", userId).eq("active", true).maybeSingle()
+  if (!m) return { error: "Usuário inválido" }
+
+  const cur = deal.participants ?? []
+  if (!cur.includes(userId)) {
+    const { error } = await supabaseAdmin.from("tenant_deals")
+      .update({ participants: [...cur, userId], updated_at: new Date().toISOString() })
+      .eq("id", dealId).eq("tenant_id", scope.tenantId)
+    if (error) return { error: error.message }
+  }
+
+  // Opcional: incluir também na conversa de atendimento (gate próprio da conversa).
+  let note: string | undefined
+  if (alsoConversation && deal.contact_id) {
+    const { data: conv } = await supabaseAdmin.from("chat_conversations")
+      .select("id, assigned_to, participants").eq("tenant_id", scope.tenantId).eq("contact_id", deal.contact_id)
+      .is("archived_at", null).order("last_message_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle()
+    const c = conv as { id: string; assigned_to: string | null; participants: string[] | null } | null
+    if (!c) note = "Adicionado ao negócio. Sem conversa de atendimento aberta pra incluir."
+    else if (!(scope.isAdmin || c.assigned_to === scope.userId)) note = "Adicionado ao negócio. Pra entrar na conversa, o responsável do atendimento precisa incluir."
+    else {
+      const cp = c.participants ?? []
+      if (!cp.includes(userId)) await supabaseAdmin.from("chat_conversations")
+        .update({ participants: [...cp, userId], updated_at: new Date().toISOString() }).eq("id", c.id).eq("tenant_id", scope.tenantId)
+    }
+  }
+
+  revalidatePath(`/negocios/${dealId}`)
+  return note ? { note } : {}
+}
+
+/** Remove um participante do negócio. Dono do negócio OU manager. */
+export async function removeDealParticipant(dealId: string, userId: string): Promise<{ error?: string }> {
+  const scope = await getViewerScope()
+  if (!scope.tenantId) return { error: "Não autenticado" }
+  const { data: d } = await supabaseAdmin.from("tenant_deals").select("assigned_to, participants").eq("id", dealId).eq("tenant_id", scope.tenantId).maybeSingle()
+  if (!d) return { error: "Negócio não encontrado" }
+  const deal = d as { assigned_to: string | null; participants: string[] | null }
+  if (!seesAllDeals(scope) && deal.assigned_to !== scope.userId) return { error: "Sem permissão." }
+  const cur = deal.participants ?? []
+  const { error } = await supabaseAdmin.from("tenant_deals")
+    .update({ participants: cur.filter((u) => u !== userId), updated_at: new Date().toISOString() })
+    .eq("id", dealId).eq("tenant_id", scope.tenantId)
+  if (error) return { error: error.message }
+  revalidatePath(`/negocios/${dealId}`)
+  return {}
 }
 
 export interface DealEventView { id: string; type: string; at: string; by: string | null; from_stage: string | null; to_stage: string | null; note: string | null; reason: string | null; change: DealFieldChange | null; extras: DealEventExtras | null }
@@ -454,6 +523,10 @@ export interface DealDetail {
   contact: { id: string; name: string | null; push_name?: string | null; profile_pic_url?: string | null; phone_number?: string | null; lifecycle_stage?: string | null; source?: string | null; tags?: { name: string; color: string }[] } | null
   responsible: string | null
   responsible_id: string | null
+  /** Dono do negócio (assigned_to) — pro gate de adicionar participante. */
+  owner_id: string | null
+  /** Colaboradores no negócio (participants) — nomes pra ficha. */
+  participants: { id: string; name: string }[]
   conversationId: string | null
   lastMessageAt: string | null
   /** Canal da conversa mais recente (rótulo da "última interação"). */
@@ -548,7 +621,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   // Select ÚNICO: termos (N2) e tabela (T2) fundidos — as queries "graciosas"
   // separadas eram transição pré-migration; migrations aplicadas = round-trips a menos.
   const { data: d } = await supabaseAdmin.from("tenant_deals").select(`
-    id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, canceled_at, stage_entered_at, created_at, created_by, assigned_to, contact_id, pipeline_id,
+    id, name, status, estimated_value, expected_close_date, won_at, lost_at, lost_reason, canceled_at, stage_entered_at, created_at, created_by, assigned_to, participants, contact_id, pipeline_id,
     payment_method, installments, proposal_expires_at, price_table_id, custom_fields,
     chat_contacts ( id, push_name, custom_name, profile_pic_url, phone_number, lifecycle_stage, source ),
     deal_pipelines ( name ),
@@ -557,7 +630,8 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   if (!d) return { error: "Negócio não encontrado" }
   const deal = d as Record<string, unknown>
   const scope = await getViewerScope()
-  const mineDeal = (deal.assigned_to as string | null) === scope.userId
+  const dealParts = (deal.participants as string[] | null) ?? []
+  const mineDeal = (deal.assigned_to as string | null) === scope.userId || dealParts.includes(scope.userId)
   if (!seesAllDeals(scope) && !mineDeal && !(await canAccessDeal(t, deal.contact_id as string | null))) return { error: "Sem acesso a este negócio" }
   const contactId = deal.contact_id as string | null
 
@@ -629,6 +703,15 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     stages: ((p.deal_pipeline_stages as DealPipeline["stages"] | null) ?? []).slice().sort((a, b) => a.position - b.position),
   }))
 
+  // Participantes (colaboradores no negócio) — resolve nomes pra ficha.
+  const partIds = (deal.participants as string[] | null) ?? []
+  let participants: { id: string; name: string }[] = []
+  if (partIds.length) {
+    const { data: pp } = await supabaseAdmin.from("profiles").select("id, full_name").in("id", partIds)
+    const pm = new Map(((pp ?? []) as { id: string; full_name: string | null }[]).map((p) => [p.id, p.full_name ?? "—"]))
+    participants = partIds.map((id) => ({ id, name: pm.get(id) ?? "—" }))
+  }
+
   return {
     id: deal.id as string, name: (deal.name as string | null) ?? null, status: deal.status as string,
     estimated_value: (deal.estimated_value as number | null) ?? null, expected_close_date: (deal.expected_close_date as string | null) ?? null,
@@ -640,6 +723,8 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     contact: c ? { id: c.id, name: c.custom_name?.trim() || c.push_name?.trim() || null, push_name: c.push_name, profile_pic_url: c.profile_pic_url, phone_number: c.phone_number, lifecycle_stage: c.lifecycle_stage, source: c.source, tags: contactTags } : null,
     responsible: deal.created_by ? (pMap.get(deal.created_by as string) ?? null) : null,
     responsible_id: (deal.created_by as string | null) ?? null,
+    owner_id: (deal.assigned_to as string | null) ?? null,
+    participants,
     conversationId: (() => {
       const rows = (convs ?? []) as { id: string; active_deal_id: string | null }[]
       return rows.find((r) => r.active_deal_id === dealId)?.id ?? rows[0]?.id ?? null
