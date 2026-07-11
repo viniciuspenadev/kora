@@ -2,7 +2,8 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
-import { requireModule } from "@/lib/modules"
+import { hasModule } from "@/lib/modules"
+import { getViewerScope, canViewCatalog, canManageCatalog } from "@/lib/visibility"
 import { revalidatePath } from "next/cache"
 import { getDefaultPriceTable } from "@/lib/crm/pricing"
 import { UNITS, DEFAULT_UNIT } from "@/lib/crm/units"
@@ -44,17 +45,31 @@ export interface CatalogItem {
   in_use:      number
 }
 
+/** Catálogo é módulo INDEPENDENTE: crm OU inventory habilita no tenant. */
+async function catalogModuleOn(tenantId: string): Promise<boolean> {
+  const [crm, inv] = await Promise.all([hasModule(tenantId, "crm"), hasModule(tenantId, "inventory")])
+  return crm || inv
+}
+
+/** Gate de LEITURA (vitrine/tabelas) — owner/admin ou catalog_access ≥ view. */
+async function requireCatalogView(): Promise<{ tenantId: string; userId: string } | { error: string }> {
+  const scope = await getViewerScope()
+  if (!canViewCatalog(scope)) return { error: "Sem permissão" }
+  if (!(await catalogModuleOn(scope.tenantId))) return { error: "Módulo Catálogo não habilitado" }
+  return { tenantId: scope.tenantId, userId: scope.userId }
+}
+
+/** Gate de GESTÃO (criar/editar/preço/ativo-por-tabela) — owner/admin ou catalog_access = manage. */
 async function requireManager(): Promise<{ tenantId: string; userId: string } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
-  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
-  return { tenantId: session.user.tenantId, userId: session.user.id }
+  const scope = await getViewerScope()
+  if (!canManageCatalog(scope)) return { error: "Sem permissão" }
+  if (!(await catalogModuleOn(scope.tenantId))) return { error: "Módulo Catálogo não habilitado" }
+  return { tenantId: scope.tenantId, userId: scope.userId }
 }
 
 /** Lista completa (ativos + arquivados) com contagem de uso. Ordena: ativos primeiro, por nome. */
 export async function getCatalogItems(): Promise<CatalogItem[]> {
-  const gate = await requireManager()
+  const gate = await requireCatalogView()
   if ("error" in gate) return []
 
   const [{ data: items }, { data: usage }] = await Promise.all([
@@ -80,6 +95,50 @@ export async function getCatalogItems(): Promise<CatalogItem[]> {
     attrs: i.attrs ?? {},
     in_use: useCount.get(i.id) ?? 0,
   }))
+}
+
+export interface CatalogTableCell { price: number; active: boolean }
+export interface CatalogTablePrices {
+  /** Tabelas ativas, padrão primeiro. */
+  tables: { id: string; name: string; is_default: boolean }[]
+  /** item_id → { table_id → { preço, ativo } }. Ausência = produto NÃO está naquela tabela. */
+  cells: Record<string, Record<string, CatalogTableCell>>
+}
+
+/**
+ * Preço + estado ATIVO de cada produto em CADA tabela — alimenta a matriz-hub.
+ * Sem célula numa tabela = produto fora dela; célula inativa = na tabela mas
+ * desligada (participação por tabela, price_list_items.active).
+ */
+export async function getCatalogTablePrices(): Promise<CatalogTablePrices> {
+  const gate = await requireCatalogView()
+  if ("error" in gate) return { tables: [], cells: {} }
+  const t = gate.tenantId
+
+  const [{ data: tables }, { data: lists }, { data: pli }] = await Promise.all([
+    supabaseAdmin.from("price_tables")
+      .select("id, name, is_default").eq("tenant_id", t).eq("active", true)
+      .order("is_default", { ascending: false }).order("name"),
+    supabaseAdmin.from("price_lists")
+      .select("id, table_id").eq("tenant_id", t).eq("status", "active"),
+    supabaseAdmin.from("price_list_items")
+      .select("list_id, item_id, price, active").eq("tenant_id", t),
+  ])
+
+  const tableByList = new Map(((lists ?? []) as { id: string; table_id: string | null }[])
+    .filter((l) => l.table_id).map((l) => [l.id, l.table_id as string]))
+
+  const cells: Record<string, Record<string, CatalogTableCell>> = {}
+  for (const r of ((pli ?? []) as { list_id: string; item_id: string; price: number; active: boolean | null }[])) {
+    const tableId = tableByList.get(r.list_id)
+    if (!tableId) continue
+    ;(cells[r.item_id] ??= {})[tableId] = { price: Number(r.price ?? 0), active: r.active !== false }
+  }
+
+  return {
+    tables: (tables ?? []) as { id: string; name: string; is_default: boolean }[],
+    cells,
+  }
 }
 
 /** Sanitiza campos personalizados (dado descritivo — nunca comportamento). */
@@ -149,7 +208,7 @@ export interface CatalogItemEvent {
 
 /** Histórico de alterações de um item (preço/custo/teto/validade). */
 export async function getCatalogItemHistory(itemId: string): Promise<CatalogItemEvent[]> {
-  const gate = await requireManager()
+  const gate = await requireCatalogView()
   if ("error" in gate) return []
   const { data } = await supabaseAdmin.from("catalog_item_events")
     .select("id, field, from_value, to_value, by, at, table_label")
@@ -205,8 +264,8 @@ export async function createCatalogItem(input: CatalogItemInput): Promise<{ id: 
     .insert({ tenant_id: gate.tenantId, item_id: id, by: gate.userId, field: "created", from_value: null, to_value: String(input.price) })
   if (audErr) console.error("[catalog.audit created]", audErr.message)
   await seedAllActiveLists(gate.tenantId, id, input.price, input.cost ?? null, input.maxDiscountPct ?? 0)
-  revalidatePath("/configuracoes/catalogo")
-  revalidatePath("/configuracoes/catalogo/tabelas")
+  revalidatePath("/catalogo")
+  revalidatePath("/catalogo/tabelas")
   return { id }
 }
 
@@ -249,8 +308,8 @@ export async function updateCatalogIdentity(id: string, input: CatalogIdentityIn
   }).eq("id", id).eq("tenant_id", gate.tenantId)
 
   if (error) return { error: error.message }
-  revalidatePath("/configuracoes/catalogo")
-  revalidatePath("/configuracoes/catalogo/tabelas")
+  revalidatePath("/catalogo")
+  revalidatePath("/catalogo/tabelas")
   return { ok: true }
 }
 
@@ -261,7 +320,7 @@ export async function updateCatalogIdentity(id: string, input: CatalogIdentityIn
  * da mesma fonte.
  */
 export async function getCatalogPriceTrends(): Promise<Record<string, { points: number[]; delta: number }>> {
-  const gate = await requireManager()
+  const gate = await requireCatalogView()
   if ("error" in gate) return {}
   const def = await getDefaultPriceTable(gate.tenantId)
   const { data } = await supabaseAdmin.from("catalog_item_events")
@@ -292,7 +351,7 @@ export async function setCatalogItemActive(id: string, active: boolean): Promise
     .update({ active, updated_at: new Date().toISOString() })
     .eq("id", id).eq("tenant_id", gate.tenantId)
   if (error) return { error: error.message }
-  revalidatePath("/configuracoes/catalogo")
+  revalidatePath("/catalogo")
   return { ok: true }
 }
 
@@ -325,7 +384,7 @@ export async function uploadCatalogImage(itemId: string, formData: FormData): Pr
   await supabaseAdmin.from("catalog_items").update({ image_path: path, updated_at: new Date().toISOString() }).eq("id", itemId).eq("tenant_id", gate.tenantId)
   if (old) await supabaseAdmin.storage.from(CATALOG_BUCKET).remove([old]).catch?.(() => {})
 
-  revalidatePath("/configuracoes/catalogo")
+  revalidatePath("/catalogo")
   return { ok: true }
 }
 
@@ -338,7 +397,7 @@ export async function removeCatalogImage(itemId: string): Promise<{ ok: true } |
   const path = (item as { image_path: string | null }).image_path
   await supabaseAdmin.from("catalog_items").update({ image_path: null, updated_at: new Date().toISOString() }).eq("id", itemId).eq("tenant_id", gate.tenantId)
   if (path) await supabaseAdmin.storage.from(CATALOG_BUCKET).remove([path])
-  revalidatePath("/configuracoes/catalogo")
+  revalidatePath("/catalogo")
   return { ok: true }
 }
 
@@ -355,6 +414,6 @@ export async function deleteCatalogItem(id: string): Promise<{ ok: true } | { er
   const { error } = await supabaseAdmin.from("catalog_items")
     .delete().eq("id", id).eq("tenant_id", gate.tenantId)
   if (error) return { error: error.message }
-  revalidatePath("/configuracoes/catalogo")
+  revalidatePath("/catalogo")
   return { ok: true }
 }

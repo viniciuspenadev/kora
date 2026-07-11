@@ -81,12 +81,14 @@ const NAV: NavItem[] = [
       { href: "/negocios/painel", label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, capability: "deals_manage" },
       // "Funil de Vendas" = link ao board + botão dedicado que expande os funis ativos.
       { href: "/negocios",        label: "Funil de Vendas", icon: <Funnel   className={subIcon} strokeWidth={1.75} />, dealSwitcher: true },
-      { href: "/configuracoes/catalogo", label: "Catálogo", icon: <Package   className={subIcon} strokeWidth={1.75} /> },
     ],
   },
   // Top-level: visível pra owner/admin OU agente com a capability inventory_access
   // (não fica sob "Negócios" que é adminOnly — senão o atendente não veria).
   { href: "/estoque", label: "Estoque", icon: <Boxes className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "inventory", capability: "inventory_access" },
+  // Catálogo: módulo INDEPENDENTE (serve Negócios e Estoque). Visível pra owner/admin
+  // OU agente com catalog_access. Gate de módulo = crm (comum); a página aceita crm OU inventory.
+  { href: "/catalogo", label: "Catálogo", icon: <Package className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "crm", capability: "catalog_access" },
   {
     key:        "marketing",
     label:      "Marketing",

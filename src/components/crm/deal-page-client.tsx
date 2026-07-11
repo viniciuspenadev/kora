@@ -809,13 +809,15 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
         <DealItemModal
           dealId={deal.id}
           edit={itemModal.mode === "edit" ? itemModal.item : null}
+          tables={deal.priceTables}
+          defaultTableId={deal.priceTable?.id ?? null}
           pending={pending}
           onClose={() => setItemModal(null)}
           onSubmit={(p) => {
             const m = itemModal
             setItemModal(null)
             if (m.mode === "edit") run(() => updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths }))
-            else run(() => addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths }))
+            else run(() => addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, priceTableId: p.priceTableId }))
           }}
         />
       )}
@@ -1402,13 +1404,8 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
   onTerms: (t: { paymentMethod?: string | null; installments?: number | null; proposalExpiresAt?: string | null; priceTableId?: string | null }) => void
 }) {
   const items = deal.items
-  // Multi-tabela (T2): switcher só aparece quando há 2+ tabelas VISÍVEIS (ativas +
-  // a atual, mesmo desativada). Troca não re-preça itens já lançados.
-  const visibleTables = deal.priceTables.filter((p) => p.active || p.id === deal.priceTable?.id)
-  const multiTable = visibleTables.length > 1
-  const currentTableName = deal.priceTable?.name ?? deal.priceTables.find((p) => p.is_default)?.name ?? "Padrão"
-  // Valor do switcher: padrão vira "" (negócio com a default explícita = mesmo caso).
-  const tableSelectValue = deal.priceTable && !deal.priceTables.find((p) => p.id === deal.priceTable!.id)?.is_default ? deal.priceTable.id : ""
+  // Multi-tabela (T2): a escolha da tabela é POR ITEM, no modal de adicionar
+  // (decisão owner 2026-07-11). Aqui não há switcher — só a lista + resumo.
   // Bruto = preço de TABELA × qtd × prazo; Final = negociado (lib); Desconto = diferença.
   const bruto = items.reduce((s, it) => s + (it.list_price ?? it.unit_price) * it.quantity * termFactor(it), 0)
   const final = summary?.total ?? 0
@@ -1429,13 +1426,6 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
         {expired && (
           <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">
             <Clock className="size-2.5" /> Proposta vencida
-          </span>
-        )}
-        {multiTable && (
-          <span className="inline-flex items-center gap-1.5 ml-1" title="Tabela de preço deste negócio — herdada do cliente; a troca fica na linha do tempo e só vale pra itens novos">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Tabela</span>
-            <SimpleSelect value={tableSelectValue} onChange={(v) => onTerms({ priceTableId: v || null })} className="h-7 text-[11px] w-32"
-              options={visibleTables.map((p) => ({ value: p.is_default ? "" : p.id, label: p.active ? p.name : `${p.name} (desativada)` }))} />
           </span>
         )}
         <button onClick={onAdd} disabled={pending} className="ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-50">
@@ -1480,7 +1470,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                             {it.category ?? BILLING_PT[it.billing].label}
                             {it.billing !== "one_time" && ` · ${brl(lineVal)}/mês × ${it.term_months ?? DEFAULT_TERM_MONTHS}m`}
                             {it.max_discount_pct > 0 && <span className="text-emerald-600"> · teto {it.max_discount_pct}%</span>}
-                            {it.price_table_label && it.price_table_label !== currentTableName && <span className="text-sky-600 font-semibold"> · {it.price_table_label}</span>}
+                            {it.price_table_label && <span className="text-sky-600 font-semibold"> · {it.price_table_label}</span>}
                           </p>
                         </div>
                       </div>
@@ -1555,13 +1545,21 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
 
 
 /** Modal de item — adicionar (picker do catálogo → configurar) ou ajustar (direto). */
-function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
+function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose, onSubmit }: {
   dealId: string
   edit: DealItemView | null
+  tables: { id: string; name: string; is_default: boolean; active: boolean }[]
+  defaultTableId: string | null
   pending: boolean
   onClose: () => void
-  onSubmit: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null }) => void
+  onSubmit: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null }) => void
 }) {
+  // Multi-tabela (T2, decisão owner 2026-07-11): escolhe a tabela POR item, aqui no
+  // add. Seletor só aparece com 2+ tabelas visíveis; "" = tabela padrão do tenant.
+  const visibleTables = tables.filter((p) => p.active || p.id === defaultTableId)
+  const multiTable = visibleTables.length > 1
+  const defaultSel = defaultTableId && visibleTables.find((p) => p.id === defaultTableId && !p.is_default) ? defaultTableId : ""
+  const [tableId, setTableId]   = useState<string>(defaultSel)
   const [catalog, setCatalog]   = useState<CatalogPickerItem[] | null>(edit ? [] : null)   // null = carregando
   const [pickError, setPickError] = useState<string | null>(null)
   const [search, setSearch]     = useState("")
@@ -1576,14 +1574,16 @@ function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
   useEffect(() => {
     if (edit) return
     let alive = true
-    // T2: preços/tetos vêm da TABELA do negócio (Atacado…); tabela vencida → erro fail-closed.
-    getCatalogForPicker(dealId).then((r) => {
+    // T2: preços/tetos vêm da TABELA escolhida no seletor (Atacado…); trocar a tabela
+    // re-preça a lista. Tabela sem grade → erro fail-closed.
+    setCatalog(null); setPickError(null); setPicked(null)
+    getCatalogForPicker(dealId, tableId).then((r) => {
       if (!alive) return
       if (Array.isArray(r)) setCatalog(r)
       else { setCatalog([]); setPickError(r.error) }
     }).catch(() => { if (alive) setCatalog([]) })
     return () => { alive = false }
-  }, [edit, dealId])
+  }, [edit, dealId, tableId])
 
   // Item "ativo" da configuração: o escolhido no picker OU o snapshot em edição.
   // listPrice/maxPct = base do PISO (teto de desconto snapshotado).
@@ -1641,7 +1641,7 @@ function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
         return
       }
     }
-    onSubmit({ catalogItemId: picked?.id, quantity: q, unitPrice: effPrice, discount: d, termMonths: recurring ? tm : null })
+    onSubmit({ catalogItemId: picked?.id, quantity: q, unitPrice: effPrice, discount: d, termMonths: recurring ? tm : null, priceTableId: tableId || null })
   }
 
   const field = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
@@ -1655,8 +1655,16 @@ function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
         </div>
 
         {!active ? (
-          /* passo 1 — escolher no catálogo */
+          /* passo 1 — escolher a tabela e o produto */
           <div className="flex-1 overflow-y-auto p-4">
+            {multiTable && (
+              <div className="mb-3">
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Tabela de preço</label>
+                <SimpleSelect value={tableId} onChange={setTableId} className="h-9 text-xs w-full"
+                  options={visibleTables.map((p) => ({ value: p.is_default ? "" : p.id, label: p.active ? p.name : `${p.name} (desativada)` }))} />
+                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">Preços e teto de desconto vêm desta tabela. Você pode usar tabelas diferentes por item.</p>
+              </div>
+            )}
             <div className="relative mb-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400" />
               <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar produto ou serviço…"
@@ -1669,7 +1677,7 @@ function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
             {catalog !== null && catalog.length === 0 && !pickError && (
               <p className="text-[11px] text-slate-400 text-center py-8 leading-relaxed">
                 Seu catálogo está vazio.<br />
-                <Link href="/configuracoes/catalogo" className="text-primary-600 font-semibold hover:underline">Cadastre produtos e serviços</Link> pra compor o valor dos negócios.
+                <Link href="/catalogo" className="text-primary-600 font-semibold hover:underline">Cadastre produtos e serviços</Link> pra compor o valor dos negócios.
               </p>
             )}
             {filtered.length > 0 && (
@@ -1715,7 +1723,10 @@ function DealItemModal({ dealId, edit, pending, onClose, onSubmit }: {
                 {active.type === "service" ? <Wrench className="size-4" /> : <Package className="size-4" />}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold text-slate-800 truncate">{active.name}</p>
+                <p className="text-xs font-semibold text-slate-800 truncate">
+                  {active.name}
+                  {(picked?.table_label ?? edit?.price_table_label) && <span className="ml-1.5 text-[9px] font-bold text-sky-600 align-middle">{picked?.table_label ?? edit?.price_table_label}</span>}
+                </p>
                 <p className="text-[10px] text-slate-400">
                   {BILLING_PT[active.billing].label} · tabela {brl(active.listPrice)}{BILLING_PT[active.billing].suffix}
                   {active.maxPct > 0

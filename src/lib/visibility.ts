@@ -44,6 +44,7 @@ export interface ViewerScope {
   dealsAccess:     AccessLevel  // Negócios: none|view|manage (idem)
   contactsAccess:  AccessLevel  // Contatos: none|view|manage (view=por relação; manage=base toda)
   marketingAccess: AccessLevel  // Marketing: none|view|manage (view=ver campanhas; manage=criar/disparar)
+  catalogAccess:   AccessLevel  // Catálogo (módulo independente): none|view|manage (view=vitrine/tabelas; manage=produto/preço/ativo-por-tabela)
 }
 
 /** Normaliza o valor cru (aceita o boolean legado durante a transição). */
@@ -81,6 +82,16 @@ export function canOpenDeals(scope: ViewerScope): boolean {
 /** Configura Negócios (funis/etapas/motivos) + vê painel/faturamento. */
 export function canManageDeals(scope: ViewerScope): boolean {
   return scope.isAdmin || INV_ORDER[scope.dealsAccess] >= INV_ORDER.manage
+}
+
+// ── Catálogo (módulo independente; escada Ver/Gerenciar) ──────────────────
+/** VER o catálogo (vitrine + tabelas, leitura). */
+export function canViewCatalog(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.catalogAccess] >= INV_ORDER.view
+}
+/** GERENCIAR o catálogo (criar produto, editar preço, ativar por tabela, gerir tabelas). */
+export function canManageCatalog(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.catalogAccess] >= INV_ORDER.manage
 }
 /** Alcance de Negócios num query builder: manager vê tudo; senão só assigned_to = ele. */
 export function applyDealScope<T>(query: T, scope: ViewerScope): T {
@@ -160,11 +171,12 @@ export async function getViewerScope(): Promise<ViewerScope> {
   let dealsAccess: AccessLevel = "none"
   let contactsAccess: AccessLevel = "none"
   let marketingAccess: AccessLevel = "none"
+  let catalogAccess: AccessLevel = "none"
 
   if (!isAdmin) {
     const { data: tu } = await supabaseAdmin
       .from("tenant_users")
-      .select("view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access")
+      .select("view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access")
       .eq("tenant_id", session.user.tenantId)
       .eq("user_id", session.user.id)
       .maybeSingle()
@@ -179,9 +191,10 @@ export async function getViewerScope(): Promise<ViewerScope> {
     dealsAccess = normAccessLevel(tu?.deals_access)
     contactsAccess = normAccessLevel(tu?.contacts_access)
     marketingAccess = normAccessLevel(tu?.marketing_access)
+    catalogAccess = normAccessLevel(tu?.catalog_access)
   }
 
-  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments, inventoryAccess, dealsAccess, contactsAccess, marketingAccess }
+  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments, inventoryAccess, dealsAccess, contactsAccess, marketingAccess, catalogAccess }
 }
 
 /**

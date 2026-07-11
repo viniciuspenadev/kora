@@ -851,7 +851,7 @@ async function recomputeDealValueFromItems(t: string, dealId: string, by: string
  *  T2: com `dealId`, os preços/tetos vêm da TABELA do negócio (Atacado…); sem
  *  linha na tabela, o item cai no preço da padrão (cache do catálogo). */
 export interface CatalogPickerItem { id: string; name: string; sku: string | null; category: string | null; price: number; billing: "one_time" | "monthly" | "yearly"; type: "product" | "service"; max_discount_pct: number; image_path: string | null; table_label: string | null; unit: string }
-export async function getCatalogForPicker(dealId?: string): Promise<CatalogPickerItem[] | { error: string }> {
+export async function getCatalogForPicker(dealId?: string, tableId?: string | null): Promise<CatalogPickerItem[] | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return []
   try { await requireModule("crm") } catch { return [] }
@@ -860,9 +860,13 @@ export async function getCatalogForPicker(dealId?: string): Promise<CatalogPicke
     .select("id, name, sku, category, price, billing, type, max_discount_pct, image_path, unit")
     .eq("tenant_id", t).eq("active", true).order("name")
 
-  // Tabela do negócio (query separada e graciosa — pré-migration cai na padrão).
+  // Precificação do picker: tabela ESCOLHIDA por item (T2 multi-tabela) tem
+  // precedência; sem escolha explícita cai na tabela do negócio; sem negócio, padrão.
+  // Query separada e graciosa (pré-migration cai na padrão).
   let overlay: Awaited<ReturnType<typeof resolveDealPricing>> = { usesDefault: true, table: null }
-  if (dealId) {
+  if (tableId !== undefined) {
+    overlay = await resolveDealPricing(t, tableId || null)
+  } else if (dealId) {
     const { data: dRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
     overlay = await resolveDealPricing(t, (dRow as { price_table_id?: string | null } | null)?.price_table_id ?? null)
   }
@@ -899,7 +903,7 @@ function lineFloorError(listPrice: number, maxPct: number, unitPrice: number, qt
     : "Este item não aceita desconto (teto 0% no catálogo)."
 }
 
-export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null }): Promise<{ ok: true } | { error: string }> {
+export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; priceTableId?: string | null }): Promise<{ ok: true } | { error: string }> {
   const gate = await dealItemGate(dealId)
   if ("error" in gate) return gate
   const qty = Number(input.quantity)
@@ -919,10 +923,18 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
   if (!cat) return { error: "Item do catálogo não encontrado" }
   const ci = cat as { id: string; name: string; type: string; billing: string; price: number; category: string | null; cost: number | null; max_discount_pct: number | null; unit: string | null }
 
-  // T2: precificação pela TABELA do negócio (query separada e graciosa; padrão =
-  // cache do catálogo). Tabela sem grade → bloqueia (fail-closed).
-  const { data: dRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", gate.t).maybeSingle()
-  const pricing = await resolveDealPricing(gate.t, (dRow as { price_table_id?: string | null } | null)?.price_table_id ?? null)
+  // T2: precificação pela TABELA DO ITEM (multi-tabela — decisão owner 2026-07-11:
+  // a proposta PODE misturar tabelas). Escolha explícita no picker manda; sem ela,
+  // herda a tabela do negócio. `resolveDealPricing` valida tenant/ativa/grade
+  // (anti-IDOR + fail-closed). Padrão = cache do catálogo.
+  let chosenTableId: string | null
+  if (input.priceTableId !== undefined) {
+    chosenTableId = input.priceTableId || null
+  } else {
+    const { data: dRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", gate.t).maybeSingle()
+    chosenTableId = (dRow as { price_table_id?: string | null } | null)?.price_table_id ?? null
+  }
+  const pricing = await resolveDealPricing(gate.t, chosenTableId)
   if ("error" in pricing) return { error: pricing.error }
   const tableRow = !pricing.usesDefault ? (pricing.rows.get(ci.id) ?? null) : null
 

@@ -34,6 +34,7 @@ export default async function MemberPage({ params }: { params: Promise<{ userId:
       hasCrm={hasCrm}
       hasContacts={hasContacts}
       hasMarketing={hasMarketing}
+      hasCatalog={hasCrm || hasInventory}
     />
   )
 }

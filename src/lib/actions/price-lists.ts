@@ -2,7 +2,8 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
-import { requireModule } from "@/lib/modules"
+import { requireModule, hasModule } from "@/lib/modules"
+import { getViewerScope, canManageCatalog } from "@/lib/visibility"
 import { revalidatePath } from "next/cache"
 import { getDefaultPriceTable, getActiveVersionOfTable, getVersionPricing } from "@/lib/crm/pricing"
 
@@ -41,12 +42,18 @@ export interface PriceTableGrid {
   rows: PriceListRow[]
 }
 
+/** Catálogo é módulo INDEPENDENTE: crm OU inventory habilita no tenant. */
+async function catalogModuleOn(tenantId: string): Promise<boolean> {
+  const [crm, inv] = await Promise.all([hasModule(tenantId, "crm"), hasModule(tenantId, "inventory")])
+  return crm || inv
+}
+
+/** Gate de GESTÃO das tabelas (as tabelas são superfície de GESTÃO — Ver não entra aqui). */
 async function requireManager(): Promise<{ tenantId: string; userId: string } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
-  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
-  return { tenantId: session.user.tenantId, userId: session.user.id }
+  const scope = await getViewerScope()
+  if (!canManageCatalog(scope)) return { error: "Sem permissão" }
+  if (!(await catalogModuleOn(scope.tenantId))) return { error: "Módulo Catálogo não habilitado" }
+  return { tenantId: scope.tenantId, userId: scope.userId }
 }
 
 /** Grade viva de uma tabela (cria se faltar — estados legados do modelo antigo). */
@@ -138,7 +145,7 @@ export async function createPriceTable(name: string): Promise<{ tableId: string 
     if (copy.length) await supabaseAdmin.from("price_list_items").insert(copy)
   }
 
-  revalidatePath("/configuracoes/catalogo/tabelas")
+  revalidatePath("/catalogo/tabelas")
   return { tableId }
 }
 
@@ -151,7 +158,7 @@ export async function renamePriceTable(tableId: string, name: string): Promise<{
     .update({ name: clean, updated_at: new Date().toISOString() })
     .eq("id", tableId).eq("tenant_id", gate.tenantId)
   if (error) return { error: error.message.includes("duplicate") || error.message.includes("uq_price_tables_name") ? "Já existe uma tabela com esse nome" : error.message }
-  revalidatePath("/configuracoes/catalogo/tabelas")
+  revalidatePath("/catalogo/tabelas")
   return { ok: true }
 }
 
@@ -171,8 +178,56 @@ export async function setPriceTableActive(tableId: string, active: boolean): Pro
     .update({ active, updated_at: new Date().toISOString() })
     .eq("id", tableId).eq("tenant_id", gate.tenantId)
   if (error) return { error: error.message }
-  revalidatePath("/configuracoes/catalogo/tabelas")
+  revalidatePath("/catalogo/tabelas")
   return { ok: true }
+}
+
+/**
+ * Ativa/desativa produtos numa tabela (participação por tabela — matriz-hub).
+ * 1 id (clique na célula) ou vários (edição em massa). Ativar produto que estava
+ * FORA da tabela cria a linha com o preço-base do catálogo; desativar mantém a
+ * linha (preço preservado pra quando religar). Gated por Gerenciar.
+ */
+export async function setTableActive(itemIds: string[], tableId: string, active: boolean): Promise<{ ok: true; changed: number } | { error: string }> {
+  const gate = await requireManager()
+  if ("error" in gate) return gate
+  const t = gate.tenantId
+  const ids = Array.from(new Set(itemIds)).slice(0, 500)
+  if (ids.length === 0) return { ok: true, changed: 0 }
+
+  const listId = await ensureActiveList(t, tableId, gate.userId)
+  if (!listId) return { error: "Falha ao abrir a tabela" }
+
+  const { data: rows } = await supabaseAdmin.from("price_list_items")
+    .select("item_id").eq("tenant_id", t).eq("list_id", listId).in("item_id", ids)
+  const haveRow = new Set(((rows ?? []) as { item_id: string }[]).map((r) => r.item_id))
+
+  if (haveRow.size > 0) {
+    const { error } = await supabaseAdmin.from("price_list_items")
+      .update({ active }).eq("tenant_id", t).eq("list_id", listId).in("item_id", [...haveRow])
+    if (error) return { error: error.message }
+  }
+
+  // Ativar produto ausente na tabela → cria a linha com o preço-base do catálogo.
+  if (active) {
+    const missing = ids.filter((id) => !haveRow.has(id))
+    if (missing.length) {
+      const { data: items } = await supabaseAdmin.from("catalog_items")
+        .select("id, price, cost, max_discount_pct").eq("tenant_id", t).in("id", missing)
+      const ins = ((items ?? []) as { id: string; price: number; cost: number | null; max_discount_pct: number }[]).map((i) => ({
+        tenant_id: t, list_id: listId, item_id: i.id,
+        price: Number(i.price ?? 0), cost: i.cost != null ? Number(i.cost) : null,
+        max_discount_pct: Number(i.max_discount_pct ?? 0), active: true,
+      }))
+      if (ins.length) {
+        const { error } = await supabaseAdmin.from("price_list_items").insert(ins)
+        if (error) return { error: error.message }
+      }
+    }
+  }
+
+  revalidatePath("/catalogo")
+  return { ok: true, changed: ids.length }
 }
 
 /** A GRADE VIVA de uma tabela: todo o catálogo × valores desta tabela. */
@@ -286,7 +341,7 @@ export async function savePriceTableRows(tableId: string, rows: { itemId: string
     if (audErr) console.error("[price-lists.save audit]", audErr.message)
   }
 
-  revalidatePath("/configuracoes/catalogo")
-  revalidatePath("/configuracoes/catalogo/tabelas")
+  revalidatePath("/catalogo")
+  revalidatePath("/catalogo/tabelas")
   return { ok: true, changed }
 }
