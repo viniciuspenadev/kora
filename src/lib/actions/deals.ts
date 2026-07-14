@@ -8,7 +8,8 @@ import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, openDealOf, 
 import { computeDealValue } from "@/lib/crm/value"
 import { formatQuantityWithUnit } from "@/lib/crm/units"
 import { applyDealStock } from "@/lib/actions/inventory"
-import { resolveDealPricing } from "@/lib/crm/pricing"
+import { resolveDealPricing, getPriceTable, getDefaultPriceTable } from "@/lib/crm/pricing"
+import { resolvePrice, fromCents } from "@/lib/commercial/entries"
 import { revalidatePath } from "next/cache"
 
 // ═══════════════════════════════════════════════════════════════
@@ -914,7 +915,8 @@ export async function getCatalogForPicker(dealId?: string, tableId?: string | nu
       category: (r.category as string | null) ?? null,
       price: row ? row.price : Number(r.price ?? 0),
       billing: r.billing as CatalogPickerItem["billing"], type: r.type as CatalogPickerItem["type"],
-      max_discount_pct: row ? row.max_discount_pct : Number(r.max_discount_pct ?? 0),
+      // Teto de desconto é item-level no modelo novo (catalog_items.max_discount_pct).
+      max_discount_pct: Number(r.max_discount_pct ?? 0),
       image_path: (r.image_path as string | null) ?? null,
       table_label: row ? nonDefault!.table.name : null,
       unit: (r.unit as string | null) ?? "un",
@@ -967,20 +969,30 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
     const { data: dRow } = await supabaseAdmin.from("tenant_deals").select("price_table_id").eq("id", dealId).eq("tenant_id", gate.t).maybeSingle()
     chosenTableId = (dRow as { price_table_id?: string | null } | null)?.price_table_id ?? null
   }
-  const pricing = await resolveDealPricing(gate.t, chosenTableId)
-  if ("error" in pricing) return { error: pricing.error }
-  const tableRow = !pricing.usesDefault ? (pricing.rows.get(ci.id) ?? null) : null
+  // Fail-closed: tabela ESCOLHIDA desativada → não preça item novo (troque/reative).
+  if (chosenTableId) {
+    const chosen = await getPriceTable(gate.t, chosenTableId)
+    if (chosen && !chosen.is_default && !chosen.active)
+      return { error: `A tabela "${chosen.name}" está desativada — troque a tabela do negócio ou reative-a em Configurações → Tabelas de preço.` }
+  }
 
-  // Teto de desconto (snapshot do dia) — piso vale pro desconto E pro preço negociado.
-  const listPrice = tableRow ? tableRow.price : Number(ci.price ?? 0)
-  const maxPct    = tableRow ? tableRow.max_discount_pct : Number(ci.max_discount_pct ?? 0)
-  const lineCost  = tableRow ? tableRow.cost : ci.cost
+  // Commercial Core: o preço-alvo sai do cérebro único (price_entries → cache).
+  // entryId = proveniência exata do snapshot (imunidade + auditoria).
+  const resolved = await resolvePrice(gate.t, { itemId: ci.id, tableId: chosenTableId })
+  const listPrice = fromCents(resolved.cents)
+  // Teto/custo são item-level (snapshot do dia) — piso vale pro desconto E pro preço negociado.
+  const maxPct    = Number(ci.max_discount_pct ?? 0)
+  const lineCost  = ci.cost
   const floorErr  = lineFloorError(listPrice, maxPct, unitPrice ?? listPrice, qty, discount)
   if (floorErr) return { error: floorErr }
 
+  // Rótulo da tabela só quando a linha preçou por uma tabela NÃO-padrão.
+  const def = await getDefaultPriceTable(gate.t)
+  const tableLabel = resolved.entryId && resolved.tableId && resolved.tableId !== def?.id ? resolved.tableName : null
+
   const { count } = await supabaseAdmin.from("tenant_deal_items")
     .select("id", { count: "exact", head: true }).eq("tenant_id", gate.t).eq("deal_id", dealId)
-  const { data: inserted, error } = await supabaseAdmin.from("tenant_deal_items").insert({
+  const { error } = await supabaseAdmin.from("tenant_deal_items").insert({
     tenant_id: gate.t, deal_id: dealId, catalog_item_id: ci.id,
     name: ci.name, type: ci.type, billing: ci.billing,
     unit_price: unitPrice ?? listPrice, quantity: qty, discount,
@@ -988,17 +1000,10 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
     term_months: ci.billing === "one_time" ? null : term,
     list_price: listPrice, category: ci.category, cost: lineCost,
     max_discount_pct: maxPct,
+    price_entry_id: resolved.entryId, price_table_label: tableLabel,
     position: count ?? 0,
   }).select("id").single()
   if (error) return { error: error.message }
-
-  // Proveniência (T2): versão exata + rótulo da tabela — best-effort (pré-migration só loga).
-  if (tableRow && !pricing.usesDefault && inserted) {
-    const { error: provErr } = await supabaseAdmin.from("tenant_deal_items")
-      .update({ price_list_id: pricing.version.id, price_table_label: pricing.table.name })
-      .eq("id", (inserted as { id: string }).id).eq("tenant_id", gate.t)
-    if (provErr) console.error("[deals.addDealItem] proveniência (migration pendente?):", provErr.message)
-  }
 
   await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item adicionado: ${qty !== 1 ? `${qty}× ` : ""}${ci.name}`, gate.oldValue)
   return { ok: true }

@@ -1,12 +1,10 @@
 import { auth } from "@/auth"
 import { redirect, notFound } from "next/navigation"
-import { Table2 } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
 import { getViewerScope, canManageCatalog } from "@/lib/visibility"
-import { getPriceTableGrid } from "@/lib/actions/price-lists"
-import { listCustomFields } from "@/lib/actions/custom-fields"
-import { TabelaGridClient } from "./grid-client"
+import { getTableGrid } from "@/lib/actions/commercial"
+import { TabelaGridClient, type TableRow } from "./grid-client"
 
 export default async function TabelaDetalhePage({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth()
@@ -17,21 +15,26 @@ export default async function TabelaDetalhePage({ params }: { params: Promise<{ 
   if (!crm && !inv) redirect("/inbox")
 
   const { id } = await params
-  const [grid, productFields] = await Promise.all([
-    getPriceTableGrid(id),
-    listCustomFields("product"),
-  ])
+  const grid = await getTableGrid(id)
   if ("error" in grid) notFound()
+
+  const rows: TableRow[] = grid.rows.map((r) => ({
+    itemId: r.itemId, name: r.name, sku: r.sku, category: r.category, type: r.type,
+    unit: r.unit, imagePath: r.imagePath, itemActive: r.itemActive, inTable: r.inTable,
+    priceCents: r.priceCents, promoCents: r.promoCents, inUse: r.inUse,
+  }))
+  const inCount = rows.filter((r) => r.inTable).length
 
   return (
     <PageShell
+      variant="list"
       title={grid.table.name}
-      description={grid.table.is_default
-        ? "Grade viva da tabela padrão — editou, salvou, valeu. O catálogo espelha estes valores; tudo auditado."
-        : `Grade viva do ${grid.table.name} — negócios nesta tabela preçam por aqui; tudo auditado. O catálogo segue espelhando a padrão.`}
-      icon={Table2}
+      description={`${inCount} ${inCount === 1 ? "item na tabela" : "itens na tabela"}${grid.table.is_default ? " · alimenta o catálogo" : ""}`}
     >
-      <TabelaGridClient grid={grid} productFields={productFields} />
+      <TabelaGridClient
+        table={{ id: grid.table.id, name: grid.table.name, isDefault: grid.table.is_default, active: grid.table.active }}
+        rows={rows}
+      />
     </PageShell>
   )
 }

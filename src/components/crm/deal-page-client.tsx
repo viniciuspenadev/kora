@@ -10,7 +10,7 @@ import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
-  Package, Wrench, Trash2, Search, MoreHorizontal, Hourglass, Bot,
+  Package, Wrench, Trash2, Search, MoreHorizontal, Hourglass, Bot, ChevronDown,
 } from "lucide-react"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { toast } from "sonner"
@@ -105,19 +105,17 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   const [itemModal, setItemModal] = useState<null | { mode: "add" } | { mode: "edit"; item: DealItemView }>(null)
   const [editPrev, setEditPrev]   = useState(false)                       // previsão inline
   const [sheetContact, setSheetContact] = useState<string | null>(null)   // Ver 360
-  const [composerTab, setComposerTab]   = useState<"nota" | "tarefa">("nota")
-  const [composerText, setComposerText] = useState("")
-  const [ctTitle, setCtTitle] = useState(""); const [ctDate, setCtDate] = useState(""); const [ctTime, setCtTime] = useState("09:00")
+  const [noteDraft, setNoteDraft]   = useState("")                        // modal de nota (menu ⋯)
+  const [taskPreset, setTaskPreset] = useState<string | null>(null)       // Reunião/Ligação = preset de tarefa
   const [rescheduleOf, setRescheduleOf] = useState<{ id: string; title: string } | null>(null)
 
   // Com itens, o valor é DERIVADO (composição do catálogo) — edição manual sai de cena.
   const hasItems = deal.items.length > 0
   const valueSummary = hasItems ? computeDealValue(deal.items) : null
 
-  // ── Régua de gestão (mockup): probabilidade → valor ponderado · saúde · jornada ──
-  const curProb  = curStageId ? ((pipeline?.stages ?? []).find((s) => s.id === curStageId)?.probability_pct ?? 0) : 0
-  const weighted = deal.status === "open" && deal.estimated_value && deal.estimated_value > 0 && curProb > 0
-    ? (deal.estimated_value * curProb) / 100 : null
+  // ── Régua de gestão: probabilidade da etapa (chip) · saúde · jornada ──
+  // (Valor ponderado removido por decisão do owner 2026-07-13.)
+  const curProb = curStageId ? ((pipeline?.stages ?? []).find((s) => s.id === curStageId)?.probability_pct ?? 0) : 0
 
   // Jornada no funil: segmentos de tempo por etapa a partir dos eventos (asc).
   const journey = (() => {
@@ -175,16 +173,13 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
     if ((v || null) === (deal.unit_id ?? null)) return
     run(() => updateDeal(deal.id, { unitId: v || null }))
   }
-  function submitComposerNota() {
-    if (!convId || !composerText.trim()) return
-    const text = composerText.trim(); setComposerText("")
+  function submitNote() {
+    if (!convId || !noteDraft.trim()) return
+    const text = noteDraft.trim(); setNoteDraft(""); setActiveModal(null)
     run(() => addDealNote(convId, deal.id, text))
   }
-  function submitComposerTarefa() {
-    if (!ctTitle.trim()) return
-    const dueAt = ctDate ? new Date(`${ctDate}T${ctTime || "09:00"}:00`).toISOString() : null
-    const title = ctTitle.trim(); setCtTitle(""); setCtDate("")
-    run(() => createTask({ dealId: deal.id, title, dueAt }))
+  function openTaskModal(preset: string | null) {
+    setRescheduleOf(null); setTaskPreset(preset); setActiveModal("task")
   }
   function doReschedule(title: string, dueAt: string | null) {
     const old = rescheduleOf; setRescheduleOf(null); setActiveModal(null)
@@ -366,19 +361,38 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   </button>
                 )}
               </div>
-              <span className={`inline-flex items-center text-[11px] font-semibold px-3 py-1.5 rounded-full border self-center ${st.cls}`}>{st.label}</span>
+              {/* Status como DROPDOWN (referência): transições de desfecho moram nele */}
+              <DropdownMenu>
+                <DropdownMenuTrigger disabled={pending}
+                  className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full border self-center transition-colors hover:brightness-95 ${st.cls}`}>
+                  {isOpen ? "Em negociação" : st.label} <ChevronDown className="size-3" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  {isOpen ? (
+                    <>
+                      <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}>
+                        <XCircle className="size-3.5 text-red-500" /> Marcar como perdido
+                      </DropdownMenuItem>
+                      <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }}>
+                        <Ban className="size-3.5 text-slate-400" /> Cancelar negócio
+                      </DropdownMenuItem>
+                    </>
+                  ) : (
+                    (deal.status !== "won" || isManager) && (
+                      <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReopenNote(""); setReopening(true) }}>
+                        <RotateCcw className="size-3.5 text-primary-500" /> Reabrir negócio
+                      </DropdownMenuItem>
+                    )
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
 
               <div className="flex items-center gap-2 self-center">
                 {pending && <Loader2 className="size-4 animate-spin text-slate-400" />}
-                {convId && <Link href={`/inbox?conversation=${convId}`} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><MessageSquare className="size-3.5 text-primary-500" /> Conversa</Link>}
-                {isOpen && wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><Trophy className="size-3.5 text-emerald-500" /> Ganhar</button>}
+                {convId && <Link href={`/inbox?conversation=${convId}`} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><MessageSquare className="size-3.5 text-primary-500" /> Abrir conversa</Link>}
+                {isOpen && wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${HBTN} border-primary bg-primary hover:bg-primary-700 text-white`}><Trophy className="size-3.5" /> Ganhar negócio</button>}
                 {!isOpen && deal.status === "won" && convId && deal.pipelines.length > 1 && (
-                  <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary-200 text-primary-700 bg-primary-50 hover:bg-primary-100`}><Route className="size-3.5" /> Próximo fluxo</button>
-                )}
-                {!isOpen && (
-                  (deal.status !== "won" || isManager) && (
-                    <button onClick={() => { setReopenNote(""); setReopening(true) }} disabled={!convId || pending} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><RotateCcw className="size-3.5 text-primary-500" /> Reabrir</button>
-                  )
+                  <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary bg-primary hover:bg-primary-700 text-white`}><Route className="size-3.5" /> Próximo fluxo</button>
                 )}
                 <DropdownMenu>
                   <DropdownMenuTrigger title="Mais ações"
@@ -386,25 +400,28 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                     <MoreHorizontal className="size-4" />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-56">
-                    {isOpen && (
-                      <>
-                        <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}>
-                          <XCircle className="size-3.5 text-red-500" /> Marcar como perdido
-                        </DropdownMenuItem>
-                        <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }}>
-                          <Ban className="size-3.5 text-slate-400" /> Cancelar negócio
-                        </DropdownMenuItem>
-                      </>
-                    )}
+                    {/* Registrar (referência: ações saíram do corpo pro menu, abrem modal) */}
+                    <DropdownMenuItem disabled={!convId || pending} onClick={() => { setNoteDraft(""); setActiveModal("note") }}>
+                      <StickyNote className="size-3.5 text-slate-400" /> Registrar nota
+                    </DropdownMenuItem>
+                    <DropdownMenuItem disabled={pending} onClick={() => openTaskModal(null)}>
+                      <CheckSquare className="size-3.5 text-slate-400" /> Criar tarefa
+                    </DropdownMenuItem>
+                    <DropdownMenuItem disabled={pending} onClick={() => openTaskModal("Reunião — ")}>
+                      <Calendar className="size-3.5 text-slate-400" /> Agendar reunião
+                    </DropdownMenuItem>
+                    <DropdownMenuItem disabled={pending} onClick={() => openTaskModal("Ligação — ")}>
+                      <MessageSquare className="size-3.5 text-slate-400" /> Registrar ligação
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     {deal.pipelines.length > 1 && isOpen && (
                       <>
-                        <DropdownMenuSeparator />
                         <DropdownMenuItem disabled={pending} onClick={() => setFlowModal("reclass")}>
                           <ArrowRightLeft className="size-3.5 text-slate-400" /> Mover para outro funil
                         </DropdownMenuItem>
+                        <DropdownMenuSeparator />
                       </>
                     )}
-                    <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => deal.contact && setSheetContact(deal.contact.id)}>
                       <User className="size-3.5 text-slate-400" /> Ver contato 360
                     </DropdownMenuItem>
@@ -414,25 +431,44 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
             </div>
           </div>
 
-          {/* Stepper — tempo por etapa + probabilidade da atual (mockup) */}
-          <div className="mt-4 pt-3.5 border-t border-slate-100 flex items-start overflow-x-auto pb-1">
+          {/* Stepper — NÓS CIRCULARES (referência 2026-07-13): check nas percorridas,
+              nó ativo com chip de % em cima, linha conectando, desfechos verde/vermelho. */}
+          <div className="mt-4 pt-5 border-t border-slate-100 flex items-start overflow-x-auto pb-1">
             {stepStages.map((s, i) => {
               const active = s.id === curStageId
               const done   = curIdx >= 0 && i < curIdx && !s.is_won && !s.is_lost
               const tdays  = daysByStage.get(s.name)
+              const isLast = i === stepStages.length - 1
               return (
                 <button key={s.id} onClick={() => clickStage(s)} disabled={!convId || pending || active}
                   className="group/step relative flex-1 min-w-[104px] text-center pt-4 disabled:cursor-default">
                   {active && curProb > 0 && !s.is_won && !s.is_lost && (
-                    <span className="absolute top-0 left-1/2 -translate-x-1/2 text-[9px] font-extrabold text-primary bg-primary-50 border border-primary-100 rounded-full px-2 py-px whitespace-nowrap">{curProb}% de chance</span>
+                    <span className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1 text-[9px] font-extrabold text-primary bg-primary-50 border border-primary-100 rounded-full px-2 py-px whitespace-nowrap z-10">{curProb}% de chance</span>
                   )}
-                  <span className={`block h-[5px] rounded mx-0.5 transition-colors ${active ? "" : done ? "bg-primary" : "bg-slate-200 group-hover/step:bg-primary-200"}`}
-                    style={active ? { background: `linear-gradient(90deg, ${s.color ?? "#004add"} 55%, #dbe4ff 55%)` } : undefined} />
+                  {/* linha + nó */}
+                  <span className="relative block h-5">
+                    {/* trilho: esquerda (chega no nó) e direita (sai do nó) */}
+                    {i > 0 && <span className={`absolute left-0 right-1/2 top-1/2 -translate-y-1/2 h-[3px] ${done || active ? "bg-primary" : "bg-slate-200"}`} />}
+                    {!isLast && <span className={`absolute left-1/2 right-0 top-1/2 -translate-y-1/2 h-[3px] ${done ? "bg-primary" : "bg-slate-200"}`} />}
+                    <span className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 grid place-items-center rounded-full transition-colors ${
+                      done ? "size-5 bg-primary text-white"
+                      : active ? "size-5 ring-4 ring-primary-100"
+                      : s.is_won ? "size-5 bg-white border-2 border-emerald-300 text-emerald-500"
+                      : s.is_lost ? "size-5 bg-white border-2 border-red-200 text-red-400"
+                      : "size-5 bg-white border-2 border-slate-200 text-slate-300 group-hover/step:border-primary-200"}`}
+                      style={active ? { background: s.color ?? "#004add" } : undefined}>
+                      {done ? <Check className="size-3" strokeWidth={3.5} />
+                        : active ? <span className="size-1.5 rounded-full bg-white" />
+                        : s.is_won ? <Trophy className="size-2.5" />
+                        : s.is_lost ? <X className="size-2.5" strokeWidth={3} />
+                        : <span className="size-1.5 rounded-full bg-slate-200 group-hover/step:bg-primary-200" />}
+                    </span>
+                  </span>
                   <span className={`block text-[10.5px] font-bold mt-1.5 truncate px-1 ${active || done ? "text-slate-900" : s.is_won ? "text-emerald-600" : s.is_lost ? "text-red-500" : "text-slate-400"}`}>
-                    {s.is_won ? "🏆 " : ""}{s.name}
+                    {s.is_won ? "Negócio fechado" : s.is_lost ? "Perdido" : s.name}
                   </span>
                   <span className={`block text-[9.5px] mt-px tabular-nums ${active && (stageAging ?? 0) >= 4 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
-                    {active ? `${stageAging ?? 0}d${(stageAging ?? 0) >= 4 ? " — parado" : ""}` : tdays != null && tdays > 0 ? `${tdays}d` : "—"}
+                    {s.is_won || s.is_lost ? " " : active ? `${stageAging ?? 0}d${(stageAging ?? 0) >= 4 ? " — parado" : ""}` : tdays != null && tdays > 0 ? `${tdays}d` : " "}
                   </span>
                 </button>
               )
@@ -441,29 +477,8 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
 
           {/* Régua de gestão — 5 cards individuais ("quadradinhos"), monocromática na
               identidade (azul), stroke editorial — decisão owner 2026-07-04. */}
-          <div className="mt-3 mb-3.5 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
-            <Gauge icon={Clock} label={isOpen ? "Em aberto" : "Duração"} value={daysOpen != null ? `${daysOpen} dias` : "—"} />
-            <Gauge icon={Hourglass} label="Na etapa atual" value={stageAging != null ? `${stageAging} dias` : "—"} warn={(stageAging ?? 0) >= 4 && isOpen} />
-            <div className="flex items-center gap-2.5 px-3.5 py-3 rounded-xl border border-slate-300 bg-white">
-              <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-primary-50 text-primary-600"><Calendar className="size-4" /></span>
-              <div className="min-w-0">
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Previsão</p>
-                {editPrev ? (
-                  <input autoFocus type="date" defaultValue={deal.expected_close_date ?? ""}
-                    onBlur={(e) => savePrev(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") savePrev((e.target as HTMLInputElement).value); if (e.key === "Escape") setEditPrev(false) }}
-                    className="text-xs font-bold text-slate-800 border-b border-primary-300 focus:outline-none bg-transparent" />
-                ) : (
-                  <button onClick={() => setEditPrev(true)} className="text-sm font-extrabold text-slate-900 tabular-nums border-b border-dashed border-slate-300 hover:border-primary leading-tight">
-                    {deal.expected_close_date ? shortDate(deal.expected_close_date) : "definir"}
-                  </button>
-                )}
-              </div>
-            </div>
-            <Gauge icon={TrendingUp} label="Valor ponderado" value={weighted != null ? brl(weighted) : "—"}
-              hint={weighted != null ? `${brl(deal.estimated_value as number)} × ${curProb}% da etapa` : isOpen ? "defina a % da etapa no funil" : undefined} />
-            <Gauge icon={MessageSquare} label="Última interação" value={relTime(lastTouch)} hint={lastChannelLabel ?? undefined} />
-          </div>
+          {/* KPIs desceram pro corpo (abaixo do banner de próximo passo) — feedback owner 2026-07-13 */}
+          <div className="pb-3.5" />
           {!convId && <p className="pb-2 text-[11px] text-amber-600">Negócio sem conversa vinculada — mover/ganhar/perder/observar ficam indisponíveis nesta tela.</p>}
 
           {losing && (
@@ -581,15 +596,40 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               </div>
             </div>
           ) : (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-3.5 flex items-center gap-3.5">
-              <span className="size-10 rounded-xl bg-slate-100 text-slate-400 grid place-items-center shrink-0"><Bell className="size-4.5" /></span>
-              <p className="text-xs text-slate-500 flex-1">Todo negócio vivo tem um <b>próximo passo</b> — este está sem nenhum agendado.</p>
-              <button onClick={() => { setRescheduleOf(null); setActiveModal("task") }}
-                className="h-8 px-3.5 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold shrink-0">
-                Agendar agora
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3.5 flex items-center gap-3.5">
+              <span className="size-10 rounded-xl bg-white border border-amber-200 text-amber-600 grid place-items-center shrink-0"><Calendar className="size-4.5" /></span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-extrabold text-slate-900">Nenhum próximo passo agendado</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Agende uma atividade para manter esta negociação avançando.</p>
+              </div>
+              <button onClick={() => openTaskModal(null)}
+                className="h-9 px-4 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold shrink-0">
+                Agendar próximo passo
               </button>
             </div>
           ))}
+
+          {/* KPIs — abaixo do próximo passo (referência: header compacto) */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <Gauge icon={Clock} label={isOpen ? "Tempo em aberto" : "Duração"} value={daysOpen != null ? `${daysOpen} dias` : "—"} />
+            <Gauge icon={Hourglass} label="Tempo na etapa" value={stageAging != null ? `${stageAging} dias` : "—"} warn={(stageAging ?? 0) >= 4 && isOpen} />
+            <div className="flex items-center gap-2.5 px-3.5 py-3 rounded-xl border border-slate-300 bg-white">
+              <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-primary-50 text-primary-600"><Calendar className="size-4" /></span>
+              <div className="min-w-0">
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Previsão de fechamento</p>
+                {editPrev ? (
+                  <input autoFocus type="date" defaultValue={deal.expected_close_date ?? ""}
+                    onBlur={(e) => savePrev(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") savePrev((e.target as HTMLInputElement).value); if (e.key === "Escape") setEditPrev(false) }}
+                    className="text-xs font-bold text-slate-800 border-b border-primary-300 focus:outline-none bg-transparent" />
+                ) : (
+                  <button onClick={() => setEditPrev(true)} className="text-sm font-extrabold text-slate-900 tabular-nums border-b border-dashed border-slate-300 hover:border-primary leading-tight">
+                    {deal.expected_close_date ? shortDate(deal.expected_close_date) : "definir"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
 
           {/* NEGOCIAÇÃO — itens + resumo + termos (spec: acima da linha do tempo) */}
           <NegotiationCard
@@ -603,40 +643,8 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
             onTerms={(t) => run(() => updateDeal(deal.id, t))}
           />
 
-          {/* COMPOSER — registrar sem sair (nota | tarefa) */}
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="flex gap-1 px-2.5 pt-2">
-              {(["nota", "tarefa"] as const).map((t) => (
-                <button key={t} onClick={() => setComposerTab(t)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-t-lg transition-colors ${composerTab === t ? "bg-primary-50 text-primary-700" : "text-slate-400 hover:text-slate-600"}`}>
-                  {t === "nota" ? <StickyNote className="size-3" /> : <CheckSquare className="size-3" />}
-                  {t === "nota" ? "Nota" : "Tarefa"}
-                </button>
-              ))}
-            </div>
-            {composerTab === "nota" ? (
-              <div className="bg-primary-50/60">
-                <textarea value={composerText} onChange={(e) => setComposerText(e.target.value)} rows={2}
-                  placeholder={convId ? "Escreva uma nota sobre este negócio… (fica na linha do tempo, com sua assinatura)" : "Sem conversa vinculada — notas indisponíveis"}
-                  disabled={!convId}
-                  className="w-full px-3.5 py-2.5 text-xs bg-transparent resize-none focus:outline-none disabled:opacity-50" />
-                <div className="flex px-2.5 pb-2.5">
-                  <button onClick={submitComposerNota} disabled={!convId || !composerText.trim() || pending}
-                    className="ml-auto h-7.5 px-4 py-1.5 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold disabled:opacity-40">Registrar</button>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-primary-50/60 px-3.5 py-2.5 flex items-center gap-2 flex-wrap">
-                <input value={ctTitle} onChange={(e) => setCtTitle(e.target.value)} placeholder="Ex: Ligar pra fechar a proposta"
-                  onKeyDown={(e) => { if (e.key === "Enter") submitComposerTarefa() }}
-                  className="flex-1 min-w-[180px] h-8 px-3 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20" />
-                <input type="date" value={ctDate} onChange={(e) => setCtDate(e.target.value)} className="h-8 px-2 text-[11px] bg-white border border-slate-200 rounded-lg text-slate-600 focus:outline-none" />
-                <input type="time" value={ctTime} onChange={(e) => setCtTime(e.target.value)} className="h-8 px-2 text-[11px] bg-white border border-slate-200 rounded-lg text-slate-600 focus:outline-none" />
-                <button onClick={submitComposerTarefa} disabled={!ctTitle.trim() || pending}
-                  className="h-8 px-4 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold disabled:opacity-40">Criar</button>
-              </div>
-            )}
-          </div>
+          {/* Composer saiu do corpo (feedback owner 2026-07-13): Nota/Tarefa/Reunião/Ligação
+              agora moram no menu "⋯" do header e abrem MODAL. */}
 
           {/* Linha do tempo única — movimentações + notas + tarefas */}
           <section className="bg-white rounded-2xl border border-slate-200 p-5">
@@ -694,18 +702,24 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   <p className="text-[13px] font-extrabold text-slate-900 tabular-nums mt-0.5">{contactLastWonDays != null ? `${contactLastWonDays}d` : "—"}</p>
                 </div>
               </div>
-              <div className="flex gap-2 mt-3">
-                {convId && (
-                  <Link href={`/inbox?conversation=${convId}`} className="flex-1 h-8 rounded-lg bg-primary hover:bg-primary-700 text-white text-[11px] font-bold inline-flex items-center justify-center gap-1.5">
-                    <MessageSquare className="size-3" /> Conversa
-                  </Link>
-                )}
-                <button onClick={() => setSheetContact(deal.contact!.id)} className="flex-1 h-8 rounded-lg bg-white border border-slate-200 text-slate-600 text-[11px] font-bold hover:bg-slate-50">
-                  Ver 360
-                </button>
-              </div>
+              {/* Referência: um botão único, largura total ("Abrir conversa" já mora no header) */}
+              <button onClick={() => setSheetContact(deal.contact!.id)} className="w-full h-9 mt-3 rounded-lg bg-white border border-slate-200 text-slate-700 text-[11px] font-bold hover:bg-slate-50 transition-colors">
+                Ver cliente 360
+              </button>
             </section>
           )}
+
+          {/* Última interação (saiu da régua de KPIs — referência 2026-07-13) */}
+          <section className="bg-white rounded-2xl border border-slate-200 p-4">
+            <h2 className="text-sm font-bold text-slate-900 mb-2.5">Última interação</h2>
+            <div className="flex items-center gap-2.5">
+              <span className="size-9 rounded-full bg-emerald-50 text-emerald-600 grid place-items-center shrink-0"><MessageSquare className="size-4" /></span>
+              <div className="min-w-0">
+                <p className="text-[13px] font-extrabold text-slate-900">{relTime(lastTouch)}</p>
+                {lastChannelLabel && <p className="text-[11px] text-slate-400 mt-0.5">{lastChannelLabel}</p>}
+              </div>
+            </div>
+          </section>
 
           {/* Campos personalizados do negócio (tenant_custom_fields entity='deal') */}
           {dealFields.length > 0 && (
@@ -734,8 +748,8 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           )}
 
           {/* Detalhes */}
-          <Card title="Detalhes">
-            <dl className="space-y-2 text-xs">
+          <Card title="Detalhes do negócio">
+            <dl>
               <Row label="Responsável">
                 {deal.responsible ? (
                   <span className="inline-flex items-center gap-1.5">
@@ -746,7 +760,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   </span>
                 ) : "—"}
               </Row>
-              <Row label="Funil">{[deal.pipeline_name, deal.stage?.name].filter(Boolean).join(" · ") || "—"}</Row>
+              <Row label="Funil e etapa">{[deal.pipeline_name, deal.stage?.name].filter(Boolean).join(" · ") || "—"}</Row>
               {(units.length > 0 || deal.unit_id) && (
                 <Row label="Unidade">
                   <SimpleSelect value={deal.unit_id ?? ""} onChange={saveUnit} disabled={pending} className="h-7 text-xs -my-0.5 min-w-[120px]" options={unitOptions} />
@@ -810,14 +824,29 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
         />
       )}
 
-      {/* Tarefa via modal: "Agendar agora" (herói vazio) e "Reagendar" (troca a pendente) */}
+      {/* Tarefa via modal: banner, "Reagendar" e presets Reunião/Ligação do menu ⋯ */}
       {activeModal === "task" && (
         <TaskModal
-          initialTitle={rescheduleOf?.title}
+          initialTitle={rescheduleOf?.title ?? taskPreset ?? undefined}
           onSubmit={(title, dueAt) => (rescheduleOf ? doReschedule(title, dueAt) : doAddTask(title, dueAt))}
-          onClose={() => { setActiveModal(null); setRescheduleOf(null) }}
+          onClose={() => { setActiveModal(null); setRescheduleOf(null); setTaskPreset(null) }}
           pending={pending}
         />
+      )}
+
+      {/* Nota via modal (menu ⋯) — registra na linha do tempo com assinatura */}
+      {activeModal === "note" && (
+        <ModalShell title="Registrar nota" desc="Fica na linha do tempo do negócio, com sua assinatura." icon={StickyNote} accent="bg-primary-50 text-primary-600" onClose={() => setActiveModal(null)}>
+          <textarea autoFocus value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} rows={4}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitNote(); if (e.key === "Escape") setActiveModal(null) }}
+            placeholder="Escreva uma nota sobre este negócio…"
+            className="w-full px-3 py-2.5 text-xs border border-slate-200 rounded-lg bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
+          <div className="flex items-center justify-end gap-2 mt-3">
+            <button onClick={() => setActiveModal(null)} className="h-9 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Cancelar</button>
+            <button onClick={submitNote} disabled={!noteDraft.trim() || pending}
+              className="h-9 px-4 text-xs font-semibold text-white bg-primary hover:bg-primary-700 rounded-lg disabled:opacity-50">Registrar nota</button>
+          </div>
+        </ModalShell>
       )}
 
       {/* Contato 360 (mesma superfície do board/roster) */}
@@ -1370,10 +1399,11 @@ function DocStat({ label, value, sub }: { label: string; value: string; sub?: st
 }
 
 
+// Card lateral no respiro da referência (2026-07-13): título forte + linhas com ar.
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="bg-white rounded-xl border border-slate-200 p-4">
-      <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2.5">{title}</h2>
+    <section className="bg-white rounded-2xl border border-slate-200 p-4">
+      <h2 className="text-sm font-bold text-slate-900 mb-1.5">{title}</h2>
       {children}
     </section>
   )
@@ -1381,9 +1411,9 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <dt className="text-slate-400 shrink-0">{label}</dt>
-      <dd className="text-slate-700 text-right min-w-0 truncate">{children}</dd>
+    <div className="flex items-center justify-between gap-3 py-2.5 border-b border-slate-100 last:border-0 last:pb-0">
+      <dt className="text-[11px] text-slate-400 shrink-0">{label}</dt>
+      <dd className="text-xs font-semibold text-slate-800 text-right min-w-0 truncate">{children}</dd>
     </div>
   )
 }

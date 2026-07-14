@@ -6,6 +6,7 @@ import { hasModule } from "@/lib/modules"
 import { getViewerScope, canViewCatalog, canManageCatalog } from "@/lib/visibility"
 import { revalidatePath } from "next/cache"
 import { getDefaultPriceTable } from "@/lib/crm/pricing"
+import { seedItemDefaultPrice, toCents } from "@/lib/commercial/entries"
 import { UNITS, DEFAULT_UNIT } from "@/lib/crm/units"
 
 const UNIT_CODES = new Set(UNITS.map((u) => u.code))
@@ -108,31 +109,36 @@ export interface CatalogTablePrices {
 /**
  * Preço + estado ATIVO de cada produto em CADA tabela — alimenta a matriz-hub.
  * Sem célula numa tabela = produto fora dela; célula inativa = na tabela mas
- * desligada (participação por tabela, price_list_items.active).
+ * desligada (participação por tabela, price_entries.active da entry vigente).
  */
 export async function getCatalogTablePrices(): Promise<CatalogTablePrices> {
   const gate = await requireCatalogView()
   if ("error" in gate) return { tables: [], cells: {} }
   const t = gate.tenantId
+  const now = new Date().toISOString()
 
-  const [{ data: tables }, { data: lists }, { data: pli }] = await Promise.all([
+  // Cutover Commercial Core: cells vêm das entries (cabeça vigente por célula,
+  // inclusive as DESLIGADAS — cell.active mostra participação). Preço em reais
+  // (contrato da matriz); domínio é cents.
+  const [{ data: tables }, { data: entries }] = await Promise.all([
     supabaseAdmin.from("price_tables")
       .select("id, name, is_default").eq("tenant_id", t).eq("active", true)
       .order("is_default", { ascending: false }).order("name"),
-    supabaseAdmin.from("price_lists")
-      .select("id, table_id").eq("tenant_id", t).eq("status", "active"),
-    supabaseAdmin.from("price_list_items")
-      .select("list_id, item_id, price, active").eq("tenant_id", t),
+    supabaseAdmin.from("price_entries")
+      .select("table_id, item_id, price_cents, promo_cents, active, starts_at")
+      .eq("tenant_id", t).is("superseded_by", null)
+      .lte("starts_at", now).or(`ends_at.is.null,ends_at.gt.${now}`)
+      .order("starts_at", { ascending: false }),
   ])
 
-  const tableByList = new Map(((lists ?? []) as { id: string; table_id: string | null }[])
-    .filter((l) => l.table_id).map((l) => [l.id, l.table_id as string]))
-
+  const activeTableIds = new Set(((tables ?? []) as { id: string }[]).map((x) => x.id))
   const cells: Record<string, Record<string, CatalogTableCell>> = {}
-  for (const r of ((pli ?? []) as { list_id: string; item_id: string; price: number; active: boolean | null }[])) {
-    const tableId = tableByList.get(r.list_id)
-    if (!tableId) continue
-    ;(cells[r.item_id] ??= {})[tableId] = { price: Number(r.price ?? 0), active: r.active !== false }
+  for (const e of ((entries ?? []) as { table_id: string; item_id: string; price_cents: number; promo_cents: number | null; active: boolean }[])) {
+    if (!activeTableIds.has(e.table_id)) continue
+    const cell = (cells[e.item_id] ??= {})
+    if (cell[e.table_id]) continue // já pegou a mais recente (ordem desc)
+    const cents = e.promo_cents != null ? e.promo_cents : e.price_cents
+    cell[e.table_id] = { price: Number(cents) / 100, active: e.active }
   }
 
   return {
@@ -153,23 +159,6 @@ function sanitizeAttrs(input: unknown): Record<string, string> {
   return out
 }
 
-/**
- * Item NOVO nasce em TODAS as tabelas (grade viva de cada uma) com o mesmo
- * preço/custo/teto como ponto de partida — cada tabela ajusta o seu depois.
- * Best-effort: roda OK antes das migrations (loga e segue).
- */
-async function seedAllActiveLists(t: string, itemId: string, price: number, cost: number | null, maxPct: number): Promise<void> {
-  const { data: lists } = await supabaseAdmin.from("price_lists")
-    .select("id").eq("tenant_id", t).eq("status", "active")
-  for (const l of ((lists ?? []) as { id: string }[])) {
-    const { data: existing } = await supabaseAdmin.from("price_list_items")
-      .select("id").eq("tenant_id", t).eq("list_id", l.id).eq("item_id", itemId).maybeSingle()
-    if (existing) continue
-    const { error } = await supabaseAdmin.from("price_list_items")
-      .insert({ tenant_id: t, list_id: l.id, item_id: itemId, price, cost, max_discount_pct: maxPct })
-    if (error) console.error("[catalog.seedAllActiveLists]", error.message)
-  }
-}
 
 export interface CatalogItemInput {
   type:        CatalogType
@@ -187,6 +176,17 @@ export interface CatalogItemInput {
   maxDiscountPct?: number
   /** Campos personalizados (chave/valor — sanitizados no server). */
   attrs?: Record<string, string>
+  // ── Commercial Core: detalhes por natureza (colunas F0) ──
+  /** Produto: código de barras (EAN/GTIN). */
+  barcode?:    string | null
+  /** Produto: marca/fabricante. */
+  brand?:      string | null
+  /** Produto: começar controlando estoque (stock_qty=0). Só faz efeito com módulo inventory. */
+  controlsStock?: boolean
+  /** Serviço: duração estimada em minutos. */
+  durationMin?: number | null
+  /** Serviço: modalidade (presencial · online · híbrido…). */
+  modality?:   string | null
 }
 
 function validate(input: CatalogItemInput): string | null {
@@ -242,19 +242,36 @@ export async function createCatalogItem(input: CatalogItemInput): Promise<{ id: 
   const sku = input.sku?.trim() || null
   if (sku && (await skuTaken(gate.tenantId, sku))) return { error: `Já existe um item com o identificador "${sku}"` }
 
+  // Detalhes por natureza (aposta 1 — flags): produto ganha barcode/marca/estoque;
+  // serviço guarda duração/modalidade em strategy_params (jsonb dedicado, ≠ attrs do
+  // cliente). nature = type na v1 (UI expõe só produto/serviço).
+  const isProduct = input.type === "product"
+  const serviceMeta =
+    !isProduct && (input.durationMin != null || (input.modality ?? "").trim())
+      ? { service_duration_min: input.durationMin ?? null, service_modality: input.modality?.trim() || null }
+      : null
+
   const { data, error } = await supabaseAdmin.from("catalog_items").insert({
     tenant_id:   gate.tenantId,
     type:        input.type,
+    nature:      input.type,
     name:        input.name.trim(),
     sku,
     category:    input.category?.trim() || null,
     description: input.description?.trim() || null,
     price:       input.price,
     cost:        input.cost ?? null,
+    cost_cents:  input.cost != null ? toCents(input.cost) : null,
     billing:     input.billing,
+    // Aposta 3 (commercial core): estratégia acompanha a cobrança — recorrente ≠ per_unit.
+    pricing_strategy: input.billing === "one_time" ? "per_unit" : "recurring",
     unit:        normalizeUnit(input.unit),
     max_discount_pct: input.maxDiscountPct ?? 0,
     attrs:       sanitizeAttrs(input.attrs),
+    barcode:     isProduct ? (input.barcode?.trim() || null) : null,
+    brand:       isProduct ? (input.brand?.trim() || null) : null,
+    stock_qty:   isProduct && input.controlsStock ? 0 : null,
+    strategy_params: serviceMeta,
     created_by:  gate.userId,
   }).select("id").single()
 
@@ -263,7 +280,10 @@ export async function createCatalogItem(input: CatalogItemInput): Promise<{ id: 
   const { error: audErr } = await supabaseAdmin.from("catalog_item_events")
     .insert({ tenant_id: gate.tenantId, item_id: id, by: gate.userId, field: "created", from_value: null, to_value: String(input.price) })
   if (audErr) console.error("[catalog.audit created]", audErr.message)
-  await seedAllActiveLists(gate.tenantId, id, input.price, input.cost ?? null, input.maxDiscountPct ?? 0)
+  // Commercial Core: item nasce com o preço-base na tabela PADRÃO (entry inicial).
+  // Tabelas não-padrão herdam via resolvePrice (fallback à padrão) até ganharem
+  // preço próprio; participação por tabela entra depois (setItemActiveInTable).
+  await seedItemDefaultPrice(gate.tenantId, gate.userId, id, toCents(input.price))
   revalidatePath("/catalogo")
   revalidatePath("/catalogo/tabelas")
   return { id }
@@ -278,6 +298,8 @@ export interface CatalogIdentityInput {
   billing:     CatalogBilling
   unit?:       string
   attrs?:      Record<string, string>
+  barcode?:    string | null
+  brand?:      string | null
 }
 
 /**
@@ -295,21 +317,150 @@ export async function updateCatalogIdentity(id: string, input: CatalogIdentityIn
   const sku = input.sku?.trim() || null
   if (sku && (await skuTaken(gate.tenantId, sku, id))) return { error: `Já existe um item com o identificador "${sku}"` }
 
-  const { error } = await supabaseAdmin.from("catalog_items").update({
+  const patch: Record<string, unknown> = {
     type:        input.type,
     name:        input.name.trim(),
     sku,
     category:    input.category?.trim() || null,
     description: input.description?.trim() || null,
     billing:     input.billing,
+    pricing_strategy: input.billing === "one_time" ? "per_unit" : "recurring",
     unit:        normalizeUnit(input.unit),
     attrs:       sanitizeAttrs(input.attrs),
     updated_at:  new Date().toISOString(),
-  }).eq("id", id).eq("tenant_id", gate.tenantId)
+  }
+  if (input.type === "product") {
+    if (input.barcode !== undefined) patch.barcode = input.barcode?.trim() || null
+    if (input.brand   !== undefined) patch.brand   = input.brand?.trim() || null
+  }
+  const { error } = await supabaseAdmin.from("catalog_items").update(patch)
+    .eq("id", id).eq("tenant_id", gate.tenantId)
 
   if (error) return { error: error.message }
   revalidatePath("/catalogo")
   revalidatePath("/catalogo/tabelas")
+  revalidatePath(`/catalogo/${id}`)
+  return { ok: true }
+}
+
+// ── Ficha do item: leitura completa + edição de campos comerciais/fiscais ──
+
+export interface CatalogItemFull extends CatalogItem {
+  nature:      string | null
+  barcode:     string | null
+  brand:       string | null
+  ncm:         string | null
+  cest:        string | null
+  cfop:        string | null
+  /** NULL = não controla estoque · número = saldo em cache. */
+  stock_qty:   number | null
+  /** Serviço: duração estimada (min) e modalidade — de strategy_params. */
+  durationMin: number | null
+  modality:    string | null
+}
+
+/** Item único com TODOS os campos da ficha (natureza/fiscal/estoque/serviço). */
+export async function getCatalogItem(id: string): Promise<CatalogItemFull | null> {
+  const gate = await requireCatalogView()
+  if ("error" in gate) return null
+
+  const [{ data }, { count }] = await Promise.all([
+    supabaseAdmin.from("catalog_items")
+      .select("id, type, nature, name, sku, category, description, price, cost, cost_cents, billing, unit, max_discount_pct, image_path, attrs, barcode, brand, ncm, cest, cfop_default, stock_qty, strategy_params, active, created_at")
+      .eq("id", id).eq("tenant_id", gate.tenantId).maybeSingle(),
+    supabaseAdmin.from("tenant_deal_items")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", gate.tenantId).eq("catalog_item_id", id),
+  ])
+  if (!data) return null
+  const r = data as Record<string, unknown>
+  const sp = (r.strategy_params as Record<string, unknown> | null) ?? {}
+  return {
+    id: r.id as string, type: r.type as CatalogType, nature: (r.nature as string | null) ?? null,
+    name: r.name as string, sku: (r.sku as string | null) ?? null, category: (r.category as string | null) ?? null,
+    description: (r.description as string | null) ?? null,
+    price: Number(r.price ?? 0),
+    cost: r.cost_cents != null ? Number(r.cost_cents) / 100 : (r.cost != null ? Number(r.cost) : null),
+    billing: (r.billing as CatalogBilling) ?? "one_time", unit: (r.unit as string | null) ?? "un",
+    max_discount_pct: Number(r.max_discount_pct ?? 0),
+    image_path: (r.image_path as string | null) ?? null,
+    attrs: (r.attrs as Record<string, string> | null) ?? {},
+    active: !!r.active, created_at: r.created_at as string,
+    in_use: count ?? 0,
+    barcode: (r.barcode as string | null) ?? null, brand: (r.brand as string | null) ?? null,
+    ncm: (r.ncm as string | null) ?? null, cest: (r.cest as string | null) ?? null,
+    cfop: (r.cfop_default as string | null) ?? null,
+    stock_qty: r.stock_qty != null ? Number(r.stock_qty) : null,
+    durationMin: sp.service_duration_min != null ? Number(sp.service_duration_min) : null,
+    modality: (sp.service_modality as string | null) ?? null,
+  }
+}
+
+export interface CatalogCommercialInput {
+  maxDiscountPct?: number
+  cost?:        number | null
+  ncm?:         string | null
+  cest?:        string | null
+  cfop?:        string | null
+  durationMin?: number | null
+  modality?:    string | null
+}
+
+/**
+ * Edita os campos COMERCIAIS/FISCAIS do item (custo item-level, teto de desconto,
+ * NCM/CEST/CFOP, detalhes de serviço). Preço por tabela NÃO passa aqui — mora nas
+ * entries ([commercial.ts] upsertPrice). Audita custo e teto (catalog_item_events).
+ */
+export async function updateCatalogCommercial(id: string, input: CatalogCommercialInput): Promise<{ ok: true } | { error: string }> {
+  const gate = await requireManager()
+  if ("error" in gate) return gate
+
+  const { data: cur } = await supabaseAdmin.from("catalog_items")
+    .select("cost, cost_cents, max_discount_pct, strategy_params, type")
+    .eq("id", id).eq("tenant_id", gate.tenantId).maybeSingle()
+  if (!cur) return { error: "Item não encontrado" }
+  const c = cur as Record<string, unknown>
+
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  const events: { field: string; from_value: string | null; to_value: string | null }[] = []
+
+  if (input.maxDiscountPct !== undefined) {
+    const md = input.maxDiscountPct
+    if (!Number.isInteger(md) || md < 0 || md > 100) return { error: "Desconto máximo inválido (0 a 100)" }
+    patch.max_discount_pct = md
+    if (md !== Number(c.max_discount_pct ?? 0)) events.push({ field: "max_discount_pct", from_value: String(c.max_discount_pct ?? 0), to_value: String(md) })
+  }
+  if (input.cost !== undefined) {
+    const cost = input.cost
+    if (cost != null && (!Number.isFinite(cost) || cost < 0)) return { error: "Custo inválido" }
+    patch.cost = cost ?? null
+    patch.cost_cents = cost != null ? toCents(cost) : null
+    const prevCost = c.cost_cents != null ? Number(c.cost_cents) / 100 : (c.cost != null ? Number(c.cost) : null)
+    if ((cost ?? null) !== (prevCost ?? null)) events.push({ field: "cost", from_value: prevCost != null ? String(prevCost) : null, to_value: cost != null ? String(cost) : null })
+  }
+  if (input.ncm  !== undefined) patch.ncm = input.ncm?.trim() || null
+  if (input.cest !== undefined) patch.cest = input.cest?.trim() || null
+  if (input.cfop !== undefined) patch.cfop_default = input.cfop?.trim() || null
+
+  if (input.durationMin !== undefined || input.modality !== undefined) {
+    const sp = { ...((c.strategy_params as Record<string, unknown> | null) ?? {}) }
+    if (input.durationMin !== undefined) sp.service_duration_min = input.durationMin ?? null
+    if (input.modality !== undefined)    sp.service_modality = input.modality?.trim() || null
+    patch.strategy_params = sp
+  }
+
+  const { error } = await supabaseAdmin.from("catalog_items").update(patch)
+    .eq("id", id).eq("tenant_id", gate.tenantId)
+  if (error) return { error: error.message }
+
+  for (const e of events) {
+    const { error: audErr } = await supabaseAdmin.from("catalog_item_events")
+      .insert({ tenant_id: gate.tenantId, item_id: id, by: gate.userId, field: e.field, from_value: e.from_value, to_value: e.to_value })
+    if (audErr) console.error("[catalog.audit commercial]", audErr.message)
+  }
+
+  revalidatePath("/catalogo")
+  revalidatePath(`/catalogo/${id}`)
   return { ok: true }
 }
 

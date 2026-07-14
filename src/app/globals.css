@@ -62,11 +62,12 @@
   --radius-lg: var(--radius);
 }
 
-/* Canvas de página — token DEDICADO `bg-canvas` (azul clarinho), usado SÓ no fundo das
-   páginas (PageShell + roots). slate-50 fica NEUTRO (é preenchimento de card/rodapé/hover,
-   não pode azular). Card/surface = white. Distinto do primary-50 pra chips continuarem evidentes. */
+/* Canvas de página — token DEDICADO `bg-canvas`, usado SÓ no fundo das páginas
+   (PageShell + roots). BRANCO desde 2026-07-13 (redesign aprovado: cards se
+   sustentam pela borda slate-200, como na referência do owner). Valor anterior
+   (azul clarinho #eff4fd) documentado caso volte. slate-50 segue NEUTRO. */
 @theme {
-  --color-canvas: #eff4fd;
+  --color-canvas: #ffffff;
 
   /* Chrome de navegação (sidebar + topbar) — TEMÁVEL via estes tokens. Só trocar os
      valores aqui inverte todo o menu (claro ⇄ escuro), sem mexer em componente.
@@ -86,7 +87,7 @@
 
 :root {
   /* Superfícies */
-  --background: oklch(0.965 0.014 256);   /* = bg-canvas (body harmoniza com o fundo das páginas) */
+  --background: oklch(1 0 0);   /* = bg-canvas branco (body harmoniza com o fundo das páginas) */
   --foreground: oklch(0.145 0.015 260);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0.015 260);
