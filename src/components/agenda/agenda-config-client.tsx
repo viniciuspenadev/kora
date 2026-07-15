@@ -658,7 +658,17 @@ function ReminderEditorDialog({ draft, exampleVars, isMeta, confirmStatus, appro
   const confirmButtons = ["Confirmar", "Remarcar"]
   const buttons = draft.requestConfirmation ? confirmButtons : undefined
   const defaultAnchor = `Olá ${v.nome || "cliente"}! Passando pra confirmar seu horário 👋\n\n📅 *${v.servico || "atendimento"}*\n🗓️ ${v.data || "—"} às ${v.hora || "—"}\n\nPosso confirmar?`
-  const inWindowBody = renderTemplate(draft.text, v).trim() || (draft.requestConfirmation ? defaultAnchor : "(sua mensagem aparece aqui)")
+  // PREVIEW = o que o MOTOR envia (espelha buildConfirmAnchor de reminders.ts):
+  // com confirmação, os dados do agendamento entram SOZINHOS — o texto do tenant é
+  // a saudação. Se o texto já contém a âncora (data/hora/"posso confirmar"), vale
+  // como mensagem completa (guarda anti-duplicação, varredura 2026-07-15).
+  const renderedText = renderTemplate(draft.text, v).trim()
+  const textHasAnchor = !!renderedText && (
+    (!!v.hora && renderedText.includes(v.hora)) || (!!v.data && renderedText.includes(v.data)) || /posso confirmar/i.test(renderedText)
+  )
+  const anchorBlock = `📅 *${v.servico || "atendimento"}*\n🗓️ ${v.data || "—"} às ${v.hora || "—"}`
+  const confirmBody = !renderedText ? defaultAnchor : textHasAnchor ? renderedText : `${renderedText}\n\n${anchorBlock}\n\nPosso confirmar?`
+  const inWindowBody = draft.requestConfirmation ? confirmBody : (renderedText || "(sua mensagem aparece aqui)")
   const templateBody = `Olá ${v.nome || "cliente"}! Confirmando seu ${v.servico || "atendimento"} em ${v.data || "—"} às ${v.hora || "—"}. Posso confirmar?`
   const canSave = draft.text.trim().length > 0 || (draft.requestConfirmation ?? false)
 
@@ -710,6 +720,9 @@ function ReminderEditorDialog({ draft, exampleVars, isMeta, confirmStatus, appro
                 <p className="text-xs font-semibold text-emerald-700">🟢 Janela aberta · texto + botões (grátis)</p>
                 <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={v} placeholder="Ex: Oi {{nome}}, confirmando seu horário…" />
                 <Switch checked={draft.requestConfirmation ?? false} onChange={(x) => onChange({ ...draft, requestConfirmation: x })} size="sm" label="Pedir confirmação (botões Confirmar/Remarcar)" />
+                {draft.requestConfirmation && !textHasAnchor && (
+                  <p className="text-[10px] text-slate-400">Com a confirmação ligada, serviço, data e hora entram <strong>sozinhos</strong> — escreva só a saudação (ou deixe vazio). A prévia mostra a mensagem final.</p>
+                )}
                 <WhatsAppPreview body={inWindowBody} buttons={buttons} badge="Dentro da janela · grátis" />
               </div>
               {/* Janela fechada */}
@@ -743,6 +756,9 @@ function ReminderEditorDialog({ draft, exampleVars, isMeta, confirmStatus, appro
             <div className="space-y-3 rounded-xl border border-slate-200 p-4">
               <MessageBuilder value={draft.text} onChange={(t) => onChange({ ...draft, text: t })} vars={v} placeholder="Ex: Oi {{nome}}, seu horário é {{data}} às {{hora}}!" />
               <Switch checked={draft.requestConfirmation ?? false} onChange={(x) => onChange({ ...draft, requestConfirmation: x })} size="sm" label="Pedir confirmação ao cliente" description="O cliente responde Confirmar / Remarcar — status muda sozinho." />
+              {draft.requestConfirmation && !textHasAnchor && (
+                <p className="text-[10px] text-slate-400">Com a confirmação ligada, serviço, data e hora entram <strong>sozinhos</strong> — escreva só a saudação (ou deixe vazio). A prévia mostra a mensagem final.</p>
+              )}
               <WhatsAppPreview body={inWindowBody} buttons={buttons} />
             </div>
           )}
