@@ -43,7 +43,19 @@ const firstName = (full: string) => full.trim().split(/\s+/)[0]
 // só a saudação de abertura. As 2 ações ficam uma embaixo da outra. Sem "cancelar":
 // cancelamento não é self-service (cliente que insiste cai pro atendente).
 function buildConfirmAnchor(tenantText: string, vars: Record<string, string>): string {
-  const intro = tenantText || `Olá${vars.nome ? `, ${firstName(vars.nome)}` : ""}! Passando pra confirmar seu horário 👋`
+  // Guarda anti-duplicação (varredura 2026-07-15): se o texto do tenant JÁ contém
+  // a âncora (data/hora renderizadas ou a pergunta), ele é a mensagem COMPLETA —
+  // usar como está. Sem isso, serviço/data/hora saíam 2× no mesmo disparo (a UI
+  // induzia a salvar o exemplo inteiro como texto do step).
+  const t = tenantText.trim()
+  const hasAnchor = !!t && (
+    (!!vars.hora && t.includes(vars.hora)) ||
+    (!!vars.data && t.includes(vars.data)) ||
+    /posso confirmar/i.test(t)
+  )
+  if (hasAnchor) return t
+
+  const intro = t || `Olá${vars.nome ? `, ${firstName(vars.nome)}` : ""}! Passando pra confirmar seu horário 👋`
   const anchor = [
     vars.servico ? `📅 *${vars.servico}*` : null,
     `🗓️ ${vars.data} às ${vars.hora}`,

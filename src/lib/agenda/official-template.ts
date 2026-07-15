@@ -85,6 +85,12 @@ export async function ensureAgendaConfirmTemplate(tenantId: string): Promise<voi
     }
 
     // Cache local + selo system-managed (UI trava deletar/editar) + nome em config.
+    // ⚠️ NUNCA rebaixar status: se o cache já diz APPROVED (sync da WABA), o
+    // default "PENDING" deste caminho não pode sobrescrever (varredura 2026-07-15).
+    const { data: cached } = await supabaseAdmin.from("wa_templates")
+      .select("status").eq("tenant_id", tenantId)
+      .eq("name", AGENDA_CONFIRM_TEMPLATE).eq("language", AGENDA_TEMPLATE_LANG).maybeSingle()
+    if (cached?.status === "APPROVED") status = "APPROVED"
     await supabaseAdmin.from("wa_templates").upsert({
       tenant_id: tenantId, instance_id: inst.id, waba_id: inst.meta_business_account_id,
       name: AGENDA_CONFIRM_TEMPLATE, language: AGENDA_TEMPLATE_LANG, category: "UTILITY",
@@ -115,8 +121,22 @@ export async function agendaConfirmStatus(tenantId: string): Promise<AgendaTempl
 export async function approvedConfirmTemplate(tenantId: string): Promise<string | null> {
   const { data: cfg } = await supabaseAdmin.from("tenant_config")
     .select("agenda_confirm_template").eq("tenant_id", tenantId).maybeSingle()
-  const name = cfg?.agenda_confirm_template as string | null
-  if (!name) return null
+  const name = (cfg?.agenda_confirm_template as string | null) ?? null
+
+  // Config vazio ≠ template inexistente: o seeding pode ter falhado DEPOIS do
+  // template já existir/aprovar na WABA (sync preenche wa_templates). A VERDADE
+  // é o cache de status — consulta direto e AUTO-CURA o config (varredura
+  // 2026-07-15: Blue tinha APPROVED no cache e config null → degradava sempre).
+  if (!name) {
+    const { data: tpl } = await supabaseAdmin.from("wa_templates")
+      .select("status").eq("tenant_id", tenantId)
+      .eq("name", AGENDA_CONFIRM_TEMPLATE).eq("language", AGENDA_TEMPLATE_LANG).maybeSingle()
+    if (tpl?.status !== "APPROVED") return null
+    await supabaseAdmin.from("tenant_config")
+      .upsert({ tenant_id: tenantId, agenda_confirm_template: AGENDA_CONFIRM_TEMPLATE }, { onConflict: "tenant_id" })
+    return AGENDA_CONFIRM_TEMPLATE
+  }
+
   const { data: tpl } = await supabaseAdmin.from("wa_templates")
     .select("status").eq("tenant_id", tenantId).eq("name", name).eq("language", AGENDA_TEMPLATE_LANG).maybeSingle()
   return tpl?.status === "APPROVED" ? name : null
