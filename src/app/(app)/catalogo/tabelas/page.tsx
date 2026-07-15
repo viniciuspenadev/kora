@@ -1,6 +1,5 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
-import { Table2 } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
 import { getViewerScope, canManageCatalog } from "@/lib/visibility"
@@ -16,12 +15,13 @@ export default async function TabelasPage() {
   if (!crm && !inv) redirect("/inbox")
 
   const tables = await getPriceTables()
+  const active = tables.filter((t) => t.active).length
 
   return (
     <PageShell
+      variant="list"
       title="Tabelas de preço"
-      description="A bancada de gestão dos seus produtos e serviços — Varejo, Atacado… grade viva, reajuste em massa, tudo auditado."
-      icon={Table2}
+      description={`${active} ${active === 1 ? "tabela ativa" : "tabelas ativas"} · a padrão alimenta o catálogo — edite a grade, reajuste em massa, tudo auditado`}
     >
       <TabelasClient tables={tables} />
     </PageShell>

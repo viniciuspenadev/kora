@@ -17,7 +17,6 @@ export function TabelasClient({ tables }: { tables: PriceTableSummary[] }) {
         <Link href="/catalogo" className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-600 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors">
           <ArrowLeft className="size-3.5" /> Catálogo
         </Link>
-        <span className="text-xs text-slate-400 tabular-nums">{tables.length} tabela{tables.length !== 1 ? "s" : ""}</span>
         <button type="button" onClick={() => setCreating(true)}
           className="ml-auto inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
           <Plus className="size-3.5" /> Nova tabela

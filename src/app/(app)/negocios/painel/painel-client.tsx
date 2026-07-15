@@ -50,6 +50,8 @@ const LENS: Record<Lens, { color: string; soft: string; ring: string }> = {
   open: { color: "#6366f1", soft: "#eef2ff", ring: "ring-indigo-400/40 border-indigo-300" },
 }
 const LOSS_COLORS = ["#b91c1c", "#ef4444", "#f87171", "#fca5a5", "#dc2626", "#fecaca", "#991b1b", "#fee2e2"]
+/** Donut de atendentes: escala monocromática de azul (referência do owner) — maior fatia = tom mais escuro. */
+const BLUE_SHADES = ["#1e40af", "#3b82f6", "#60a5fa", "#0ea5e9", "#93c5fd", "#38bdf8", "#7dd3fc", "#bfdbfe"]
 
 /** Linha das listas Produtos/Atendentes — colunas FIXAS (nome flexível + Vendas ·
     Ticket médio · Total) → tudo alinhado verticalmente, como a referência. */
@@ -143,8 +145,10 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
   const byAgent = useMemo(() => {
     const g = new Map<string, DashDeal[]>()
     for (const d of set) { const k = d.responsible ?? "Sem responsável"; g.set(k, [...(g.get(k) ?? []), d]) }
-    return [...g.entries()].map(([label, ds]) => ({ label, value: metric(ds), color: avaColor(label) }))
+    // Cor DEPOIS do sort: maior fatia = azul mais escuro (escala monocromática da referência).
+    return [...g.entries()].map(([label, ds]) => ({ label, value: metric(ds) }))
       .filter((x) => x.value > 0).sort((a, b) => b.value - a.value).slice(0, 8)
+      .map((x, i) => ({ ...x, color: BLUE_SHADES[i % BLUE_SHADES.length] }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [set, byQty])
 
@@ -305,7 +309,7 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
           <section className="bg-white rounded-xl border border-slate-200 p-4">
             <h2 className="text-sm font-bold text-slate-900">Vendas por unidade</h2>
             <p className="text-[11px] text-slate-400">Visualização por {byQty ? "quantidade" : "valor"} dos negócios</p>
-            <Donut data={byUnit} fmt={byQty ? (v) => String(v) : brlK} empty="Sem negócios na lente." showValueInLegend />
+            <Donut data={byUnit} fmt={byQty ? (v) => String(v) : brlK} empty="Sem negócios na lente." labelMode="value" />
           </section>
           <section className="bg-white rounded-xl border border-slate-200 p-4">
             <h2 className="text-sm font-bold text-slate-900">{lens === "won" ? "Produtos mais vendidos" : "Produtos com mais negócios"}</h2>
@@ -366,7 +370,7 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
               <p className="text-[11px] text-slate-400">Visualização por valor dos negócios</p>
             </div>
             <div className="flex items-center gap-3 text-[10.5px] text-slate-500">
-              <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-[#004add]" /> Criados</span>
+              <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-[#3b82f6]" /> Criados</span>
               <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-emerald-500" /> Ganhos</span>
               <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-red-500" /> Perdidos</span>
             </div>
@@ -520,80 +524,185 @@ function FunnelChart({ funnel, color }: {
   )
 }
 
-// ── Donut ─────────────────────────────────────────────────────────
-function Donut({ data, fmt, empty, showValueInLegend = false }: {
+// ── Donut (referência do owner: label EXTERNO com linha-guia — % ou valor —
+//    e legenda horizontal de bolinhas embaixo) ───────────────────────
+function Donut({ data, fmt, empty, labelMode = "pct", showValueInLegend = false }: {
   data: { label: string; value: number; color: string }[]
   fmt: (v: number) => string
   empty: string
+  /** O que a linha-guia mostra: percentual (default) ou o valor formatado (fmt). */
+  labelMode?: "pct" | "value"
   showValueInLegend?: boolean
 }) {
   const total = data.reduce((s, d) => s + d.value, 0)
   if (total <= 0) return <p className="text-xs text-slate-400 py-10 text-center">{empty}</p>
-  const R = 54, C = 2 * Math.PI * R
+  const CX = 130, CY = 100, R = 52, SW = 24, C = 2 * Math.PI * R
   // Offset acumulado por segmento — pré-computado (sem mutação durante o render).
   const segs = data.reduce<{ frac: number; offset: number }[]>((acc, seg) => {
     const prev = acc[acc.length - 1]
     acc.push({ frac: seg.value / total, offset: prev ? prev.offset + prev.frac : 0 })
     return acc
   }, [])
+
+  // Labels externos: ponto na borda do anel → cotovelo → trecho horizontal → texto.
+  const labels = data.map((seg, i) => {
+    const a = (segs[i].offset + segs[i].frac / 2) * 2 * Math.PI - Math.PI / 2
+    const right = Math.cos(a) >= 0
+    const text = labelMode === "value"
+      ? fmt(seg.value)
+      : `${((seg.value / total) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`
+    return {
+      sx: CX + Math.cos(a) * (R + SW / 2 + 2), sy: CY + Math.sin(a) * (R + SW / 2 + 2),
+      ex: CX + Math.cos(a) * (R + SW / 2 + 13), ey: CY + Math.sin(a) * (R + SW / 2 + 13),
+      right, text, frac: segs[i].frac,
+    }
+  }).filter((l) => l.frac >= 0.02)  // fatia <2% não ganha label (legenda cobre)
+  // Anti-colisão: por lado, empurra labels muito próximos pra baixo (min 15px).
+  for (const side of [true, false]) {
+    const col = labels.filter((l) => l.right === side).sort((a, b) => a.ey - b.ey)
+    for (let i = 1; i < col.length; i++) if (col[i].ey - col[i - 1].ey < 15) col[i].ey = col[i - 1].ey + 15
+  }
+
   return (
     <div className="mt-3 flex flex-col items-center gap-3">
-      <svg width={150} height={150} viewBox="0 0 150 150">
-        <g transform="rotate(-90 75 75)">
+      <svg viewBox="0 0 260 200" className="w-full max-w-[300px]">
+        <g transform={`rotate(-90 ${CX} ${CY})`}>
           {data.map((seg, i) => (
-            <circle key={i} cx={75} cy={75} r={R} fill="none" stroke={seg.color} strokeWidth={20}
+            <circle key={i} cx={CX} cy={CY} r={R} fill="none" stroke={seg.color} strokeWidth={SW}
               strokeDasharray={`${Math.max(0.5, segs[i].frac * C - 1.5)} ${C}`} strokeDashoffset={-segs[i].offset * C} />
           ))}
         </g>
+        {labels.map((l, i) => (
+          <g key={i}>
+            <polyline
+              points={`${l.sx},${l.sy} ${l.ex},${l.ey} ${l.ex + (l.right ? 9 : -9)},${l.ey}`}
+              fill="none" stroke="#94a3b8" strokeWidth={1} />
+            <circle cx={l.ex + (l.right ? 9 : -9)} cy={l.ey} r={1.5} fill="#64748b" />
+            <text x={l.ex + (l.right ? 13 : -13)} y={l.ey + 3.5} textAnchor={l.right ? "start" : "end"}
+              fontSize={11} fontWeight={600} className="fill-slate-700 tabular-nums">{l.text}</text>
+          </g>
+        ))}
       </svg>
-      <div className="w-full space-y-1">
+      {/* legenda horizontal de bolinhas (como a referência) */}
+      <div className="w-full flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 pt-2.5 border-t border-slate-100">
         {data.map((seg) => (
-          <div key={seg.label} className="flex items-center gap-2 text-[11px]">
+          <span key={seg.label} className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 min-w-0">
             <span className="size-2 rounded-full shrink-0" style={{ background: seg.color }} />
-            <span className="text-slate-600 truncate flex-1">{seg.label}{showValueInLegend && <span className="text-slate-400"> · {fmt(seg.value)}</span>}</span>
-            <span className="tabular-nums font-semibold text-slate-700 shrink-0">{((seg.value / total) * 100).toFixed(seg.value / total >= 0.1 ? 1 : 2)}%</span>
-          </div>
+            <span className="truncate max-w-[140px]">{seg.label}</span>
+            {showValueInLegend && <span className="text-slate-400 tabular-nums shrink-0">· {fmt(seg.value)}</span>}
+          </span>
         ))}
       </div>
     </div>
   )
 }
 
-// ── Dados mensais (barras: criados / ganhos acima · perdidos abaixo) ─
+// ── Dados mensais (barra empilhada: criados+ganhos acima do zero · perdidos
+//    NEGATIVOS abaixo — escala ÚNICA cruzando o zero, gridlines em valores
+//    redondos, hover com coluna destacada + tooltip) ─────────────────
 function MonthlyChart({ data }: { data: { month: string; created: number; won: number; lost: number }[] }) {
   const [ref, w] = useMeasure()
-  const H = 210, axis = H * 0.68, padL = 8
-  const maxUp = Math.max(1, ...data.map((d) => Math.max(d.created, d.won)))
-  const maxDn = Math.max(1, ...data.map((d) => d.lost))
+  const [hover, setHover] = useState<number | null>(null)
+  const H = 250, padT = 10, padB = 24, padL = 56, padR = 12
+  const plotH = H - padT - padB, plotW = Math.max(0, w - padL - padR)
+
+  // Escala única: mesmo R$-por-px acima e abaixo do zero (honestidade visual).
+  const maxUp = Math.max(1, ...data.map((d) => d.created + d.won))
+  const maxDn = Math.max(0, ...data.map((d) => d.lost))
+  const niceStep = (raw: number) => {
+    const pow = Math.pow(10, Math.floor(Math.log10(raw)))
+    const n = raw / pow
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * pow
+  }
+  const step = niceStep(Math.max(maxUp, 1) / 3)
+  const upTicks = Math.max(1, Math.ceil(maxUp / step))
+  const dnTicks = maxDn > 0 ? Math.max(1, Math.ceil(maxDn / step)) : 0
+  const pxPer = plotH / ((upTicks + dnTicks) * step)
+  const zeroY = padT + upTicks * step * pxPer
+  const yOf = (v: number) => zeroY - v * pxPer
+
   const monthLabel = (m: string) => {
     const [y, mo] = m.split("-")
     return `${["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"][Number(mo) - 1]}/${y.slice(2)}`
   }
+  // Intervalo do bucket pro tooltip: "01/05/24 - 01/06/24" (como a referência).
+  const rangeLabel = (m: string) => {
+    const [y, mo] = m.split("-").map(Number)
+    const f = (yy: number, mm: number) => `01/${String(mm).padStart(2, "0")}/${String(yy).slice(2)}`
+    return mo === 12 ? `${f(y, 12)} - ${f(y + 1, 1)}` : `${f(y, mo)} - ${f(y, mo + 1)}`
+  }
+  const axisLabel = (v: number) => (v === 0 ? "R$ 0,00" : `${v < 0 ? "-" : ""}${brlK(Math.abs(v))}`)
+
   const n = data.length
-  const slot = n > 0 ? (w - padL * 2) / n : 0
-  const bw = Math.min(26, Math.max(8, slot * 0.24))
+  const slot = n > 0 ? plotW / n : 0
+  const bw = Math.min(64, Math.max(14, slot * 0.55))
+  const ticks: number[] = []
+  for (let t = upTicks; t >= -dnTicks; t--) ticks.push(t * step)
+
+  const hovered = hover != null ? data[hover] : null
+  const tipLeft = hover != null ? padL + slot * hover + slot / 2 : 0
+  const tipFlip = hover != null && w > 0 && tipLeft > w - 190
 
   return (
-    <div ref={ref} className="mt-3">
+    <div ref={ref} className="mt-3 relative">
       {w > 0 && (
-        <svg width={w} height={H} className="block">
-          <line x1={0} y1={axis} x2={w} y2={axis} stroke="#e2e8f0" strokeWidth={1} />
+        <svg
+          width={w} height={H} className="block"
+          onMouseLeave={() => setHover(null)}
+          onMouseMove={(e) => {
+            const x = e.clientX - e.currentTarget.getBoundingClientRect().left
+            const i = Math.floor((x - padL) / slot)
+            setHover(i >= 0 && i < n ? i : null)
+          }}
+        >
+          {/* coluna destacada no hover (atrás de tudo) */}
+          {hover != null && (
+            <rect x={padL + slot * hover} y={padT} width={slot} height={plotH} fill="#eef1f6" opacity={0.8} />
+          )}
+          {/* gridlines + labels do eixo Y */}
+          {ticks.map((v) => (
+            <g key={v}>
+              <line x1={padL} y1={yOf(v)} x2={w - padR} y2={yOf(v)} stroke={v === 0 ? "#cbd5e1" : "#eef1f5"} strokeWidth={1} />
+              <text x={padL - 8} y={yOf(v) + 3.5} textAnchor="end" className="fill-slate-400" fontSize={10}>{axisLabel(v)}</text>
+            </g>
+          ))}
+          {/* barras */}
           {data.map((d, i) => {
             const cx = padL + slot * i + slot / 2
-            const hC = (d.created / maxUp) * (axis - 18)
-            const hW = (d.won / maxUp) * (axis - 18)
-            const hL = (d.lost / maxDn) * (H - axis - 22)
+            const hC = d.created * pxPer, hW = d.won * pxPer, hL = d.lost * pxPer
             return (
               <g key={d.month}>
-                <title>{`${monthLabel(d.month)} — Criados ${brl(d.created)} · Ganhos ${brl(d.won)} · Perdidos ${brl(d.lost)}`}</title>
-                <rect x={cx - bw - 2} y={axis - hC} width={bw} height={Math.max(d.created > 0 ? 2 : 0, hC)} rx={2} fill="#004add" opacity={0.9} />
-                <rect x={cx + 2} y={axis - hW} width={bw} height={Math.max(d.won > 0 ? 2 : 0, hW)} rx={2} fill="#10b981" opacity={0.9} />
-                <rect x={cx - bw / 2} y={axis + 3} width={bw} height={Math.max(d.lost > 0 ? 2 : 0, hL)} rx={2} fill="#ef4444" opacity={0.85} />
-                <text x={cx} y={H - 5} textAnchor="middle" className="fill-slate-400" fontSize={10}>{monthLabel(d.month)}</text>
+                {d.created > 0 && <rect x={cx - bw / 2} y={zeroY - hC} width={bw} height={Math.max(2, hC)} fill="#3b82f6" />}
+                {d.won > 0 && <rect x={cx - bw / 2} y={zeroY - hC - hW} width={bw} height={Math.max(2, hW)} fill="#10b981" />}
+                {d.lost > 0 && <rect x={cx - bw / 2} y={zeroY + 1} width={bw} height={Math.max(2, hL)} fill="#ef4444" />}
+                <text x={cx} y={H - 7} textAnchor="middle" className="fill-slate-400" fontSize={10}>{monthLabel(d.month)}</text>
               </g>
             )
           })}
         </svg>
+      )}
+      {/* tooltip (HTML sobre o SVG, flipa perto da borda direita) */}
+      {hovered && (
+        <div
+          className="absolute z-10 pointer-events-none bg-white rounded-lg border border-slate-200 shadow-lg px-3 py-2 min-w-[176px]"
+          style={{ left: tipLeft, top: padT + 12, transform: tipFlip ? "translateX(calc(-100% - 10px))" : "translateX(10px)" }}
+        >
+          <p className="text-[11px] font-bold text-slate-800 tabular-nums">{rangeLabel(hovered.month)}</p>
+          <div className="mt-1.5 space-y-1">
+            {([
+              ["Criados", hovered.created, "#3b82f6", false],
+              ["Ganhos", hovered.won, "#10b981", false],
+              ["Perdidos", hovered.lost, "#ef4444", true],
+            ] as [string, number, string, boolean][]).map(([label, v, color, neg]) => (
+              <p key={label} className="flex items-center justify-between gap-4 text-[11px]">
+                <span className="inline-flex items-center gap-1.5 text-slate-500">
+                  <span className="w-1 h-3 rounded-full shrink-0" style={{ background: color }} />{label}
+                </span>
+                <span className="tabular-nums font-semibold text-slate-800">{neg ? "-" : ""}{brl(v)}</span>
+              </p>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   )

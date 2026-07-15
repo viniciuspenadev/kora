@@ -1,16 +1,8 @@
-import { Document, Page, View, Text, Image, StyleSheet, Font } from "@react-pdf/renderer"
-import path from "path"
+import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer"
+import { registerPdfFonts } from "./fonts"
 
-// Inter estática embutida (public/fonts) — fidelidade à identidade do site.
-Font.register({
-  family: "Inter",
-  fonts: [
-    { src: path.join(process.cwd(), "public/fonts/Inter-Regular.ttf"),  fontWeight: 400 },
-    { src: path.join(process.cwd(), "public/fonts/Inter-SemiBold.ttf"), fontWeight: 600 },
-    { src: path.join(process.cwd(), "public/fonts/Inter-Bold.ttf"),     fontWeight: 700 },
-  ],
-})
-Font.registerHyphenationCallback((w) => [w]) // não quebra palavras
+// Inter estática embutida (public/fonts) — registro compartilhado com quote-pdf.
+registerPdfFonts()
 
 const C = {
   primary: "#004add", navy: "#001548",

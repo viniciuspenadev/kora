@@ -120,6 +120,12 @@ function hoursSince(date: string): number {
   return Math.floor((Date.now() - new Date(date).getTime()) / (60 * 60 * 1000))
 }
 
+/** Fila: sem atendente E com departamento (IA ou transferência) — MESMA regra da pill da linha. */
+function isWaitingConv(c: ChatConversation): boolean {
+  const aiRouted = (c.metadata as { ai_routed?: unknown } | null | undefined)?.ai_routed
+  return !c.profiles?.full_name && (!!aiRouted || !!c.department_id)
+}
+
 function formatTimeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime()
   const mins = Math.floor(diff / 60000)
@@ -152,6 +158,14 @@ export function ConversationList({
   const [showStatusMenu, setShowStatusMenu] = useState(false)
   const [showNewModal, setShowNewModal]     = useState(false)
   const [menu, setMenu]                     = useState<{ x: number; y: number; conv: ChatConversation } | null>(null)
+  // Lente rápida da fila (client-side sobre as carregadas): 1 clique isola quem espera.
+  const [queueOnly, setQueueOnly]           = useState(false)
+
+  const waitingCount = useMemo(() => conversations.filter(isWaitingConv).length, [conversations])
+  const shownConversations = useMemo(
+    () => (queueOnly ? conversations.filter(isWaitingConv) : conversations),
+    [conversations, queueOnly],
+  )
 
   const departmentById = useMemo(() => {
     const m: Record<string, DepartmentMini> = {}
@@ -295,6 +309,26 @@ export function ConversationList({
           </button>
         </div>
 
+        {/* Chip da fila — só existe quando HÁ fila. Clicou, isola quem espera. */}
+        {(waitingCount > 0 || queueOnly) && (
+          <div className="mb-2">
+            <button
+              type="button"
+              onClick={() => setQueueOnly((v) => !v)}
+              className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border text-[11px] font-semibold transition-colors ${
+                queueOnly
+                  ? "bg-amber-100 border-amber-300 text-amber-800"
+                  : "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+              }`}
+              title={queueOnly ? "Mostrar todas" : "Ver só quem aguarda atendimento"}
+            >
+              <span className="size-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              Aguardando ({waitingCount})
+              {queueOnly && <X className="size-3 -mr-0.5" />}
+            </button>
+          </div>
+        )}
+
         {showFilters && (
           <div className="space-y-1.5 mb-2 p-2.5 rounded-lg border border-slate-200 bg-slate-50/50">
             {pipelines.length > 0 && (
@@ -347,16 +381,21 @@ export function ConversationList({
             <Loader2 className="size-5 text-slate-300 animate-spin mb-3" />
             <p className="text-xs text-slate-400 text-center">Carregando conversas…</p>
           </div>
-        ) : conversations.length === 0 ? (
+        ) : shownConversations.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 px-4">
             <MessageCircle className="size-8 text-slate-200 mb-3" />
             <p className="text-xs text-slate-400 text-center">
-              {searchValue || activeFiltersCount > 0 ? "Nenhuma conversa encontrada" : "Nenhuma conversa neste filtro"}
+              {queueOnly ? "Fila zerada — ninguém aguardando 🎉" : searchValue || activeFiltersCount > 0 ? "Nenhuma conversa encontrada" : "Nenhuma conversa neste filtro"}
             </p>
+            {queueOnly && (
+              <button type="button" onClick={() => setQueueOnly(false)} className="mt-2 text-[11px] font-semibold text-primary-600 hover:underline">
+                Mostrar todas
+              </button>
+            )}
           </div>
         ) : (
           <>
-            {conversations.map((conv) => {
+            {shownConversations.map((conv) => {
             const isGroup    = conv.is_group
             const contact    = conv.chat_contacts
             const name       = isGroup
@@ -411,12 +450,18 @@ export function ConversationList({
                 className={`relative w-full flex items-start gap-3.5 px-4 py-3.5 text-left transition-colors border-b border-slate-100 ${
                   isActive
                     ? "bg-gradient-to-r from-primary-100 via-primary-50/40 to-transparent"
-                    : "hover:bg-slate-50"
+                    : isWaiting
+                      ? "bg-amber-50/40 hover:bg-amber-50/70"
+                      : "hover:bg-slate-50"
                 }`}
               >
-                {isActive && (
+                {/* Rail esquerdo: azul = conversa aberta · âmbar = aguardando atendimento
+                    (detectável no scan periférico, antes de ler qualquer texto) */}
+                {isActive ? (
                   <span className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full bg-primary" />
-                )}
+                ) : isWaiting ? (
+                  <span className="absolute left-0 top-3 bottom-3 w-[3px] rounded-r-full bg-amber-400" />
+                ) : null}
                 <div className="relative shrink-0">
                   <div className={`size-11 rounded-full flex items-center justify-center overflow-hidden ${
                     isGroup
@@ -469,12 +514,15 @@ export function ConversationList({
 
                   {isWaiting && (
                     <div className="mt-1.5">
-                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
-                        <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" />
-                        Aguardando atendimento
-                        {queueDept && (
-                          <span className="text-amber-600 font-medium">· {queueDept}</span>
-                        )}
+                      {/* nowrap + truncate: a pill nunca quebra em 2 linhas. Com setor, o rótulo
+                          encurta ("Aguardando · Comercial") — o SETOR é a informação, não o boilerplate. */}
+                      <span className="inline-flex items-center gap-1 max-w-full whitespace-nowrap text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                        <span className="size-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                        <span className="truncate min-w-0">
+                          {queueDept
+                            ? <>Aguardando <span className="text-amber-600 font-medium">· {queueDept}</span></>
+                            : "Aguardando atendimento"}
+                        </span>
                       </span>
                     </div>
                   )}

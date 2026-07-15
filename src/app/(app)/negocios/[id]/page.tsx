@@ -6,6 +6,8 @@ import { getDeal } from "@/lib/actions/deals"
 import { listDealTasks } from "@/lib/actions/tasks"
 import { listCustomFields } from "@/lib/actions/custom-fields"
 import { listActiveUnits } from "@/lib/actions/team"
+import { getQuotesForDeal, getQuoteDefaults } from "@/lib/actions/documents"
+import type { DocumentSettings } from "@/lib/commercial/documents"
 import { DealPageClient } from "@/components/crm/deal-page-client"
 
 export const dynamic = "force-dynamic"
@@ -16,8 +18,15 @@ export default async function DealDetailPage({ params }: { params: Promise<{ id:
   const { id } = await params
   if (!(await hasModule(session.user.tenantId, "crm"))) redirect("/inbox")
 
-  const [deal, tasks, dealFields, units] = await Promise.all([getDeal(id), listDealTasks(id), listCustomFields("deal"), listActiveUnits()])
+  const [deal, tasks, dealFields, units, quotes, quoteDefaultsRaw] = await Promise.all([
+    getDeal(id), listDealTasks(id), listCustomFields("deal"), listActiveUnits(),
+    getQuotesForDeal(id), getQuoteDefaults(),
+  ])
   if ("error" in deal) redirect("/negocios")
+
+  const quoteDefaults: DocumentSettings = "error" in quoteDefaultsRaw
+    ? { paymentTerms: null, validityDays: 7, defaultNotes: null }
+    : quoteDefaultsRaw
 
   // Gestor vê custo/margem e edita a validade da proposta (o server revalida tudo).
   const isManager = ["owner", "admin"].includes(session.user.role)
@@ -29,5 +38,5 @@ export default async function DealDetailPage({ params }: { params: Promise<{ id:
   const agents = ((agentRows ?? []) as unknown as { user_id: string; profiles: { full_name: string | null } | { full_name: string | null }[] | null }[])
     .map((r) => { const p = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles; return { id: r.user_id, name: p?.full_name ?? "—" } })
 
-  return <DealPageClient deal={deal} tasks={tasks} isManager={isManager} dealFields={dealFields} agents={agents} units={units} currentUserId={session.user.id} />
+  return <DealPageClient deal={deal} tasks={tasks} isManager={isManager} dealFields={dealFields} agents={agents} units={units} currentUserId={session.user.id} quotes={quotes} quoteDefaults={quoteDefaults} />
 }

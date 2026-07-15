@@ -63,11 +63,12 @@
 }
 
 /* Canvas de página — token DEDICADO `bg-canvas`, usado SÓ no fundo das páginas
-   (PageShell + roots). BRANCO desde 2026-07-13 (redesign aprovado: cards se
-   sustentam pela borda slate-200, como na referência do owner). Valor anterior
-   (azul clarinho #eff4fd) documentado caso volte. slate-50 segue NEUTRO. */
+   (PageShell + roots). CINZA-NEUTRO QUASE-BRANCO desde 2026-07-15 (owner: no
+   branco puro as linhas "somem" — o contraste de superfície devolve definição
+   aos cards sem engrossar borda). Histórico: #ffffff (2026-07-13, redesign) ·
+   #eff4fd (azul clarinho original). slate-50 segue NEUTRO. */
 @theme {
-  --color-canvas: #ffffff;
+  --color-canvas: #f7f8fa;
 
   /* Chrome de navegação (sidebar + topbar) — TEMÁVEL via estes tokens. Só trocar os
      valores aqui inverte todo o menu (claro ⇄ escuro), sem mexer em componente.
@@ -83,6 +84,20 @@
   /* Variante ESCURA (era o v1): nav #0b1430 · hover rgb(255 255 255/.06) · active
      rgb(77 124 255/.16) · text #c9d2ec · dim #7c88b0 · line rgb(255 255 255/.08) ·
      accent #4d7cff · strong #ffffff. (Logo volta pro wordmark branco no escuro.) */
+}
+
+/* Tinta da SIDEBAR (teste do owner 2026-07-15) — override escopado dos tokens
+   nav-* SÓ onde a classe é aplicada (aside desktop + drawer mobile). O topbar
+   segue branco (bg-nav global). Pra reverter: remover `nav-tint` dos asides.
+   Pra promover a definitivo: mover estes valores pro @theme acima.
+   ATUAL: cinza-neutro = MESMO tom do canvas (padrão Notion/Slack/Attio — a nav
+   vira moldura e o branco fica só no conteúdo). Tentativa anterior (azul-claro
+   #f4f8fe/#eef3fd) reprovada pelo owner. */
+.nav-tint {
+  --color-nav:        #f7f8fa;   /* = bg-canvas (moldura contínua) */
+  --color-nav-hover:  #eceef2;   /* um tom abaixo do fundo */
+  --color-nav-active: #dbe4ff;   /* pill ativa segue primary-100 (o azul é só do estado) */
+  --color-nav-line:   #e4e7ec;   /* divisores neutros acompanham */
 }
 
 :root {

@@ -31,6 +31,8 @@ import { createTask, setTaskDone, type TaskRow } from "@/lib/actions/tasks"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
+import { DealQuotes } from "@/components/crm/deal-quotes"
+import type { DocumentRow, DocumentSettings } from "@/lib/commercial/documents"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
 
@@ -64,10 +66,14 @@ function relTime(iso: string | null): string {
   return `há ${Math.floor(days / 30)} mês${days >= 60 ? "es" : ""}`
 }
 
-export function DealPageClient({ deal, tasks, isManager = false, dealFields = [], agents = [], units = [], currentUserId = "" }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[]; agents?: { id: string; name: string }[]; units?: { id: string; name: string; color: string }[]; currentUserId?: string }) {
+export function DealPageClient({ deal, tasks, isManager = false, dealFields = [], agents = [], units = [], currentUserId = "", quotes = [], quoteDefaults }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[]; agents?: { id: string; name: string }[]; units?: { id: string; name: string; color: string }[]; currentUserId?: string; quotes?: DocumentRow[]; quoteDefaults?: DocumentSettings }) {
   const router = useRouter()
   const [pending, start] = useTransition()
   const convId = deal.conversationId
+  // Tick pra abrir o modal "Gerar cotação" a partir do menu "⋯" do header (o card
+  // Cotações mora na sidebar; o incremento sinaliza a abertura).
+  const [quoteGenTick, setQuoteGenTick] = useState(0)
+  const quoteSettings: DocumentSettings = quoteDefaults ?? { paymentTerms: null, validityDays: 7, defaultNotes: null }
 
   function run(fn: () => Promise<{ ok: true } | { error: string } | { id: string }>) {
     start(async () => {
@@ -414,6 +420,10 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                       <MessageSquare className="size-3.5 text-slate-400" /> Registrar ligação
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
+                    <DropdownMenuItem disabled={!hasItems} onClick={() => setQuoteGenTick((t) => t + 1)}>
+                      <FileText className="size-3.5 text-slate-400" /> Gerar cotação
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     {deal.pipelines.length > 1 && isOpen && (
                       <>
                         <DropdownMenuItem disabled={pending} onClick={() => setFlowModal("reclass")}>
@@ -708,6 +718,10 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               </button>
             </section>
           )}
+
+          {/* Cotações — documentos do negócio (F4). Gera do estado atual dos itens,
+              envia no WhatsApp e acompanha o aceite (viewer embutido, sem link externo). */}
+          <DealQuotes dealId={deal.id} quotes={quotes} defaults={quoteSettings} hasItems={hasItems} items={deal.items} genTick={quoteGenTick} />
 
           {/* Última interação (saiu da régua de KPIs — referência 2026-07-13) */}
           <section className="bg-white rounded-2xl border border-slate-200 p-4">

@@ -49,7 +49,7 @@ export function MobileSidebar(props: Props) {
       />
       {/* Painel */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 flex w-72 max-w-[82%] flex-col bg-nav shadow-2xl transition-transform duration-200 ease-out ${
+        className={`nav-tint fixed inset-y-0 left-0 z-50 flex w-72 max-w-[82%] flex-col bg-nav shadow-2xl transition-transform duration-200 ease-out ${
           navOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >

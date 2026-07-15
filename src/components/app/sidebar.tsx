@@ -40,7 +40,7 @@ export function Sidebar({ initialCollapsed = false, ...props }: Props) {
   }, [])
 
   return (
-    <aside className={`hidden md:flex flex-col bg-nav shrink-0 h-dvh overflow-hidden z-20
+    <aside className={`nav-tint hidden md:flex flex-col bg-nav shrink-0 h-dvh overflow-hidden z-20
       shadow-[4px_0_20px_-8px_rgba(15,23,42,0.16)]
       transition-[width] duration-200 ease-in-out ${collapsed ? "w-14" : "w-64"}`}>
       <SidebarBody

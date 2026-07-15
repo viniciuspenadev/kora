@@ -106,18 +106,25 @@ function Header({ item, isProduct, natureLabel, canManage }: { item: CatalogItem
         <ArrowLeft className="size-3.5" /> Voltar ao catálogo
       </Link>
       <div className="flex items-start gap-4 flex-wrap">
-        {/* thumb — só interativa com acesso de gestão */}
+        {/* thumb — só interativa com acesso de gestão. Badge de câmera SEMPRE
+            visível (affordance descoberto sem hover — owner não achava a foto). */}
         {canManage ? (
-          <button type="button" onClick={() => fileRef.current?.click()}
-            className={`group relative size-16 rounded-xl shrink-0 overflow-hidden grid place-items-center ring-1 ring-slate-200 cursor-pointer ${isProduct ? "bg-primary-50 text-primary-600" : "bg-violet-50 text-violet-500"}`}>
-            {item.image_path ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img src={`/api/catalog-image/${item.id}`} alt="" className="size-full object-cover" />
-            ) : <Icon className="size-6" />}
-            <span className="absolute inset-0 bg-slate-900/45 opacity-0 group-hover:opacity-100 grid place-items-center transition-opacity">
-              <ImagePlus className="size-4 text-white" />
+          <div className="relative shrink-0">
+            <button type="button" onClick={() => fileRef.current?.click()}
+              title={item.image_path ? "Trocar foto" : "Adicionar foto"}
+              className={`group relative size-16 rounded-xl overflow-hidden grid place-items-center ring-1 ring-slate-200 cursor-pointer ${isProduct ? "bg-primary-50 text-primary-600" : "bg-violet-50 text-violet-500"}`}>
+              {item.image_path ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={`/api/catalog-image/${item.id}`} alt="" className="size-full object-cover" />
+              ) : <Icon className="size-6" />}
+              <span className="absolute inset-0 bg-slate-900/45 opacity-0 group-hover:opacity-100 grid place-items-center transition-opacity">
+                <ImagePlus className="size-4 text-white" />
+              </span>
+            </button>
+            <span className="absolute -bottom-1 -right-1 size-5 rounded-full bg-white ring-1 ring-slate-200 shadow-sm grid place-items-center pointer-events-none">
+              <ImagePlus className="size-3 text-slate-500" />
             </span>
-          </button>
+          </div>
         ) : (
           <div className={`relative size-16 rounded-xl shrink-0 overflow-hidden grid place-items-center ring-1 ring-slate-200 ${isProduct ? "bg-primary-50 text-primary-600" : "bg-violet-50 text-violet-500"}`}>
             {item.image_path ? (

@@ -33,3 +33,13 @@ export function parsePct(input: string): number {
   const n = Number(String(input).trim().replace(",", "."))
   return Number.isFinite(n) ? n : NaN
 }
+
+/**
+ * Máscara no blur: re-formata o que foi digitado pra BR completo
+ * ("1500" → "1.500,00"). Entrada inválida/vazia volta como está (o submit valida).
+ */
+export function formatMoneyInput(input: string): string {
+  const cents = parseMoneyToCents(input)
+  if (!Number.isFinite(cents)) return input
+  return (cents / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}

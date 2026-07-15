@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { upsertPrice, getPriceHistory } from "@/lib/actions/commercial"
 import type { PriceHistoryRow } from "@/lib/commercial/entries"
 import { unitSpec } from "@/lib/crm/units"
-import { brlFromCents, centsToInput, parseMoneyToCents } from "./money"
+import { brlFromCents, centsToInput, parseMoneyToCents, formatMoneyInput } from "./money"
 
 // ─────────────────────────────────────────────────────────────────
 // Atualizar preço de UMA célula item×tabela (vitrine). Sempre nomeia o alvo
@@ -77,6 +77,7 @@ export function PriceCellModal({
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>
               <input autoFocus value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.,-]/g, ""))} inputMode="decimal"
+                onBlur={() => price.trim() && setPrice(formatMoneyInput(price))}
                 onKeyDown={(e) => { if (e.key === "Enter") save() }} placeholder="0,00"
                 className="w-full h-9 pl-8 pr-12 text-sm border border-slate-200 rounded-lg bg-slate-50 tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">/{sym}</span>

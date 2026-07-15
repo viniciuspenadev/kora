@@ -1,15 +1,15 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { ArrowLeft, Package, Wrench, ChevronDown, Boxes, Loader2, AlertCircle } from "lucide-react"
+import { ArrowLeft, Package, Wrench, ChevronDown, Boxes, Loader2, AlertCircle, ImagePlus, X } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { FormRow } from "@/components/ui/form-row"
 import { UNITS, DEFAULT_UNIT, unitSpec } from "@/lib/crm/units"
-import { parseMoneyToCents } from "../money"
-import { createCatalogItem, type CatalogType } from "@/lib/actions/catalog"
+import { parseMoneyToCents, formatMoneyInput } from "../money"
+import { createCatalogItem, uploadCatalogImage, type CatalogType } from "@/lib/actions/catalog"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
 const UNIT_OPTS = UNITS.map((u) => ({ value: u.code, label: `${u.label} (${u.symbol})` }))
@@ -32,6 +32,22 @@ export function NovoItemClient({ categories, hasInventory }: { categories: strin
   const [unit, setUnit] = useState(DEFAULT_UNIT)
   const [price, setPrice] = useState("")
   const [billing, setBilling] = useState<"one_time" | "monthly" | "yearly">("one_time")
+
+  // Foto (opcional) — sobe DEPOIS do create (precisa do id); falha na foto não
+  // desfaz o item, só avisa.
+  const [photo, setPhoto] = useState<File | null>(null)
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null)
+  const photoRef = useRef<HTMLInputElement>(null)
+  useEffect(() => () => { if (photoUrl) URL.revokeObjectURL(photoUrl) }, [photoUrl])
+  function pickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0]
+    e.target.value = ""
+    if (!f) return
+    if (!["image/jpeg", "image/png", "image/webp"].includes(f.type)) { toast.error("Use JPG, PNG ou WebP"); return }
+    if (f.size > 2 * 1024 * 1024) { toast.error("Imagem muito grande (máx. 2MB)"); return }
+    if (photoUrl) URL.revokeObjectURL(photoUrl)
+    setPhoto(f); setPhotoUrl(URL.createObjectURL(f))
+  }
 
   const [showDetails, setShowDetails] = useState(false)
   // produto
@@ -68,10 +84,18 @@ export function NovoItemClient({ categories, hasInventory }: { categories: strin
         modality: !isProduct ? modality.trim() || null : null,
       })
       if ("error" in r) { setError(r.error); return }
+      if (photo) {
+        const fd = new FormData(); fd.append("file", photo)
+        const up = await uploadCatalogImage(r.id, fd)
+        if ("error" in up) toast.warning(`Item criado, mas a foto falhou: ${up.error}`)
+      }
       toast.success("Item criado")
       router.push(`/catalogo/${r.id}`)
     })
   }
+
+  // Enter nos campos de texto = criar (cadastro em série sem mouse).
+  const submitOnEnter = (e: React.KeyboardEvent) => { if (e.key === "Enter") { e.preventDefault(); submit() } }
 
   return (
     <div className="min-h-full bg-canvas">
@@ -90,12 +114,12 @@ export function NovoItemClient({ categories, hasInventory }: { categories: strin
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <NatureCard
               active={isProduct} onClick={() => setNature("product")}
-              icon={Package} emoji="📦" title="Produto"
+              icon={Package} tint="bg-primary-50 text-primary-600" title="Produto"
               desc="Algo físico que você vende ou controla"
             />
             <NatureCard
               active={!isProduct} onClick={() => setNature("service")}
-              icon={Wrench} emoji="🛠️" title="Serviço"
+              icon={Wrench} tint="bg-violet-50 text-violet-500" title="Serviço"
               desc="Algo que você presta ou executa"
             />
           </div>
@@ -104,14 +128,36 @@ export function NovoItemClient({ categories, hasInventory }: { categories: strin
           <div className="space-y-4">
             <SectionLabel>Essencial</SectionLabel>
 
-            <FormRow label="Nome" required>
-              <input autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={120}
-                placeholder={isProduct ? "Ex: Camiseta básica preta" : "Ex: Consultoria de marketing"} className={INPUT} />
-            </FormRow>
+            <div className="flex items-start gap-3">
+              {/* foto opcional — clica pra escolher, X remove */}
+              <div className="relative shrink-0 pt-5">
+                <button type="button" onClick={() => photoRef.current?.click()}
+                  title="Foto do item (opcional)"
+                  className={`size-[52px] rounded-xl grid place-items-center overflow-hidden border transition-colors ${photoUrl ? "border-slate-200" : "border-dashed border-slate-300 text-slate-400 hover:border-primary/50 hover:text-primary-600 bg-slate-50"}`}>
+                  {photoUrl ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img src={photoUrl} alt="" className="size-full object-cover" />
+                  ) : <ImagePlus className="size-4" />}
+                </button>
+                {photoUrl && (
+                  <button type="button" onClick={() => { if (photoUrl) URL.revokeObjectURL(photoUrl); setPhoto(null); setPhotoUrl(null) }}
+                    className="absolute -top-0.5 -right-1.5 size-4 grid place-items-center rounded-full bg-slate-700 text-white hover:bg-slate-900" title="Remover foto">
+                    <X className="size-2.5" />
+                  </button>
+                )}
+                <input ref={photoRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={pickPhoto} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <FormRow label="Nome" required>
+                  <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={submitOnEnter} maxLength={120}
+                    placeholder={isProduct ? "Ex: Camiseta básica preta" : "Ex: Consultoria de marketing"} className={INPUT} />
+                </FormRow>
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <FormRow label="Categoria" hint="Agrupa o item na vitrine">
-                <input value={category} onChange={(e) => setCategory(e.target.value)} list="catalog-categories" maxLength={60}
+                <input value={category} onChange={(e) => setCategory(e.target.value)} onKeyDown={submitOnEnter} list="catalog-categories" maxLength={60}
                   placeholder="Ex: Vestuário" className={INPUT} />
                 <datalist id="catalog-categories">
                   {categories.map((c) => <option key={c} value={c} />)}
@@ -135,6 +181,7 @@ export function NovoItemClient({ categories, hasInventory }: { categories: strin
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">R$</span>
                 <input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ""))}
+                  onBlur={() => price.trim() && setPrice(formatMoneyInput(price))} onKeyDown={submitOnEnter}
                   inputMode="decimal" placeholder="0,00"
                   className={`${INPUT} pl-9 tabular-nums`} />
               </div>
@@ -218,14 +265,16 @@ export function NovoItemClient({ categories, hasInventory }: { categories: strin
   )
 }
 
-function NatureCard({ active, onClick, icon: Icon, emoji, title, desc }: {
-  active: boolean; onClick: () => void; icon: React.ElementType; emoji: string; title: string; desc: string
+function NatureCard({ active, onClick, icon: Icon, tint, title, desc }: {
+  active: boolean; onClick: () => void; icon: React.ElementType; tint: string; title: string; desc: string
 }) {
   return (
     <button type="button" onClick={onClick}
       className={`text-left rounded-xl border p-4 transition-colors ${active ? "border-primary bg-primary-50" : "border-slate-200 bg-white hover:border-slate-300"}`}>
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-lg leading-none">{emoji}</span>
+        <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${active ? "bg-white/70 text-primary-600" : tint}`}>
+          <Icon className="size-4" />
+        </span>
         <span className={`text-sm font-bold ${active ? "text-primary-700" : "text-slate-800"}`}>{title}</span>
       </div>
       <p className="text-[11px] text-slate-500 leading-snug">{desc}</p>

@@ -134,13 +134,16 @@ export function CatalogClient({ data, canManage }: { data: VitrineData; canManag
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-200 text-[11px] text-slate-500 bg-slate-50/60">
+                {/* Coluna Item CONGELADA (sticky) — com várias tabelas o scroll
+                    horizontal não pode levar o nome do item embora. Células
+                    sticky precisam de bg SÓLIDO (senão o conteúdo vaza por baixo). */}
+                <tr className="border-b border-slate-200 text-[11px] text-slate-500 bg-slate-50">
                   {canManage && (
-                    <th className="w-9 pl-4 pr-1 py-2.5">
+                    <th className="sticky left-0 z-10 bg-slate-50 w-9 pl-4 pr-1 py-2.5">
                       <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Selecionar todos" className="size-3.5 rounded border-slate-300 accent-primary align-middle" />
                     </th>
                   )}
-                  <th className="text-left font-medium py-2.5 px-4">Item</th>
+                  <th className={`sticky ${canManage ? "left-9" : "left-0"} z-10 bg-slate-50 text-left font-medium py-2.5 px-4 border-r border-slate-100`}>Item</th>
                   {tables.map((tb) => (
                     <th key={tb.id} className="text-right font-medium py-2.5 px-3 whitespace-nowrap">
                       {tb.name}
@@ -221,15 +224,17 @@ function Row({ item, tables, cellRow, canManage, selected, onToggleSelect, onEdi
 }) {
   const meta = NATURE_META[item.type]
   const sym = unitSpec(item.unit).symbol
+  // bg sólido das células congeladas (acompanha o estado visual da linha)
+  const stickyBg = selected ? "bg-primary-50" : item.itemActive ? "bg-white group-hover:bg-slate-50" : "bg-slate-50"
 
   return (
-    <tr className={`border-b border-slate-100 last:border-0 transition-colors ${selected ? "bg-primary-50/40" : item.itemActive ? "hover:bg-slate-50/50" : "bg-slate-50/40 opacity-60"}`}>
+    <tr className={`group border-b border-slate-100 last:border-0 transition-colors ${selected ? "bg-primary-50/40" : item.itemActive ? "hover:bg-slate-50/50" : "bg-slate-50/40 opacity-60"}`}>
       {canManage && (
-        <td className="pl-4 pr-1">
+        <td className={`sticky left-0 z-10 pl-4 pr-1 ${stickyBg}`}>
           <input type="checkbox" checked={selected} onChange={onToggleSelect} aria-label={`Selecionar ${item.name}`} className="size-3.5 rounded border-slate-300 accent-primary align-middle" />
         </td>
       )}
-      <td className="py-2.5 px-4">
+      <td className={`sticky ${canManage ? "left-9" : "left-0"} z-10 py-2.5 px-4 border-r border-slate-100 ${stickyBg}`}>
         {/* Nome/thumb abrem a FICHA do item (costura vitrine → /catalogo/[id]) */}
         <Link href={`/catalogo/${item.itemId}`} className="group/item flex items-center gap-2.5 min-w-0">
           {item.imagePath ? (
@@ -267,7 +272,8 @@ function Row({ item, tables, cellRow, canManage, selected, onToggleSelect, onEdi
               <button type="button" onClick={() => onEditCell(tb, cell ? cell.priceCents : null)}
                 title={active ? `Atualizar preço em ${tb.name}` : `Definir preço em ${tb.name}`}
                 className="group/cell inline-flex items-center gap-1.5 justify-end rounded-md px-1.5 py-0.5 hover:bg-slate-100">
-                {body}
+                {/* tracejado no hover = "isto edita" (padrão planilha, sem depender da dica do rodapé) */}
+                <span className="group-hover/cell:underline group-hover/cell:decoration-dashed group-hover/cell:decoration-slate-400 underline-offset-[3px]">{body}</span>
                 <span className={`size-1.5 rounded-full shrink-0 ${active ? "bg-emerald-500" : "bg-slate-300 group-hover/cell:bg-primary-400"}`} />
               </button>
             ) : (
