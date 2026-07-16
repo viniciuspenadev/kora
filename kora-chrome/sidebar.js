@@ -57,6 +57,7 @@ let holdRender = false // segura o re-render do storage durante a animação de 
 function setView(html) {
   document.getElementById("dock").hidden = true
   closeSheet()
+  view.classList.add("canvas") // fundo canvas (spec) — só o login remove
   view.innerHTML = html
   view.classList.remove("enter")
   void view.offsetWidth
@@ -145,6 +146,16 @@ function empty(ico, title, text, extraHtml = "") {
   setView(`<div class="empty"><div class="ico">${ico}</div><b>${esc(title)}</b><p>${esc(text)}</p>${extraHtml}</div>`)
 }
 
+/** Estado-guarda: contato existe na base mas fora do alcance do atendente.
+ *  Mesmo texto pra COM dono e SEM dono — nunca vazar de quem é. */
+function renderBaseGuard() {
+  empty(
+    "🗂",
+    "Já está na base da empresa",
+    "Este número pertence à base do time. Peça ao gestor pra atribuir o contato a você — aí a ficha abre aqui.",
+  )
+}
+
 function renderChrome() {
   const brandLogo = document.getElementById("brand-logo")
   const navRadar = document.getElementById("nav-radar")
@@ -189,6 +200,7 @@ function renderLogin() {
         <input id="lg-base" type="url" value="${base}" placeholder="http://localhost:3000" />
       </details>
     </div>`)
+  view.classList.remove("canvas") // login é a única tela toda branca
   document.getElementById("login-form").addEventListener("submit", onLogin)
 }
 
@@ -296,6 +308,12 @@ async function resolveChat() {
   }
 
   if (!r.data.found) {
+    // já existe na base mas FORA do alcance → estado-guarda imediato (decisão do
+    // owner: não fazer o atendente preencher cadastro pra bater na parede)
+    if (r.data.inBase) {
+      renderBaseGuard()
+      return
+    }
     setView(`
       <div class="empty" style="flex:none;padding:18px 8px 4px">
         <div class="ico">👤</div>
@@ -327,6 +345,11 @@ async function resolveChat() {
         photoUrl: chk && chk.checked ? currentChat.avatar : undefined,
       })
       if (!res || !res.ok) {
+        // corrida: o número entrou na base entre o resolve e o cadastro
+        if (res && res.code === "already_in_base") {
+          renderBaseGuard()
+          return
+        }
         morphFail(btn, "Cadastrar contato")
         errEl.textContent = (res && res.error) || "Não deu pra cadastrar."
         errEl.hidden = false
@@ -387,23 +410,41 @@ async function renderFicha() {
          <p>Que tal abrir o primeiro? É só clicar em "＋ Novo negócio".</p>
        </div>`
 
+  // corpo da aba Negócio (spec §3): ações em par + cards dos negócios
+  const negocioBody = `
+    <div class="btn-row">
+      <button id="new-deal" class="btn btn-primary" type="button">＋ Novo negócio</button>
+      <a class="btn btn-white" target="_blank" rel="noreferrer" href="${esc(session.baseUrl)}/contatos/${esc(c.id)}">Ficha completa ↗</a>
+    </div>
+    ${dealsBlock}`
+
   setView(`
-    <div class="contact">
-      <div class="avatar">${esc(initials(c.name || (currentChat && currentChat.name)))}</div>
-      <div style="min-width:0">
-        <span class="nm-row">
-          <b>${esc(c.name || (currentChat && currentChat.name) || "Sem nome")}</b>
-          <a class="ext-lnk" title="Abrir ficha no Kora" target="_blank" href="${esc(session.baseUrl)}/contatos/${esc(c.id)}">↗</a>
-        </span>
-        <span class="ph">${fmtPhone(c.phone || (currentChat && currentChat.phone))}</span>
+    <div class="ficha-head">
+      <div class="contact">
+        <div class="avatar">${esc(initials(c.name || (currentChat && currentChat.name)))}</div>
+        <div style="min-width:0">
+          <span class="nm-row"><b>${esc(c.name || (currentChat && currentChat.name) || "Sem nome")}</b></span>
+          <span class="ph">${fmtPhone(c.phone || (currentChat && currentChat.phone))}</span>
+        </div>
+      </div>
+      <div class="tabs">
+        <button class="tab${fichaTab === "negocio" ? " on" : ""}" data-tab="negocio" type="button">Negócio</button>
+        <button class="tab${fichaTab === "agenda" ? " on" : ""}" data-tab="agenda" type="button">Agenda</button>
       </div>
     </div>
-    <button id="new-deal" class="btn btn-primary" type="button">＋ Novo negócio</button>
-    ${dealsBlock}
-    <div id="ag-block"></div>`)
+    <div id="tab-body" class="tab-body">
+      ${fichaTab === "negocio" ? negocioBody : ""}
+    </div>`)
 
   document.getElementById("dock").hidden = false
-  loadAgendaBlock(c.id)
+  view.querySelectorAll(".tab").forEach((t) => {
+    t.addEventListener("click", () => {
+      if (t.dataset.tab === fichaTab) return
+      fichaTab = t.dataset.tab
+      renderFicha()
+    })
+  })
+  if (fichaTab === "agenda") renderAgendaTab()
 
   // mover etapa — confirma com anel verde no card + toast antes do refresh
   view.querySelectorAll(".stage-sel").forEach((sel) => {
@@ -533,38 +574,38 @@ async function renderRadar() {
 
   const apptsHtml = rd.appointments.length
     ? `<div class="sec">Agenda de hoje · ${rd.appointments.length}</div>
-       <div class="list">${rd.appointments.map((a) => row(
+       <div class="card slim"><div class="list">${rd.appointments.map((a) => row(
          fmtApptTime(a.startsAt),
          "time",
          a.contactName || "Contato",
          [a.serviceName || "Compromisso", a.resourceName].filter(Boolean).join(" · ") + (a.status === "confirmed" ? " · confirmado" : ""),
          a.contactPhone,
          "",
-       )).join("")}</div>`
+       )).join("")}</div></div>`
     : ""
 
   const dealsHtml = rd.staleDeals.length
     ? `<div class="sec">Negócios parados · ${rd.staleDeals.length}</div>
-       <div class="list">${rd.staleDeals.map((d) => row(
+       <div class="card slim"><div class="list">${rd.staleDeals.map((d) => row(
          `${d.days}d`,
          "late",
          d.name || "Negócio",
          [d.contactName, d.value != null ? brl(d.value) : null, d.stageName].filter(Boolean).join(" · "),
          d.contactPhone,
          d.draft,
-       )).join("")}</div>`
+       )).join("")}</div></div>`
     : ""
 
   const quotesHtml = rd.pendingQuotes.length
     ? `<div class="sec">Cotações sem resposta · ${rd.pendingQuotes.length}</div>
-       <div class="list">${rd.pendingQuotes.map((qd) => row(
+       <div class="card slim"><div class="list">${rd.pendingQuotes.map((qd) => row(
          `${qd.days}d`,
          "late",
          `${qd.code} · ${brl2((qd.totalCents || 0) / 100)}`,
          [qd.contactName, qd.dealName].filter(Boolean).join(" · "),
          qd.contactPhone,
          qd.draft,
-       )).join("")}</div>`
+       )).join("")}</div></div>`
     : ""
 
   setView(`
@@ -580,48 +621,75 @@ async function renderRadar() {
   })
 }
 
-// ── F2b: agenda na ficha — próximo compromisso + agendar no chat aberto ──
-const fmtApptDay = (iso) =>
-  new Date(iso).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" }).replace(".", "")
+// ── Ficha com abas (spec §3–§6): Negócio | Agenda | Automação ──
+let fichaTab = "negocio" // lembra a última aba entre contatos
+
 const fmtApptTime = (iso) =>
   new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
 
-async function loadAgendaBlock(contactId) {
-  const box = document.getElementById("ag-block")
-  if (!box) return
-  const r = await send({ type: "agenda", contactId })
-  if (!document.getElementById("ag-block")) return // trocou de tela no meio
-  if (!r || !r.ok || !r.data.agenda || !r.data.agenda.enabled) { box.hidden = true; return }
-  const ag = r.data.agenda
-  lastResolve.agenda = ag
-  const canBook = ag.resources.length > 0
-
-  const nextHtml = ag.next
-    ? `<div class="appt">
-         <div class="appt-when"><b>${esc(fmtApptDay(ag.next.startsAt))}</b><span>${esc(fmtApptTime(ag.next.startsAt))}</span></div>
-         <div class="appt-info">
-           <b>${esc(ag.next.serviceName || "Compromisso")}</b>
-           <small>${esc(ag.next.resourceName || "")}</small>
-         </div>
-         <span class="chip ${ag.next.status === "confirmed" ? "st-ok" : "st-sent"}">${ag.next.status === "confirmed" ? "Confirmado" : "Agendado"}</span>
-       </div>
-       ${ag.upcoming > 1 ? `<div class="ag-empty">+ ${ag.upcoming - 1} horário(s) futuro(s) — detalhes na agenda do app.</div>` : ""}`
-    : `<div class="ag-empty">Sem horário marcado${canBook ? " — que tal agendar o primeiro?" : "."}</div>`
-
-  box.hidden = false
-  box.innerHTML = `
-    <div class="sec">Agenda${canBook ? `<button id="ag-new" class="sec-act" type="button">＋ Agendar</button>` : ""}</div>
-    ${nextHtml}`
-  const b = document.getElementById("ag-new")
-  if (b) b.addEventListener("click", renderAgendar)
+/** Card do compromisso — bloco de data em tinta (spec §5 .appt-date). */
+function apptCard(a) {
+  const d = new Date(a.startsAt)
+  const mon = d.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "")
+  const wd = d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "")
+  return `
+    <div class="appt">
+      <div class="appt-date"><b>${d.getDate()}</b><span>${esc(mon)}</span></div>
+      <div class="appt-info">
+        <b>${esc(a.serviceName || "Compromisso")}</b>
+        <small>${esc(wd)} ${esc(fmtApptTime(a.startsAt))}${a.resourceName ? ` · ${esc(a.resourceName)}` : ""}</small>
+      </div>
+      <span class="chip ${a.status === "confirmed" ? "st-ok" : "st-sent"}">${a.status === "confirmed" ? "Confirmado" : "Agendado"}</span>
+    </div>`
 }
 
-async function renderAgendar() {
-  const c = lastResolve.contact
-  const ag = lastResolve.agenda
-  if (!ag || !ag.resources.length) { alertHint("Nenhuma agenda ativa — configure no app."); return }
+// Aba Automação (spec §6) REMOVIDA por decisão do owner 2026-07-16: o conceito
+// ("quem fala com esse cliente — eu ou a máquina?" + inscrever em fluxo) fica
+// guardado pra quando a IA v2 estiver de pé; placeholder por meses seria ruído.
 
-  const today = new Date().toLocaleDateString("en-CA") // YYYY-MM-DD local
+// Aba Agenda (spec §5): próximo agendamento + novo agendamento INLINE
+// (serviço → agenda → chips de dia → grade de slots 4-col → aviso → CTA).
+let agDay = null // dia selecionado; persiste entre re-renders da aba
+
+async function renderAgendaTab() {
+  const body = document.getElementById("tab-body")
+  if (!body) return
+  const c = lastResolve.contact
+  body.innerHTML = `<div class="ag-empty">Carregando agenda…</div>`
+
+  let ag = lastResolve.agenda
+  if (!ag) {
+    const r = await send({ type: "agenda", contactId: c.id })
+    if (fichaTab !== "agenda" || !document.getElementById("tab-body")) return
+    if (!r || !r.ok) {
+      document.getElementById("tab-body").innerHTML =
+        `<div class="empty inline"><div class="ico">⚠️</div><b>Não deu pra carregar</b><p>${esc((r && r.error) || "Erro de conexão com o servidor.")}</p></div>`
+      return
+    }
+    ag = r.data.agenda
+    lastResolve.agenda = ag
+  }
+  const bodyNow = document.getElementById("tab-body")
+  if (!bodyNow || fichaTab !== "agenda") return
+
+  if (!ag.enabled) {
+    bodyNow.innerHTML = `<div class="empty inline"><div class="ico">🗓️</div><b>Agenda desativada</b><p>O módulo Agenda não está habilitado nesta conta.</p></div>`
+    return
+  }
+
+  const nextHtml = ag.next
+    ? apptCard(ag.next) +
+      (ag.upcoming > 1 ? `<div class="ag-empty">+ ${ag.upcoming - 1} outro(s) horário(s) futuro(s) — detalhes na agenda do app.</div>` : "")
+    : `<div class="ag-empty">Sem horário marcado${ag.resources.length ? " — é só escolher um horário abaixo." : "."}</div>`
+
+  if (!ag.resources.length) {
+    bodyNow.innerHTML = `
+      <div class="sec">Próximo agendamento</div>
+      ${nextHtml}
+      <div class="hint">Nenhuma agenda configurada — configure em Agenda no app.</div>`
+    return
+  }
+
   const svcOpts = `<option value="">Sem serviço · duração padrão da agenda</option>` +
     ag.services.map((s) => `<option value="${esc(s.id)}">${esc(s.name)} · ${s.durationMinutes}min</option>`).join("")
   const resOptsFor = (svcId) => {
@@ -632,17 +700,33 @@ async function renderAgendar() {
     return (pool.length ? pool : ag.resources)
       .map((r, i) => `<option value="${esc(r.id)}" ${i === 0 ? "selected" : ""}>${esc(r.name)}</option>`).join("")
   }
+  // chips de dia: hoje + 4 (spec §5 .days)
+  const days = []
+  for (let i = 0; i < 5; i++) {
+    const d = new Date(Date.now() + i * 86_400_000)
+    days.push({
+      ymd: d.toLocaleDateString("en-CA"),
+      wd: d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
+      n: d.getDate(),
+    })
+  }
+  if (!agDay || !days.some((x) => x.ymd === agDay)) agDay = days[0].ymd
 
-  setView(`
-    <div class="frm-head"><button id="ag-back" class="back-btn" type="button">‹</button><b>Agendar horário</b><small>para ${esc(c.name || "contato")}</small></div>
-    <form id="ag-form" class="frm">
-      <label>Serviço<select id="ag-svc">${svcOpts}</select></label>
+  bodyNow.innerHTML = `
+    <div class="sec">Próximo agendamento</div>
+    ${nextHtml}
+    <div class="sec">Novo agendamento</div>
+    <div class="frm">
       <div class="frm-grid">
+        <label>Serviço<select id="ag-svc">${svcOpts}</select></label>
         <label>Agenda<select id="ag-res">${resOptsFor("")}</select></label>
-        <label>Dia<input id="ag-date" type="date" value="${today}" min="${today}" /></label>
       </div>
-      <div class="sec">Horários livres</div>
-      <div id="ag-slots" class="slots"></div>
+    </div>
+    <div class="days" id="ag-days">
+      ${days.map((x) => `<button type="button" class="day${x.ymd === agDay ? " on" : ""}" data-ymd="${x.ymd}"><span>${esc(x.wd)}</span><b>${x.n}</b></button>`).join("")}
+    </div>
+    <div id="ag-slots" class="slots"></div>
+    <div class="frm">
       <label>Aviso pro cliente
         <select id="ag-notify">
           <option value="chat" selected>Eu envio nesta conversa — mensagem pronta pra revisar</option>
@@ -650,28 +734,31 @@ async function renderAgendar() {
           <option value="none">Não avisar agora</option>
         </select>
       </label>
-      <div class="hint" style="text-align:left">Lembretes automáticos e pedido de confirmação seguem a configuração da agenda — nada muda neles.</div>
-      <div id="ag-err" class="err" hidden></div>
-      <button id="ag-btn" class="btn btn-primary" type="submit" disabled>Confirmar horário</button>
-    </form>`)
+    </div>
+    <div id="ag-err" class="err" hidden></div>
+    <button id="ag-btn" class="btn btn-primary" type="button" disabled>Agendar horário</button>
+    <div class="hint">Lembretes e pedido de confirmação seguem a configuração da agenda no app.</div>`
 
   let selSlot = null
-  const updateBtn = () => { document.getElementById("ag-btn").disabled = !selSlot }
+  const updateBtn = () => {
+    const b = document.getElementById("ag-btn")
+    if (b) b.disabled = !selSlot
+  }
 
   async function loadSlots() {
     selSlot = null
     updateBtn()
     const el = document.getElementById("ag-slots")
+    if (!el) return
     const resourceId = document.getElementById("ag-res").value
-    const date = document.getElementById("ag-date").value
-    if (!resourceId || !date) { el.innerHTML = `<div class="ag-empty">Escolha a agenda e o dia.</div>`; return }
+    const date = agDay
     el.innerHTML = `<div class="ag-empty">Carregando horários…</div>`
     const svcId = document.getElementById("ag-svc").value || null
     const r = await send({ type: "agendaSlots", resourceId, serviceId: svcId, date })
-    // resposta velha (trocou de tela ou mudou o filtro no meio) → descarta
+    // resposta velha (trocou de aba ou mudou o filtro no meio) → descarta
     const elNow = document.getElementById("ag-slots")
-    if (!elNow) return
-    if (document.getElementById("ag-res").value !== resourceId || document.getElementById("ag-date").value !== date) return
+    if (!elNow || fichaTab !== "agenda") return
+    if (document.getElementById("ag-res").value !== resourceId || agDay !== date) return
     if (!r || !r.ok) { elNow.innerHTML = `<div class="ag-empty">${esc((r && r.error) || "Não deu pra buscar horários.")}</div>`; return }
     const slots = (r.data && r.data.slots) || []
     if (!slots.length) { elNow.innerHTML = `<div class="ag-empty">Sem horários livres neste dia — tente outro.</div>`; return }
@@ -684,15 +771,20 @@ async function renderAgendar() {
     }))
   }
 
-  document.getElementById("ag-back").addEventListener("click", () => renderFicha())
   document.getElementById("ag-svc").addEventListener("change", (ev) => {
     document.getElementById("ag-res").innerHTML = resOptsFor(ev.target.value)
     loadSlots()
   })
   document.getElementById("ag-res").addEventListener("change", loadSlots)
-  document.getElementById("ag-date").addEventListener("change", loadSlots)
-  document.getElementById("ag-form").addEventListener("submit", async (ev) => {
-    ev.preventDefault()
+  bodyNow.querySelectorAll(".day").forEach((b) => {
+    b.addEventListener("click", () => {
+      if (agDay === b.dataset.ymd) return
+      agDay = b.dataset.ymd
+      bodyNow.querySelectorAll(".day").forEach((x) => x.classList.toggle("on", x.dataset.ymd === agDay))
+      loadSlots()
+    })
+  })
+  document.getElementById("ag-btn").addEventListener("click", async () => {
     if (!selSlot) return
     const btn = document.getElementById("ag-btn")
     const errEl = document.getElementById("ag-err")
@@ -707,10 +799,9 @@ async function renderAgendar() {
       notify: document.getElementById("ag-notify").value,
     })
     if (!res || !res.ok) {
-      morphFail(btn, "Confirmar horário")
+      morphFail(btn, "Agendar horário")
       errEl.textContent = (res && res.error) || "Não deu pra marcar o horário."
       errEl.hidden = false
-      shakeForm(document.getElementById("ag-form"))
       loadSlots() // o horário pode ter sido tomado — recarrega a grade
       return
     }
@@ -749,7 +840,7 @@ async function renderDealDetail(dealId) {
 
   const itemsHtml = d.items.length
     ? `<div class="sec">Itens · ${d.items.length}</div>
-       <div class="list">
+       <div class="card slim"><div class="list">
          ${d.items.map((it) => `
            <div class="it">
              <span class="it-l"><b>${esc(it.name)}</b><small>${it.qty} ${esc(it.unit)} × ${brl2(it.unitPrice)}${billTag(it)}</small></span>
@@ -759,7 +850,7 @@ async function renderDealDetail(dealId) {
            <span class="it-l"><b>Total do negócio</b>${d.totals.mrr > 0 ? `<small>MRR ${brl2(d.totals.mrr)}/mês</small>` : ""}</span>
            <span class="it-v">${brl2(d.totals.total)}</span>
          </div>
-       </div>`
+       </div></div>`
     : `<div class="empty inline">
          <div class="ico">📦</div>
          <b>Sem itens neste negócio</b>

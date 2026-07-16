@@ -47,6 +47,23 @@ body {
 .acct[hidden] + .x { margin-left: auto; }
 
 .view { flex: 1; overflow-y: auto; padding: 12px 20px 20px; display: flex; flex-direction: column; gap: 18px; }
+/* fundo canvas (spec): cinza #f7f8fa com cards brancos; só o login fica branco */
+.view.canvas { background: #f7f8fa; }
+.card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 16px; }
+.card.slim { padding: 3px 14px; }
+
+/* ── cabeçalho da ficha: contato + ABAS (spec §3: Negócio | Agenda | Automação) ── */
+.ficha-head { margin: -12px -20px 0; background: #fff; border-bottom: 1px solid #e2e8f0; flex: none; }
+.ficha-head .contact { padding: 14px 20px 6px; }
+.tabs { display: flex; gap: 2px; padding: 0 14px; }
+.tab {
+  padding: 10px 10px 9px; font-size: 11.5px; font-weight: 600; color: #64748b;
+  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  cursor: pointer; font-family: inherit; transition: color 0.15s ease;
+}
+.tab:hover { color: #004add; }
+.tab.on { color: #004add; border-color: #004add; }
+.tab-body { display: flex; flex-direction: column; gap: 12px; }
 
 .foot {
   border-top: 1px solid #f1f5f9; padding: 12px 20px;
@@ -86,7 +103,7 @@ body {
 }
 .sec a { color: #004add; font-size: 11px; font-weight: 700; text-transform: none; letter-spacing: 0; text-decoration: none; }
 
-.deal { border: 1px solid #e8ecf1; border-radius: 12px; padding: 12px 16px; }
+.deal { border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 16px; }
 /* cabeçalho do card = porta do drill-down (hover só de COR — Lei da curva) */
 .deal-open {
   display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
@@ -98,7 +115,7 @@ body {
 .deal-open:hover b, .deal-open:hover .chev { color: #004add; }
 .deal-v { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .deal-m { display: flex; gap: 7px; align-items: center; margin-top: 9px; flex-wrap: wrap; }
-.pill { font-size: 11px; font-weight: 600; color: #334155; background: #f8fafc; border: 1px solid #e8ecf1; border-radius: 8px; padding: 4px 10px; }
+.pill { font-size: 11px; font-weight: 600; color: #334155; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 4px 10px; }
 .deal-m small { font-size: 11px; color: #94a3b8; }
 
 .btn {
@@ -165,7 +182,7 @@ button.btn.btn-primary { border: 0; }
 
 .stage-sel {
   font-size: 11px; font-weight: 600; color: #334155; background: #f8fafc;
-  border: 1px solid #e8ecf1; border-radius: 8px; padding: 5px 8px; max-width: 150px;
+  border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 8px; max-width: 150px;
   font-family: inherit; cursor: pointer;
 }
 .mini-btn {
@@ -200,7 +217,7 @@ button.btn.btn-primary { border: 0; }
 .it.tot .it-v { font-size: 13.5px; }
 
 /* card de cotação: código + chip de status + valor; anulada fica apagada */
-.quote { border: 1px solid #e8ecf1; border-radius: 12px; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.quote { border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
 .quote.muted { opacity: 0.55; }
 .q-t { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .q-t b { font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -259,37 +276,48 @@ button.btn.btn-primary { border: 0; }
 }
 
 /* ── F2b: agenda na ficha (próximo compromisso + agendar) ─────── */
-#ag-block { display: flex; flex-direction: column; gap: 12px; }
-#ag-block > * { animation: krise 0.34s cubic-bezier(0.22, 0.61, 0.36, 1) both; } /* entra suave ao carregar */
-.sec-act {
-  font-size: 11px; font-weight: 700; color: #004add; background: none; border: 0;
-  padding: 0; cursor: pointer; font-family: inherit; text-transform: none; letter-spacing: 0;
-}
-.sec-act:hover { color: #003db8; }
+/* a aba Agenda entra suave ao trocar */
+.tab-body > * { animation: krise 0.34s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
 
-/* card do compromisso: data em tinta à esquerda, serviço/agenda no meio, status */
-.appt { display: flex; align-items: center; gap: 12px; border: 1px solid #e8ecf1; border-radius: 12px; padding: 12px 14px; }
-.appt-when {
-  display: flex; flex-direction: column; align-items: center; flex: none; min-width: 56px;
-  background: #eef4ff; border: 1px solid #d6e3ff; border-radius: 10px; padding: 6px 8px;
+/* card do compromisso: BLOCO DE DATA em tinta (spec §5 .appt-date) + status */
+.appt { display: flex; align-items: center; gap: 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; }
+.appt-date {
+  width: 42px; height: 46px; border-radius: 10px; flex: none;
+  background: #eef4ff; border: 1px solid #d6e3ff; color: #004add;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
 }
-.appt-when b { font-size: 10.5px; color: #004add; text-transform: capitalize; white-space: nowrap; }
-.appt-when span { font-size: 12.5px; font-weight: 700; color: #004add; font-variant-numeric: tabular-nums; }
+.appt-date b { font-size: 16px; line-height: 1; }
+.appt-date span { font-size: 8.5px; font-weight: 700; text-transform: uppercase; }
 .appt-info { min-width: 0; flex: 1; }
 .appt-info b { font-size: 12.5px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.appt-info small { font-size: 11px; color: #94a3b8; display: block; margin-top: 2px; }
+.appt-info small { font-size: 11px; color: #94a3b8; display: block; margin-top: 2px; text-transform: capitalize; }
 .ag-empty { font-size: 11.5px; color: #94a3b8; line-height: 1.5; padding: 2px 2px; }
 
-/* grade de horários livres: chips selecionáveis (hover/seleção só de cor) */
-.slots { display: flex; flex-wrap: wrap; gap: 8px; }
+/* chips de dia (spec §5 .days): Qua 16 · Qui 17 · … seleção em tinta */
+.days { display: flex; gap: 6px; }
+.day {
+  flex: 1; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff;
+  padding: 6px 0; text-align: center; cursor: pointer; font-family: inherit;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.day span { display: block; font-size: 8.5px; font-weight: 700; text-transform: uppercase; color: #94a3b8; }
+.day b { display: block; font-size: 12.5px; color: #0f172a; }
+.day:hover { border-color: #b7c8ff; }
+.day.on { border-color: #004add; background: #eef4ff; }
+.day.on b, .day.on span { color: #004add; }
+
+/* grade de horários (spec §5 .slots): 4 colunas, seleção em tinta */
+.slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .slot {
-  padding: 7px 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff;
-  font-size: 11.5px; font-weight: 600; color: #334155; cursor: pointer; font-family: inherit;
+  height: 32px; display: flex; align-items: center; justify-content: center; padding: 0;
+  border: 1px solid #e2e8f0; border-radius: 8px; background: #fff;
+  font-size: 11px; font-weight: 600; color: #334155; cursor: pointer; font-family: inherit;
   font-variant-numeric: tabular-nums;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .slot:hover { border-color: #b7c8ff; }
 .slot.sel { background: #eef4ff; border-color: #004add; color: #004add; }
+.slots .ag-empty { grid-column: 1 / -1; }
 
 /* diagnóstico de suporte (estado "não li o chat") */
 .diag { margin-top: 14px; width: 100%; text-align: left; }

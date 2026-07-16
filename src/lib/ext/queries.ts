@@ -26,6 +26,7 @@ import { lineSubtotal, computeDealValue, DEFAULT_TERM_MONTHS, type DealItemLike 
 import { hasModule } from "@/lib/modules"
 import { availabilitySlots, bookAppointment } from "@/lib/agenda/booking"
 import { appointmentLevel, viewerShareMap, LEVEL_RANK, type ApptVisibility, type ShareLevel } from "@/lib/agenda/access"
+import { logAudit } from "@/lib/audit"
 
 // ═══════════════════════════════════════════════════════════════
 // Kora Companion — queries de leitura (F0)
@@ -216,16 +217,22 @@ async function saveAvatarFromCdn(
   }
 }
 
+const ALREADY_IN_BASE =
+  "Este número já está na base da empresa. Peça ao gestor pra atribuir o contato a você."
+
 /**
  * Cria contato a partir do chat aberto (F1). Passa pelo resolver canônico
- * (dedup/merge). Agente sem "base inteira" vira DONO (owner_id) do contato que
- * criou — senão criaria algo que o próprio alcance não enxerga. Foto (opt-in)
- * entra fire-and-forget pelo pipeline do webhook.
+ * (dedup/merge). Agente sem "base inteira" vira DONO (owner_id) SÓ do contato
+ * que ele CRIOU de verdade — cadastro NUNCA é porta pra assumir contato
+ * pré-existente fora do alcance (anti carteira-grab, auditoria 2026-07-16):
+ * nesse caso nada é escrito (nem nome, nem foto, nem carteira) e o erro
+ * `already_in_base` manda a sidebar pro estado-guarda. Foto (opt-in) entra
+ * fire-and-forget pelo pipeline do webhook.
  */
 export async function createContactExt(
   scope: ViewerScope,
   input: { name: string; phone: string; photoUrl?: string | null },
-): Promise<{ id: string } | { error: string }> {
+): Promise<{ id: string } | { error: string; code?: string }> {
   if (!(scope.isAdmin || canOpenContacts(scope) || canOpenDeals(scope)))
     return { error: "Seu papel não pode criar contatos." }
   const norm = normalizeWhatsAppPhone(input.phone)
@@ -233,19 +240,36 @@ export async function createContactExt(
   const name = input.name.trim().slice(0, 120)
   if (!name) return { error: "Informe o nome." }
 
+  // Barreira ANTES do resolver (que faz backfill no dedup): pré-existente fora
+  // do alcance = nega sem escrever nada + registro de auditoria pro gestor.
+  const existing = await findContactByPhone(scope.tenantId, input.phone)
+  if (existing && !(await canReachContact(scope, existing.id))) {
+    await logAudit({
+      tenantId: scope.tenantId, actorId: scope.userId,
+      action: "companion.contact_claim_blocked", targetType: "contact", targetId: existing.id,
+      metadata: { via: "extension" },
+    })
+    return { error: ALREADY_IN_BASE, code: "already_in_base" }
+  }
+
   const { id, created } = await resolveOrCreateContact(
     scope.tenantId,
     { jid: norm.jid, phone: norm.phone },
     { customName: name, source: "manual", touch: true },
   )
-  if (!seesAllContacts(scope)) {
+  // Corrida (apareceu entre a checagem e o resolver): dedupou pra algo fora do
+  // alcance → mesmo tratamento, sem claim.
+  if (!created && !(await canReachContact(scope, id))) {
+    return { error: ALREADY_IN_BASE, code: "already_in_base" }
+  }
+  if (created && !seesAllContacts(scope)) {
     await supabaseAdmin
       .from("chat_contacts")
       .update({ owner_id: scope.userId })
       .eq("id", id).eq("tenant_id", scope.tenantId).is("owner_id", null)
   }
   if (input.photoUrl) {
-    // contato pré-existente: só preenche se ainda não tem foto
+    // contato pré-existente (alcançável): só preenche se ainda não tem foto
     saveAvatarFromCdn(scope.tenantId, id, input.photoUrl, !created).catch(() => {})
   }
   return { id }

@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
     if (!body.phone) throw new ExtError(400, "Telefone obrigatório.", "bad_request")
 
     const r = await createContactExt(viewer.scope, { name: body.name ?? "", phone: body.phone, photoUrl: body.photoUrl ?? null })
-    if ("error" in r) throw new ExtError(400, r.error, "invalid")
+    if ("error" in r) throw new ExtError(r.code === "already_in_base" ? 403 : 400, r.error, r.code ?? "invalid")
     return extJson(req, 200, { id: r.id })
   } catch (e) {
     return extErrorResponse(req, e)
