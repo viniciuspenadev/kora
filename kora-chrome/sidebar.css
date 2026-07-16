@@ -293,20 +293,39 @@ button.btn.btn-primary { border: 0; }
 .appt-info small { font-size: 11px; color: #94a3b8; display: block; margin-top: 2px; text-transform: capitalize; }
 .ag-empty { font-size: 11.5px; color: #94a3b8; line-height: 1.5; padding: 2px 2px; }
 
-/* chips de dia (spec §5 .days): Qua 16 · Qui 17 · … seleção em tinta */
-.days { display: flex; gap: 6px; }
-.day {
-  flex: 1; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff;
-  padding: 6px 0; text-align: center; cursor: pointer; font-family: inherit;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
-}
-.day span { display: block; font-size: 8.5px; font-weight: 700; text-transform: uppercase; color: #94a3b8; }
-.day b { display: block; font-size: 12.5px; color: #0f172a; }
-.day:hover { border-color: #b7c8ff; }
-.day.on { border-color: #004add; background: #eef4ff; }
-.day.on b, .day.on span { color: #004add; }
+/* ── sheet "Novo agendamento": calendário do mês + horários por período ── */
+#ag-sheet { max-height: 88%; }
+.ag-sheet-body { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 2px; }
 
-/* grade de horários (spec §5 .slots): 4 colunas, seleção em tinta */
+.cal { border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; }
+.cal-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cal-hd b { font-size: 12px; text-transform: capitalize; }
+.cal-nav {
+  width: 26px; height: 26px; border-radius: 8px; border: 1px solid #e2e8f0;
+  background: #fff; color: #64748b; cursor: pointer; font-family: inherit; font-size: 12px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.cal-nav:hover:not(:disabled) { color: #004add; border-color: #d6e3ff; }
+.cal-nav:disabled { opacity: 0.4; cursor: default; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.cal-wd { font-size: 9px; font-weight: 700; color: #94a3b8; text-align: center; padding: 3px 0; }
+.cal-d {
+  height: 30px; border-radius: 8px; border: 1px solid transparent; background: none;
+  font-size: 11.5px; font-weight: 600; color: #0f172a; cursor: pointer; font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.cal-d:hover:not(:disabled) { background: #f8fafc; border-color: #e2e8f0; }
+.cal-d.today { border-color: #d6e3ff; color: #004add; }
+.cal-d.on { background: #004add; border-color: #004add; color: #fff; }
+.cal-d:disabled { color: #cbd5e1; cursor: default; }
+
+/* grade de horários (spec §5): 4 colunas, agrupada por período, seleção PREENCHIDA */
+.slot-g small {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: #94a3b8; display: block; margin-bottom: 6px;
+}
+.slot-g + .slot-g { margin-top: 10px; }
 .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .slot {
   height: 32px; display: flex; align-items: center; justify-content: center; padding: 0;
@@ -316,8 +335,7 @@ button.btn.btn-primary { border: 0; }
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .slot:hover { border-color: #b7c8ff; }
-.slot.sel { background: #eef4ff; border-color: #004add; color: #004add; }
-.slots .ag-empty { grid-column: 1 / -1; }
+.slot.sel { background: #004add; border-color: #004add; color: #fff; }
 
 /* diagnóstico de suporte (estado "não li o chat") */
 .diag { margin-top: 14px; width: 100%; text-align: left; }

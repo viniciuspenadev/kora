@@ -57,6 +57,7 @@ let holdRender = false // segura o re-render do storage durante a animação de 
 function setView(html) {
   document.getElementById("dock").hidden = true
   closeSheet()
+  closeAgSheet()
   view.classList.add("canvas") // fundo canvas (spec) — só o login remove
   view.innerHTML = html
   view.classList.remove("enter")
@@ -85,7 +86,7 @@ function closeSheet() {
   setTimeout(() => { sheetBackdrop.hidden = true }, 260)
 }
 document.getElementById("sheet-close").addEventListener("click", closeSheet)
-sheetBackdrop.addEventListener("click", closeSheet)
+sheetBackdrop.addEventListener("click", () => { closeSheet(); closeAgSheet() })
 document.getElementById("qr-open").addEventListener("click", openSheet)
 document.getElementById("qr-search").addEventListener("input", () => renderQuickList())
 
@@ -647,9 +648,13 @@ function apptCard(a) {
 // ("quem fala com esse cliente — eu ou a máquina?" + inscrever em fluxo) fica
 // guardado pra quando a IA v2 estiver de pé; placeholder por meses seria ruído.
 
-// Aba Agenda (spec §5): próximo agendamento + novo agendamento INLINE
-// (serviço → agenda → chips de dia → grade de slots 4-col → aviso → CTA).
-let agDay = null // dia selecionado; persiste entre re-renders da aba
+// Aba Agenda: próximo agendamento + "＋ Novo agendamento" abre o SHEET com
+// calendário do mês (decisão do owner 2026-07-16: chips de 5 dias limitavam a
+// data; a grade de horários aprovada fica, agora agrupada por período).
+let agDay = null   // dia selecionado (YYYY-MM-DD)
+let agMonth = null // mês exibido no calendário ("YYYY-MM")
+let agSvc = ""     // últimas escolhas lembradas (spec §5)
+let agRes = ""
 
 async function renderAgendaTab() {
   const body = document.getElementById("tab-body")
@@ -680,123 +685,191 @@ async function renderAgendaTab() {
   const nextHtml = ag.next
     ? apptCard(ag.next) +
       (ag.upcoming > 1 ? `<div class="ag-empty">+ ${ag.upcoming - 1} outro(s) horário(s) futuro(s) — detalhes na agenda do app.</div>` : "")
-    : `<div class="ag-empty">Sem horário marcado${ag.resources.length ? " — é só escolher um horário abaixo." : "."}</div>`
-
-  if (!ag.resources.length) {
-    bodyNow.innerHTML = `
-      <div class="sec">Próximo agendamento</div>
-      ${nextHtml}
-      <div class="hint">Nenhuma agenda configurada — configure em Agenda no app.</div>`
-    return
-  }
-
-  const svcOpts = `<option value="">Sem serviço · duração padrão da agenda</option>` +
-    ag.services.map((s) => `<option value="${esc(s.id)}">${esc(s.name)} · ${s.durationMinutes}min</option>`).join("")
-  const resOptsFor = (svcId) => {
-    const svc = ag.services.find((s) => s.id === svcId)
-    const pool = svc && svc.resourceIds && svc.resourceIds.length
-      ? ag.resources.filter((r) => svc.resourceIds.includes(r.id))
-      : ag.resources
-    return (pool.length ? pool : ag.resources)
-      .map((r, i) => `<option value="${esc(r.id)}" ${i === 0 ? "selected" : ""}>${esc(r.name)}</option>`).join("")
-  }
-  // chips de dia: hoje + 4 (spec §5 .days)
-  const days = []
-  for (let i = 0; i < 5; i++) {
-    const d = new Date(Date.now() + i * 86_400_000)
-    days.push({
-      ymd: d.toLocaleDateString("en-CA"),
-      wd: d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", ""),
-      n: d.getDate(),
-    })
-  }
-  if (!agDay || !days.some((x) => x.ymd === agDay)) agDay = days[0].ymd
+    : `<div class="ag-empty">Sem horário marcado${ag.resources.length ? " — marque o primeiro abaixo." : "."}</div>`
 
   bodyNow.innerHTML = `
     <div class="sec">Próximo agendamento</div>
     ${nextHtml}
-    <div class="sec">Novo agendamento</div>
+    ${ag.resources.length
+      ? `<button id="ag-new" class="btn btn-primary" type="button">＋ Novo agendamento</button>`
+      : `<div class="hint">Nenhuma agenda configurada — configure em Agenda no app.</div>`}`
+  const b = document.getElementById("ag-new")
+  if (b) b.addEventListener("click", openAgendaSheet)
+}
+
+// ── sheet "Novo agendamento": serviço/agenda → calendário do mês → horários ──
+const agSheet = document.getElementById("ag-sheet")
+
+function openAgendaSheet() {
+  const ag = lastResolve && lastResolve.agenda
+  if (!ag || !ag.resources.length) return
+  const today = new Date().toLocaleDateString("en-CA")
+  if (!agDay || agDay < today) agDay = today
+  agMonth = agDay.slice(0, 7)
+  buildAgendaSheet()
+  sheetBackdrop.hidden = false
+  void agSheet.offsetWidth
+  sheetBackdrop.classList.add("open")
+  agSheet.classList.add("open")
+  agSheet.setAttribute("aria-hidden", "false")
+}
+
+function closeAgSheet() {
+  if (!agSheet.classList.contains("open")) return
+  agSheet.classList.remove("open")
+  agSheet.setAttribute("aria-hidden", "true")
+  sheetBackdrop.classList.remove("open")
+  setTimeout(() => {
+    if (!sheet.classList.contains("open") && !agSheet.classList.contains("open")) sheetBackdrop.hidden = true
+  }, 260)
+}
+document.getElementById("ag-sheet-close").addEventListener("click", closeAgSheet)
+
+function buildAgendaSheet() {
+  const ag = lastResolve.agenda
+  const c = lastResolve.contact
+  const body = document.getElementById("ag-sheet-body")
+  const todayYmd = () => new Date().toLocaleDateString("en-CA")
+
+  if (agSvc && !ag.services.some((s) => s.id === agSvc)) agSvc = ""
+  const svcOpts = `<option value=""${agSvc === "" ? " selected" : ""}>Sem serviço · duração padrão da agenda</option>` +
+    ag.services.map((s) => `<option value="${esc(s.id)}"${s.id === agSvc ? " selected" : ""}>${esc(s.name)} · ${s.durationMinutes}min</option>`).join("")
+  const resOptsFor = (svcId) => {
+    const svc = ag.services.find((s) => s.id === svcId)
+    let pool = svc && svc.resourceIds && svc.resourceIds.length
+      ? ag.resources.filter((r) => svc.resourceIds.includes(r.id))
+      : ag.resources
+    if (!pool.length) pool = ag.resources
+    if (!pool.some((r) => r.id === agRes)) agRes = pool[0].id
+    return pool.map((r) => `<option value="${esc(r.id)}"${r.id === agRes ? " selected" : ""}>${esc(r.name)}</option>`).join("")
+  }
+
+  body.innerHTML = `
     <div class="frm">
       <div class="frm-grid">
-        <label>Serviço<select id="ag-svc">${svcOpts}</select></label>
-        <label>Agenda<select id="ag-res">${resOptsFor("")}</select></label>
+        <label>Serviço<select id="ags-svc">${svcOpts}</select></label>
+        <label>Agenda<select id="ags-res">${resOptsFor(agSvc)}</select></label>
       </div>
     </div>
-    <div class="days" id="ag-days">
-      ${days.map((x) => `<button type="button" class="day${x.ymd === agDay ? " on" : ""}" data-ymd="${x.ymd}"><span>${esc(x.wd)}</span><b>${x.n}</b></button>`).join("")}
-    </div>
-    <div id="ag-slots" class="slots"></div>
+    <div class="cal" id="ags-cal"></div>
+    <div class="sec">Horários livres</div>
+    <div id="ags-slots"></div>
     <div class="frm">
       <label>Aviso pro cliente
-        <select id="ag-notify">
+        <select id="ags-notify">
           <option value="chat" selected>Eu envio nesta conversa — mensagem pronta pra revisar</option>
           <option value="system">Sistema envia pelo número conectado</option>
           <option value="none">Não avisar agora</option>
         </select>
       </label>
     </div>
-    <div id="ag-err" class="err" hidden></div>
-    <button id="ag-btn" class="btn btn-primary" type="button" disabled>Agendar horário</button>
+    <div id="ags-err" class="err" hidden></div>
+    <button id="ags-btn" class="btn btn-primary" type="button" disabled>Agendar horário</button>
     <div class="hint">Lembretes e pedido de confirmação seguem a configuração da agenda no app.</div>`
 
   let selSlot = null
   const updateBtn = () => {
-    const b = document.getElementById("ag-btn")
-    if (b) b.disabled = !selSlot
+    const btn = document.getElementById("ags-btn")
+    if (btn) btn.disabled = !selSlot
+  }
+
+  function renderCal() {
+    const el = document.getElementById("ags-cal")
+    if (!el) return
+    const parts = agMonth.split("-")
+    const y = Number(parts[0]), m = Number(parts[1])
+    const first = new Date(y, m - 1, 1)
+    const curYm = todayYmd().slice(0, 7)
+    const label = first.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })
+    const daysIn = new Date(y, m, 0).getDate()
+    const cells = []
+    for (let i = 0; i < first.getDay(); i++) cells.push("<span></span>")
+    for (let d = 1; d <= daysIn; d++) {
+      const ymd = `${agMonth}-${String(d).padStart(2, "0")}`
+      const past = ymd < todayYmd()
+      cells.push(`<button type="button" class="cal-d${ymd === agDay ? " on" : ""}${ymd === todayYmd() ? " today" : ""}" data-ymd="${ymd}"${past ? " disabled" : ""}>${d}</button>`)
+    }
+    el.innerHTML = `
+      <div class="cal-hd">
+        <button id="cal-prev" class="cal-nav" type="button"${agMonth <= curYm ? " disabled" : ""}>‹</button>
+        <b>${esc(label)}</b>
+        <button id="cal-next" class="cal-nav" type="button">›</button>
+      </div>
+      <div class="cal-grid">
+        ${["D", "S", "T", "Q", "Q", "S", "S"].map((w) => `<span class="cal-wd">${w}</span>`).join("")}
+        ${cells.join("")}
+      </div>`
+    const shiftMonth = (delta) => {
+      const nd = new Date(y, m - 1 + delta, 1)
+      agMonth = `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}`
+      renderCal()
+    }
+    document.getElementById("cal-prev").addEventListener("click", () => shiftMonth(-1))
+    document.getElementById("cal-next").addEventListener("click", () => shiftMonth(1))
+    el.querySelectorAll(".cal-d").forEach((btn) => btn.addEventListener("click", () => {
+      if (agDay === btn.dataset.ymd) return
+      agDay = btn.dataset.ymd
+      el.querySelectorAll(".cal-d").forEach((x) => x.classList.toggle("on", x.dataset.ymd === agDay))
+      loadSlots()
+    }))
   }
 
   async function loadSlots() {
     selSlot = null
     updateBtn()
-    const el = document.getElementById("ag-slots")
+    const el = document.getElementById("ags-slots")
     if (!el) return
-    const resourceId = document.getElementById("ag-res").value
+    const resourceId = agRes
     const date = agDay
     el.innerHTML = `<div class="ag-empty">Carregando horários…</div>`
-    const svcId = document.getElementById("ag-svc").value || null
-    const r = await send({ type: "agendaSlots", resourceId, serviceId: svcId, date })
-    // resposta velha (trocou de aba ou mudou o filtro no meio) → descarta
-    const elNow = document.getElementById("ag-slots")
-    if (!elNow || fichaTab !== "agenda") return
-    if (document.getElementById("ag-res").value !== resourceId || agDay !== date) return
+    const r = await send({ type: "agendaSlots", resourceId, serviceId: agSvc || null, date })
+    const elNow = document.getElementById("ags-slots")
+    if (!elNow) return
+    if (agRes !== resourceId || agDay !== date) return // filtro mudou no meio
     if (!r || !r.ok) { elNow.innerHTML = `<div class="ag-empty">${esc((r && r.error) || "Não deu pra buscar horários.")}</div>`; return }
     const slots = (r.data && r.data.slots) || []
-    if (!slots.length) { elNow.innerHTML = `<div class="ag-empty">Sem horários livres neste dia — tente outro.</div>`; return }
-    elNow.innerHTML = slots.map((s) => `<button type="button" class="slot" data-start="${esc(s.start)}">${esc(fmtApptTime(s.start))}</button>`).join("")
-    elNow.querySelectorAll(".slot").forEach((b) => b.addEventListener("click", () => {
+    if (!slots.length) { elNow.innerHTML = `<div class="ag-empty">Sem horários livres neste dia — escolha outro no calendário.</div>`; return }
+    // agrupado por período: parede única de horários é difícil de escanear
+    const groups = [["Manhã", []], ["Tarde", []], ["Noite", []]]
+    for (const s of slots) {
+      const h = new Date(s.start).getHours()
+      groups[h < 12 ? 0 : h < 18 ? 1 : 2][1].push(s)
+    }
+    elNow.innerHTML = groups.filter((g) => g[1].length).map((g) => `
+      <div class="slot-g"><small>${g[0]}</small>
+        <div class="slots">${g[1].map((s) => `<button type="button" class="slot" data-start="${esc(s.start)}">${esc(fmtApptTime(s.start))}</button>`).join("")}</div>
+      </div>`).join("")
+    elNow.querySelectorAll(".slot").forEach((btn) => btn.addEventListener("click", () => {
       elNow.querySelectorAll(".slot").forEach((x) => x.classList.remove("sel"))
-      b.classList.add("sel")
-      selSlot = b.dataset.start
+      btn.classList.add("sel")
+      selSlot = btn.dataset.start
       updateBtn()
     }))
   }
 
-  document.getElementById("ag-svc").addEventListener("change", (ev) => {
-    document.getElementById("ag-res").innerHTML = resOptsFor(ev.target.value)
+  document.getElementById("ags-svc").addEventListener("change", (ev) => {
+    agSvc = ev.target.value
+    document.getElementById("ags-res").innerHTML = resOptsFor(agSvc)
+    agRes = document.getElementById("ags-res").value
     loadSlots()
   })
-  document.getElementById("ag-res").addEventListener("change", loadSlots)
-  bodyNow.querySelectorAll(".day").forEach((b) => {
-    b.addEventListener("click", () => {
-      if (agDay === b.dataset.ymd) return
-      agDay = b.dataset.ymd
-      bodyNow.querySelectorAll(".day").forEach((x) => x.classList.toggle("on", x.dataset.ymd === agDay))
-      loadSlots()
-    })
+  document.getElementById("ags-res").addEventListener("change", (ev) => {
+    agRes = ev.target.value
+    loadSlots()
   })
-  document.getElementById("ag-btn").addEventListener("click", async () => {
+  document.getElementById("ags-btn").addEventListener("click", async () => {
     if (!selSlot) return
-    const btn = document.getElementById("ag-btn")
-    const errEl = document.getElementById("ag-err")
+    const btn = document.getElementById("ags-btn")
+    const errEl = document.getElementById("ags-err")
     errEl.hidden = true
     morphStart(btn)
     const res = await send({
       type: "agendaBook",
       contactId: c.id,
-      resourceId: document.getElementById("ag-res").value,
-      serviceId: document.getElementById("ag-svc").value || null,
+      resourceId: agRes,
+      serviceId: agSvc || null,
       startsAt: selSlot,
-      notify: document.getElementById("ag-notify").value,
+      notify: document.getElementById("ags-notify").value,
     })
     if (!res || !res.ok) {
       morphFail(btn, "Agendar horário")
@@ -806,6 +879,7 @@ async function renderAgendaTab() {
       return
     }
     morphSuccess(btn, () => {
+      closeAgSheet()
       const msg = res.data && res.data.confirmMessage
       if (msg) {
         // "o sistema prepara, o humano dispara": pré-enche o composer — enviar é seu clique
@@ -818,6 +892,8 @@ async function renderAgendaTab() {
     })
   })
 
+  agRes = document.getElementById("ags-res").value
+  renderCal()
   loadSlots()
 }
 
