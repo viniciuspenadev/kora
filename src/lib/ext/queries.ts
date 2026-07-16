@@ -23,6 +23,9 @@ import {
   type DocumentStatus,
 } from "@/lib/commercial/documents"
 import { lineSubtotal, computeDealValue, DEFAULT_TERM_MONTHS, type DealItemLike } from "@/lib/crm/value"
+import { hasModule } from "@/lib/modules"
+import { availabilitySlots, bookAppointment } from "@/lib/agenda/booking"
+import { appointmentLevel, viewerShareMap, LEVEL_RANK, type ApptVisibility, type ShareLevel } from "@/lib/agenda/access"
 
 // ═══════════════════════════════════════════════════════════════
 // Kora Companion — queries de leitura (F0)
@@ -545,6 +548,128 @@ export async function markQuoteSentExt(
     })
   }
   return { ok: true }
+}
+
+// ── F2b: Agenda na ficha (próximo compromisso + agendar no chat aberto) ───────
+// Leitura respeita a ESCADA de níveis (fonte única em agenda/access.ts — nível
+// ≥ details, igual à sidebar do app). Booking = qualquer membro (espelho do app:
+// createAppointment não restringe por share) via núcleo bookAppointment
+// (anti-double-book EXCLUDE, notificação do host, lembretes server-side).
+
+export interface ExtAppt {
+  id:           string
+  startsAt:     string
+  endsAt:       string
+  status:       string
+  serviceName:  string | null
+  resourceName: string | null
+}
+
+export interface ExtAgenda {
+  enabled:   boolean
+  next:      ExtAppt | null
+  upcoming:  number
+  resources: { id: string; name: string }[]
+  services:  { id: string; name: string; durationMinutes: number; resourceIds: string[] }[]
+}
+
+type ExtApptRow = ApptVisibility & {
+  id: string; resource_id: string; starts_at: string; ends_at: string; status: string
+  tenant_services: { name: string | null } | null
+  tenant_resources: { name: string | null; assigned_agent_id: string | null; share_everyone_level: ShareLevel | null } | null
+}
+
+/** Agenda do contato: próximos compromissos visíveis + agendas/serviços ativos. */
+export async function agendaForContactExt(
+  scope: ViewerScope,
+  contactId: string,
+): Promise<ExtAgenda | { error: string }> {
+  if (!(await canReachContact(scope, contactId))) return { error: "Contato não encontrado." }
+  if (!(await hasModule(scope.tenantId, "agenda")))
+    return { enabled: false, next: null, upcoming: 0, resources: [], services: [] }
+
+  const { data: rows } = await supabaseAdmin
+    .from("appointments")
+    .select(`id, resource_id, starts_at, ends_at, status, created_by,
+      tenant_services(name),
+      tenant_resources(name, assigned_agent_id, share_everyone_level),
+      chat_conversations(instance_id, assigned_to, participants, department_id)`)
+    .eq("tenant_id", scope.tenantId).eq("contact_id", contactId)
+    .gte("ends_at", new Date().toISOString())
+    .in("status", ["scheduled", "confirmed"])
+    .order("starts_at", { ascending: true })
+    .limit(10)
+  const all = (rows ?? []) as unknown as ExtApptRow[]
+
+  // Mesma régua do app (getContactAppointments): nível ≥ details entra.
+  let visible = all
+  if (!scope.isAdmin && all.length) {
+    const shareMap = await viewerShareMap(scope)
+    const { data: parts } = await supabaseAdmin
+      .from("appointment_participants")
+      .select("appointment_id")
+      .eq("tenant_id", scope.tenantId).eq("user_id", scope.userId)
+      .in("appointment_id", all.map((a) => a.id))
+    const coSet = new Set((parts ?? []).map((p) => p.appointment_id as string))
+    visible = all.filter(
+      (a) => LEVEL_RANK[appointmentLevel(scope, a, shareMap.get(a.resource_id), coSet.has(a.id))] >= LEVEL_RANK.details,
+    )
+  }
+
+  const [resR, svcR] = await Promise.all([
+    supabaseAdmin.from("tenant_resources").select("id, name").eq("tenant_id", scope.tenantId).eq("active", true).order("name"),
+    supabaseAdmin.from("tenant_services").select("id, name, duration_minutes, resource_ids").eq("tenant_id", scope.tenantId).eq("active", true).order("name"),
+  ])
+
+  const nxt = visible[0] ?? null
+  return {
+    enabled: true,
+    next: nxt ? {
+      id: nxt.id, startsAt: nxt.starts_at, endsAt: nxt.ends_at, status: nxt.status,
+      serviceName: nxt.tenant_services?.name ?? null, resourceName: nxt.tenant_resources?.name ?? null,
+    } : null,
+    upcoming: visible.length,
+    resources: ((resR.data ?? []) as { id: string; name: string }[]).map((r) => ({ id: r.id, name: r.name })),
+    services: ((svcR.data ?? []) as { id: string; name: string; duration_minutes: number; resource_ids: string[] | null }[])
+      .map((s) => ({ id: s.id, name: s.name, durationMinutes: s.duration_minutes, resourceIds: s.resource_ids ?? [] })),
+  }
+}
+
+/** Horários livres de UMA agenda num dia (America/Sao_Paulo, −03 fixo desde 2019). */
+export async function agendaSlotsExt(
+  scope: ViewerScope,
+  input: { resourceId: string; serviceId?: string | null; date: string },
+): Promise<{ slots: { start: string; end: string }[] } | { error: string }> {
+  if (!(await hasModule(scope.tenantId, "agenda"))) return { error: "Módulo Agenda não habilitado." }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return { error: "Dia inválido." }
+  const slots = await availabilitySlots(scope.tenantId, {
+    resourceId: input.resourceId,
+    serviceId:  input.serviceId ?? null,
+    rangeStart: `${input.date}T00:00:00-03:00`,
+    rangeEnd:   `${input.date}T23:59:59-03:00`,
+  })
+  const now = Date.now()
+  return { slots: slots.filter((s) => new Date(s.start).getTime() > now).slice(0, 48) }
+}
+
+/** Marca horário pro contato do chat aberto — delega pro núcleo (mesmo motor do app/Studio). */
+export async function bookAppointmentExt(
+  scope: ViewerScope,
+  input: { contactId: string; resourceId: string; serviceId?: string | null; startsAt: string },
+): Promise<{ id: string } | { error: string }> {
+  if (!(await hasModule(scope.tenantId, "agenda"))) return { error: "Módulo Agenda não habilitado." }
+  if (!(await canReachContact(scope, input.contactId))) return { error: "Contato não encontrado." }
+  const r = await bookAppointment(scope.tenantId, {
+    contactId:  input.contactId,
+    resourceId: input.resourceId,
+    serviceId:  input.serviceId ?? null,
+    startsAt:   input.startsAt,
+    source:     "agent",
+    createdBy:  scope.userId,
+    notifyCustomer: true,
+  })
+  if (r.error || !r.id) return { error: r.error ?? "Não deu pra marcar o horário." }
+  return { id: r.id }
 }
 
 /** Nota na linha do tempo do negócio (F1) — com autoria real. */

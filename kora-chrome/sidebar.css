@@ -195,15 +195,57 @@ button.btn.btn-primary { border: 0; }
 .chip.st-bad   { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
 .chip.st-void  { background: #f8fafc; color: #94a3b8; border-color: #e2e8f0; }
 
-/* ação por-cotação: tinta azul-claro (Lei do Contraste — nunca branco-sobre-branco) */
-.q-send {
+/* ações por-cotação: Visualizar (borda) ao lado do Enviar (tinta azul-claro —
+   Lei do Contraste: nunca branco-sem-borda sobre branco) */
+.q-actions { display: grid; grid-template-columns: auto 1fr; gap: 8px; }
+.q-actions.single { grid-template-columns: 1fr; }
+.q-view, .q-send {
   height: 34px; border-radius: 10px; font-size: 11.5px; font-weight: 700; font-family: inherit;
-  background: #eef4ff; color: #004add; border: 1px solid #d6e3ff; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer; white-space: nowrap; padding: 0 13px;
   transition: background-color 0.15s ease;
 }
+.q-view svg, .q-send svg { width: 13px; height: 13px; flex: none; }
+.q-view { background: #fff; color: #334155; border: 1px solid #e2e8f0; }
+.q-view:hover { background: #f8fafc; }
+.q-view:disabled { opacity: 0.7; cursor: default; }
+.q-send { background: #eef4ff; color: #004add; border: 1px solid #d6e3ff; }
 .q-send:hover { background: #e2ecff; }
 .q-send:disabled { opacity: 0.7; cursor: default; }
 .q-send.ok { background: #ecfdf5 !important; color: #047857 !important; border-color: #a7f3d0 !important; }
+
+/* ── F2b: agenda na ficha (próximo compromisso + agendar) ─────── */
+#ag-block { display: flex; flex-direction: column; gap: 12px; }
+#ag-block > * { animation: krise 0.34s cubic-bezier(0.22, 0.61, 0.36, 1) both; } /* entra suave ao carregar */
+.sec-act {
+  font-size: 11px; font-weight: 700; color: #004add; background: none; border: 0;
+  padding: 0; cursor: pointer; font-family: inherit; text-transform: none; letter-spacing: 0;
+}
+.sec-act:hover { color: #003db8; }
+
+/* card do compromisso: data em tinta à esquerda, serviço/agenda no meio, status */
+.appt { display: flex; align-items: center; gap: 12px; border: 1px solid #e8ecf1; border-radius: 12px; padding: 12px 14px; }
+.appt-when {
+  display: flex; flex-direction: column; align-items: center; flex: none; min-width: 56px;
+  background: #eef4ff; border: 1px solid #d6e3ff; border-radius: 10px; padding: 6px 8px;
+}
+.appt-when b { font-size: 10.5px; color: #004add; text-transform: capitalize; white-space: nowrap; }
+.appt-when span { font-size: 12.5px; font-weight: 700; color: #004add; font-variant-numeric: tabular-nums; }
+.appt-info { min-width: 0; flex: 1; }
+.appt-info b { font-size: 12.5px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.appt-info small { font-size: 11px; color: #94a3b8; display: block; margin-top: 2px; }
+.ag-empty { font-size: 11.5px; color: #94a3b8; line-height: 1.5; padding: 2px 2px; }
+
+/* grade de horários livres: chips selecionáveis (hover/seleção só de cor) */
+.slots { display: flex; flex-wrap: wrap; gap: 8px; }
+.slot {
+  padding: 7px 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff;
+  font-size: 11.5px; font-weight: 600; color: #334155; cursor: pointer; font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.slot:hover { border-color: #b7c8ff; }
+.slot.sel { background: #eef4ff; border-color: #004add; color: #004add; }
 
 /* diagnóstico de suporte (estado "não li o chat") */
 .diag { margin-top: 14px; width: 100%; text-align: left; }

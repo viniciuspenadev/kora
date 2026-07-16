@@ -94,6 +94,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "markQuoteSent":
         sendResponse(await api(`/api/ext/documents/${encodeURIComponent(msg.docId)}/sent`, { method: "POST", body: "{}" }))
         break
+      case "agenda":
+        sendResponse(await api(`/api/ext/agenda?contactId=${encodeURIComponent(msg.contactId)}`))
+        break
+      case "agendaSlots":
+        sendResponse(await api(
+          `/api/ext/agenda/slots?resourceId=${encodeURIComponent(msg.resourceId)}&date=${encodeURIComponent(msg.date)}` +
+          (msg.serviceId ? `&serviceId=${encodeURIComponent(msg.serviceId)}` : ""),
+        ))
+        break
+      case "agendaBook":
+        sendResponse(await api("/api/ext/agenda/book", {
+          method: "POST",
+          body: JSON.stringify({ contactId: msg.contactId, resourceId: msg.resourceId, serviceId: msg.serviceId, startsAt: msg.startsAt }),
+        }))
+        break
       case "quotePdf": {
         // binário → base64: mensagens do runtime só trafegam JSON.
         const st = await getState()
