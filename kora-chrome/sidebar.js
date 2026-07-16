@@ -128,15 +128,17 @@ function renderQuickList() {
 }
 
 // resultado da inserção vem do content script
+let insertOkMsg = null // toast customizado pro próximo kora:inserted (ex: fluxo do agendamento)
 window.addEventListener("message", (ev) => {
   const d = ev.data || {}
   if (d.type !== "kora:inserted") return
   if (d.ok) {
     closeSheet()
-    alertHint("Inserido no campo — revise e envie ✓", true)
+    alertHint(insertOkMsg || "Inserido no campo — revise e envie ✓", true)
   } else {
     alertHint("Não achei o campo de mensagem. Clique no chat e tente de novo.")
   }
+  insertOkMsg = null
 })
 
 function empty(ico, title, text, extraHtml = "") {
@@ -518,9 +520,16 @@ async function renderAgendar() {
       </div>
       <div class="sec">Horários livres</div>
       <div id="ag-slots" class="slots"></div>
+      <label>Aviso pro cliente
+        <select id="ag-notify">
+          <option value="chat" selected>Eu envio nesta conversa — mensagem pronta pra revisar</option>
+          <option value="system">Sistema envia pelo número conectado</option>
+          <option value="none">Não avisar agora</option>
+        </select>
+      </label>
+      <div class="hint" style="text-align:left">Lembretes automáticos e pedido de confirmação seguem a configuração da agenda — nada muda neles.</div>
       <div id="ag-err" class="err" hidden></div>
       <button id="ag-btn" class="btn btn-primary" type="submit" disabled>Confirmar horário</button>
-      <div class="hint">Confirmação e lembretes seguem a configuração da agenda no app.</div>
     </form>`)
 
   let selSlot = null
@@ -572,6 +581,7 @@ async function renderAgendar() {
       resourceId: document.getElementById("ag-res").value,
       serviceId: document.getElementById("ag-svc").value || null,
       startsAt: selSlot,
+      notify: document.getElementById("ag-notify").value,
     })
     if (!res || !res.ok) {
       morphFail(btn, "Confirmar horário")
@@ -582,7 +592,14 @@ async function renderAgendar() {
       return
     }
     morphSuccess(btn, () => {
-      alertHint("Horário marcado ✓", true)
+      const msg = res.data && res.data.confirmMessage
+      if (msg) {
+        // "o sistema prepara, o humano dispara": pré-enche o composer — enviar é seu clique
+        insertOkMsg = "Horário marcado ✓ — revise a mensagem e envie"
+        parent.postMessage({ type: "kora:insert", text: msg }, "*")
+      } else {
+        alertHint("Horário marcado ✓", true)
+      }
       refreshResolve()
     })
   })

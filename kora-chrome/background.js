@@ -106,7 +106,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "agendaBook":
         sendResponse(await api("/api/ext/agenda/book", {
           method: "POST",
-          body: JSON.stringify({ contactId: msg.contactId, resourceId: msg.resourceId, serviceId: msg.serviceId, startsAt: msg.startsAt }),
+          body: JSON.stringify({ contactId: msg.contactId, resourceId: msg.resourceId, serviceId: msg.serviceId, startsAt: msg.startsAt, notify: msg.notify }),
         }))
         break
       case "quotePdf": {

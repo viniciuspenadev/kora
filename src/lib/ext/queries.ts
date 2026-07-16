@@ -652,13 +652,22 @@ export async function agendaSlotsExt(
   return { slots: slots.filter((s) => new Date(s.start).getTime() > now).slice(0, 48) }
 }
 
-/** Marca horário pro contato do chat aberto — delega pro núcleo (mesmo motor do app/Studio). */
+/**
+ * Marca horário pro contato do chat aberto — delega pro núcleo (mesmo motor do app/Studio).
+ * `notify` = quem dá o aviso IMEDIATO (lembretes + round-trip do sistema seguem a política, intocados):
+ *   "chat"   → o ATENDENTE avisa na conversa aberta: devolvemos a mensagem PRONTA
+ *              (texto da política com variáveis resolvidas) pra extensão pré-encher o
+ *              composer — humano revisa e envia. Hand-off registrado na auditoria.
+ *   "system" → aviso plano pelo canal conectado (comportamento clássico do app).
+ *   "none"   → ninguém avisa agora.
+ */
 export async function bookAppointmentExt(
   scope: ViewerScope,
-  input: { contactId: string; resourceId: string; serviceId?: string | null; startsAt: string },
-): Promise<{ id: string } | { error: string }> {
+  input: { contactId: string; resourceId: string; serviceId?: string | null; startsAt: string; notify?: "chat" | "system" | "none" },
+): Promise<{ id: string; confirmMessage?: string } | { error: string }> {
   if (!(await hasModule(scope.tenantId, "agenda"))) return { error: "Módulo Agenda não habilitado." }
   if (!(await canReachContact(scope, input.contactId))) return { error: "Contato não encontrado." }
+  const notify = input.notify ?? "system"
   const r = await bookAppointment(scope.tenantId, {
     contactId:  input.contactId,
     resourceId: input.resourceId,
@@ -667,9 +676,58 @@ export async function bookAppointmentExt(
     source:     "agent",
     createdBy:  scope.userId,
     notifyCustomer: true,
+    // ≠"system": pula SÓ o aviso plano do sistema (semântica conversationalConfirm
+    // da IA); round-trip de confirmação e lembretes da política CONTINUAM.
+    conversationalConfirm: notify !== "system",
   })
   if (r.error || !r.id) return { error: r.error ?? "Não deu pra marcar o horário." }
-  return { id: r.id }
+  if (notify !== "chat") return { id: r.id }
+  return { id: r.id, confirmMessage: await agendaHandOffMessage(scope, r.id) }
+}
+
+/**
+ * Mensagem de aviso pronta pro atendente enviar na conversa aberta ("o sistema
+ * prepara, o humano dispara"). Usa o MESMO texto do passo "ao agendar" da política
+ * do serviço (variáveis do registry resolvidas server-side); sem política → default
+ * sóbrio. Registra o hand-off em appointment_reminders (auditoria: o aviso ficou
+ * com o atendente, canal extensão).
+ */
+async function agendaHandOffMessage(scope: ViewerScope, appointmentId: string): Promise<string> {
+  const { data } = await supabaseAdmin
+    .from("appointments")
+    .select("starts_at, chat_contacts(custom_name, push_name), tenant_services(name, reminder_policy), tenant_resources(name)")
+    .eq("tenant_id", scope.tenantId).eq("id", appointmentId).maybeSingle()
+  const a = data as unknown as {
+    starts_at: string
+    chat_contacts: { custom_name: string | null; push_name: string | null } | null
+    tenant_services: { name: string | null; reminder_policy: { steps?: { offset_minutes?: number; audience?: string; request_confirmation?: boolean; text?: string }[] } | null } | null
+    tenant_resources: { name: string | null } | null
+  } | null
+
+  const TZ = "America/Sao_Paulo"
+  const starts = a?.starts_at ? new Date(a.starts_at) : new Date()
+  // Mesmos nomes/formatos do buildVars dos avisos do sistema (reminders.ts).
+  const vars = withAliases({
+    nome:    a?.chat_contacts?.custom_name || a?.chat_contacts?.push_name || "",
+    data:    starts.toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "long" }),
+    hora:    starts.toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }),
+    servico: a?.tenant_services?.name ?? "",
+    recurso: a?.tenant_resources?.name ?? "",
+  })
+  const step = (a?.tenant_services?.reminder_policy?.steps ?? []).find(
+    (s) => (s.offset_minutes ?? 0) === 0 && (s.audience ?? "customer") !== "agent" && s.request_confirmation !== true && !!s.text?.trim(),
+  )
+  const first = (vars.nome || "").trim().split(/\s+/)[0]
+  const text = step?.text?.trim()
+    ? renderVars(step.text, vars)
+    : `Oi${first ? `, ${first}` : ""}! Tudo certo por aqui: ${vars.servico ? `${vars.servico} — ` : ""}${vars.data} às ${vars.hora}. Qualquer imprevisto, é só me avisar por esta conversa.`
+
+  await supabaseAdmin.from("appointment_reminders").insert({
+    tenant_id: scope.tenantId, appointment_id: appointmentId,
+    step_key: "created#ext", audience: "customer", channel: "extension",
+    status: "handed_to_agent", detail: "mensagem preparada na conversa pelo atendente (Kora Companion)",
+  })
+  return text
 }
 
 /** Nota na linha do tempo do negócio (F1) — com autoria real. */
