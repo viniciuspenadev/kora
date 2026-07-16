@@ -310,8 +310,7 @@ async function resolveChat() {
       ev.preventDefault()
       const btn = document.getElementById("cc-btn")
       const errEl = document.getElementById("cc-err")
-      btn.disabled = true
-      btn.textContent = "Cadastrando…"
+      morphStart(btn)
       const chk = document.getElementById("cc-save-photo")
       const res = await send({
         type: "createContact",
@@ -320,13 +319,16 @@ async function resolveChat() {
         photoUrl: chk && chk.checked ? currentChat.avatar : undefined,
       })
       if (!res || !res.ok) {
-        btn.disabled = false
-        btn.textContent = "Cadastrar contato"
+        morphFail(btn, "Cadastrar contato")
         errEl.textContent = (res && res.error) || "Não deu pra cadastrar."
         errEl.hidden = false
+        shakeForm(document.getElementById("cc-form"))
         return
       }
-      refreshResolve()
+      morphSuccess(btn, () => {
+        alertHint("Contato cadastrado ✓", true)
+        refreshResolve()
+      })
     })
     return
   }
@@ -352,7 +354,9 @@ async function renderFicha() {
   const dealsHtml = deals.length
     ? deals.map((d) => `
         <div class="deal">
-          <div class="deal-t"><b>${esc(d.name || "Negócio")}</b><span class="deal-v">${brl(d.value)}</span></div>
+          <button class="deal-open" data-deal="${esc(d.id)}" type="button" title="Ver itens e cotações">
+            <b>${esc(d.name || "Negócio")}</b><span class="deal-v">${brl(d.value)}<i class="chev">›</i></span>
+          </button>
           <div class="deal-m">
             <select class="stage-sel" data-deal="${esc(d.id)}" title="Mover etapa">${stageOptions(d)}</select>
             <small>${esc(d.pipelineName || "")}</small>
@@ -391,13 +395,20 @@ async function renderFicha() {
 
   document.getElementById("dock").hidden = false
 
-  // mover etapa
+  // mover etapa — confirma com anel verde no card + toast antes do refresh
   view.querySelectorAll(".stage-sel").forEach((sel) => {
     sel.addEventListener("change", async () => {
       sel.disabled = true
       const res = await send({ type: "moveStage", dealId: sel.dataset.deal, stageId: sel.value })
-      if (!res || !res.ok) { alertHint((res && res.error) || "Não deu pra mover."); }
-      refreshResolve()
+      if (!res || !res.ok) {
+        alertHint((res && res.error) || "Não deu pra mover a etapa.")
+        refreshResolve()
+        return
+      }
+      const card = sel.closest(".deal")
+      if (card) card.classList.add("saved")
+      alertHint("Etapa movida ✓", true)
+      setTimeout(refreshResolve, 950)
     })
   })
   // nota por negócio
@@ -415,17 +426,212 @@ async function renderFicha() {
       b.disabled = true
       b.textContent = "Salvando…"
       const res = await send({ type: "addNote", dealId: b.dataset.deal, text: ta.value })
-      if (!res || !res.ok) { alertHint((res && res.error) || "Não deu pra salvar."); b.disabled = false; b.textContent = "Salvar nota"; return }
-      ta.value = ""
-      b.disabled = false
-      b.textContent = "Salvar nota"
-      document.getElementById(`nb-${b.dataset.deal}`).hidden = true
+      if (!res || !res.ok) {
+        alertHint((res && res.error) || "Não deu pra salvar a nota.")
+        b.disabled = false
+        b.textContent = "Salvar nota"
+        return
+      }
+      // confirmação no PRÓPRIO botão antes de recolher
+      b.textContent = "✓ Nota salva"
+      b.classList.add("ok-mini")
       alertHint("Nota salva na linha do tempo ✓", true)
+      setTimeout(() => {
+        b.classList.remove("ok-mini")
+        b.disabled = false
+        b.textContent = "Salvar nota"
+        ta.value = ""
+        document.getElementById(`nb-${b.dataset.deal}`).hidden = true
+      }, 1200)
     })
   })
   const newDealBtn = document.getElementById("new-deal")
   if (newDealBtn) newDealBtn.addEventListener("click", renderNewDeal)
+  // drill-down: negócio por dentro (itens + cotações)
+  view.querySelectorAll(".deal-open").forEach((b) => {
+    b.addEventListener("click", () => renderDealDetail(b.dataset.deal))
+  })
 }
+
+// ── F2: negócio por dentro — itens + valores + cotação "Enviar nesta conversa" ──
+const brl2 = (v) =>
+  Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+
+async function renderDealDetail(dealId) {
+  empty("⏳", "Abrindo negócio…", "Buscando itens e cotações.")
+  const r = await send({ type: "dealDetail", dealId })
+  if (!r || !r.ok) {
+    if (r && r.status === 401) { session = { loggedIn: false }; renderState(); return }
+    empty("⚠️", "Não deu pra abrir", (r && r.error) || "Erro de conexão com o servidor.")
+    return
+  }
+  const d = r.data.deal
+  const billTag = (it) =>
+    it.billing === "monthly" ? ` · mensal${it.termMonths ? ` × ${it.termMonths}m` : ""}`
+    : it.billing === "yearly" ? " · anual" : ""
+
+  const itemsHtml = d.items.length
+    ? `<div class="sec">Itens · ${d.items.length}</div>
+       <div class="list">
+         ${d.items.map((it) => `
+           <div class="it">
+             <span class="it-l"><b>${esc(it.name)}</b><small>${it.qty} ${esc(it.unit)} × ${brl2(it.unitPrice)}${billTag(it)}</small></span>
+             <span class="it-v">${brl2(it.lineTotal)}</span>
+           </div>`).join("")}
+         <div class="it tot">
+           <span class="it-l"><b>Total do negócio</b>${d.totals.mrr > 0 ? `<small>MRR ${brl2(d.totals.mrr)}/mês</small>` : ""}</span>
+           <span class="it-v">${brl2(d.totals.total)}</span>
+         </div>
+       </div>`
+    : `<div class="empty inline">
+         <div class="ico">📦</div>
+         <b>Sem itens neste negócio</b>
+         <p>Adicione produtos ou serviços no app pra compor o valor e gerar a cotação.</p>
+         <a class="lnk" target="_blank" rel="noreferrer" href="${esc(session.baseUrl)}/negocios/${esc(d.id)}">Abrir o negócio no app ↗</a>
+       </div>`
+
+  const STATUS = {
+    draft:    ["Rascunho", "st-draft"],
+    sent:     ["Enviada", "st-sent"],
+    accepted: ["Aceita", "st-ok"],
+    signed:   ["Assinada", "st-ok"],
+    declined: ["Recusada", "st-bad"],
+    void:     ["Anulada", "st-void"],
+  }
+  const quotesHtml = d.quotes.length
+    ? d.quotes.map((qd) => {
+        const st = STATUS[qd.status] || [qd.status, "st-draft"]
+        const sendable = qd.status === "draft" || qd.status === "sent"
+        return `
+          <div class="quote${qd.status === "void" ? " muted" : ""}">
+            <div class="q-t">
+              <b>${esc(qd.code)}</b>
+              <span class="chip ${st[1]}">${esc(st[0])}</span>
+              <span class="q-v">${brl2((qd.totalCents || 0) / 100)}</span>
+            </div>
+            ${sendable ? `<button class="q-send" data-doc="${esc(qd.id)}" type="button">Enviar nesta conversa</button>` : ""}
+          </div>`
+      }).join("")
+    : (d.items.length
+        ? `<div class="hint">Nenhuma cotação ainda — gere a primeira. Ela congela itens e preços num PDF numerado.</div>`
+        : "")
+
+  setView(`
+    <div class="frm-head">
+      <button id="dd-back" class="back-btn" type="button">‹</button>
+      <b>${esc(d.name || "Negócio")}</b>
+      <a class="ext-lnk" title="Abrir negócio no Kora" target="_blank" rel="noreferrer" href="${esc(session.baseUrl)}/negocios/${esc(d.id)}">↗</a>
+    </div>
+    <div class="dd-meta">${esc(d.pipelineName || "")}${d.stageName ? ` · ${esc(d.stageName)}` : ""}</div>
+    ${itemsHtml}
+    ${d.quotes.length || d.items.length ? `<div class="sec">Cotações${d.quotes.length ? ` · ${d.quotes.length}` : ""}</div>` : ""}
+    ${quotesHtml}
+    ${d.items.length ? `
+      <button id="dd-quote" class="btn btn-primary" type="button">Gerar cotação</button>
+      <div class="hint">Usa as condições-padrão da empresa. Cada geração é uma nova versão numerada.</div>` : ""}`)
+
+  document.getElementById("dd-back").addEventListener("click", () => renderFicha())
+  const gen = document.getElementById("dd-quote")
+  if (gen) gen.addEventListener("click", async () => {
+    morphStart(gen)
+    const res = await send({ type: "createQuote", dealId })
+    if (!res || !res.ok) {
+      morphFail(gen, "Gerar cotação")
+      alertHint((res && res.error) || "Não deu pra gerar a cotação.")
+      return
+    }
+    morphSuccess(gen, () => {
+      alertHint(`Cotação ${res.data.code} gerada ✓`, true)
+      renderDealDetail(dealId)
+    })
+  })
+  view.querySelectorAll(".q-send").forEach((b) => {
+    b.addEventListener("click", () => sendQuoteHere(b, dealId))
+  })
+}
+
+// envio 1-clique: baixa o PDF congelado → File → content script anexa e envia
+// no chat ABERTO → só marca ENVIADA no Kora depois do envio VERIFICADO.
+let attachPending = null // um envio por vez (doutrina 1-clique = 1 ação)
+
+async function sendQuoteHere(btn, dealId) {
+  if (!currentChat || currentChat.kind !== "chat") {
+    alertHint("Abra a conversa do cliente pra enviar.")
+    return
+  }
+  if (attachPending) return
+  const docId = btn.dataset.doc
+  const original = btn.textContent
+  btn.disabled = true
+  btn.textContent = "Preparando PDF…"
+
+  const r = await send({ type: "quotePdf", docId })
+  if (!r || !r.ok) {
+    btn.disabled = false
+    btn.textContent = original
+    if (r && r.status === 401) { session = { loggedIn: false }; renderState(); return }
+    alertHint((r && r.error) || "Não deu pra baixar o PDF.")
+    return
+  }
+  let file
+  try {
+    const bin = atob(r.data.b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    file = new File([bytes], r.data.fileName || "cotacao.pdf", { type: "application/pdf" })
+  } catch (e) {
+    btn.disabled = false
+    btn.textContent = original
+    alertHint("O PDF chegou corrompido — tente de novo.")
+    return
+  }
+
+  btn.textContent = "Enviando no chat…"
+  const timeout = setTimeout(() => {
+    if (!attachPending) return
+    attachPending = null
+    btn.disabled = false
+    btn.textContent = original
+    alertHint("O WhatsApp não respondeu — tente de novo.")
+  }, 12000)
+
+  attachPending = async (res) => {
+    clearTimeout(timeout)
+    attachPending = null
+    if (res.ok && res.mode === "sent") {
+      // confirmação no PRÓPRIO controle antes do refresh (doutrina de feedback)
+      btn.classList.add("ok")
+      btn.textContent = "✓ Enviada nesta conversa"
+      const mk = await send({ type: "markQuoteSent", docId })
+      if (mk && mk.ok) alertHint("Cotação enviada ✓", true)
+      else alertHint("Enviada no chat — mas não consegui marcar no Kora. Marque no app.")
+      setTimeout(() => renderDealDetail(dealId), 1400)
+      return
+    }
+    btn.disabled = false
+    btn.textContent = original
+    if (res.ok && res.mode === "preview") {
+      // estado honesto: anexou mas não confirmou o envio — o humano decide lá
+      alertHint("Prévia aberta no WhatsApp — confirme o envio lá.", true)
+      return
+    }
+    const why = {
+      chat_changed: "Você trocou de conversa — volte pro chat do cliente e tente de novo.",
+      busy:         "Já tem um anexo aberto no WhatsApp — envie ou cancele ele primeiro.",
+      no_preview:   "Não consegui anexar aqui — envie pela ficha do negócio no app.",
+      no_file:      "O arquivo se perdeu no caminho — tente de novo.",
+    }
+    alertHint(why[res.mode] || "Não deu pra enviar por aqui.")
+  }
+  parent.postMessage({ type: "kora:attach", file, expectPhone: currentChat.phone }, "*")
+}
+
+// resultado do anexo vem do content script
+window.addEventListener("message", (ev) => {
+  const d = ev.data || {}
+  if (d.type !== "kora:attached") return
+  if (attachPending) attachPending(d)
+})
 
 function alertHint(msg, ok) {
   let el = document.getElementById("flash")
@@ -437,7 +643,31 @@ function alertHint(msg, ok) {
   el.textContent = msg
   el.className = ok ? "ok" : "bad"
   el.style.opacity = "1"
-  setTimeout(() => { el.style.opacity = "0" }, 2600)
+  setTimeout(() => { el.style.opacity = "0" }, 3200)
+}
+
+// ── doutrina de feedback: toda ação mutante confirma NO PRÓPRIO CONTROLE ──
+// pending (spinner) → ✓ verde → estado final. Toast é reforço, nunca o único aviso.
+function morphStart(btn) {
+  btn.style.width = btn.offsetWidth + "px"
+  void btn.offsetWidth
+  btn.classList.add("loading")
+  btn.disabled = true
+}
+function morphFail(btn, label) {
+  btn.classList.remove("loading")
+  btn.style.width = ""
+  btn.disabled = false
+  btn.textContent = label
+}
+function morphSuccess(btn, after, holdMs = 700) {
+  btn.classList.add("success")
+  setTimeout(after, holdMs)
+}
+function shakeForm(formEl) {
+  formEl.classList.remove("shake")
+  void formEl.offsetWidth
+  formEl.classList.add("shake")
 }
 
 // ── form de novo negócio ──
@@ -482,8 +712,7 @@ async function renderNewDeal() {
       errEl.hidden = false
       return
     }
-    btn.disabled = true
-    btn.textContent = "Criando…"
+    morphStart(btn)
     const res = await send({
       type: "createDeal",
       contactId: c.id,
@@ -493,13 +722,16 @@ async function renderNewDeal() {
       value,
     })
     if (!res || !res.ok) {
-      btn.disabled = false
-      btn.textContent = "Criar negócio"
+      morphFail(btn, "Criar negócio")
       errEl.textContent = (res && res.error) || "Não deu pra criar."
       errEl.hidden = false
+      shakeForm(document.getElementById("nd-form"))
       return
     }
-    refreshResolve()
+    morphSuccess(btn, () => {
+      alertHint("Negócio criado ✓", true)
+      refreshResolve()
+    })
   })
 }
 

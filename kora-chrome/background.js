@@ -85,6 +85,39 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "quickReplies":
         sendResponse(await api(`/api/ext/quick-replies${msg.contactId ? `?contactId=${encodeURIComponent(msg.contactId)}` : ""}`))
         break
+      case "dealDetail":
+        sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}`))
+        break
+      case "createQuote":
+        sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}/quote`, { method: "POST", body: "{}" }))
+        break
+      case "markQuoteSent":
+        sendResponse(await api(`/api/ext/documents/${encodeURIComponent(msg.docId)}/sent`, { method: "POST", body: "{}" }))
+        break
+      case "quotePdf": {
+        // binário → base64: mensagens do runtime só trafegam JSON.
+        const st = await getState()
+        try {
+          const res = await fetch(`${st.baseUrl}/api/ext/documents/${encodeURIComponent(msg.docId)}/pdf`, {
+            headers: st.token ? { authorization: `Bearer ${st.token}` } : {},
+          })
+          if (!res.ok) {
+            let data = null
+            try { data = await res.json() } catch { /* corpo vazio */ }
+            if (res.status === 401) await chrome.storage.local.remove(["token", "user", "tenant"])
+            sendResponse({ ok: false, status: res.status, error: (data && data.error) || `Erro ${res.status}`, code: (data && data.code) || null })
+            break
+          }
+          const u8 = new Uint8Array(await res.arrayBuffer())
+          let bin = ""
+          for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000))
+          const m = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "")
+          sendResponse({ ok: true, status: 200, data: { b64: btoa(bin), fileName: (m && m[1]) || "cotacao.pdf" } })
+        } catch {
+          sendResponse({ ok: false, status: 0, error: "Sem conexão com o servidor Kora.", code: "offline" })
+        }
+        break
+      }
       default:
         sendResponse({ ok: false, error: "Mensagem desconhecida." })
     }

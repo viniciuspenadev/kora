@@ -1,8 +1,10 @@
 // Kora Companion — content script.
-// SÓ LÊ o DOM (chat aberto) e injeta puxador + iframe da sidebar. Não envia
-// nada pela sessão nesta fase (ações 1-clique chegam na F1/F2 via actions.ts).
+// Lê o DOM (chat aberto), injeta puxador + iframe da sidebar e executa as ações
+// 1-clique no chat ABERTO (F1 inserir rascunho · F2 anexar+enviar cotação).
+// Doutrina: toda execução aqui é resultado direto de UM clique humano na
+// sidebar, uma por vez, só na conversa aberta — nunca massa/agendado.
 // Seletores do WhatsApp são ofuscados: tudo aqui usa padrões ESTRUTURAIS
-// ([data-id], header, span[title]) — nunca classes geradas.
+// ([data-id], header, span[title], [data-icon]) — nunca classes geradas.
 
 ;(() => {
   if (window.__koraCompanion) return
@@ -131,6 +133,76 @@
     }, 160)
   }
 
+  // ── anexar arquivo no chat aberto (F2: cotação 1-clique) ──
+  // paste sintético com o File no composer → a prévia de anexo do WhatsApp abre
+  // → clica o enviar DA PRÉVIA (send fora do footer do #main) → verifica que ela
+  // fechou. Fallback: drop no #main. Antes de tudo confere que o chat ainda é o
+  // esperado (trocou de conversa no meio = aborta, nunca envia no chat errado).
+  function previewSendButton() {
+    const icons = document.querySelectorAll('span[data-icon="send"], span[data-icon="wds-ic-send-filled"]')
+    for (let i = 0; i < icons.length; i++) {
+      if (icons[i].closest("#main footer")) continue // send do composer ≠ send da prévia
+      const btn = icons[i].closest('[role="button"], button') || icons[i].parentElement
+      if (btn && btn.offsetParent !== null) return btn
+    }
+    return null
+  }
+
+  function waitFor(probe, timeoutMs, cb) {
+    const t0 = Date.now()
+    const iv = setInterval(() => {
+      const v = probe()
+      if (v || Date.now() - t0 > timeoutMs) { clearInterval(iv); cb(v || null) }
+    }, 120)
+  }
+
+  function clickPreviewSend(btn, cb) {
+    btn.click()
+    // prévia fechou = mensagem saiu; se não fechar, ficou aberta pro humano confirmar
+    waitFor(() => (previewSendButton() ? null : true), 4000, (closed) => {
+      cb(closed ? { ok: true, mode: "sent" } : { ok: true, mode: "preview" })
+    })
+  }
+
+  function attachFile(payload, cb) {
+    const chat = currentChat()
+    if (!chat || chat.kind !== "chat" || (payload.expectPhone && chat.phone !== payload.expectPhone)) {
+      return cb({ ok: false, mode: "chat_changed" })
+    }
+    const file = payload.file
+    if (!(file instanceof File)) return cb({ ok: false, mode: "no_file" })
+    const main = document.querySelector("#main")
+    if (!main) return cb({ ok: false, mode: "chat_changed" })
+    // já existe uma prévia de anexo aberta (do humano)? NUNCA clicar o enviar dela.
+    if (previewSendButton()) return cb({ ok: false, mode: "busy" })
+
+    const dt = new DataTransfer()
+    try { dt.items.add(file) } catch (e) { return cb({ ok: false, mode: "no_file" }) }
+
+    // caminho 1: paste sintético no composer (mesmo canal do Ctrl+V real)
+    const box = composerBox()
+    if (box) {
+      box.focus()
+      try {
+        box.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }))
+      } catch (e) { /* segue pro drop */ }
+    }
+    waitFor(previewSendButton, 1600, (btn) => {
+      if (btn) return clickPreviewSend(btn, cb)
+      // caminho 2: drop no chat (o WhatsApp aceita arquivo arrastado no #main)
+      try {
+        const opts = { dataTransfer: dt, bubbles: true, cancelable: true }
+        main.dispatchEvent(new DragEvent("dragenter", opts))
+        main.dispatchEvent(new DragEvent("dragover", opts))
+        main.dispatchEvent(new DragEvent("drop", opts))
+      } catch (e) { /* verificação decide */ }
+      waitFor(previewSendButton, 2400, (btn2) => {
+        if (btn2) return clickPreviewSend(btn2, cb)
+        cb({ ok: false, mode: "no_preview" })
+      })
+    })
+  }
+
   // Mensagens vindas da sidebar (origem verificada pelo source do iframe).
   window.addEventListener("message", (ev) => {
     if (ev.source !== frame.contentWindow) return
@@ -140,6 +212,11 @@
     if (d.type === "kora:insert") {
       insertDraft(String(d.text || ""), (ok) => {
         frame.contentWindow.postMessage({ type: "kora:inserted", ok }, "*")
+      })
+    }
+    if (d.type === "kora:attach") {
+      attachFile(d, (result) => {
+        frame.contentWindow.postMessage(Object.assign({ type: "kora:attached" }, result), "*")
       })
     }
   })

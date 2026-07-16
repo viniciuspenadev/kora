@@ -6,12 +6,23 @@ import {
   canOpenDeals,
   canOpenContacts,
   seesAllContacts,
+  seesAllDeals,
   reachableContactIds,
 } from "@/lib/visibility"
 import { normalizeWhatsAppPhone, formatPhoneDisplay } from "@/lib/phone-utils"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createDeal, recordDealEvent } from "@/lib/crm/deals"
 import { withAliases } from "@/lib/variables/registry"
+import {
+  createQuote,
+  getDealDocuments,
+  getDocumentSettings,
+  markDocumentSent,
+  docCode,
+  type DocumentKind,
+  type DocumentStatus,
+} from "@/lib/commercial/documents"
+import { lineSubtotal, computeDealValue, DEFAULT_TERM_MONTHS, type DealItemLike } from "@/lib/crm/value"
 
 // ═══════════════════════════════════════════════════════════════
 // Kora Companion — queries de leitura (F0)
@@ -370,6 +381,170 @@ export async function quickRepliesExt(
     shortcut: r.shortcut,
     preview:  renderVars(r.content, vars),
   }))
+}
+
+// ── F2: drill-down do negócio (itens + cotações) ──────────────────────────────
+// A cotação usa o MESMO domínio do app (commercial/documents.ts): snapshot
+// imutável + PDF congelado no storage. A extensão só orquestra — nunca recalcula.
+
+export interface ExtDealItem {
+  name:       string
+  type:       "product" | "service"
+  qty:        number
+  unit:       string
+  unitPrice:  number   // reais (como tenant_deal_items guarda)
+  billing:    "one_time" | "monthly" | "yearly"
+  termMonths: number | null
+  lineTotal:  number   // reais — contribuição da linha ao valor (prazo aplicado)
+}
+
+export interface ExtQuote {
+  id:         string
+  code:       string
+  status:     DocumentStatus
+  totalCents: number
+  createdAt:  string
+  validUntil: string | null
+}
+
+export interface ExtDealDetail {
+  id:           string
+  name:         string | null
+  stageName:    string | null
+  pipelineName: string | null
+  items:        ExtDealItem[]
+  totals:       { total: number; mrr: number }
+  quotes:       ExtQuote[]
+}
+
+type DealItemRow = {
+  name: string; type: "product" | "service"; billing: "one_time" | "monthly" | "yearly"
+  unit_price: number; quantity: number; unit: string | null; discount: number; term_months: number | null
+}
+
+/** Negócio por dentro: itens+valores (mesma matemática do crm/value.ts) + cotações. */
+export async function dealDetailExt(
+  scope: ViewerScope,
+  dealId: string,
+): Promise<ExtDealDetail | { error: string }> {
+  if (!canOpenDeals(scope)) return { error: "Seu papel não tem acesso a Negócios." }
+  const q = applyDealScope(
+    supabaseAdmin
+      .from("tenant_deals")
+      .select("id, name, deal_pipelines ( name ), deal_pipeline_stages ( name )")
+      .eq("tenant_id", scope.tenantId)
+      .eq("id", dealId),
+    scope,
+  )
+  const { data: d } = await q.maybeSingle()
+  if (!d) return { error: "Negócio não encontrado." }
+  const deal = d as Record<string, unknown>
+
+  const { data: rows } = await supabaseAdmin
+    .from("tenant_deal_items")
+    .select("name, type, billing, unit_price, quantity, unit, discount, term_months")
+    .eq("tenant_id", scope.tenantId).eq("deal_id", dealId)
+    .order("position", { ascending: true }).order("created_at", { ascending: true })
+  const itemRows = (rows ?? []) as DealItemRow[]
+
+  const likes: DealItemLike[] = itemRows.map((r) => ({
+    billing: r.billing, unit_price: Number(r.unit_price ?? 0), quantity: Number(r.quantity ?? 1),
+    discount: Number(r.discount ?? 0), term_months: r.term_months,
+  }))
+  const items: ExtDealItem[] = itemRows.map((r, i) => {
+    const net = lineSubtotal(likes[i])
+    const term = r.term_months ?? DEFAULT_TERM_MONTHS
+    const factor = r.billing === "one_time" ? 1 : r.billing === "monthly" ? term : term / 12
+    return {
+      name: r.name, type: r.type, qty: likes[i].quantity, unit: r.unit ?? "un",
+      unitPrice: likes[i].unit_price, billing: r.billing, termMonths: r.term_months ?? null,
+      lineTotal: Math.round(net * factor * 100) / 100,
+    }
+  })
+  const summary = computeDealValue(likes)
+
+  const docs = await getDealDocuments(scope.tenantId, dealId)
+  return {
+    id:           deal.id as string,
+    name:         (deal.name as string | null) ?? null,
+    stageName:    (deal.deal_pipeline_stages as { name: string | null } | null)?.name ?? null,
+    pipelineName: (deal.deal_pipelines as { name: string | null } | null)?.name ?? null,
+    items,
+    totals: { total: summary.total, mrr: summary.mrr },
+    quotes: docs.slice(0, 6).map((doc) => ({
+      id: doc.id, code: doc.code, status: doc.status,
+      totalCents: doc.totalCents, createdAt: doc.createdAt, validUntil: doc.validUntil,
+    })),
+  }
+}
+
+/** Gera cotação com as condições-padrão da empresa (numera + congela PDF). */
+export async function createQuoteExt(
+  scope: ViewerScope,
+  dealId: string,
+): Promise<{ id: string; code: string } | { error: string }> {
+  if (!canOpenDeals(scope)) return { error: "Seu papel não tem acesso a Negócios." }
+  const deal = await dealInScope(scope, dealId)
+  if (!deal) return { error: "Negócio não encontrado." }
+  const defaults = await getDocumentSettings(scope.tenantId)
+  const validUntil = new Date(Date.now() + defaults.validityDays * 86_400_000).toISOString().slice(0, 10)
+  return createQuote(scope.tenantId, scope.userId, {
+    dealId, validUntil, paymentTerms: defaults.paymentTerms, notes: defaults.defaultNotes,
+  })
+}
+
+type QuoteDocRow = {
+  id: string; deal_id: string | null; pdf_path: string | null
+  kind: DocumentKind; year: number; number: number; status: DocumentStatus
+}
+
+/** Documento no alcance do viewer (gate = o do NEGÓCIO dele; órfão = só gestor). */
+async function quoteInScope(scope: ViewerScope, docId: string): Promise<QuoteDocRow | null> {
+  if (!canOpenDeals(scope)) return null
+  const { data } = await supabaseAdmin
+    .from("commercial_documents")
+    .select("id, deal_id, pdf_path, kind, year, number, status")
+    .eq("id", docId).eq("tenant_id", scope.tenantId).maybeSingle()
+  const doc = (data as QuoteDocRow | null) ?? null
+  if (!doc) return null
+  if (doc.deal_id) {
+    if (!(await dealInScope(scope, doc.deal_id))) return null
+  } else if (!seesAllDeals(scope)) return null
+  return doc
+}
+
+/** Bytes do PDF congelado (pro attach 1-clique no chat aberto). */
+export async function quotePdfExt(
+  scope: ViewerScope,
+  docId: string,
+): Promise<{ bytes: ArrayBuffer; fileName: string } | { error: string }> {
+  const doc = await quoteInScope(scope, docId)
+  if (!doc) return { error: "Cotação não encontrada." }
+  if (!doc.pdf_path) return { error: "PDF da cotação indisponível." }
+  const { data: blob, error } = await supabaseAdmin.storage.from("chat-attachments").download(doc.pdf_path)
+  if (error || !blob) return { error: "Erro ao ler o PDF da cotação." }
+  const code = docCode(doc.kind, doc.number, doc.year)
+  return { bytes: await blob.arrayBuffer(), fileName: `${code.replace("/", "-")}.pdf` }
+}
+
+/** Marca ENVIADA após o envio verificado no WhatsApp Web (+ atribuição na timeline). */
+export async function markQuoteSentExt(
+  scope: ViewerScope,
+  docId: string,
+): Promise<{ ok: true } | { error: string }> {
+  const doc = await quoteInScope(scope, docId)
+  if (!doc) return { error: "Cotação não encontrada." }
+  const r = await markDocumentSent(scope.tenantId, scope.userId, docId)
+  if ("error" in r) return r
+  if (doc.deal_id) {
+    const code = docCode(doc.kind, doc.number, doc.year)
+    await recordDealEvent({
+      tenantId: scope.tenantId, dealId: doc.deal_id, type: "note",
+      conversationId: await conversationOfDeal(scope.tenantId, doc.deal_id),
+      by: scope.userId, note: `Cotação ${code} enviada pelo WhatsApp Web (extensão)`, postCard: false,
+    })
+  }
+  return { ok: true }
 }
 
 /** Nota na linha do tempo do negócio (F1) — com autoria real. */
