@@ -12,12 +12,17 @@ import { availabilitySlots, bookAppointment } from "@/lib/agenda/booking"
 import {
   LEVEL_RANK, APPT_VISIBILITY_SELECT,
   appointmentLevel, isAppointmentParticipant, viewerShareLevel, viewerShareMap,
-  type AccessLevel, type ShareLevel, type ApptVisibility,
+  type ApptVisibility,
 } from "@/lib/agenda/access"
+import type { AccessLevel as AccessLevelSrc, ShareLevel as ShareLevelSrc } from "@/lib/agenda/access"
 import { after } from "next/server"
 
-// Escada de visibilidade re-exportada pra os consumidores existentes (types somem no build).
-export type { AccessLevel, ShareLevel }
+// Escada re-exportada pros consumidores existentes como ALIAS DECLARADO.
+// ⚠️ NÃO trocar por `export type { X } from ...`: o coletor de server actions do
+// Turbopack trata a cláusula como export de runtime num arquivo "use server" e
+// o build quebra ("Export X doesn't exist"). Alias declarado é inequívoco.
+export type AccessLevel = AccessLevelSrc
+export type ShareLevel = ShareLevelSrc
 
 // ═══════════════════════════════════════════════════════════════
 // Server actions da Agenda (Fase 1) — doc: docs/agenda-design.md
