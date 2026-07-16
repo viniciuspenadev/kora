@@ -152,6 +152,55 @@ export interface ConvVisibilityFields {
   instance_id?:   string | null
 }
 
+/** Select dos campos de escopo em tenant_users — compartilhado entre a sessão do
+ *  app (getViewerScope) e o token de dispositivo da extensão (ext-auth). */
+export const SCOPE_TU_SELECT =
+  "view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access"
+
+/** Linha crua de tenant_users com os campos do SCOPE_TU_SELECT. */
+export type ScopeTenantUserRow = {
+  view_all?: boolean | null
+  see_pool?: boolean | null
+  department_id?: string | null
+  instance_ids?: string[] | null
+  supervises_departments?: string[] | null
+  inventory_access?: unknown
+  deals_access?: unknown
+  contacts_access?: unknown
+  marketing_access?: unknown
+  catalog_access?: unknown
+} | null
+
+/**
+ * Mapeador ÚNICO linha→escopo. Defaults seguros: linha ausente/flags null →
+ * see_pool=true (não-quebra), view_all=false, capabilities none. Usado pela
+ * sessão do app E pelo token da extensão — nunca duplicar esta normalização.
+ */
+export function scopeFromTenantUserRow(
+  tenantId: string,
+  userId: string,
+  isAdmin: boolean,
+  tu: ScopeTenantUserRow,
+): ViewerScope {
+  const arr = tu?.instance_ids as string[] | null | undefined
+  const sup = tu?.supervises_departments as string[] | null | undefined
+  return {
+    tenantId,
+    userId,
+    isAdmin,
+    viewAll:      !isAdmin && tu?.view_all === true,
+    seePool:      isAdmin ? true : tu?.see_pool !== false,   // null/undefined → true
+    departmentId: isAdmin ? null : (tu?.department_id ?? null),
+    instanceIds:  !isAdmin && Array.isArray(arr) && arr.length > 0 ? arr : null,   // {} / null → todos
+    supervisesDepartments: !isAdmin && Array.isArray(sup) ? sup : [],
+    inventoryAccess: isAdmin ? "none" : normInventoryLevel(tu?.inventory_access),
+    dealsAccess:     isAdmin ? "none" : normAccessLevel(tu?.deals_access),
+    contactsAccess:  isAdmin ? "none" : normAccessLevel(tu?.contacts_access),
+    marketingAccess: isAdmin ? "none" : normAccessLevel(tu?.marketing_access),
+    catalogAccess:   isAdmin ? "none" : normAccessLevel(tu?.catalog_access),
+  }
+}
+
 /**
  * Resolve o escopo do usuário logado. Faz UMA query em tenant_users (só quando
  * não-admin) pra ler view_all + see_pool. Defaults seguros: se a linha não
@@ -162,39 +211,19 @@ export async function getViewerScope(): Promise<ViewerScope> {
   if (!session?.user?.tenantId) throw new Error("Não autenticado")
 
   const isAdmin = ["owner", "admin"].includes(session.user.role)
-  let viewAll = false
-  let seePool = true   // default = comportamento clássico (vê o pool)
-  let departmentId: string | null = null
-  let instanceIds: string[] | null = null   // null = todos os números (sem restrição)
-  let supervisesDepartments: string[] = []
-  let inventoryAccess: AccessLevel = "none"   // agente: default sem acesso (owner/admin = manage via role)
-  let dealsAccess: AccessLevel = "none"
-  let contactsAccess: AccessLevel = "none"
-  let marketingAccess: AccessLevel = "none"
-  let catalogAccess: AccessLevel = "none"
+  let tu: ScopeTenantUserRow = null
 
   if (!isAdmin) {
-    const { data: tu } = await supabaseAdmin
+    const { data } = await supabaseAdmin
       .from("tenant_users")
-      .select("view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access")
+      .select(SCOPE_TU_SELECT)
       .eq("tenant_id", session.user.tenantId)
       .eq("user_id", session.user.id)
       .maybeSingle()
-    viewAll = tu?.view_all === true
-    seePool = tu?.see_pool !== false   // null/undefined → true
-    departmentId = tu?.department_id ?? null
-    const arr = tu?.instance_ids as string[] | null | undefined
-    instanceIds = Array.isArray(arr) && arr.length > 0 ? arr : null   // {} / null → todos
-    const sup = tu?.supervises_departments as string[] | null | undefined
-    supervisesDepartments = Array.isArray(sup) ? sup : []
-    inventoryAccess = normInventoryLevel(tu?.inventory_access)
-    dealsAccess = normAccessLevel(tu?.deals_access)
-    contactsAccess = normAccessLevel(tu?.contacts_access)
-    marketingAccess = normAccessLevel(tu?.marketing_access)
-    catalogAccess = normAccessLevel(tu?.catalog_access)
+    tu = (data ?? null) as ScopeTenantUserRow
   }
 
-  return { tenantId: session.user.tenantId, userId: session.user.id, isAdmin, viewAll, seePool, departmentId, instanceIds, supervisesDepartments, inventoryAccess, dealsAccess, contactsAccess, marketingAccess, catalogAccess }
+  return scopeFromTenantUserRow(session.user.tenantId, session.user.id, isAdmin, tu)
 }
 
 /**

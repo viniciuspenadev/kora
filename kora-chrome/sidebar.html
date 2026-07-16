@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="sidebar.css" />
+</head>
+<body>
+  <div class="brand">
+    <img src="assets/logo.svg" alt="Kora" class="wm" id="brand-logo" />
+    <span id="acct" class="acct" hidden><span class="dot"></span><span id="acct-name"></span></span>
+    <button id="close" class="x" title="Recolher">✕</button>
+  </div>
+
+  <div id="view" class="view"><!-- estados renderizados pelo sidebar.js --></div>
+
+  <!-- ação fixa acima do rodapé (referência: "Enviar mensagem pré-definida") -->
+  <div id="dock" class="dock" hidden>
+    <button id="qr-open" class="btn" type="button">Inserir mensagem pré-definida</button>
+  </div>
+
+  <!-- painel deslizante de modelos (referência: "Modelos pré-definidas") -->
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+  <div id="sheet" class="sheet" aria-hidden="true">
+    <div class="sheet-head">
+      <b>Modelos pré-definidos</b>
+      <button id="sheet-close" class="x" type="button" title="Fechar">✕</button>
+    </div>
+    <input id="qr-search" type="text" placeholder="🔍  Buscar modelo" />
+    <div id="qr-list" class="qr-list"></div>
+  </div>
+
+  <div class="foot">
+    <div id="foot-user" class="foot-user">—</div>
+    <span class="foot-tag">Kora Companion · F0</span>
+  </div>
+
+  <script src="sidebar.js"></script>
+</body>
+</html>

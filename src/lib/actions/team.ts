@@ -27,6 +27,7 @@ export interface TeamMember {
   contacts_access:  AccessLevel            // Contatos: none | view | manage
   marketing_access: AccessLevel            // Marketing: none | view | manage
   catalog_access:   AccessLevel            // Catálogo: none | view | manage
+  companion_access: boolean                // Extensão Chrome (Kora Companion): pode usar sobre o WhatsApp Web
   department:    { id: string; name: string; color: string } | null
   unit_id:       string | null
   unit:          { id: string; name: string; color: string } | null
@@ -131,7 +132,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, unit_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, companion_access, unit_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color ),
       tenant_units ( id, name, color )
@@ -162,6 +163,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       contacts_access: normAccessLevel(row.contacts_access),
       marketing_access: normAccessLevel(row.marketing_access),
       catalog_access: normAccessLevel(row.catalog_access),
+      companion_access: (row.companion_access as boolean | null) !== false,
       department:    dept,
       unit_id:       row.unit_id,
       unit,
@@ -176,7 +178,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
   const { data } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, unit_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, companion_access, unit_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color ),
       tenant_units ( id, name, color )
@@ -203,6 +205,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
     contacts_access: normAccessLevel(row.contacts_access),
     marketing_access: normAccessLevel(row.marketing_access),
     catalog_access: normAccessLevel(row.catalog_access),
+    companion_access: (row.companion_access as boolean | null) !== false,
     department:    dept,
     unit_id:       (row.unit_id as string | null) ?? null,
     unit,
@@ -523,6 +526,23 @@ export async function setMemberInventoryAccess(userId: string, level: InventoryA
 
   if (error) return { error: error.message }
 
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Extensão Chrome (Kora Companion): pode usar o Kora sobre o WhatsApp Web?
+ * Vale pra QUALQUER role (a extensão respeita o alcance de cada um). O gate é
+ * checado a cada request em /api/ext — desligar derruba a sessão na hora.
+ */
+export async function setMemberCompanionAccess(userId: string, enabled: boolean): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ companion_access: enabled === true })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", userId)
+  if (error) return { error: error.message }
   revalidatePath("/configuracoes/equipe")
   return {}
 }

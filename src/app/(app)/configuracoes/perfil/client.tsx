@@ -10,6 +10,8 @@ import type { MyProfile, MySession } from "@/lib/actions/profile"
 import {
   uploadMyAvatar, removeMyAvatar, changeMyPassword, revokeMySession,
 } from "@/lib/actions/profile"
+import { ExtensionDevices } from "@/components/app/extension-devices"
+import { Puzzle } from "lucide-react"
 
 interface Props {
   profile:  MyProfile
@@ -30,6 +32,18 @@ export function ProfileClient({ profile, sessions }: Props) {
         <AvatarCard profile={profile} onChange={() => router.refresh()} />
         <PasswordCard />
         <DevicesCard sessions={sessions} onChange={() => router.refresh()} />
+
+        {/* Extensão Chrome (Kora Companion) — tokens de dispositivo, revogáveis na hora */}
+        <section className="bg-white border border-slate-200 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-1">
+            <Puzzle className="size-4 text-slate-400" />
+            <h2 className="text-sm font-bold text-slate-900">Extensão do Chrome</h2>
+          </div>
+          <p className="text-xs text-slate-500 mb-4">
+            Navegadores com o Kora Companion conectado à sua conta. Revogar desconecta na hora.
+          </p>
+          <ExtensionDevices />
+        </section>
       </div>
     </div>
   )

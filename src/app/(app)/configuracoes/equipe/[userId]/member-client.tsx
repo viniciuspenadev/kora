@@ -4,16 +4,17 @@ import { useState, useEffect, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
-  Loader2, Check, Power, RotateCcw, CalendarDays, BadgeCheck, Smartphone,
+  Loader2, Check, Power, RotateCcw, CalendarDays, BadgeCheck, Smartphone, Puzzle,
   User, Contact, ShieldCheck, LayoutGrid, Settings2, Building2, Boxes, Briefcase, Megaphone, Package, Landmark, FileText, AlertTriangle, Store,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
   updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool,
-  updateMemberInstances, setMemberSupervises, setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberUnit, updateMemberProfile,
+  updateMemberInstances, setMemberSupervises, setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberCompanionAccess, setMemberUnit, updateMemberProfile,
   type TeamMember, type Department, type UnitOption, type TenantRole,
 } from "@/lib/actions/team"
+import { ExtensionDevices } from "@/components/app/extension-devices"
 import {
   listMemberAgendaAccess, setMemberAgendaAccess, type MemberAgendaAccess, type ShareLevel,
 } from "@/lib/actions/agenda"
@@ -48,6 +49,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
   const [contactsAccess, setContactsAccess] = useState<InventoryAccessLevel>(member.contacts_access)
   const [marketingAccess, setMarketingAccess] = useState<InventoryAccessLevel>(member.marketing_access)
   const [catalogAccess, setCatalogAccess] = useState<InventoryAccessLevel>(member.catalog_access)
+  const [companionAccess, setCompanionAccess] = useState<boolean>(member.companion_access)
   const [instanceIds, setInstanceIds] = useState<string[]>(member.instance_ids ?? [])
 
   const [savePending, startSave]     = useTransition()
@@ -63,7 +65,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
   const dirty =
     fullName.trim() !== (member.full_name ?? "") || role !== member.role ||
     (departmentId || null) !== member.department_id || (unitId || null) !== member.unit_id || (supMode === "all") !== member.view_all ||
-    seePool !== member.see_pool || invAccess !== member.inventory_access || dealsAccess !== member.deals_access || contactsAccess !== member.contacts_access || marketingAccess !== member.marketing_access || catalogAccess !== member.catalog_access ||
+    seePool !== member.see_pool || invAccess !== member.inventory_access || dealsAccess !== member.deals_access || contactsAccess !== member.contacts_access || marketingAccess !== member.marketing_access || catalogAccess !== member.catalog_access || companionAccess !== member.companion_access ||
     !sameSet(supMode === "scoped" ? supDepts : [], member.supervises_departments) ||
     !sameSet(instanceIds, member.instance_ids ?? [])
 
@@ -85,6 +87,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
       if (contactsAccess !== member.contacts_access) await run(setMemberContactsAccess(member.user_id, contactsAccess))
       if (marketingAccess !== member.marketing_access) await run(setMemberMarketingAccess(member.user_id, marketingAccess))
       if (catalogAccess !== member.catalog_access) await run(setMemberCatalogAccess(member.user_id, catalogAccess))
+      if (companionAccess !== member.companion_access) await run(setMemberCompanionAccess(member.user_id, companionAccess))
       if (!sameSet(instanceIds, member.instance_ids ?? [])) await run(updateMemberInstances(member.user_id, instanceIds))
 
       if (err) { setFlash("error", err); return }
@@ -338,6 +341,16 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
                     <ModuleRow icon={FileText} iconCls="bg-fuchsia-50 text-fuchsia-600" name="Fiscal (NF-e)" soon desc="Emissão e gestão de notas." />
                   </div>
                 )}
+
+                {/* Extensão: vale pra QUALQUER papel — a sidebar respeita o alcance de cada um.
+                    Gate checado a cada request no servidor; desligar derruba a sessão na hora. */}
+                <div className="mt-4 pt-4 border-t border-slate-100">
+                  <ModuleRow icon={Puzzle} iconCls="bg-primary-50 text-primary" name="Extensão · Kora Companion" desc="Usar o Kora sobre o WhatsApp Web. Desligar desconecta a extensão desta pessoa na hora.">
+                    <div className="flex gap-2">
+                      <PermBox label="Ativa" on={companionAccess} disabled={!canEditOther} onClick={() => setCompanionAccess(!companionAccess)} />
+                    </div>
+                  </ModuleRow>
+                </div>
               </Section>
             )}
 
@@ -355,6 +368,10 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
             {/* CONTA */}
             {tab === "conta" && (
               <Section title="Conta" sub="Situação da conta desta pessoa.">
+                <div className="mb-6">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Dispositivos da extensão</p>
+                  <ExtensionDevices userId={member.user_id} />
+                </div>
                 {isSelf || isOwner ? (
                   <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">{isOwner ? "O owner não pode ser desativado." : "Você não pode desativar a própria conta."}</p>
                 ) : (
