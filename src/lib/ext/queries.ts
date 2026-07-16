@@ -106,12 +106,18 @@ export async function canReachContact(scope: ViewerScope, contactId: string): Pr
   return ids.includes(contactId)
 }
 
+/** Gate de Negócios da extensão = capability do papel E módulo crm do tenant
+ *  (alinha com requireModule("crm") das actions do app — fail-closed). */
+async function canUseDeals(scope: ViewerScope): Promise<boolean> {
+  return canOpenDeals(scope) && (await hasModule(scope.tenantId, "crm"))
+}
+
 /** Negócios ABERTOS do contato, no alcance do viewer (Ver = só os dele). */
 export async function openDealsForContact(
   scope: ViewerScope,
   contactId: string,
 ): Promise<ExtDeal[]> {
-  if (!canOpenDeals(scope)) return []
+  if (!(await canUseDeals(scope))) return []
   const q = applyDealScope(
     supabaseAdmin
       .from("tenant_deals")
@@ -140,7 +146,7 @@ export async function openDealsForContact(
 
 /** Funis ativos com etapas (terminal = ganho/perdido; a extensão não move pra elas). */
 export async function listPipelinesExt(scope: ViewerScope): Promise<ExtPipeline[]> {
-  if (!canOpenDeals(scope)) return []
+  if (!(await canUseDeals(scope))) return []
   const { data } = await supabaseAdmin
     .from("deal_pipelines")
     .select("id, name, deal_pipeline_stages ( id, name, position, is_won, is_lost )")
@@ -250,7 +256,7 @@ export async function createDealExt(
   scope: ViewerScope,
   input: { contactId: string; name?: string | null; pipelineId: string; stageId: string; value?: number | null },
 ): Promise<{ id: string } | { error: string }> {
-  if (!canOpenDeals(scope)) return { error: "Seu papel não tem acesso a Negócios." }
+  if (!(await canUseDeals(scope))) return { error: "Sem acesso a Negócios nesta conta." }
   const pipes = await listPipelinesExt(scope)
   const pipe = pipes.find((p) => p.id === input.pipelineId)
   const stage = pipe?.stages.find((s) => s.id === input.stageId)
@@ -296,7 +302,7 @@ export async function moveDealStageExt(
   dealId: string,
   stageId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  if (!canOpenDeals(scope)) return { error: "Seu papel não tem acesso a Negócios." }
+  if (!(await canUseDeals(scope))) return { error: "Sem acesso a Negócios nesta conta." }
   const deal = await dealInScope(scope, dealId)
   if (!deal) return { error: "Negócio não encontrado." }
   if (deal.status !== "open") return { error: "Só negócios abertos movem por aqui." }
@@ -430,7 +436,7 @@ export async function dealDetailExt(
   scope: ViewerScope,
   dealId: string,
 ): Promise<ExtDealDetail | { error: string }> {
-  if (!canOpenDeals(scope)) return { error: "Seu papel não tem acesso a Negócios." }
+  if (!(await canUseDeals(scope))) return { error: "Sem acesso a Negócios nesta conta." }
   const q = applyDealScope(
     supabaseAdmin
       .from("tenant_deals")
@@ -486,7 +492,7 @@ export async function createQuoteExt(
   scope: ViewerScope,
   dealId: string,
 ): Promise<{ id: string; code: string } | { error: string }> {
-  if (!canOpenDeals(scope)) return { error: "Seu papel não tem acesso a Negócios." }
+  if (!(await canUseDeals(scope))) return { error: "Sem acesso a Negócios nesta conta." }
   const deal = await dealInScope(scope, dealId)
   if (!deal) return { error: "Negócio não encontrado." }
   const defaults = await getDocumentSettings(scope.tenantId)
@@ -503,7 +509,7 @@ type QuoteDocRow = {
 
 /** Documento no alcance do viewer (gate = o do NEGÓCIO dele; órfão = só gestor). */
 async function quoteInScope(scope: ViewerScope, docId: string): Promise<QuoteDocRow | null> {
-  if (!canOpenDeals(scope)) return null
+  if (!(await canUseDeals(scope))) return null
   const { data } = await supabaseAdmin
     .from("commercial_documents")
     .select("id, deal_id, pdf_path, kind, year, number, status")
@@ -736,7 +742,7 @@ export async function addDealNoteExt(
   dealId: string,
   text: string,
 ): Promise<{ ok: true } | { error: string }> {
-  if (!canOpenDeals(scope)) return { error: "Seu papel não tem acesso a Negócios." }
+  if (!(await canUseDeals(scope))) return { error: "Sem acesso a Negócios nesta conta." }
   const note = text.trim().slice(0, 2000)
   if (!note) return { error: "Escreva a nota." }
   const deal = await dealInScope(scope, dealId)
@@ -748,4 +754,161 @@ export async function addDealNoteExt(
     by: scope.userId, note,
   })
   return { ok: true }
+}
+
+// ── Radar do Dia — fila derivada do que JÁ existe (zero migration) ────────────
+// Cada fila respeita a régua do PRÓPRIO domínio (nunca duplicar): agenda = escada
+// nível ≥ details (agenda/access.ts) · negócios/cotações = applyDealScope + módulo
+// crm. Módulo desligado / sem capability = fila simplesmente some (fail-closed).
+// `draft` = mensagem pronta pro composer ("o sistema prepara, o humano dispara").
+
+export interface ExtRadar {
+  appointments: {
+    id: string; startsAt: string; status: string
+    serviceName: string | null; resourceName: string | null
+    contactName: string | null; contactPhone: string | null
+  }[]
+  staleDeals: {
+    id: string; name: string | null; value: number | null; stageName: string | null
+    days: number; contactName: string | null; contactPhone: string | null; draft: string
+  }[]
+  pendingQuotes: {
+    id: string; code: string; totalCents: number; days: number; dealName: string | null
+    contactName: string | null; contactPhone: string | null; draft: string
+  }[]
+  count: number
+}
+
+const RADAR_TZ = "America/Sao_Paulo"
+const daysSince = (iso: string) => Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000))
+const firstName = (name: string | null) => (name ?? "").trim().split(/\s+/)[0] ?? ""
+
+export async function radarExt(scope: ViewerScope): Promise<ExtRadar> {
+  const [appointments, staleDeals, pendingQuotes] = await Promise.all([
+    radarAppointments(scope),
+    radarStaleDeals(scope),
+    radarPendingQuotes(scope),
+  ])
+  return { appointments, staleDeals, pendingQuotes, count: appointments.length + staleDeals.length + pendingQuotes.length }
+}
+
+/** Compromissos de HOJE visíveis ao viewer (mesma escada da agenda). */
+async function radarAppointments(scope: ViewerScope): Promise<ExtRadar["appointments"]> {
+  if (!(await hasModule(scope.tenantId, "agenda"))) return []
+  const ymd = new Date().toLocaleDateString("en-CA", { timeZone: RADAR_TZ })
+  const { data: rows } = await supabaseAdmin
+    .from("appointments")
+    .select(`id, resource_id, starts_at, ends_at, status, created_by,
+      chat_contacts(custom_name, push_name, phone_number),
+      tenant_services(name),
+      tenant_resources(name, assigned_agent_id, share_everyone_level),
+      chat_conversations(instance_id, assigned_to, participants, department_id)`)
+    .eq("tenant_id", scope.tenantId)
+    .gte("starts_at", `${ymd}T00:00:00-03:00`).lte("starts_at", `${ymd}T23:59:59-03:00`)
+    .in("status", ["scheduled", "confirmed"])
+    .order("starts_at", { ascending: true })
+    .limit(20)
+  type Row = ExtApptRow & { chat_contacts: { custom_name: string | null; push_name: string | null; phone_number: string | null } | null }
+  const all = (rows ?? []) as unknown as Row[]
+
+  let visible = all
+  if (!scope.isAdmin && all.length) {
+    const shareMap = await viewerShareMap(scope)
+    const { data: parts } = await supabaseAdmin
+      .from("appointment_participants").select("appointment_id")
+      .eq("tenant_id", scope.tenantId).eq("user_id", scope.userId)
+      .in("appointment_id", all.map((a) => a.id))
+    const coSet = new Set((parts ?? []).map((p) => p.appointment_id as string))
+    visible = all.filter(
+      (a) => LEVEL_RANK[appointmentLevel(scope, a, shareMap.get(a.resource_id), coSet.has(a.id))] >= LEVEL_RANK.details,
+    )
+  }
+  return visible.map((a) => ({
+    id: a.id, startsAt: a.starts_at, status: a.status,
+    serviceName: a.tenant_services?.name ?? null,
+    resourceName: a.tenant_resources?.name ?? null,
+    contactName: a.chat_contacts?.custom_name || a.chat_contacts?.push_name || null,
+    contactPhone: a.chat_contacts?.phone_number ?? null,
+  }))
+}
+
+/** Negócios ABERTOS do alcance parados há 7+ dias (updated_at é tocado por toda ação). */
+async function radarStaleDeals(scope: ViewerScope): Promise<ExtRadar["staleDeals"]> {
+  if (!(await canUseDeals(scope))) return []
+  const cutoff = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  const q = applyDealScope(
+    supabaseAdmin
+      .from("tenant_deals")
+      .select("id, name, estimated_value, updated_at, deal_pipeline_stages(name), chat_contacts(custom_name, push_name, phone_number)")
+      .eq("tenant_id", scope.tenantId).eq("status", "open").lt("updated_at", cutoff)
+      .order("updated_at", { ascending: true }).limit(10),
+    scope,
+  )
+  const { data } = await q
+  return ((data ?? []) as Record<string, unknown>[]).map((r) => {
+    const c = r.chat_contacts as { custom_name: string | null; push_name: string | null; phone_number: string | null } | null
+    const contactName = c?.custom_name || c?.push_name || null
+    const first = firstName(contactName)
+    const dealName = (r.name as string | null) ?? null
+    return {
+      id: r.id as string,
+      name: dealName,
+      value: (r.estimated_value as number | null) ?? null,
+      stageName: (r.deal_pipeline_stages as { name: string | null } | null)?.name ?? null,
+      days: daysSince(r.updated_at as string),
+      contactName,
+      contactPhone: c?.phone_number ?? null,
+      draft: `Oi${first ? `, ${first}` : ""}! Passando pra retomar nossa conversa${dealName ? ` sobre ${dealName}` : ""} — conseguiu avaliar? Qualquer dúvida, estou por aqui.`,
+    }
+  })
+}
+
+/** Cotações ENVIADAS há 3+ dias sem aceite/recusa (versão vigente), no alcance. */
+async function radarPendingQuotes(scope: ViewerScope): Promise<ExtRadar["pendingQuotes"]> {
+  if (!(await canUseDeals(scope))) return []
+  const cutoff = new Date(Date.now() - 3 * 86_400_000).toISOString()
+  const { data: docs } = await supabaseAdmin
+    .from("commercial_documents")
+    .select("id, kind, year, number, deal_id, sent_at, snapshot")
+    .eq("tenant_id", scope.tenantId).eq("kind", "quote").eq("status", "sent")
+    .is("superseded_by", null).not("deal_id", "is", null).lt("sent_at", cutoff)
+    .order("sent_at", { ascending: true }).limit(15)
+  const rows = (docs ?? []) as {
+    id: string; kind: DocumentKind; year: number; number: number
+    deal_id: string; sent_at: string; snapshot: { totals?: { total_cents?: number } } | null
+  }[]
+  if (!rows.length) return []
+
+  // Alcance decidido pelo applyDealScope (fonte única) — doc cujo negócio não volta = fora.
+  const q = applyDealScope(
+    supabaseAdmin
+      .from("tenant_deals")
+      .select("id, name, chat_contacts(custom_name, push_name, phone_number)")
+      .eq("tenant_id", scope.tenantId)
+      .in("id", [...new Set(rows.map((r) => r.deal_id))]),
+    scope,
+  )
+  const { data: deals } = await q
+  const byId = new Map(((deals ?? []) as Record<string, unknown>[]).map((d) => [d.id as string, d]))
+
+  const out: ExtRadar["pendingQuotes"] = []
+  for (const r of rows) {
+    const deal = byId.get(r.deal_id)
+    if (!deal) continue
+    const c = deal.chat_contacts as { custom_name: string | null; push_name: string | null; phone_number: string | null } | null
+    const contactName = c?.custom_name || c?.push_name || null
+    const first = firstName(contactName)
+    const code = docCode(r.kind, r.number, r.year)
+    out.push({
+      id: r.id, code,
+      totalCents: Number(r.snapshot?.totals?.total_cents ?? 0),
+      days: daysSince(r.sent_at),
+      dealName: (deal.name as string | null) ?? null,
+      contactName,
+      contactPhone: c?.phone_number ?? null,
+      draft: `Oi${first ? `, ${first}` : ""}! Sobre a cotação ${code} que te enviei — ficou alguma dúvida? Posso ajustar o que for preciso.`,
+    })
+    if (out.length >= 10) break
+  }
+  return out
 }

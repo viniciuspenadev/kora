@@ -238,7 +238,7 @@ function renderState() {
     return
   }
   if (!currentChat || currentChat.kind === "none") {
-    empty("💬", "Nenhuma conversa aberta", "Abra uma conversa no WhatsApp pra ver o contato no Kora.")
+    renderRadar() // sem chat aberto = home do Radar do Dia
     return
   }
   if (currentChat.kind === "group") {
@@ -454,6 +454,102 @@ async function renderFicha() {
   // drill-down: negócio por dentro (itens + cotações)
   view.querySelectorAll(".deal-open").forEach((b) => {
     b.addEventListener("click", () => renderDealDetail(b.dataset.deal))
+  })
+}
+
+// ── Radar do Dia — home da sidebar quando não há chat aberto ──
+// Filas derivadas do CRM/Agenda no alcance do viewer; clicar abre a conversa
+// (rota /send do WhatsApp) com o rascunho de follow-up JÁ no composer.
+
+function radarBadge(count) {
+  parent.postMessage({ type: "kora:badge", count: Number(count) || 0 }, "*")
+}
+
+async function refreshBadge() {
+  if (!session || !session.loggedIn) { radarBadge(0); return }
+  const r = await send({ type: "radar" })
+  radarBadge(r && r.ok && r.data.radar ? r.data.radar.count : 0)
+}
+setInterval(refreshBadge, 5 * 60_000)
+
+function openChatFromRadar(phone, text) {
+  if (!phone) {
+    alertHint("Contato sem número de WhatsApp — abra pelo app.")
+    return
+  }
+  parent.postMessage({ type: "kora:open-chat", phone, text: text || "" }, "*")
+}
+
+async function renderRadar() {
+  empty("📡", "Radar do dia", "Buscando suas pendências…")
+  const r = await send({ type: "radar" })
+  if (session && !session.loggedIn) return // deslogou no meio
+  if (!r || !r.ok) {
+    if (r && r.status === 401) { session = { loggedIn: false }; renderState(); return }
+    empty("⚠️", "Radar indisponível", (r && r.error) || "Erro de conexão com o servidor.")
+    return
+  }
+  const rd = r.data.radar
+  radarBadge(rd.count)
+
+  if (!rd.count) {
+    empty("🌤️", "Tudo em dia", "Nenhuma pendência no seu radar. Abra uma conversa no WhatsApp pra ver a ficha do contato.")
+    return
+  }
+
+  const today = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })
+  const row = (chip, chipCls, title, sub, phone, draft) => `
+    <button class="rd-row" type="button" data-phone="${esc(phone || "")}" data-draft="${esc(draft || "")}">
+      <span class="rd-chip ${chipCls}">${esc(chip)}</span>
+      <span class="rd-t"><b>${esc(title)}</b><small>${esc(sub)}</small></span>
+      <span class="go">Abrir</span>
+    </button>`
+
+  const apptsHtml = rd.appointments.length
+    ? `<div class="sec">Agenda de hoje · ${rd.appointments.length}</div>
+       <div class="list">${rd.appointments.map((a) => row(
+         fmtApptTime(a.startsAt),
+         "time",
+         a.contactName || "Contato",
+         [a.serviceName || "Compromisso", a.resourceName].filter(Boolean).join(" · ") + (a.status === "confirmed" ? " · confirmado" : ""),
+         a.contactPhone,
+         "",
+       )).join("")}</div>`
+    : ""
+
+  const dealsHtml = rd.staleDeals.length
+    ? `<div class="sec">Negócios parados · ${rd.staleDeals.length}</div>
+       <div class="list">${rd.staleDeals.map((d) => row(
+         `${d.days}d`,
+         "late",
+         d.name || "Negócio",
+         [d.contactName, d.value != null ? brl(d.value) : null, d.stageName].filter(Boolean).join(" · "),
+         d.contactPhone,
+         d.draft,
+       )).join("")}</div>`
+    : ""
+
+  const quotesHtml = rd.pendingQuotes.length
+    ? `<div class="sec">Cotações sem resposta · ${rd.pendingQuotes.length}</div>
+       <div class="list">${rd.pendingQuotes.map((qd) => row(
+         `${qd.days}d`,
+         "late",
+         `${qd.code} · ${brl2((qd.totalCents || 0) / 100)}`,
+         [qd.contactName, qd.dealName].filter(Boolean).join(" · "),
+         qd.contactPhone,
+         qd.draft,
+       )).join("")}</div>`
+    : ""
+
+  setView(`
+    <div class="rd-head"><b>Radar do dia</b><small>${esc(today)}</small></div>
+    ${apptsHtml}
+    ${dealsHtml}
+    ${quotesHtml}
+    <div class="hint">Clique numa pendência pra abrir a conversa — nos follow-ups a mensagem já chega pronta no campo, é só revisar e enviar.</div>`)
+
+  view.querySelectorAll(".rd-row").forEach((b) => {
+    b.addEventListener("click", () => openChatFromRadar(b.dataset.phone, b.dataset.draft))
   })
 }
 
@@ -943,10 +1039,12 @@ chrome.storage.onChanged.addListener(async () => {
   if (holdRender) return
   lastResolvedPhone = null
   renderState()
+  refreshBadge() // login/logout refletem no badge do puxador
 })
 
 ;(async () => {
   session = await send({ type: "status" })
   renderState()
+  refreshBadge()
   parent.postMessage({ type: "kora:ready" }, "*")
 })()

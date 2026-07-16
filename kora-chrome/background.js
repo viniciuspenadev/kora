@@ -94,6 +94,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "markQuoteSent":
         sendResponse(await api(`/api/ext/documents/${encodeURIComponent(msg.docId)}/sent`, { method: "POST", body: "{}" }))
         break
+      case "radar":
+        sendResponse(await api("/api/ext/radar"))
+        break
       case "agenda":
         sendResponse(await api(`/api/ext/agenda?contactId=${encodeURIComponent(msg.contactId)}`))
         break

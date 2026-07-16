@@ -22,6 +22,11 @@
   logo.src = chrome.runtime.getURL("assets/logo.svg")
   logo.alt = "Kora"
   edge.appendChild(logo)
+  // badge do Radar do Dia (contagem vem da sidebar via kora:badge)
+  const badge = document.createElement("span")
+  badge.className = "kora-edge-badge"
+  badge.hidden = true
+  edge.appendChild(badge)
   edge.addEventListener("click", () => setOpen(true))
 
   // ── sidebar (iframe de página da extensão — imune ao CSP da página) ──
@@ -218,6 +223,21 @@
       attachFile(d, (result) => {
         frame.contentWindow.postMessage(Object.assign({ type: "kora:attached" }, result), "*")
       })
+    }
+    if (d.type === "kora:badge") {
+      const n = Number(d.count) || 0
+      badge.textContent = n > 99 ? "99+" : String(n)
+      badge.hidden = n <= 0
+    }
+    if (d.type === "kora:open-chat") {
+      // Radar → abrir a conversa do contato. Rota /send do próprio WhatsApp Web:
+      // recarrega a página (aceito no v1) e o `text` já pousa no composer como
+      // RASCUNHO nativo — enviar continua sendo o clique do humano.
+      const digits = String(d.phone || "").replace(/\D/g, "")
+      if (!digits) return
+      const url = "https://web.whatsapp.com/send/?phone=" + digits +
+        (d.text ? "&text=" + encodeURIComponent(String(d.text)) : "")
+      window.location.href = url
     }
   })
 
