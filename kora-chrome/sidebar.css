@@ -21,6 +21,23 @@ body {
   font-size: 11px; font-weight: 600; color: #334155;
   border: 1px solid #e2e8f0; border-radius: 999px; padding: 6px 12px; white-space: nowrap;
 }
+/* navegação: pill do Radar no topo (ícone + contagem em tinta) */
+.nav-radar {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 9px; border-radius: 999px;
+  background: #fff; border: 1px solid #e2e8f0; color: #64748b; cursor: pointer;
+  font-family: inherit; flex: none;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.nav-radar svg { width: 15px; height: 15px; flex: none; }
+.nav-radar:hover { color: #004add; border-color: #d6e3ff; background: #f8fafc; }
+.nav-radar b {
+  font-size: 10.5px; font-weight: 800; color: #004add; background: #eef4ff;
+  border: 1px solid #d6e3ff; border-radius: 999px; min-width: 17px; height: 17px;
+  line-height: 15px; padding: 0 4px; text-align: center; font-variant-numeric: tabular-nums;
+}
+/* o pusher do flex passa a ser o nav-radar; a pill da conta cola nele */
+.nav-radar + .acct { margin-left: 0; }
 .acct .dot { width: 7px; height: 7px; border-radius: 99px; background: #10b981; }
 .x {
   margin-left: 8px; width: 24px; height: 24px; border-radius: 8px;

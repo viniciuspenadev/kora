@@ -7,6 +7,10 @@
 <body>
   <div class="brand">
     <img src="assets/logo.svg" alt="Kora" class="wm" id="brand-logo" />
+    <button id="nav-radar" class="nav-radar" type="button" title="Radar do dia" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" opacity="0.35"/><circle cx="12" cy="12" r="5" opacity="0.6"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/><path d="M12 12 18 5"/></svg>
+      <b id="nav-radar-n" hidden>0</b>
+    </button>
     <span id="acct" class="acct" hidden><span class="dot"></span><span id="acct-name"></span></span>
     <button id="close" class="x" title="Recolher">✕</button>
   </div>
@@ -31,7 +35,7 @@
 
   <div class="foot">
     <div id="foot-user" class="foot-user">—</div>
-    <span class="foot-tag">Kora Companion · F0</span>
+    <span class="foot-tag">Kora Companion</span>
   </div>
 
   <script src="sidebar.js"></script>

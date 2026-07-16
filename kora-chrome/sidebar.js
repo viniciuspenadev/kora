@@ -147,18 +147,24 @@ function empty(ico, title, text, extraHtml = "") {
 
 function renderChrome() {
   const brandLogo = document.getElementById("brand-logo")
+  const navRadar = document.getElementById("nav-radar")
   if (session && session.loggedIn) {
     brandLogo.hidden = false
+    navRadar.hidden = false
     acct.hidden = false
     acctName.textContent = (session.tenant && session.tenant.name) || "Kora"
     footUser.textContent = (session.user && session.user.name) || (session.user && session.user.email) || "—"
   } else {
     // deslogado: o logo mora DENTRO do bloco de login, acima do título
     brandLogo.hidden = true
+    navRadar.hidden = true
     acct.hidden = true
     footUser.textContent = "Desconectado"
   }
 }
+
+// navegação: o Radar é alcançável SEMPRE (com ou sem chat aberto)
+document.getElementById("nav-radar").addEventListener("click", () => renderRadar())
 
 function renderLogin() {
   const base = esc((session && session.baseUrl) || "")
@@ -462,7 +468,11 @@ async function renderFicha() {
 // (rota /send do WhatsApp) com o rascunho de follow-up JÁ no composer.
 
 function radarBadge(count) {
-  parent.postMessage({ type: "kora:badge", count: Number(count) || 0 }, "*")
+  const n = Number(count) || 0
+  parent.postMessage({ type: "kora:badge", count: n }, "*")
+  const chip = document.getElementById("nav-radar-n")
+  chip.textContent = n > 99 ? "99+" : String(n)
+  chip.hidden = n <= 0
 }
 
 async function refreshBadge() {
@@ -481,23 +491,39 @@ function openChatFromRadar(phone, text) {
 }
 
 async function renderRadar() {
-  empty("📡", "Radar do dia", "Buscando suas pendências…")
+  // navegação: com chat aberto, o Radar ganha o ‹ de volta pra ficha — em TODOS
+  // os estados (carregando/erro/vazio/cheio), nunca deixar o usuário preso.
+  const hasChat = () => currentChat && currentChat.kind !== "none"
+  const today = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })
+  const head = () =>
+    `<div class="rd-head">${hasChat() ? `<button id="rd-back" class="back-btn" type="button" title="Voltar pra conversa aberta">‹</button>` : ""}<b>Radar do dia</b><small>${esc(today)}</small></div>`
+  const wireBack = () => {
+    const b = document.getElementById("rd-back")
+    if (b) b.addEventListener("click", () => refreshResolve())
+  }
+  const radarState = (ico, title, text) => {
+    setView(`${head()}<div class="empty inline"><div class="ico">${ico}</div><b>${esc(title)}</b><p>${esc(text)}</p></div>`)
+    wireBack()
+  }
+
+  const chatKey = JSON.stringify(currentChat)
+  radarState("📡", "Radar do dia", "Buscando suas pendências…")
   const r = await send({ type: "radar" })
+  // trocou de chat no meio → o renderState já assumiu a tela; não sobrescrever
+  if (JSON.stringify(currentChat) !== chatKey) return
   if (session && !session.loggedIn) return // deslogou no meio
   if (!r || !r.ok) {
     if (r && r.status === 401) { session = { loggedIn: false }; renderState(); return }
-    empty("⚠️", "Radar indisponível", (r && r.error) || "Erro de conexão com o servidor.")
+    radarState("⚠️", "Radar indisponível", (r && r.error) || "Erro de conexão com o servidor.")
     return
   }
   const rd = r.data.radar
   radarBadge(rd.count)
 
   if (!rd.count) {
-    empty("🌤️", "Tudo em dia", "Nenhuma pendência no seu radar. Abra uma conversa no WhatsApp pra ver a ficha do contato.")
+    radarState("🌤️", "Tudo em dia", "Nenhuma pendência no seu radar. Abra uma conversa no WhatsApp pra ver a ficha do contato.")
     return
   }
-
-  const today = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })
   const row = (chip, chipCls, title, sub, phone, draft) => `
     <button class="rd-row" type="button" data-phone="${esc(phone || "")}" data-draft="${esc(draft || "")}">
       <span class="rd-chip ${chipCls}">${esc(chip)}</span>
@@ -542,12 +568,13 @@ async function renderRadar() {
     : ""
 
   setView(`
-    <div class="rd-head"><b>Radar do dia</b><small>${esc(today)}</small></div>
+    ${head()}
     ${apptsHtml}
     ${dealsHtml}
     ${quotesHtml}
     <div class="hint">Clique numa pendência pra abrir a conversa — nos follow-ups a mensagem já chega pronta no campo, é só revisar e enviar.</div>`)
 
+  wireBack()
   view.querySelectorAll(".rd-row").forEach((b) => {
     b.addEventListener("click", () => openChatFromRadar(b.dataset.phone, b.dataset.draft))
   })
