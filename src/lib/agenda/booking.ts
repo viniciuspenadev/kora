@@ -1,7 +1,8 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getAvailability, type Slot } from "@/lib/agenda/availability"
-import { runAppointmentEvent } from "@/lib/agenda/reminders"
+import { runAppointmentEvent, rearmAppointmentReminders } from "@/lib/agenda/reminders"
+import { recordAppointmentEvent } from "@/lib/agenda/events"
 import { createNotification } from "@/lib/notifications"
 import { hasModule } from "@/lib/modules"
 
@@ -75,7 +76,7 @@ export async function availabilitySlots(tenantId: string, input: {
  */
 export async function bookAppointment(tenantId: string, input: {
   contactId: string; conversationId?: string | null; resourceId: string; serviceId?: string | null
-  startsAt: string; durationMinutes?: number; source?: "ai" | "agent" | "manual"; notes?: string
+  startsAt: string; durationMinutes?: number; source?: "ai" | "agent" | "manual" | "self_service"; notes?: string
   partySize?: number; notifyCustomer?: boolean; createdBy?: string | null
   /** Marcado numa conversa ao vivo (IA/nó já confirmou) → não manda o aviso plano
    *  da agenda (evita confirmação dupla); o round-trip de confirmação continua. */
@@ -158,6 +159,18 @@ export async function bookAppointment(tenantId: string, input: {
       payload: { appointment_id: data.id, conversation_id: conversationId },
     })
   }
+
+  // Espinha de eventos (Agenda 2.0 F0): quem criou, como, quando.
+  await recordAppointmentEvent({
+    tenantId, appointmentId: data.id, type: "created",
+    actorUserId: createdBy,
+    actorLabel: input.source === "ai" ? "IA" : input.source === "self_service" ? "cliente" : "sistema",
+    payload: {
+      starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString(),
+      resource_id: input.resourceId, service_id: input.serviceId ?? null,
+      source: input.source ?? "manual",
+    },
+  })
 
   // Evento `created` → consumidor built-in (confirmação/lembrete do 3d).
   // Conversa ao vivo (IA/nó) → pula o aviso plano (round-trip preservado).
@@ -292,24 +305,70 @@ export async function pickFreeInPool(tenantId: string, input: {
 }
 
 /**
- * Move um agendamento pra um novo horário (preserva a duração). Server-less.
- * Anti-double-book: capacidade 1 via EXCLUDE (`23P01`). O chamador é responsável
- * pela autorização (ex: a capability resolve o appointment PELO contato → anti-IDOR).
+ * Remarca um agendamento — PORTA ÚNICA de toda remarcação (Agenda 2.0 F2).
+ * Preserva a duração; `opts.resourceId` troca também a agenda (drag entre colunas
+ * no Dia / select no modal). Server-less; o chamador é responsável pela autorização
+ * (action = gateAppointment · capability = resolve pelo contato · interceptor = pendência).
+ *
+ * Garantias (iguais pra atendente, IA e cliente):
+ *  • bloqueios SEMPRE barram (mesma regra do bookAppointment — antes só valia ao criar);
+ *  • anti-double-book: capacidade 1 via EXCLUDE (`23P01` → mensagem amigável);
+ *  • status volta pra `scheduled` (remarcou = precisa re-confirmar);
+ *  • evento `rescheduled` na espinha (com troca de agenda no payload, se houver);
+ *  • lembretes REARMADOS pro horário novo; `opts.resendConfirm` re-dispara a
+ *    confirmação (gates de módulo/switch respeitados, fail-closed).
  */
-export async function moveAppointment(tenantId: string, appointmentId: string, newStartsAt: string): Promise<{ error?: string; ok?: boolean }> {
+export async function moveAppointment(
+  tenantId: string, appointmentId: string, newStartsAt: string,
+  opts?: { actorUserId?: string | null; actorLabel?: string | null; resourceId?: string | null; resendConfirm?: boolean },
+): Promise<{ error?: string; ok?: boolean }> {
   const { data: appt } = await supabaseAdmin.from("appointments")
-    .select("starts_at, ends_at").eq("tenant_id", tenantId).eq("id", appointmentId).maybeSingle()
+    .select("starts_at, ends_at, resource_id").eq("tenant_id", tenantId).eq("id", appointmentId).maybeSingle()
   if (!appt) return { error: "Agendamento não encontrado" }
   const start = new Date(newStartsAt)
   if (isNaN(start.getTime())) return { error: "Data/hora inválida" }
   const duration = new Date(appt.ends_at).getTime() - new Date(appt.starts_at).getTime()
   const end = new Date(start.getTime() + duration)
+
+  // Troca de agenda (opcional): destino tem que ser recurso ATIVO do tenant (anti-IDOR).
+  const targetResource = opts?.resourceId ?? appt.resource_id
+  let blocksOverlap: boolean | undefined
+  if (targetResource !== appt.resource_id) {
+    const { data: res } = await supabaseAdmin.from("tenant_resources")
+      .select("id, capacity").eq("tenant_id", tenantId).eq("id", targetResource).eq("active", true).maybeSingle()
+    if (!res) return { error: "Agenda de destino não encontrada" }
+    blocksOverlap = res.capacity === 1
+  }
+
+  // Bloqueios sempre barram (recurso de destino OU tenant inteiro).
+  const { count: blocked } = await supabaseAdmin.from("tenant_blackouts")
+    .select("id", { count: "exact", head: true })
+    .eq("tenant_id", tenantId)
+    .or(`resource_id.eq.${targetResource},resource_id.is.null`)
+    .lt("starts_at", end.toISOString()).gt("ends_at", start.toISOString())
+  if (blocked && blocked > 0) return { error: "Esse horário está bloqueado (folga/feriado)" }
+
   const { error } = await supabaseAdmin.from("appointments")
-    .update({ starts_at: start.toISOString(), ends_at: end.toISOString(), status: "scheduled", updated_at: new Date().toISOString() })
+    .update({
+      starts_at: start.toISOString(), ends_at: end.toISOString(),
+      resource_id: targetResource, status: "scheduled",
+      ...(blocksOverlap !== undefined ? { blocks_overlap: blocksOverlap } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq("tenant_id", tenantId).eq("id", appointmentId)
   if (error) {
     if (error.code === "23P01" || /exclusion|overlap/i.test(error.message)) return { error: "Esse horário acabou de ser preenchido" }
     return { error: error.message }
   }
+
+  await recordAppointmentEvent({
+    tenantId, appointmentId, type: "rescheduled",
+    actorUserId: opts?.actorUserId ?? null, actorLabel: opts?.actorLabel ?? "sistema",
+    payload: {
+      from: appt.starts_at, to: start.toISOString(),
+      ...(targetResource !== appt.resource_id ? { resource_from: appt.resource_id, resource_to: targetResource } : {}),
+    },
+  })
+  await rearmAppointmentReminders(appointmentId, { resendConfirm: opts?.resendConfirm === true })
   return { ok: true }
 }

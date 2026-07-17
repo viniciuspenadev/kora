@@ -3,6 +3,8 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { createNotification } from "@/lib/notifications"
 import { getAvailability } from "@/lib/agenda/availability"
+import { moveAppointment } from "@/lib/agenda/booking"
+import { recordAppointmentEvent } from "@/lib/agenda/events"
 
 // ═══════════════════════════════════════════════════════════════
 // Interceptor de inbound da Agenda (round-trip, Fase 3d) — DETERMINÍSTICO
@@ -90,6 +92,10 @@ export async function handleAgendaReply(args: {
   if (pending.kind === "confirm") {
     if (act === "confirm" || digit === "1" || /\b(confirmo|confirmar|confirmado|confirma)\b/.test(t) || /^\s*sim\b/.test(t)) {
       await setStatus(appt.id, "confirmed"); await clearPending(conversationId)
+      await recordAppointmentEvent({
+        tenantId, appointmentId: appt.id, type: "confirmed_by_customer",
+        actorLabel: "cliente", payload: { via: interactiveId ? "botão" : "texto" },
+      })
       await notifyAgent(ctx, "confirmed")
       await reply(ctx, "✅ Tudo certo, seu horário está confirmado! Até lá 😊")
       return true
@@ -227,14 +233,10 @@ async function startReschedule(ctx: Ctx, fromMs?: number): Promise<boolean> {
 
 /** Move o agendamento pro novo horário (preserva duração). false = conflito (slot tomado). */
 async function doReschedule(appt: Ctx["appt"], slotIso: string): Promise<boolean> {
-  const duration = new Date(appt.ends_at).getTime() - new Date(appt.starts_at).getTime()
-  const start = new Date(slotIso)
-  const end = new Date(start.getTime() + duration)
-  const { error } = await supabaseAdmin.from("appointments")
-    .update({ starts_at: start.toISOString(), ends_at: end.toISOString(), status: "scheduled", updated_at: new Date().toISOString() })
-    .eq("id", appt.id).eq("tenant_id", appt.tenant_id)
-  if (error && (error.code === "23P01" || /exclusion|overlap/i.test(error.message))) return false
-  return !error
+  // Porta única (Agenda 2.0 F2): bloqueio + EXCLUDE + evento + rearme dos lembretes.
+  // O cliente acabou de escolher o horário na conversa → NÃO re-pede confirmação.
+  const r = await moveAppointment(appt.tenant_id, appt.id, slotIso, { actorLabel: "cliente", resendConfirm: false })
+  return !r.error
 }
 
 // Janela de busca por página (dias). O cursor `next_from` avança por aqui até o

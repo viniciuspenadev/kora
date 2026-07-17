@@ -8,7 +8,8 @@ import { createNotification } from "@/lib/notifications"
 import { logAudit } from "@/lib/audit"
 import { ensureAgendaConfirmTemplate, agendaConfirmStatus, type AgendaTemplateStatus } from "@/lib/agenda/official-template"
 import type { WorkingHoursDay } from "@/lib/agenda/availability"
-import { availabilitySlots, bookAppointment } from "@/lib/agenda/booking"
+import { availabilitySlots, bookAppointment, moveAppointment } from "@/lib/agenda/booking"
+import { recordAppointmentEvent } from "@/lib/agenda/events"
 import {
   LEVEL_RANK, APPT_VISIBILITY_SELECT,
   appointmentLevel, isAppointmentParticipant, viewerShareLevel, viewerShareMap,
@@ -94,9 +95,9 @@ async function assertAgentInTenant(tenantId: string, agentId: string | null | un
  * Carrega um compromisso por id E gateia o ator pra MUTAÇÃO (exige nível ≥ details —
  * "livre/ocupado" é só leitura). O id sozinho nunca basta (defesa em profundidade vs IDOR).
  */
-async function gateAppointment(s: ViewerScope, id: string): Promise<{ appt?: { starts_at: string; ends_at: string; resource_id: string }; error?: string }> {
+async function gateAppointment(s: ViewerScope, id: string): Promise<{ appt?: { starts_at: string; ends_at: string; resource_id: string; status: string }; error?: string }> {
   const { data } = await supabaseAdmin.from("appointments")
-    .select(`starts_at, ends_at, resource_id, ${APPT_VISIBILITY_SELECT}`)
+    .select(`starts_at, ends_at, resource_id, status, ${APPT_VISIBILITY_SELECT}`)
     .eq("tenant_id", s.tenantId).eq("id", id).maybeSingle()
   if (!data) return { error: "Agendamento não encontrado" }
   const resourceId = (data as { resource_id: string }).resource_id
@@ -105,7 +106,7 @@ async function gateAppointment(s: ViewerScope, id: string): Promise<{ appt?: { s
   if (LEVEL_RANK[level] < LEVEL_RANK.details) {
     return { error: level === "free_busy" ? "Você só tem acesso de leitura (livre/ocupado) a esta agenda" : "Você não tem acesso a este agendamento" }
   }
-  return { appt: data as unknown as { starts_at: string; ends_at: string; resource_id: string } }
+  return { appt: data as unknown as { starts_at: string; ends_at: string; resource_id: string; status: string } }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -374,47 +375,198 @@ export async function createAppointment(input: {
   return { id: r.id }
 }
 
-export async function rescheduleAppointment(id: string, newStartsAt: string): Promise<{ error?: string }> {
+/**
+ * Remarca (gesto de drag, select de horário ou troca de agenda no modal).
+ * UNIFICADO na porta única (Agenda 2.0 F2): `moveAppointment` cuida de bloqueio,
+ * EXCLUDE, status→scheduled, evento, rearme de lembretes e RE-CONFIRMAÇÃO
+ * (resendConfirm — gates de módulo/switch fail-closed lá dentro).
+ * `resourceId` opcional = mover também de agenda (drag entre colunas no Dia).
+ */
+export async function rescheduleAppointment(id: string, newStartsAt: string, resourceId?: string): Promise<{ error?: string }> {
   const s = await agendaScope()
-  const start = new Date(newStartsAt)
-  if (isNaN(start.getTime())) return { error: "Data/hora inválida" }
+  const { error: gErr } = await gateAppointment(s, id)
+  if (gErr) return { error: gErr }
+  const r = await moveAppointment(s.tenantId, id, newStartsAt, {
+    actorUserId: s.userId, resourceId: resourceId ?? null, resendConfirm: true,
+  })
+  if (r.error) return { error: r.error }
+  revalidatePath(ROUTE)
+  return {}
+}
+
+/**
+ * Estica/encolhe a duração (gesto de resize, passos de 15min). NÃO muda o início →
+ * lembretes continuam válidos (sem rearme, sem re-confirmação); só o evento `resized`.
+ */
+export async function resizeAppointment(id: string, durationMinutes: number): Promise<{ error?: string }> {
+  const s = await agendaScope()
+  const dur = Math.round(durationMinutes)
+  if (!Number.isFinite(dur) || dur < 15 || dur > 12 * 60) return { error: "Duração inválida" }
   const { appt, error: gErr } = await gateAppointment(s, id)
   if (gErr || !appt) return { error: gErr ?? "Agendamento não encontrado" }
-  const duration = new Date(appt.ends_at).getTime() - new Date(appt.starts_at).getTime()
-  const end = new Date(start.getTime() + duration)
+  const prevMin = Math.round((new Date(appt.ends_at).getTime() - new Date(appt.starts_at).getTime()) / 60_000)
+  if (prevMin === dur) return {}
+  const end = new Date(new Date(appt.starts_at).getTime() + dur * 60_000)
   const { error } = await supabaseAdmin.from("appointments")
-    .update({ starts_at: start.toISOString(), ends_at: end.toISOString(), updated_at: new Date().toISOString() })
+    .update({ ends_at: end.toISOString(), updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
   if (error) {
-    if (error.code === "23P01" || /exclusion|overlap/i.test(error.message)) return { error: "Esse horário acabou de ser preenchido" }
+    if (error.code === "23P01" || /exclusion|overlap/i.test(error.message)) return { error: "Não dá pra esticar por cima do próximo horário" }
     return { error: error.message }
   }
+  await recordAppointmentEvent({
+    tenantId: s.tenantId, appointmentId: id, type: "resized",
+    actorUserId: s.userId, payload: { from_minutes: prevMin, to_minutes: dur },
+  })
+  revalidatePath(ROUTE)
+  return {}
+}
+
+/**
+ * Troca o SERVIÇO do compromisso (edição inline no modal). Duração e horário
+ * ficam como estão (decisão do protótipo aprovado); só o evento `service_changed`.
+ */
+export async function updateAppointmentService(id: string, serviceId: string | null): Promise<{ error?: string }> {
+  const s = await agendaScope()
+  const { error: gErr } = await gateAppointment(s, id)
+  if (gErr) return { error: gErr }
+  if (serviceId) {
+    const { data: svc } = await supabaseAdmin.from("tenant_services")
+      .select("id").eq("tenant_id", s.tenantId).eq("id", serviceId).eq("active", true).maybeSingle()
+    if (!svc) return { error: "Serviço não encontrado" }
+  }
+  const { error } = await supabaseAdmin.from("appointments")
+    .update({ service_id: serviceId, updated_at: new Date().toISOString() })
+    .eq("tenant_id", s.tenantId).eq("id", id)
+  if (error) return { error: error.message }
+  await recordAppointmentEvent({
+    tenantId: s.tenantId, appointmentId: id, type: "service_changed",
+    actorUserId: s.userId, payload: { to: serviceId },
+  })
   revalidatePath(ROUTE)
   return {}
 }
 
 export async function setAppointmentStatus(id: string, status: "scheduled" | "confirmed" | "done" | "no_show" | "canceled"): Promise<{ error?: string }> {
   const s = await agendaScope()
-  const { error: gErr } = await gateAppointment(s, id)
-  if (gErr) return { error: gErr }
+  const { appt, error: gErr } = await gateAppointment(s, id)
+  if (gErr || !appt) return { error: gErr ?? "Agendamento não encontrado" }
   const { error } = await supabaseAdmin.from("appointments")
     .update({ status, updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
   if (error) return { error: error.message }
+  if (status !== appt.status) {
+    await recordAppointmentEvent({
+      tenantId: s.tenantId, appointmentId: id,
+      type: status === "canceled" ? "canceled" : "status_changed",
+      actorUserId: s.userId, payload: { from: appt.status, to: status },
+    })
+  }
   revalidatePath(ROUTE)
   return {}
 }
 
 export async function cancelAppointment(id: string, reason?: string): Promise<{ error?: string }> {
   const s = await agendaScope()
-  const { error: gErr } = await gateAppointment(s, id)
-  if (gErr) return { error: gErr }
+  const { appt, error: gErr } = await gateAppointment(s, id)
+  if (gErr || !appt) return { error: gErr ?? "Agendamento não encontrado" }
   const { error } = await supabaseAdmin.from("appointments")
     .update({ status: "canceled", notes: reason?.trim() || undefined, updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
   if (error) return { error: error.message }
+  await recordAppointmentEvent({
+    tenantId: s.tenantId, appointmentId: id, type: "canceled",
+    actorUserId: s.userId, payload: { from: appt.status, reason: reason?.trim() || null },
+  })
   revalidatePath(ROUTE)
   return {}
+}
+
+// ═══════════════════════════════════════════════════════════════
+// NOTAS + HISTÓRICO (Agenda 2.0 — F1) — doc: docs/agenda-2-0-design.md §1,§3
+// ═══════════════════════════════════════════════════════════════
+// Feed de notas internas (append-only) + timeline de eventos da ficha. Ambos
+// GATED pela MESMA escada de visibilidade (gateAppointment ≥ details): quem só
+// tem "livre/ocupado" nem lê. A escrita é exclusiva do service role (RLS das
+// tabelas é SELECT-only pro papel autenticado — não tente escrever com client
+// de sessão). Toda nota também vira evento `note_added` na espinha (porta única).
+
+export interface AppointmentEventRow {
+  id: string; type: string
+  actor_user_id: string | null; actor_label: string | null
+  actor_name: string | null                 // full_name do autor quando há usuário
+  payload: Record<string, unknown>; created_at: string
+}
+export interface AppointmentNoteRow {
+  id: string; body: string
+  author_user_id: string | null; author_name: string | null
+  created_at: string
+}
+
+/** Timeline de auditoria do compromisso (created_at asc). [] se sem acesso. */
+export async function listAppointmentEvents(appointmentId: string): Promise<AppointmentEventRow[]> {
+  const s = await agendaScope()
+  if ((await gateAppointment(s, appointmentId)).error) return []
+  const { data } = await supabaseAdmin.from("appointment_events")
+    .select("id, type, actor_user_id, actor_label, payload, created_at, profiles!appointment_events_actor_user_id_fkey ( full_name )")
+    .eq("tenant_id", s.tenantId).eq("appointment_id", appointmentId)
+    .order("created_at", { ascending: true })
+  type Row = { id: string; type: string; actor_user_id: string | null; actor_label: string | null; payload: Record<string, unknown> | null; created_at: string; profiles: { full_name: string | null } | null }
+  return ((data ?? []) as unknown as Row[]).map((r) => ({
+    id: r.id, type: r.type,
+    actor_user_id: r.actor_user_id ?? null, actor_label: r.actor_label ?? null,
+    actor_name: r.profiles?.full_name ?? null,
+    payload: r.payload ?? {}, created_at: r.created_at,
+  }))
+}
+
+/** Feed de notas internas do compromisso (created_at asc). [] se sem acesso. */
+export async function listAppointmentNotes(appointmentId: string): Promise<AppointmentNoteRow[]> {
+  const s = await agendaScope()
+  if ((await gateAppointment(s, appointmentId)).error) return []
+  const { data } = await supabaseAdmin.from("appointment_notes")
+    .select("id, body, author_user_id, created_at, profiles!appointment_notes_author_user_id_fkey ( full_name )")
+    .eq("tenant_id", s.tenantId).eq("appointment_id", appointmentId)
+    .order("created_at", { ascending: true })
+  type Row = { id: string; body: string; author_user_id: string | null; created_at: string; profiles: { full_name: string | null } | null }
+  return ((data ?? []) as unknown as Row[]).map((r) => ({
+    id: r.id, body: r.body,
+    author_user_id: r.author_user_id ?? null, author_name: r.profiles?.full_name ?? null,
+    created_at: r.created_at,
+  }))
+}
+
+/** Adiciona uma nota (author = viewer) e registra o evento `note_added`. Gated ≥ details. */
+export async function addAppointmentNote(appointmentId: string, body: string): Promise<{ error?: string; id?: string }> {
+  const s = await agendaScope()
+  const text = body?.trim()
+  if (!text) return { error: "Escreva algo na nota" }
+  const { error: gErr } = await gateAppointment(s, appointmentId)
+  if (gErr) return { error: gErr }
+  const { data, error } = await supabaseAdmin.from("appointment_notes")
+    .insert({ tenant_id: s.tenantId, appointment_id: appointmentId, author_user_id: s.userId, body: text })
+    .select("id").single()
+  if (error) return { error: error.message }
+  await recordAppointmentEvent({
+    tenantId: s.tenantId, appointmentId, type: "note_added",
+    actorUserId: s.userId, payload: { preview: text.slice(0, 80) },
+  })
+  revalidatePath(ROUTE)
+  return { id: data.id as string }
+}
+
+/**
+ * Subconjunto dos ids dados que têm ≥1 nota no feed — alimenta o selo 📝 dos
+ * cards do board. Tenant-scoped; os ids já chegam da listagem visível ao viewer
+ * (listAppointments), então não reabre acesso (leitura de mero booleano de presença).
+ */
+export async function getAppointmentNoteFlags(appointmentIds: string[]): Promise<string[]> {
+  const s = await getViewerScope()
+  if (appointmentIds.length === 0) return []
+  const { data } = await supabaseAdmin.from("appointment_notes")
+    .select("appointment_id")
+    .eq("tenant_id", s.tenantId).in("appointment_id", appointmentIds)
+  return Array.from(new Set((data ?? []).map((r) => r.appointment_id as string)))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -612,6 +764,134 @@ export async function setMemberAgendaAccess(memberUserId: string, resourceId: st
   return level === "none"
     ? removeResourceShare(resourceId, memberUserId)
     : upsertResourceShare(resourceId, memberUserId, level)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// KPIs da Visão Geral (Agenda 2.0 F4) — doc: docs/agenda-2-0-design.md §1
+// ═══════════════════════════════════════════════════════════════
+// SÓ números agregados — zero PII. Escopo (decisão de segurança): admin vê o
+// tenant inteiro; atendente vê SÓ as agendas atribuídas a ele (aproximação
+// documentada — a escada fina por-compromisso não se aplica a agregados).
+// Janelas: ocupação/receita = SEMANA ATUAL (seg–dom, -03) · no-show e % IA =
+// últimos 30d · confirmação = PRÓXIMOS 7d (métrica de ação da recepção) ·
+// remarcações = últimos 7d (espinha de eventos).
+
+export interface AgendaKpis {
+  occupancyPct: number | null; bookedMinutes: number; availableMinutes: number
+  noShowPct: number | null; noShowCount: number; finishedCount: number
+  confirmPct: number | null; confirmedUpcoming: number; pendingUpcoming: number
+  reschedules7d: number
+  aiSharePct: number | null; aiCount: number; createdCount: number
+  expectedRevenue: number   // R$ (numeric somado) da semana atual
+}
+
+const KPI_TZ = "America/Sao_Paulo"
+const ACTIVE_KPI_STATUSES = ["scheduled", "confirmed", "done"]
+
+/** Início (seg 00:00 −03) da semana corrente. Brasil sem DST → offset fixo é seguro. */
+function currentWeekStart(): Date {
+  const wall = new Date(new Date().toLocaleString("en-US", { timeZone: KPI_TZ }))
+  const monday = new Date(wall)
+  monday.setDate(wall.getDate() - ((wall.getDay() + 6) % 7))
+  const y = monday.getFullYear(), m = String(monday.getMonth() + 1).padStart(2, "0"), d = String(monday.getDate()).padStart(2, "0")
+  return new Date(`${y}-${m}-${d}T00:00:00-03:00`)
+}
+
+const hhmmToMin = (t: string): number => {
+  const [h, m] = t.split(":").map(Number)
+  return (h || 0) * 60 + (m || 0)
+}
+
+export async function getAgendaKpis(): Promise<AgendaKpis | null> {
+  const s = await getViewerScope()
+  if (!(await hasModule(s.tenantId, "agenda"))) return null
+
+  const { data: resAll } = await supabaseAdmin.from("tenant_resources")
+    .select("id, working_hours, assigned_agent_id")
+    .eq("tenant_id", s.tenantId).eq("active", true)
+  const scoped = (resAll ?? []).filter((r) => s.isAdmin || r.assigned_agent_id === s.userId)
+  const resourceIds = scoped.map((r) => r.id as string)
+  if (resourceIds.length === 0) {
+    return { occupancyPct: null, bookedMinutes: 0, availableMinutes: 0, noShowPct: null, noShowCount: 0, finishedCount: 0, confirmPct: null, confirmedUpcoming: 0, pendingUpcoming: 0, reschedules7d: 0, aiSharePct: null, aiCount: 0, createdCount: 0, expectedRevenue: 0 }
+  }
+
+  const now = new Date()
+  const weekStart = currentWeekStart()
+  const weekEnd = new Date(weekStart.getTime() + 7 * 86_400_000)
+  const d30ago = new Date(now.getTime() - 30 * 86_400_000)
+  const d7ago = new Date(now.getTime() - 7 * 86_400_000)
+  const d7fwd = new Date(now.getTime() + 7 * 86_400_000)
+
+  const [weekR, finishedR, upcomingR, createdR, svcR] = await Promise.all([
+    supabaseAdmin.from("appointments")
+      .select("starts_at, ends_at, service_id, status")
+      .eq("tenant_id", s.tenantId).in("resource_id", resourceIds)
+      .in("status", ACTIVE_KPI_STATUSES)
+      .gte("starts_at", weekStart.toISOString()).lt("starts_at", weekEnd.toISOString()),
+    supabaseAdmin.from("appointments")
+      .select("status", { count: "exact" })
+      .eq("tenant_id", s.tenantId).in("resource_id", resourceIds)
+      .in("status", ["done", "no_show"])
+      .gte("starts_at", d30ago.toISOString()).lte("starts_at", now.toISOString()),
+    supabaseAdmin.from("appointments")
+      .select("status")
+      .eq("tenant_id", s.tenantId).in("resource_id", resourceIds)
+      .in("status", ["scheduled", "confirmed"])
+      .gte("starts_at", now.toISOString()).lt("starts_at", d7fwd.toISOString()),
+    supabaseAdmin.from("appointments")
+      .select("source")
+      .eq("tenant_id", s.tenantId).in("resource_id", resourceIds)
+      .neq("status", "canceled")
+      .gte("created_at", d30ago.toISOString()),
+    supabaseAdmin.from("tenant_services")
+      .select("id, price").eq("tenant_id", s.tenantId),
+  ])
+
+  // Remarcações 7d — pela espinha de eventos; escopo por appointment das agendas visadas.
+  let reschedules7d = 0
+  {
+    const { data: apptIds } = await supabaseAdmin.from("appointments")
+      .select("id").eq("tenant_id", s.tenantId).in("resource_id", resourceIds)
+      .gte("starts_at", d30ago.toISOString())
+    const ids = (apptIds ?? []).map((r) => r.id as string)
+    if (ids.length > 0) {
+      const { count } = await supabaseAdmin.from("appointment_events")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", s.tenantId).eq("type", "rescheduled")
+        .gte("created_at", d7ago.toISOString()).in("appointment_id", ids)
+      reschedules7d = count ?? 0
+    }
+  }
+
+  // Ocupação: minutos reservados ÷ minutos úteis (working_hours × 1 semana).
+  const bookedMinutes = (weekR.data ?? []).reduce((acc, a) =>
+    acc + Math.max(0, (new Date(a.ends_at).getTime() - new Date(a.starts_at).getTime()) / 60_000), 0)
+  const availableMinutes = scoped.reduce((acc, r) => {
+    const wh = (r.working_hours ?? []) as WorkingHoursDay[]
+    return acc + wh.reduce((a2, d) => a2 + (d.intervals ?? []).reduce((a3, [ini, fim]) => a3 + Math.max(0, hhmmToMin(fim) - hhmmToMin(ini)), 0), 0)
+  }, 0)
+
+  const priceById = new Map((svcR.data ?? []).map((sv) => [sv.id as string, Number(sv.price) || 0]))
+  const expectedRevenue = (weekR.data ?? []).reduce((acc, a) => acc + (a.service_id ? (priceById.get(a.service_id) ?? 0) : 0), 0)
+
+  const noShowCount = (finishedR.data ?? []).filter((a) => a.status === "no_show").length
+  const finishedCount = finishedR.data?.length ?? 0
+  const confirmedUpcoming = (upcomingR.data ?? []).filter((a) => a.status === "confirmed").length
+  const upcomingTotal = upcomingR.data?.length ?? 0
+  const aiCount = (createdR.data ?? []).filter((a) => a.source === "ai").length
+  const createdCount = createdR.data?.length ?? 0
+
+  const pct = (num: number, den: number): number | null => den > 0 ? Math.round((num / den) * 100) : null
+
+  return {
+    occupancyPct: pct(bookedMinutes, availableMinutes),
+    bookedMinutes: Math.round(bookedMinutes), availableMinutes,
+    noShowPct: pct(noShowCount, finishedCount), noShowCount, finishedCount,
+    confirmPct: pct(confirmedUpcoming, upcomingTotal), confirmedUpcoming, pendingUpcoming: upcomingTotal - confirmedUpcoming,
+    reschedules7d,
+    aiSharePct: pct(aiCount, createdCount), aiCount, createdCount,
+    expectedRevenue,
+  }
 }
 
 // ── Agendamentos de um CONTATO (pra a sidebar do chat) ───────

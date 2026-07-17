@@ -385,7 +385,7 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
 
     if (ctx.dryRun) return { ok: true, toolMessage: `[simulação] Remarcaria para ${fmtSlot(start.toISOString())}.` }
 
-    const r = await moveAppointment(ctx.tenantId, appt.id, start.toISOString())
+    const r = await moveAppointment(ctx.tenantId, appt.id, start.toISOString(), { actorLabel: "IA", resendConfirm: true })
     if (r.error) return { ok: false, toolMessage: `Não consegui remarcar: ${r.error}. Ofereça outro horário (check_availability).` }
     await clearOffer(ctx)
     return { ok: true, toolMessage: `Remarcado para ${fmtSlot(start.toISOString())}. ✅`, data: { appointmentId: appt.id } }

@@ -4,6 +4,7 @@ import { getProvider } from "@/lib/providers"
 import { createNotification } from "@/lib/notifications"
 import { hasModule } from "@/lib/modules"
 import { sendAgendaConfirm } from "./official-template"
+import { recordAppointmentEvent } from "./events"
 import { withAliases } from "@/lib/variables/registry"
 
 // ═══════════════════════════════════════════════════════════════
@@ -142,6 +143,13 @@ async function logReminder(appt: ApptForEvent, stepKey: string, channel: string,
     tenant_id: appt.tenant_id, appointment_id: appt.id,
     step_key: stepKey, audience, channel, status, detail: detail ?? null,
   })
+  // Espinha de eventos (Agenda 2.0 F0): só o que SAIU de fato vira linha do tempo.
+  if (status === "sent") {
+    await recordAppointmentEvent({
+      tenantId: appt.tenant_id, appointmentId: appt.id, type: "reminder_sent",
+      actorLabel: "sistema", payload: { step: stepKey, channel, audience },
+    })
+  }
 }
 
 async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKey: string, vars: Record<string, string>, enabled: boolean) {
@@ -249,6 +257,33 @@ async function notifyConfirmFallback(appt: ApptForEvent, vars: Record<string, st
     body: [vars.nome, `${vars.data} às ${vars.hora}`].filter(Boolean).join(" · "),
     payload: { appointment_id: appt.id, conversation_id: appt.conversation_id },
   })
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Agenda 2.0 F2 — REARMAR avisos após remarcação (bugfix do dedup)
+// ═══════════════════════════════════════════════════════════════
+// O log `appointment_reminders` deduplica por step_key (`m-1440` etc.) — sem
+// isto, um agendamento REMARCADO nunca receberia o lembrete pro horário NOVO
+// (o cron acharia o step "já enviado" do horário antigo). Chamado pela porta
+// única (moveAppointment) em TODA remarcação. Best-effort: nunca lança.
+//
+//  • lembretes (m%) SEMPRE rearmam — horário mudou, log antigo não vale
+//    (cobre customer E agent: o delete não filtra audience de propósito);
+//  • `resendConfirm` limpa também o log de confirmação (created#%) e re-dispara
+//    SÓ o step de confirmação (skipPlainNotify) — os gates de módulo + master
+//    switch do runAppointmentEvent continuam valendo (fail-closed).
+export async function rearmAppointmentReminders(appointmentId: string, opts?: { resendConfirm?: boolean }): Promise<void> {
+  try {
+    await supabaseAdmin.from("appointment_reminders").delete()
+      .eq("appointment_id", appointmentId).like("step_key", "m%")
+    if (opts?.resendConfirm) {
+      await supabaseAdmin.from("appointment_reminders").delete()
+        .eq("appointment_id", appointmentId).like("step_key", "created#%")
+      await runAppointmentEvent(appointmentId, "created", { skipPlainNotify: true })
+    }
+  } catch (e) {
+    console.error("[agenda] rearmAppointmentReminders:", e instanceof Error ? e.message : e)
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
