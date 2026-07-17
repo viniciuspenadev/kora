@@ -15,6 +15,7 @@
   right: 0;
   top: 50%;
   transform: translateY(-50%);
+  will-change: transform;
   z-index: 2147483000;
   width: 36px;
   height: 96px;

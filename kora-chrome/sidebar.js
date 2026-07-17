@@ -653,8 +653,11 @@ function apptCard(a) {
 // data; a grade de horários aprovada fica, agora agrupada por período).
 let agDay = null   // dia selecionado (YYYY-MM-DD)
 let agMonth = null // mês exibido no calendário ("YYYY-MM")
-let agSvc = ""     // últimas escolhas lembradas (spec §5)
-let agRes = ""
+// escolhas GRAVADAS (pedido do owner: "precisa gravar qual é o serviço correto")
+// — sobrevivem ao F5 da página (sessionStorage do iframe da extensão).
+// agSvc: null = nunca escolhido conscientemente · "" = "sem serviço" explícito · id
+let agSvc = sessionStorage.getItem("kora-ag-svc")
+let agRes = sessionStorage.getItem("kora-ag-res") || ""
 
 async function renderAgendaTab() {
   const body = document.getElementById("tab-body")
@@ -725,54 +728,132 @@ function closeAgSheet() {
 }
 document.getElementById("ag-sheet-close").addEventListener("click", closeAgSheet)
 
+// ── UX "2 andares" (decisão do owner 2026-07-16): andar 1 = resumo vivo de
+// serviço/agenda + CALENDÁRIO protagonista; andar 2 = horários grandes do dia.
+// O serviço é 1ª classe: 1º uso abre expandido e o calendário só libera depois
+// da escolha (a DURAÇÃO do serviço muda os horários — escolher errado = agendar
+// errado); depois colapsa em resumo sempre visível e fica gravado.
 function buildAgendaSheet() {
   const ag = lastResolve.agenda
   const c = lastResolve.contact
   const body = document.getElementById("ag-sheet-body")
   const todayYmd = () => new Date().toLocaleDateString("en-CA")
 
-  if (agSvc && !ag.services.some((s) => s.id === agSvc)) agSvc = ""
-  const svcOpts = `<option value=""${agSvc === "" ? " selected" : ""}>Sem serviço · duração padrão da agenda</option>` +
-    ag.services.map((s) => `<option value="${esc(s.id)}"${s.id === agSvc ? " selected" : ""}>${esc(s.name)} · ${s.durationMinutes}min</option>`).join("")
-  const resOptsFor = (svcId) => {
-    const svc = ag.services.find((s) => s.id === svcId)
+  const hasServices = ag.services.length > 0
+  if (agSvc && !ag.services.some((x) => x.id === agSvc)) agSvc = null // lembrado sumiu → re-escolher
+  if (!hasServices) agSvc = "" // tenant sem serviços: caminho único
+
+  let sumOpen = hasServices && agSvc === null // 1º uso: escolhas abertas
+  let selSlot = null
+
+  const svcById = (id) => ag.services.find((x) => x.id === id)
+  const resPoolFor = (svcId) => {
+    const svc = svcId ? svcById(svcId) : null
     let pool = svc && svc.resourceIds && svc.resourceIds.length
       ? ag.resources.filter((r) => svc.resourceIds.includes(r.id))
       : ag.resources
     if (!pool.length) pool = ag.resources
-    if (!pool.some((r) => r.id === agRes)) agRes = pool[0].id
-    return pool.map((r) => `<option value="${esc(r.id)}"${r.id === agRes ? " selected" : ""}>${esc(r.name)}</option>`).join("")
+    return pool
   }
+  const ensureRes = () => {
+    const pool = resPoolFor(agSvc)
+    if (!pool.some((r) => r.id === agRes)) agRes = pool[0].id
+  }
+  const resName = () => {
+    const r = ag.resources.find((x) => x.id === agRes)
+    return r ? r.name : ""
+  }
+  const svcLabel = () =>
+    agSvc ? `${svcById(agSvc).name} · ${svcById(agSvc).durationMinutes}min` : "Sem serviço · duração padrão"
+  const saveChoices = () => {
+    if (agSvc === null) sessionStorage.removeItem("kora-ag-svc")
+    else sessionStorage.setItem("kora-ag-svc", agSvc)
+    sessionStorage.setItem("kora-ag-res", agRes)
+  }
+  ensureRes()
 
   body.innerHTML = `
-    <div class="frm">
-      <div class="frm-grid">
-        <label>Serviço<select id="ags-svc">${svcOpts}</select></label>
-        <label>Agenda<select id="ags-res">${resOptsFor(agSvc)}</select></label>
+    <div id="ags-cal-stage" class="ags-stage">
+      <div id="ags-sum"></div>
+      <div class="cal" id="ags-cal"></div>
+      <div id="ags-cal-hint" class="hint" hidden>Escolha o serviço pra liberar os horários certos.</div>
+    </div>
+    <div id="ags-slot-stage" class="ags-stage" hidden>
+      <div class="ags-day-head">
+        <button id="ags-back" class="back-btn" type="button" title="Trocar o dia">‹</button>
+        <div style="min-width:0">
+          <b id="ags-day-title"></b>
+          <small id="ags-day-sub"></small>
+        </div>
       </div>
-    </div>
-    <div class="cal" id="ags-cal"></div>
-    <div class="sec">Horários livres</div>
-    <div id="ags-slots"></div>
-    <div class="frm">
-      <label>Aviso pro cliente
-        <select id="ags-notify">
-          <option value="chat" selected>Eu envio nesta conversa — mensagem pronta pra revisar</option>
-          <option value="system">Sistema envia pelo número conectado</option>
-          <option value="none">Não avisar agora</option>
-        </select>
-      </label>
-    </div>
-    <div id="ags-err" class="err" hidden></div>
-    <button id="ags-btn" class="btn btn-primary" type="button" disabled>Agendar horário</button>
-    <div class="hint">Lembretes e pedido de confirmação seguem a configuração da agenda no app.</div>`
+      <div id="ags-slots"></div>
+      <div class="frm">
+        <label>Aviso pro cliente
+          <select id="ags-notify">
+            <option value="chat" selected>Eu envio nesta conversa — mensagem pronta pra revisar</option>
+            <option value="system">Sistema envia pelo número conectado</option>
+            <option value="none">Não avisar agora</option>
+          </select>
+        </label>
+      </div>
+      <div id="ags-err" class="err" hidden></div>
+      <button id="ags-btn" class="btn btn-primary" type="button" disabled>Agendar horário</button>
+      <div class="hint">Lembretes e pedido de confirmação seguem a configuração da agenda no app.</div>
+    </div>`
 
-  let selSlot = null
-  const updateBtn = () => {
-    const btn = document.getElementById("ags-btn")
-    if (btn) btn.disabled = !selSlot
+  const needSvc = () => hasServices && agSvc === null
+
+  // ── resumo vivo (andar 1) ──
+  function renderSum() {
+    const el = document.getElementById("ags-sum")
+    if (!el) return
+    document.getElementById("ags-cal-hint").hidden = !needSvc()
+    if (!sumOpen) {
+      el.innerHTML = `
+        <button id="ags-sum-row" class="ags-sum-row" type="button" title="Trocar serviço ou agenda">
+          <span class="ags-sum-txt"><b>${esc(svcLabel())}</b><small>com ${esc(resName())}</small></span>
+          <span class="ags-sum-edit">✎</span>
+        </button>`
+      document.getElementById("ags-sum-row").addEventListener("click", () => { sumOpen = true; renderSum() })
+      return
+    }
+    const svcOpts =
+      (agSvc === null ? `<option value="__none" selected disabled>Escolha o serviço…</option>` : "") +
+      `<option value=""${agSvc === "" ? " selected" : ""}>Sem serviço · duração padrão da agenda</option>` +
+      ag.services.map((x) => `<option value="${esc(x.id)}"${x.id === agSvc ? " selected" : ""}>${esc(x.name)} · ${x.durationMinutes}min</option>`).join("")
+    const resOpts = resPoolFor(agSvc)
+      .map((r) => `<option value="${esc(r.id)}"${r.id === agRes ? " selected" : ""}>${esc(r.name)}</option>`).join("")
+    el.innerHTML = `
+      <div class="frm ags-sum-form">
+        ${hasServices ? `<label>Serviço<select id="ags-svc">${svcOpts}</select></label>` : ""}
+        <label>Agenda<select id="ags-res">${resOpts}</select></label>
+      </div>`
+    const svcSel = document.getElementById("ags-svc")
+    if (svcSel) svcSel.addEventListener("change", (ev) => {
+      agSvc = ev.target.value === "__none" ? null : ev.target.value
+      ensureRes()
+      saveChoices()
+      renderSum() // re-renderiza pra sincronizar o pool de agendas
+    })
+    document.getElementById("ags-res").addEventListener("change", (ev) => {
+      agRes = ev.target.value
+      saveChoices()
+    })
   }
 
+  // ── troca de andar (desliza lateral) ──
+  function showStage(which) {
+    const calSt = document.getElementById("ags-cal-stage")
+    const slotSt = document.getElementById("ags-slot-stage")
+    calSt.hidden = which !== "cal"
+    slotSt.hidden = which !== "slots"
+    const st = which === "cal" ? calSt : slotSt
+    st.classList.remove("in-l", "in-r")
+    void st.offsetWidth
+    st.classList.add(which === "cal" ? "in-l" : "in-r")
+  }
+
+  // ── calendário (andar 1) ──
   function renderCal() {
     const el = document.getElementById("ags-cal")
     if (!el) return
@@ -807,11 +888,43 @@ function buildAgendaSheet() {
     document.getElementById("cal-prev").addEventListener("click", () => shiftMonth(-1))
     document.getElementById("cal-next").addEventListener("click", () => shiftMonth(1))
     el.querySelectorAll(".cal-d").forEach((btn) => btn.addEventListener("click", () => {
-      if (agDay === btn.dataset.ymd) return
+      if (needSvc()) {
+        // serviço primeiro — a duração dele define os horários
+        const h = document.getElementById("ags-cal-hint")
+        h.hidden = false
+        h.classList.remove("shake"); void h.offsetWidth; h.classList.add("shake")
+        return
+      }
       agDay = btn.dataset.ymd
       el.querySelectorAll(".cal-d").forEach((x) => x.classList.toggle("on", x.dataset.ymd === agDay))
-      loadSlots()
+      sumOpen = false
+      renderSum() // volta colapsado quando o usuário retornar ao andar 1
+      openSlotStage()
     }))
+  }
+
+  // ── horários (andar 2) ──
+  const ctaLabel = () => {
+    if (!selSlot) return "Agendar horário"
+    const d = new Date(selSlot)
+    const wd = d.toLocaleDateString("pt-BR", { weekday: "short", day: "numeric" }).replace(".", "")
+    return `Agendar ${wd}, ${fmtApptTime(selSlot)}`
+  }
+  const updateBtn = () => {
+    const btn = document.getElementById("ags-btn")
+    if (!btn) return
+    btn.disabled = !selSlot
+    btn.textContent = ctaLabel()
+  }
+
+  function openSlotStage() {
+    const d = new Date(agDay + "T12:00:00")
+    document.getElementById("ags-day-title").textContent =
+      d.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })
+    document.getElementById("ags-day-sub").textContent =
+      `${agSvc ? svcById(agSvc).name : "Sem serviço"} · ${resName()}`
+    showStage("slots")
+    loadSlots()
   }
 
   async function loadSlots() {
@@ -828,16 +941,16 @@ function buildAgendaSheet() {
     if (agRes !== resourceId || agDay !== date) return // filtro mudou no meio
     if (!r || !r.ok) { elNow.innerHTML = `<div class="ag-empty">${esc((r && r.error) || "Não deu pra buscar horários.")}</div>`; return }
     const slots = (r.data && r.data.slots) || []
-    if (!slots.length) { elNow.innerHTML = `<div class="ag-empty">Sem horários livres neste dia — escolha outro no calendário.</div>`; return }
+    if (!slots.length) { elNow.innerHTML = `<div class="ag-empty">Sem horários livres neste dia — toque em ‹ e escolha outro no calendário.</div>`; return }
     // agrupado por período: parede única de horários é difícil de escanear
     const groups = [["Manhã", []], ["Tarde", []], ["Noite", []]]
-    for (const s of slots) {
-      const h = new Date(s.start).getHours()
-      groups[h < 12 ? 0 : h < 18 ? 1 : 2][1].push(s)
+    for (const sl of slots) {
+      const h = new Date(sl.start).getHours()
+      groups[h < 12 ? 0 : h < 18 ? 1 : 2][1].push(sl)
     }
     elNow.innerHTML = groups.filter((g) => g[1].length).map((g) => `
       <div class="slot-g"><small>${g[0]}</small>
-        <div class="slots">${g[1].map((s) => `<button type="button" class="slot" data-start="${esc(s.start)}">${esc(fmtApptTime(s.start))}</button>`).join("")}</div>
+        <div class="slots">${g[1].map((sl) => `<button type="button" class="slot" data-start="${esc(sl.start)}">${esc(fmtApptTime(sl.start))}</button>`).join("")}</div>
       </div>`).join("")
     elNow.querySelectorAll(".slot").forEach((btn) => btn.addEventListener("click", () => {
       elNow.querySelectorAll(".slot").forEach((x) => x.classList.remove("sel"))
@@ -847,16 +960,7 @@ function buildAgendaSheet() {
     }))
   }
 
-  document.getElementById("ags-svc").addEventListener("change", (ev) => {
-    agSvc = ev.target.value
-    document.getElementById("ags-res").innerHTML = resOptsFor(agSvc)
-    agRes = document.getElementById("ags-res").value
-    loadSlots()
-  })
-  document.getElementById("ags-res").addEventListener("change", (ev) => {
-    agRes = ev.target.value
-    loadSlots()
-  })
+  document.getElementById("ags-back").addEventListener("click", () => showStage("cal"))
   document.getElementById("ags-btn").addEventListener("click", async () => {
     if (!selSlot) return
     const btn = document.getElementById("ags-btn")
@@ -872,7 +976,7 @@ function buildAgendaSheet() {
       notify: document.getElementById("ags-notify").value,
     })
     if (!res || !res.ok) {
-      morphFail(btn, "Agendar horário")
+      morphFail(btn, ctaLabel())
       errEl.textContent = (res && res.error) || "Não deu pra marcar o horário."
       errEl.hidden = false
       loadSlots() // o horário pode ter sido tomado — recarrega a grade
@@ -892,9 +996,8 @@ function buildAgendaSheet() {
     })
   })
 
-  agRes = document.getElementById("ags-res").value
+  renderSum()
   renderCal()
-  loadSlots()
 }
 
 // ── F2: negócio por dentro — itens + valores + cotação "Enviar nesta conversa" ──
@@ -1216,13 +1319,35 @@ async function renderNewDeal() {
   })
 }
 
-// chat aberto vem do content script
+// chat aberto vem do content script.
+// Anti-refresh-fantasma (owner pegou 2026-07-16): só a IDENTIDADE (kind+telefone)
+// re-renderiza — nome/avatar chegam ~1s DEPOIS da troca e não podem contar como
+// "trocou de conversa" (contavam: ciclo completo de loading 2x por troca).
+let chatDebounce = null
+const chatIdOf = (ch) => (ch ? `${ch.kind}|${ch.phone || ""}` : "∅")
+
 window.addEventListener("message", (ev) => {
   const d = ev.data || {}
-  if (d.type === "kora:chat") {
-    const changed = JSON.stringify(d.chat) !== JSON.stringify(currentChat)
-    currentChat = d.chat
-    if (changed) { lastResolvedPhone = null; renderState() }
+  if (d.type !== "kora:chat") return
+  const next = d.chat
+
+  if (chatIdOf(next) === chatIdOf(currentChat)) {
+    currentChat = next // absorve nome/avatar frescos SEM re-renderizar
+    // leitura boa re-confirmou o chat atual → cancela estado ruim pendente
+    if (chatDebounce) { clearTimeout(chatDebounce); chatDebounce = null }
+    return
+  }
+
+  clearTimeout(chatDebounce)
+  chatDebounce = null
+  const apply = () => { currentChat = next; lastResolvedPhone = null; renderState() }
+  // troca de conversa passa por estados transitórios (o bridge re-lê o fiber em
+  // ~1s): segura 1 tick antes de mostrar unknown/lid/none — se for real, confirma
+  const transient = next.kind === "unknown" || next.kind === "lid" || next.kind === "none"
+  if (transient && currentChat && currentChat.kind === "chat") {
+    chatDebounce = setTimeout(apply, 1400)
+  } else {
+    apply()
   }
 })
 

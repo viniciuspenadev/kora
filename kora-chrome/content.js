@@ -41,28 +41,29 @@
   document.documentElement.appendChild(wrap)
 
   // ── empurrão do WhatsApp (adaptativo, inline + !important) ──
-  // Aplica margem no #app com transform (prende descendentes position:fixed).
-  // Depois MEDE: se o app não encolheu de verdade, escala o alvo pro <body>.
+  // FLUIDEZ (lição 2026-07-16): NUNCA animar `width` do #app — cada frame
+  // reflui o WhatsApp inteiro (lista virtualizada + milhares de nós) = abre
+  // travado. Coreografia certa: o painel desliza POR CIMA (transform/GPU) e o
+  // app reflui UMA vez só, escondido embaixo do painel — no FIM do slide ao
+  // abrir, no INÍCIO ao fechar. Depois MEDE: se o app não encolheu de verdade
+  // (miolo ignora o pai), escala o alvo pro <body>.
   const PUSH_W = 360
   const PUSH_MS = 320
-  const PUSH_EASE = `width ${PUSH_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1)`
   let pushEl = null
+  let pushTimer = null
 
   // width (não margin!): o WhatsApp seta width:100% explícito no app/body, e
   // largura explícita NÃO encolhe com margem — só "vaza". calc(100% - painel)
   // sobrepõe o 100% deles e força o reflow real. transform prende os fixed.
+  // SEM transition — o snap é proposital (1 reflow, invisível sob o painel).
   function setPush(el, on) {
     if (!el) return
-    el.style.setProperty("transition", PUSH_EASE)
+    el.style.removeProperty("transition")
     el.style.setProperty("transform", "translateZ(0)")
     el.style.setProperty("width", on ? `calc(100% - ${PUSH_W}px)` : "100%", "important")
     if (!on) {
       setTimeout(() => {
-        if (!open && el === pushEl) {
-          el.style.removeProperty("width")
-          el.style.removeProperty("transform")
-          el.style.removeProperty("transition")
-        }
+        if (!open && el === pushEl) clearPush(el)
       }, PUSH_MS + 80)
     }
   }
@@ -76,18 +77,26 @@
     const target = document.getElementById("app") || document.body
     if (pushEl && pushEl !== target) clearPush(pushEl)
     pushEl = target
-    setPush(target, on)
+    clearTimeout(pushTimer)
     if (on) {
-      setTimeout(() => {
-        if (!open || !pushEl) return
-        const r = pushEl.getBoundingClientRect()
-        // não encolheu (o miolo ignora o pai)? sobe o alvo pro body.
-        if (r.width > window.innerWidth - PUSH_W / 2 && pushEl !== document.body) {
-          clearPush(pushEl)
-          pushEl = document.body
-          setPush(document.body, true)
-        }
-      }, PUSH_MS + 60)
+      // abre espaço só quando o painel JÁ cobriu a faixa (fim do slide)
+      pushTimer = setTimeout(() => {
+        if (!open) return
+        setPush(target, true)
+        setTimeout(() => {
+          if (!open || !pushEl) return
+          const r = pushEl.getBoundingClientRect()
+          // não encolheu? sobe o alvo pro body.
+          if (r.width > window.innerWidth - PUSH_W / 2 && pushEl !== document.body) {
+            clearPush(pushEl)
+            pushEl = document.body
+            setPush(document.body, true)
+          }
+        }, 60)
+      }, PUSH_MS)
+    } else {
+      // solta o app NA HORA — ele reflui embaixo do painel que ainda está saindo
+      setPush(target, false)
     }
   }
 

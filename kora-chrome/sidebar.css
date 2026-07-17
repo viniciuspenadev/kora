@@ -293,25 +293,46 @@ button.btn.btn-primary { border: 0; }
 .appt-info small { font-size: 11px; color: #94a3b8; display: block; margin-top: 2px; text-transform: capitalize; }
 .ag-empty { font-size: 11.5px; color: #94a3b8; line-height: 1.5; padding: 2px 2px; }
 
-/* ── sheet "Novo agendamento": calendário do mês + horários por período ── */
-#ag-sheet { max-height: 88%; }
-.ag-sheet-body { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 2px; }
+/* ── sheet "Novo agendamento" — UX 2 ANDARES (calendário protagonista) ── */
+#ag-sheet { max-height: 92%; }
+.ag-sheet-body { overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 2px; }
 
-.cal { border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 12px; }
-.cal-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.cal-hd b { font-size: 12px; text-transform: capitalize; }
+/* andares deslizam lateralmente (curva única do sistema) */
+.ags-stage { display: flex; flex-direction: column; gap: 14px; }
+.ags-stage.in-r { animation: kslide-r 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+.ags-stage.in-l { animation: kslide-l 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@keyframes kslide-r { from { opacity: 0; transform: translateX(26px); } to { opacity: 1; transform: none; } }
+@keyframes kslide-l { from { opacity: 0; transform: translateX(-26px); } to { opacity: 1; transform: none; } }
+
+/* resumo vivo: o serviço CERTO sempre à vista; ✎ expande as escolhas */
+.ags-sum-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 11px 14px;
+  cursor: pointer; font-family: inherit; color: inherit;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.ags-sum-row:hover { border-color: #d6e3ff; background: #f1f5ff; }
+.ags-sum-txt { min-width: 0; flex: 1; }
+.ags-sum-txt b { font-size: 12.5px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ags-sum-txt small { font-size: 11px; color: #64748b; display: block; margin-top: 2px; }
+.ags-sum-edit { color: #004add; font-size: 13px; flex: none; }
+
+/* calendário GRANDE — o palco é dele */
+.cal { border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; }
+.cal-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.cal-hd b { font-size: 13px; text-transform: capitalize; }
 .cal-nav {
-  width: 26px; height: 26px; border-radius: 8px; border: 1px solid #e2e8f0;
-  background: #fff; color: #64748b; cursor: pointer; font-family: inherit; font-size: 12px;
+  width: 30px; height: 30px; border-radius: 9px; border: 1px solid #e2e8f0;
+  background: #fff; color: #64748b; cursor: pointer; font-family: inherit; font-size: 13px;
   transition: color 0.15s ease, border-color 0.15s ease;
 }
 .cal-nav:hover:not(:disabled) { color: #004add; border-color: #d6e3ff; }
 .cal-nav:disabled { opacity: 0.4; cursor: default; }
-.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
-.cal-wd { font-size: 9px; font-weight: 700; color: #94a3b8; text-align: center; padding: 3px 0; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-wd { font-size: 9.5px; font-weight: 700; color: #94a3b8; text-align: center; padding: 4px 0; }
 .cal-d {
-  height: 30px; border-radius: 8px; border: 1px solid transparent; background: none;
-  font-size: 11.5px; font-weight: 600; color: #0f172a; cursor: pointer; font-family: inherit;
+  height: 36px; border-radius: 9px; border: 1px solid transparent; background: none;
+  font-size: 12.5px; font-weight: 600; color: #0f172a; cursor: pointer; font-family: inherit;
   font-variant-numeric: tabular-nums;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
@@ -320,17 +341,22 @@ button.btn.btn-primary { border: 0; }
 .cal-d.on { background: #004add; border-color: #004add; color: #fff; }
 .cal-d:disabled { color: #cbd5e1; cursor: default; }
 
-/* grade de horários (spec §5): 4 colunas, agrupada por período, seleção PREENCHIDA */
+/* cabeçalho do andar 2: ‹ + dia por extenso + serviço·agenda */
+.ags-day-head { display: flex; align-items: center; gap: 10px; }
+.ags-day-head b { font-size: 13.5px; display: block; text-transform: capitalize; letter-spacing: -0.01em; }
+.ags-day-head small { font-size: 11px; color: #64748b; display: block; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* horários GRANDES: 3 colunas × 40px, agrupados por período, seleção preenchida */
 .slot-g small {
   font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-  color: #94a3b8; display: block; margin-bottom: 6px;
+  color: #94a3b8; display: block; margin-bottom: 7px;
 }
-.slot-g + .slot-g { margin-top: 10px; }
-.slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.slot-g + .slot-g { margin-top: 12px; }
+.slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .slot {
-  height: 32px; display: flex; align-items: center; justify-content: center; padding: 0;
-  border: 1px solid #e2e8f0; border-radius: 8px; background: #fff;
-  font-size: 11px; font-weight: 600; color: #334155; cursor: pointer; font-family: inherit;
+  height: 40px; display: flex; align-items: center; justify-content: center; padding: 0;
+  border: 1px solid #e2e8f0; border-radius: 10px; background: #fff;
+  font-size: 12px; font-weight: 600; color: #334155; cursor: pointer; font-family: inherit;
   font-variant-numeric: tabular-nums;
   transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
