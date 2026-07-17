@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { listAppointments, setAppointmentStatus, cancelAppointment } from "@/lib/actions/agenda"
+import { AgendaKpiRow } from "@/components/agenda/agenda-kpi-row"
 
 const TZ = "America/Sao_Paulo"
 
@@ -170,6 +171,8 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
 
   return (
     <div className="space-y-4">
+      {/* KPIs estratégicos (F4) — fileira no topo; escopo resolvido server-side */}
+      <AgendaKpiRow />
       {/* KPIs do dia — com ícone (mesmo estilo das outras abas) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Kpi icon={CalendarClock} tone="primary" label="No dia"      value={kpis.total} />
