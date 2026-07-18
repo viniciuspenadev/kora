@@ -5,8 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
   ChevronLeft, ChevronRight, CalendarDays, ArrowRight, AlertTriangle,
-  Check, CheckCheck, X, MessageSquare, CalendarClock, UserX,
-  CircleCheck, CircleDashed, Clock,
+  Check, CheckCheck, X, MessageSquare, UserX,
 } from "lucide-react"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { listAppointments, setAppointmentStatus, cancelAppointment } from "@/lib/actions/agenda"
@@ -129,11 +128,6 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
     toast.success(msg); void loadDay(); void loadMarkers(); void loadWindow()
   }
 
-  const kpis = useMemo(() => {
-    const c = (s: string) => dayItems.filter((a) => a.status === s).length
-    return { total: dayItems.length, confirmed: c("confirmed"), waiting: c("scheduled"), done: c("done") }
-  }, [dayItems])
-
   // ── Fila "Precisa de atenção" ──────────────────────────────────
   // Atrasados (passou do horário sem desfecho) + aguardando confirmação hoje/amanhã.
   const attention = useMemo(() => {
@@ -171,15 +165,9 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
 
   return (
     <div className="space-y-4">
-      {/* KPIs estratégicos (F4) — fileira no topo; escopo resolvido server-side */}
+      {/* KPIs — fileira única no topo (o cartão "Hoje" absorveu a antiga linha do dia);
+          escopo resolvido server-side */}
       <AgendaKpiRow />
-      {/* KPIs do dia — com ícone (mesmo estilo das outras abas) */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi icon={CalendarClock} tone="primary" label="No dia"      value={kpis.total} />
-        <Kpi icon={CircleCheck}   tone="emerald" label="Confirmados" value={kpis.confirmed} />
-        <Kpi icon={CircleDashed}  tone="amber"   label="Aguardando"  value={kpis.waiting} />
-        <Kpi icon={Clock}         tone="slate"   label="Concluídos"  value={kpis.done} />
-      </div>
 
       {/* Precisa de atenção — o motivo de abrir esta aba todo dia */}
       {attention.length > 0 && (
@@ -409,24 +397,6 @@ function MiniCalendar({ month, selected, today, markers, onPrev, onNext, onSelec
   )
 }
 
-// ── KPI com ícone (mesmo desenho das outras abas da Agenda) ──
-function Kpi({ icon: Icon, tone, label, value }: { icon: typeof Clock; tone: "primary" | "emerald" | "amber" | "slate"; label: string; value: number }) {
-  const tones = {
-    primary: "bg-primary-50 text-primary-600",
-    emerald: "bg-emerald-50 text-emerald-600",
-    amber:   "bg-amber-50 text-amber-600",
-    slate:   "bg-slate-100 text-slate-500",
-  }
-  return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
-      <div className={`size-9 rounded-lg grid place-items-center shrink-0 ${tones[tone]}`}><Icon className="size-4.5" /></div>
-      <div className="min-w-0">
-        <p className="text-2xl font-bold text-slate-900 leading-none tabular-nums">{value}</p>
-        <p className="text-xs text-slate-400 mt-1 truncate">{label}</p>
-      </div>
-    </div>
-  )
-}
 
 // Ações neutras por padrão, azul no hover (sem verde/vermelho). Tooltip dá o sentido.
 function IconBtn({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {

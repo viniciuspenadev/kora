@@ -12,7 +12,7 @@ import { availabilitySlots, bookAppointment, moveAppointment } from "@/lib/agend
 import { recordAppointmentEvent } from "@/lib/agenda/events"
 import {
   LEVEL_RANK, APPT_VISIBILITY_SELECT,
-  appointmentLevel, isAppointmentParticipant, viewerShareLevel, viewerShareMap,
+  appointmentLevel, isAppointmentParticipant, viewerShareLevel, viewerShareMap, resourceLevel,
   type ApptVisibility,
 } from "@/lib/agenda/access"
 import type { AccessLevel as AccessLevelSrc, ShareLevel as ShareLevelSrc } from "@/lib/agenda/access"
@@ -157,6 +157,30 @@ export async function listResources(includeInactive = false): Promise<ResourceRo
   return (data ?? []) as ResourceRow[]
 }
 
+/**
+ * Recursos que o viewer pode VER (nível ≥ livre/ocupado) — alimenta o board,
+ * seletores de marcação/bloqueio e a Semana. Owner 2026-07-18: agenda restrita
+ * não vira coluna (coluna vazia mentia "livre o dia todo" + vazava a existência).
+ * Admin/view_all seguem vendo tudo pela própria escada.
+ */
+export async function listVisibleResources(): Promise<ResourceRow[]> {
+  const s = await getViewerScope()
+  const [all, shares] = await Promise.all([listResources(), viewerShareMap(s)])
+  return all.filter((r) => LEVEL_RANK[resourceLevel(s, r, shares.get(r.id))] >= LEVEL_RANK.free_busy)
+}
+
+/** Gate de escrita em agenda-alvo: marcar/mover PARA uma agenda exige vê-la (≥ livre/ocupado). */
+async function assertResourceVisible(s: ViewerScope, resourceId: string): Promise<string | null> {
+  const { data: r } = await supabaseAdmin.from("tenant_resources")
+    .select("assigned_agent_id, share_everyone_level").eq("tenant_id", s.tenantId).eq("id", resourceId).maybeSingle()
+  if (!r) return "Agenda não encontrada"
+  const share = await viewerShareLevel(s, resourceId)
+  if (LEVEL_RANK[resourceLevel(s, r as { assigned_agent_id: string | null; share_everyone_level: ShareLevel | null }, share)] < LEVEL_RANK.free_busy) {
+    return "Você não tem acesso a essa agenda"
+  }
+  return null
+}
+
 export async function createResource(input: {
   name: string; kind?: string | null; capacity?: number; working_hours?: WorkingHoursDay[]
   slot_minutes?: number; timezone?: string; assigned_agent_id?: string | null
@@ -254,23 +278,65 @@ export async function listBlackouts(resourceId?: string): Promise<{ id: string; 
   let q = supabaseAdmin.from("tenant_blackouts").select("id, resource_id, starts_at, ends_at, reason").eq("tenant_id", s.tenantId)
   if (resourceId) q = q.or(`resource_id.eq.${resourceId},resource_id.is.null`)
   const { data } = await q.order("starts_at")
-  return data ?? []
+  const rows = data ?? []
+  if (s.isAdmin) return rows
+
+  // Inspeção 2026-07-18: o MOTIVO do bloqueio é dado pessoal do colega — só sai
+  // pra quem tem nível ≥ detalhes naquela agenda (o HORÁRIO bloqueado sai pra
+  // todos: é exatamente o que "livre/ocupado" garante). Tenant-wide (feriado)
+  // é público por natureza. A UI cai no rótulo "Bloqueio" quando reason=null.
+  const [resR, shares] = await Promise.all([
+    supabaseAdmin.from("tenant_resources").select("id, assigned_agent_id, share_everyone_level").eq("tenant_id", s.tenantId),
+    viewerShareMap(s),
+  ])
+  const levelByRes = new Map((resR.data ?? []).map((r) => [
+    r.id as string,
+    resourceLevel(s, r as { assigned_agent_id: string | null; share_everyone_level: ShareLevel | null }, shares.get(r.id as string)),
+  ]))
+  return rows.map((b) => {
+    if (!b.resource_id) return b
+    const lvl = levelByRes.get(b.resource_id) ?? "none"
+    return LEVEL_RANK[lvl] >= LEVEL_RANK.details ? b : { ...b, reason: null }
+  })
+}
+
+/**
+ * Quem pode gerenciar um bloqueio (Agenda 2.0 — pedido do owner 2026-07-17):
+ * admin = qualquer um (inclusive tenant-wide) · atendente = SÓ da agenda ATRIBUÍDA
+ * a ele (folga da própria agenda). Fail-closed: recurso inexistente/alheio barra.
+ */
+async function assertCanManageBlackout(s: ViewerScope, resourceId: string | null): Promise<string | null> {
+  if (s.isAdmin) return null
+  if (!resourceId) return "Só owner/admin bloqueiam a empresa inteira"
+  const { data } = await supabaseAdmin.from("tenant_resources")
+    .select("assigned_agent_id").eq("tenant_id", s.tenantId).eq("id", resourceId).maybeSingle()
+  if (!data) return "Agenda não encontrada"
+  if (data.assigned_agent_id !== s.userId) return "Você só pode bloquear a sua própria agenda"
+  return null
 }
 
 export async function createBlackout(input: { resource_id?: string | null; starts_at: string; ends_at: string; reason?: string }): Promise<{ error?: string }> {
-  const s = await adminScope()
+  const s = await agendaScope()
+  const denied = await assertCanManageBlackout(s, input.resource_id ?? null)
+  if (denied) return { error: denied }
   if (new Date(input.ends_at) <= new Date(input.starts_at)) return { error: "Fim deve ser depois do início" }
   const { error } = await supabaseAdmin.from("tenant_blackouts").insert({
     tenant_id: s.tenantId, resource_id: input.resource_id ?? null,
     starts_at: input.starts_at, ends_at: input.ends_at, reason: input.reason?.trim() || null,
   })
   if (error) return { error: error.message }
+  await logAudit({ tenantId: s.tenantId, actorId: s.userId, action: "agenda.blackout.create", targetType: "tenant_blackouts", targetId: input.resource_id ?? "tenant", metadata: { starts_at: input.starts_at, ends_at: input.ends_at } })
   revalidatePath(ROUTE)
   return {}
 }
 
 export async function deleteBlackout(id: string): Promise<{ error?: string }> {
-  const s = await adminScope()
+  const s = await agendaScope()
+  const { data: blk } = await supabaseAdmin.from("tenant_blackouts")
+    .select("resource_id").eq("tenant_id", s.tenantId).eq("id", id).maybeSingle()
+  if (!blk) return { error: "Bloqueio não encontrado" }
+  const denied = await assertCanManageBlackout(s, blk.resource_id as string | null)
+  if (denied) return { error: denied }
   const { error } = await supabaseAdmin.from("tenant_blackouts").delete().eq("tenant_id", s.tenantId).eq("id", id)
   if (error) return { error: error.message }
   revalidatePath(ROUTE)
@@ -346,11 +412,17 @@ export async function listAppointments(input: { rangeStart: string; rangeEnd: st
   return out
 }
 
-/** Redige um compromisso pro nível "livre/ocupado": mantém só o horário, zera a PII. */
+/**
+ * Redige um compromisso pro nível "livre/ocupado": SÓ horário + recurso.
+ * Inspeção 2026-07-18: redigir também status/source/created_by/conversa —
+ * a tela já era neutra, mas o PAYLOAD vazava (devtools). "Livre/ocupado"
+ * vale no fio, não só no pixel.
+ */
 function redactBusy(a: AppointmentRow & ApptVisibility): AppointmentRow {
   const r = { ...(a as unknown as Record<string, unknown>) }
   r.contact_id = ""; r.conversation_id = null; r.service_id = null; r.notes = null
-  r.chat_contacts = null; r.tenant_services = null
+  r.chat_contacts = null; r.tenant_services = null; r.chat_conversations = null
+  r.status = "scheduled"; r.source = "manual"; r.created_by = null
   r.busy_only = true
   return r as unknown as AppointmentRow
 }
@@ -368,6 +440,9 @@ export async function createAppointment(input: {
   notifyCustomer?: boolean
 }): Promise<{ error?: string; id?: string }> {
   const s = await agendaScope()
+  // Política (owner 2026-07-18): marcar NUMA agenda exige vê-la (≥ livre/ocupado).
+  const denied = await assertResourceVisible(s, input.resourceId)
+  if (denied) return { error: denied }
   // Delega ao núcleo server-less (DRY — mesmo motor que a capability do Studio usa).
   const r = await bookAppointment(s.tenantId, { ...input, createdBy: s.userId })
   if (r.error) return { error: r.error }
@@ -386,6 +461,10 @@ export async function rescheduleAppointment(id: string, newStartsAt: string, res
   const s = await agendaScope()
   const { error: gErr } = await gateAppointment(s, id)
   if (gErr) return { error: gErr }
+  if (resourceId) {   // mover PARA outra agenda exige vê-la (mesma política do criar)
+    const denied = await assertResourceVisible(s, resourceId)
+    if (denied) return { error: denied }
+  }
   const r = await moveAppointment(s.tenantId, id, newStartsAt, {
     actorUserId: s.userId, resourceId: resourceId ?? null, resendConfirm: true,
   })
@@ -556,16 +635,37 @@ export async function addAppointmentNote(appointmentId: string, body: string): P
 }
 
 /**
- * Subconjunto dos ids dados que têm ≥1 nota no feed — alimenta o selo 📝 dos
- * cards do board. Tenant-scoped; os ids já chegam da listagem visível ao viewer
- * (listAppointments), então não reabre acesso (leitura de mero booleano de presença).
+ * Subconjunto dos ids dados que têm ≥1 nota — alimenta o selo 📝 do board.
+ * Inspeção 2026-07-18: gated pela ESCADA (nível ≥ detalhes por compromisso) —
+ * presença de nota também é metadado; linha "Ocupado" não pode nem insinuar.
  */
 export async function getAppointmentNoteFlags(appointmentIds: string[]): Promise<string[]> {
   const s = await getViewerScope()
   if (appointmentIds.length === 0) return []
+
+  let allowed = appointmentIds
+  if (!s.isAdmin) {
+    const { data: rows } = await supabaseAdmin.from("appointments")
+      .select(`id, resource_id, ${APPT_VISIBILITY_SELECT}`)
+      .eq("tenant_id", s.tenantId).in("id", appointmentIds)
+    const list = (rows ?? []) as unknown as ({ id: string; resource_id: string } & ApptVisibility)[]
+    let coSet = new Set<string>()
+    if (list.length) {
+      const { data: parts } = await supabaseAdmin.from("appointment_participants")
+        .select("appointment_id").eq("tenant_id", s.tenantId).eq("user_id", s.userId)
+        .in("appointment_id", list.map((r) => r.id))
+      coSet = new Set((parts ?? []).map((p) => p.appointment_id as string))
+    }
+    const shares = await viewerShareMap(s)
+    allowed = list
+      .filter((r) => LEVEL_RANK[appointmentLevel(s, r, shares.get(r.resource_id), coSet.has(r.id))] >= LEVEL_RANK.details)
+      .map((r) => r.id)
+    if (allowed.length === 0) return []
+  }
+
   const { data } = await supabaseAdmin.from("appointment_notes")
     .select("appointment_id")
-    .eq("tenant_id", s.tenantId).in("appointment_id", appointmentIds)
+    .eq("tenant_id", s.tenantId).in("appointment_id", allowed)
   return Array.from(new Set((data ?? []).map((r) => r.appointment_id as string)))
 }
 
@@ -783,6 +883,8 @@ export interface AgendaKpis {
   reschedules7d: number
   aiSharePct: number | null; aiCount: number; createdCount: number
   expectedRevenue: number   // R$ (numeric somado) da semana atual
+  /** Pulso de HOJE (dia corrente −03, sempre — independe do dia selecionado no mini-calendário). */
+  todayTotal: number; todayConfirmed: number; todayPending: number; todayDone: number; todayNoShow: number
 }
 
 const KPI_TZ = "America/Sao_Paulo"
@@ -797,6 +899,13 @@ function currentWeekStart(): Date {
   return new Date(`${y}-${m}-${d}T00:00:00-03:00`)
 }
 
+/** 00:00 −03 do dia corrente (mesma técnica da semana). */
+function todayStartTz(): Date {
+  const wall = new Date(new Date().toLocaleString("en-US", { timeZone: KPI_TZ }))
+  const y = wall.getFullYear(), m = String(wall.getMonth() + 1).padStart(2, "0"), d = String(wall.getDate()).padStart(2, "0")
+  return new Date(`${y}-${m}-${d}T00:00:00-03:00`)
+}
+
 const hhmmToMin = (t: string): number => {
   const [h, m] = t.split(":").map(Number)
   return (h || 0) * 60 + (m || 0)
@@ -807,12 +916,17 @@ export async function getAgendaKpis(): Promise<AgendaKpis | null> {
   if (!(await hasModule(s.tenantId, "agenda"))) return null
 
   const { data: resAll } = await supabaseAdmin.from("tenant_resources")
-    .select("id, working_hours, assigned_agent_id")
+    .select("id, working_hours, assigned_agent_id, share_everyone_level")
     .eq("tenant_id", s.tenantId).eq("active", true)
-  const scoped = (resAll ?? []).filter((r) => s.isAdmin || r.assigned_agent_id === s.userId)
+  // Inspeção 2026-07-18 — escopo alinhado à ESCADA: admin e supervisor (view_all)
+  // contam o tenant; atendente conta as agendas que GERENCIA (dele + delegação manage).
+  const kpiShares = await viewerShareMap(s)
+  const scoped = (resAll ?? []).filter((r) =>
+    s.isAdmin || s.viewAll ||
+    resourceLevel(s, r as { assigned_agent_id: string | null; share_everyone_level: ShareLevel | null }, kpiShares.get(r.id as string)) === "manage")
   const resourceIds = scoped.map((r) => r.id as string)
   if (resourceIds.length === 0) {
-    return { occupancyPct: null, bookedMinutes: 0, availableMinutes: 0, noShowPct: null, noShowCount: 0, finishedCount: 0, confirmPct: null, confirmedUpcoming: 0, pendingUpcoming: 0, reschedules7d: 0, aiSharePct: null, aiCount: 0, createdCount: 0, expectedRevenue: 0 }
+    return { occupancyPct: null, bookedMinutes: 0, availableMinutes: 0, noShowPct: null, noShowCount: 0, finishedCount: 0, confirmPct: null, confirmedUpcoming: 0, pendingUpcoming: 0, reschedules7d: 0, aiSharePct: null, aiCount: 0, createdCount: 0, expectedRevenue: 0, todayTotal: 0, todayConfirmed: 0, todayPending: 0, todayDone: 0, todayNoShow: 0 }
   }
 
   const now = new Date()
@@ -822,7 +936,10 @@ export async function getAgendaKpis(): Promise<AgendaKpis | null> {
   const d7ago = new Date(now.getTime() - 7 * 86_400_000)
   const d7fwd = new Date(now.getTime() + 7 * 86_400_000)
 
-  const [weekR, finishedR, upcomingR, createdR, svcR] = await Promise.all([
+  const todayStart = todayStartTz()
+  const todayEnd = new Date(todayStart.getTime() + 86_400_000)
+
+  const [weekR, finishedR, upcomingR, createdR, svcR, todayR] = await Promise.all([
     supabaseAdmin.from("appointments")
       .select("starts_at, ends_at, service_id, status")
       .eq("tenant_id", s.tenantId).in("resource_id", resourceIds)
@@ -845,6 +962,11 @@ export async function getAgendaKpis(): Promise<AgendaKpis | null> {
       .gte("created_at", d30ago.toISOString()),
     supabaseAdmin.from("tenant_services")
       .select("id, price").eq("tenant_id", s.tenantId),
+    supabaseAdmin.from("appointments")
+      .select("status")
+      .eq("tenant_id", s.tenantId).in("resource_id", resourceIds)
+      .neq("status", "canceled")
+      .gte("starts_at", todayStart.toISOString()).lt("starts_at", todayEnd.toISOString()),
   ])
 
   // Remarcações 7d — pela espinha de eventos; escopo por appointment das agendas visadas.
@@ -883,7 +1005,12 @@ export async function getAgendaKpis(): Promise<AgendaKpis | null> {
 
   const pct = (num: number, den: number): number | null => den > 0 ? Math.round((num / den) * 100) : null
 
+  const todayBy = (st: string) => (todayR.data ?? []).filter((a) => a.status === st).length
+
   return {
+    todayTotal: todayR.data?.length ?? 0,
+    todayConfirmed: todayBy("confirmed"), todayPending: todayBy("scheduled"),
+    todayDone: todayBy("done"), todayNoShow: todayBy("no_show"),
     occupancyPct: pct(bookedMinutes, availableMinutes),
     bookedMinutes: Math.round(bookedMinutes), availableMinutes,
     noShowPct: pct(noShowCount, finishedCount), noShowCount, finishedCount,
@@ -936,13 +1063,15 @@ export async function getContactAppointments(contactId: string): Promise<{
     service_name: a.tenant_services?.name ?? null, resource_name: a.tenant_resources?.name ?? null,
   }))
 
-  const [resR, svcR] = await Promise.all([
-    supabaseAdmin.from("tenant_resources").select("*").eq("tenant_id", s.tenantId).eq("active", true).order("name"),
+  // Mesma régua do board: só agendas que o viewer pode VER (senão a sidebar do
+  // chat viraria porta lateral pra marcar em agenda restrita).
+  const [visRes, svcR] = await Promise.all([
+    listVisibleResources(),
     supabaseAdmin.from("tenant_services").select("*").eq("tenant_id", s.tenantId).eq("active", true).order("name"),
   ])
   return {
     enabled: true, items,
-    resources: (resR.data ?? []) as unknown as ResourceRow[],
+    resources: visRes,
     services: (svcR.data ?? []) as unknown as ServiceRow[],
   }
 }

@@ -112,6 +112,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           body: JSON.stringify({ contactId: msg.contactId, resourceId: msg.resourceId, serviceId: msg.serviceId, startsAt: msg.startsAt, notify: msg.notify }),
         }))
         break
+      case "agendaReschedule":
+        sendResponse(await api("/api/ext/agenda/reschedule", {
+          method: "POST",
+          body: JSON.stringify({ appointmentId: msg.appointmentId, startsAt: msg.startsAt }),
+        }))
+        break
+      case "agendaConfirm":
+        sendResponse(await api("/api/ext/agenda/confirm", {
+          method: "POST",
+          body: JSON.stringify({ appointmentId: msg.appointmentId }),
+        }))
+        break
       case "quotePdf": {
         // binário → base64: mensagens do runtime só trafegam JSON.
         const st = await getState()

@@ -3,7 +3,7 @@
 import { useCallback, useRef, type RefObject, type PointerEvent as ReactPointerEvent } from "react"
 import { toast } from "sonner"
 import {
-  PX_PER_MIN, SNAP_MIN, snap15, minutesToLabel, isoFromDayMinute, rangesOverlap,
+  SNAP_MIN, snap15, minutesToLabel, isoFromDayMinute, rangesOverlap,
 } from "./lanes"
 import type { BoardAppt } from "./types"
 
@@ -38,6 +38,7 @@ export interface GestureOpts {
   containerRef: RefObject<HTMLDivElement | null>
   gridStartMin: number
   gridEndMin: number
+  pxPerMin: number
   reducedMotion: boolean
   getAppt: (id: string) => BoardAppt | undefined
   getMeta: (colKey: string) => ColMeta | undefined
@@ -82,7 +83,7 @@ export function useGridGestures(opts: GestureOpts) {
   function placeGhost(d: DragState, col: HTMLElement, top: number, height: number, conflict: boolean) {
     if (!d.ghost) {
       const g = document.createElement("div")
-      g.style.cssText = "position:absolute;left:5px;right:5px;border-radius:9px;border:2px dashed;z-index:25;pointer-events:none;"
+      g.style.cssText = "position:absolute;left:0;right:0;border:2px dashed;z-index:25;pointer-events:none;"   // full-width, sem radius (consistência)
       d.ghost = g
     }
     const c = conflict ? GHOST_BAD : GHOST_VALID
@@ -111,19 +112,19 @@ export function useGridGestures(opts: GestureOpts) {
       const meta = o.getMeta(col.dataset.colKey ?? "")
       if (!meta) return
       const r = col.getBoundingClientRect()
-      const rawMin = (ev.clientY - r.top - d.grabOffset) / PX_PER_MIN + o.gridStartMin
+      const rawMin = (ev.clientY - r.top - d.grabOffset) / o.pxPerMin + o.gridStartMin
       const span = Math.min(d.appt.durMin, o.gridEndMin - o.gridStartMin)
       const startMin = clamp(snap15(rawMin), o.gridStartMin, o.gridEndMin - span)
       const resourceId = col.dataset.resid || undefined      // coluna define recurso (Dia) → troca; Semana não tem → mantém
       d.target = { colEl: col, dateKey: meta.dateKey, startMin, resourceId }
       d.conflict = hasConflict(meta.occupied, startMin, d.appt.durMin, d.id)
-      placeGhost(d, col, (startMin - o.gridStartMin) * PX_PER_MIN, d.appt.durMin * PX_PER_MIN - 2, d.conflict)
+      placeGhost(d, col, (startMin - o.gridStartMin) * o.pxPerMin, d.appt.durMin * o.pxPerMin, d.conflict)
     } else {
       const meta = o.getMeta(d.colEl.dataset.colKey ?? "")
-      const newDur = clamp(snap15(d.appt.durMin + dy / PX_PER_MIN), SNAP_MIN, 720)
+      const newDur = clamp(snap15(d.appt.durMin + dy / o.pxPerMin), SNAP_MIN, 720)
       d.target = { durMin: newDur }
       d.conflict = meta ? hasConflict(meta.occupied, d.appt.startMin, newDur, d.id) : false
-      d.cardEl.style.height = `${Math.max(newDur * PX_PER_MIN - 2, 26)}px`
+      d.cardEl.style.height = `${Math.max(newDur * o.pxPerMin, 14)}px`
       d.cardEl.style.outline = d.conflict ? "2px dashed #ef4444" : ""
       d.cardEl.style.outlineOffset = "-1px"
       const t = d.cardEl.querySelector<HTMLElement>("[data-role=time]")
@@ -143,7 +144,7 @@ export function useGridGestures(opts: GestureOpts) {
     const o = ref.current
     if (!d.target?.colEl) return
     const hDelta = d.target.colEl.getBoundingClientRect().left - d.colEl.getBoundingClientRect().left
-    const vDelta = ((d.target.startMin ?? d.appt.startMin) - d.appt.startMin) * PX_PER_MIN
+    const vDelta = ((d.target.startMin ?? d.appt.startMin) - d.appt.startMin) * o.pxPerMin
     clearLift(d.cardEl)
     d.cardEl.style.transition = o.reducedMotion ? "none" : "transform .18s ease"
     d.cardEl.style.transform = `translate(${hDelta}px, ${vDelta}px)`
@@ -151,7 +152,7 @@ export function useGridGestures(opts: GestureOpts) {
   function resetResize(d: DragState, animate = false) {
     const o = ref.current
     d.cardEl.style.transition = animate && !o.reducedMotion ? "height .18s ease" : "none"
-    d.cardEl.style.height = `${Math.max(d.appt.durMin * PX_PER_MIN - 2, 26)}px`
+    d.cardEl.style.height = `${Math.max(d.appt.durMin * o.pxPerMin, 14)}px`
     d.cardEl.style.outline = ""
     const t = d.cardEl.querySelector<HTMLElement>("[data-role=time]")
     if (t) t.textContent = `${minutesToLabel(d.appt.startMin)}–${minutesToLabel(d.appt.startMin + d.appt.durMin)}`

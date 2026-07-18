@@ -77,7 +77,9 @@ function openSheet() {
   sheet.classList.add("open")
   sheet.setAttribute("aria-hidden", "false")
   loadQuickReplies()
-  document.getElementById("qr-search").focus()
+  // preventScroll: o focus era o gatilho do glitch — rolava a página atrás do
+  // input em trânsito e revelava o sheet de agendamento estacionado abaixo.
+  document.getElementById("qr-search").focus({ preventScroll: true })
 }
 function closeSheet() {
   sheet.classList.remove("open")
@@ -658,6 +660,8 @@ let agMonth = null // mês exibido no calendário ("YYYY-MM")
 // agSvc: null = nunca escolhido conscientemente · "" = "sem serviço" explícito · id
 let agSvc = sessionStorage.getItem("kora-ag-svc")
 let agRes = sessionStorage.getItem("kora-ag-res") || ""
+// modo REMARCAR: serviço/agenda ficam travados no compromisso (não é re-escolha)
+let agReschedule = null // { appointmentId, resourceId, serviceId, serviceName, resourceName }
 
 async function renderAgendaTab() {
   const body = document.getElementById("tab-body")
@@ -690,14 +694,40 @@ async function renderAgendaTab() {
       (ag.upcoming > 1 ? `<div class="ag-empty">+ ${ag.upcoming - 1} outro(s) horário(s) futuro(s) — detalhes na agenda do app.</div>` : "")
     : `<div class="ag-empty">Sem horário marcado${ag.resources.length ? " — marque o primeiro abaixo." : "."}</div>`
 
+  // ações do compromisso (o pedido chega pelo chat): confirmar em 1 clique
+  // (cliente disse "confirmado" em texto livre) + remarcar sem sair da conversa
+  const actsHtml = ag.next
+    ? `<div class="btn-row">
+        ${ag.next.status === "scheduled" ? `<button id="ag-confirm" class="btn btn-white" type="button">✓ Confirmar</button>` : ""}
+        <button id="ag-move" class="btn btn-white" type="button">Remarcar</button>
+      </div>`
+    : ""
+
   bodyNow.innerHTML = `
     <div class="sec">Próximo agendamento</div>
     ${nextHtml}
+    ${actsHtml}
     ${ag.resources.length
       ? `<button id="ag-new" class="btn btn-primary" type="button">＋ Novo agendamento</button>`
       : `<div class="hint">Nenhuma agenda configurada — configure em Agenda no app.</div>`}`
   const b = document.getElementById("ag-new")
   if (b) b.addEventListener("click", openAgendaSheet)
+  const bc = document.getElementById("ag-confirm")
+  if (bc) bc.addEventListener("click", async () => {
+    bc.disabled = true
+    bc.textContent = "Confirmando…"
+    const r = await send({ type: "agendaConfirm", appointmentId: ag.next.id })
+    if (!r || !r.ok) {
+      bc.disabled = false
+      bc.textContent = "✓ Confirmar"
+      alertHint((r && r.error) || "Não deu pra confirmar.")
+      return
+    }
+    alertHint("Horário confirmado ✓", true)
+    refreshResolve()
+  })
+  const bm = document.getElementById("ag-move")
+  if (bm) bm.addEventListener("click", () => openRescheduleSheet(ag.next))
 }
 
 // ── sheet "Novo agendamento": serviço/agenda → calendário do mês → horários ──
@@ -706,9 +736,33 @@ const agSheet = document.getElementById("ag-sheet")
 function openAgendaSheet() {
   const ag = lastResolve && lastResolve.agenda
   if (!ag || !ag.resources.length) return
+  agReschedule = null
   const today = new Date().toLocaleDateString("en-CA")
   if (!agDay || agDay < today) agDay = today
   agMonth = agDay.slice(0, 7)
+  document.getElementById("ag-sheet-title").textContent = "Novo agendamento"
+  buildAgendaSheet()
+  sheetBackdrop.hidden = false
+  void agSheet.offsetWidth
+  sheetBackdrop.classList.add("open")
+  agSheet.classList.add("open")
+  agSheet.setAttribute("aria-hidden", "false")
+}
+
+/** Remarcar: mesmo sheet "2 andares", com serviço/agenda TRAVADOS no compromisso. */
+function openRescheduleSheet(next) {
+  agReschedule = {
+    appointmentId: next.id,
+    resourceId: next.resourceId,
+    serviceId: next.serviceId || null,
+    serviceName: next.serviceName || null,
+    resourceName: next.resourceName || null,
+  }
+  const cur = new Date(next.startsAt).toLocaleDateString("en-CA")
+  const today = new Date().toLocaleDateString("en-CA")
+  agDay = cur >= today ? cur : today // abre no dia atual do compromisso
+  agMonth = agDay.slice(0, 7)
+  document.getElementById("ag-sheet-title").textContent = "Remarcar horário"
   buildAgendaSheet()
   sheetBackdrop.hidden = false
   void agSheet.offsetWidth
@@ -719,6 +773,7 @@ function openAgendaSheet() {
 
 function closeAgSheet() {
   if (!agSheet.classList.contains("open")) return
+  agReschedule = null
   agSheet.classList.remove("open")
   agSheet.setAttribute("aria-hidden", "true")
   sheetBackdrop.classList.remove("open")
@@ -736,6 +791,7 @@ document.getElementById("ag-sheet-close").addEventListener("click", closeAgSheet
 function buildAgendaSheet() {
   const ag = lastResolve.agenda
   const c = lastResolve.contact
+  const re = agReschedule // modo remarcar: serviço/agenda fixos no compromisso
   const body = document.getElementById("ag-sheet-body")
   const todayYmd = () => new Date().toLocaleDateString("en-CA")
 
@@ -743,7 +799,7 @@ function buildAgendaSheet() {
   if (agSvc && !ag.services.some((x) => x.id === agSvc)) agSvc = null // lembrado sumiu → re-escolher
   if (!hasServices) agSvc = "" // tenant sem serviços: caminho único
 
-  let sumOpen = hasServices && agSvc === null // 1º uso: escolhas abertas
+  let sumOpen = !re && hasServices && agSvc === null // 1º uso: escolhas abertas
   let selSlot = null
 
   const svcById = (id) => ag.services.find((x) => x.id === id)
@@ -756,15 +812,20 @@ function buildAgendaSheet() {
     return pool
   }
   const ensureRes = () => {
+    if (re) return
     const pool = resPoolFor(agSvc)
     if (!pool.some((r) => r.id === agRes)) agRes = pool[0].id
   }
+  const effRes = () => (re ? re.resourceId : agRes)
+  const effSvc = () => (re ? (re.serviceId || "") : agSvc)
   const resName = () => {
-    const r = ag.resources.find((x) => x.id === agRes)
-    return r ? r.name : ""
+    const r = ag.resources.find((x) => x.id === effRes())
+    return r ? r.name : (re && re.resourceName) || ""
   }
-  const svcLabel = () =>
-    agSvc ? `${svcById(agSvc).name} · ${svcById(agSvc).durationMinutes}min` : "Sem serviço · duração padrão"
+  const svcLabel = () => {
+    if (re) return re.serviceName || "Sem serviço"
+    return agSvc ? `${svcById(agSvc).name} · ${svcById(agSvc).durationMinutes}min` : "Sem serviço · duração padrão"
+  }
   const saveChoices = () => {
     if (agSvc === null) sessionStorage.removeItem("kora-ag-svc")
     else sessionStorage.setItem("kora-ag-svc", agSvc)
@@ -787,7 +848,7 @@ function buildAgendaSheet() {
         </div>
       </div>
       <div id="ags-slots"></div>
-      <div class="frm">
+      ${re ? "" : `<div class="frm">
         <label>Aviso pro cliente
           <select id="ags-notify">
             <option value="chat" selected>Eu envio nesta conversa — mensagem pronta pra revisar</option>
@@ -795,19 +856,29 @@ function buildAgendaSheet() {
             <option value="none">Não avisar agora</option>
           </select>
         </label>
-      </div>
+      </div>`}
       <div id="ags-err" class="err" hidden></div>
-      <button id="ags-btn" class="btn btn-primary" type="button" disabled>Agendar horário</button>
-      <div class="hint">Lembretes e pedido de confirmação seguem a configuração da agenda no app.</div>
+      <button id="ags-btn" class="btn btn-primary" type="button" disabled>${re ? "Remarcar horário" : "Agendar horário"}</button>
+      <div class="hint">${re
+        ? "O cliente recebe novo pedido de confirmação e os lembretes são reprogramados pro horário novo."
+        : "Lembretes e pedido de confirmação seguem a configuração da agenda no app."}</div>
     </div>`
 
-  const needSvc = () => hasServices && agSvc === null
+  const needSvc = () => !re && hasServices && agSvc === null
 
   // ── resumo vivo (andar 1) ──
   function renderSum() {
     const el = document.getElementById("ags-sum")
     if (!el) return
     document.getElementById("ags-cal-hint").hidden = !needSvc()
+    if (re) {
+      // remarcando: serviço/agenda são DO compromisso — só informação, sem edição
+      el.innerHTML = `
+        <div class="ags-sum-row" style="cursor:default">
+          <span class="ags-sum-txt"><b>${esc(svcLabel())}</b><small>com ${esc(resName())} · escolha o novo dia</small></span>
+        </div>`
+      return
+    }
     if (!sumOpen) {
       el.innerHTML = `
         <button id="ags-sum-row" class="ags-sum-row" type="button" title="Trocar serviço ou agenda">
@@ -905,10 +976,11 @@ function buildAgendaSheet() {
 
   // ── horários (andar 2) ──
   const ctaLabel = () => {
-    if (!selSlot) return "Agendar horário"
+    const verb = re ? "Remarcar" : "Agendar"
+    if (!selSlot) return `${verb} horário`
     const d = new Date(selSlot)
     const wd = d.toLocaleDateString("pt-BR", { weekday: "short", day: "numeric" }).replace(".", "")
-    return `Agendar ${wd}, ${fmtApptTime(selSlot)}`
+    return `${verb} ${wd}, ${fmtApptTime(selSlot)}`
   }
   const updateBtn = () => {
     const btn = document.getElementById("ags-btn")
@@ -922,7 +994,7 @@ function buildAgendaSheet() {
     document.getElementById("ags-day-title").textContent =
       d.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })
     document.getElementById("ags-day-sub").textContent =
-      `${agSvc ? svcById(agSvc).name : "Sem serviço"} · ${resName()}`
+      `${re ? (re.serviceName || "Sem serviço") : (agSvc ? svcById(agSvc).name : "Sem serviço")} · ${resName()}`
     showStage("slots")
     loadSlots()
   }
@@ -932,13 +1004,13 @@ function buildAgendaSheet() {
     updateBtn()
     const el = document.getElementById("ags-slots")
     if (!el) return
-    const resourceId = agRes
+    const resourceId = effRes()
     const date = agDay
     el.innerHTML = `<div class="ag-empty">Carregando horários…</div>`
-    const r = await send({ type: "agendaSlots", resourceId, serviceId: agSvc || null, date })
+    const r = await send({ type: "agendaSlots", resourceId, serviceId: effSvc() || null, date })
     const elNow = document.getElementById("ags-slots")
     if (!elNow) return
-    if (agRes !== resourceId || agDay !== date) return // filtro mudou no meio
+    if (effRes() !== resourceId || agDay !== date) return // filtro mudou no meio
     if (!r || !r.ok) { elNow.innerHTML = `<div class="ag-empty">${esc((r && r.error) || "Não deu pra buscar horários.")}</div>`; return }
     const slots = (r.data && r.data.slots) || []
     if (!slots.length) { elNow.innerHTML = `<div class="ag-empty">Sem horários livres neste dia — toque em ‹ e escolha outro no calendário.</div>`; return }
@@ -967,23 +1039,30 @@ function buildAgendaSheet() {
     const errEl = document.getElementById("ags-err")
     errEl.hidden = true
     morphStart(btn)
-    const res = await send({
-      type: "agendaBook",
-      contactId: c.id,
-      resourceId: agRes,
-      serviceId: agSvc || null,
-      startsAt: selSlot,
-      notify: document.getElementById("ags-notify").value,
-    })
+    const res = re
+      ? await send({ type: "agendaReschedule", appointmentId: re.appointmentId, startsAt: selSlot })
+      : await send({
+          type: "agendaBook",
+          contactId: c.id,
+          resourceId: agRes,
+          serviceId: agSvc || null,
+          startsAt: selSlot,
+          notify: document.getElementById("ags-notify").value,
+        })
     if (!res || !res.ok) {
       morphFail(btn, ctaLabel())
-      errEl.textContent = (res && res.error) || "Não deu pra marcar o horário."
+      errEl.textContent = (res && res.error) || (re ? "Não deu pra remarcar." : "Não deu pra marcar o horário.")
       errEl.hidden = false
       loadSlots() // o horário pode ter sido tomado — recarrega a grade
       return
     }
     morphSuccess(btn, () => {
       closeAgSheet()
+      if (re) {
+        alertHint("Horário remarcado ✓ — confirmação e lembretes reprogramados", true)
+        refreshResolve()
+        return
+      }
       const msg = res.data && res.data.confirmMessage
       if (msg) {
         // "o sistema prepara, o humano dispara": pré-enche o composer — enviar é seu clique

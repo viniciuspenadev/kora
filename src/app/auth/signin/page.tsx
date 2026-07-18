@@ -38,21 +38,12 @@ export default function SignInPage() {
   }
 
   return (
-    <div className="min-h-screen relative flex items-center justify-center overflow-hidden bg-slate-50 font-sans selection:bg-indigo-500/20">
+    <div className="min-h-screen flex items-center justify-center bg-canvas font-sans selection:bg-indigo-500/20">
 
-      <div className="absolute inset-0 z-0">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-indigo-300/40 blur-[100px] animate-pulse duration-[10000ms]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-violet-300/40 blur-[100px] animate-pulse duration-[7000ms]" />
-        <div className="absolute top-[20%] right-[10%] w-[30%] h-[30%] rounded-full bg-blue-300/30 blur-[100px]" />
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03] mix-blend-multiply" />
-      </div>
+      <div className="w-full max-w-md px-6 py-12">
+        <div className="bg-white border border-slate-200 shadow-[0_8px_32px_0_rgba(0,0,0,0.06)] rounded-3xl p-8 sm:p-10">
 
-      <div className="relative z-10 w-full max-w-md px-6 py-12">
-        <div className="relative bg-white/60 backdrop-blur-2xl border border-white/80 shadow-[0_8px_32px_0_rgba(0,0,0,0.06)] rounded-3xl p-8 sm:p-10 overflow-hidden group">
-
-          <div className="absolute inset-0 bg-gradient-to-b from-white to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-700 pointer-events-none" />
-
-          <div className="text-center mb-10 relative z-10">
+          <div className="text-center mb-10">
             <Image
               src="/logo_kora.png"
               alt="Kora"
@@ -67,7 +58,7 @@ export default function SignInPage() {
 
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6 relative z-10">
+          <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
               <label htmlFor="email" className="text-xs font-medium text-slate-600 ml-1">
                 E-mail
@@ -142,7 +133,7 @@ export default function SignInPage() {
 
         </div>
 
-        <p className="text-center text-xs text-slate-500 mt-8 relative z-10">
+        <p className="text-center text-xs text-slate-500 mt-8">
           Não possui uma conta?{" "}
           <a href="/signup" className="font-medium text-indigo-600 hover:text-indigo-700 transition-colors">
             Criar conta grátis

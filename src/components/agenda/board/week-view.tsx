@@ -15,7 +15,7 @@ import type { GestureApi } from "./use-grid-gestures"
 const ymd = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: TZ })
 
 export function WeekView({
-  weekDays, appts, blackouts, weekRes, resourceName, todayKey, startHour, endHour, now, onOpen, gestures, onSlotClick,
+  weekDays, appts, blackouts, weekRes, resourceName, todayKey, startHour, endHour, hourPx, now, onOpen, gestures, onSlotClick,
 }: {
   weekDays: Date[]                // 7 dias (seg→dom)
   appts: BoardAppt[]              // da semana inteira (todos os recursos visíveis)
@@ -25,6 +25,7 @@ export function WeekView({
   todayKey: string
   startHour: number
   endHour: number
+  hourPx: number
   now: Date
   onOpen: (id: string) => void
   gestures: GestureApi | null
@@ -34,9 +35,14 @@ export function WeekView({
   const columns: GridColumn[] = weekDays.map((d) => {
     const key = ymd(d)
     const dayAppts = appts.filter((a) => a.dateKey === key && (all || a.resourceId === weekRes))
+    // Modo equipe: bloqueio de COLEGA é informativo (blocking=false) — só o
+    // tenant-wide trava a coluna inteira. Agenda específica: tudo trava (é dela).
     const dayBlackouts = blackouts
       .filter((b) => all || b.resource_id === weekRes || b.resource_id === null)
-      .map((b) => blackoutBlockForDay(b, key, all && b.resource_id ? resourceName(b.resource_id) : undefined))
+      .map((b) => blackoutBlockForDay(b, key, {
+        prefix: all && b.resource_id ? resourceName(b.resource_id) : undefined,
+        blocking: all ? b.resource_id === null : true,
+      }))
       .filter((b): b is NonNullable<typeof b> => b !== null)
     const count = dayAppts.filter((a) => a.status !== "canceled" && !a.busyOnly).length
     const isToday = key === todayKey
@@ -60,5 +66,5 @@ export function WeekView({
     }
   })
 
-  return <TimeGrid columns={columns} startHour={startHour} endHour={endHour} now={now} onOpen={onOpen} gestures={gestures} onSlotClick={onSlotClick} colMinWidth={150} />
+  return <TimeGrid columns={columns} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={onOpen} gestures={gestures} onSlotClick={onSlotClick} colMinWidth={150} />
 }

@@ -38,6 +38,28 @@ export function appointmentLevel(s: ViewerScope, a: ApptVisibility, shareLevel: 
   return best
 }
 
+/**
+ * Nível do viewer sobre um RECURSO (a agenda como um todo) — decide se a agenda
+ * sequer APARECE (coluna no Dia, seletor da Semana, selects de marcação/bloqueio).
+ * Owner 2026-07-18: coluna vazia de agenda restrita mentia "livre o dia todo".
+ * Fontes por-recurso apenas (host/supervisor/piso da equipe/delegação) — as fontes
+ * por-compromisso (criador/co-host/conversa) não tornam a AGENDA visível.
+ */
+export function resourceLevel(
+  s: ViewerScope,
+  r: { assigned_agent_id: string | null; share_everyone_level: ShareLevel | null },
+  share?: ShareLevel,
+): AccessLevel {
+  if (s.isAdmin) return "manage"
+  let best: AccessLevel = "none"
+  const bump = (l: AccessLevel) => { if (LEVEL_RANK[l] > LEVEL_RANK[best]) best = l }
+  if (r.assigned_agent_id === s.userId) bump("manage")
+  if (s.viewAll) bump("details")
+  if (r.share_everyone_level) bump(r.share_everyone_level)
+  if (share) bump(share)
+  return best
+}
+
 /** Co-host: o viewer é participante explícito deste compromisso? */
 export async function isAppointmentParticipant(s: ViewerScope, appointmentId: string): Promise<boolean> {
   const { data } = await supabaseAdmin.from("appointment_participants")

@@ -23,6 +23,7 @@ export interface RawAppt {
 export interface BoardAppt {
   id: string
   resourceId: string
+  resourceAgentId: string | null   // dono da agenda → foto no badge da Semana-equipe
   serviceId: string | null
   conversationId: string | null
   createdBy: string | null
@@ -60,6 +61,7 @@ export function normalizeAppt(
   return {
     id: a.id,
     resourceId: a.resource_id,
+    resourceAgentId: res?.assigned_agent_id ?? null,
     serviceId: a.service_id,
     conversationId: a.conversation_id,
     createdBy: a.created_by ?? null,
@@ -96,14 +98,16 @@ export function fmtBRL(v: number | null): string {
 
 // ── Bloqueios (folga/feriado/manutenção) ─────────────────────
 export interface RawBlackout { id: string; resource_id: string | null; starts_at: string; ends_at: string; reason: string | null }
-export interface BlackoutBlock { id: string; startMin: number; durMin: number; label: string }
+export interface BlackoutBlock { id: string; startMin: number; durMin: number; label: string; blocking: boolean }
 
 /**
  * Recorta um bloqueio no dia `dateKey`, devolvendo o bloco (minuto-do-dia +
  * duração) ou null se não intercepta o dia. `prefix` (nome do recurso) só é usado
- * no modo "Todas (equipe)" da Semana.
+ * no modo "Todas (equipe)" da Semana. `blocking=false` = INFORMATIVO: aparece mas
+ * não trava clique/gesto — bloqueio de COLEGA na Semana-equipe não pode impedir
+ * marcação na agenda de outra pessoa (só o tenant-wide bloqueia todo mundo).
  */
-export function blackoutBlockForDay(b: RawBlackout, dateKey: string, prefix?: string): BlackoutBlock | null {
+export function blackoutBlockForDay(b: RawBlackout, dateKey: string, opts?: { prefix?: string; blocking?: boolean }): BlackoutBlock | null {
   const dayStart = new Date(isoFromDayMinute(dateKey, 0)).getTime()
   const dayEnd = dayStart + 1440 * 60_000
   const bStart = new Date(b.starts_at).getTime(), bEnd = new Date(b.ends_at).getTime()
@@ -113,5 +117,5 @@ export function blackoutBlockForDay(b: RawBlackout, dateKey: string, prefix?: st
   const durMin = endMin - startMin
   if (durMin <= 0) return null
   const reason = b.reason?.trim() || "Bloqueio"
-  return { id: b.id, startMin, durMin, label: `${prefix ? prefix + " · " : ""}🔒 ${reason}` }
+  return { id: b.id, startMin, durMin, label: `${opts?.prefix ? opts.prefix + " · " : ""}🔒 ${reason}`, blocking: opts?.blocking ?? true }
 }

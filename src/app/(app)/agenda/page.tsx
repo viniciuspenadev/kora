@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { hasModule } from "@/lib/modules"
-import { listResources, listServices } from "@/lib/actions/agenda"
+import { listVisibleResources, listServices } from "@/lib/actions/agenda"
 import { AgendaClient } from "@/components/agenda/agenda-client"
 
 export default async function AgendaPage() {
@@ -14,7 +14,8 @@ export default async function AgendaPage() {
 
   const isAdmin = ["owner", "admin"].includes(session.user.role)
 
-  const [resources, services] = await Promise.all([listResources(), listServices()])
+  // Só as agendas que o viewer pode VER (escada por-recurso; admin/view_all = todas).
+  const [resources, services] = await Promise.all([listVisibleResources(), listServices()])
 
   return <AgendaClient resources={resources} services={services} isAdmin={isAdmin} userId={session.user.id} />
 }

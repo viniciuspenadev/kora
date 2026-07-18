@@ -1,7 +1,10 @@
 /* Kora Companion — sidebar (pele clean da spec: branco, respiro, #004add) */
 * { box-sizing: border-box; margin: 0; }
 [hidden] { display: none !important; } /* atributo hidden SEMPRE vence a classe */
-html, body { height: 100%; }
+/* overflow:hidden é ESTRUTURAL: os sheets ficam estacionados em translateY(105%)
+   (abaixo da viewport) e transform CONTA como overflow rolável — sem a trava, um
+   focus() rolava a página e revelava o sheet errado ("abre o agendamento"). */
+html, body { height: 100%; overflow: hidden; }
 body {
   font-family: Inter, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 12.5px;
@@ -410,9 +413,12 @@ body { position: relative; overflow: hidden; }
   box-shadow: 0 -12px 40px -12px rgba(2, 6, 23, 0.35);
   display: flex; flex-direction: column; gap: 12px; padding: 18px 20px 16px;
   transform: translateY(105%);
-  transition: transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* fechado = invisível de verdade (nem foco nem clique alcançam); o delay mantém
+     a animação de saída visível antes de sumir */
+  visibility: hidden;
+  transition: transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1), visibility 0s linear 0.32s;
 }
-.sheet.open { transform: translateY(0); }
+.sheet.open { transform: translateY(0); visibility: visible; transition: transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1), visibility 0s; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; }
 .sheet-head b { font-size: 15px; letter-spacing: -0.01em; }
 .sheet input {

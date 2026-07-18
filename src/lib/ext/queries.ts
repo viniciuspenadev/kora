@@ -24,8 +24,12 @@ import {
 } from "@/lib/commercial/documents"
 import { lineSubtotal, computeDealValue, DEFAULT_TERM_MONTHS, type DealItemLike } from "@/lib/crm/value"
 import { hasModule } from "@/lib/modules"
-import { availabilitySlots, bookAppointment } from "@/lib/agenda/booking"
-import { appointmentLevel, viewerShareMap, LEVEL_RANK, type ApptVisibility, type ShareLevel } from "@/lib/agenda/access"
+import { availabilitySlots, bookAppointment, moveAppointment } from "@/lib/agenda/booking"
+import { recordAppointmentEvent } from "@/lib/agenda/events"
+import {
+  appointmentLevel, resourceLevel, viewerShareMap, viewerShareLevel, isAppointmentParticipant,
+  LEVEL_RANK, APPT_VISIBILITY_SELECT, type ApptVisibility, type ShareLevel,
+} from "@/lib/agenda/access"
 import { logAudit } from "@/lib/audit"
 
 // ═══════════════════════════════════════════════════════════════
@@ -593,6 +597,8 @@ export interface ExtAppt {
   status:       string
   serviceName:  string | null
   resourceName: string | null
+  resourceId:   string
+  serviceId:    string | null
 }
 
 export interface ExtAgenda {
@@ -604,12 +610,28 @@ export interface ExtAgenda {
 }
 
 type ExtApptRow = ApptVisibility & {
-  id: string; resource_id: string; starts_at: string; ends_at: string; status: string
+  id: string; resource_id: string; service_id?: string | null; starts_at: string; ends_at: string; status: string
   tenant_services: { name: string | null } | null
   tenant_resources: { name: string | null; assigned_agent_id: string | null; share_everyone_level: ShareLevel | null } | null
 }
 
-/** Agenda do contato: próximos compromissos visíveis + agendas/serviços ativos. */
+/**
+ * Agendas que o viewer pode VER (resourceLevel ≥ free_busy) — MESMA régua do app
+ * (inspeção de privacidade 2026-07-18: agenda restrita nem aparece, nem responde
+ * slots, nem aceita marcação). Fonte da regra: src/lib/agenda/access.ts.
+ */
+async function visibleAgendaResourcesExt(scope: ViewerScope): Promise<{ id: string; name: string }[]> {
+  const { data } = await supabaseAdmin.from("tenant_resources")
+    .select("id, name, assigned_agent_id, share_everyone_level")
+    .eq("tenant_id", scope.tenantId).eq("active", true).order("name")
+  const rows = (data ?? []) as { id: string; name: string; assigned_agent_id: string | null; share_everyone_level: ShareLevel | null }[]
+  if (scope.isAdmin) return rows.map((r) => ({ id: r.id, name: r.name }))
+  const shares = await viewerShareMap(scope)
+  return rows
+    .filter((r) => LEVEL_RANK[resourceLevel(scope, r, shares.get(r.id))] >= LEVEL_RANK.free_busy)
+    .map((r) => ({ id: r.id, name: r.name }))
+}
+
 export async function agendaForContactExt(
   scope: ViewerScope,
   contactId: string,
@@ -620,7 +642,7 @@ export async function agendaForContactExt(
 
   const { data: rows } = await supabaseAdmin
     .from("appointments")
-    .select(`id, resource_id, starts_at, ends_at, status, created_by,
+    .select(`id, resource_id, service_id, starts_at, ends_at, status, created_by,
       tenant_services(name),
       tenant_resources(name, assigned_agent_id, share_everyone_level),
       chat_conversations(instance_id, assigned_to, participants, department_id)`)
@@ -646,8 +668,8 @@ export async function agendaForContactExt(
     )
   }
 
-  const [resR, svcR] = await Promise.all([
-    supabaseAdmin.from("tenant_resources").select("id, name").eq("tenant_id", scope.tenantId).eq("active", true).order("name"),
+  const [visibleRes, svcR] = await Promise.all([
+    visibleAgendaResourcesExt(scope),   // agenda restrita NÃO aparece no seletor
     supabaseAdmin.from("tenant_services").select("id, name, duration_minutes, resource_ids").eq("tenant_id", scope.tenantId).eq("active", true).order("name"),
   ])
 
@@ -657,9 +679,10 @@ export async function agendaForContactExt(
     next: nxt ? {
       id: nxt.id, startsAt: nxt.starts_at, endsAt: nxt.ends_at, status: nxt.status,
       serviceName: nxt.tenant_services?.name ?? null, resourceName: nxt.tenant_resources?.name ?? null,
+      resourceId: nxt.resource_id, serviceId: nxt.service_id ?? null,
     } : null,
     upcoming: visible.length,
-    resources: ((resR.data ?? []) as { id: string; name: string }[]).map((r) => ({ id: r.id, name: r.name })),
+    resources: visibleRes,
     services: ((svcR.data ?? []) as { id: string; name: string; duration_minutes: number; resource_ids: string[] | null }[])
       .map((s) => ({ id: s.id, name: s.name, durationMinutes: s.duration_minutes, resourceIds: s.resource_ids ?? [] })),
   }
@@ -672,6 +695,9 @@ export async function agendaSlotsExt(
 ): Promise<{ slots: { start: string; end: string }[] } | { error: string }> {
   if (!(await hasModule(scope.tenantId, "agenda"))) return { error: "Módulo Agenda não habilitado." }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return { error: "Dia inválido." }
+  // Agenda restrita não responde nem os horários livres (fail-closed, sem vazar existência).
+  const canSee = (await visibleAgendaResourcesExt(scope)).some((r) => r.id === input.resourceId)
+  if (!canSee) return { error: "Agenda não encontrada." }
   const slots = await availabilitySlots(scope.tenantId, {
     resourceId: input.resourceId,
     serviceId:  input.serviceId ?? null,
@@ -697,6 +723,8 @@ export async function bookAppointmentExt(
 ): Promise<{ id: string; confirmMessage?: string } | { error: string }> {
   if (!(await hasModule(scope.tenantId, "agenda"))) return { error: "Módulo Agenda não habilitado." }
   if (!(await canReachContact(scope, input.contactId))) return { error: "Contato não encontrado." }
+  // Gate de escrita (mesma régua do app): marcar PARA uma agenda exige vê-la.
+  if (!(await visibleAgendaResourcesExt(scope)).some((r) => r.id === input.resourceId)) return { error: "Agenda não encontrada." }
   const notify = input.notify ?? "system"
   const r = await bookAppointment(scope.tenantId, {
     contactId:  input.contactId,
@@ -713,6 +741,64 @@ export async function bookAppointmentExt(
   if (r.error || !r.id) return { error: r.error ?? "Não deu pra marcar o horário." }
   if (notify !== "chat") return { id: r.id }
   return { id: r.id, confirmMessage: await agendaHandOffMessage(scope, r.id) }
+}
+
+/** Gate de AÇÃO num compromisso — espelho do gateAppointment do app (nível ≥ details). */
+async function gateApptExt(scope: ViewerScope, id: string): Promise<{ status?: string; error?: string }> {
+  const { data } = await supabaseAdmin.from("appointments")
+    .select(`status, resource_id, ${APPT_VISIBILITY_SELECT}`)
+    .eq("tenant_id", scope.tenantId).eq("id", id).maybeSingle()
+  if (!data) return { error: "Agendamento não encontrado." }
+  const resourceId = (data as { resource_id: string }).resource_id
+  const [isCo, share] = await Promise.all([isAppointmentParticipant(scope, id), viewerShareLevel(scope, resourceId)])
+  const level = appointmentLevel(scope, data as unknown as ApptVisibility, share, isCo)
+  if (LEVEL_RANK[level] < LEVEL_RANK.details) return { error: "Você não tem acesso a este agendamento." }
+  return { status: (data as { status: string }).status }
+}
+
+/**
+ * Remarca o compromisso de dentro da conversa (cliente pediu no chat) — delega
+ * pra PORTA ÚNICA do núcleo: bloqueio/agenda-alvo checados, volta pra "aguarda",
+ * re-confirmação + REARME de lembretes pro horário novo (gesto do atendente).
+ */
+export async function rescheduleAppointmentExt(
+  scope: ViewerScope,
+  input: { appointmentId: string; startsAt: string },
+): Promise<{ ok: true } | { error: string }> {
+  if (!(await hasModule(scope.tenantId, "agenda"))) return { error: "Módulo Agenda não habilitado." }
+  const g = await gateApptExt(scope, input.appointmentId)
+  if (g.error) return { error: g.error }
+  if (g.status === "canceled" || g.status === "done" || g.status === "no_show")
+    return { error: "Esse horário já foi finalizado — marque um novo." }
+  const r = await moveAppointment(scope.tenantId, input.appointmentId, input.startsAt, {
+    actorUserId: scope.userId, resendConfirm: true,
+  })
+  if (r.error) return { error: r.error }
+  return { ok: true }
+}
+
+/**
+ * Confirma em 1 clique (cliente disse "confirmado" em texto livre na conversa —
+ * o round-trip automático só entende resposta estruturada). Idempotente.
+ */
+export async function confirmAppointmentExt(
+  scope: ViewerScope,
+  appointmentId: string,
+): Promise<{ ok: true } | { error: string }> {
+  if (!(await hasModule(scope.tenantId, "agenda"))) return { error: "Módulo Agenda não habilitado." }
+  const g = await gateApptExt(scope, appointmentId)
+  if (g.error) return { error: g.error }
+  if (g.status === "confirmed") return { ok: true }
+  if (g.status !== "scheduled") return { error: "Esse horário já foi finalizado — marque um novo." }
+  const { error } = await supabaseAdmin.from("appointments")
+    .update({ status: "confirmed", updated_at: new Date().toISOString() })
+    .eq("tenant_id", scope.tenantId).eq("id", appointmentId)
+  if (error) return { error: error.message }
+  await recordAppointmentEvent({
+    tenantId: scope.tenantId, appointmentId, type: "status_changed",
+    actorUserId: scope.userId, payload: { from: "scheduled", to: "confirmed", via: "companion" },
+  })
+  return { ok: true }
 }
 
 /**

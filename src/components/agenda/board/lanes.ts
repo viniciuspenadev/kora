@@ -27,8 +27,11 @@ export const STATUS_COLORS: Record<string, StatusStyle> = {
 export function statusStyle(status: string): StatusStyle { return STATUS_COLORS[status] ?? STATUS_COLORS.scheduled }
 
 // Cores das linhas de grade — espelham o protótipo (chrome do board).
-export const GRID_HOUR = "#aebbcb"      // hora — forte, bem visível
-export const GRID_HALF = "#e1e7ee"      // meia-hora — visível mas claramente secundária (senão 1h lê como 2 células)
+export const GRID_HOUR = "#94a3b8"      // hora — slate-400, destaque firme (3º pedido do owner: mais forte)
+export const GRID_HALF = "#dbe2ea"      // meia-hora — presente, mas claramente secundária (senão 1h lê como 2 células)
+export const GRID_VERT = "#c2cbd7"      // divisória VERTICAL de coluna — tom intermediário de propósito:
+                                        // a vertical corre contínua na altura toda e PARECE mais pesada que a
+                                        // horizontal no mesmo tom; este meio-termo iguala a percepção (owner 2026-07-18)
 
 // ── fuso America/Sao_Paulo ──
 const _hm = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false })
