@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Users, Smartphone, Boxes, Gauge, FileText, CreditCard, Building } from "lucide-react"
+import { LayoutDashboard, Users, Smartphone, Boxes, Gauge, FileText, CreditCard, Building, Sparkles } from "lucide-react"
 
 const TABS = [
   { seg: "",          label: "Visão geral",      icon: LayoutDashboard },
@@ -12,6 +12,7 @@ const TABS = [
   { seg: "canais",    label: "Canais",           icon: Smartphone },
   { seg: "modulos",   label: "Módulos",          icon: Boxes },
   { seg: "limites",   label: "Limites",          icon: Gauge },
+  { seg: "ia",        label: "IA",               icon: Sparkles },
   { seg: "atividade", label: "Atividade",        icon: FileText },
 ] as const
 

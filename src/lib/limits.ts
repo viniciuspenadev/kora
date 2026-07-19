@@ -22,7 +22,7 @@ export type { LimitResource, LimitInfo } from "@/lib/limits-shared"
 
 const ALL_RESOURCES: LimitResource[] = [
   "users", "whatsapp_official", "whatsapp_qr", "messages_per_month",
-  "conversations_per_month", "broadcasts_per_month", "storage_mb", "contacts",
+  "conversations_per_month", "broadcasts_per_month", "storage_mb", "contacts", "automations",
 ]
 
 /** Parse SEGURO do jsonb `plans.limits`: só aceita number≥0 ou null; ignora lixo. */
@@ -165,6 +165,16 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
 
     case "broadcasts_per_month":
       return 0
+
+    case "automations": {
+      // Fluxos do Kora Studio que existem (rascunho + publicado); arquivados não contam.
+      const { count } = await supabaseAdmin
+        .from("studio_flows")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId)
+        .neq("status", "archived")
+      return count ?? 0
+    }
   }
 }
 
@@ -205,7 +215,7 @@ export async function listAllLimits(tenantId: string): Promise<LimitInfo[]> {
   const resources: LimitResource[] = [
     "users", "whatsapp_official", "whatsapp_qr", "contacts",
     "conversations_per_month", "messages_per_month",
-    "broadcasts_per_month", "storage_mb",
+    "broadcasts_per_month", "storage_mb", "automations",
   ]
   return Promise.all(resources.map((r) => checkLimit(tenantId, r)))
 }

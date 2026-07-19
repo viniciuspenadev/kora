@@ -7,6 +7,7 @@ import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { handleAgendaReply } from "@/lib/agenda/interceptor"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
+import { transcribeStoredAudio } from "@/lib/ai/transcribe"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
@@ -606,10 +607,23 @@ async function handleMessageUpsert(
     if (!agendaHandled && !kwMatched) {
       const convId = conversation.id
       const convReopened = (conversation as { _reopened?: boolean })._reopened ?? false
+      // Voice note 1:1 sem texto = candidata a transcrição (gate do módulo `ai` +
+      // fail-safe moram no helper). Grupo fica fora (custo sem uso — IA não atende grupo).
+      const audioPath = contentType === "audio" && !isGroup && typeof metadata.storage_path === "string"
+        ? metadata.storage_path : null
+      const audioMime  = finalMimeType
+      const audioMsgId = msg.key.id ?? null
       after(async () => {
         try {
-          // IA só processa texto. Mídia pura → pula direto pras automações fixas.
-          if (content) {
+          // IA processa texto — ou voice note TRANSCRITA (pro motor, vira texto).
+          let aiText = content
+          if (!aiText && audioPath) {
+            aiText = (await transcribeStoredAudio({
+              tenantId, conversationId: convId, whatsappMsgId: audioMsgId, storagePath: audioPath, mimeType: audioMime,
+            })) ?? ""
+          }
+          // Mídia sem texto (e sem transcrição) → pula direto pras automações fixas.
+          if (aiText) {
             // Debounce: aguarda janela curta; se chegou msg mais nova do contato,
             // aborta — o turno disparado por ela verá o histórico completo.
             const baseline = await latestInboundAt(convId)
@@ -619,9 +633,14 @@ async function handleMessageUpsert(
             const ai = await routeAutomationTurn({
               tenantId,
               conversationId: convId,
-              incomingText:   content,
+              incomingText:   aiText,
               instance,
               signals:        { isReopened: convReopened },
+              // "digitando…" honesto (só pós-gates). Baileys não tem typing por
+              // messageId — usa presence pelo telefone da conversa.
+              onWillRespond: async () => {
+                try { await getProvider(instance).sendPresence(jidToPhone(jid), "typing") } catch { /* cosmético */ }
+              },
             })
             // IA atuou (respondeu/roteou) OU a conversa já foi encaminhada pro
             // time humano → não dispara automações fixas por cima do handoff.

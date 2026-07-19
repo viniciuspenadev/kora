@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import bcrypt from "bcryptjs"
 import { checkLimit } from "@/lib/limits"
 import { validatePassword } from "@/lib/password"
-import { provisionAgentAgenda } from "@/lib/actions/agenda"
+import { provisionAgentAgenda } from "@/lib/agenda/provision"
 
 export async function acceptInvite(
   token: string,

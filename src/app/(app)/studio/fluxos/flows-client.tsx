@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu"
+import { toast } from "sonner"
 import { createFlow, createFlowWithAI, deleteFlow, cloneFlow, setFlowActive } from "@/lib/actions/studio/flows"
 import type { StudioFlowSummary, FlowTrigger } from "@/types/studio"
 
@@ -174,6 +175,7 @@ export function FlowsClient({ flows, activations }: { flows: StudioFlowSummary[]
     startTransition(async () => {
       const r = await createFlow(purpose === "marketing" ? "Novo fluxo de marketing" : "Novo fluxo", purpose)
       if (r.id) router.push(`/studio/fluxos/${r.id}`)
+      else if (r.error) toast.error(r.error)   // ex.: limite de automações atingido
     })
   }
   function handleAI() {
@@ -188,7 +190,7 @@ export function FlowsClient({ flows, activations }: { flows: StudioFlowSummary[]
     setBusyId(id); startTransition(async () => { await deleteFlow(id); setBusyId(null); setDeleting(null); router.refresh() })
   }
   function handleClone(id: string) {
-    setBusyId(id); startTransition(async () => { await cloneFlow(id); setBusyId(null); router.refresh() })
+    setBusyId(id); startTransition(async () => { const r = await cloneFlow(id); if (r?.error) toast.error(r.error); setBusyId(null); router.refresh() })
   }
   function handleToggleActive(id: string, active: boolean) {
     setBusyId(id); startTransition(async () => { await setFlowActive(id, active); setBusyId(null); router.refresh() })

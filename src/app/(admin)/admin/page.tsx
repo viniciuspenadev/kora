@@ -85,6 +85,7 @@ export default async function AdminDashboardPage() {
     msgsPerDayRaw,
     msgs7dRaw,
     aiRuns30dRaw,
+    studioRuns30dRaw,
     activeTenants24hRaw,
     activeTenants30dRaw,
     instanceStatusGroups,
@@ -119,9 +120,15 @@ export default async function AdminDashboardPage() {
       .select("created_at")
       .gte("created_at", day7),
 
-    // IA: tokens + custo (últimos 30 dias) — agregado client-side
+    // IA: tokens + custo (últimos 30 dias) — agregado client-side.
+    // Dois motores, duas tabelas: ai_runs (v1, sunset) + studio_runs (v2 =
+    // turnos do Studio, router, dossiê, aiParse, transcrição). Soma dos dois.
     supabaseAdmin
       .from("ai_runs")
+      .select("input_tokens, output_tokens, cost_usd")
+      .gte("created_at", day30),
+    supabaseAdmin
+      .from("studio_runs")
       .select("input_tokens, output_tokens, cost_usd")
       .gte("created_at", day30),
 
@@ -193,10 +200,10 @@ export default async function AdminDashboardPage() {
   }
   const spark7d = Array.from(sparkBucket.values())
 
-  // IA: tokens + custo (30d) — custo direto da Kora (margem)
+  // IA: tokens + custo (30d) — custo direto da Kora (margem). v1 + v2.
   let aiTokens = 0
   let aiCostUsd = 0
-  for (const r of aiRuns30dRaw.data ?? []) {
+  for (const r of [...(aiRuns30dRaw.data ?? []), ...(studioRuns30dRaw.data ?? [])]) {
     aiTokens  += (r.input_tokens ?? 0) + (r.output_tokens ?? 0)
     aiCostUsd += Number(r.cost_usd ?? 0)
   }

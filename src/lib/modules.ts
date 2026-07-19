@@ -33,8 +33,8 @@ export type ModuleSlug =
   | "crm"
   // Lead gen
   | "widget_site" | "keyword_triggers" | "welcome_message" | "business_hours"
-  // AI
-  | "ai_atendente" | "ai_suggestions" | "ai_knowledge_base" | "ai_studio"
+  // AI / Kora Studio
+  | "ai_atendente" | "ai_suggestions" | "ai_knowledge_base" | "ai_studio" | "ai"
   // Engagement
   | "broadcasts" | "sequences" | "chatbot_builder"
   // Multi-channel
@@ -52,6 +52,7 @@ export interface ModuleCatalogEntry {
   is_core:     boolean
   default_on:  boolean
   position:    number
+  parent_slug: string | null
 }
 
 export interface TenantModuleStatus {
@@ -64,6 +65,7 @@ export interface TenantModuleStatus {
   reason:      string | null
   expires_at:  string | null
   set_at:      string | null
+  parent_slug: string | null   // hierarquia pai/filho (null = raiz)
 }
 
 // ── API ────────────────────────────────────────────────────────
@@ -139,7 +141,7 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
   const [{ data: catalog }, { data: tm }] = await Promise.all([
     supabaseAdmin
       .from("module_catalog")
-      .select("slug, category, name, description, is_core, default_on, position")
+      .select("slug, category, name, description, is_core, default_on, position, parent_slug")
       .order("position", { ascending: true }),
     supabaseAdmin
       .from("tenant_modules")
@@ -174,6 +176,7 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
       reason:      override?.reason ?? null,
       expires_at:  override?.expires_at ?? null,
       set_at:      override?.set_at ?? null,
+      parent_slug: c.parent_slug ?? null,
     }
   })
 }

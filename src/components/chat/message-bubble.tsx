@@ -7,7 +7,7 @@ import {
   Image as ImageIcon, Download, X, ImageOff, Reply, Smartphone,
   Megaphone, ExternalLink, Eye, EyeOff, Trash2, Pencil, MessageSquareWarning,
   User as UserIcon, ListChecks, Square, Sparkles, ArrowRight, Smile, Forward,
-  DollarSign, Bell, Camera, Share2,
+  DollarSign, Bell, Camera, Share2, Captions, ChevronDown,
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
@@ -534,7 +534,14 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
           }
 
           if (message.content_type === "audio") {
-            return <AudioPlayer src={mediaSrc} incoming={isIncoming} mimeType={message.media_mime_type} />
+            const transcript = typeof message.metadata?.transcript === "string"
+              ? (message.metadata.transcript as string).trim() : ""
+            return (
+              <>
+                <AudioPlayer src={mediaSrc} incoming={isIncoming} mimeType={message.media_mime_type} />
+                {transcript && <AudioTranscript text={transcript} incoming={isIncoming} />}
+              </>
+            )
           }
 
           if (message.content_type === "video") {
@@ -906,6 +913,36 @@ function getMediaIcon(type: string) {
     case "location": return <MapPin className="size-3.5" />
     default:         return null
   }
+}
+
+// ── Transcrição de voice note (IA) — disclosure dentro do próprio bubble ──
+// Fechada por default pra não competir com o player; expande inline (o bubble
+// cresce, layout do chat intacto). Só renderiza quando metadata.transcript
+// existe (tenant com módulo `ai` + transcrição bem-sucedida).
+function AudioTranscript({ text, incoming }: { text: string; incoming: boolean }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex items-center gap-1 text-[11px] font-medium transition-colors ${
+          incoming ? "text-slate-400 hover:text-slate-600" : "text-slate-500 hover:text-slate-700"
+        }`}
+      >
+        <Captions className="size-3" />
+        {open ? "Ocultar transcrição" : "Ver transcrição"}
+        <ChevronDown className={`size-3 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <p className={`mt-1 max-w-[280px] sm:max-w-xs text-xs leading-relaxed rounded-lg px-2.5 py-2 whitespace-pre-wrap ${
+          incoming ? "bg-slate-50 text-slate-600" : "bg-white/60 text-slate-700"
+        }`}>
+          {text}
+        </p>
+      )}
+    </div>
+  )
 }
 
 // ── Carrossel (Cloud API): tira de cards com scroll horizontal ──────────

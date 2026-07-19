@@ -13,6 +13,7 @@ export type LimitResource =
   | "broadcasts_per_month"
   | "storage_mb"
   | "contacts"
+  | "automations"
 
 export interface LimitInfo {
   resource:  LimitResource
@@ -32,6 +33,7 @@ export const LIMIT_META: Record<LimitResource, { label: string; unit: string; de
   broadcasts_per_month:    { label: "Broadcasts/mês",        unit: "envio",    description: "Disparos em massa (em desenvolvimento)" },
   storage_mb:              { label: "Storage",               unit: "MB",       description: "Mídia armazenada no bucket" },
   contacts:                { label: "Contatos",              unit: "",         description: "Total de contatos cadastrados" },
+  automations:             { label: "Automações",            unit: "fluxo",    description: "Fluxos do Kora Studio (não-arquivados)" },
 }
 
 export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number | null>> = {
@@ -44,6 +46,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     broadcasts_per_month:    0,
     storage_mb:              500,
     contacts:                500,
+    automations:             15,
   },
   starter: {
     users:                   5,
@@ -54,6 +57,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     broadcasts_per_month:    10,
     storage_mb:              2_000,
     contacts:                5_000,
+    automations:             40,
   },
   pro: {
     users:                   15,
@@ -64,6 +68,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     broadcasts_per_month:    100,
     storage_mb:              20_000,
     contacts:                50_000,
+    automations:             150,
   },
   enterprise: {
     users:                   null,
@@ -74,6 +79,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     broadcasts_per_month:    null,
     storage_mb:              null,
     contacts:                null,
+    automations:             null,
   },
 }
 

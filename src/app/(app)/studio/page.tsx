@@ -15,11 +15,12 @@ export default async function StudioPage() {
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const [{ data: config }, { count: flowCount }, { count: knowledgeCount }] = await Promise.all([
+  const [{ data: config }, { count: flowCount }, { count: knowledgeCount }, hasAi] = await Promise.all([
     supabaseAdmin.from("studio_config").select("*").eq("tenant_id", tenantId).maybeSingle(),
     supabaseAdmin.from("studio_flows").select("id", { count: "exact", head: true })
       .eq("tenant_id", tenantId).neq("status", "archived"),
     supabaseAdmin.from("studio_knowledge").select("id", { count: "exact", head: true }).eq("tenant_id", tenantId),
+    hasModule(tenantId, "ai"),   // add-on IA: sem ele, Persona/Conhecimento aparecem cadeados (vitrine)
   ])
 
   return (
@@ -34,6 +35,7 @@ export default async function StudioPage() {
         config={(config as StudioConfig | null) ?? null}
         flowCount={flowCount ?? 0}
         knowledgeCount={knowledgeCount ?? 0}
+        hasAi={hasAi}
       />
     </PageShell>
   )

@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useMemo } from "react"
 import {
-  Boxes, MessageSquare, Users, Workflow, Globe, Bot, Megaphone, Plug,
+  Boxes, MessageSquare, Workflow, Bot, Megaphone, Plug,
   Settings as SettingsIcon, CreditCard, Lock, Sparkles, Clock, CheckCircle2,
   AlertCircle, Loader2, X,
 } from "lucide-react"
@@ -18,18 +18,21 @@ interface Props {
 
 // ── Visual config por categoria ─────────────────────────────────
 
+// Taxonomia reorganizada (docs/modules-reorg-design.md) — cada categoria responde
+// a UMA pergunta. `deprecated` NÃO entra no ORDER de propósito → fantasmas somem da tela.
 const CATEGORIES: Record<string, { label: string; icon: typeof Boxes; color: string; bg: string }> = {
-  core:         { label: "Core",          icon: Lock,         color: "text-slate-700",   bg: "bg-slate-50"   },
-  commercial:   { label: "Comercial",     icon: Workflow,     color: "text-blue-700",    bg: "bg-blue-50"    },
-  leadgen:      { label: "Lead gen",      icon: Globe,        color: "text-cyan-700",    bg: "bg-cyan-50"    },
-  ai:           { label: "Inteligência",  icon: Bot,          color: "text-violet-700",  bg: "bg-violet-50"  },
-  engagement:   { label: "Engajamento",   icon: Megaphone,    color: "text-pink-700",    bg: "bg-pink-50"    },
-  multichannel: { label: "Multi-canal",   icon: Plug,         color: "text-emerald-700", bg: "bg-emerald-50" },
-  operational:  { label: "Operacional",   icon: SettingsIcon, color: "text-amber-700",   bg: "bg-amber-50"   },
-  billing:      { label: "Cobrança",      icon: CreditCard,   color: "text-rose-700",    bg: "bg-rose-50"    },
+  core:         { label: "Essenciais",     icon: Lock,         color: "text-slate-700",   bg: "bg-slate-50"    },
+  atendimento:  { label: "Atendimento",    icon: MessageSquare, color: "text-emerald-700", bg: "bg-emerald-50" },
+  crm:          { label: "CRM · Vendas",   icon: Workflow,     color: "text-blue-700",    bg: "bg-blue-50"     },
+  agenda:       { label: "Agenda",         icon: Clock,        color: "text-primary-700", bg: "bg-primary-50"  },
+  studio:       { label: "Kora Studio & IA", icon: Bot,        color: "text-violet-700",  bg: "bg-violet-50"   },
+  campanhas:    { label: "Campanhas",      icon: Megaphone,    color: "text-pink-700",    bg: "bg-pink-50"     },
+  multichannel: { label: "Multi-canal",    icon: Plug,         color: "text-cyan-700",    bg: "bg-cyan-50"     },
+  operational:  { label: "Operacional",    icon: SettingsIcon, color: "text-amber-700",   bg: "bg-amber-50"    },
+  billing:      { label: "Cobrança",       icon: CreditCard,   color: "text-rose-700",    bg: "bg-rose-50"     },
 }
 
-const CATEGORY_ORDER = ["core", "commercial", "leadgen", "ai", "engagement", "multichannel", "operational", "billing"]
+const CATEGORY_ORDER = ["core", "atendimento", "crm", "agenda", "studio", "campanhas", "multichannel", "operational", "billing"]
 
 // ── Componente principal ────────────────────────────────────────
 
@@ -38,18 +41,21 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
   const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string } | null>(null)
   const [editing, setEditing] = useState<TenantModuleStatus | null>(null)
 
+  // Fantasmas (categoria 'deprecated') não aparecem nem contam.
+  const visible = useMemo(() => modules.filter((m) => m.category !== "deprecated"), [modules])
+
   // Agrupar por categoria
   const grouped = useMemo(() => {
     const g: Record<string, TenantModuleStatus[]> = {}
-    for (const m of modules) {
+    for (const m of visible) {
       if (!g[m.category]) g[m.category] = []
       g[m.category].push(m)
     }
     return g
-  }, [modules])
+  }, [visible])
 
-  const enabledCount = modules.filter((m) => m.enabled).length
-  const totalCount   = modules.length
+  const enabledCount = visible.filter((m) => m.enabled).length
+  const totalCount   = visible.length
 
   function flash(kind: "ok" | "error", text: string) {
     setFeedback({ kind, text })
@@ -118,16 +124,35 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
             }
           >
             <div className="space-y-1.5">
-              {items.map((m) => (
-                <ModuleRow
-                  key={m.slug}
-                  module={m}
-                  tenantId={tenantId}
-                  onChange={(partial) => patchLocal(m.slug, partial)}
-                  onFlash={flash}
-                  onEditDetails={() => setEditing(m)}
-                />
-              ))}
+              {/* Módulos-pai no topo; filhos (parent_slug) indentados sob o pai. */}
+              {items.filter((m) => !m.parent_slug).map((root) => {
+                const kids = items.filter((c) => c.parent_slug === root.slug)
+                return (
+                  <div key={root.slug} className="space-y-1.5">
+                    <ModuleRow
+                      module={root}
+                      tenantId={tenantId}
+                      onChange={(partial) => patchLocal(root.slug, partial)}
+                      onFlash={flash}
+                      onEditDetails={() => setEditing(root)}
+                    />
+                    {kids.length > 0 && (
+                      <div className="ml-4 pl-4 border-l-2 border-slate-200 space-y-1.5">
+                        {kids.map((k) => (
+                          <ModuleRow
+                            key={k.slug}
+                            module={k}
+                            tenantId={tenantId}
+                            onChange={(partial) => patchLocal(k.slug, partial)}
+                            onFlash={flash}
+                            onEditDetails={() => setEditing(k)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </SectionCard>
         )

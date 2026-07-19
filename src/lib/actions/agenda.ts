@@ -43,6 +43,14 @@ export type ShareLevel = ShareLevelSrc
 
 const ROUTE = "/agenda"
 
+/** Filtra um patch pra SÓ as chaves permitidas (defined) — barra mass-assignment
+ *  (tenant_id/id/role viajando no spread). `Partial<>` some em runtime. */
+function pickDefined<T extends object, K extends keyof T>(patch: T, keys: readonly K[]): Partial<Pick<T, K>> {
+  const out: Partial<Pick<T, K>> = {}
+  for (const k of keys) if (k in patch && patch[k] !== undefined) out[k] = patch[k]
+  return out
+}
+
 export interface ResourceRow {
   id: string; tenant_id: string; name: string; kind: string | null
   capacity: number; working_hours: WorkingHoursDay[]; slot_minutes: number
@@ -215,8 +223,14 @@ export async function updateResource(id: string, patch: Partial<{
   if ("assigned_agent_id" in patch && !(await assertAgentInTenant(s.tenantId, patch.assigned_agent_id))) {
     return { error: "Atendente inválido" }
   }
+  // Allow-list explícita: `Partial<>` some em runtime — sem isso o cliente poderia
+  // spread `tenant_id`/`id` e mover o recurso pro tenant de outro (auditoria M2).
+  const fields = pickDefined(patch, [
+    "name", "kind", "capacity", "working_hours", "slot_minutes", "timezone",
+    "assigned_agent_id", "min_lead_minutes", "max_horizon_days", "active",
+  ])
   const { error } = await supabaseAdmin.from("tenant_resources")
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update({ ...fields, updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
   if (error) return { error: error.message }
   revalidatePath(ROUTE)
@@ -262,8 +276,13 @@ export async function updateService(id: string, patch: Partial<{
   reminder_policy: Record<string, unknown>; active: boolean
 }>): Promise<{ error?: string }> {
   const s = await adminScope()
+  // Allow-list explícita (mesma razão do updateResource — auditoria M2).
+  const fields = pickDefined(patch, [
+    "name", "duration_minutes", "buffer_before_minutes", "buffer_after_minutes",
+    "resource_ids", "price", "reminder_policy", "active",
+  ])
   const { error } = await supabaseAdmin.from("tenant_services")
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update({ ...fields, updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
   if (error) return { error: error.message }
   revalidatePath(ROUTE)
@@ -485,7 +504,18 @@ export async function resizeAppointment(id: string, durationMinutes: number): Pr
   if (gErr || !appt) return { error: gErr ?? "Agendamento não encontrado" }
   const prevMin = Math.round((new Date(appt.ends_at).getTime() - new Date(appt.starts_at).getTime()) / 60_000)
   if (prevMin === dur) return {}
-  const end = new Date(new Date(appt.starts_at).getTime() + dur * 60_000)
+  const start = new Date(appt.starts_at)
+  const end = new Date(start.getTime() + dur * 60_000)
+  // Não estica por cima de bloqueio (folga/feriado) — o EXCLUDE não cobre blackout;
+  // o moveAppointment já checa, o resize não checava (auditoria B2).
+  if (dur > prevMin) {
+    const { count: blocked } = await supabaseAdmin.from("tenant_blackouts")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", s.tenantId)
+      .or(`resource_id.eq.${appt.resource_id},resource_id.is.null`)
+      .lt("starts_at", end.toISOString()).gt("ends_at", start.toISOString())
+    if (blocked && blocked > 0) return { error: "Não dá pra esticar por cima de um bloqueio (folga/feriado)" }
+  }
   const { error } = await supabaseAdmin.from("appointments")
     .update({ ends_at: end.toISOString(), updated_at: new Date().toISOString() })
     .eq("tenant_id", s.tenantId).eq("id", id)
@@ -526,8 +556,13 @@ export async function updateAppointmentService(id: string, serviceId: string | n
   return {}
 }
 
+const APPT_STATUSES = ["scheduled", "confirmed", "done", "no_show", "canceled"] as const
+
 export async function setAppointmentStatus(id: string, status: "scheduled" | "confirmed" | "done" | "no_show" | "canceled"): Promise<{ error?: string }> {
   const s = await agendaScope()
+  // A união TS some em runtime — valida contra o set permitido (sem CHECK no banco,
+  // um cliente gravaria status arbitrário; auditoria B1).
+  if (!(APPT_STATUSES as readonly string[]).includes(status)) return { error: "Status inválido" }
   const { appt, error: gErr } = await gateAppointment(s, id)
   if (gErr || !appt) return { error: gErr ?? "Agendamento não encontrado" }
   const { error } = await supabaseAdmin.from("appointments")
@@ -818,29 +853,9 @@ export async function setResourceEveryoneLevel(resourceId: string, level: ShareL
   return {}
 }
 
-// ── Auto-provisão: agenda pessoal de cada agente novo ────────
-// Padrão: nome = nome do usuário · seg–sex 07–20 · capacidade 1 · horizonte 60 ·
-// a equipe vê "Restrita" (livre/ocupado). Idempotente; só roda com o módulo agenda
-// ligado; best-effort (não derruba o cadastro). NÃO faz backfill (só agentes novos).
-const DEFAULT_AGENDA_HOURS: WorkingHoursDay[] = [1, 2, 3, 4, 5].map((day) => ({ day, intervals: [["07:00", "20:00"]] as [string, string][] }))
-
-export async function provisionAgentAgenda(tenantId: string, userId: string): Promise<void> {
-  try {
-    if (!(await hasModule(tenantId, "agenda"))) return
-    const { data: existing } = await supabaseAdmin.from("tenant_resources")
-      .select("id").eq("tenant_id", tenantId).eq("assigned_agent_id", userId).maybeSingle()
-    if (existing) return   // já tem agenda
-    const { data: profile } = await supabaseAdmin.from("profiles").select("full_name").eq("id", userId).maybeSingle()
-    await supabaseAdmin.from("tenant_resources").insert({
-      tenant_id: tenantId, name: profile?.full_name?.trim() || "Minha agenda", kind: null, capacity: 1,
-      working_hours: DEFAULT_AGENDA_HOURS, slot_minutes: 30, timezone: "America/Sao_Paulo",
-      assigned_agent_id: userId, min_lead_minutes: 0, max_horizon_days: 60,
-      share_everyone_level: "free_busy", active: true,
-    })
-  } catch (err) {
-    console.error("[provisionAgentAgenda]", err)
-  }
-}
+// Auto-provisão da agenda pessoal (provisionAgentAgenda) MOVIDA pra módulo
+// server-only [src/lib/agenda/provision.ts] — não pode ser export de "use server"
+// (viraria endpoint com tenantId/userId controlados pelo cliente; auditoria M1).
 
 // ── Visão POR-PESSOA (pro Sheet de Equipe): "quais agendas esta pessoa acessa" ──
 export interface MemberAgendaAccess { resource_id: string; name: string; level: ShareLevel | null }

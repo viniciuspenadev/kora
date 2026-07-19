@@ -2,7 +2,7 @@
 
 import {
   Users, Server, QrCode, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact,
-  Infinity as InfinityIcon, AlertCircle, CheckCircle2, Mail,
+  Infinity as InfinityIcon, AlertCircle, CheckCircle2, Mail, Sparkles, Captions, Workflow,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { LIMIT_META, type LimitInfo, type LimitResource } from "@/lib/limits-shared"
@@ -11,6 +11,8 @@ interface Props {
   limits:     LimitInfo[]
   tenantName: string
   tenantPlan: string
+  /** Uso de IA (30d) em UNIDADES — custo é assunto interno da plataforma. */
+  aiUsage?:   { replies: number; transcriptions: number; support: number }
 }
 
 const PLAN_LABELS: Record<string, string> = {
@@ -33,6 +35,7 @@ const RESOURCE_ICONS: Record<LimitResource, typeof Users> = {
   messages_per_month:   MessageCircle,
   broadcasts_per_month: Megaphone,
   storage_mb:           Database,
+  automations:          Brain,
 }
 
 function formatNum(n: number, unit: string): string {
@@ -41,10 +44,11 @@ function formatNum(n: number, unit: string): string {
   return `${n.toLocaleString("pt-BR")}${unit ? ` ${unit}` : ""}`
 }
 
-export function UsageClient({ limits, tenantName, tenantPlan }: Props) {
+export function UsageClient({ limits, tenantName, tenantPlan, aiUsage }: Props) {
   const overLimit  = limits.filter((l) => !l.ok)
   const nearLimit  = limits.filter((l) => l.ok && l.max && l.used / l.max >= 0.8)
   const healthy    = limits.filter((l) => l.ok && (!l.max || l.used / l.max < 0.8))
+  const hasAi      = !!aiUsage && (aiUsage.replies > 0 || aiUsage.transcriptions > 0 || aiUsage.support > 0)
 
   return (
     <div className="space-y-6">
@@ -122,6 +126,37 @@ export function UsageClient({ limits, tenantName, tenantPlan }: Props) {
         >
           <div className="space-y-2">
             {nearLimit.map((l) => <UsageRow key={l.resource} limit={l} />)}
+          </div>
+        </SectionCard>
+      )}
+
+      {/* IA — atividade dos últimos 30 dias (unidades) */}
+      {hasAi && aiUsage && (
+        <SectionCard
+          title={
+            <span className="flex items-center gap-2">
+              <Sparkles className="size-3.5 text-violet-600" />
+              Inteligência Artificial — últimos 30 dias
+            </span>
+          }
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[
+              { icon: MessageCircle, label: "Respostas da IA", value: aiUsage.replies, hint: "mensagens que a IA conduziu" },
+              { icon: Captions,      label: "Áudios transcritos", value: aiUsage.transcriptions, hint: "voice notes entendidas pela IA" },
+              { icon: Workflow,      label: "Operações de apoio", value: aiUsage.support, hint: "roteio de intenção, dossiês, agenda" },
+            ].map((s) => (
+              <div key={s.label} className="flex items-center gap-3 p-3 rounded-lg border border-slate-100 bg-white">
+                <div className="size-8 rounded-lg bg-violet-50 flex items-center justify-center text-violet-600">
+                  <s.icon className="size-3.5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-900 tabular-nums">{s.value.toLocaleString("pt-BR")}</p>
+                  <p className="text-[11px] text-slate-500">{s.label}</p>
+                  <p className="text-[10px] text-slate-400">{s.hint}</p>
+                </div>
+              </div>
+            ))}
           </div>
         </SectionCard>
       )}

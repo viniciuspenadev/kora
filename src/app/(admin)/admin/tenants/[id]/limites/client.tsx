@@ -34,6 +34,7 @@ const RESOURCE_ICONS: Record<LimitResource, typeof Users> = {
   messages_per_month:   MessageCircle,
   broadcasts_per_month: Megaphone,
   storage_mb:           Database,
+  automations:          Brain,
 }
 
 const RESOURCE_TONE: Record<LimitResource, { ok: string; warning: string; danger: string }> = {
@@ -45,6 +46,7 @@ const RESOURCE_TONE: Record<LimitResource, { ok: string; warning: string; danger
   messages_per_month:   { ok: "text-cyan-700",    warning: "text-amber-700",  danger: "text-red-700" },
   broadcasts_per_month: { ok: "text-pink-700",    warning: "text-amber-700",  danger: "text-red-700" },
   storage_mb:           { ok: "text-amber-700",   warning: "text-amber-700",  danger: "text-red-700" },
+  automations:          { ok: "text-violet-700",  warning: "text-amber-700",  danger: "text-red-700" },
 }
 
 function formatNum(n: number, unit: string): string {
