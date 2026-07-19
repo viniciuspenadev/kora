@@ -332,13 +332,13 @@ export async function moveAppointment(
 
   // Troca de agenda (opcional): destino tem que ser recurso ATIVO do tenant (anti-IDOR).
   const targetResource = opts?.resourceId ?? appt.resource_id
-  let blocksOverlap: boolean | undefined
-  if (targetResource !== appt.resource_id) {
-    const { data: res } = await supabaseAdmin.from("tenant_resources")
-      .select("id, capacity").eq("tenant_id", tenantId).eq("id", targetResource).eq("active", true).maybeSingle()
-    if (!res) return { error: "Agenda de destino não encontrada" }
-    blocksOverlap = res.capacity === 1
-  }
+  const changingResource = targetResource !== appt.resource_id
+  let resQ = supabaseAdmin.from("tenant_resources")
+    .select("capacity").eq("tenant_id", tenantId).eq("id", targetResource)
+  if (changingResource) resQ = resQ.eq("active", true)
+  const { data: targetRes } = await resQ.maybeSingle()
+  if (changingResource && !targetRes) return { error: "Agenda de destino não encontrada" }
+  const blocksOverlap: boolean | undefined = changingResource ? targetRes?.capacity === 1 : undefined
 
   // Bloqueios sempre barram (recurso de destino OU tenant inteiro).
   const { count: blocked } = await supabaseAdmin.from("tenant_blackouts")
@@ -347,6 +347,18 @@ export async function moveAppointment(
     .or(`resource_id.eq.${targetResource},resource_id.is.null`)
     .lt("starts_at", end.toISOString()).gt("ends_at", start.toISOString())
   if (blocked && blocked > 0) return { error: "Esse horário está bloqueado (folga/feriado)" }
+
+  // Capacidade N: o EXCLUDE só protege capacidade 1 → reconta manualmente (exclui a
+  // si mesmo). Sem isto, mover pra dentro de um recurso de grupo estoura o limite
+  // (mesma checagem do bookAppointment; auditoria B2).
+  if ((targetRes?.capacity ?? 0) > 1) {
+    const { count: taken } = await supabaseAdmin.from("appointments")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", tenantId).eq("resource_id", targetResource).neq("id", appointmentId)
+      .in("status", ACTIVE_STATUSES as unknown as string[])
+      .lt("starts_at", end.toISOString()).gt("ends_at", start.toISOString())
+    if ((taken ?? 0) + 1 > (targetRes?.capacity ?? 0)) return { error: "Esse horário está lotado" }
+  }
 
   const { error } = await supabaseAdmin.from("appointments")
     .update({

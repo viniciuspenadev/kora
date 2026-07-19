@@ -6,7 +6,7 @@
 // no futuro = trocar só este arquivo.
 
 import "server-only"
-import OpenAI from "openai"
+import OpenAI, { toFile } from "openai"
 
 let _client: OpenAI | null = null
 
@@ -77,6 +77,41 @@ export async function runChat(params: RunChatParams): Promise<ChatResult> {
     usage: {
       inputTokens:  resp.usage?.prompt_tokens ?? 0,
       outputTokens: resp.usage?.completion_tokens ?? 0,
+    },
+  }
+}
+
+// Modelo de transcrição num lugar só (trocável; whisper-1 é o fallback clássico).
+export const TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
+
+export interface TranscriptionResult {
+  text: string
+  /** Tokens reais da API (validado: a resposta traz usage com audio_tokens). */
+  usage: { audioTokens: number; outputTokens: number }
+}
+
+/**
+ * Transcreve um áudio (voice note do chat). Lança em erro de rede/API — o
+ * caller (transcribeStoredAudio) captura e degrada pra null, nunca derruba
+ * o webhook.
+ */
+export async function runTranscription(args: {
+  buffer:    Buffer
+  fileName:  string
+  /** ISO-639-1 (default "pt" — clientes BR; acerto de acurácia do modelo). */
+  language?: string
+}): Promise<TranscriptionResult> {
+  const file = await toFile(args.buffer, args.fileName)
+  const r = await client().audio.transcriptions.create(
+    { model: TRANSCRIBE_MODEL, file, language: args.language ?? "pt" },
+    { timeout: 60_000 },
+  )
+  const u = (r as unknown as { usage?: { input_tokens?: number; output_tokens?: number; input_token_details?: { audio_tokens?: number } } }).usage
+  return {
+    text: r.text?.trim() ?? "",
+    usage: {
+      audioTokens:  u?.input_token_details?.audio_tokens ?? u?.input_tokens ?? 0,
+      outputTokens: u?.output_tokens ?? 0,
     },
   }
 }

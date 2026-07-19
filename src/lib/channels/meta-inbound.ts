@@ -6,6 +6,7 @@ import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/ai/context"
+import { transcribeStoredAudio } from "@/lib/ai/transcribe"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
@@ -592,20 +593,33 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
       // id da opção interativa tocada (botão/lista/template button) — já extraído no
       // parse do inbound. Roteia a escolha no motor do Studio de forma determinística.
       const interactiveId = (ext.metadata as { interactive_id?: string })?.interactive_id ?? null
+      // Voice note sem texto = candidata a transcrição (gate `ai` + fail-safe no helper).
+      const audioPath = contentType === "audio" && typeof metadata.storage_path === "string"
+        ? metadata.storage_path : null
+      const audioMime = mediaMime
       after(async () => {
         try {
-          if (text) {
+          let aiText = text
+          if (!aiText && audioPath) {
+            aiText = (await transcribeStoredAudio({
+              tenantId: instance.tenant_id, conversationId: convId, whatsappMsgId: msgId, storagePath: audioPath, mimeType: audioMime,
+            })) ?? ""
+          }
+          if (aiText) {
             const baseline = await latestInboundAt(convId)
             await new Promise((r) => setTimeout(r, AI_DEBOUNCE_MS))
             if ((await latestInboundAt(convId)) !== baseline) return
             // "digitando…" honesto: enviado pelo onWillRespond, SÓ depois dos gates da IA
             // (humano ativo / IA off / já roteada) — nunca fantasma.
             const ai = await routeAutomationTurn({
-              tenantId: instance.tenant_id, conversationId: convId, incomingText: text, instance,
+              tenantId: instance.tenant_id, conversationId: convId, incomingText: aiText, instance,
               // Tap numa opção interativa nativa (botão/lista) → o id que ENVIAMOS volta
               // aqui. Threadado pro motor do Studio casar a escolha de forma determinística
               // (mesmo padrão do interceptor da Agenda acima). Baileys não tem → undefined.
               optionId: interactiveId ?? undefined,
+              // Threading pro respiro humanizado (outbound.humanPace): o typing da
+              // Meta é preso ao id do inbound e re-acionado a cada mensagem do bot.
+              inboundMessageId: msgId,
               signals: { isReopened: convReopened },
               onWillRespond: async () => { try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ } },
             })

@@ -17,6 +17,7 @@ import { normalizeLifecycle } from "@/lib/lifecycle-stage"
 import { sendBotText, sendBotMedia, sendBotTemplate } from "../outbound"
 import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
+import { hasModule } from "@/lib/modules"
 import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
 import { logConversationEvent } from "@/lib/atendimento/events"
@@ -503,9 +504,12 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         const cfg = node.config as unknown as AiRouterNodeConfig
         const routes = cfg.routes ?? []
         if (routes.length === 0) { currentId = edgeTarget(graph, node.id); break }
+        // Add-on IA off: sem classificação por LLM → segue o fallback/"else" (determinístico), nunca trava.
+        if (!(await hasModule(ctx.tenantId, "ai"))) { currentId = edgeTarget(graph, node.id, cfg.fallback || "else"); break }
         const chosen = await classifyIntent({
           model: input.model, routes, instruction: cfg.instruction ?? null,
           history: input.history, incomingText: input.incomingText,
+          meter: { tenantId: ctx.tenantId, conversationId: ctx.conversationId, kind: "router", flowId: activeFlow.id, nodeId: node.id },
         })
         // rota escolhida → fallback configurado → saída "else" (ou aresta default).
         currentId = edgeTarget(graph, node.id, (chosen || cfg.fallback) || "else")
@@ -513,6 +517,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "ai_agent": {
         const cfg = node.config as unknown as AiAgentNodeConfig
+        // Add-on IA desligado (módulo `ai`): Studio roda, mas o Agente não pensa →
+        // pula o nó e segue o fluxo determinístico (aresta default). Nunca trava.
+        if (!(await hasModule(ctx.tenantId, "ai"))) { currentId = edgeTarget(graph, node.id); break }
         // Marca que a IA ESTEVE no fluxo (independente de coletar campo) → um nó Transfer
         // determinístico mais à frente sabe que pode soltar o dossiê e rotular "pela IA".
         // Sem nenhum Agente IA = fluxo puro → o Transfer só encaminha.
@@ -549,7 +556,12 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           return { status: "error", departmentId: null, error: turn.error, agent: turn }
         }
         if (turn.status === "step_done") {
-          if (turn.fields) for (const [k, v] of Object.entries(turn.fields)) variables[k] = v
+          // fields vêm do LLM (induzível pelo cliente): nunca deixam sobrescrever
+          // estado interno do motor (__*, menu:*, schedule:*).
+          if (turn.fields) for (const [k, v] of Object.entries(turn.fields)) {
+            if (k.startsWith("__") || k.startsWith("menu:") || k.startsWith("schedule:")) continue
+            variables[k] = v
+          }
           currentId = edgeTarget(graph, node.id, turn.outcome ?? undefined)
           break   // continua avançando o grafo NESTE turno
         }

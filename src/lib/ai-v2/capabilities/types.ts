@@ -71,6 +71,12 @@ export interface ExecCtx {
   dryRun?:              boolean
   /** Saídas capturadas no dry-run (pra UI do simulador exibir). */
   captured?:            { kind: "text" | "media"; content: string }[]
+  /** whatsapp_msg_id da mensagem INBOUND que disparou o turno (Meta: o typing
+   *  indicator é preso a ele). Ausente no resume por cron/site. */
+  inboundMsgId?:        string | null
+  /** Orçamento de respiro humanizado do turno (outbound.humanPace) — objeto
+   *  mutável compartilhado: sequências de nós respiram até o teto, não além. */
+  pace?:                { usedMs: number }
 }
 
 /**

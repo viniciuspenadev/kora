@@ -54,10 +54,14 @@ export function compileStudioPrompt(args: {
     lines.push(``, `# SUA MISSÃO NESTE MOMENTO`, instruction.trim())
   }
 
-  // Dados disponíveis (variáveis do fluxo, ex: resposta de uma API).
-  if (variables && Object.keys(variables).length > 0) {
+  // Dados disponíveis (variáveis do fluxo, ex: resposta de uma API). Estado
+  // interno do motor (__*, menu:*, schedule:*) fica de fora: não é dado pro
+  // modelo, é ruído — e o stash do schedule é grande (slots serializados).
+  const visible = Object.entries(variables ?? {}).filter(([k]) =>
+    !k.startsWith("__") && !k.startsWith("menu:") && !k.startsWith("schedule:"))
+  if (visible.length > 0) {
     lines.push(``, `# DADOS DISPONÍVEIS (use pra responder; não invente além disto)`)
-    for (const [k, v] of Object.entries(variables)) {
+    for (const [k, v] of visible) {
       const val = typeof v === "string" ? v : JSON.stringify(v)
       lines.push(`- ${k}: ${val.slice(0, 1500)}`)
     }
@@ -67,9 +71,6 @@ export function compileStudioPrompt(args: {
   if (flowControl) {
     lines.push(``, `# VOCÊ FAZ PARTE DE UM FLUXO`)
     lines.push(`Esta é uma ETAPA de um fluxo maior. Cumpra o objetivo acima conversando o necessário. Quando concluir, chame a ferramenta finish_step para DEVOLVER o controle ao fluxo (os próximos passos continuam). Não fique preso — assim que tiver o que precisa, conclua.`)
-    if (flowControl.collect.length > 0) {
-      lines.push(`Antes de concluir, capture estes dados e devolva em "fields": ${flowControl.collect.map((c) => `${c.key}${c.description ? ` (${c.description})` : ""}`).join(", ")}.`)
-    }
     if (flowControl.outcomes.length > 0) {
       lines.push(`Ao concluir, escolha uma saída (outcome): ${flowControl.outcomes.map((o) => `${o.id}${o.label ? ` = ${o.label}` : ""}`).join(" · ")}.`)
     }
@@ -90,10 +91,14 @@ export function compileStudioPrompt(args: {
 
   // Dados a descobrir — o `collect` do cliente. É "vá descobrindo ao longo da
   // conversa", NÃO "colete e conclua" (esse acoplamento fazia a IA encerrar cedo).
+  // ÚNICA menção ao collect no prompt (era 3× — pressão tripla fazia a IA cobrar
+  // dado já na saudação). A instrução do "fields" mora aqui junto, não no bloco
+  // do fluxo.
   const cf = (collectFields ?? []).filter((c) => c.key?.trim())
   if (cf.length > 0) {
-    lines.push(``, `# DADOS A DESCOBRIR (pergunte naturalmente ao longo da conversa; não precisa todos de uma vez, e isto NÃO é motivo pra encerrar o passo)`)
+    lines.push(``, `# DADOS A DESCOBRIR (UM de cada vez, no momento certo da conversa; NUNCA na primeira mensagem, NUNCA junto de uma resposta a dúvida, e isto NÃO é motivo pra encerrar o passo)`)
     for (const c of cf) lines.push(`- ${c.key.trim()}${c.description?.trim() ? `: ${c.description.trim()}` : ""}`)
+    if (flowControl) lines.push(`Ao concluir o passo (finish_step), devolva o que tiver descoberto no campo "fields".`)
   }
 
   // Studio Engine §Pilar 1 — o "COMO AGIR" de cada ferramenta vem dos PLAYBOOKS das
@@ -102,6 +107,19 @@ export function compileStudioPrompt(args: {
   if (playbooks?.trim()) {
     lines.push(``, `# SUAS FERRAMENTAS E COMO USÁ-LAS`, playbooks.trim())
   }
+
+  // Formato de turno — REGRA DURA (craft do sistema, não do cliente). Fica no
+  // FIM do prompt de propósito: precisa vencer a tentação que a missão + coleta
+  // induzem ("responder E cobrar dado na mesma bolha"). Evidência: caso Dr Renan
+  // (Blue) — persona pedia "sem textão, 1 pergunta por vez" como texto solto e o
+  // modelo ignorou; regra dura no fim é o mesmo mecanismo do deferral, que obedece.
+  lines.push(``, `# ESTILO DE CHAT (regra dura — vale pra TODA mensagem sua, com prioridade sobre a missão)`,
+    `Isto é uma conversa de chat em tempo real, não um e-mail.`,
+    `- Mensagem CURTA: no máximo ~2 frases, mais a pergunta quando houver.`,
+    `- No MÁXIMO UMA pergunta por mensagem. NUNCA duas perguntas na mesma mensagem.`,
+    `- NUNCA misture: se o cliente perguntou algo, RESPONDA e entregue a vez — não emende pedido de dado na mesma mensagem. Dado se pede noutro turno, quando a bola voltar pra você.`,
+    `- Não despeje tudo o que sabe: responda SÓ o que foi perguntado. Detalhe a mais, só se o cliente pedir.`,
+    `- Sem bullets, sem títulos, sem numeração: fale como uma pessoa digitando no chat.`)
 
   // Contrato de fronteira — REGRA DURA, deliberadamente a ÚLTIMA seção (primazia
   // sobre persona/missão). Diz o que este nó NÃO executa mas existe à frente, e

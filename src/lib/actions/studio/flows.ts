@@ -11,7 +11,16 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { isWindowOpen } from "@/lib/channels/policy"
+import { checkLimit } from "@/lib/limits"
+import { hasModule } from "@/lib/modules"
 import { runStudioTurn } from "@/lib/ai-v2/run"
+
+/** Cota de automações (fluxos): bloqueia a CRIAÇÃO acima do teto; os existentes seguem. */
+async function assertAutomationQuota(tenantId: string): Promise<string | null> {
+  const info = await checkLimit(tenantId, "automations")
+  if (!info.ok) return `Limite de automações atingido (${info.used}/${info.max}). Fale com o administrador da plataforma pra aumentar.`
+  return null
+}
 import type { FlowGraph, FlowTrigger } from "@/lib/ai-v2/flow/types"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
 
@@ -52,6 +61,8 @@ export async function createFlow(
   opts?: { seedCampaign?: boolean },
 ): Promise<{ id?: string; error?: string }> {
   const session = await requireAdmin()
+  const quota = await assertAutomationQuota(session.user.tenantId)
+  if (quota) return { error: quota }
   const clean = name.trim() || (purpose === "marketing" ? "Novo fluxo de marketing" : "Novo fluxo")
   // Semente: só o nó start. Campanha-por-fluxo nasce com o nó TEMPLATE de acionamento
   // já ligado (start → template) — a regra "campanha começa por template" vira ponto de partida.
@@ -96,6 +107,9 @@ export async function createFlow(
  */
 export async function createFlowWithAI(description: string): Promise<{ id?: string; error?: string }> {
   const session = await requireAdmin()
+  if (!(await hasModule(session.user.tenantId, "ai"))) return { error: "A geração de fluxo por IA não está habilitada nesta conta." }
+  const quota = await assertAutomationQuota(session.user.tenantId)
+  if (quota) return { error: quota }
   const { generateFlow } = await import("@/lib/ai-v2/copilot")
   const gen = await generateFlow(session.user.tenantId, description)
   if (gen.error || !gen.flow) return { error: gen.error ?? "Falha ao gerar o fluxo." }
@@ -203,6 +217,8 @@ export async function setFlowActive(id: string, active: boolean): Promise<{ erro
  */
 export async function cloneFlow(id: string): Promise<{ id?: string; error?: string }> {
   const session = await requireAdmin()
+  const quota = await assertAutomationQuota(session.user.tenantId)
+  if (quota) return { error: quota }
   const { data: src, error: readErr } = await supabaseAdmin
     .from("studio_flows")
     .select("name, trigger, graph")

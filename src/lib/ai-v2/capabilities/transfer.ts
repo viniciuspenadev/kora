@@ -235,7 +235,10 @@ export const transferCapability = defineCapability<TransferArgs>({
     // da IA (byAI). Determinístico não chama LLM (nem inventa dossiê).
     const collected = args.collected.length > 0
       ? args.collected
-      : (args.byAI ? await extractDossier(ctx.model ?? "gpt-4.1", ctx.history ?? [], args.collectHint) : [])
+      : (args.byAI
+          ? await extractDossier(ctx.model ?? "gpt-4.1", ctx.history ?? [], args.collectHint,
+              { tenantId: ctx.tenantId, conversationId: ctx.conversationId, kind: "dossier" })
+          : [])
 
     // 1) Nota interna (equipe vê; cliente não) — card "Dossiê da IA" (byAI) ou pílula.
     const collectedLine = collected.length > 0

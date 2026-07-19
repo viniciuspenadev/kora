@@ -21,6 +21,7 @@ import { parseScheduleRequest, localDayRange, inPeriod } from "./ai-schedule"
 import type { ExecCtx } from "../capabilities/types"
 import type { ScheduleNodeConfig } from "./types"
 import { resolveAgendaTargets, availabilityPool, pickFreeInPool, bookAppointment } from "@/lib/agenda/booking"
+import { hasModule } from "@/lib/modules"
 
 const TZ = "America/Sao_Paulo"
 
@@ -480,10 +481,18 @@ async function startNormal(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Res
 
 /** Entrada do nó. aiParse: a IA interpreta serviço+dia → motor oferta/marca. */
 export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Promise<ScheduleResume> {
-  if (!cfg.aiParse) return startNormal(ctx, cfg)
+  // Furo #1 (auditoria 2026-07-18): o nó só oferta/marca se o módulo `agenda` está
+  // ligado. Sem ele, degrada pelo ramo "sem_horario" (o fluxo segue, nunca trava).
+  if (!(await hasModule(ctx.tenantId, "agenda"))) {
+    return { kind: "branch", branch: "sem_horario", responded: false }
+  }
+  // aiParse ("Entender com IA") precisa do add-on `ai`; sem ele, cai no modo
+  // determinístico (botões) — o agendamento continua funcionando, só sem interpretar texto.
+  if (!cfg.aiParse || !(await hasModule(ctx.tenantId, "ai"))) return startNormal(ctx, cfg)
 
   const services = ctx.services ?? []
-  const parsed = await parseScheduleRequest(ctx.model ?? "gpt-4.1", ctx.history ?? [], services.map((s) => s.name))
+  const parsed = await parseScheduleRequest(ctx.model ?? "gpt-4.1", ctx.history ?? [], services.map((s) => s.name),
+    { tenantId: ctx.tenantId, conversationId: ctx.conversationId, kind: "ai_parse" })
   const matchedId = matchService(parsed.service, services) ?? (services.length === 1 ? services[0].id : null)
 
   if (matchedId) {

@@ -9,6 +9,7 @@
 import "server-only"
 import type OpenAI from "openai"
 import { runChat } from "@/lib/ai/openai"
+import { runChatMetered, type UsageMeter } from "@/lib/ai/usage"
 
 const DOSSIER_TOOL: OpenAI.Chat.Completions.ChatCompletionTool = {
   type: "function",
@@ -55,6 +56,8 @@ export async function extractDossier(
   model: string,
   history: { role: "user" | "assistant"; content: string }[],
   hintFields?: string[],
+  /** Ledger de uso (kind "dossier"). Presente = gasto medido em studio_runs. */
+  meter?: UsageMeter,
 ): Promise<DossierItem[]> {
   try {
     if (history.length < 2) return []   // conversa trivial → nada a extrair
@@ -68,17 +71,18 @@ export async function extractDossier(
       ? `${SYSTEM}\nPRIORIZE estes campos quando o cliente os tiver informado: ${hints.join(", ")}. Além deles, capture outros fatos relevantes.`
       : SYSTEM
 
-    const res = await runChat({
+    const params = {
       model,
       messages: [
-        { role: "system", content: system },
-        { role: "user", content: transcript },
+        { role: "system" as const, content: system },
+        { role: "user" as const, content: transcript },
       ],
       tools:      [DOSSIER_TOOL],
-      toolChoice: { type: "function", function: { name: "report_dossier" } },
+      toolChoice: { type: "function" as const, function: { name: "report_dossier" } },
       temperature: 0,
       timeoutMs:   15_000,
-    })
+    }
+    const res = meter ? await runChatMetered(meter, params) : await runChat(params)
 
     const call = res.toolCalls.find((t) => t.name === "report_dossier")
     if (!call) return []

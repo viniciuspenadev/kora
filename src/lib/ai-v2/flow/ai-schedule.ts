@@ -11,6 +11,7 @@
 import "server-only"
 import type OpenAI from "openai"
 import { runChat } from "@/lib/ai/openai"
+import { runChatMetered, type UsageMeter } from "@/lib/ai/usage"
 
 const TZ = "America/Sao_Paulo"
 
@@ -43,6 +44,8 @@ export async function parseScheduleRequest(
   model: string,
   history: { role: "user" | "assistant"; content: string }[],
   services: string[],
+  /** Ledger de uso (kind "ai_parse"). Presente = gasto medido em studio_runs. */
+  meter?: UsageMeter,
 ): Promise<ParsedRequest> {
   const empty: ParsedRequest = { service: "", fromDate: "", period: "" }
   try {
@@ -58,14 +61,15 @@ export async function parseScheduleRequest(
       `Hoje é ${hoje} (${hojeIso}); use pra resolver datas ("sexta" = a próxima sexta-feira; "amanhã" = ${hojeIso}+1). ` +
       (services.length ? `Serviços disponíveis (escolha o nome EXATO desta lista, ou deixe vazio se o cliente não deixou claro): ${services.join(", ")}. ` : "") +
       `Preencha SOMENTE o que o cliente disse; deixe vazio o resto. NÃO invente.`
-    const res = await runChat({
+    const params = {
       model,
-      messages: [{ role: "system", content: system }, { role: "user", content: transcript }],
+      messages: [{ role: "system" as const, content: system }, { role: "user" as const, content: transcript }],
       tools:       [PARSE_TOOL],
-      toolChoice:  { type: "function", function: { name: "parse_scheduling_request" } },
+      toolChoice:  { type: "function" as const, function: { name: "parse_scheduling_request" } },
       temperature: 0,
       timeoutMs:   15_000,
-    })
+    }
+    const res = meter ? await runChatMetered(meter, params) : await runChat(params)
     const call = res.toolCalls.find((t) => t.name === "parse_scheduling_request")
     if (!call) return empty
     const p = JSON.parse(call.arguments || "{}") as Record<string, unknown>

@@ -22,7 +22,8 @@ import { markRecipientReplied, isOptOut } from "@/lib/campaigns/engine"
 import { openerTemplateNode, templateNodeByName, nodeAfter } from "@/lib/campaigns/flow-opener"
 import type { PersonaInput } from "./prompt"
 import type { ExecCtx } from "./capabilities"
-import { gatherPromptContext, type ConvRow, type ContactRow } from "@/lib/ai/context"
+import { gatherPromptContext, latestInboundAt, type ConvRow, type ContactRow } from "@/lib/ai/context"
+import { costOfTokens } from "@/lib/ai/pricing"
 import { hasModule } from "@/lib/modules"
 import type { RunAITurnInput, RunAITurnResult } from "@/lib/ai/run"
 
@@ -30,15 +31,8 @@ import type { RunAITurnInput, RunAITurnResult } from "@/lib/ai/run"
 // cross-réplica (advisory lock no DB) entra quando escalarmos — doc §5.
 const activeTurns = new Set<string>()
 
-// Preço aproximado (USD por 1M tokens) — best-effort pra studio_runs.
-const PRICE_PER_M: Record<string, { in: number; out: number }> = {
-  "gpt-4.1": { in: 2.0, out: 8.0 },
-}
-function estimateCost(model: string, inTok: number, outTok: number): number | null {
-  const p = PRICE_PER_M[model]
-  if (!p) return null
-  return (inTok / 1_000_000) * p.in + (outTok / 1_000_000) * p.out
-}
+// Preço mora na tabela ÚNICA da plataforma (src/lib/ai/pricing.ts).
+const estimateCost = costOfTokens
 
 /**
  * opts.dryRun     = modo SIMULADOR: persiste tudo (sandbox), mas não transmite ao WhatsApp.
@@ -52,7 +46,29 @@ export async function runStudioTurn(input: RunAITurnInput, opts?: StudioTurnOpts
   if (activeTurns.has(conversationId)) return { status: "skipped", reason: "locked" }
   activeTurns.add(conversationId)
   try {
-    return await doStudioRun(input, opts)
+    const baseline = await latestInboundAt(conversationId)
+    let result = await doStudioRun(input, opts)
+    // Rajada perdida: mensagem do cliente que chegou DURANTE o turno bateu no
+    // lock e foi descartada (skipped: locked) — ficaria sem resposta até ele
+    // mandar outra. Uma rodada extra (bounded a 1), vendo o histórico completo.
+    // Os respiros (humanPace) alargam a janela dessa colisão — este é o contrapeso.
+    if (!opts?.dryRun && !opts?.forceFlowId
+        && (result.status === "responded" || result.status === "no_action")) {
+      const latest = await latestInboundAt(conversationId)
+      if (latest && latest !== baseline) {
+        const { data: lastMsg } = await supabaseAdmin
+          .from("chat_messages")
+          .select("content")
+          .eq("conversation_id", conversationId)
+          .eq("sender_type", "contact")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        const text = lastMsg?.content?.trim()
+        if (text) result = await doStudioRun({ ...input, incomingText: text, optionId: undefined }, opts)
+      }
+    }
+    return result
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.error("[studio/run] turno falhou:", msg)
@@ -75,7 +91,9 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   // Disparo manual (forceFlowId) ignora o master switch — é uma ação explícita do
   // atendente/campanha, não a auto-resposta a um inbound que o ai_enabled governa.
   if (!config) return { status: "skipped", reason: "disabled" }
-  if (!config.ai_enabled && !opts?.forceFlowId) return { status: "skipped", reason: "disabled" }
+  // Controle do Studio = MÓDULO (god mode). O antigo toggle do tenant (config.ai_enabled)
+  // foi removido — quem liga/desliga é a plataforma. Disparo manual (forceFlowId) ignora.
+  if (!(await hasModule(tenantId, "ai_studio")) && !opts?.forceFlowId) return { status: "skipped", reason: "disabled" }
 
   // ── 2) Conversa + contato + guardas ────────────────────────
   const { data: convData } = await supabaseAdmin
@@ -161,6 +179,8 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     history, model: config.ai_model,
     dryRun:   opts?.dryRun,
     captured: opts?.dryRun ? [] : undefined,
+    inboundMsgId: input.inboundMessageId ?? null,
+    pace: { usedMs: 0 },
   }
   const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText, optionId }
 
@@ -279,6 +299,9 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   }
 
   // ── 7) Agente (fallback — modo "IA conduz") ────────────────
+  // Add-on IA desligado: sem agente conversacional. O Studio só atua por FLUXOS
+  // determinísticos; sem fluxo casado, não auto-responde (atendimento fica com o humano).
+  if (!(await hasModule(tenantId, "ai"))) return { status: "no_action" }
   const turn = await runAgentTurn(flowInput)
   await persistStudioRun({
     tenantId, conversationId, model: config.ai_model, startedAt,
@@ -360,7 +383,8 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
 
   const { data: config } = await supabaseAdmin
     .from("studio_config").select("*").eq("tenant_id", tenantId).maybeSingle()
-  if (!config || !config.ai_enabled) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "disabled" } }
+  if (!config) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "disabled" } }
+  // (o gate de módulo ai_studio vem logo abaixo — o toggle do tenant foi removido)
   // God mode tirou o módulo? Não acorda o fluxo (mesma regra do dispatcher na entrada).
   if (!(await hasModule(tenantId, "ai_studio"))) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "module_disabled" } }
 
@@ -415,7 +439,7 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
     name: config.ai_name, tone: config.ai_tone, language: config.ai_language,
     identityText: config.identity_text, communicationStyle: config.communication_style_text, antiPatterns: config.anti_patterns_text,
   }
-  const ctx: ExecCtx = { tenantId, conversationId, contact, instance, departments, tags, stages, services, resources, channel: convData.channel, conversationMetadata: convMeta, history, model: config.ai_model }
+  const ctx: ExecCtx = { tenantId, conversationId, contact, instance, departments, tags, stages, services, resources, channel: convData.channel, conversationMetadata: convMeta, history, model: config.ai_model, pace: { usedMs: 0 } }
   const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText: "" }
 
   // Acorda: status active + limpa resume_at; runFlow continua do nó já pré-avançado.

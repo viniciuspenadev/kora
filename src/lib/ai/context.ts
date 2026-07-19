@@ -169,7 +169,7 @@ export async function gatherPromptContext(
   if (wants.has("conversation_history")) {
     const { data } = await supabaseAdmin
       .from("chat_messages")
-      .select("sender_type, content, content_type, is_private_note, created_at")
+      .select("sender_type, content, content_type, is_private_note, created_at, metadata")
       .eq("conversation_id", conv.id)
       .eq("is_private_note", false)
       .in("sender_type", ["contact", "agent", "bot"])
@@ -178,11 +178,18 @@ export async function gatherPromptContext(
 
     history = (data ?? [])
       .reverse()
-      .filter((m) => m.content && m.content.trim().length > 0)
-      .map((m) => ({
-        role:    m.sender_type === "contact" ? ("user" as const) : ("assistant" as const),
-        content: m.content as string,
-      }))
+      .map((m) => {
+        // Voice note transcrita entra no histórico como texto (senão o áudio
+        // some da memória do agente — content de áudio é vazio).
+        const transcript = ((m.metadata as Record<string, unknown> | null)?.transcript ?? null) as string | null
+        const text = m.content?.trim() ? (m.content as string)
+          : transcript?.trim() ? `[áudio transcrito] ${transcript.trim()}` : ""
+        return {
+          role:    m.sender_type === "contact" ? ("user" as const) : ("assistant" as const),
+          content: text,
+        }
+      })
+      .filter((m) => m.content.length > 0)
   }
 
   // Anúncio de origem (CTWA) — só se pedido e se a conversa veio de anúncio.

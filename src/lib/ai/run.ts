@@ -12,6 +12,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { sendChannelText } from "@/lib/channels/reply"
 import { runChat, type ChatToolCall } from "@/lib/ai/openai"
+import { costOfTokens } from "@/lib/ai/pricing"
 import { evaluateTriggers } from "@/lib/ai/evaluate-triggers"
 import { compilePrompt, type CompileInput } from "@/lib/ai/compile-prompt"
 import {
@@ -51,6 +52,10 @@ export interface RunAITurnInput {
    *  (texto/número digitado) → undefined → comportamento clássico intacto. */
   optionId?:      string
   instance:       InstanceForProvider
+  /** whatsapp_msg_id da mensagem inbound que disparou o turno. Usado pelo v2 pro
+   *  "digitando…" da Meta (typing_indicator é preso ao id do inbound). Opcional
+   *  e ignorado pelo v1. */
+  inboundMessageId?: string
   /** Chamado SÓ depois que todos os gates de elegibilidade passaram (a IA vai mesmo
    *  processar) — pra enviar o "digitando…" de forma honesta, não-fantasma. */
   onWillRespond?: () => void | Promise<void>
@@ -69,16 +74,8 @@ export type RunAITurnResult =
 // conversa (a real proteção contra rajada é o debounce em F5).
 const activeTurns = new Set<string>()
 
-// Preço aproximado gpt-4.1 (USD por 1M tokens) — best-effort pra ai_runs.
-const PRICE_PER_M: Record<string, { in: number; out: number }> = {
-  "gpt-4.1": { in: 2.0, out: 8.0 },
-}
-
-function estimateCost(model: string, inTok: number, outTok: number): number | null {
-  const p = PRICE_PER_M[model]
-  if (!p) return null
-  return (inTok / 1_000_000) * p.in + (outTok / 1_000_000) * p.out
-}
+// Preço mora na tabela ÚNICA da plataforma (src/lib/ai/pricing.ts).
+const estimateCost = costOfTokens
 
 export async function runAITurn(input: RunAITurnInput): Promise<RunAITurnResult> {
   const { conversationId } = input

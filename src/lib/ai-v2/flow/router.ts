@@ -8,6 +8,7 @@
 
 import "server-only"
 import { runChat } from "@/lib/ai/openai"
+import { runChatMetered, type UsageMeter } from "@/lib/ai/usage"
 
 export interface Route { id: string; label: string; description?: string }
 
@@ -17,8 +18,10 @@ export async function classifyIntent(args: {
   instruction:  string | null
   history:      { role: "user" | "assistant"; content: string }[]
   incomingText: string
+  /** Ledger de uso (kind "router"). Presente = gasto medido em studio_runs. */
+  meter?:       UsageMeter
 }): Promise<string> {
-  const { model, routes, instruction, history, incomingText } = args
+  const { model, routes, instruction, history, incomingText, meter } = args
   if (routes.length === 0) return ""
 
   const list = routes
@@ -42,7 +45,9 @@ export async function classifyIntent(args: {
   ]
 
   try {
-    const res = await runChat({ model, messages, temperature: 0 })
+    const res = meter
+      ? await runChatMetered(meter, { model, messages, temperature: 0 })
+      : await runChat({ model, messages, temperature: 0 })
     const out = (res.text ?? "").toLowerCase().trim()
     if (!out || out === "none") return ""
     // match tolerante: id exato → id contido → label contido.

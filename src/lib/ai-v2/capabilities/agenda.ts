@@ -8,6 +8,7 @@
 import { defineCapability } from "./registry"
 import type { ExecCtx } from "./types"
 import { supabaseAdmin } from "@/lib/supabase"
+import { hasModule } from "@/lib/modules"
 import {
   availabilitySlots, bookAppointment, moveAppointment,
   resolveAgendaTargets, availabilityPool, pickFreeInPool, type AgendaTargetSpec,
@@ -299,6 +300,11 @@ export const scheduleAppointmentCapability = defineCapability<ScheduleArgs>({
     return { slot: typeof p.slot === "string" ? p.slot.trim() : "" }
   },
   execute: async (ctx, args) => {
+    // Furo #1 (auditoria 2026-07-18): marcar exige o módulo `agenda` ligado — a
+    // automação não pode furar a licença que o app/extensão já respeitam.
+    if (!(await hasModule(ctx.tenantId, "agenda"))) {
+      return { ok: false, toolMessage: "Agendamento indisponível nesta conta agora — encaminhe pro time pra marcar." }
+    }
     // Resolve a LETRA contra a oferta guardada (serviço/pool já vêm dela → fonte única).
     const offer = readOffer(ctx)
     if (!offer) return { ok: false, toolMessage: `Não há lista de horários ativa (ou expirou). Chame check_availability primeiro e ofereça os horários. ${SLOT_HINT}` }
@@ -358,6 +364,9 @@ export const rescheduleAppointmentCapability = defineCapability<RescheduleArgs>(
     return { new_slot: typeof p.new_slot === "string" ? p.new_slot.trim() : "" }
   },
   execute: async (ctx, args) => {
+    if (!(await hasModule(ctx.tenantId, "agenda"))) {
+      return { ok: false, toolMessage: "Remarcação indisponível nesta conta agora — encaminhe pro time." }
+    }
     const offer = readOffer(ctx)
     if (!offer) return { ok: false, toolMessage: `Não há lista de horários ativa (ou expirou). Chame check_availability primeiro. ${SLOT_HINT}` }
     const letter = parseSlotLetter(args.new_slot)
