@@ -163,6 +163,11 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let sentMessage = false
   let stepOutcome: string | null = null
   let stepFields:  Record<string, unknown> | null = null
+  // 🔒 Trava "UMA pergunta por mensagem": 2+ "?" → pede reescrita UMA vez por
+  // turno (a regra de estilo sozinha o modelo às vezes fura; na reincidência
+  // envia mesmo assim — nunca deixa o cliente sem resposta).
+  let askedRewrite = false
+  const countQuestions = (t: string) => (t.match(/\?/g) ?? []).length
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -174,6 +179,12 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       // Sem tool: a IA respondeu em texto → envia e encerra.
       if (res.toolCalls.length === 0) {
         const t = res.text?.trim()
+        if (t && !askedRewrite && countQuestions(t) >= 2) {
+          askedRewrite = true
+          messages.push({ role: "assistant", content: t })
+          messages.push({ role: "system", content: "Sua resposta tem mais de UMA pergunta. Reescreva com no máximo UMA pergunta curta e responda apenas com o texto reescrito." })
+          continue
+        }
         if (t) { await sendBotText(ctx, t); status = "responded"; sentMessage = true }
         break
       }
@@ -215,6 +226,18 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
           status = "step_done"; terminal = true
           messages.push({ role: "tool", tool_call_id: tc.id, content: "Etapa concluída; controle devolvido ao fluxo." })
           continue
+        }
+
+        // 🔒 send_message com 2+ perguntas → pede reescrita (1x por turno).
+        if (tc.name === SEND_MESSAGE && !askedRewrite) {
+          const txt = typeof raw.text === "string" ? raw.text : ""
+          const q = countQuestions(txt)
+          if (q >= 2) {
+            askedRewrite = true
+            fedBack = true
+            messages.push({ role: "tool", tool_call_id: tc.id, content: `Essa mensagem tem ${q} perguntas — o chat aceita no MÁXIMO UMA. Reescreva mais curta, com uma pergunta só, e chame send_message de novo.` })
+            continue
+          }
         }
 
         const cap = getCapability(tc.name)

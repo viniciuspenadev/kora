@@ -116,7 +116,8 @@ export function compileStudioPrompt(args: {
   lines.push(``, `# ESTILO DE CHAT (regra dura — vale pra TODA mensagem sua, com prioridade sobre a missão)`,
     `Isto é uma conversa de chat em tempo real, não um e-mail.`,
     `- Mensagem CURTA: no máximo ~2 frases, mais a pergunta quando houver.`,
-    `- No MÁXIMO UMA pergunta por mensagem. NUNCA duas perguntas na mesma mensagem.`,
+    `- No MÁXIMO UMA pergunta por mensagem — cortesia devolvida ("e você?") também conta como pergunta. NUNCA duas perguntas na mesma mensagem.`,
+    `- Saudação pura ("oi", "boa noite", "tudo bem?"): responda com a saudação + UMA pergunta aberta (ex: "Como posso te ajudar?"). A sua missão começa SÓ depois que o cliente disser o que procura — não puxe assunto de negócio antes disso.`,
     `- NUNCA misture: se o cliente perguntou algo, RESPONDA e entregue a vez — não emende pedido de dado na mesma mensagem. Dado se pede noutro turno, quando a bola voltar pra você.`,
     `- Não despeje tudo o que sabe: responda SÓ o que foi perguntado. Detalhe a mais, só se o cliente pedir.`,
     `- Sem bullets, sem títulos, sem numeração: fale como uma pessoa digitando no chat.`)
