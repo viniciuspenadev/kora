@@ -8,6 +8,7 @@ import { lineSubtotal, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
 import { recordDealEvent } from "@/lib/crm/deals"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { QuotePdf, type QuotePdfData } from "@/lib/pdf/quote-pdf"
+import { normalizeRichDoc, isEmptyRichDoc, richDocToPlain, type RichDoc } from "@/lib/commercial/richdoc"
 
 // ═══════════════════════════════════════════════════════════════════
 // Commercial Core — F4: DOCUMENTOS (docs/commercial-core-design.md §7.1).
@@ -58,9 +59,15 @@ export interface QuoteItem {
   total_cents:      number      // contribuição da linha ao valor do negócio (billing/prazo aplicados)
 }
 export interface QuoteConditions {
-  payment_terms: string | null
-  notes:         string | null
+  // RichDoc (compositor novo) OU string (docs legados congelados — back-compat).
+  payment_terms: RichDoc | string | null
+  notes:         RichDoc | string | null
   valid_until:   string | null  // yyyy-mm-dd
+  contract:      RichDoc | string | null   // bloco de contrato (texto único, abaixo das observações)
+  // Condição ESTABELECIDA no negócio (Negociação → Pagamento/Parcelas) — estrutural,
+  // congelada no momento da geração. Distinta do `payment_terms` livre (narrativa/legal).
+  payment_method: string | null
+  installments:   number | null
 }
 export interface QuoteTotals { subtotal_cents: number; discount_cents: number; total_cents: number }
 
@@ -73,11 +80,27 @@ export interface QuoteSnapshot {
   totals:     QuoteTotals
 }
 
-/** Condições editáveis no modal de gerar cotação. */
+/** Condições editáveis (modal legado = string · compositor novo = RichDoc). */
 export interface DocumentConditionsInput {
-  paymentTerms?: string | null
-  notes?:        string | null
+  paymentTerms?: RichDoc | string | null
+  notes?:        RichDoc | string | null
   validUntil?:   string | null   // yyyy-mm-dd
+  contract?:     RichDoc | string | null
+}
+
+/** Normaliza um campo de condição pro snapshot: string→trim|null · RichDoc→limpo|null. */
+function condToStored(v: RichDoc | string | null | undefined): RichDoc | string | null {
+  if (v == null) return null
+  if (typeof v === "string") return v.trim() || null
+  const doc = normalizeRichDoc(v)
+  return isEmptyRichDoc(doc) ? null : doc
+}
+
+/** Achata um campo de condição pra TEXTO PURO (colunas de default string). */
+function condToPlainDefault(v: RichDoc | string | null | undefined): string | null {
+  if (v == null) return null
+  if (typeof v === "string") return v.trim() || null
+  return richDocToPlain(v).trim() || null
 }
 
 /** Linha da tabela commercial_documents pro client (código+valor derivados do snapshot). */
@@ -187,7 +210,7 @@ export async function buildQuoteSnapshot(
   tenantId: string, dealId: string, cond: DocumentConditionsInput,
 ): Promise<{ snapshot: QuoteSnapshot; contactId: string | null; unitId: string | null } | { error: string }> {
   const { data: d } = await supabaseAdmin.from("tenant_deals").select(`
-    id, name, assigned_to, contact_id, unit_id,
+    id, name, assigned_to, contact_id, unit_id, payment_method, installments,
     chat_contacts ( push_name, custom_name, phone_number )
   `).eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()
   if (!d) return { error: "Negócio não encontrado" }
@@ -242,9 +265,14 @@ export async function buildQuoteSnapshot(
     deal:   { id: dealId, name: (deal.name as string | null) ?? null, seller },
     items,
     conditions: {
-      payment_terms: cond.paymentTerms?.trim() || null,
-      notes:         cond.notes?.trim() || null,
+      payment_terms: condToStored(cond.paymentTerms),
+      notes:         condToStored(cond.notes),
       valid_until:   cond.validUntil || null,
+      contract:      condToStored(cond.contract),
+      // Congela a condição ESTABELECIDA no negócio (Negociação) no momento da
+      // geração — sobrevive mesmo se o vendedor mudar o método depois.
+      payment_method: (deal.payment_method as string | null) ?? null,
+      installments:   (deal.installments as number | null) ?? null,
     },
     totals: { subtotal_cents: subtotalCents, discount_cents: discountCents, total_cents: totalCents },
   }
@@ -276,6 +304,10 @@ async function snapshotToPdfData(snapshot: QuoteSnapshot, code: string, issuedAt
     })),
     totals: snapshot.totals,
     conditions: { payment_terms: snapshot.conditions.payment_terms, notes: snapshot.conditions.notes },
+    contract: snapshot.conditions.contract ?? null,   // ?? p/ snapshots legados sem o campo
+    // ?? p/ snapshots legados sem os campos (docs emitidos antes desta mudança).
+    paymentMethod: snapshot.conditions.payment_method ?? null,
+    installments:  snapshot.conditions.installments ?? null,
     contentHash,
   }
 }
@@ -284,6 +316,21 @@ async function renderQuoteBuffer(snapshot: QuoteSnapshot, code: string, issuedAt
   const data = await snapshotToPdfData(snapshot, code, issuedAt, contentHash)
   const buf = await renderToBuffer(createElement(QuotePdf, { data }) as Parameters<typeof renderToBuffer>[0])
   return buf as Buffer
+}
+
+/**
+ * Renderiza o PDF de PRÉVIA do estado atual do compositor (NÃO persiste, NÃO
+ * numera). Reusa buildQuoteSnapshot (que já escopa o deal por tenant_id). Código
+ * fictício "COT-PRÉVIA"; hash real do snapshot pro rodapé ficar coerente.
+ */
+export async function renderQuotePreviewBuffer(
+  tenantId: string, dealId: string, cond: DocumentConditionsInput,
+): Promise<{ buffer: Buffer } | { error: string }> {
+  const built = await buildQuoteSnapshot(tenantId, dealId, cond)
+  if ("error" in built) return { error: built.error }
+  const hash = snapshotHash(built.snapshot)
+  const buffer = await renderQuoteBuffer(built.snapshot, "COT-PRÉVIA", new Date().toISOString(), hash)
+  return { buffer }
 }
 
 // ── Linha do client ─────────────────────────────────────────────────
@@ -307,8 +354,9 @@ function mapDoc(r: RawDoc): DocumentRow {
 export interface CreateQuoteInput {
   dealId:       string
   validUntil?:  string | null
-  paymentTerms?: string | null
-  notes?:       string | null
+  paymentTerms?: RichDoc | string | null
+  notes?:       RichDoc | string | null
+  contract?:    RichDoc | string | null
   saveAsDefault?: boolean
 }
 
@@ -320,7 +368,7 @@ export interface CreateQuoteInput {
 export async function createQuote(
   tenantId: string, userId: string, input: CreateQuoteInput,
 ): Promise<{ id: string; code: string } | { error: string }> {
-  const cond: DocumentConditionsInput = { paymentTerms: input.paymentTerms ?? null, notes: input.notes ?? null, validUntil: input.validUntil ?? null }
+  const cond: DocumentConditionsInput = { paymentTerms: input.paymentTerms ?? null, notes: input.notes ?? null, validUntil: input.validUntil ?? null, contract: input.contract }
   const built = await buildQuoteSnapshot(tenantId, input.dealId, cond)
   if ("error" in built) return built
   const { snapshot, contactId, unitId } = built
@@ -370,8 +418,10 @@ export async function createQuote(
       : undefined
     await supabaseAdmin.from("tenant_document_settings").upsert({
       tenant_id: tenantId,
-      payment_terms: cond.paymentTerms?.trim() || null,
-      default_notes: cond.notes?.trim() || null,
+      // Defaults ficam em TEXTO PURO (colunas string); RichDoc é achatado (formatação
+      // no padrão é F2). Preserva o comportamento do modal legado.
+      payment_terms: condToPlainDefault(cond.paymentTerms),
+      default_notes: condToPlainDefault(cond.notes),
       ...(validityDays != null ? { validity_days: validityDays } : {}),
       updated_at: new Date().toISOString(),
     }, { onConflict: "tenant_id" })

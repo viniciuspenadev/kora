@@ -28,8 +28,9 @@ export function TabelasClient({ tables }: { tables: PriceTableSummary[] }) {
       </div>
 
       <p className="text-[11px] text-slate-400 leading-relaxed max-w-2xl">
-        <b className="text-slate-500">Como funciona:</b> cada tabela (Varejo, Atacado…) é uma grade viva de preço, custo e teto de desconto —
-        editou, salvou, valeu, com <b>cada mudança auditada</b> (quem, quando, de→para). A tabela <b>padrão</b> alimenta o catálogo;
+        <b className="text-slate-500">Como funciona:</b> cada tabela (Varejo, Atacado…) é uma grade viva de <b>preço</b> —
+        editou, salvou, valeu, com <b>cada mudança auditada</b> (quem, quando, de→para). <b>Custo e teto de desconto são do produto</b>
+        (valem em todas as tabelas) — defina na ficha do item, não aqui. A tabela <b>padrão</b> alimenta o catálogo;
         o cliente pode carregar outra tabela e os negócios dele herdam — ou você escolhe a tabela ao abrir o negócio.
         Nada se apaga: tabela fora de uso se <b>desativa</b> pelo interruptor (some dos seletores, histórico intacto) e reativa quando quiser.
       </p>

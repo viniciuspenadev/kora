@@ -304,8 +304,9 @@ export interface CatalogIdentityInput {
 
 /**
  * Edita a IDENTIDADE do item (nome/SKU/categoria/descrição/cobrança/attrs).
- * Dinheiro (preço/custo/teto) NÃO passa por aqui — mora na grade das tabelas
- * ([price-lists.ts] savePriceTableRows, auditado por tabela). Uma porta só.
+ * Dinheiro NÃO passa por aqui: PREÇO é por-tabela (grade da tabela → entries);
+ * CUSTO e TETO de desconto são ITEM-LEVEL (do produto, valem em todas as tabelas)
+ * e moram em `updateCatalogCommercial`. (savePriceTableRows está órfã — não usar.)
  */
 export async function updateCatalogIdentity(id: string, input: CatalogIdentityInput): Promise<{ ok: true } | { error: string }> {
   const gate = await requireManager()

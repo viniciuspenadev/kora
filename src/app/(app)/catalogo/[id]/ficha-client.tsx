@@ -361,13 +361,13 @@ function InfoTab({ item, isProduct, customFields, canManage }: { item: CatalogIt
                   ]} />
               </FormRow>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <FormRow label="Desconto máximo do vendedor" hint="Teto de desconto na negociação (0–100%)">
+                <FormRow label="Desconto máximo do vendedor" hint="Teto de desconto na negociação (0–100%) — do produto, vale em todas as tabelas">
                   <div className="relative">
                     <input value={maxDisc} onChange={(e) => setMaxDisc(e.target.value.replace(/[^\d]/g, "").slice(0, 3))} inputMode="numeric" className={`${INPUT} pr-8 tabular-nums`} />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">%</span>
                   </div>
                 </FormRow>
-                <FormRow label="Custo" hint="Custo não aparece pro cliente — serve pra margem">
+                <FormRow label="Custo" hint="Não aparece pro cliente — serve pra margem. Do produto, vale em todas as tabelas">
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">R$</span>
                     <input value={cost} onChange={(e) => setCost(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0,00" className={`${INPUT} pl-9 tabular-nums`} />

@@ -48,8 +48,9 @@ function buildCsp(opts: { turnstile?: boolean; meta?: boolean } = {}): string {
     `media-src 'self' blob: ${SUPABASE_HTTPS}`.trim(),
     // Supabase REST + Realtime + Storage; OpenAI direto não chamamos do client
     `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}${mC}`.trim(),
-    // iframe do widget Turnstile (/signup) ou do FB SDK (integração oficial); 'self' p/ preview de email no admin
-    `frame-src 'self'${cf}${mF}`,
+    // iframe do widget Turnstile (/signup) ou do FB SDK (integração oficial); 'self' p/
+    // preview de email no admin; blob: p/ a prévia do PDF da cotação (compositor).
+    `frame-src 'self' blob:${cf}${mF}`,
     // 'self' permite iframes da própria app (ex: preview de email em /admin/emails).
     // Mantém proteção anti-clickjacking de origens externas.
     "frame-ancestors 'self'",

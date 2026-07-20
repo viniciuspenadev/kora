@@ -108,7 +108,7 @@ export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick 
       <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5">
         <h2 className="text-sm font-bold text-slate-900">Cotações</h2>
         <span title={hasItems ? undefined : "Adicione produtos ou serviços primeiro"} className="ml-auto">
-          <button onClick={() => setGenMode({ kind: "new" })} disabled={!hasItems || pending}
+          <button onClick={() => router.push(`/negocios/${dealId}/cotacao/nova`)} disabled={!hasItems || pending}
             className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-40 disabled:cursor-not-allowed">
             <Plus className="size-3" /> Gerar cotação
           </button>

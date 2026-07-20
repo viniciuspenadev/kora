@@ -125,6 +125,7 @@ const NAV: NavItem[] = [
     children: [
       { href: "/configuracoes/atendimento",    label: "Atendimento",       icon: <Headset          className={subIcon} strokeWidth={1.75} /> },
       { href: "/negocios/funis",               label: "Config. Funis",     icon: <SlidersHorizontal className={subIcon} strokeWidth={1.75} />, module: "crm" },
+      { href: "/configuracoes/cotacao",        label: "Cotação e Contrato", icon: <FileText        className={subIcon} strokeWidth={1.75} />, module: "crm" },
       { href: "/configuracoes/motivos",        label: "Motivos de perda",  icon: <ClipboardList    className={subIcon} strokeWidth={1.75} />, module: "crm" },
       { href: "/configuracoes/tags",           label: "Tags",              icon: <TagIcon          className={subIcon} strokeWidth={1.75} /> },
       { href: "/configuracoes/cadastro",       label: "Campos do cadastro", icon: <IdCard       className={subIcon} strokeWidth={1.75} /> },

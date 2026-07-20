@@ -1537,14 +1537,32 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                         </div>
                       </div>
                     </td>
-                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-700">{it.unit && it.unit !== "un" ? formatQuantityWithUnit(it.quantity, it.unit) : fmtQty(it.quantity)}</td>
-                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-500">{brl(list)}{it.unit && it.unit !== "un" && <span className="text-[9px] text-slate-400">/{unitSpec(it.unit).symbol}</span>}</td>
+                    {/* Serviço com qtd 1 e unidade genérica → em branco (não confunde);
+                        produto ou qtd real → mostra. Mesma regra do PDF da cotação. */}
+                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-700">{
+                      it.type === "service" && (!it.unit || it.unit === "un") && it.quantity === 1
+                        ? <span className="text-slate-300">—</span>
+                        : it.unit && it.unit !== "un" ? formatQuantityWithUnit(it.quantity, it.unit) : fmtQty(it.quantity)
+                    }</td>
+                    <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-500">
+                      {brl(list)}
+                      {it.billing !== "one_time"
+                        ? <span className="text-[9px] text-slate-400">{BILLING_PT[it.billing].suffix}</span>
+                        : it.unit && it.unit !== "un" && <span className="text-[9px] text-slate-400">/{unitSpec(it.unit).symbol}</span>}
+                    </td>
                     <td className="py-2 px-2 text-right text-xs tabular-nums">
                       {dPct > 0.05
                         ? <span className="text-amber-700 font-semibold">−{brl(lineBase - lineVal)} <span className="text-[10px] font-medium text-slate-400">({dPct.toFixed(dPct >= 10 ? 0 : 1)}%)</span></span>
                         : <span className="text-slate-300">—</span>}
                     </td>
-                    <td className="py-2 px-3 text-right text-xs font-bold tabular-nums text-slate-900">{brl(lineVal * f)}</td>
+                    <td className="py-2 px-3 text-right">
+                      <p className="text-xs font-bold tabular-nums text-slate-900">{brl(lineVal * f)}</p>
+                      {/* Legenda ao lado do número que a pessoa realmente lê — não só no
+                          subtítulo do item (era fácil de passar batido; confusão real de cliente). */}
+                      {it.billing !== "one_time" && (
+                        <p className="text-[9px] text-slate-400 tabular-nums">{it.term_months ?? DEFAULT_TERM_MONTHS}× {brl(lineVal)}{BILLING_PT[it.billing].suffix}</p>
+                      )}
+                    </td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button onClick={() => onEdit(it)} disabled={pending} title="Ajustar" className="size-6 grid place-items-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50"><Pencil className="size-3" /></button>

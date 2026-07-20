@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 import { auth } from "@/auth"
 import { renderToBuffer } from "@react-pdf/renderer"
 import { QuotePdf, type QuotePdfData } from "@/lib/pdf/quote-pdf"
+import type { RichDoc } from "@/lib/commercial/richdoc"
 
 /**
  * GET /api/dev/quote-preview
@@ -15,19 +16,53 @@ import { QuotePdf, type QuotePdfData } from "@/lib/pdf/quote-pdf"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+// ── Amostras de texto rico (harness visual da F1) ──────────────
+const RICH_TERMS: RichDoc = {
+  v: 1,
+  blocks: [
+    { t: "ul", items: [
+      [{ text: "30% na assinatura", b: true }, { text: " (R$ 987,00);" }],
+      [{ text: "70% em 3× sem juros", b: true }, { text: " no cartão ou boleto;" }],
+      [{ text: "Mensalidade da licença a partir do 2º mês." }],
+    ] },
+  ],
+}
+const RICH_NOTES: RichDoc = {
+  v: 1,
+  blocks: [
+    { t: "p", runs: [
+      { text: "Suporte via WhatsApp em horário comercial, com " },
+      { text: "SLA de 1 dia útil", b: true },
+      { text: ". Valores não incluem mídia paga." },
+    ] },
+  ],
+}
+const RICH_CONTRACT: RichDoc = {
+  v: 1,
+  blocks: [
+    { t: "h", runs: [{ text: "Garantia & suporte" }] },
+    { t: "p", runs: [{ text: "Correções de defeito sem custo durante toda a vigência do contrato. Acesso ao " }, { text: "portal de suporte", u: true, link: "https://kora.bluedigitalhub.com.br" }, { text: "." }] },
+    { t: "h", runs: [{ text: "LGPD & tratamento de dados" }] },
+    { t: "p", runs: [{ text: "Os dados são tratados conforme a Lei 13.709/2018. O cliente é o controlador dos dados dos seus contatos; a Kora atua como operadora." }] },
+  ],
+}
+
 export async function GET(_req: NextRequest) {
   const session = await auth()
   if (!session?.user?.isPlatformAdmin) {
     return NextResponse.json({ error: "Acesso restrito" }, { status: 403 })
   }
 
+  // Mistura de naturezas (prova a caixa de totais adaptativa): setup avulso +
+  // serviços mensais de 6 meses + um produto por medida (kg). É o cenário do
+  // Dr. Renan — mensalidade que somava 6 meses e parecia preço à vista.
   const items: QuotePdfData["items"] = [
-    { name: "Desenvolvimento Site",        type: "service", qty: 1,   unit: "un", unit_price_cents: 500000, billing: "one_time", term_months: null, total_cents: 500000 },
-    { name: "Meta/Google Ads",             type: "service", qty: 1,   unit: "un", unit_price_cents: 250000, billing: "one_time", term_months: null, total_cents: 250000 },
-    { name: "Gerenc. Midias Sociais",      type: "service", qty: 1,   unit: "un", unit_price_cents: 250000, billing: "one_time", term_months: null, total_cents: 250000 },
-    { name: "Camarão (teste)",             type: "product", qty: 3.5, unit: "kg", unit_price_cents: 14990,  billing: "one_time", term_months: null, total_cents: 52465 },
+    { name: "Setup & Implantação",       type: "service", qty: 1,   unit: "un", unit_price_cents: 300000, billing: "one_time", term_months: null, total_cents: 300000 },
+    { name: "Gestão de Marketing",       type: "service", qty: 1,   unit: "un", unit_price_cents: 200000, billing: "monthly",  term_months: 6,    total_cents: 1200000 },
+    { name: "Tráfego pago (gestão)",     type: "service", qty: 1,   unit: "un", unit_price_cents: 100000, billing: "monthly",  term_months: 6,    total_cents: 600000 },
+    { name: "Camarão (teste medida)",    type: "product", qty: 3.5, unit: "kg", unit_price_cents: 14990,  billing: "one_time", term_months: null, total_cents: 52465 },
   ]
-  const total = items.reduce((s, i) => s + i.total_cents, 0) // R$ 10.524,65
+  const total = items.reduce((s, i) => s + i.total_cents, 0) // R$ 21.524,65
 
   const data: QuotePdfData = {
     code:       "COT-0001/2026",
@@ -49,10 +84,13 @@ export async function GET(_req: NextRequest) {
     deal:   { name: "Projeto digital + fornecimento", seller: "Vinicius Henrique" },
     items,
     totals:     { subtotal_cents: total, discount_cents: 0, total_cents: total },
+    // Exemplo com TEXTO RICO (negrito + lista) — prova o motor RichDoc no PDF real.
     conditions: {
-      payment_terms: "50% na aprovação, 50% na entrega. Pix ou boleto.",
-      notes:         "Valores não incluem taxas de mídia paga (investimento em anúncios é à parte, direto na plataforma).",
+      payment_terms: RICH_TERMS,
+      notes:         RICH_NOTES,
     },
+    contract: RICH_CONTRACT,   // bloco de contrato (texto único), abaixo das observações
+    paymentMethod: "Cartão de crédito", installments: 3,   // condição estabelecida (selo antes do Total)
     contentHash: createHash("sha256").update(JSON.stringify(items)).digest("hex"),
   }
 

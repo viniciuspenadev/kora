@@ -1,6 +1,9 @@
 import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer"
 import { registerPdfFonts } from "./fonts"
-import { formatQuantityWithUnit, unitSpec } from "@/lib/crm/units"
+import { formatQuantity, formatQuantityWithUnit, unitSpec } from "@/lib/crm/units"
+import type { Style } from "@react-pdf/types"
+import { RichView } from "./richdoc-pdf"
+import { isRichDoc, isEmptyRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
 
 // Cotação em PDF — espelha invoice-pdf.tsx (mesma paleta C, Inter embutida).
 // Mockup aprovado (docs/commercial-core-design.md §7.1): faixa primary no topo,
@@ -54,8 +57,22 @@ export interface QuotePdfData {
   deal:         { name: string | null; seller: string | null }
   items:        QuotePdfItem[]
   totals:       { subtotal_cents: number; discount_cents: number; total_cents: number }
-  conditions:   { payment_terms: string | null; notes: string | null }
+  // payment_terms/notes: RichDoc (novo) OU string (docs legados congelados).
+  conditions:   { payment_terms: RichDoc | string | null; notes: RichDoc | string | null }
+  // Bloco de contrato (texto único, já congelado) — abaixo das observações.
+  contract:     RichDoc | string | null
+  // Condição ESTABELECIDA no negócio (Negociação → Pagamento/Parcelas) — estrutural,
+  // sempre correta (não depende do vendedor redigitar); aparece ANTES do Total.
+  paymentMethod: string | null
+  installments:  number | null
   contentHash:  string
+}
+
+/** Tem conteúdo? (string não-vazia ou RichDoc não-vazio). */
+function condHasContent(v: RichDoc | string | null): boolean {
+  if (v == null) return false
+  if (typeof v === "string") return v.trim() !== ""
+  return !isEmptyRichDoc(v)
 }
 
 /** Endereço do emissor em até 3 linhas (mesmo formato da fatura). */
@@ -74,16 +91,103 @@ function itemSubtitle(it: QuotePdfItem): string {
   const nature = it.type === "service" ? "Serviço" : "Produto"
   const sym = unitSpec(it.unit).symbol
   let regime: string
-  if (it.billing === "monthly")     regime = it.term_months ? `mensal · ${it.term_months} meses` : "mensal"
+  if (it.billing === "monthly")     regime = "mensal"
   else if (it.billing === "yearly") regime = "anual"
   else                              regime = it.unit && it.unit !== "un" ? `por ${sym}` : "cobrança única"
   return `${nature} · ${regime}`
 }
 
-/** Preço unitário: com sufixo de medida quando a unidade não é "un" ("R$ 149,90/kg"). */
-function unitPriceLabel(it: QuotePdfItem): string {
+/**
+ * Taxa/preço do item: SEMPRE deixa claro o regime — "/mês"/"/ano" pra recorrente,
+ * sufixo de medida quando a unidade não é "un" ("R$ 149,90/kg"). Nunca um número
+ * "pelado" que possa ser lido como preço fechado (era a origem da confusão do
+ * cliente: R$2.000,00 sem indicar que era mensal, ao lado de um Total de 6 meses).
+ */
+function rateLabel(it: QuotePdfItem): string {
   const base = brl(it.unit_price_cents)
+  if (it.billing === "monthly") return `${base}/mês`
+  if (it.billing === "yearly")  return `${base}/ano`
   return it.unit && it.unit !== "un" ? `${base}/${unitSpec(it.unit).symbol}` : base
+}
+
+/**
+ * Quantidade — pensada pra NÃO confundir:
+ *  • Serviço com qtd 1 e unidade genérica → em branco ("1 serviço" não informa
+ *    nada e polui a linha; o preço/mês já diz tudo). Só aparece se qtd > 1
+ *    (ex: "3" sessões) ou se tem unidade real (hora, m²…).
+ *  • Produto → sempre a quantidade, com símbolo quando a unidade não é "un".
+ */
+function qtyLabel(it: QuotePdfItem): string {
+  const generic = !it.unit || it.unit === "un"
+  if (it.type === "service" && generic && it.qty === 1) return ""
+  return generic ? formatQuantity(it.qty, it.unit) : formatQuantityWithUnit(it.qty, it.unit)
+}
+
+/** Legenda sob o Total da linha: a MULTIPLICAÇÃO explícita, bem ao lado do número
+ *  que o cliente realmente lê — "6× R$ 2.000,00/mês" explica o R$12.000,00 acima
+ *  sem depender de ele achar o texto pequeno junto do nome do item. */
+function totalCaption(it: QuotePdfItem): string | null {
+  if (it.billing === "monthly" && it.term_months) return `${it.term_months}× ${rateLabel(it)}`
+  if (it.billing === "yearly") return rateLabel(it)
+  return null
+}
+
+/**
+ * Quebra por NATUREZA — separa o que se paga UMA vez (produtos, projetos, setup)
+ * do que é RECORRENTE (mensalidade/anuidade). A caixa de totais só muda de forma
+ * quando há recorrência: aí distingue "Investimento inicial × Mensalidade × Total
+ * do contrato" em vez de um único "Total" gordo que soma 6 meses de serviço e
+ * parece preço à vista (origem literal da confusão do cliente). Venda só de
+ * produto continua uma nota limpa (Subtotal/Total).
+ *
+ * Taxa recorrente = total_cents ÷ prazo → embute o desconto por-item e é robusta
+ * a prazos diferentes entre itens. `commonTermMonths` só quando TODOS os itens
+ * recorrentes compartilham o mesmo prazo (senão "por N meses" mentiria).
+ */
+interface NatureSplit {
+  oneTimeCents:     number
+  monthlyRateCents: number
+  yearlyRateCents:  number
+  hasRecurring:     boolean
+  commonTermMonths: number | null
+}
+const RECUR_DEFAULT_TERM = 12 // espelha DEFAULT_TERM_MONTHS de @/lib/crm/value
+function natureSplit(items: QuotePdfItem[]): NatureSplit {
+  const termOf = (it: QuotePdfItem) => it.term_months ?? RECUR_DEFAULT_TERM
+  let oneTimeCents = 0, monthlyRateCents = 0, yearlyRateCents = 0
+  const recurTerms = new Set<number>()
+  for (const it of items) {
+    if (it.billing === "monthly") {
+      monthlyRateCents += Math.round(it.total_cents / termOf(it))
+      recurTerms.add(termOf(it))
+    } else if (it.billing === "yearly") {
+      yearlyRateCents += Math.round(it.total_cents / (termOf(it) / 12))
+      recurTerms.add(termOf(it))
+    } else {
+      oneTimeCents += it.total_cents
+    }
+  }
+  return {
+    oneTimeCents, monthlyRateCents, yearlyRateCents,
+    hasRecurring:     recurTerms.size > 0,
+    commonTermMonths: recurTerms.size === 1 ? [...recurTerms][0] : null,
+  }
+}
+
+/** "6 meses" / "1 mês" — prazo por extenso, pra colar no rótulo da recorrência. */
+function termLabel(months: number, unit: "month" | "year"): string {
+  if (unit === "year") {
+    const y = Math.round(months / 12)
+    return `${y} ${y === 1 ? "ano" : "anos"}`
+  }
+  return `${months} ${months === 1 ? "mês" : "meses"}`
+}
+
+/** Resumo estruturado da forma de pagamento — vai no card Condições de pagamento
+ *  (ex: "Cartão de crédito · 3× de R$ 7.174,88"). Neutro a qualquer segmento. */
+function paymentSummary(method: string | null, inst: number | null, instValueCents: number | null): string | null {
+  if (!method) return null
+  return inst && instValueCents ? `${method} · ${inst}× de ${brl(instValueCents)}` : method
 }
 
 /** Carimbo de geração em America/Sao_Paulo. */
@@ -124,22 +228,42 @@ const s = StyleSheet.create({
   itemName: { fontSize: 9.5, fontWeight: 600, color: C.ink, marginBottom: 2 },
   itemSub: { fontSize: 7.5, color: C.slate500 },
   td: { fontSize: 9, color: C.ink },
-  cItem: { flex: 1, paddingRight: 8 }, cQty: { width: 74, textAlign: "right" },
-  cUnit: { width: 90, textAlign: "right" }, cTot: { width: 90, textAlign: "right" },
+  // Layout: Item (largura fixa, Qtd logo ao lado à ESQUERDA) → spacer flexível
+  // absorve o vão → Preço e Total ancorados à DIREITA, com respiro entre eles.
+  // (Antes o Item era flex:1 e empurrava Qtd/Preço/Total todos pra ponta direita.)
+  cItem:   { width: 210, paddingRight: 10 },
+  cQty:    { width: 40, textAlign: "left" },
+  cSpacer: { flex: 1 },
+  cUnit:   { width: 96, textAlign: "right" },
+  cTot:    { width: 96, textAlign: "right", paddingLeft: 10 },
   tdStrong: { fontWeight: 600 },
+  // Legenda sob o Total da linha (multiplicação explícita — clareza de cobrança).
+  totCaption: { fontSize: 7, color: C.slate500, textAlign: "right", marginTop: 1 },
   // Totais
   totalsWrap: { marginTop: 16, flexDirection: "row", justifyContent: "flex-end" },
   totalsBox: { width: 236, backgroundColor: C.softBlue, borderRadius: 8, padding: 14 },
   totRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 2 },
   totLabel: { fontSize: 9, color: C.slate600 },
   totVal: { fontSize: 9, fontWeight: 600, color: C.ink },
+  // Desconto = AJUSTE, não headline: recua (slate, sem bold) pra não competir com
+  // as linhas de valor — lê como ajuste da conta antes do Total.
+  totDiscountRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 2 },
+  totDiscountLabel: { fontSize: 8.5, color: C.slate500 },
+  totDiscountVal: { fontSize: 8.5, color: C.slate500 },
   grandRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 7, paddingTop: 8, borderTopWidth: 1, borderTopColor: "#c7d2fe" },
   grandLabel: { fontSize: 11, fontWeight: 700, color: C.navy },
   grandVal: { fontSize: 14, fontWeight: 700, color: C.navy },
+  // Recorrência — COLA no Total (logo abaixo), em azul, prazo no rótulo. É a
+  // resposta "e por mês?" ao lado do "quanto no total". Neutra a qualquer segmento.
+  recurRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginTop: 6 },
+  recurLabel: { fontSize: 9, fontWeight: 600, color: C.primary },
+  recurVal: { fontSize: 11, fontWeight: 700, color: C.primary },
   // Cards de condições
   cards: { flexDirection: "row", gap: 14, marginTop: 26 },
   card: { flex: 1, backgroundColor: C.soft, borderRadius: 8, padding: 13 },
   cardLabel: { fontSize: 7.5, fontWeight: 700, color: C.slate500, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 5 },
+  // Resumo estruturado da forma de pagamento no topo do card Condições.
+  payLine: { fontSize: 9.5, fontWeight: 600, color: C.ink, marginBottom: 4 },
   cardValue: { fontSize: 9.5, color: C.ink, lineHeight: 1.4 },
   cardMuted: { fontSize: 9.5, color: C.slate400 },
   notes: { marginTop: 14, fontSize: 8.5, color: C.slate600, lineHeight: 1.4 },
@@ -148,10 +272,26 @@ const s = StyleSheet.create({
   footText: { fontSize: 7.5, color: C.slate400 },
 })
 
+/** Renderiza um valor de condição: RichDoc → RichView; string legada → Text. */
+function CondValue({ value, textStyle }: { value: RichDoc | string; textStyle: Style }) {
+  if (isRichDoc(value)) return <RichView doc={value} textStyle={textStyle} />
+  return <Text style={textStyle}>{value}</Text>
+}
+
 export function QuotePdf({ data }: { data: QuotePdfData }) {
   const { issuer } = data
   const hash = data.contentHash
   const hashShort = hash.length > 12 ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : hash
+
+  // Parcela: total ÷ nº de parcelas (só quando >1× — 1× é "à vista", sem fração a mostrar).
+  const inst = data.installments && data.installments > 1 ? data.installments : null
+  const instValueCents = inst ? Math.round(data.totals.total_cents / inst) : null
+  // Quebra por natureza — decide se a caixa de totais mostra o desdobramento
+  // (investimento inicial × mensalidade × total) ou fica simples.
+  const split = natureSplit(data.items)
+  // Forma de pagamento estruturada → card Condições de pagamento (não mais na
+  // caixa de totais). Ex: "Cartão de crédito · 3× de R$ 7.174,88".
+  const paySummary = paymentSummary(data.paymentMethod, inst, instValueCents)
 
   return (
     <Document title={`Cotação ${data.code}`}>
@@ -201,22 +341,33 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
         <View style={s.tHead}>
           <Text style={[s.th, s.cItem]}>Item</Text>
           <Text style={[s.th, s.cQty]}>Qtd</Text>
-          <Text style={[s.th, s.cUnit]}>Preço unit.</Text>
+          <View style={s.cSpacer} />
+          <Text style={[s.th, s.cUnit]}>Preço</Text>
           <Text style={[s.th, s.cTot]}>Total</Text>
         </View>
-        {data.items.map((it, i) => (
-          <View key={i} style={s.tRow} wrap={false}>
-            <View style={s.cItem}>
-              <Text style={s.itemName}>{it.name}</Text>
-              <Text style={s.itemSub}>{itemSubtitle(it)}</Text>
+        {data.items.map((it, i) => {
+          const caption = totalCaption(it)
+          return (
+            <View key={i} style={s.tRow} wrap={false}>
+              <View style={s.cItem}>
+                <Text style={s.itemName}>{it.name}</Text>
+                <Text style={s.itemSub}>{itemSubtitle(it)}</Text>
+              </View>
+              <Text style={[s.td, s.cQty]}>{qtyLabel(it)}</Text>
+              <View style={s.cSpacer} />
+              <Text style={[s.td, s.cUnit]}>{rateLabel(it)}</Text>
+              <View style={s.cTot}>
+                <Text style={[s.td, s.tdStrong, { textAlign: "right" }]}>{brl(it.total_cents)}</Text>
+                {caption ? <Text style={s.totCaption}>{caption}</Text> : null}
+              </View>
             </View>
-            <Text style={[s.td, s.cQty]}>{formatQuantityWithUnit(it.qty, it.unit)}</Text>
-            <Text style={[s.td, s.cUnit]}>{unitPriceLabel(it)}</Text>
-            <Text style={[s.td, s.cTot, s.tdStrong]}>{brl(it.total_cents)}</Text>
-          </View>
-        ))}
+          )
+        })}
 
-        {/* Totais */}
+        {/* Totais — conta de nota padrão (Subtotal → Descontos → Total), e quando
+            há recorrência a Mensalidade/Anuidade COLA logo abaixo do Total (azul,
+            prazo no rótulo) respondendo "e por mês?" sem confundir com o à vista.
+            Forma de pagamento vai no card Condições. */}
         <View style={s.totalsWrap}>
           <View style={s.totalsBox}>
             <View style={s.totRow}>
@@ -224,15 +375,27 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
               <Text style={s.totVal}>{brl(data.totals.subtotal_cents)}</Text>
             </View>
             {data.totals.discount_cents > 0 ? (
-              <View style={s.totRow}>
-                <Text style={s.totLabel}>Descontos</Text>
-                <Text style={s.totVal}>− {brl(data.totals.discount_cents)}</Text>
+              <View style={s.totDiscountRow}>
+                <Text style={s.totDiscountLabel}>Descontos</Text>
+                <Text style={s.totDiscountVal}>− {brl(data.totals.discount_cents)}</Text>
               </View>
             ) : null}
             <View style={s.grandRow}>
               <Text style={s.grandLabel}>Total</Text>
               <Text style={s.grandVal}>{brl(data.totals.total_cents)}</Text>
             </View>
+            {split.monthlyRateCents > 0 ? (
+              <View style={s.recurRow}>
+                <Text style={s.recurLabel}>Mensalidade{split.commonTermMonths ? ` · ${termLabel(split.commonTermMonths, "month")}` : ""}</Text>
+                <Text style={s.recurVal}>{brl(split.monthlyRateCents)}/mês</Text>
+              </View>
+            ) : null}
+            {split.yearlyRateCents > 0 ? (
+              <View style={s.recurRow}>
+                <Text style={s.recurLabel}>Anuidade{split.commonTermMonths ? ` · ${termLabel(split.commonTermMonths, "year")}` : ""}</Text>
+                <Text style={s.recurVal}>{brl(split.yearlyRateCents)}/ano</Text>
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -240,9 +403,10 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
         <View style={s.cards}>
           <View style={s.card}>
             <Text style={s.cardLabel}>Condições de pagamento</Text>
-            {data.conditions.payment_terms
-              ? <Text style={s.cardValue}>{data.conditions.payment_terms}</Text>
-              : <Text style={s.cardMuted}>A combinar</Text>}
+            {paySummary ? <Text style={s.payLine}>{paySummary}</Text> : null}
+            {condHasContent(data.conditions.payment_terms)
+              ? <CondValue value={data.conditions.payment_terms!} textStyle={s.cardValue} />
+              : (!paySummary ? <Text style={s.cardMuted}>A combinar</Text> : null)}
           </View>
           <View style={s.card}>
             <Text style={s.cardLabel}>Validade</Text>
@@ -251,7 +415,17 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
               : <Text style={s.cardMuted}>Sem prazo definido</Text>}
           </View>
         </View>
-        {data.conditions.notes ? <Text style={s.notes}>{data.conditions.notes}</Text> : null}
+        {condHasContent(data.conditions.notes)
+          ? <View style={s.notes}><CondValue value={data.conditions.notes!} textStyle={s.cardValue} /></View>
+          : null}
+
+        {/* Bloco de contrato — texto único (mesma linguagem dos cartões cinza) */}
+        {condHasContent(data.contract) ? (
+          <View style={[s.card, { marginTop: 14 }]}>
+            <Text style={s.cardLabel}>Contrato</Text>
+            <CondValue value={data.contract!} textStyle={s.cardValue} />
+          </View>
+        ) : null}
 
         {/* Rodapé: integridade + carimbo */}
         <View style={s.footer} fixed>
