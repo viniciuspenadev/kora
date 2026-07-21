@@ -1,31 +1,23 @@
 "use client"
 
-import { useState, useEffect, useMemo, useTransition, useRef } from "react"
+import { useState, useEffect, useTransition, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
-  FileText, Plus, MoreVertical, Eye, Download, Send, Check, X, Copy, Ban,
-  Loader2, Package, Wrench,
+  FileText, Plus, MoreVertical, Eye, Download, Send, Check, X, Copy, Ban, Loader2,
 } from "lucide-react"
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
-import {
-  generateQuote, generateQuoteVersion, markQuoteAccepted, markQuoteDeclined,
-  voidQuote, sendQuoteInChat,
-} from "@/lib/actions/documents"
+import { markQuoteAccepted, markQuoteDeclined, voidQuote, sendQuoteInChat } from "@/lib/actions/documents"
 import type { DocumentRow, DocumentSettings, DocumentStatus } from "@/lib/commercial/documents"
 import type { DealItemView } from "@/lib/actions/deals"
-import { lineSubtotal, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
 
 // ── Formatação ────────────────────────────────────────────────────
 const brlCents = (cents: number) =>
   (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 const shortDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "2-digit" }) : "—"
-function addDays(days: number): string {
-  const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10)
-}
 
 // ── Status chips ──────────────────────────────────────────────────
 const STATUS_META: Record<DocumentStatus, { label: string; cls: string }> = {
@@ -34,7 +26,7 @@ const STATUS_META: Record<DocumentStatus, { label: string; cls: string }> = {
   accepted: { label: "Aceita",   cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   declined: { label: "Recusada", cls: "bg-red-50 text-red-700 border-red-200" },
   signed:   { label: "Assinada", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  void:     { label: "Anulada",  cls: "bg-slate-100 text-slate-400 border-slate-200 opacity-80" },
+  void:     { label: "Cancelada", cls: "bg-slate-100 text-slate-500 border-slate-200" },
 }
 /** VENCIDA = estado DERIVADO (validade estourada em rascunho/enviada) — nada muda
     no banco; avisa-não-trava: ainda dá pra enviar/aceitar, mas o vendedor VÊ. */
@@ -53,16 +45,14 @@ function StatusChip({ status, validUntil = null }: { status: DocumentStatus; val
 /** draft/sent aceitam marcar aceita/recusada. */
 const canDecide = (s: DocumentStatus) => s === "draft" || s === "sent"
 
-// ── Fator de contribuição (recorrente × prazo — mesma matemática da lib) ──
-const termFactor = (it: DealItemView) =>
-  it.billing === "one_time" ? 1 : it.billing === "monthly" ? (it.term_months ?? DEFAULT_TERM_MONTHS) : (it.term_months ?? DEFAULT_TERM_MONTHS) / 12
-
 type ViewerRef = { id: string; code: string; status: DocumentStatus }
 
 // ══════════════════════════════════════════════════════════════════
-// Card "Cotações" + modais (gerar · viewer · enviar · anular)
+// Card "Cotações" + modais (viewer · enviar · anular). Gerar/nova versão
+// navegam pro COMPOSITOR (/cotacao/nova[?from=doc]) — modal legado morreu.
+// defaults/items ficam na interface (callers passam; composer é quem usa hoje).
 // ══════════════════════════════════════════════════════════════════
-export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick = 0 }: {
+export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
   dealId:    string
   quotes:    DocumentRow[]
   defaults:  DocumentSettings
@@ -73,16 +63,20 @@ export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick 
   const router = useRouter()
   const [pending, start] = useTransition()
 
-  const [genMode, setGenMode] = useState<null | { kind: "new" } | { kind: "version"; doc: DocumentRow }>(null)
   const [viewer, setViewer]   = useState<ViewerRef | null>(null)
   const [sendDoc, setSendDoc] = useState<DocumentRow | null>(null)
+  // Abas: canceladas (void) e recusadas saem da frente sem sumir (owner 2026-07-20).
+  const [tab, setTab] = useState<"open" | "closed">("open")
+  const closedQ = quotes.filter((q) => q.status === "void" || q.status === "declined")
+  const openQ   = quotes.filter((q) => q.status !== "void" && q.status !== "declined")
+  const shown   = tab === "open" ? openQ : closedQ
   const [voiding, setVoiding] = useState<DocumentRow | null>(null)
 
-  // Abre o modal de gerar a partir do menu "⋯" do header (deliverable 4).
+  // "Gerar" vindo do menu "⋯" do header → página do compositor (modal legado morreu).
   const lastTick = useRef(genTick)
   useEffect(() => {
-    if (genTick !== lastTick.current) { lastTick.current = genTick; if (hasItems) setGenMode({ kind: "new" }) }
-  }, [genTick, hasItems])
+    if (genTick !== lastTick.current) { lastTick.current = genTick; if (hasItems) router.push(`/negocios/${dealId}/cotacao/nova`) }
+  }, [genTick, hasItems, router, dealId])
 
   function decide(doc: DocumentRow, kind: "accept" | "decline") {
     start(async () => {
@@ -98,7 +92,7 @@ export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick 
     start(async () => {
       const r = await voidQuote(doc.id)
       if ("error" in r) { toast.error(r.error); return }
-      toast.success("Cotação anulada")
+      toast.success("Cotação cancelada")
       router.refresh()
     })
   }
@@ -115,15 +109,35 @@ export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick 
         </span>
       </div>
 
+      {/* Abas (design system: segmented pill) — só existem quando há encerradas. */}
+      {closedQ.length > 0 && (
+        <div className="px-4 pb-2">
+          <div className="inline-flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5">
+            {([["open", `Ativas · ${openQ.length}`], ["closed", `Encerradas · ${closedQ.length}`]] as const).map(([k, label]) => (
+              <button key={k} type="button" onClick={() => setTab(k)}
+                className={`h-6 px-2.5 text-[11px] font-semibold rounded-md transition-colors ${
+                  tab === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {quotes.length === 0 ? (
         <p className="text-xs text-slate-400 px-4 pb-4 leading-relaxed">
           {hasItems
             ? "Gere uma cotação em PDF a partir dos itens do negócio — envie no WhatsApp e acompanhe o aceite por aqui."
             : "Adicione produtos ou serviços ao negócio para gerar a primeira cotação."}
         </p>
+      ) : shown.length === 0 ? (
+        <p className="text-xs text-slate-400 px-4 pb-4 leading-relaxed">
+          {tab === "open" ? "Nenhuma cotação ativa — veja as encerradas na outra aba." : "Nenhuma cotação encerrada."}
+        </p>
       ) : (
-        <ul className="px-2 pb-2">
-          {quotes.map((q) => {
+        /* ~5 linhas visíveis (48px cada) — o resto rola dentro do card. */
+        <ul className="px-2 pb-2 max-h-[248px] overflow-y-auto">
+          {shown.map((q) => {
             const dim = q.status === "void"
             return (
               <li key={q.id} className={`group flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-slate-50 ${dim ? "opacity-60" : ""}`}>
@@ -169,13 +183,15 @@ export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick 
                     )}
                     <DropdownMenuSeparator />
                     {q.status !== "void" && (
-                      <DropdownMenuItem onClick={() => setGenMode({ kind: "version", doc: q })}>
+                      /* Vai pro COMPOSITOR pré-carregado com as condições desta cotação
+                         (owner 2026-07-20 — o modal legado abria aqui, morreu). */
+                      <DropdownMenuItem onClick={() => router.push(`/negocios/${dealId}/cotacao/nova?from=${q.id}`)}>
                         <Copy className="size-3.5 text-slate-400" /> Gerar nova versão
                       </DropdownMenuItem>
                     )}
                     {q.status !== "void" && (
                       <DropdownMenuItem onClick={() => setVoiding(q)}>
-                        <Ban className="size-3.5 text-red-500" /> Anular
+                        <Ban className="size-3.5 text-red-500" /> Cancelar cotação
                       </DropdownMenuItem>
                     )}
                   </DropdownMenuContent>
@@ -186,13 +202,6 @@ export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick 
         </ul>
       )}
 
-      {genMode && (
-        <GenerateModal
-          dealId={dealId} mode={genMode} defaults={defaults} items={items}
-          onClose={() => setGenMode(null)}
-          onGenerated={(ref) => { setGenMode(null); setViewer(ref); router.refresh() }}
-        />
-      )}
       {viewer && <QuoteViewer doc={viewer} onClose={() => setViewer(null)} />}
       {sendDoc && (
         <SendModal doc={sendDoc} onClose={() => setSendDoc(null)}
@@ -200,119 +209,12 @@ export function DealQuotes({ dealId, quotes, defaults, hasItems, items, genTick 
       )}
       {voiding && (
         <ConfirmModal
-          title="Anular cotação" icon={Ban}
-          desc={`A cotação ${voiding.code} será anulada e não poderá mais ser aceita. Esta ação não pode ser desfeita.`}
-          confirmLabel="Anular cotação" pending={pending}
+          title="Cancelar cotação" icon={Ban}
+          desc={`A cotação ${voiding.code} será cancelada e não poderá mais ser aceita. Esta ação não pode ser desfeita.`}
+          confirmLabel="Cancelar cotação" pending={pending}
           onConfirm={doVoid} onClose={() => setVoiding(null)} />
       )}
     </section>
-  )
-}
-
-// ── Modal: gerar cotação / nova versão ────────────────────────────
-function GenerateModal({ dealId, mode, defaults, items, onClose, onGenerated }: {
-  dealId: string
-  mode: { kind: "new" } | { kind: "version"; doc: DocumentRow }
-  defaults: DocumentSettings
-  items: DealItemView[]
-  onClose: () => void
-  onGenerated: (ref: ViewerRef) => void
-}) {
-  const isVersion = mode.kind === "version"
-  const [pending, start] = useTransition()
-  const [error, setError] = useState<string | null>(null)
-
-  const [validUntil, setValidUntil] = useState(
-    isVersion && mode.doc.validUntil ? mode.doc.validUntil : addDays(defaults.validityDays || 7),
-  )
-  const [terms, setTerms] = useState(defaults.paymentTerms ?? "")
-  const [notes, setNotes] = useState(defaults.defaultNotes ?? "")
-  const [saveDefault, setSaveDefault] = useState(false)
-
-  // Resumo read-only dos itens (nome + total da linha — mesma matemática da lib).
-  const lines = useMemo(() => items.map((it) => ({
-    id: it.id, name: it.name, type: it.type,
-    total: lineSubtotal({ unit_price: it.unit_price, quantity: it.quantity, discount: it.discount, billing: it.billing, term_months: it.term_months }) * termFactor(it),
-  })), [items])
-  const grandTotal = lines.reduce((s, l) => s + l.total, 0)
-
-  function submit() {
-    setError(null)
-    start(async () => {
-      const cond = { validUntil: validUntil || null, paymentTerms: terms.trim() || null, notes: notes.trim() || null }
-      const r = isVersion
-        ? await generateQuoteVersion((mode as { doc: DocumentRow }).doc.id, cond)
-        : await generateQuote({ dealId, ...cond, saveAsDefault: saveDefault })
-      if ("error" in r) { setError(r.error); return }
-      toast.success(`Cotação ${r.code} gerada`)
-      onGenerated({ id: r.id, code: r.code, status: "draft" })
-    })
-  }
-
-  const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-  const field = "w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
-
-  return (
-    <ModalShell title={isVersion ? "Gerar nova versão" : "Gerar cotação"}
-      desc={isVersion ? "A versão anterior será anulada e substituída." : "Retrato dos itens do negócio, congelado em PDF."}
-      icon={FileText} accent="#004add" onClose={onClose}>
-      <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
-        {/* Itens (read-only) */}
-        <div>
-          <p className="text-[11px] font-semibold text-slate-600 mb-1.5">Itens do negócio</p>
-          <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 overflow-hidden">
-            {lines.length === 0 ? (
-              <p className="text-[11px] text-slate-400 px-3 py-2.5">Nenhum item no negócio.</p>
-            ) : lines.map((l) => (
-              <div key={l.id} className="flex items-center gap-2 px-3 py-2">
-                <span className={`size-5 rounded grid place-items-center shrink-0 ${l.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
-                  {l.type === "service" ? <Wrench className="size-2.5" /> : <Package className="size-2.5" />}
-                </span>
-                <span className="text-xs text-slate-700 truncate flex-1">{l.name}</span>
-                <span className="text-xs font-bold text-slate-900 tabular-nums shrink-0">{brl(l.total)}</span>
-              </div>
-            ))}
-            {lines.length > 0 && (
-              <div className="flex items-center justify-between px-3 py-2 bg-slate-50/60">
-                <span className="text-[11px] font-semibold text-slate-500">Total</span>
-                <span className="text-xs font-extrabold text-slate-900 tabular-nums">{brl(grandTotal)}</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-600 mb-1">Validade</label>
-          <input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)}
-            className="w-full h-9 px-3 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
-        </div>
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-600 mb-1">Condições de pagamento</label>
-          <textarea value={terms} onChange={(e) => setTerms(e.target.value)} rows={2}
-            placeholder="Ex: 50% na aprovação, 50% na entrega. Pix ou cartão em até 12x." className={field} />
-        </div>
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-600 mb-1">Observações <span className="text-slate-300 font-normal">(opcional)</span></label>
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
-            placeholder="Aparece no rodapé da cotação, se preenchida." className={field} />
-        </div>
-        {!isVersion && (
-          <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer select-none">
-            <input type="checkbox" checked={saveDefault} onChange={(e) => setSaveDefault(e.target.checked)}
-              className="size-3.5 rounded border-slate-300 text-primary focus:ring-primary/20" />
-            Salvar estas condições como padrão da empresa
-          </label>
-        )}
-        {error && <p className="text-[11px] text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
-      </div>
-      <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-100 bg-slate-50/50">
-        <button type="button" onClick={onClose} disabled={pending} className="h-9 px-4 text-sm font-semibold text-slate-600 hover:bg-slate-200/60 rounded-lg disabled:opacity-50">Cancelar</button>
-        <button type="button" onClick={submit} disabled={pending}
-          className="inline-flex items-center gap-1.5 h-9 px-5 text-sm font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg disabled:opacity-50">
-          {pending && <Loader2 className="size-4 animate-spin" />} {isVersion ? "Gerar versão" : "Gerar cotação"}
-        </button>
-      </div>
-    </ModalShell>
   )
 }
 

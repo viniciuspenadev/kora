@@ -1122,7 +1122,7 @@ async function renderDealDetail(dealId) {
     accepted: ["Aceita", "st-ok"],
     signed:   ["Assinada", "st-ok"],
     declined: ["Recusada", "st-bad"],
-    void:     ["Anulada", "st-void"],
+    void:     ["Cancelada", "st-void"],
   }
   const ICO_EYE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`
   const ICO_SEND = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>`
@@ -1159,7 +1159,7 @@ async function renderDealDetail(dealId) {
     ${quotesHtml}
     ${d.items.length ? `
       <button id="dd-quote" class="btn btn-primary" type="button">Gerar cotação</button>
-      <div class="hint">Usa as condições-padrão da empresa. Cada geração é uma nova versão numerada.</div>` : ""}`)
+      <div class="hint">Nasce com os modelos "sempre incluir" da empresa. Cada geração é uma nova versão numerada.</div>` : ""}`)
 
   document.getElementById("dd-back").addEventListener("click", () => renderFicha())
   const gen = document.getElementById("dd-quote")

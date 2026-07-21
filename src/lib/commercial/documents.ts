@@ -86,6 +86,10 @@ export interface DocumentConditionsInput {
   notes?:        RichDoc | string | null
   validUntil?:   string | null   // yyyy-mm-dd
   contract?:     RichDoc | string | null
+  /** Pagamento/Parcelas — casa única no COMPOSITOR (owner 2026-07-20). undefined =
+   *  cai no valor armazenado no deal (modal legado/extensão); null = limpo. */
+  paymentMethod?: string | null
+  installments?:  number | null
 }
 
 /** Normaliza um campo de condição pro snapshot: string→trim|null · RichDoc→limpo|null. */
@@ -269,10 +273,10 @@ export async function buildQuoteSnapshot(
       notes:         condToStored(cond.notes),
       valid_until:   cond.validUntil || null,
       contract:      condToStored(cond.contract),
-      // Congela a condição ESTABELECIDA no negócio (Negociação) no momento da
-      // geração — sobrevive mesmo se o vendedor mudar o método depois.
-      payment_method: (deal.payment_method as string | null) ?? null,
-      installments:   (deal.installments as number | null) ?? null,
+      // Pagamento/Parcelas: o compositor manda (casa única); undefined = cai no
+      // armazenado no deal (modal legado/extensão). Congelado no snapshot.
+      payment_method: cond.paymentMethod !== undefined ? (cond.paymentMethod?.trim() || null) : ((deal.payment_method as string | null) ?? null),
+      installments:   cond.installments  !== undefined ? cond.installments : ((deal.installments as number | null) ?? null),
     },
     totals: { subtotal_cents: subtotalCents, discount_cents: discountCents, total_cents: totalCents },
   }
@@ -300,7 +304,9 @@ async function snapshotToPdfData(snapshot: QuoteSnapshot, code: string, issuedAt
     deal: { name: snapshot.deal.name, seller: snapshot.deal.seller },
     items: snapshot.items.map((i) => ({
       name: i.name, type: i.type, qty: i.qty, unit: i.unit,
-      unit_price_cents: i.unit_price_cents, billing: i.billing, term_months: i.term_months, total_cents: i.total_cents,
+      unit_price_cents: i.unit_price_cents, billing: i.billing, term_months: i.term_months,
+      discount_cents: i.discount ?? 0,   // ?? p/ snapshots muito antigos sem o campo
+      total_cents: i.total_cents,
     })),
     totals: snapshot.totals,
     conditions: { payment_terms: snapshot.conditions.payment_terms, notes: snapshot.conditions.notes },
@@ -357,6 +363,8 @@ export interface CreateQuoteInput {
   paymentTerms?: RichDoc | string | null
   notes?:       RichDoc | string | null
   contract?:    RichDoc | string | null
+  paymentMethod?: string | null
+  installments?:  number | null
   saveAsDefault?: boolean
 }
 
@@ -368,7 +376,17 @@ export interface CreateQuoteInput {
 export async function createQuote(
   tenantId: string, userId: string, input: CreateQuoteInput,
 ): Promise<{ id: string; code: string } | { error: string }> {
-  const cond: DocumentConditionsInput = { paymentTerms: input.paymentTerms ?? null, notes: input.notes ?? null, validUntil: input.validUntil ?? null, contract: input.contract }
+  // Pagamento/Parcelas: payload do client → sanitiza (undefined preserva o
+  // comportamento legado = cai no armazenado do deal).
+  const safeMethod = input.paymentMethod === undefined ? undefined
+    : (typeof input.paymentMethod === "string" ? (input.paymentMethod.trim().slice(0, 60) || null) : null)
+  const safeInst = input.installments === undefined ? undefined
+    : (typeof input.installments === "number" && Number.isFinite(input.installments)
+        ? Math.min(60, Math.max(1, Math.floor(input.installments))) : null)
+  const cond: DocumentConditionsInput = {
+    paymentTerms: input.paymentTerms ?? null, notes: input.notes ?? null, validUntil: input.validUntil ?? null,
+    contract: input.contract, paymentMethod: safeMethod, installments: safeInst,
+  }
   const built = await buildQuoteSnapshot(tenantId, input.dealId, cond)
   if ("error" in built) return built
   const { snapshot, contactId, unitId } = built
@@ -411,6 +429,17 @@ export async function createQuote(
   // é texto livre, sem enum; postCard=false = só auditoria, não polui o chat).
   await emitCommercialEvent(tenantId, "doc_created", { subject: { deal_id: input.dealId, document_id: docId }, actorId: userId })
   await recordDealEvent({ tenantId, dealId: input.dealId, type: "note", by: userId, note: `Cotação ${code} gerada`, postCard: false })
+
+  // Write-back: a cotação EMITIDA é a fonte da verdade — grava pagamento/parcelas/
+  // validade de volta no deal (armazenamento; a UI única é o compositor). Mantém
+  // painel/badge "proposta vencida" e o pré-preenchimento da próxima cotação
+  // consistentes com o que foi emitido. Best-effort (não derruba a geração).
+  const { error: wbErr } = await supabaseAdmin.from("tenant_deals").update({
+    payment_method:      snapshot.conditions.payment_method,
+    installments:        snapshot.conditions.installments,
+    proposal_expires_at: snapshot.conditions.valid_until,
+  }).eq("id", input.dealId).eq("tenant_id", tenantId)
+  if (wbErr) console.error("[documents.createQuote] write-back deal:", wbErr.message)
 
   if (input.saveAsDefault) {
     const validityDays = snapshot.conditions.valid_until
@@ -519,6 +548,7 @@ export async function createNewVersion(
 
   const created = await createQuote(tenantId, userId, {
     dealId: doc.deal_id, validUntil: cond.validUntil ?? null, paymentTerms: cond.paymentTerms ?? null, notes: cond.notes ?? null,
+    contract: cond.contract ?? null, paymentMethod: cond.paymentMethod, installments: cond.installments,
   })
   if ("error" in created) {
     // Rollback best-effort: devolve o status lido antes do claim (janela minúscula).

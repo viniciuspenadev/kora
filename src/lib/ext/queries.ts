@@ -23,6 +23,7 @@ import {
   type DocumentStatus,
 } from "@/lib/commercial/documents"
 import { lineSubtotal, computeDealValue, DEFAULT_TERM_MONTHS, type DealItemLike } from "@/lib/crm/value"
+import { normalizeRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
 import { hasModule } from "@/lib/modules"
 import { availabilitySlots, bookAppointment, moveAppointment } from "@/lib/agenda/booking"
 import { recordAppointmentEvent } from "@/lib/agenda/events"
@@ -508,14 +509,21 @@ export async function dealDetailExt(
     pipelineName: (deal.deal_pipelines as { name: string | null } | null)?.name ?? null,
     items,
     totals: { total: summary.total, mrr: summary.mrr },
-    quotes: docs.slice(0, 6).map((doc) => ({
-      id: doc.id, code: doc.code, status: doc.status,
-      totalCents: doc.totalCents, createdAt: doc.createdAt, validUntil: doc.validUntil,
-    })),
+    // Cabine ENXUTA (owner 2026-07-20: "lista imensa… rascunho/enviada/anulada"):
+    // só as ATIVAS, 3 mais recentes. Canceladas/recusadas moram no app (link ↗).
+    quotes: docs
+      .filter((doc) => doc.status !== "void" && doc.status !== "declined")
+      .slice(0, 3)
+      .map((doc) => ({
+        id: doc.id, code: doc.code, status: doc.status,
+        totalCents: doc.totalCents, createdAt: doc.createdAt, validUntil: doc.validUntil,
+      })),
   }
 }
 
-/** Gera cotação com as condições-padrão da empresa (numera + congela PDF). */
+/** Gera cotação com os modelos "SEMPRE INCLUIR" da empresa (mesma governança do
+ *  compositor do app — o texto-padrão de tenant_document_settings foi aposentado;
+ *  dele só resta a validade). Numera + congela PDF; pagamento/parcelas vêm do deal. */
 export async function createQuoteExt(
   scope: ViewerScope,
   dealId: string,
@@ -525,8 +533,22 @@ export async function createQuoteExt(
   if (!deal) return { error: "Negócio não encontrado." }
   const defaults = await getDocumentSettings(scope.tenantId)
   const validUntil = new Date(Date.now() + defaults.validityDays * 86_400_000).toISOString().slice(0, 10)
+
+  const { data: tpls } = await supabaseAdmin.from("tenant_quote_templates")
+    .select("context, body").eq("tenant_id", scope.tenantId)
+    .eq("active", true).eq("always_include", true)
+    .order("position").order("created_at")
+  const mergeCtx = (ctx: string): RichDoc | null => {
+    const blocks = ((tpls ?? []) as { context: string; body: unknown }[])
+      .filter((t) => t.context === ctx)
+      .flatMap((t) => normalizeRichDoc(t.body).blocks)
+    return blocks.length ? { v: 1, blocks } : null
+  }
   return createQuote(scope.tenantId, scope.userId, {
-    dealId, validUntil, paymentTerms: defaults.paymentTerms, notes: defaults.defaultNotes,
+    dealId, validUntil,
+    paymentTerms: mergeCtx("condicoes"),
+    notes:        mergeCtx("observacoes"),
+    contract:     mergeCtx("contrato"),
   })
 }
 

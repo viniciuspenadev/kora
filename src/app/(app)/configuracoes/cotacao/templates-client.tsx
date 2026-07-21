@@ -2,12 +2,12 @@
 
 import { useState, useMemo, useTransition } from "react"
 import { toast } from "sonner"
-import { FileText, MessageSquare, ScrollText, Plus, Sparkles, Pencil, Trash2, Check, Loader2, X } from "lucide-react"
+import { FileText, MessageSquare, ScrollText, Plus, Pencil, Trash2, Check, Loader2, X } from "lucide-react"
 import { RichEditor } from "@/components/commercial/rich-editor"
 import { richDocToPlain, isEmptyRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
 import {
   createQuoteTemplate, updateQuoteTemplate, setTemplateActive, setTemplateAlwaysInclude,
-  deleteQuoteTemplate, seedStarterTemplates, type QuoteTemplate, type TemplateContext,
+  deleteQuoteTemplate, type QuoteTemplate, type TemplateContext,
 } from "@/lib/actions/quote-templates"
 
 const CTX: { key: TemplateContext; label: string; icon: typeof FileText; hint: string }[] = [
@@ -39,17 +39,6 @@ export function TemplatesClient({ initial }: { initial: QuoteTemplate[] }) {
       setItems((xs) => [...xs, { id: r.id!, context: ctx, title: "Novo modelo", body: { v: 1, blocks: [] }, active: true, always_include: false, position: xs.length }])
     })
   }
-  function seed() {
-    startTransition(async () => {
-      const r = await seedStarterTemplates(ctx)
-      if (r.error) { toast.error(r.error); return }
-      if (r.added === 0) { toast.message("Já há modelos aqui."); return }
-      toast.success(`${r.added} modelo(s) adicionado(s)`)
-      // recarrega a lista do contexto: mais simples via refresh do server component
-      location.reload()
-    })
-  }
-
   return (
     <div className="grid grid-cols-1 md:grid-cols-[190px_1fr] gap-5">
       {/* Menu lateral — contextos */}
@@ -82,10 +71,7 @@ export function TemplatesClient({ initial }: { initial: QuoteTemplate[] }) {
         {list.length === 0 ? (
           <div className="border border-dashed border-slate-200 rounded-xl px-4 py-10 text-center">
             <p className="text-sm text-slate-500">Nenhum modelo em {CTX.find((c) => c.key === ctx)?.label.toLowerCase()} ainda.</p>
-            <button onClick={seed} disabled={pending}
-              className="mt-3 inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold text-primary-700 border border-primary-200 bg-primary-50 rounded-lg hover:bg-primary-100/70 transition-colors disabled:opacity-50">
-              <Sparkles className="size-3.5" /> Carregar modelos iniciais
-            </button>
+            <p className="text-xs text-slate-400 mt-1">Crie os seus com o botão “Novo modelo”.</p>
           </div>
         ) : (
           <div className="space-y-2.5">
@@ -141,7 +127,7 @@ function TemplateRow({ tpl, onPatch, onRemove }: {
             {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Salvar
           </button>
         </div>
-        <RichEditor value={body} onChange={setBody} placeholder="Texto do modelo…" minHeight={120} />
+        <RichEditor value={body} onChange={setBody} placeholder="Texto do modelo…" minHeight={220} />
       </div>
     )
   }

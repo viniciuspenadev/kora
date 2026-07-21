@@ -24,13 +24,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     paymentTerms?: RichDoc | null
     notes?: RichDoc | null
     contract?: RichDoc | null
+    paymentMethod?: string | null
+    installments?: number | null
   }
+  // Parcelas: inteiro 1..60 ou null (payload é do client — sanitiza).
+  const inst = typeof body.installments === "number" && Number.isFinite(body.installments)
+    ? Math.min(60, Math.max(1, Math.floor(body.installments))) : null
 
   const res = await renderQuotePreviewBuffer(session.user.tenantId, dealId, {
-    validUntil:   body.validUntil ?? null,
-    paymentTerms: body.paymentTerms ?? null,
-    notes:        body.notes ?? null,
-    contract:     body.contract ?? null,
+    validUntil:    body.validUntil ?? null,
+    paymentTerms:  body.paymentTerms ?? null,
+    notes:         body.notes ?? null,
+    contract:      body.contract ?? null,
+    paymentMethod: typeof body.paymentMethod === "string" ? body.paymentMethod.slice(0, 60) : null,
+    installments:  inst,
   })
   if ("error" in res) return NextResponse.json({ error: res.error }, { status: 400 })
 

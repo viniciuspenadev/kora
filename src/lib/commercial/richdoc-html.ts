@@ -61,6 +61,16 @@ function walkInline(node: Node, marks: Marks, out: Run[]): void {
     if (tag === "b" || tag === "strong")            nm.b = true
     if (tag === "u")                                nm.u = true
     // i/em (itálico) intencionalmente NÃO capturado — deferido.
+    // Estilos inline como REDE DE SEGURANÇA (fidelidade editor→PDF): navegador/
+    // origem às vezes marca via style e não via tag — inclusive o wrapper
+    // <b style="font-weight:normal"> do Google Docs, que RESETA o negrito.
+    const st = (el as HTMLElement).style
+    if (st) {
+      const fw = st.fontWeight
+      if (fw === "bold" || Number(fw) >= 600) nm.b = true
+      else if (fw === "normal" || (Number(fw) > 0 && Number(fw) < 600)) nm.b = false
+      if ((st.textDecorationLine || st.textDecoration || "").includes("underline")) nm.u = true
+    }
     if (tag === "a") {
       const href = el.getAttribute("href") ?? ""
       if (/^https?:\/\//i.test(href)) nm.link = href

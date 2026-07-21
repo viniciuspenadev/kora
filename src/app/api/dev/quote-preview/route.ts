@@ -53,16 +53,20 @@ export async function GET(_req: NextRequest) {
     return NextResponse.json({ error: "Acesso restrito" }, { status: 403 })
   }
 
-  // Mistura de naturezas (prova a caixa de totais adaptativa): setup avulso +
-  // serviços mensais de 6 meses + um produto por medida (kg). É o cenário do
-  // Dr. Renan — mensalidade que somava 6 meses e parecia preço à vista.
+  // Mistura de naturezas (prova a caixa adaptativa + Qtd inteligente + desconto
+  // ancorado): setup avulso · mensal 6m COM desconto na taxa (R$200/mês → −R$1.200
+  // na linha) · mensal 6m limpo · produto kg · serviço avulso com desconto 100%
+  // (Total R$ 0,00 + cheio riscado — regra uniforme, sem rótulo).
   const items: QuotePdfData["items"] = [
-    { name: "Setup & Implantação",       type: "service", qty: 1,   unit: "un", unit_price_cents: 300000, billing: "one_time", term_months: null, total_cents: 300000 },
-    { name: "Gestão de Marketing",       type: "service", qty: 1,   unit: "un", unit_price_cents: 200000, billing: "monthly",  term_months: 6,    total_cents: 1200000 },
-    { name: "Tráfego pago (gestão)",     type: "service", qty: 1,   unit: "un", unit_price_cents: 100000, billing: "monthly",  term_months: 6,    total_cents: 600000 },
-    { name: "Camarão (teste medida)",    type: "product", qty: 3.5, unit: "kg", unit_price_cents: 14990,  billing: "one_time", term_months: null, total_cents: 52465 },
+    { name: "Setup & Implantação",       type: "service", qty: 1,   unit: "un", unit_price_cents: 300000, billing: "one_time", term_months: null, discount_cents: 0,     total_cents: 300000 },
+    { name: "Gestão de Marketing",       type: "service", qty: 1,   unit: "un", unit_price_cents: 200000, billing: "monthly",  term_months: 6,    discount_cents: 20000, total_cents: 1080000 },
+    { name: "Tráfego pago (gestão)",     type: "service", qty: 1,   unit: "un", unit_price_cents: 100000, billing: "monthly",  term_months: 6,    discount_cents: 0,     total_cents: 600000 },
+    { name: "Camarão (teste medida)",    type: "product", qty: 3.5, unit: "kg", unit_price_cents: 14990,  billing: "one_time", term_months: null, discount_cents: 0,     total_cents: 52465 },
+    { name: "Diagnóstico inicial",       type: "service", qty: 1,   unit: "un", unit_price_cents: 50000,  billing: "one_time", term_months: null, discount_cents: 50000, total_cents: 0 },
   ]
-  const total = items.reduce((s, i) => s + i.total_cents, 0) // R$ 21.524,65
+  const total    = items.reduce((s, i) => s + i.total_cents, 0)                    // líquido
+  const subtotal = 300000 + 1200000 + 600000 + 52465 + 50000                       // cheio
+  const discount = subtotal - total
 
   const data: QuotePdfData = {
     code:       "COT-0001/2026",
@@ -83,7 +87,7 @@ export async function GET(_req: NextRequest) {
     client: { name: "Kleiton Moma Planejados", phone: "+55 (11) 99999-8888" },
     deal:   { name: "Projeto digital + fornecimento", seller: "Vinicius Henrique" },
     items,
-    totals:     { subtotal_cents: total, discount_cents: 0, total_cents: total },
+    totals:     { subtotal_cents: subtotal, discount_cents: discount, total_cents: total },
     // Exemplo com TEXTO RICO (negrito + lista) — prova o motor RichDoc no PDF real.
     conditions: {
       payment_terms: RICH_TERMS,

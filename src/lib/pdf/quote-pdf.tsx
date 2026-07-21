@@ -32,6 +32,9 @@ export interface QuotePdfItem {
   unit_price_cents: number
   billing:          QuoteBilling
   term_months:      number | null
+  /** Desconto da linha em centavos, no nível da TAXA (sem fator de prazo) —
+   *  num mensal, é desconto POR MÊS. 0 = sem desconto. */
+  discount_cents:   number
   total_cents:      number
 }
 export interface QuotePdfAddress {
@@ -111,25 +114,39 @@ function rateLabel(it: QuotePdfItem): string {
 }
 
 /**
- * Quantidade — pensada pra NÃO confundir:
- *  • Serviço com qtd 1 e unidade genérica → em branco ("1 serviço" não informa
- *    nada e polui a linha; o preço/mês já diz tudo). Só aparece se qtd > 1
- *    (ex: "3" sessões) ou se tem unidade real (hora, m²…).
- *  • Produto → sempre a quantidade, com símbolo quando a unidade não é "un".
+ * Qtd = "o que MULTIPLICA o preço" — a conta Qtd × Preço = Total fecha em toda
+ * linha, em todo segmento:
+ *  • Recorrente → o PRAZO ("6 meses", "2 anos"); qtd > 1 vira prefixo ("2 · 6 meses").
+ *  • Serviço avulso qtd 1 sem medida → em branco (nada multiplica; o preço já diz tudo).
+ *  • Produto/medida → quantidade, com símbolo quando a unidade não é "un".
  */
 function qtyLabel(it: QuotePdfItem): string {
+  const term = it.term_months ?? RECUR_DEFAULT_TERM
+  if (it.billing === "monthly" || it.billing === "yearly") {
+    const label = termLabel(term, it.billing === "monthly" ? "month" : "year")
+    return it.qty > 1 ? `${formatQuantity(it.qty, it.unit)} · ${label}` : label
+  }
   const generic = !it.unit || it.unit === "un"
   if (it.type === "service" && generic && it.qty === 1) return ""
   return generic ? formatQuantity(it.qty, it.unit) : formatQuantityWithUnit(it.qty, it.unit)
 }
 
-/** Legenda sob o Total da linha: a MULTIPLICAÇÃO explícita, bem ao lado do número
- *  que o cliente realmente lê — "6× R$ 2.000,00/mês" explica o R$12.000,00 acima
- *  sem depender de ele achar o texto pequeno junto do nome do item. */
-function totalCaption(it: QuotePdfItem): string | null {
-  if (it.billing === "monthly" && it.term_months) return `${it.term_months}× ${rateLabel(it)}`
-  if (it.billing === "yearly") return rateLabel(it)
-  return null
+/**
+ * Âncora do desconto na LINHA: SÓ o valor cheio riscado sob o Total líquido
+ * (owner: "− R$X" junto virava poluição). O riscado sozinho conta a história —
+ * inclusive no 100% ("R$ 0,00" + cheio riscado, sem rótulo). Nível do TOTAL da
+ * linha (fator de prazo aplicado: desconto abate a taxa).
+ */
+function discountAnchor(it: QuotePdfItem): string | null {
+  if (!it.discount_cents || it.discount_cents <= 0) return null
+  const factor = it.billing === "monthly" ? (it.term_months ?? RECUR_DEFAULT_TERM)
+               : it.billing === "yearly"  ? (it.term_months ?? RECUR_DEFAULT_TERM) / 12
+               : 1
+  // Cheio derivado do preço unitário (não de net+desconto) — exato mesmo quando
+  // o desconto encosta no piso 0 da linha (100%).
+  const grossC = Math.round(it.unit_price_cents * it.qty * factor)
+  if (grossC <= it.total_cents) return null
+  return brl(grossC)
 }
 
 /**
@@ -237,8 +254,9 @@ const s = StyleSheet.create({
   cUnit:   { width: 96, textAlign: "right" },
   cTot:    { width: 96, textAlign: "right", paddingLeft: 10 },
   tdStrong: { fontWeight: 600 },
-  // Legenda sob o Total da linha (multiplicação explícita — clareza de cobrança).
+  // Âncora de desconto sob o Total da linha: cheio riscado + abatimento.
   totCaption: { fontSize: 7, color: C.slate500, textAlign: "right", marginTop: 1 },
+  totStrike:  { textDecoration: "line-through", color: C.slate400 },
   // Totais
   totalsWrap: { marginTop: 16, flexDirection: "row", justifyContent: "flex-end" },
   totalsBox: { width: 236, backgroundColor: C.softBlue, borderRadius: 8, padding: 14 },
@@ -346,7 +364,7 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
           <Text style={[s.th, s.cTot]}>Total</Text>
         </View>
         {data.items.map((it, i) => {
-          const caption = totalCaption(it)
+          const disc = discountAnchor(it)
           return (
             <View key={i} style={s.tRow} wrap={false}>
               <View style={s.cItem}>
@@ -358,7 +376,7 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
               <Text style={[s.td, s.cUnit]}>{rateLabel(it)}</Text>
               <View style={s.cTot}>
                 <Text style={[s.td, s.tdStrong, { textAlign: "right" }]}>{brl(it.total_cents)}</Text>
-                {caption ? <Text style={s.totCaption}>{caption}</Text> : null}
+                {disc ? <Text style={[s.totCaption, s.totStrike]}>{disc}</Text> : null}
               </View>
             </View>
           )
@@ -399,15 +417,19 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
           </View>
         </View>
 
-        {/* Condições de pagamento / Validade */}
+        {/* Condições de pagamento / Validade — o cartão de Condições SÓ existe
+            quando tem conteúdo (nada de "A combinar" que o vendedor não escreveu;
+            owner 2026-07-20). Sem condições → Validade ocupa a linha sozinha. */}
         <View style={s.cards}>
-          <View style={s.card}>
-            <Text style={s.cardLabel}>Condições de pagamento</Text>
-            {paySummary ? <Text style={s.payLine}>{paySummary}</Text> : null}
-            {condHasContent(data.conditions.payment_terms)
-              ? <CondValue value={data.conditions.payment_terms!} textStyle={s.cardValue} />
-              : (!paySummary ? <Text style={s.cardMuted}>A combinar</Text> : null)}
-          </View>
+          {paySummary || condHasContent(data.conditions.payment_terms) ? (
+            <View style={s.card}>
+              <Text style={s.cardLabel}>Condições de pagamento</Text>
+              {paySummary ? <Text style={s.payLine}>{paySummary}</Text> : null}
+              {condHasContent(data.conditions.payment_terms)
+                ? <CondValue value={data.conditions.payment_terms!} textStyle={s.cardValue} />
+                : null}
+            </View>
+          ) : null}
           <View style={s.card}>
             <Text style={s.cardLabel}>Validade</Text>
             {data.validUntil

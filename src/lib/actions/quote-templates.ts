@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
 import { revalidatePath } from "next/cache"
-import { normalizeRichDoc, isEmptyRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
+import { normalizeRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
 
 // ═══════════════════════════════════════════════════════════════
 // Modelos de Cotação e Contrato (F2b) — CRUD gated admin/owner + crm.
@@ -100,6 +100,22 @@ export async function setTemplateAlwaysInclude(id: string, always: boolean): Pro
   return {}
 }
 
+/** Modelos ATIVOS pro compositor (qualquer membro que gera cotação — não só
+ *  admin): é o "puxar texto" da integração F2b-int. Ordenado por posição. */
+export async function listQuoteTemplatesForUse(): Promise<QuoteTemplate[]> {
+  let tenantId: string
+  try { tenantId = (await getViewerScope()).tenantId } catch { return [] }
+  if (!(await hasModule(tenantId, "crm"))) return []
+  const { data } = await supabaseAdmin.from("tenant_quote_templates")
+    .select("id, context, title, body, active, always_include, position")
+    .eq("tenant_id", tenantId).eq("active", true)
+    .order("context").order("position").order("created_at")
+  return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+    id: r.id as string, context: r.context as TemplateContext, title: r.title as string,
+    body: normalizeRichDoc(r.body), active: true, always_include: !!r.always_include, position: Number(r.position ?? 0),
+  }))
+}
+
 export async function deleteQuoteTemplate(id: string): Promise<{ error?: string }> {
   const gate = await requireAdmin()
   if ("error" in gate) return { error: gate.error }
@@ -110,41 +126,3 @@ export async function deleteQuoteTemplate(id: string): Promise<{ error?: string 
   return {}
 }
 
-// ── Pacote inicial (nasce cheia) — semeia um contexto se estiver VAZIO ──
-const p = (text: string, marks?: Partial<{ b: true }>): { t: "p"; runs: { text: string; b?: true }[] } =>
-  ({ t: "p", runs: [{ text, ...(marks?.b ? { b: true } : {}) }] })
-const h = (text: string): { t: "h"; runs: { text: string }[] } => ({ t: "h", runs: [{ text }] })
-
-const STARTER: Record<TemplateContext, { title: string; body: RichDoc; always_include?: boolean }[]> = {
-  condicoes: [
-    { title: "Entrada + parcelado", body: { v: 1, blocks: [
-      { t: "ul", items: [[{ text: "30% na assinatura;" }], [{ text: "70% em 3× sem juros no cartão ou boleto." }]] },
-    ] } },
-    { title: "À vista (Pix)", body: { v: 1, blocks: [p("Pagamento à vista via Pix, com condição especial.")] } },
-  ],
-  observacoes: [
-    { title: "Validade e reajuste", body: { v: 1, blocks: [p("Esta proposta tem validade — atente-se ao prazo; após ele os valores podem ser reajustados.")] } },
-  ],
-  contrato: [
-    { title: "Garantia e suporte", body: { v: 1, blocks: [h("Garantia e suporte"), p("Correções de defeito sem custo durante toda a vigência do contrato, com suporte em horário comercial.")] } },
-    { title: "LGPD", body: { v: 1, blocks: [h("Tratamento de dados (LGPD)"), p("Os dados são tratados conforme a Lei 13.709/2018. O contratante é o controlador dos dados dos seus contatos.")] }, always_include: true },
-    { title: "Cancelamento", body: { v: 1, blocks: [h("Cancelamento"), p("O cancelamento pode ser solicitado a qualquer momento, respeitando o aviso prévio acordado.")] } },
-    { title: "Foro", body: { v: 1, blocks: [h("Foro"), p("Fica eleito o foro da comarca do contratado para dirimir eventuais controvérsias.")] }, always_include: true },
-  ],
-}
-
-export async function seedStarterTemplates(context: TemplateContext): Promise<{ added: number; error?: string }> {
-  const gate = await requireAdmin()
-  if ("error" in gate) return { added: 0, error: gate.error }
-  if (!CONTEXTS.includes(context)) return { added: 0, error: "Contexto inválido" }
-  const { count } = await supabaseAdmin.from("tenant_quote_templates")
-    .select("id", { count: "exact", head: true }).eq("tenant_id", gate.tenantId).eq("context", context)
-  if ((count ?? 0) > 0) return { added: 0 }   // só semeia se vazio
-  const rows = STARTER[context]
-    .filter((t) => !isEmptyRichDoc(t.body))
-    .map((t, i) => ({ tenant_id: gate.tenantId, context, title: t.title, body: t.body, always_include: !!t.always_include, position: i }))
-  const { error } = await supabaseAdmin.from("tenant_quote_templates").insert(rows)
-  if (error) return { added: 0, error: error.message }
-  revalidatePath(ROUTE)
-  return { added: rows.length }
-}

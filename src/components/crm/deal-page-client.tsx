@@ -650,7 +650,6 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
             onAdd={() => setItemModal({ mode: "add" })}
             onEdit={(item) => setItemModal({ mode: "edit", item })}
             onRemove={(item) => run(() => removeDealItem(deal.id, item.id))}
-            onTerms={(t) => run(() => updateDeal(deal.id, t))}
           />
 
           {/* Composer saiu do corpo (feedback owner 2026-07-13): Nota/Tarefa/Reunião/Ligação
@@ -1439,6 +1438,13 @@ const BILLING_PT: Record<DealItemView["billing"], { label: string; suffix: strin
   yearly:   { label: "Anual",  suffix: "/ano" },
 }
 const fmtQty = (q: number) => (Number.isInteger(q) ? String(q) : q.toLocaleString("pt-BR"))
+/** Qtd = "o que multiplica o preço" (espelho do PDF da cotação): recorrente →
+ *  o PRAZO ("6 meses"/"2 anos", qtd>1 vira prefixo); avulso → quantidade. */
+function qtdTermLabel(billing: "monthly" | "yearly", termMonths: number | null): string {
+  const t = termMonths ?? DEFAULT_TERM_MONTHS
+  if (billing === "yearly") { const y = Math.round(t / 12); return `${y} ${y === 1 ? "ano" : "anos"}` }
+  return `${t} ${t === 1 ? "mês" : "meses"}`
+}
 /** "1.234,56" → número em reais (NaN se inválido). */
 function parseMoneyBR(s: string): number | null {
   const t = s.trim()
@@ -1449,13 +1455,12 @@ function parseMoneyBR(s: string): number | null {
 }
 
 // ── NEGOCIAÇÃO — itens + resumo + termos da proposta (N2, spec do owner) ──
-const PAYMENT_OPTIONS = ["Pix", "Cartão de crédito", "Cartão de débito", "Boleto", "Dinheiro", "Transferência", "Outro"]
 
 /** Fator de contribuição no total (recorrente × prazo — mesma matemática da lib). */
 const termFactor = (it: DealItemView) =>
   it.billing === "one_time" ? 1 : it.billing === "monthly" ? (it.term_months ?? DEFAULT_TERM_MONTHS) : (it.term_months ?? DEFAULT_TERM_MONTHS) / 12
 
-function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove, onTerms }: {
+function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove }: {
   deal: DealDetail
   summary: ReturnType<typeof computeDealValue> | null
   isManager: boolean
@@ -1463,7 +1468,6 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
   onAdd: () => void
   onEdit: (item: DealItemView) => void
   onRemove: (item: DealItemView) => void
-  onTerms: (t: { paymentMethod?: string | null; installments?: number | null; proposalExpiresAt?: string | null; priceTableId?: string | null }) => void
 }) {
   const items = deal.items
   // Multi-tabela (T2): a escolha da tabela é POR ITEM, no modal de adicionar
@@ -1520,7 +1524,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                 const dPct = lineBase > 0 ? Math.max(0, ((lineBase - lineVal) / lineBase) * 100) : 0
                 const f = termFactor(it)
                 return (
-                  <tr key={it.id} className="group border-b border-slate-50 last:border-0 hover:bg-slate-50/40">
+                  <tr key={it.id} className="group border-b border-slate-50 last:border-0 even:bg-slate-50/50 hover:bg-primary-50/30 transition-colors">
                     <td className="py-2 px-4">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className={`size-6 rounded-md grid place-items-center shrink-0 ${it.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
@@ -1537,12 +1541,14 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                         </div>
                       </div>
                     </td>
-                    {/* Serviço com qtd 1 e unidade genérica → em branco (não confunde);
-                        produto ou qtd real → mostra. Mesma regra do PDF da cotação. */}
+                    {/* Qtd = o que multiplica o preço (regra do PDF): recorrente → prazo
+                        ("6 meses"); serviço avulso qtd 1 → em branco; resto → quantidade. */}
                     <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-700">{
-                      it.type === "service" && (!it.unit || it.unit === "un") && it.quantity === 1
-                        ? <span className="text-slate-300">—</span>
-                        : it.unit && it.unit !== "un" ? formatQuantityWithUnit(it.quantity, it.unit) : fmtQty(it.quantity)
+                      it.billing !== "one_time"
+                        ? (it.quantity > 1 ? `${fmtQty(it.quantity)} · ${qtdTermLabel(it.billing, it.term_months)}` : qtdTermLabel(it.billing, it.term_months))
+                        : it.type === "service" && (!it.unit || it.unit === "un") && it.quantity === 1
+                          ? <span className="text-slate-300">—</span>
+                          : it.unit && it.unit !== "un" ? formatQuantityWithUnit(it.quantity, it.unit) : fmtQty(it.quantity)
                     }</td>
                     <td className="py-2 px-2 text-right text-xs tabular-nums text-slate-500">
                       {brl(list)}
@@ -1555,13 +1561,10 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                         ? <span className="text-amber-700 font-semibold">−{brl(lineBase - lineVal)} <span className="text-[10px] font-medium text-slate-400">({dPct.toFixed(dPct >= 10 ? 0 : 1)}%)</span></span>
                         : <span className="text-slate-300">—</span>}
                     </td>
+                    {/* Sem legenda "6× R$…" — a coluna Qtd agora mostra o prazo e a
+                        conta Qtd × Tabela − Desconto = Total fecha à vista. */}
                     <td className="py-2 px-3 text-right">
                       <p className="text-xs font-bold tabular-nums text-slate-900">{brl(lineVal * f)}</p>
-                      {/* Legenda ao lado do número que a pessoa realmente lê — não só no
-                          subtítulo do item (era fácil de passar batido; confusão real de cliente). */}
-                      {it.billing !== "one_time" && (
-                        <p className="text-[9px] text-slate-400 tabular-nums">{it.term_months ?? DEFAULT_TERM_MONTHS}× {brl(lineVal)}{BILLING_PT[it.billing].suffix}</p>
-                      )}
                     </td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1577,44 +1580,32 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
         </div>
       )}
 
+      {/* Resumo = MESMA linguagem da caixa da cotação (card azul à direita:
+          Subtotal → Desconto → Total, MRR colado embaixo em primary). Pagamento/
+          Parcelas/Validade saíram daqui (owner 2026-07-20): casa única = compositor. */}
       {items.length > 0 && summary && (
-        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40">
-          <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
-            <div className="space-y-1 text-xs min-w-[220px]">
-              <div className="flex justify-between gap-8"><span className="text-slate-400">Total bruto</span><span className="tabular-nums text-slate-600">{brl(bruto)}</span></div>
-              <div className="flex justify-between gap-8"><span className="text-slate-400">Desconto total</span><span className={`tabular-nums ${descTotal > 0 ? "text-amber-700 font-semibold" : "text-slate-400"}`}>{descTotal > 0 ? `−${brl(descTotal)} (${descPct.toFixed(descPct >= 10 ? 0 : 1)}%)` : "—"}</span></div>
-              {summary.mrr > 0 && <div className="flex justify-between gap-8"><span className="text-slate-400">Recorrente (MRR)</span><span className="tabular-nums text-emerald-600 font-semibold">{brl(summary.mrr)}/mês</span></div>}
-              <div className="flex justify-between gap-8 pt-1 border-t border-slate-200/70"><span className="font-bold text-slate-800">Total final</span><span className="tabular-nums font-extrabold text-slate-900">{brl(final)}</span></div>
-              {hasCost && (
-                <div className="flex justify-between gap-8"><span className="text-slate-400 inline-flex items-center gap-1">Margem <span className="text-[9px] font-bold uppercase bg-slate-200 text-slate-500 rounded px-1">gestor</span></span>
-                  <span className={`tabular-nums font-bold ${margem >= 0 ? "text-emerald-600" : "text-red-600"}`}>{brl(margem)} <span className="text-[10px] font-medium text-slate-400">({final > 0 ? ((margem / final) * 100).toFixed(0) : 0}%)</span></span>
-                </div>
-              )}
+        <div className="px-4 pb-4 pt-3 border-t border-slate-100 flex justify-end">
+          <div className="w-full max-w-[320px] rounded-xl bg-primary-50/50 border border-primary-100 px-4 py-3.5 text-xs space-y-1.5">
+            <div className="flex justify-between gap-8"><span className="text-slate-500">Subtotal</span><span className="tabular-nums font-semibold text-slate-700">{brl(bruto)}</span></div>
+            {descTotal > 0 && (
+              <div className="flex justify-between gap-8"><span className="text-slate-400">Descontos ({descPct.toFixed(descPct >= 10 ? 0 : 1)}%)</span><span className="tabular-nums text-amber-700">−{brl(descTotal)}</span></div>
+            )}
+            <div className="flex justify-between items-baseline gap-8 pt-2 mt-0.5 border-t border-primary-100">
+              <span className="font-bold text-slate-900">Total</span>
+              <span className="tabular-nums font-extrabold text-slate-900 text-base">{brl(final)}</span>
             </div>
-
-            {/* termos da proposta */}
-            <div className="flex items-end gap-3 flex-wrap">
-              <div>
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Pagamento</p>
-                <div className="w-40">
-                  <SimpleSelect value={deal.paymentMethod ?? ""} onChange={(v) => onTerms({ paymentMethod: v || null })} className="h-8 text-xs"
-                    options={[{ value: "", label: "Definir…" }, ...PAYMENT_OPTIONS.map((p) => ({ value: p, label: p }))]} />
-                </div>
+            {summary.mrr > 0 && (
+              <div className="flex justify-between items-baseline gap-8">
+                <span className="font-semibold text-primary-700">Mensalidade</span>
+                <span className="tabular-nums font-bold text-primary-700">{brl(summary.mrr)}/mês</span>
               </div>
-              <div>
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Parcelas</p>
-                <input type="number" min={1} max={60} defaultValue={deal.installments ?? ""} placeholder="1×"
-                  onBlur={(e) => { const v = e.target.value ? Math.floor(Number(e.target.value)) : null; if (v !== (deal.installments ?? null)) onTerms({ installments: v }) }}
-                  className="w-16 h-8 px-2 text-xs text-center border border-slate-200 rounded-lg bg-white tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20" />
+            )}
+            {hasCost && (
+              <div className="flex justify-between gap-8 pt-1.5 mt-0.5 border-t border-primary-100/70">
+                <span className="text-slate-400 inline-flex items-center gap-1">Margem <span className="text-[9px] font-bold uppercase bg-slate-200 text-slate-500 rounded px-1">gestor</span></span>
+                <span className={`tabular-nums font-bold ${margem >= 0 ? "text-emerald-600" : "text-red-600"}`}>{brl(margem)} <span className="text-[10px] font-medium text-slate-400">({final > 0 ? ((margem / final) * 100).toFixed(0) : 0}%)</span></span>
               </div>
-              <div>
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 mb-1">Validade da proposta</p>
-                <input type="date" defaultValue={deal.proposalExpiresAt ?? ""} disabled={!isManager}
-                  title={isManager ? undefined : "Definida pela política do tenant — só gestores alteram"}
-                  onBlur={(e) => { const v = e.target.value || null; if (isManager && v !== (deal.proposalExpiresAt ?? null)) onTerms({ proposalExpiresAt: v }) }}
-                  className={`h-8 px-2 text-xs border rounded-lg tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/20 ${expired ? "border-red-300 text-red-600 bg-red-50" : "border-slate-200 bg-white text-slate-700"} disabled:opacity-60 disabled:cursor-not-allowed`} />
-              </div>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -1648,6 +1639,9 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
   // Preço da LINHA (negociado) — o do catálogo entra como sugestão editável.
   const [price, setPrice]       = useState(edit ? edit.unit_price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
   const [discount, setDiscount] = useState(edit && edit.discount > 0 ? edit.discount.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
+  // Desconto em R$ OU % (owner 2026-07-20) — o % é açúcar de digitação: converte
+  // pra valor na hora (o server só conhece valor; teto validado igual nos 2 modos).
+  const [discMode, setDiscMode] = useState<"brl" | "pct">("brl")
   const [term, setTerm]         = useState(edit?.term_months != null ? String(edit.term_months) : "")
   const [error, setError]       = useState<string | null>(null)
 
@@ -1691,22 +1685,48 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
     return p == null || Number.isNaN(p) ? null : p
   }, [active, price])
 
+  // Desconto EFETIVO em R$ (modo % converte sobre preço × qtd). NaN = inválido.
+  const discValue = useMemo(() => {
+    if (!discount.trim()) return 0
+    const n = parseMoneyBR(discount)
+    if (n == null || Number.isNaN(n)) return NaN
+    if (discMode === "brl") return n
+    const q = Number(qty.replace(",", "."))
+    if (effPrice == null || !Number.isFinite(q) || n > 100) return NaN
+    return Math.round(effPrice * q * (n / 100) * 100) / 100
+  }, [discount, discMode, qty, effPrice])
+
   // Preview ao vivo da linha (mesma matemática do server — lib compartilhada).
   const preview = useMemo(() => {
     if (!active || effPrice == null) return null
     const q = Number(qty.replace(",", "."))
-    const d = discount.trim() ? parseMoneyBR(discount) : 0
-    if (!Number.isFinite(q) || q <= 0 || d == null || Number.isNaN(d)) return null
-    return lineSubtotal({ billing: active.billing, unit_price: effPrice, quantity: q, discount: d ?? 0, term_months: null })
-  }, [active, effPrice, qty, discount])
+    if (!Number.isFinite(q) || q <= 0 || Number.isNaN(discValue)) return null
+    return lineSubtotal({ billing: active.billing, unit_price: effPrice, quantity: q, discount: discValue, term_months: null })
+  }, [active, effPrice, qty, discValue])
+
+  // Troca de modo converte o que já foi digitado (20% ⇄ R$ 500,00) — sem perder input.
+  function switchDiscMode(m: "brl" | "pct") {
+    if (m === discMode) return
+    const q = Number(qty.replace(",", "."))
+    const base = effPrice != null && Number.isFinite(q) ? effPrice * q : null
+    if (discount.trim() && base && base > 0 && !Number.isNaN(discValue)) {
+      if (m === "pct") {
+        const pct = (discValue / base) * 100
+        setDiscount(pct > 0 ? (Math.round(pct * 10) / 10).toLocaleString("pt-BR") : "")
+      } else {
+        setDiscount(discValue > 0 ? discValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
+      }
+    }
+    setDiscMode(m)
+  }
 
   function submit() {
     setError(null)
     const q = Number(qty.replace(",", "."))
     if (!Number.isFinite(q) || q <= 0) { setError("Quantidade inválida"); return }
     if (effPrice == null) { setError("Preço inválido — use por exemplo 1.500,00"); return }
-    const d = discount.trim() ? parseMoneyBR(discount) : null
-    if (d != null && Number.isNaN(d)) { setError("Desconto inválido"); return }
+    const d = discount.trim() ? discValue : null
+    if (d != null && Number.isNaN(d)) { setError(discMode === "pct" ? "Percentual inválido (0–100)" : "Desconto inválido"); return }
     const tm = term.trim() ? Math.floor(Number(term)) : null
     if (tm != null && (!Number.isFinite(tm) || tm <= 0)) { setError("Prazo inválido"); return }
     // Piso do teto (mesma regra do server — que valida de novo, fail-closed):
@@ -1836,8 +1856,33 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Desconto <span className="text-slate-300 font-normal">(R$, opcional)</span></label>
-                <input value={discount} onChange={(e) => setDiscount(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0,00" className={`${field} tabular-nums`} />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-semibold text-slate-600">Desconto <span className="text-slate-300 font-normal">(opcional)</span></label>
+                  <div className="inline-flex rounded-md border border-slate-200 overflow-hidden">
+                    <button type="button" onClick={() => switchDiscMode("brl")}
+                      className={`px-2 py-0.5 text-[10px] font-bold transition-colors ${discMode === "brl" ? "bg-primary text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}>R$</button>
+                    <button type="button" onClick={() => switchDiscMode("pct")}
+                      className={`px-2 py-0.5 text-[10px] font-bold transition-colors ${discMode === "pct" ? "bg-primary text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}>%</button>
+                  </div>
+                </div>
+                <div className="relative">
+                  {discMode === "brl" && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>}
+                  <input value={discount} onChange={(e) => setDiscount(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal"
+                    placeholder={discMode === "brl" ? "0,00" : "0"} className={`${field} tabular-nums ${discMode === "brl" ? "pl-8" : "pr-7"}`} />
+                  {discMode === "pct" && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">%</span>}
+                </div>
+                {/* Equivalência ao vivo — quem digita % vê o R$, quem digita R$ vê o % */}
+                {discount.trim() !== "" && !Number.isNaN(discValue) && discValue > 0 && effPrice != null && (() => {
+                  const q = Number(qty.replace(",", "."))
+                  const base = Number.isFinite(q) ? effPrice * q : 0
+                  const pct = base > 0 ? (discValue / base) * 100 : 0
+                  return (
+                    <p className="text-[10px] tabular-nums mt-1 text-slate-400">
+                      = {discMode === "pct" ? `−${brl(discValue)}${BILLING_PT[active.billing].suffix}` : `${(Math.round(pct * 10) / 10).toLocaleString("pt-BR")}%`}
+                      {active.maxPct > 0 && pct > active.maxPct + 0.05 && <span className="text-red-600 font-semibold"> · acima do teto ({active.maxPct}%)</span>}
+                    </p>
+                  )
+                })()}
               </div>
               {recurring && (
                 <div>
@@ -1850,12 +1895,21 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
               <p className="text-[10px] text-slate-400 -mt-1.5">Usado no valor total do negócio: {active.billing === "monthly" ? "mensalidade" : "anuidade"} × prazo.</p>
             )}
 
-            {preview != null && (
-              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-primary-50/50 border border-primary-100 text-xs">
-                <span className="text-slate-500">Linha</span>
-                <span className="font-bold text-primary-700 tabular-nums">{brl(preview)}{BILLING_PT[active.billing].suffix}</span>
-              </div>
-            )}
+            {preview != null && (() => {
+              const tm = term.trim() ? Math.floor(Number(term)) : DEFAULT_TERM_MONTHS
+              const f  = active.billing === "monthly" ? tm : active.billing === "yearly" ? tm / 12 : 1
+              return (
+                <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-primary-50/50 border border-primary-100 text-xs">
+                  <span className="text-slate-500">Linha</span>
+                  <span className="text-right">
+                    <span className="font-bold text-primary-700 tabular-nums">{brl(preview)}{BILLING_PT[active.billing].suffix}</span>
+                    {recurring && Number.isFinite(f) && f > 0 && (
+                      <span className="block text-[10px] text-slate-400 tabular-nums">{tm} meses no total: {brl(preview * f)}</span>
+                    )}
+                  </span>
+                </div>
+              )
+            })()}
 
             {error && <p className="text-[11px] text-red-600 bg-red-50 border border-red-100 px-3 py-2 rounded-lg">{error}</p>}
 
