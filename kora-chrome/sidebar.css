@@ -219,6 +219,16 @@ button.btn.btn-primary { border: 0; }
 .it-l b { font-size: 12.5px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .it-l small { font-size: 11px; color: #94a3b8; display: block; margin-top: 2px; }
 .it-v { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.it-r { display: flex; align-items: center; gap: 8px; flex: none; }
+.it-disc { color: #b45309; font-weight: 600; }
+/* remover linha: × discreto, aparece com clareza no hover (Lei da curva: só cor) */
+.it-del {
+  width: 22px; height: 22px; flex: none; border: 0; border-radius: 6px; cursor: pointer;
+  background: transparent; color: #cbd5e1; font-size: 15px; line-height: 1; font-family: inherit;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+.it-del:hover { color: #b91c1c; background: #fef2f2; }
+.it-del.busy { color: #94a3b8; cursor: default; }
 .it.tot { border-top: 1px solid #e2e8f0; border-bottom: 0; margin-top: 2px; padding-top: 12px; }
 .it.tot .it-v { font-size: 13.5px; }
 

@@ -425,11 +425,13 @@ export async function quickRepliesExt(
 // imutável + PDF congelado no storage. A extensão só orquestra — nunca recalcula.
 
 export interface ExtDealItem {
+  id:         string   // p/ remover a linha
   name:       string
   type:       "product" | "service"
   qty:        number
   unit:       string
   unitPrice:  number   // reais (como tenant_deal_items guarda)
+  discount:   number   // reais (desconto da linha, nível taxa)
   billing:    "one_time" | "monthly" | "yearly"
   termMonths: number | null
   lineTotal:  number   // reais — contribuição da linha ao valor (prazo aplicado)
@@ -455,7 +457,7 @@ export interface ExtDealDetail {
 }
 
 type DealItemRow = {
-  name: string; type: "product" | "service"; billing: "one_time" | "monthly" | "yearly"
+  id: string; name: string; type: "product" | "service"; billing: "one_time" | "monthly" | "yearly"
   unit_price: number; quantity: number; unit: string | null; discount: number; term_months: number | null
 }
 
@@ -479,7 +481,7 @@ export async function dealDetailExt(
 
   const { data: rows } = await supabaseAdmin
     .from("tenant_deal_items")
-    .select("name, type, billing, unit_price, quantity, unit, discount, term_months")
+    .select("id, name, type, billing, unit_price, quantity, unit, discount, term_months")
     .eq("tenant_id", scope.tenantId).eq("deal_id", dealId)
     .order("position", { ascending: true }).order("created_at", { ascending: true })
   const itemRows = (rows ?? []) as DealItemRow[]
@@ -493,8 +495,9 @@ export async function dealDetailExt(
     const term = r.term_months ?? DEFAULT_TERM_MONTHS
     const factor = r.billing === "one_time" ? 1 : r.billing === "monthly" ? term : term / 12
     return {
-      name: r.name, type: r.type, qty: likes[i].quantity, unit: r.unit ?? "un",
-      unitPrice: likes[i].unit_price, billing: r.billing, termMonths: r.term_months ?? null,
+      id: r.id, name: r.name, type: r.type, qty: likes[i].quantity, unit: r.unit ?? "un",
+      unitPrice: likes[i].unit_price, discount: Number(likes[i].discount ?? 0),
+      billing: r.billing, termMonths: r.term_months ?? null,
       lineTotal: Math.round(net * factor * 100) / 100,
     }
   })
@@ -563,6 +566,54 @@ export async function catalogForComandaExt(
   })
 }
 
+/** Recalcula o valor do negócio a partir dos itens + audita (espelho do
+ *  recompute das actions do app). Devolve o novo total (reais) ou null. */
+async function recomputeComandaValue(tenantId: string, dealId: string, userId: string, note: string, oldValue: number | null): Promise<number | null> {
+  const { data: rows } = await supabaseAdmin.from("tenant_deal_items")
+    .select("billing, unit_price, quantity, discount, term_months")
+    .eq("tenant_id", tenantId).eq("deal_id", dealId)
+  const likes = ((rows ?? []) as Record<string, unknown>[]).map((r) => ({
+    billing: r.billing as "one_time" | "monthly" | "yearly",
+    unit_price: Number(r.unit_price ?? 0), quantity: Number(r.quantity ?? 1),
+    discount: Number(r.discount ?? 0), term_months: (r.term_months as number | null) ?? null,
+  }))
+  const total = likes.length ? computeDealValue(likes).total : null
+  await supabaseAdmin.from("tenant_deals")
+    .update({ estimated_value: total, updated_at: new Date().toISOString() })
+    .eq("id", dealId).eq("tenant_id", tenantId)
+  const fmt = (v: number | null) => v != null ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }) : "—"
+  await recordDealEvent({
+    tenantId, dealId, type: "field_changed", by: userId, note,
+    change: { label: "Valor", from: fmt(oldValue), to: fmt(total) }, postCard: false,
+  })
+  return total
+}
+
+/** Remove UM item do negócio (espelho do removeDealItem do app). Só itens do
+ *  próprio negócio/tenant (anti-IDOR); recalcula o valor e audita. */
+export async function removeComandaItemExt(
+  scope: ViewerScope, dealId: string, itemId: string,
+): Promise<{ ok: true } | { error: string }> {
+  if (!(await canUseDeals(scope))) return { error: "Sem acesso a Negócios nesta conta." }
+  const deal = await dealInScope(scope, dealId)
+  if (!deal) return { error: "Negócio não encontrado." }
+
+  const { data: it } = await supabaseAdmin.from("tenant_deal_items")
+    .select("id, name").eq("id", itemId).eq("tenant_id", scope.tenantId).eq("deal_id", dealId).maybeSingle()
+  if (!it) return { error: "Item não encontrado." }
+  const { data: dRow } = await supabaseAdmin.from("tenant_deals")
+    .select("estimated_value").eq("id", dealId).eq("tenant_id", scope.tenantId).maybeSingle()
+  const oldValue = (dRow as { estimated_value?: number | null } | null)?.estimated_value ?? null
+
+  const { error } = await supabaseAdmin.from("tenant_deal_items")
+    .delete().eq("id", itemId).eq("tenant_id", scope.tenantId).eq("deal_id", dealId)
+  if (error) return { error: error.message }
+
+  await recomputeComandaValue(scope.tenantId, dealId, scope.userId,
+    `Item removido via extensão: ${(it as { name: string }).name}`, oldValue != null ? Number(oldValue) : null)
+  return { ok: true }
+}
+
 /** Lança a comanda: até 20 itens {catalogItemId, quantity} com o MESMO snapshot
  *  de linha do addDealItem do app (list_price/teto/custo/proveniência), preço =
  *  tabela (piso do teto passa trivialmente: linha == cheio). Recalcula o valor
@@ -621,25 +672,8 @@ export async function addComandaItemsExt(
   }
   if (!added) return { error: "Não deu pra adicionar os itens — confira o catálogo." }
 
-  // Recalcula o valor do negócio + audita (espelho do recompute das actions).
-  const { data: rows } = await supabaseAdmin.from("tenant_deal_items")
-    .select("billing, unit_price, quantity, discount, term_months")
-    .eq("tenant_id", scope.tenantId).eq("deal_id", dealId)
-  const likes = ((rows ?? []) as Record<string, unknown>[]).map((r) => ({
-    billing: r.billing as "one_time" | "monthly" | "yearly",
-    unit_price: Number(r.unit_price ?? 0), quantity: Number(r.quantity ?? 1),
-    discount: Number(r.discount ?? 0), term_months: (r.term_months as number | null) ?? null,
-  }))
-  const total = likes.length ? computeDealValue(likes).total : null
-  await supabaseAdmin.from("tenant_deals")
-    .update({ estimated_value: total, updated_at: new Date().toISOString() })
-    .eq("id", dealId).eq("tenant_id", scope.tenantId)
-  const fmt = (v: number | null) => v != null ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }) : "—"
-  await recordDealEvent({
-    tenantId: scope.tenantId, dealId, type: "field_changed", by: scope.userId,
-    note: `Itens adicionados via extensão: ${names.join(", ")}`,
-    change: { label: "Valor", from: fmt(oldValue != null ? Number(oldValue) : null), to: fmt(total) }, postCard: false,
-  })
+  await recomputeComandaValue(scope.tenantId, dealId, scope.userId,
+    `Itens adicionados via extensão: ${names.join(", ")}`, oldValue != null ? Number(oldValue) : null)
   return { added, skipped: wanted.length - added }
 }
 

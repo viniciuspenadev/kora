@@ -97,6 +97,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "addDealItems":
         sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}/items`, { method: "POST", body: JSON.stringify({ items: msg.items }) }))
         break
+      case "removeDealItem":
+        sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}/items/${encodeURIComponent(msg.itemId)}`, { method: "DELETE" }))
+        break
       case "markQuoteSent":
         sendResponse(await api(`/api/ext/documents/${encodeURIComponent(msg.docId)}/sent`, { method: "POST", body: "{}" }))
         break

@@ -1096,13 +1096,17 @@ async function renderDealDetail(dealId) {
     it.billing === "monthly" ? ` · mensal${it.termMonths ? ` × ${it.termMonths}m` : ""}`
     : it.billing === "yearly" ? " · anual" : ""
 
+  const discTag = (it) => it.discount > 0 ? ` · <span class="it-disc">−${brl2(it.discount)}${it.billing !== "one_time" ? "/mês" : ""}</span>` : ""
   const itemsHtml = d.items.length
     ? `<div class="sec">Itens · ${d.items.length}</div>
        <div class="card slim"><div class="list">
          ${d.items.map((it) => `
            <div class="it">
-             <span class="it-l"><b>${esc(it.name)}</b><small>${it.qty} ${esc(it.unit)} × ${brl2(it.unitPrice)}${billTag(it)}</small></span>
-             <span class="it-v">${brl2(it.lineTotal)}</span>
+             <span class="it-l"><b>${esc(it.name)}</b><small>${it.qty} ${esc(it.unit)} × ${brl2(it.unitPrice)}${billTag(it)}${discTag(it)}</small></span>
+             <span class="it-r">
+               <span class="it-v">${brl2(it.lineTotal)}</span>
+               <button class="it-del" data-item="${esc(it.id)}" data-name="${esc(it.name)}" type="button" title="Remover item" aria-label="Remover item">×</button>
+             </span>
            </div>`).join("")}
          <div class="it tot">
            <span class="it-l"><b>Total do negócio</b>${d.totals.mrr > 0 ? `<small>MRR ${brl2(d.totals.mrr)}/mês</small>` : ""}</span>
@@ -1171,6 +1175,19 @@ async function renderDealDetail(dealId) {
   })
   const addBtn = document.getElementById("dd-additems")
   if (addBtn) addBtn.addEventListener("click", () => renderComanda(dealId))
+  // Remover item: confirma no próprio × (morfa spinner → some), recarrega o negócio.
+  view.querySelectorAll(".it-del").forEach((b) => b.addEventListener("click", async () => {
+    if (b.dataset.busy) return
+    b.dataset.busy = "1"; b.classList.add("busy"); b.textContent = "…"
+    const res = await send({ type: "removeDealItem", dealId, itemId: b.dataset.item })
+    if (!res || !res.ok) {
+      b.dataset.busy = ""; b.classList.remove("busy"); b.textContent = "×"
+      alertHint((res && res.error) || "Não deu pra remover o item.")
+      return
+    }
+    alertHint(`Item removido ✓`, true)
+    renderDealDetail(dealId)
+  }))
   view.querySelectorAll(".q-view").forEach((b) => {
     b.addEventListener("click", () => viewQuote(b))
   })
