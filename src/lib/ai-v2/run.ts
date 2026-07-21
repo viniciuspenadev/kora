@@ -83,14 +83,28 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   const startedAt = Date.now()
 
   // ── 1) Config + persona + master switch ────────────────────
-  const { data: config } = await supabaseAdmin
+  const { data: configRow } = await supabaseAdmin
     .from("studio_config")
     .select("*")
     .eq("tenant_id", tenantId)
     .maybeSingle()
-  // Disparo manual (forceFlowId) ignora o master switch — é uma ação explícita do
-  // atendente/campanha, não a auto-resposta a um inbound que o ai_enabled governa.
-  if (!config) return { status: "skipped", reason: "disabled" }
+  // A Persona (studio_config) é SÓ da IA. Um fluxo determinístico (menu/coletar/
+  // disparar — sem nó de IA) NÃO precisa dela: sem linha, roda com padrões neutros
+  // em vez de abortar. Isto só muda o caso "config ausente" (que hoje não roda NADA);
+  // todo tenant que já tem studio_config cai no configRow real e é idêntico ao de
+  // antes. O liga/desliga do Studio segue sendo o MÓDULO ai_studio (checado abaixo).
+  const config = configRow ?? {
+    tenant_id:                tenantId,
+    ai_enabled:               true,
+    ai_name:                  null,
+    ai_tone:                  null,
+    ai_language:              "pt-BR",
+    ai_model:                 "gpt-4.1",
+    identity_text:            null,
+    communication_style_text: null,
+    anti_patterns_text:       null,
+    ai_control_decoupled:     false,
+  }
   // Controle do Studio = MÓDULO (god mode). O antigo toggle do tenant (config.ai_enabled)
   // foi removido — quem liga/desliga é a plataforma. Disparo manual (forceFlowId) ignora.
   if (!(await hasModule(tenantId, "ai_studio")) && !opts?.forceFlowId) return { status: "skipped", reason: "disabled" }
