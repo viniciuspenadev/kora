@@ -88,8 +88,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "dealDetail":
         sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}`))
         break
-      case "createQuote":
-        sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}/quote`, { method: "POST", body: "{}" }))
+      // "createQuote" aposentado (owner 2026-07-20): compor cotação = app
+      // ("Compor no Kora ↗"); a extensão captura/consulta/dispara, não compõe.
+      // COMANDA: capturar o pedido ditado na conversa (itens a preço de tabela).
+      case "dealCatalog":
+        sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}/catalog`))
+        break
+      case "addDealItems":
+        sendResponse(await api(`/api/ext/deals/${encodeURIComponent(msg.dealId)}/items`, { method: "POST", body: JSON.stringify({ items: msg.items }) }))
         break
       case "markQuoteSent":
         sendResponse(await api(`/api/ext/documents/${encodeURIComponent(msg.docId)}/sent`, { method: "POST", body: "{}" }))

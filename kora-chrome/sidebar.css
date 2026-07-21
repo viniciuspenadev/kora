@@ -130,6 +130,9 @@ button.btn { font-family: inherit; }
 button.btn.btn-primary { border: 0; }
 .btn-primary { background: #004add; color: #fff; box-shadow: 0 6px 16px -8px rgba(0, 74, 221, 0.5); }
 .btn-white { background: #fff; color: #334155; border-color: #e2e8f0; }
+/* secundário em TINTA (Lei do Contraste — nunca branco-sobre-branco) */
+.btn-soft { background: #eef4ff; color: #004add; border-color: #d6e3ff; }
+.btn-soft:hover { background: #e2ecff; }
 .hint { font-size: 10.5px; color: #94a3b8; text-align: center; line-height: 1.5; }
 .warn {
   background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px;
@@ -532,3 +535,34 @@ body { position: relative; overflow: hidden; }
   from { opacity: 0; transform: translateY(9px); }
   to   { opacity: 1; transform: none; }
 }
+
+/* ── COMANDA: lançar itens do catálogo (preço de tabela, sem negociação) ── */
+.cm-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 2px; border-bottom: 1px solid #f1f5f9;
+}
+.cm-row:last-child { border-bottom: 0; }
+.cm-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cm-l b { font-size: 12.5px; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-l small { font-size: 10.5px; color: #64748b; }
+.cm-add {
+  flex: none; width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
+  background: #eef4ff; color: #004add; border: 1px solid #d6e3ff;
+  font-size: 14px; font-weight: 700; line-height: 1; font-family: inherit;
+}
+.cm-add:hover { background: #e2ecff; }
+.cm-step {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  background: #eef4ff; border: 1px solid #d6e3ff; border-radius: 8px; padding: 2px;
+}
+.cm-step b { font-size: 12.5px; color: #004add; min-width: 20px; text-align: center; }
+.cm-step button {
+  width: 24px; height: 24px; border: 0; border-radius: 6px; cursor: pointer;
+  background: transparent; color: #004add; font-size: 13px; font-weight: 700; font-family: inherit;
+}
+.cm-step button:hover { background: #d6e3ff; }
+.cm-foot {
+  position: sticky; bottom: 0; background: #fff; border-top: 1px solid #f1f5f9;
+  padding: 10px 0 4px; display: flex; flex-direction: column; gap: 8px; margin-top: 8px;
+}
+.cm-sum { font-size: 11.5px; font-weight: 700; color: #334155; text-align: center; }

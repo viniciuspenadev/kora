@@ -1112,8 +1112,7 @@ async function renderDealDetail(dealId) {
     : `<div class="empty inline">
          <div class="ico">📦</div>
          <b>Sem itens neste negócio</b>
-         <p>Adicione produtos ou serviços no app pra compor o valor e gerar a cotação.</p>
-         <a class="lnk" target="_blank" rel="noreferrer" href="${esc(session.baseUrl)}/negocios/${esc(d.id)}">Abrir o negócio no app ↗</a>
+         <p>Que tal lançar os primeiros? Busque no catálogo e adicione com um toque — a preço de tabela.</p>
        </div>`
 
   const STATUS = {
@@ -1155,33 +1154,141 @@ async function renderDealDetail(dealId) {
     </div>
     <div class="dd-meta">${esc(d.pipelineName || "")}${d.stageName ? ` · ${esc(d.stageName)}` : ""}</div>
     ${itemsHtml}
+    <button id="dd-additems" class="btn btn-soft" type="button">＋ Adicionar itens</button>
     ${d.quotes.length || d.items.length ? `<div class="sec">Cotações${d.quotes.length ? ` · ${d.quotes.length}` : ""}</div>` : ""}
     ${quotesHtml}
     ${d.items.length ? `
-      <button id="dd-quote" class="btn btn-primary" type="button">Gerar cotação</button>
-      <div class="hint">Nasce com os modelos "sempre incluir" da empresa. Cada geração é uma nova versão numerada.</div>` : ""}`)
+      <button id="dd-quote" class="btn btn-primary" type="button">Compor cotação no Kora ↗</button>
+      <div class="hint">Abre o compositor (validade, condições, observações e contrato, com preview). A cotação gerada aparece aqui pra enviar nesta conversa.</div>` : ""}`)
 
   document.getElementById("dd-back").addEventListener("click", () => renderFicha())
+  // Gerar-às-cegas MORREU (owner 2026-07-20): documento numerado e imutável não
+  // nasce de 1 clique sem validade/condições/contrato — o botão abre o COMPOSITOR
+  // do app já no negócio; de volta ao chat, a lista mostra a nova pra enviar.
   const gen = document.getElementById("dd-quote")
-  if (gen) gen.addEventListener("click", async () => {
-    morphStart(gen)
-    const res = await send({ type: "createQuote", dealId })
-    if (!res || !res.ok) {
-      morphFail(gen, "Gerar cotação")
-      alertHint((res && res.error) || "Não deu pra gerar a cotação.")
-      return
-    }
-    morphSuccess(gen, () => {
-      alertHint(`Cotação ${res.data.code} gerada ✓`, true)
-      renderDealDetail(dealId)
-    })
+  if (gen) gen.addEventListener("click", () => {
+    window.open(`${session.baseUrl}/negocios/${encodeURIComponent(dealId)}/cotacao/nova`, "_blank", "noopener")
   })
+  const addBtn = document.getElementById("dd-additems")
+  if (addBtn) addBtn.addEventListener("click", () => renderComanda(dealId))
   view.querySelectorAll(".q-view").forEach((b) => {
     b.addEventListener("click", () => viewQuote(b))
   })
   view.querySelectorAll(".q-send").forEach((b) => {
     b.addEventListener("click", () => sendQuoteHere(b, dealId))
   })
+}
+
+// ── COMANDA (owner 2026-07-20): capturar o pedido ditado na conversa ──────────
+// Itens do catálogo + quantidade, a PREÇO DE TABELA — sem desconto, sem editar
+// preço (negociar é no Kora ↗). Régua: capturar = extensão; trabalhar = app.
+async function renderComanda(dealId) {
+  empty("⏳", "Abrindo catálogo…", "Buscando produtos e serviços.")
+  const res = await send({ type: "dealCatalog", dealId })
+  if (!res || !res.ok) {
+    if (res && res.status === 401) { session = { loggedIn: false }; renderState(); return }
+    empty("😕", "Catálogo indisponível", (res && res.error) || "Tente de novo em instantes.")
+    const back = document.createElement("button")
+    back.className = "btn btn-soft"; back.type = "button"; back.textContent = "‹ Voltar pro negócio"
+    back.addEventListener("click", () => renderDealDetail(dealId))
+    view.appendChild(back)
+    return
+  }
+  const catalog = res.data.items || []
+  const SUFFIX = { monthly: "/mês", yearly: "/ano" }
+  const sel = new Map()   // catalogItemId → qty
+  let query = ""
+
+  setView(`
+    <div class="frm-head">
+      <button id="cm-back" class="back-btn" type="button">‹</button>
+      <b>Adicionar itens</b>
+    </div>
+    <div class="frm"><input id="cm-q" type="text" placeholder="Buscar no catálogo…" autocomplete="off"></div>
+    <div id="cm-list"></div>
+    <div class="cm-foot">
+      <span id="cm-sum" class="cm-sum">Nenhum item selecionado</span>
+      <button id="cm-save" class="btn btn-primary" type="button" disabled>Salvar no negócio</button>
+      <div class="hint">Preço de tabela. Negociar preço, desconto ou prazo é no Kora — abra o negócio no ↗ acima.</div>
+    </div>`)
+
+  const listEl = document.getElementById("cm-list")
+  const sumEl  = document.getElementById("cm-sum")
+  const saveEl = document.getElementById("cm-save")
+
+  const paintSum = () => {
+    let n = 0, total = 0
+    sel.forEach((qty, id) => {
+      const it = catalog.find((c) => c.id === id)
+      if (it) { n += 1; total += it.price * qty }
+    })
+    sumEl.textContent = n ? `${n} ${n === 1 ? "item" : "itens"} · ${brl2(total)}` : "Nenhum item selecionado"
+    saveEl.disabled = n === 0
+  }
+
+  const paint = () => {
+    const q = query.trim().toLowerCase()
+    const rows = q
+      ? catalog.filter((c) => (c.name || "").toLowerCase().includes(q) || (c.sku || "").toLowerCase().includes(q) || (c.category || "").toLowerCase().includes(q))
+      : catalog
+    if (!rows.length) {
+      listEl.innerHTML = catalog.length
+        ? `<div class="hint" style="text-align:center;padding:18px 0">Nada encontrado com esse termo.</div>`
+        : `<div class="empty inline"><div class="ico">🗂️</div><b>Catálogo vazio</b><p>Cadastre produtos e serviços no Kora pra lançar itens daqui.</p></div>`
+      return
+    }
+    listEl.innerHTML = rows.map((c) => {
+      const qty = sel.get(c.id) || 0
+      return `
+        <div class="cm-row">
+          <span class="cm-l">
+            <b>${esc(c.name)}</b>
+            <small>${brl2(c.price)}${SUFFIX[c.billing] || ""}${c.unit && c.unit !== "un" ? ` · ${esc(c.unit)}` : ""}${c.category ? ` · ${esc(c.category)}` : ""}</small>
+          </span>
+          ${qty > 0
+            ? `<span class="cm-step" data-id="${esc(c.id)}">
+                 <button class="cm-dec" type="button" aria-label="Diminuir">−</button>
+                 <b>${qty}</b>
+                 <button class="cm-inc" type="button" aria-label="Aumentar">＋</button>
+               </span>`
+            : `<button class="cm-add" data-id="${esc(c.id)}" type="button">＋</button>`}
+        </div>`
+    }).join("")
+    listEl.querySelectorAll(".cm-add").forEach((b) => b.addEventListener("click", () => {
+      sel.set(b.dataset.id, 1); paint(); paintSum()
+    }))
+    listEl.querySelectorAll(".cm-step").forEach((s) => {
+      const id = s.dataset.id
+      s.querySelector(".cm-inc").addEventListener("click", () => {
+        sel.set(id, Math.min(9999, (sel.get(id) || 0) + 1)); paint(); paintSum()
+      })
+      s.querySelector(".cm-dec").addEventListener("click", () => {
+        const next = (sel.get(id) || 0) - 1
+        if (next <= 0) sel.delete(id); else sel.set(id, next)
+        paint(); paintSum()
+      })
+    })
+  }
+
+  document.getElementById("cm-back").addEventListener("click", () => renderDealDetail(dealId))
+  document.getElementById("cm-q").addEventListener("input", (e) => { query = e.target.value; paint() })
+  saveEl.addEventListener("click", async () => {
+    const items = [...sel.entries()].map(([catalogItemId, quantity]) => ({ catalogItemId, quantity }))
+    if (!items.length) return
+    morphStart(saveEl)
+    const r = await send({ type: "addDealItems", dealId, items })
+    if (!r || !r.ok) {
+      morphFail(saveEl, "Salvar no negócio")
+      alertHint((r && r.error) || "Não deu pra lançar os itens.")
+      return
+    }
+    morphSuccess(saveEl, () => {
+      alertHint(`${r.data.added} ${r.data.added === 1 ? "item lançado" : "itens lançados"} no negócio ✓`, true)
+      renderDealDetail(dealId)
+    })
+  })
+  paint()
+  paintSum()
 }
 
 // PDF congelado é IMUTÁVEL → cache de 1 entrada (Visualizar→Enviar baixa 1x só)
