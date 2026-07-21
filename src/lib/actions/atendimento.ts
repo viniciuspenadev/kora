@@ -110,6 +110,10 @@ export async function getReturnRouting(): Promise<ReturnRoute[]> {
     const catchAll = list.find((f) => f.trigger?.type === "any_message" && catchesChannel(f, ch))
     const winner = reopened ?? catchAll
     if (winner) return { channel: ch, handler: "flow" as const, flowName: winner.name }
-    return { channel: ch, handler: "agent" as const }
+    // Sem fluxo de atendimento no canal → a IA v2 NÃO atende (ela só roda DENTRO de
+    // um fluxo, via nó Agente IA). Cai no humano/fila — reflete a realidade após a
+    // remoção do fallback global (run.ts §7). Antes retornava "agent" (IA persona),
+    // que era o fallback disfarçado de configuração.
+    return { channel: ch, handler: "human" as const, reason: "sem fluxo de atendimento" }
   })
 }

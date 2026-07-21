@@ -15,7 +15,7 @@
 
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
-import { runAgentTurn, type AgentTurnResult } from "./agent"
+import type { AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
 import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, startFlowRunAt, type MatchSignals } from "./flow/triggers"
 import { markRecipientReplied, isOptOut } from "@/lib/campaigns/engine"
@@ -312,16 +312,15 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     return mapResult(flowResult.status, flowResult.departmentId, flowResult.error)
   }
 
-  // ── 7) Agente (fallback — modo "IA conduz") ────────────────
-  // Add-on IA desligado: sem agente conversacional. O Studio só atua por FLUXOS
-  // determinísticos; sem fluxo casado, não auto-responde (atendimento fica com o humano).
-  if (!(await hasModule(tenantId, "ai"))) return { status: "no_action" }
-  const turn = await runAgentTurn(flowInput)
-  await persistStudioRun({
-    tenantId, conversationId, model: config.ai_model, startedAt,
-    flowId: null, kind: "agent_turn", agent: turn, error: turn.error,
-  })
-  return mapResult(turn.status, turn.departmentId, turn.error)
+  // ── 7) Sem fluxo casado = SEM IA (decisão 2026-07-21) ──────
+  // A IA v2 roda EXCLUSIVAMENTE dentro de um fluxo, pelo nó Agente IA. NÃO existe
+  // "auto-atendente global": se nenhum fluxo de atendimento casa o inbound, o Studio
+  // não responde — a conversa fica com o humano (o hand-back do decouple devolve o
+  // controle quando ai_control_decoupled). O nó ai_agent (runtime.ts) é o ÚNICO ponto
+  // onde a persona conduz. Antes daqui havia um fallback que respondia tudo que
+  // nenhum fluxo pegou, só pela presença do módulo `ai` — furo: a IA respondia sem
+  // que o tenant tivesse desenhado um fluxo de atendimento.
+  return { status: "no_action" }
 }
 
 // ── observability: grava 1 linha em studio_runs ─────────────────
