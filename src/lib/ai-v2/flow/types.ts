@@ -24,6 +24,7 @@ export type FlowNodeType =
   | "ai_router"  // a IA classifica a intenção e ramifica (§11.4)
   | "call_flow"  // chama outro fluxo (sub-fluxo que volta, ou "ir para") (§11.2)
   | "template"   // envia um TEMPLATE aprovado (Meta oficial) e avança — abre janela/re-engaja
+  | "outreach"   // DISPARA no WhatsApp pro número do contato (cross-canal: site→WhatsApp) — ramifica enviado/sem_whatsapp/bloqueado
   | "tag"        // adiciona/remove etiqueta no contato e avança
   | "move_stage" // move a conversa de etapa no pipeline e avança
   | "assign"     // distribui a conversa (round-robin) — ramifica atribuído/pool
@@ -141,6 +142,11 @@ export interface CollectNodeConfig {
   saveAs:    string
   validate?: "text" | "email" | "phone" | "number"
   retry?:    string
+  /** Além de guardar na variável, grava a resposta na COLUNA REAL do contato
+   *  (mesma normalização/guardas da tool update_contact — telefone/CPF só se
+   *  vazios). Ausente = só variável (comportamento clássico). Destrava o número
+   *  pro nó de disparo cross-canal (docs/studio-outreach-node-design.md). */
+  mapTo?:    "name" | "phone" | "email" | "document" | "company" | "birthdate"
 }
 export interface ScheduleNodeConfig {
   /** Destino (binding): fixed (agenda/serviço) · owner (carteira). Sem "ai" (não há IA aqui). */
@@ -197,6 +203,23 @@ export interface TemplateNodeConfig {
   language: string
   /** Variáveis do corpo, na ordem (texto fixo ou {{var}} do fluxo — interpolado). */
   params?:  string[]
+}
+/** Nó de disparo cross-canal (site→WhatsApp) — docs/studio-outreach-node-design.md.
+ *  Envia pro número do CONTATO no WhatsApp, não no canal onde o fluxo roda.
+ *  Ramos: "sent" | "no_whatsapp" | "blocked". */
+export interface OutreachNodeConfig {
+  /** Qual número de saída: oficial (meta_cloud) · baileys · auto (prefere oficial). */
+  channel:   "official" | "baileys" | "auto"
+  /** Instância (número) de saída. Ausente = 1ª do canal resolvido (selector = F2c). */
+  instanceId?: string
+  /** Variável com o telefone destino. Ausente = contato.phone_number. */
+  toVar?:    string
+  /** Oficial: template aprovado (fora da janela 24h só template passa). */
+  template?: { name: string; language: string; params?: string[] }
+  /** Template é categoria MARKETING? Se sim, exige marketing_opt_in (fail-closed, I5). */
+  marketing?: boolean
+  /** Baileys: texto livre (suporta {{var}} — interpolado). */
+  text?:     string
 }
 export interface TagNodeConfig {
   tag:    string

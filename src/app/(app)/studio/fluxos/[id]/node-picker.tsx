@@ -11,7 +11,7 @@ import {
   Search, ChevronRight, Sparkles, Plus,
   MessageSquare, Image as ImageIcon, FileBadge, ListChecks, ClipboardList, CalendarPlus,
   GitBranch, Split, Clock, Braces, Timer, Bot, GitFork, Tag, Columns3, UserPlus,
-  ArrowRightLeft, Globe, Workflow, CheckCircle2, CornerUpLeft, Flag,
+  ArrowRightLeft, Globe, Workflow, CheckCircle2, CornerUpLeft, Flag, Send,
 } from "lucide-react"
 import type { FlowNodeType } from "@/lib/ai-v2/flow/types"
 
@@ -24,6 +24,7 @@ const GROUPS: Group[] = [
     { type: "message",    label: "Mensagem",       desc: "texto pro cliente (com variáveis)", icon: MessageSquare },
     { type: "send_media", label: "Enviar mídia",   desc: "imagem, vídeo, áudio ou documento", icon: ImageIcon },
     { type: "template",   label: "Enviar template", desc: "aprovado — reabre a janela de 24h", icon: FileBadge },
+    { type: "outreach",   label: "Disparar no WhatsApp", desc: "envia template ou mensagem para o número do contato", icon: Send },
   ] },
   { key: "ask", label: "Perguntar & coletar", tint: "text-primary-600 bg-primary-50", items: [
     { type: "menu",     label: "Menu",         desc: "oferece opções e ramifica pela escolha", icon: ListChecks },

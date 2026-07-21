@@ -4,9 +4,13 @@
 // Grava em colunas REAIS do contato. Só PREENCHE phone/doc quando vazio
 // (não sobrescreve WhatsApp real nem identidade legal). Devolve toolMessage
 // pro agente reconhecer e seguir o atendimento (não fica mudo).
+//
+// O mapeamento coluna→normalização mora em applyContactCapture (fonte ÚNICA),
+// reusado pela tool da IA (aqui) E pelo nó Coletar determinístico (via mapTo).
 import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
 import { normalizePhone } from "@/lib/phone-utils"
+import type { ExecCtx } from "./types"
 
 export const UPDATE_CONTACT = "update_contact"
 
@@ -28,12 +32,63 @@ function normalizeBirthdate(raw: string): string | null {
   return null
 }
 
+/** Campos que o nó Coletar pode mapear pro cadastro (config `mapTo`). */
+export type ContactMapField = "name" | "phone" | "email" | "document" | "company" | "birthdate"
+
+/**
+ * Aplica os dados de identidade capturados nas COLUNAS REAIS do contato. Fonte
+ * ÚNICA do mapeamento — reusada pela tool da IA (update_contact) E pelo nó
+ * Coletar (mapTo). Guardas: phone/doc só preenchem se VAZIOS (não sobrescreve
+ * WhatsApp/identidade legal); e-mail validado; nome/empresa truncados;
+ * nascimento normalizado. Retorna as colunas efetivamente escritas ({} = nada
+ * novo). NÃO insere nota nem toca identidade/merge — só as colunas. Lança em
+ * erro de banco (o chamador decide se é fatal ou best-effort).
+ */
+export async function applyContactCapture(ctx: ExecCtx, parsed: UpdateArgs): Promise<Record<string, string>> {
+  const { tenantId, contact } = ctx
+  const updates: Record<string, string> = {}
+  if (parsed.name) updates.custom_name = parsed.name.slice(0, 120)
+  if (parsed.phone && !contact.phone_number?.trim()) {
+    const { data: tc } = await supabaseAdmin
+      .from("tenant_config").select("default_country").eq("tenant_id", tenantId).maybeSingle()
+    const normalized = normalizePhone(parsed.phone, tc?.default_country ?? "BR")
+    if (normalized) updates.phone_number = normalized
+  }
+  if (parsed.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email)) updates.email = parsed.email.slice(0, 254)
+  if (parsed.document && !contact.doc_id?.trim()) {
+    const digits = parsed.document.replace(/\D/g, "")
+    if (digits.length === 11 || digits.length === 14) updates.doc_id = digits
+  }
+  if (parsed.company) updates.company = parsed.company.slice(0, 120)
+  if (parsed.birthdate) {
+    const iso = normalizeBirthdate(parsed.birthdate)
+    if (iso) updates.birth_date = iso
+  }
+  if (Object.keys(updates).length === 0) return {}
+
+  const { error } = await supabaseAdmin
+    .from("chat_contacts")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", contact.id)
+    .eq("tenant_id", tenantId)
+  if (error) throw new Error(`applyContactCapture: ${error.message}`)
+  return updates
+}
+
+/** Captura UM campo do nó Coletar (mapTo) no cadastro — wrapper de 1 campo do
+ *  applyContactCapture. O runtime chama e trata como best-effort. */
+export function captureContactField(ctx: ExecCtx, field: ContactMapField, value: string): Promise<Record<string, string>> {
+  const args: UpdateArgs = { name: null, phone: null, email: null, document: null, company: null, birthdate: null }
+  args[field] = value
+  return applyContactCapture(ctx, args)
+}
+
 export const updateContactCapability = defineCapability<UpdateArgs>({
   id:           UPDATE_CONTACT,
   name:         "Capturar dados do contato",
   category:     "crm",
   minPlanLevel: 0,
-  isNode:       false,   // por enquanto só tool da IA (não nó do builder)
+  isNode:       false,   // reuso via applyContactCapture; não é nó do builder
   toolSchema: {
     type: "function",
     function: {
@@ -68,38 +123,18 @@ export const updateContactCapability = defineCapability<UpdateArgs>({
     }
   },
   execute: async (ctx, parsed) => {
-    const { tenantId, conversationId, contact } = ctx
-    const updates: Record<string, string> = {}
-    if (parsed.name) updates.custom_name = parsed.name.slice(0, 120)
-    if (parsed.phone && !contact.phone_number?.trim()) {
-      const { data: tc } = await supabaseAdmin
-        .from("tenant_config").select("default_country").eq("tenant_id", tenantId).maybeSingle()
-      const normalized = normalizePhone(parsed.phone, tc?.default_country ?? "BR")
-      if (normalized) updates.phone_number = normalized
-    }
-    if (parsed.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email)) updates.email = parsed.email.slice(0, 254)
-    if (parsed.document && !contact.doc_id?.trim()) {
-      const digits = parsed.document.replace(/\D/g, "")
-      if (digits.length === 11 || digits.length === 14) updates.doc_id = digits
-    }
-    if (parsed.company) updates.company = parsed.company.slice(0, 120)
-    if (parsed.birthdate) {
-      const iso = normalizeBirthdate(parsed.birthdate)
-      if (iso) updates.birth_date = iso
+    let updates: Record<string, string>
+    try {
+      updates = await applyContactCapture(ctx, parsed)
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "update_contact falhou" }
     }
     if (Object.keys(updates).length === 0) return { ok: true, toolMessage: "Nada novo a salvar." }
 
-    const { error } = await supabaseAdmin
-      .from("chat_contacts")
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq("id", contact.id)
-      .eq("tenant_id", tenantId)
-    if (error) return { ok: false, error: `update_contact: ${error.message}` }
-
     const parts = Object.entries(updates).map(([k, v]) => `${k}: ${v}`)
     await supabaseAdmin.from("chat_messages").insert({
-      conversation_id: conversationId,
-      tenant_id:       tenantId,
+      conversation_id: ctx.conversationId,
+      tenant_id:       ctx.tenantId,
       sender_type:     "system",
       content_type:    "text",
       content:         `📇 Dados capturados pela IA — ${parts.join(" · ")}`,

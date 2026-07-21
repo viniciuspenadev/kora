@@ -212,7 +212,67 @@ export function ConfigPanel({
               { value: "number", label: "Número" },
             ]} />
           </div>
+          <div>
+            <label className={LABEL}>Salvar no cadastro <span className="text-slate-400 font-normal">(opcional)</span></label>
+            <SimpleSelect value={String(cfg.mapTo ?? "")} onChange={(v) => set({ mapTo: v || undefined })} options={[
+              { value: "",          label: "Não salvar (só variável)" },
+              { value: "name",      label: "Nome" },
+              { value: "phone",     label: "Telefone / WhatsApp" },
+              { value: "email",     label: "E-mail" },
+              { value: "document",  label: "CPF / CNPJ" },
+              { value: "company",   label: "Empresa" },
+              { value: "birthdate", label: "Nascimento" },
+            ]} />
+            <p className="text-[11px] text-slate-400 mt-1">Grava a resposta na ficha do contato (telefone e CPF só se ainda vazios). Necessário pro disparo no WhatsApp.</p>
+          </div>
           <p className="text-[11px] text-slate-400">O fluxo espera a resposta e guarda na variável. Use depois com <code className="bg-slate-100 px-1 rounded">{"{{nome}}"}</code> ou pelo Agente IA.</p>
+        </div>
+      )}
+
+      {type === "outreach" && (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-400">Envia uma mensagem no <b>WhatsApp</b> para o número do contato — não responde no canal atual (ex.: site). A conversa do WhatsApp é aberta e a resposta do cliente cai nela.</p>
+          <div>
+            <label className={LABEL}>Número de saída</label>
+            <SimpleSelect value={String(cfg.channel ?? "auto")} onChange={(v) => set({ channel: v })} options={[
+              { value: "auto",     label: "Automático (prefere Oficial)" },
+              { value: "official", label: "WhatsApp Oficial — template" },
+              { value: "baileys",  label: "WhatsApp não-oficial — texto" },
+            ]} />
+          </div>
+          <div>
+            <label className={LABEL}>Enviar para qual número?</label>
+            <SimpleSelect value={String(cfg.toVar ?? "")} onChange={(v) => set({ toVar: v || undefined })} options={[
+              { value: "", label: "Telefone salvo no contato (padrão)" },
+              ...flowVars.map((v) => ({ value: v, label: `Variável: ${v}` })),
+            ]} />
+            <p className="text-[11px] text-slate-400 mt-1">Use o telefone do contato, ou uma variável coletada no fluxo. Dica: no nó Coletar, marque <b>Salvar no cadastro → Telefone</b> — aí este campo pode ficar no padrão.</p>
+          </div>
+          {cfg.channel !== "baileys" && (
+            <div className="rounded-lg border border-slate-200 p-2.5 space-y-2">
+              <p className="text-[11px] font-semibold text-slate-500">Template aprovado <span className="font-normal text-slate-400">(Oficial — fora da janela, só template passa)</span></p>
+              <input className={INPUT} value={String((cfg.template as { name?: string } | undefined)?.name ?? "")}
+                onChange={(e) => set({ template: { ...((cfg.template as Record<string, unknown> | undefined) ?? { language: "pt_BR" }), name: e.target.value } })}
+                placeholder="nome do template" />
+              <input className={INPUT} value={String((cfg.template as { language?: string } | undefined)?.language ?? "pt_BR")}
+                onChange={(e) => set({ template: { ...((cfg.template as Record<string, unknown> | undefined) ?? {}), language: e.target.value } })}
+                placeholder="pt_BR" />
+              <label className="flex items-center gap-2 text-[11px] text-slate-600">
+                <input type="checkbox" checked={!!cfg.marketing} onChange={(e) => set({ marketing: e.target.checked })} />
+                Template de <b>marketing</b> (exige opt-in do contato)
+              </label>
+            </div>
+          )}
+          {cfg.channel !== "official" && (
+            <div>
+              <label className={LABEL}>Texto livre <span className="text-slate-400 font-normal">(não-oficial)</span></label>
+              <VarField multiline rows={2} value={String(cfg.text ?? "")} onChange={(v) => set({ text: v })} placeholder="Oi {{nome}}! Como te ajudo?" flowVars={flowVars} />
+              <p className="text-[11px] text-amber-600 mt-1">⚠️ Mensagem a frio no não-oficial tem risco de bloqueio do número.</p>
+            </div>
+          )}
+          {(cfg.channel ?? "auto") === "auto" && (
+            <p className="text-[11px] text-slate-400">Em <b>Automático</b>: usa o Oficial (template) se houver número oficial; senão o não-oficial (texto).</p>
+          )}
         </div>
       )}
 
@@ -1277,6 +1337,7 @@ const TITLE: Record<string, string> = {
   wait: "Esperar",
   http: "Requisição HTTP", collect: "Coletar dado", schedule: "Agendar", ai_agent: "Agente IA",
   ai_router: "Roteador IA", call_flow: "Executar fluxo", template: "Enviar template",
+  outreach: "Disparar no WhatsApp",
   tag: "Etiquetar", move_stage: "Mover etapa", assign: "Distribuir",
   transfer: "Transferir", resolve: "Concluir", return: "Voltar", end: "Encerrar",
 }

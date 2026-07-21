@@ -16,6 +16,8 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { normalizeLifecycle } from "@/lib/lifecycle-stage"
 import { sendBotText, sendBotMedia, sendBotTemplate } from "../outbound"
 import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
+import { captureContactField } from "../capabilities/update-contact"
+import { runOutreach } from "./outreach"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
 import { hasModule } from "@/lib/modules"
 import type { PersonaInput } from "../prompt"
@@ -30,7 +32,7 @@ import type {
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
   HttpNodeConfig, CollectNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
   SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
-  WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig,
+  WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig, OutreachNodeConfig,
 } from "./types"
 
 /**
@@ -339,6 +341,23 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
       variables[cfg.saveAs?.trim() || "resposta"] = reply
+      // F1: write-back opcional pro cadastro (mapTo) — reusa a MESMA lógica da
+      // tool update_contact (normaliza + só-preenche-vazio p/ telefone/doc).
+      // Best-effort: nunca derruba o fluxo. Reflete no ctx.contact em memória pra
+      // um Condição logo à frente (has_phone/lifecycle) enxergar o que salvou.
+      if (cfg.mapTo) {
+        try {
+          const applied = await captureContactField(ctx, cfg.mapTo, reply)
+          if (applied.custom_name)  ctx.contact.custom_name  = applied.custom_name
+          if (applied.phone_number) ctx.contact.phone_number = applied.phone_number
+          if (applied.email)        ctx.contact.email        = applied.email
+          if (applied.doc_id)       ctx.contact.doc_id        = applied.doc_id
+          if (applied.company)      ctx.contact.company       = applied.company
+          if (applied.birth_date)   ctx.contact.birth_date    = applied.birth_date
+        } catch (e) {
+          console.error("[collect mapTo]", (e as Error)?.message ?? e)
+        }
+      }
       currentId = edgeTarget(graph, node.id)
     } else if (node?.type === "schedule") {
       const cfg   = { ...(node.config as unknown as ScheduleNodeConfig) }
@@ -601,6 +620,28 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           responded = true
         }
         currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "outreach": {
+        // Disparo cross-canal: envia no WhatsApp pro número do CONTATO (não no
+        // canal de origem). Interpola aqui (onde vivem as variáveis); o helper
+        // só executa. Ramifica sent/no_whatsapp/blocked.
+        const cfg = node.config as unknown as OutreachNodeConfig
+        const phoneRaw = cfg.toVar?.trim()
+          ? String(resolvePath(variables, cfg.toVar.trim()) ?? "")
+          : (ctx.contact.phone_number ?? "")
+        const out = await runOutreach(ctx, {
+          channel:          cfg.channel ?? "auto",
+          instanceId:       cfg.instanceId,
+          phoneRaw,
+          marketing:        cfg.marketing,
+          templateName:     cfg.template?.name,
+          templateLanguage: cfg.template?.language,
+          templateParams:   (cfg.template?.params ?? []).map((p) => interpolate(p ?? "", variables)),
+          text:             cfg.text ? interpolate(cfg.text, variables) : undefined,
+        })
+        if (out.branch === "sent") responded = true
+        currentId = edgeTarget(graph, node.id, out.branch)
         break
       }
       case "tag": {

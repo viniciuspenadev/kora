@@ -9,7 +9,7 @@
 
 import { createContext, useContext } from "react"
 import { Handle, Position, useNodeId, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2 } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
@@ -505,6 +505,32 @@ function TemplateNode(p: NodeProps) {
   )
 }
 
+function OutreachNode(p: NodeProps) {
+  const o = useOrient()
+  const cfg = cfgOf(p)
+  const chan = cfg.channel === "official" ? "Oficial" : cfg.channel === "baileys" ? "Não-oficial" : "Automático"
+  // Rótulos dos 3 ramos seguem a orientação: linha (vertical, handles no rodapé)
+  // ou coluna à direita (horizontal, handles empilhados na borda direita).
+  const horizontal = o === "horizontal"
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Send} accent="bg-sky-100 text-sky-700" title="Disparar no WhatsApp" selected={p.selected}>
+        Envia para o WhatsApp do contato
+        <span className="block text-[10px] text-slate-400 mt-0.5">via {chan}</span>
+        <div className={`mt-1.5 text-[9px] font-semibold uppercase tracking-wide ${horizontal ? "flex flex-col items-end gap-2.5" : "flex justify-between gap-1"}`}>
+          <span className="text-emerald-600">Enviado</span>
+          <span className="text-slate-500">Sem WhatsApp</span>
+          <span className="text-rose-500">Bloqueado</span>
+        </div>
+      </Card>
+      <SourceHandle id="sent"        pct={20} color="#059669" />
+      <SourceHandle id="no_whatsapp" pct={50} color="#94a3b8" />
+      <SourceHandle id="blocked"     pct={80} color="#dc2626" />
+    </>
+  )
+}
+
 function TagNode(p: NodeProps) {
   const cfg = cfgOf(p) as unknown as TagNodeConfig
   const isRemove = cfg.action === "remove"
@@ -601,6 +627,7 @@ export const nodeTypes = {
   ai_router: AiRouterNode,
   call_flow: CallFlowNode,
   template:   TemplateNode,
+  outreach:   OutreachNode,
   tag:        TagNode,
   move_stage: MoveStageNode,
   assign:     AssignNode,
