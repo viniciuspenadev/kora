@@ -66,3 +66,14 @@ export function isWindowOpen(channel: string | null | undefined, provider: strin
   if (!lastInboundAt) return false
   return now - new Date(lastInboundAt).getTime() < p.windowHours * 3_600_000
 }
+
+/**
+ * Canal da FAMÍLIA WhatsApp: Baileys ("whatsapp") OU Oficial ("meta_cloud") — ambos
+ * entregam pelo provider da instância (o provider distingue qual). Site/Instagram têm
+ * saída própria. Use pra rotear o ENVIO pelo canal da CONVERSA (o fio), não pelo
+ * primary_channel do contato — senão um contato de outra origem (ex: site) com um fio
+ * de WhatsApp não entrega. null/ausente = whatsapp (default do banco).
+ */
+export function isWhatsAppChannel(channel: string | null | undefined): boolean {
+  return (channel ?? "whatsapp") === "whatsapp" || channel === "meta_cloud"
+}

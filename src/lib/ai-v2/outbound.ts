@@ -16,7 +16,7 @@ type MediaKind = "image" | "audio" | "video" | "document"
 
 /** Contexto mínimo que os senders precisam (inclui respiro + typing). */
 type OutboundCtx = Pick<ExecCtx,
-  "tenantId" | "conversationId" | "contact" | "instance" | "dryRun" | "captured" | "inboundMsgId" | "pace">
+  "tenantId" | "conversationId" | "contact" | "channel" | "instance" | "dryRun" | "captured" | "inboundMsgId" | "pace">
 
 // ── Respiro humanizado (pacing) ─────────────────────────────────
 // Nenhum humano digita 400 caracteres em 2 segundos: antes de cada mensagem
@@ -37,7 +37,7 @@ async function humanPace(ctx: OutboundCtx, textLength: number): Promise<void> {
   const allowed = Math.min(want, PACE_TURN_BUDGET_MS - ctx.pace.usedMs)
   if (allowed <= 0) return
   ctx.pace.usedMs += allowed
-  if ((ctx.contact.primary_channel ?? "whatsapp") === "whatsapp") {
+  if (((ctx.channel ?? ctx.contact.primary_channel) ?? "whatsapp") === "whatsapp") {
     try {
       const provider = getProvider(ctx.instance)
       if (provider.providerName === "meta_cloud") {
@@ -61,7 +61,7 @@ export async function sendBotText(
   const sent = ctx.dryRun
     ? { messageId: null }
     : await sendChannelText(
-        { channel: ctx.contact.primary_channel, phoneNumber: ctx.contact.phone_number },
+        { channel: (ctx.channel ?? ctx.contact.primary_channel), phoneNumber: ctx.contact.phone_number },
         text,
         ctx.instance,
       )
@@ -108,12 +108,12 @@ export async function sendBotInteractive(
 
   // Respira SÓ se este caminho vai mesmo transmitir (canal whatsapp + provider
   // com interativo) — senão o fallback de texto do chamador respiraria de novo.
-  if ((ctx.contact.primary_channel ?? "whatsapp") === "whatsapp" && getProvider(ctx.instance).sendInteractive) {
+  if (((ctx.channel ?? ctx.contact.primary_channel) ?? "whatsapp") === "whatsapp" && getProvider(ctx.instance).sendInteractive) {
     await humanPace(ctx, payload.body.length)
   }
 
   const sent = await sendChannelInteractive(
-    { channel: ctx.contact.primary_channel, phoneNumber: ctx.contact.phone_number },
+    { channel: (ctx.channel ?? ctx.contact.primary_channel), phoneNumber: ctx.contact.phone_number },
     payload,
     ctx.instance,
   )
@@ -155,7 +155,7 @@ export async function sendBotMedia(
   const sent = ctx.dryRun
     ? { messageId: null }
     : await sendChannelMedia(
-        { channel: ctx.contact.primary_channel, phoneNumber: ctx.contact.phone_number },
+        { channel: (ctx.channel ?? ctx.contact.primary_channel), phoneNumber: ctx.contact.phone_number },
         media,
         ctx.instance,
       )

@@ -8,7 +8,7 @@ import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation, seesAllContacts, reachableContactIds } from "@/lib/visibility"
-import { isWindowOpen } from "@/lib/channels/policy"
+import { isWindowOpen, isWhatsAppChannel } from "@/lib/channels/policy"
 import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
@@ -424,8 +424,11 @@ export async function sendMessage(
   if (error || !msg) throw new Error(error?.message ?? "Erro ao salvar mensagem")
 
   if (!isPrivateNote) {
-    const channel = contact.primary_channel ?? "whatsapp"
-    if (channel === "whatsapp") {
+    // Roteia pelo canal da CONVERSA (o fio), não pelo primary_channel do contato —
+    // senão um contato de outra origem (ex: site-primary) com um fio de WhatsApp
+    // (disparo cross-canal) não entrega. whatsapp + meta_cloud = família WhatsApp.
+    const channel = (conv as { channel: string | null }).channel ?? "whatsapp"
+    if (isWhatsAppChannel(channel)) {
       try {
         const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
         const result   = await provider.sendText(contact.phone_number ?? contact.bsuid ?? "", content, replyCtx)
@@ -683,8 +686,8 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   // Mídia hoje só sai no WhatsApp. Em canais sem envio de mídia (site-chat),
   // bloqueia com mensagem clara em vez de tentar enviar pra um destino vazio.
-  const mediaChannel = (conv.chat_contacts as unknown as { primary_channel: string | null } | null)?.primary_channel ?? "whatsapp"
-  if (mediaChannel !== "whatsapp") {
+  const mediaChannel = (conv as { channel: string | null }).channel ?? "whatsapp"
+  if (!isWhatsAppChannel(mediaChannel)) {
     return { error: "Envio de mídia ainda não disponível nesse canal. Use texto." }
   }
 
@@ -860,7 +863,7 @@ async function resolveSendContext(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
+    .select("id, instance_id, assigned_to, participants, department_id, channel, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId).eq("tenant_id", tenantId).single()
   if (!conv) return { error: "Conversa não encontrada." }
 
@@ -874,7 +877,7 @@ async function resolveSendContext(
   })) return { error: "Sem permissão para esta conversa." }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
-  if ((contact.primary_channel ?? "whatsapp") !== "whatsapp") return { error: "Disponível apenas no WhatsApp." }
+  if (!isWhatsAppChannel((conv as { channel: string | null }).channel)) return { error: "Disponível apenas no WhatsApp." }
 
   if (opts?.autoAssign && assignedTo === null) {
     await supabaseAdmin.from("chat_conversations")
