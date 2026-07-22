@@ -1,0 +1,263 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  /* Primary scale — derivada de #004add */
+  --color-primary-50:  var(--primary-50);
+  --color-primary-100: var(--primary-100);
+  --color-primary-200: var(--primary-200);
+  --color-primary-500: var(--primary-500);
+  --color-primary-600: var(--primary-600);
+  --color-primary-700: var(--primary-700);
+  --color-primary-900: var(--primary-900);
+
+  /* Status semânticos */
+  --color-success:   var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning:   var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-danger:    var(--danger);
+  --color-danger-bg:  var(--danger-bg);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+}
+
+/* Canvas de página — token DEDICADO `bg-canvas`, usado SÓ no fundo das páginas
+   (PageShell + roots). CINZA-NEUTRO QUASE-BRANCO desde 2026-07-15 (owner: no
+   branco puro as linhas "somem" — o contraste de superfície devolve definição
+   aos cards sem engrossar borda). Histórico: #ffffff (2026-07-13, redesign) ·
+   #eff4fd (azul clarinho original). slate-50 segue NEUTRO. */
+@theme {
+  --color-canvas: #f7f8fa;
+
+  /* Chrome de navegação (sidebar + topbar) — TEMÁVEL via estes tokens. Só trocar os
+     valores aqui inverte todo o menu (claro ⇄ escuro), sem mexer em componente.
+     ATUAL: CLARO (branco + acento azul Kora). Variante escura comentada abaixo. */
+  --color-nav:        #ffffff;   /* fundo do chrome (branco) */
+  --color-nav-hover:  #f1f5f9;   /* hover de item (slate-100) */
+  --color-nav-active: #dbe4ff;   /* fundo do item ativo (primary-100) */
+  --color-nav-text:   #334155;   /* label (slate-700) */
+  --color-nav-dim:    #94a3b8;   /* ícone / secundário (slate-400) */
+  --color-nav-line:   #e2e8f0;   /* divisores (slate-200) */
+  --color-nav-accent: #004add;   /* acento / item ativo (primary) */
+  --color-nav-strong: #0f172a;   /* texto forte: título + hover (slate-900) */
+  /* Variante ESCURA (era o v1): nav #0b1430 · hover rgb(255 255 255/.06) · active
+     rgb(77 124 255/.16) · text #c9d2ec · dim #7c88b0 · line rgb(255 255 255/.08) ·
+     accent #4d7cff · strong #ffffff. (Logo volta pro wordmark branco no escuro.) */
+}
+
+/* Tinta da SIDEBAR (teste do owner 2026-07-15) — override escopado dos tokens
+   nav-* SÓ onde a classe é aplicada (aside desktop + drawer mobile). O topbar
+   segue branco (bg-nav global). Pra reverter: remover `nav-tint` dos asides.
+   Pra promover a definitivo: mover estes valores pro @theme acima.
+   ATUAL: cinza-neutro = MESMO tom do canvas (padrão Notion/Slack/Attio — a nav
+   vira moldura e o branco fica só no conteúdo). Tentativa anterior (azul-claro
+   #f4f8fe/#eef3fd) reprovada pelo owner. */
+.nav-tint {
+  --color-nav:        #f7f8fa;   /* = bg-canvas (moldura contínua) */
+  --color-nav-hover:  #eceef2;   /* um tom abaixo do fundo */
+  --color-nav-active: #dbe4ff;   /* pill ativa segue primary-100 (o azul é só do estado) */
+  --color-nav-line:   #e4e7ec;   /* divisores neutros acompanham */
+}
+
+:root {
+  /* Superfícies */
+  --background: oklch(1 0 0);   /* = bg-canvas branco (body harmoniza com o fundo das páginas) */
+  --foreground: oklch(0.145 0.015 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0.015 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0.015 260);
+
+  /* Brand — Kora azul #004add */
+  --primary:            #004add;
+  --primary-foreground: oklch(1 0 0);
+  --primary-50:         #eef2ff;
+  --primary-100:        #dbe4ff;
+  --primary-200:        #b7c8ff;
+  --primary-500:        #1a5bff;
+  --primary-600:        #004add;
+  --primary-700:        #003db8;
+  --primary-900:        #00257a;
+
+  /* Secondary — slate-100 */
+  --secondary: oklch(0.961 0.007 247);
+  --secondary-foreground: oklch(0.279 0.024 264);
+
+  /* Muted */
+  --muted: oklch(0.97 0.005 247);
+  --muted-foreground: oklch(0.55 0.02 264);
+
+  /* Accent */
+  --accent: oklch(0.97 0.005 247);
+  --accent-foreground: oklch(0.145 0.015 260);
+
+  /* Status semânticos */
+  --success:    #047857;  /* emerald-700 */
+  --success-bg: #ecfdf5;  /* emerald-50 */
+  --warning:    #b45309;  /* amber-700 */
+  --warning-bg: #fffbeb;  /* amber-50 */
+  --danger:     #b91c1c;  /* red-700 */
+  --danger-bg:  #fef2f2;  /* red-50 */
+
+  /* Destrutivo (shadcn) */
+  --destructive: oklch(0.577 0.245 27.325);
+
+  /* Bordas e inputs */
+  --border: oklch(0.94 0.008 247);
+  --input: oklch(0.94 0.008 247);
+  --ring: #004add;
+
+  /* Charts */
+  --chart-1: #004add;
+  --chart-2: oklch(0.627 0.194 149.214);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.647 0.222 41.116);
+  --chart-5: oklch(0.645 0.246 305.224);
+
+  /* Raio base */
+  --radius: 0.75rem;
+
+  /* Scrollbar — bem sutil, neutra (slate) */
+  --scrollbar-thumb:       #e2e8f0;  /* slate-200 */
+  --scrollbar-thumb-hover: #cbd5e1;  /* slate-300 */
+
+  /* Sidebar */
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.44 0.014 264);
+  --sidebar-primary: #004add;
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.961 0.007 247);
+  --sidebar-accent-foreground: oklch(0.145 0.015 260);
+  --sidebar-border: oklch(0.93 0.008 247);
+  --sidebar-ring: #004add;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: #004add;
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: #004add;
+  --scrollbar-thumb:       oklch(1 0 0 / 12%);
+  --scrollbar-thumb-hover: oklch(1 0 0 / 22%);
+  --chart-1: #004add;
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.145 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: #004add;
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: #004add;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+  html {
+    @apply font-sans;
+  }
+
+  /* Scrollbar custom — fina e neutra, alinhada ao design system.
+     Firefox (scrollbar-width/color) + WebKit/Chromium/Edge (pseudo-elementos). */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  /* Sem os botões de seta (setas do SO no topo/base da barra). */
+  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 9999px;
+    border: 2px solid transparent;   /* padding via borda transparente → thumb ~6px, look moderno */
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+  ::-webkit-scrollbar-corner { background: transparent; }
+}
+
+@layer utilities {
+  .shadow-card {
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+  }
+  .shadow-soft {
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.03), 0 2px 8px -2px rgba(0, 0, 0, 0.02);
+  }
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+
+  /* Esconde a barra de rolagem (continua rolável na roda/trackpad). Usado no chrome
+     escuro (sidebar/flyouts) pra não reservar largura nem mostrar barra clara. */
+  .scrollbar-none { scrollbar-width: none; -ms-overflow-style: none; }
+  .scrollbar-none::-webkit-scrollbar { display: none; width: 0; height: 0; }
+}
+
+/* Fusão de contatos (diálogo Vincular): pontinhos fluindo do absorvido → sobrevivente. */
+@keyframes merge-flow {
+  0%   { opacity: 0; transform: translateX(-9px) scale(0.5); }
+  45%  { opacity: 1; transform: translateX(0) scale(1); }
+  100% { opacity: 0; transform: translateX(11px) scale(0.5); }
+}
