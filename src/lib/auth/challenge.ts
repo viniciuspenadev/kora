@@ -22,14 +22,20 @@ const HOURLY_CAP     = 5      // códigos por usuário/hora (todas as origens)
 const HOURLY_CAP_IP  = 10     // códigos por IP/hora (§7 — bombing distribuído)
 
 // Mesmo pepper do signup (signup.ts): HMAC — sem o segredo do servidor, o hash
-// de 6 dígitos é irreversível mesmo com a tabela vazada. Fail-closed em prod:
-// sem OTP_PEPPER nem AUTH_SECRET o pepper viraria constante pública (OTP =
-// rainbow-table de 1M).
-if (process.env.NODE_ENV === "production" && !process.env.OTP_PEPPER && !process.env.AUTH_SECRET) {
-  throw new Error("OTP_PEPPER/AUTH_SECRET ausentes — obrigatório pro hash do código de login")
+// de 6 dígitos é irreversível mesmo com a tabela vazada. Resolvido LAZY (no uso,
+// não na carga do módulo) pra não disparar o throw durante `next build`, que
+// avalia módulos com NODE_ENV=production sem o segredo no ambiente. Fail-closed
+// em runtime: sem OTP_PEPPER nem AUTH_SECRET o pepper viraria constante pública
+// (OTP = rainbow-table de 1M).
+function otpPepper(): string {
+  const p = process.env.OTP_PEPPER || process.env.AUTH_SECRET
+  if (p) return p
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("OTP_PEPPER/AUTH_SECRET ausentes — obrigatório pro hash do código de login")
+  }
+  return "kora-otp-dev-pepper"
 }
-const OTP_PEPPER = process.env.OTP_PEPPER || process.env.AUTH_SECRET || "kora-otp-dev-pepper"
-const hashOtp = (code: string) => crypto.createHmac("sha256", OTP_PEPPER).update(code).digest("hex")
+const hashOtp = (code: string) => crypto.createHmac("sha256", otpPepper()).update(code).digest("hex")
 
 export type ChallengeCreate =
   | { ok: true }
