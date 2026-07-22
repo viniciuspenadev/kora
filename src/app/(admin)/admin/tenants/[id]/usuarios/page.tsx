@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase"
 import { Users, Eye } from "lucide-react"
+import { CreateUserDialog } from "@/components/admin/create-user-dialog"
 
 const ROLE_LABEL: Record<string, string> = { owner: "Owner", admin: "Admin", agent: "Atendente" }
 const ROLE_BADGE: Record<string, string> = {
@@ -36,6 +37,9 @@ export default async function TenantUsersPage({ params }: { params: Promise<{ id
         <Users className="size-4 text-primary-600" />
         <h2 className="text-sm font-bold text-slate-900">Equipe</h2>
         <span className="text-xs text-slate-400">· {rows.length} {rows.length === 1 ? "usuário" : "usuários"}</span>
+        <div className="ml-auto">
+          <CreateUserDialog tenantId={id} />
+        </div>
       </div>
 
       {rows.length === 0 ? (

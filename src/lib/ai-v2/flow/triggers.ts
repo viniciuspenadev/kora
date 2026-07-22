@@ -94,6 +94,28 @@ export async function findFlowToStart(
   return best
 }
 
+/**
+ * Existe fluxo publicado+ativo que RESPONDERIA a um inbound neste canal? Usado pelo
+ * widget do site no BOOT (decidir "digitando…" × "recebido") — ainda não existe texto,
+ * então keyword-only conta como NÃO: melhor prometer humano e o bot surpreender do que
+ * prometer bot e ninguém responder (mesma régua fail-closed do resto).
+ */
+export async function hasReceptiveFlowForChannel(tenantId: string, channel: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from("studio_flows")
+    .select("trigger")
+    .eq("tenant_id", tenantId)
+    .eq("status", "published")
+    .eq("active", true)
+  return ((data ?? []) as { trigger: FlowTrigger | null }[]).some(({ trigger: t }) => {
+    if (!t) return false
+    if ((t.mode ?? "receptive") !== "receptive") return false
+    if (t.channels?.length && !t.channels.includes(channel)) return false
+    // Sem o texto futuro, só os gatilhos que pegam a 1ª mensagem contam.
+    return t.type === "any_message" || t.type === "new_contact"
+  })
+}
+
 /** Carrega um fluxo por id (pra retomar um run ativo). */
 export async function loadFlow(tenantId: string, flowId: string): Promise<FlowRow | null> {
   const { data } = await supabaseAdmin

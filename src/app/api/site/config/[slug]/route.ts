@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
-import { hasModule } from "@/lib/modules"
+import { tenantAiActive } from "@/lib/llm/active"
+import { hasReceptiveFlowForChannel } from "@/lib/ai-v2/flow/triggers"
 
 /**
  * GET /api/site/config/[slug]
@@ -62,14 +63,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     brandName = tenantInfo?.name ?? null
   }
 
-  // IA na linha de frente? (módulo comprado + switch ligado). O widget usa pra
-  // decidir o estado pós-envio: "digitando" (IA responde já) vs "recebido"
-  // (atendimento manual — humano responde pelo inbox).
+  // IA na linha de frente? O widget usa pra decidir o estado pós-envio: "digitando"
+  // (bot responde já) vs "recebido" (humano responde pelo inbox). Desde "IA roda SÓ
+  // via fluxo" (2026-07-21), quem responde no site é um FLUXO do Studio cobrindo o
+  // canal `site` — é isso que se checa. (O check antigo lia ai_config/ai_atendente,
+  // o motor v1 removido: prometia atendente com bot ativo, e vice-versa.)
   let aiActive = false
-  if (cfg.mode === "chat") {
-    const { data: aiCfg } = await supabaseAdmin
-      .from("ai_config").select("ai_enabled").eq("tenant_id", tenant.id).maybeSingle()
-    if (aiCfg?.ai_enabled) aiActive = await hasModule(tenant.id, "ai_atendente")
+  if (cfg.mode === "chat" && (await tenantAiActive(tenant.id))) {
+    aiActive = await hasReceptiveFlowForChannel(tenant.id, "site")
   }
 
   return cors(NextResponse.json({
