@@ -44,23 +44,35 @@ export type ContactMapField = "name" | "phone" | "email" | "document" | "company
  * novo). NÃO insere nota nem toca identidade/merge — só as colunas. Lança em
  * erro de banco (o chamador decide se é fatal ou best-effort).
  */
-export async function applyContactCapture(ctx: ExecCtx, parsed: UpdateArgs): Promise<Record<string, string>> {
+export async function applyContactCapture(
+  ctx: ExecCtx, parsed: UpdateArgs, opts: { trusted?: boolean } = {},
+): Promise<Record<string, string>> {
   const { tenantId, contact } = ctx
+  // `trusted` = o AUTOR do fluxo mapeou o campo (nó Coletar) → pode setar/sobrescrever.
+  // SEM trusted (tool `update_contact`, o LLM INFERIU) → só ENRIQUECE campo vazio, nunca
+  // sobrescreve identidade já existente: uma frase do cliente ("falo pelo Dr Renan") não
+  // pode corromper o cadastro. Phone/doc são sempre só-se-vazio (identidade sensível).
+  const guard = !opts.trusted
   const updates: Record<string, string> = {}
-  if (parsed.name) updates.custom_name = parsed.name.slice(0, 120)
+  // Nome: com guarda, só preenche se o contato NÃO tem nome NENHUM (nem custom_name nem
+  // o push_name do WhatsApp) — senão a IA trocaria "Vinicius" (que vinha do push_name).
+  if (parsed.name && (!guard || (!contact.custom_name?.trim() && !contact.push_name?.trim())))
+    updates.custom_name = parsed.name.slice(0, 120)
   if (parsed.phone && !contact.phone_number?.trim()) {
     const { data: tc } = await supabaseAdmin
       .from("tenant_config").select("default_country").eq("tenant_id", tenantId).maybeSingle()
     const normalized = normalizePhone(parsed.phone, tc?.default_country ?? "BR")
     if (normalized) updates.phone_number = normalized
   }
-  if (parsed.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email)) updates.email = parsed.email.slice(0, 254)
+  if (parsed.email && (!guard || !contact.email?.trim()) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email))
+    updates.email = parsed.email.slice(0, 254)
   if (parsed.document && !contact.doc_id?.trim()) {
     const digits = parsed.document.replace(/\D/g, "")
     if (digits.length === 11 || digits.length === 14) updates.doc_id = digits
   }
-  if (parsed.company) updates.company = parsed.company.slice(0, 120)
-  if (parsed.birthdate) {
+  if (parsed.company && (!guard || !contact.company?.trim()))
+    updates.company = parsed.company.slice(0, 120)
+  if (parsed.birthdate && (!guard || !contact.birth_date?.trim())) {
     const iso = normalizeBirthdate(parsed.birthdate)
     if (iso) updates.birth_date = iso
   }
@@ -80,7 +92,8 @@ export async function applyContactCapture(ctx: ExecCtx, parsed: UpdateArgs): Pro
 export function captureContactField(ctx: ExecCtx, field: ContactMapField, value: string): Promise<Record<string, string>> {
   const args: UpdateArgs = { name: null, phone: null, email: null, document: null, company: null, birthdate: null }
   args[field] = value
-  return applyContactCapture(ctx, args)
+  // trusted: o autor do fluxo mapeou explicitamente ESTE campo no nó Coletar → seta.
+  return applyContactCapture(ctx, args, { trusted: true })
 }
 
 export const updateContactCapability = defineCapability<UpdateArgs>({

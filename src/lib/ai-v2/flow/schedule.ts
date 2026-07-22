@@ -20,7 +20,8 @@ import { sendOptions } from "./interactive"
 import { parseScheduleRequest, localDayRange, inPeriod } from "./ai-schedule"
 import type { ExecCtx } from "../capabilities/types"
 import type { ScheduleNodeConfig } from "./types"
-import { resolveAgendaTargets, availabilityPool, pickFreeInPool, bookAppointment } from "@/lib/agenda/booking"
+import { supabaseAdmin } from "@/lib/supabase"
+import { resolveAgendaTargets, availabilityPool, pickFreeInPool, bookAppointment, moveAppointment } from "@/lib/agenda/booking"
 import { hasModule } from "@/lib/modules"
 
 const TZ = "America/Sao_Paulo"
@@ -69,10 +70,14 @@ function fmtTime(iso: string): string {
 }
 
 // ── stash do nó (entre oferta e pick) — vive em variables[schedule:<id>] ──
+// `reschedule` = id do agendamento a MOVER (ausente = criar novo). Costurado desde a
+// escolha na colisão até o book, sobrevivendo a todas as reconstruções de stash.
 export type ScheduleStash =
-  | { mode: "slots"; serviceId: string | null; pool: string[]; slots: string[] }
-  | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "date"; pageStart: number }
-  | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "time"; pageStart: number; chosenDay: string; slots: string[] }
+  | { mode: "slots"; serviceId: string | null; pool: string[]; slots: string[]; reschedule?: string }
+  | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "date"; pageStart: number; reschedule?: string }
+  | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "time"; pageStart: number; chosenDay: string; slots: string[]; reschedule?: string }
+  // colisão: contato já tem agendamento(s) DESTE serviço → escolhe qual remarcar OU marcar novo.
+  | { mode: "collision"; appts: { id: string; label: string }[]; resolved: Resolved }
   // aiParse: a IA não identificou o serviço → o cliente escolhe (picker determinístico);
   // dia/período já interpretados ficam guardados pra estreitar a oferta depois.
   | { mode: "pick_service"; services: { id: string; name: string }[]; fromDate: string; period: string }
@@ -144,15 +149,23 @@ export async function prepareDayOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, res
 
 /** Re-valida o slot no pool e MARCA. `taken` = encheu agora; `id` = sucesso. */
 export async function bookSchedulePick(
-  ctx: ExecCtx, input: { iso: string; serviceId: string | null; pool: string[] },
+  ctx: ExecCtx, input: { iso: string; serviceId: string | null; pool: string[]; reschedule?: string },
 ): Promise<{ id?: string; taken?: boolean; error?: string }> {
+  // Remarcar: MOVE o agendamento existente (não passa pelo pool — moveAppointment
+  // re-valida blackout/overlap no recurso do próprio agendamento).
+  if (input.reschedule) {
+    if (ctx.dryRun) return { id: input.reschedule }
+    const r = await moveAppointment(ctx.tenantId, input.reschedule, input.iso, { actorLabel: "fluxo", resendConfirm: true })
+    if (r.error) return /preenchido|lotado|bloqueado|ocupad/i.test(r.error) ? { taken: true } : { error: r.error }
+    return { id: input.reschedule }
+  }
   const resourceId = await pickFreeInPool(ctx.tenantId, { pool: input.pool, serviceId: input.serviceId, startsAt: input.iso })
   if (!resourceId) return { taken: true }
   if (ctx.dryRun) return {}   // simulador: valida disponibilidade, não escreve
   const r = await bookAppointment(ctx.tenantId, {
     contactId: ctx.contact.id, conversationId: ctx.conversationId,
     resourceId, serviceId: input.serviceId, startsAt: input.iso,
-    source: "manual", createdBy: null, conversationalConfirm: true,
+    source: "ai", createdBy: null, conversationalConfirm: true,
   })
   if (r.error) return /preenchido|lotado|bloqueado/i.test(r.error) ? { taken: true } : { error: r.error }
   return { id: r.id }
@@ -285,18 +298,72 @@ const SUCCESS_DEFAULT = "✅ Agendado! Seu horário: {{horario}}. Até lá 😊"
 function successMsg(cfg: ScheduleNodeConfig, iso: string): string {
   return (cfg.successText?.trim() || SUCCESS_DEFAULT).replace(/\{\{\s*horario\s*\}\}/g, fmtSlot(iso))
 }
-async function book(ctx: ExecCtx, cfg: ScheduleNodeConfig, iso: string, serviceId: string | null, pool: string[]): Promise<ScheduleResume | "taken" | "error"> {
-  const r = await bookSchedulePick(ctx, { iso, serviceId, pool })
+function rescheduleMsg(iso: string): string {
+  return `✅ Remarcado! Seu novo horário: ${fmtSlot(iso)}. Até lá 😊`
+}
+async function book(ctx: ExecCtx, cfg: ScheduleNodeConfig, iso: string, serviceId: string | null, pool: string[], reschedule?: string): Promise<ScheduleResume | "taken" | "error"> {
+  const r = await bookSchedulePick(ctx, { iso, serviceId, pool, reschedule })
   if (r.taken) return "taken"
   if (r.error) return "error"
-  await sendBotText(ctx, successMsg(cfg, iso), SCHED_META)
+  await sendBotText(ctx, reschedule ? rescheduleMsg(iso) : successMsg(cfg, iso), SCHED_META)
   return { kind: "branch", branch: "agendado", responded: true, agendamento: fmtSlot(iso) }
+}
+
+// ── colisão: contato já tem agendamento(s) do serviço ──────────
+/** Agendamentos futuros ATIVOS do contato (anti-IDOR por contact_id), do serviço se dado. */
+async function findContactAppointments(ctx: ExecCtx, serviceId: string | null): Promise<{ id: string; label: string }[]> {
+  let q = supabaseAdmin.from("appointments")
+    .select("id, starts_at")
+    .eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
+    .in("status", ["scheduled", "confirmed"]).gt("starts_at", new Date().toISOString())
+  if (serviceId) q = q.eq("service_id", serviceId)
+  const { data } = await q.order("starts_at", { ascending: true }).limit(9)
+  return ((data ?? []) as { id: string; starts_at: string }[]).map((a) => ({ id: a.id, label: fmtSlot(a.starts_at) }))
+}
+
+async function sendCollisionMenu(ctx: ExecCtx, cfg: ScheduleNodeConfig, appts: { id: string; label: string }[]): Promise<void> {
+  const body = appts.length === 1
+    ? `Vi que você já tem um horário marcado: ${appts[0].label}. O que prefere?`
+    : "Vi que você já tem estes horários. Qual você quer remarcar?"
+  const items = appts.slice(0, 9).map((a, i) => ({ id: `schedule:appt:${i}`, title: `Remarcar ${a.label}` }))
+  items.push({ id: "schedule:new", title: "Marcar um novo horário" })
+  await sendOptions(ctx, { render: cfg.render, body, items, listButton: "Ver opções", meta: SCHED_META })
+}
+
+type CollisionPick = { kind: "appt"; index: number } | { kind: "new" } | null
+function parseCollisionPick(optionId: string | undefined, reply: string, appts: { id: string; label: string }[]): CollisionPick {
+  const p = tokenParts(optionId)
+  if (p) {
+    if (p[1] === "new") return { kind: "new" }
+    if (p[1] === "appt") { const i = parseInt(p[2] ?? "", 10); if (i >= 0 && i < appts.length) return { kind: "appt", index: i } }
+  }
+  const r = reply.trim().toLowerCase()
+  if (/(novo|nova|outro|outra)/.test(r)) return { kind: "new" }
+  const num = r.match(/\d+/)
+  if (num) {
+    const idx = parseInt(num[0], 10) - 1
+    if (idx >= 0 && idx < appts.length) return { kind: "appt", index: idx }
+    if (idx === appts.length) return { kind: "new" }   // o número após a lista = "marcar novo"
+  }
+  return null
 }
 
 export async function resumeSchedule(
   ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: ScheduleStash | undefined, reply: string,
   optionId?: string,   // Oficial: token `schedule:*` do tap → roteio determinístico (id-first)
 ): Promise<ScheduleResume> {
+  // ── colisão: cliente escolheu qual remarcar (ou "novo") → segue pra oferta ──
+  if (stash?.mode === "collision") {
+    const pick = parseCollisionPick(optionId, reply, stash.appts)
+    if (!pick) {
+      await sendBotText(ctx, "É só escolher uma das opções 👇", SCHED_META)
+      await sendCollisionMenu(ctx, cfg, stash.appts)
+      return { kind: "wait", stash }
+    }
+    const reschedule = pick.kind === "appt" ? stash.appts[pick.index].id : undefined
+    return startNormal(ctx, cfg, stash.resolved, reschedule)
+  }
+
   // ── aiParse: cliente escolheu o serviço no picker → resolve + oferta ──
   if (stash?.mode === "pick_service") {
     const idx = tokenServiceIndex(optionId, stash.services) ?? pickServiceIndex(reply, stash.services)
@@ -320,14 +387,14 @@ export async function resumeSchedule(
       return { kind: "wait", stash: s }
     }
     if (pick.kind === "none") return { kind: "branch", branch: "sem_horario", responded: false }
-    const out = await book(ctx, cfg, s.slots[pick.index], s.serviceId, s.pool)
+    const out = await book(ctx, cfg, s.slots[pick.index], s.serviceId, s.pool, s.reschedule)
     if (out === "error") return { kind: "branch", branch: "sem_horario", responded: false }
     if (out === "taken") {
       await sendBotText(ctx, "Opa, esse horário acabou de ser preenchido 😕", SCHED_META)
       const fresh = await prepareScheduleOffer(ctx, cfg)
       if (!fresh || fresh.slots.length === 0) return { kind: "branch", branch: "sem_horario", responded: false }
       await sendScheduleOffer(ctx, cfg, fresh.slots)
-      return { kind: "wait", stash: { mode: "slots", slots: fresh.slots, serviceId: fresh.serviceId, pool: fresh.pool } }
+      return { kind: "wait", stash: { mode: "slots", slots: fresh.slots, serviceId: fresh.serviceId, pool: fresh.pool, reschedule: s.reschedule } }
     }
     return out
   }
@@ -351,7 +418,7 @@ export async function resumeSchedule(
     const chosenDay = stash.dayKeys[stash.pageStart + pick.index]
     const slots = stash.byDay[chosenDay] ?? []
     if (slots.length === 0) return { kind: "branch", branch: "sem_horario", responded: false }
-    const next: ScheduleStash = { mode: "by_day", serviceId: stash.serviceId, pool: stash.pool, byDay: stash.byDay, dayKeys: stash.dayKeys, phase: "time", pageStart: stash.pageStart, chosenDay, slots }
+    const next: ScheduleStash = { mode: "by_day", serviceId: stash.serviceId, pool: stash.pool, byDay: stash.byDay, dayKeys: stash.dayKeys, phase: "time", pageStart: stash.pageStart, chosenDay, slots, reschedule: stash.reschedule }
     await sendTimeOffer(ctx, cfg, next)
     return { kind: "wait", stash: next }
   }
@@ -365,11 +432,11 @@ export async function resumeSchedule(
   }
   if (pick.kind === "none") return { kind: "branch", branch: "sem_horario", responded: false }
   if (pick.kind === "back") {
-    const back: ScheduleStash = { mode: "by_day", serviceId: stash.serviceId, pool: stash.pool, byDay: stash.byDay, dayKeys: stash.dayKeys, phase: "date", pageStart: stash.pageStart }
+    const back: ScheduleStash = { mode: "by_day", serviceId: stash.serviceId, pool: stash.pool, byDay: stash.byDay, dayKeys: stash.dayKeys, phase: "date", pageStart: stash.pageStart, reschedule: stash.reschedule }
     await sendDateOffer(ctx, cfg, back)
     return { kind: "wait", stash: back }
   }
-  const out = await book(ctx, cfg, stash.slots[pick.index], stash.serviceId, stash.pool)
+  const out = await book(ctx, cfg, stash.slots[pick.index], stash.serviceId, stash.pool, stash.reschedule)
   if (out === "error") return { kind: "branch", branch: "sem_horario", responded: false }
   if (out === "taken") {
     await sendBotText(ctx, "Opa, esse horário acabou de ser preenchido 😕", SCHED_META)
@@ -377,11 +444,11 @@ export async function resumeSchedule(
     if (!fresh) return { kind: "branch", branch: "sem_horario", responded: false }
     const dayLeft = fresh.byDay[stash.chosenDay]
     if (dayLeft?.length) {
-      const next: ScheduleStash = { mode: "by_day", serviceId: fresh.serviceId, pool: fresh.pool, byDay: fresh.byDay, dayKeys: fresh.dayKeys, phase: "time", pageStart: 0, chosenDay: stash.chosenDay, slots: dayLeft }
+      const next: ScheduleStash = { mode: "by_day", serviceId: fresh.serviceId, pool: fresh.pool, byDay: fresh.byDay, dayKeys: fresh.dayKeys, phase: "time", pageStart: 0, chosenDay: stash.chosenDay, slots: dayLeft, reschedule: stash.reschedule }
       await sendTimeOffer(ctx, cfg, next)
       return { kind: "wait", stash: next }
     }
-    const back: ScheduleStash = { mode: "by_day", serviceId: fresh.serviceId, pool: fresh.pool, byDay: fresh.byDay, dayKeys: fresh.dayKeys, phase: "date", pageStart: 0 }
+    const back: ScheduleStash = { mode: "by_day", serviceId: fresh.serviceId, pool: fresh.pool, byDay: fresh.byDay, dayKeys: fresh.dayKeys, phase: "date", pageStart: 0, reschedule: stash.reschedule }
     await sendDateOffer(ctx, cfg, back)
     return { kind: "wait", stash: back }
   }
@@ -465,18 +532,18 @@ async function offerForResolved(ctx: ExecCtx, cfg: ScheduleNodeConfig, r: Resolv
 
 // ── ADVANCE: primeira oferta do nó ─────────────────────────────
 /** Oferta normal (by_day/slots), opcionalmente com destino já resolvido (aiParse). */
-async function startNormal(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Resolved): Promise<ScheduleResume> {
+async function startNormal(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Resolved, reschedule?: string): Promise<ScheduleResume> {
   if (cfg.offerMode === "by_day") {
     const offer = await prepareDayOffer(ctx, cfg, resolved)
     if (!offer) return { kind: "branch", branch: "sem_horario", responded: false }
-    const stash: ScheduleStash = { mode: "by_day", serviceId: offer.serviceId, pool: offer.pool, byDay: offer.byDay, dayKeys: offer.dayKeys, phase: "date", pageStart: 0 }
+    const stash: ScheduleStash = { mode: "by_day", serviceId: offer.serviceId, pool: offer.pool, byDay: offer.byDay, dayKeys: offer.dayKeys, phase: "date", pageStart: 0, reschedule }
     await sendDateOffer(ctx, cfg, stash)
     return { kind: "wait", stash }
   }
   const offer = await prepareScheduleOffer(ctx, cfg, resolved)
   if (!offer || offer.slots.length === 0) return { kind: "branch", branch: "sem_horario", responded: false }
   await sendScheduleOffer(ctx, cfg, offer.slots)
-  return { kind: "wait", stash: { mode: "slots", slots: offer.slots, serviceId: offer.serviceId, pool: offer.pool } }
+  return { kind: "wait", stash: { mode: "slots", slots: offer.slots, serviceId: offer.serviceId, pool: offer.pool, reschedule } }
 }
 
 /** Entrada do nó. aiParse: a IA interpreta serviço+dia → motor oferta/marca. */
@@ -485,6 +552,20 @@ export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Prom
   // ligado. Sem ele, degrada pelo ramo "sem_horario" (o fluxo segue, nunca trava).
   if (!(await hasModule(ctx.tenantId, "agenda"))) {
     return { kind: "branch", branch: "sem_horario", responded: false }
+  }
+  // Colisão (§D2 do design): SÓ quando o nó tem serviço FIXO (owner/aiParse-sem-fixo
+  // ficam pra depois). Se o contato já tem agendamento futuro DESTE serviço → pergunta
+  // (remarcar qual × marcar novo) ANTES de ofertar, em vez de duplicar.
+  const fixedServiceId = cfg.target?.mode !== "owner" ? (cfg.target?.serviceId ?? null) : null
+  if (fixedServiceId) {
+    const appts = await findContactAppointments(ctx, fixedServiceId)
+    if (appts.length > 0) {
+      const resolved = await resolveServiceId(ctx, cfg, fixedServiceId)
+      if (resolved) {
+        await sendCollisionMenu(ctx, cfg, appts)
+        return { kind: "wait", stash: { mode: "collision", appts, resolved } }
+      }
+    }
   }
   // aiParse ("Entender com IA") precisa do add-on `ai`; sem ele, cai no modo
   // determinístico (botões) — o agendamento continua funcionando, só sem interpretar texto.
