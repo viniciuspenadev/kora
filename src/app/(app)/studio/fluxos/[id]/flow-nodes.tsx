@@ -394,7 +394,7 @@ function CollectNode(p: NodeProps) {
 function ScheduleNode(p: NodeProps) {
   const cfg = cfgOf(p) as unknown as ScheduleNodeConfig
   const t = cfg.target
-  const dest = t?.mode === "owner" ? "dono da conversa" : (t?.resourceId || t?.serviceId) ? "agenda fixada" : "configure o destino"
+  const dest = t?.mode === "owner" ? "responsável pelo cliente" : t?.resourceId ? "agenda fixada" : t?.serviceId || t?.servicePick ? "sorteio no serviço" : "sorteio entre as agendas"
   return (
     <>
       <TargetHandle />

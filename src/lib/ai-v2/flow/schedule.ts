@@ -21,7 +21,7 @@ import { parseScheduleRequest, localDayRange, inPeriod } from "./ai-schedule"
 import type { ExecCtx } from "../capabilities/types"
 import type { ScheduleNodeConfig } from "./types"
 import { supabaseAdmin } from "@/lib/supabase"
-import { resolveAgendaTargets, availabilityPool, pickFreeInPool, bookAppointment, moveAppointment } from "@/lib/agenda/booking"
+import { resolveAgendaTargets, availabilityPool, availabilitySlots, pickFreeInPool, bookAppointment, moveAppointment, ownerResource } from "@/lib/agenda/booking"
 import { linkOwnerOnAppointment } from "@/lib/carteira"
 import { hasModule } from "@/lib/modules"
 
@@ -89,13 +89,11 @@ export interface ScheduleOffer { slots: string[]; serviceId: string | null; pool
 async function resolvePool(ctx: ExecCtx, cfg: ScheduleNodeConfig) {
   const t = cfg.target
   return resolveAgendaTargets(ctx.tenantId, {
-    mode:               t?.mode === "owner" ? "owner" : "fixed",
-    serviceId:          t?.serviceId ?? null,
-    resourceId:         t?.resourceId ?? null,
-    conversationId:     ctx.conversationId,
-    contactId:          ctx.contact.id,
-    ownerFallback:      t?.ownerFallback ?? null,
-    fallbackResourceId: t?.fallbackResourceId ?? null,
+    mode:           t?.mode === "owner" ? "owner" : "fixed",
+    serviceId:      t?.serviceId ?? null,
+    resourceId:     t?.resourceId ?? null,
+    conversationId: ctx.conversationId,
+    contactId:      ctx.contact.id,
   })
 }
 
@@ -156,10 +154,28 @@ export async function bookSchedulePick(
   ctx: ExecCtx,
   input: { iso: string; serviceId: string | null; pool: string[]; reschedule?: string; claimOwner?: boolean },
 ): Promise<{ id?: string; taken?: boolean; error?: string }> {
-  // Remarcar: MOVE o agendamento existente (não passa pelo pool — moveAppointment
-  // re-valida blackout/overlap no recurso do próprio agendamento).
+  // Remarcar: MOVE o agendamento existente. A oferta veio da UNIÃO do pool, mas o move
+  // fica no recurso ORIGINAL → valida ESTADO + DISPONIBILIDADE lá antes (auditoria
+  // 2026-07-22 MÉDIO-1/BAIXO-3; espelha a capability reschedule_appointment):
+  //  • cancelado/concluído no meio do caminho → não ressuscita;
+  //  • horário fora do expediente daquele recurso (ex: sábado de outra agenda do pool)
+  //    → "taken" → re-oferta, nunca move pra agenda fechada.
   if (input.reschedule) {
     if (ctx.dryRun) return { id: input.reschedule }
+    const { data: appt } = await supabaseAdmin.from("appointments")
+      .select("resource_id, status, service_id")
+      .eq("tenant_id", ctx.tenantId).eq("id", input.reschedule).eq("contact_id", ctx.contact.id)
+      .maybeSingle()
+    if (!appt || !["scheduled", "confirmed"].includes(appt.status as string)) return { taken: true }
+    const t0 = new Date(input.iso).getTime()
+    const free = await availabilitySlots(ctx.tenantId, {
+      // Serviço do PRÓPRIO agendamento (duração certa no check) — igual à capability.
+      resourceId: appt.resource_id as string,
+      serviceId:  (appt.service_id as string | null) ?? input.serviceId,
+      rangeStart: new Date(t0 - 60_000).toISOString(),
+      rangeEnd:   new Date(t0 + 86_400_000).toISOString(),
+    })
+    if (!free.some((s) => Math.abs(new Date(s.start).getTime() - t0) < 1000)) return { taken: true }
     const r = await moveAppointment(ctx.tenantId, input.reschedule, input.iso, { actorLabel: "fluxo", resendConfirm: true })
     if (r.error) return /preenchido|lotado|bloqueado|ocupad/i.test(r.error) ? { taken: true } : { error: r.error }
     return { id: input.reschedule }
@@ -311,15 +327,15 @@ function rescheduleMsg(iso: string): string {
   return `✅ Remarcado! Seu novo horário: ${fmtSlot(iso)}. Até lá 😊`
 }
 async function book(ctx: ExecCtx, cfg: ScheduleNodeConfig, iso: string, serviceId: string | null, pool: string[], reschedule?: string): Promise<ScheduleResume | "taken" | "error"> {
-  // claimOwner: só quando o autor FIXOU a agenda ou escolheu "dono" — nesses casos a
-  // agenda tem responsável de verdade. Alvo por serviço/pool NÃO reivindica a conta (§5).
-  // EXCEÇÃO: caiu na agenda de PLANTÃO (fallback de quem não tem dono) → NÃO carimba.
-  // Plantão é rodízio de porta de entrada, não relação — senão o plantonista viraria
-  // dono de todo lead novo e a carteira viraria ruído. §5 + §6.4.
+  // claimOwner: só quando o agendamento cai numa agenda com responsável DELIBERADO —
+  // fixada pelo autor, ou resolvida pela cascata do responsável. Sorteio/pool NUNCA
+  // reivindica (quem por acaso tinha horário vago não vira dono do cliente). No ★,
+  // confere que o pool É o do responsável RESOLVIDO (auditoria 2026-07-22 BAIXO-4:
+  // pool-de-1 por coincidência — serviço com agenda única — não carimba). §5 + §6.4.
   const t = cfg.target
-  const viaPlantao = t?.mode === "owner" && t?.ownerFallback === "resource"
-    && pool.length === 1 && pool[0] === t.fallbackResourceId
-  const claimOwner = !viaPlantao && (t?.mode === "owner" || !!t?.resourceId)
+  const claimOwner = t?.mode === "owner"
+    ? pool.length === 1 && pool[0] === await ownerResource(ctx.tenantId, ctx.conversationId, ctx.contact.id)
+    : !!t?.resourceId
   const r = await bookSchedulePick(ctx, { iso, serviceId, pool, reschedule, claimOwner })
   if (r.taken) return "taken"
   if (r.error) return "error"
@@ -399,6 +415,15 @@ export async function resumeSchedule(
     }
     const r = await resolveServiceId(ctx, cfg, stash.services[idx].id)
     if (!r) return { kind: "branch", branch: "sem_horario", responded: false }
+    // Colisão PÓS-escolha (✳ e aiParse-picker): o serviço agora é conhecido → detecta
+    // agendamento existente ANTES de ofertar, escopado pelo serviço escolhido.
+    if (cfg.offerReschedule !== false) {
+      const appts = await findContactAppointments(ctx, { serviceId: stash.services[idx].id })
+      if (appts.length > 0) {
+        await sendCollisionMenu(ctx, cfg, appts)
+        return { kind: "wait", stash: { mode: "collision", appts, resolved: r } }
+      }
+    }
     return offerForResolved(ctx, cfg, r, stash.fromDate, stash.period)
   }
 
@@ -495,13 +520,11 @@ function matchService(name: string, services: { id: string; name: string }[]): s
 async function resolveServiceId(ctx: ExecCtx, cfg: ScheduleNodeConfig, serviceId: string): Promise<Resolved | null> {
   const t = cfg.target
   const res = await resolveAgendaTargets(ctx.tenantId, {
-    mode:               t?.mode === "owner" ? "owner" : "fixed",
+    mode:           t?.mode === "owner" ? "owner" : "fixed",
     serviceId,
-    resourceId:         t?.resourceId ?? null,
-    conversationId:     ctx.conversationId,
-    contactId:          ctx.contact.id,
-    ownerFallback:      t?.ownerFallback ?? null,
-    fallbackResourceId: t?.fallbackResourceId ?? null,
+    resourceId:     t?.resourceId ?? null,
+    conversationId: ctx.conversationId,
+    contactId:      ctx.contact.id,
   })
   if (res.error || res.pool.length === 0) return null
   return { serviceId: res.serviceId, pool: res.pool }
@@ -574,6 +597,32 @@ async function startNormal(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Res
   return { kind: "wait", stash: { mode: "slots", slots: offer.slots, serviceId: offer.serviceId, pool: offer.pool, reschedule } }
 }
 
+/**
+ * Serviços ativos ofertáveis no ✳ "Cliente escolhe". Quando a AGENDA é determinada
+ * (específica no nó, ou ★ com responsável resolvido) filtra pros serviços que aquela
+ * agenda atende (resource_ids vazio = todas atendem). Sem agenda determinada → todos.
+ */
+async function listPickableServices(ctx: ExecCtx, cfg: ScheduleNodeConfig): Promise<{ id: string; name: string }[]> {
+  const { data } = await supabaseAdmin
+    .from("tenant_services")
+    .select("id, name, resource_ids")
+    .eq("tenant_id", ctx.tenantId).eq("active", true)
+    .order("name")
+  const all = (data ?? []) as { id: string; name: string; resource_ids: unknown }[]
+  let scope: string | null = cfg.target?.resourceId ?? null
+  if (!scope && cfg.target?.mode === "owner") {
+    const res = await resolvePool(ctx, cfg)
+    if (!res.error && res.pool.length === 1) scope = res.pool[0]
+  }
+  const list = scope
+    ? all.filter((s) => {
+        const ids = Array.isArray(s.resource_ids) ? (s.resource_ids as string[]) : []
+        return ids.length === 0 || ids.includes(scope)
+      })
+    : all
+  return list.map((s) => ({ id: s.id, name: s.name }))
+}
+
 /** Entrada do nó. aiParse: a IA interpreta serviço+dia → motor oferta/marca. */
 export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Promise<ScheduleResume> {
   // Furo #1 (auditoria 2026-07-18): o nó só oferta/marca se o módulo `agenda` está
@@ -582,19 +631,26 @@ export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Prom
     return { kind: "branch", branch: "sem_horario", responded: false }
   }
   // Colisão: se o contato já tem agendamento futuro, pergunta (remarcar qual × marcar
-  // novo) ANTES de ofertar, em vez de duplicar. O escopo depende do que identifica
+  // novo) ANTES de ofertar, em vez de duplicar. GATE = checkbox "Oferecer remarcação"
+  // (ausente = ligado; agenda-node-redesign.md §3.4). O escopo depende do que identifica
   // "o mesmo compromisso":
-  //   • alvo fixo  → por SERVIÇO. Imune a troca de agenda (mover o agendamento pra
+  //   • serviço fixado → por SERVIÇO. Imune a troca de agenda (mover o agendamento pra
   //                  outro atendente não mexe no `service_id`).
-  //   • modo dono  → pelo CONTATO. NÃO escopar por agenda: o atendente pode ter sido
+  //   • modo ★     → pelo CONTATO. NÃO escopar por agenda: o atendente pode ter sido
   //                  trocado na agenda (moveAppointment com resourceId) e o compromisso
   //                  ficaria INVISÍVEL aqui → o nó duplicaria de novo, que é o bug que
   //                  esta feature existe pra matar. Sem serviço fixo, "já tem horário
   //                  marcado?" é pergunta legítima seja qual for a agenda.
+  //   • ✳ cliente escolhe → a colisão roda DEPOIS da escolha (resumeSchedule
+  //                  pick_service), escopada pelo serviço escolhido.
   // docs/crm-reschedule-node-design.md §D2 + crm-agenda-owner-routing-design.md §6.2.
+  const offerResched   = cfg.offerReschedule !== false
+  const servicePick    = !!cfg.target?.servicePick
   const isOwnerMode    = cfg.target?.mode === "owner"
-  const fixedServiceId = !isOwnerMode ? (cfg.target?.serviceId ?? null) : null
-  if (fixedServiceId) {
+  // Serviço fixado escopa a colisão TAMBÉM no ★ (auditoria 2026-07-22 BAIXO-5: ★+serviço
+  // sem responsável resolvido ficava sem detecção nenhuma → duplicava de novo).
+  const fixedServiceId = !servicePick ? (cfg.target?.serviceId ?? null) : null
+  if (offerResched && !servicePick && fixedServiceId) {
     const appts = await findContactAppointments(ctx, { serviceId: fixedServiceId })
     if (appts.length > 0) {
       const resolved = await resolveServiceId(ctx, cfg, fixedServiceId)
@@ -603,7 +659,7 @@ export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Prom
         return { kind: "wait", stash: { mode: "collision", appts, resolved } }
       }
     }
-  } else if (isOwnerMode) {
+  } else if (offerResched && !servicePick && isOwnerMode) {
     const res = await resolvePool(ctx, cfg)
     if (!res.error && res.pool.length === 1) {
       const appts = await findContactAppointments(ctx, {})
@@ -612,6 +668,15 @@ export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Prom
         return { kind: "wait", stash: { mode: "collision", appts, resolved: { serviceId: res.serviceId, pool: res.pool } } }
       }
     }
+  }
+  // ✳ "Cliente escolhe o serviço" (agenda-node-redesign.md): picker DETERMINÍSTICO —
+  // reusa o mesmo mecanismo do aiParse, sem gastar token. A lista é filtrada pela
+  // agenda quando ela é determinada (específica ou ★ resolvido): só o que ela atende.
+  if (servicePick) {
+    const services = await listPickableServices(ctx, cfg)
+    if (services.length === 0) return startNormal(ctx, cfg)   // sem serviço cadastrado → oferta avulsa
+    await sendServicePicker(ctx, cfg, services)
+    return { kind: "wait", stash: { mode: "pick_service", services, fromDate: "", period: "" } }
   }
   // aiParse ("Entender com IA") precisa do add-on `ai`; sem ele, cai no modo
   // determinístico (botões) — o agendamento continua funcionando, só sem interpretar texto.

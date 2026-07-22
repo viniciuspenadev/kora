@@ -12,6 +12,14 @@ import { SimpleSelect } from "@/components/ui/select"
 import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
+
+/** Serviço/agenda com os campos extras da LEGENDA dinâmica do destino da agenda
+ *  (quem entra no sorteio · quem abre fim de semana). agenda-node-redesign.md §3.5. */
+export interface SvcOpt { id: string; name: string; resource_ids?: string[] | null }
+export interface ResOpt {
+  id: string; name: string
+  working_hours?: { day: number; intervals: [string, string][] }[] | null
+}
 import { WhatsAppPreview } from "@/components/studio/whatsapp-preview"
 import { varsForContext } from "@/lib/variables/registry"
 
@@ -100,8 +108,8 @@ export function ConfigPanel({
   flows: { id: string; name: string }[]
   stages: { id: string; name: string }[]
   tags: { id: string; name: string }[]
-  services: { id: string; name: string }[]
-  resources: { id: string; name: string }[]
+  services: SvcOpt[]
+  resources: ResOpt[]
   ownerRouting: boolean
   /** Variáveis que o cliente criou no fluxo (Coletar/Definir/HTTP/Agendar) — chips extras. */
   flowVars?: string[]
@@ -367,7 +375,7 @@ export function ConfigPanel({
             <SimpleSelect value={target} onChange={(v) => set({ target: v })} options={[
               { value: "department", label: "Fila do setor" },
               { value: "agent",      label: "Atendente específico" },
-              { value: "owner",      label: "Devolver ao responsável (carteira)" },
+              { value: "owner",      label: "Devolver ao responsável pelo cliente" },
               { value: "pool",       label: "Fila geral" },
             ]} />
           </div>
@@ -782,22 +790,8 @@ function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
       {agendaOn && (
         <div className="mt-2 rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
           <label className={LABEL}>Em qual agenda cai?</label>
-          <SimpleSelect value={target.mode} onChange={(v) => setTarget({ mode: v as AgendaBinding["mode"] })} options={[
-            { value: "fixed", label: "Agenda/serviço específico" },
-            { value: "owner", label: `Dono da conversa (carteira)${ownerRouting ? "" : " — em breve"}`, disabled: !ownerRouting },
-            { value: "ai",    label: "Deixar a IA decidir" },
-          ]} />
-          {target.mode === "fixed" && (
-            <div className="space-y-1.5">
-              <SimpleSelect value={target.resourceId ?? ""} onChange={(v) => setTarget({ resourceId: v || null })}
-                options={[{ value: "", label: "— Agenda: qualquer do serviço —" }, ...resources.map((r) => ({ value: r.id, label: r.name }))]} />
-              <SimpleSelect value={target.serviceId ?? ""} onChange={(v) => setTarget({ serviceId: v || null })}
-                options={[{ value: "", label: "— Serviço: (opcional) —" }, ...services.map((s) => ({ value: s.id, label: s.name }))]} />
-              <p className="text-[11px] text-slate-400">Escolha a <b>agenda</b> (cai sempre nela) ou só o <b>serviço</b> (cai em qualquer profissional dele).</p>
-            </div>
-          )}
-          {target.mode === "owner" && <OwnerFallbackFields target={target} setTarget={setTarget} resources={resources} />}
-          {target.mode === "ai"    && <p className="text-[11px] text-slate-400">A IA escolhe serviço/agenda pela conversa. Use só quando o fluxo não precisa de destino fixo.</p>}
+          <AgendaTargetFields target={target} setTarget={setTarget} services={services} resources={resources}
+            ownerRouting={ownerRouting} aiOption servicePickOption={false} />
         </div>
       )}
 
@@ -806,43 +800,100 @@ function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
   )
 }
 
+/** Dias 6/0 abertos viram aviso na legenda — o tropeço clássico é sábado aparecer na
+ *  oferta porque UMA agenda do pool abre sábado. */
+function weekendNote(r: ResOpt): string {
+  const days = new Set((r.working_hours ?? []).map((w) => w.day))
+  const parts: string[] = []
+  if (days.has(6)) parts.push("sáb")
+  if (days.has(0)) parts.push("dom")
+  return parts.length ? ` (abre ${parts.join("/")})` : ""
+}
+
 /**
- * Modo "dono da conversa": explica a cascata e deixa o autor escolher o que fazer
- * quando o cliente AINDA não tem dono (carteira vazia E conversa sem atendente — o
- * caso do lead novo, que antes caía calado em "qualquer agenda"). Compartilhado pelo
- * nó Agendar e pelo agente IA. docs/crm-agenda-owner-routing-design.md §4.
+ * Destino da agenda — painel ÚNICO do redesenho (agenda-node-redesign.md §1):
+ * 2 dropdowns (Agenda: Aleatória/★Responsável/específica · Serviço: opcional/✳cliente
+ * escolhe/fixo) + LEGENDA dinâmica que mostra as agendas reais implicadas pela escolha.
+ * Compartilhado pelo nó Agendar e pelo agente IA (nunca divergem).
  */
-function OwnerFallbackFields({ target, setTarget, resources }: {
+function AgendaTargetFields({ target, setTarget, services, resources, ownerRouting, aiOption, servicePickOption }: {
   target:    AgendaBinding
   setTarget: (patch: Partial<AgendaBinding>) => void
-  resources: { id: string; name: string }[]
+  services:  SvcOpt[]
+  resources: ResOpt[]
+  ownerRouting: boolean
+  /** Agente IA: inclui "A IA decide pela conversa" (mode `ai`). */
+  aiOption?: boolean
+  /** Nó Agendar: inclui "✳ Cliente escolhe" na lista de serviços. */
+  servicePickOption?: boolean
 }) {
-  const fb = target.ownerFallback ?? "pool"
+  const agendaValue = target.mode === "owner" ? "owner" : target.mode === "ai" ? "ai" : (target.resourceId ?? "")
+  const serviceValue = target.servicePick ? "pick" : (target.serviceId ?? "")
+
+  const setAgenda = (v: string) => {
+    if (v === "owner")   return setTarget({ mode: "owner", resourceId: null })
+    if (v === "ai")      return setTarget({ mode: "ai",    resourceId: null })
+    if (v === "")        return setTarget({ mode: "fixed", resourceId: null })
+    return setTarget({ mode: "fixed", resourceId: v })
+  }
+  const setService = (v: string) => {
+    if (v === "pick") return setTarget({ servicePick: true,  serviceId: null })
+    if (v === "")     return setTarget({ servicePick: false, serviceId: null })
+    return setTarget({ servicePick: false, serviceId: v })
+  }
+
+  // Legenda dinâmica — a opção responde a própria pergunta ("cai onde, na prática?").
+  let legend: string
+  if (target.mode === "ai") {
+    legend = "A IA escolhe serviço/agenda pela conversa. Use só quando o fluxo não precisa de destino fixo."
+  } else if (target.mode === "owner") {
+    legend = "Cai na agenda de quem cuida do cliente (responsável pela conta → quem está atendendo). Sem responsável → sorteia entre as disponíveis."
+  } else if (target.resourceId) {
+    const r = resources.find((x) => x.id === target.resourceId)
+    legend = r
+      ? `Cai sempre em: ${r.name}${weekendNote(r)}.`
+      : "⚠️ A agenda fixada não está mais ativa — o passo vai sair por “sem horário”."
+  } else {
+    let pool = resources
+    if (target.serviceId && !target.servicePick) {
+      const s = services.find((x) => x.id === target.serviceId)
+      const ids = (s?.resource_ids ?? []) as string[]
+      if (ids.length > 0) pool = resources.filter((r) => ids.includes(r.id))
+    }
+    const names = pool.map((r) => `${r.name}${weekendNote(r)}`).join(", ")
+    legend = target.servicePick
+      ? "Sorteia entre as agendas do serviço que o cliente escolher."
+      : pool.length > 0
+        ? `Sorteia entre quem atende e está livre: ${names}.`
+        : "⚠️ Nenhuma agenda ativa — o passo vai sair por “sem horário”."
+  }
+
   return (
     <div className="space-y-1.5">
-      <p className="text-[11px] text-slate-400">
-        Cai na agenda do <b>dono do cliente</b> (carteira); ainda sem dono, na de <b>quem está atendendo</b>.
-      </p>
-      <label className={LABEL}>Se o cliente não tiver dono</label>
-      <SimpleSelect value={fb} onChange={(v) => setTarget({ ownerFallback: v as AgendaBinding["ownerFallback"] })} options={[
-        { value: "pool",     label: "Qualquer agenda disponível" },
-        { value: "resource", label: "Agenda de plantão" },
-        { value: "none",     label: "Não oferecer horário (sai por “sem horário”)" },
+      <SimpleSelect value={agendaValue} onChange={setAgenda} options={[
+        { value: "", label: "— Agenda: aleatória —" },
+        { value: "owner", label: `★ Responsável pelo cliente${ownerRouting ? "" : " — em breve"}`, disabled: !ownerRouting },
+        ...(aiOption ? [{ value: "ai", label: "A IA decide pela conversa" }] : []),
+        ...resources.map((r) => ({ value: r.id, label: r.name })),
       ]} />
-      {fb === "resource" && (
-        <SimpleSelect value={target.fallbackResourceId ?? ""} onChange={(v) => setTarget({ fallbackResourceId: v || null })}
-          options={[{ value: "", label: "— Escolha a agenda de plantão —" }, ...resources.map((r) => ({ value: r.id, label: r.name }))]} />
+      <SimpleSelect value={serviceValue} onChange={setService} options={[
+        { value: "", label: "— Serviço: (opcional) —" },
+        ...(servicePickOption ? [{ value: "pick", label: "✳ Cliente escolhe (lista os serviços)" }] : []),
+        ...services.map((s) => ({ value: s.id, label: s.name })),
+      ]} />
+      <p className="text-[11px] text-slate-400">{legend}</p>
+      {target.servicePick && (
+        <p className="text-[11px] text-slate-400">
+          O nó pergunta o <b>serviço</b> na conversa{target.resourceId ? " (só os que essa agenda atende)" : ""} e depois oferece os horários. Sem IA, sem custo.
+        </p>
       )}
-      <p className="text-[11px] text-slate-400">
-        Lead novo (site/anúncio) normalmente <b>ainda não tem dono</b> — é por aqui que ele passa.
-      </p>
     </div>
   )
 }
 
 function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
-  services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
+  services: SvcOpt[]; resources: ResOpt[]; ownerRouting: boolean
   flowVars: string[]
 }) {
   const target    = (cfg.target as AgendaBinding | undefined) ?? { mode: "fixed" }
@@ -863,25 +914,21 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
 
       <div className="rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
         <label className={LABEL}>Em qual agenda cai?</label>
-        <SimpleSelect value={target.mode === "owner" ? "owner" : "fixed"} onChange={(v) => setTarget({ mode: v as AgendaBinding["mode"] })} options={[
-          { value: "fixed", label: "Agenda/serviço específico" },
-          { value: "owner", label: `Dono da conversa (carteira)${ownerRouting ? "" : " — em breve"}`, disabled: !ownerRouting },
-        ]} />
-        {target.mode !== "owner" && (
-          <div className="space-y-1.5">
-            <SimpleSelect value={target.resourceId ?? ""} onChange={(v) => setTarget({ resourceId: v || null })}
-              options={[{ value: "", label: "— Agenda: qualquer do serviço —" }, ...resources.map((r) => ({ value: r.id, label: r.name }))]} />
-            <SimpleSelect value={target.serviceId ?? ""} onChange={(v) => setTarget({ serviceId: v || null })}
-              options={[{ value: "", label: "— Serviço: (opcional) —" }, ...services.map((s) => ({ value: s.id, label: s.name }))]} />
-            <p className="text-[11px] text-slate-400">
-              {aiParse
-                ? <>Com <b>Entender com IA</b>, o <b>serviço vem da conversa</b> — deixe o serviço aberto aqui (a <b>agenda/profissional</b> ainda vale como restrição).</>
-                : <>Escolha a <b>agenda</b> (cai sempre nela) ou só o <b>serviço</b> (cai em qualquer profissional dele).</>}
-            </p>
-          </div>
+        <AgendaTargetFields target={target} setTarget={setTarget} services={services} resources={resources}
+          ownerRouting={ownerRouting} servicePickOption />
+        {aiParse && (
+          <p className="text-[11px] text-slate-400">Com <b>Entender com IA</b>, o serviço pode vir da conversa — deixe o serviço aberto aqui (a agenda ainda vale como restrição).</p>
         )}
-        {target.mode === "owner" && <OwnerFallbackFields target={target} setTarget={setTarget} resources={resources} />}
       </div>
+
+      <label className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={cfg.offerReschedule !== false}
+          onChange={(e) => set({ offerReschedule: e.target.checked })} />
+        <span>
+          <b className="font-medium text-slate-700">Oferecer remarcação quando o cliente já tem horário</b>
+          <span className="block text-[11px] text-slate-400">Marcado: o nó pergunta &ldquo;remarcar × marcar outro&rdquo; antes de ofertar. Desmarcado: só marca novo, nunca pergunta.</span>
+        </span>
+      </label>
 
       <div>
         <label className={LABEL}>Como oferecer</label>
@@ -952,10 +999,10 @@ function AgentSummary({ cfg, tags, stages, services, resources }: {
   const agendaOn = tools.includes("check_availability")
   const target   = cfg.agenda_target as AgendaBinding | undefined
   const agendaWhere = target?.mode === "owner"
-    ? "na agenda do dono da conversa"
+    ? "na agenda do responsável pelo cliente"
     : target?.resourceId ? `na agenda: ${resources.find((r) => r.id === target.resourceId)?.name ?? "fixada"}`
-    : target?.serviceId  ? `no serviço: ${services.find((s) => s.id === target.serviceId)?.name ?? "fixado"}`
-    : "a agenda que fizer sentido"
+    : target?.serviceId  ? `no serviço: ${services.find((s) => s.id === target.serviceId)?.name ?? "fixado"} (sorteio)`
+    : "sorteando entre as agendas disponíveis"
   const names = (arr: { name: string }[], n = 6) =>
     arr.slice(0, n).map((x) => x.name).join(", ") + (arr.length > n ? "…" : "")
   const Section = ({ title }: { title: string }) =>

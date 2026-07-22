@@ -160,6 +160,9 @@ export interface ScheduleNodeConfig {
   offerMode?:   "slots" | "by_day"
   /** Estilo de exibição das opções (default auto). */
   render?:      RenderMode
+  /** Oferecer remarcação quando o cliente já tem horário (detecção de colisão).
+   *  AUSENTE = true (preserva o comportamento em produção). false = nó só cria. */
+  offerReschedule?: boolean
   /** Texto de abertura acima dos horários/dias. */
   intro?:       string
   /** Quantos horários oferecer no modo slots (default 6, máx 9 — +"nenhum" ≤ 10 rows). */

@@ -86,16 +86,14 @@ function localDayRange(dateStr: string): { start: number; end: number } | null {
 function targetSpec(ctx: ExecCtx, service: string, resource: string): AgendaTargetSpec {
   const b = ctx.agendaBinding ?? null
   return {
-    mode:               b?.mode ?? "ai",
-    serviceId:          b?.serviceId ?? null,
-    resourceId:         b?.resourceId ?? null,
-    serviceName:        service || undefined,
-    resourceName:       resource || undefined,
-    conversationId:     ctx.conversationId,
-    // Cascata da carteira + fallback explícito valem IGUAL pro nó e pra IA (fonte única).
-    contactId:          ctx.contact.id,
-    ownerFallback:      b?.ownerFallback ?? null,
-    fallbackResourceId: b?.fallbackResourceId ?? null,
+    mode:           b?.mode ?? "ai",
+    serviceId:      b?.serviceId ?? null,
+    resourceId:     b?.resourceId ?? null,
+    serviceName:    service || undefined,
+    resourceName:   resource || undefined,
+    conversationId: ctx.conversationId,
+    // Cascata do responsável vale IGUAL pro nó e pra IA (fonte única).
+    contactId:      ctx.contact.id,
   }
 }
 

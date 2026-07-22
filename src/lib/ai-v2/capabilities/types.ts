@@ -32,15 +32,15 @@ export type CapabilityCategory =
  *  • `ai`    → a IA escolhe (comportamento livre). Ausência do binding = `ai`.
  */
 export interface AgendaBinding {
+  /** `fixed` sem resourceId = "Aleatória" (sorteio no pool) · `owner` = ★ responsável
+   *  pelo cliente (cascata; sem responsável → Aleatória) · `ai` = a IA decide.
+   *  agenda-node-redesign.md é a fonte do painel. */
   mode:        "fixed" | "owner" | "ai"
   serviceId?:  string | null
   resourceId?: string | null
-  /** `owner`: o que fazer quando o cliente NÃO tem dono resolvível (carteira vazia E
-   *  conversa sem atendente — o caso do lead novo). Default `pool` = comportamento
-   *  histórico (qualquer agenda). docs/crm-agenda-owner-routing-design.md §4. */
-  ownerFallback?:      "pool" | "resource" | "none" | null
-  /** Agenda de plantão quando `ownerFallback: "resource"`. */
-  fallbackResourceId?: string | null
+  /** ✳ "Cliente escolhe o serviço": o nó lista os serviços (determinístico, sem token)
+   *  e o cliente escolhe na conversa. Quando true, `serviceId` é ignorado. */
+  servicePick?: boolean
 }
 
 /**

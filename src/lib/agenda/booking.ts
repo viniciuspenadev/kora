@@ -200,9 +200,6 @@ export interface AgendaTargetSpec {
   /** pra resolver o dono (owner mode) — a cascata usa AMBOS (docs/crm-agenda-owner-routing-design.md §3). */
   conversationId?: string | null
   contactId?:      string | null
-  /** owner mode: o que fazer quando NÃO há dono resolvível (§4). Default `pool` = como era antes. */
-  ownerFallback?:      "pool" | "resource" | "none" | null
-  fallbackResourceId?: string | null
 }
 
 /**
@@ -233,7 +230,7 @@ function servesService(
  *
  * Só devolve agenda de agente ATIVO no tenant (furo A) — desligado não recebe agendamento.
  */
-async function ownerResource(
+export async function ownerResource(
   tenantId: string, conversationId: string | null, contactId: string | null,
 ): Promise<string | null> {
   const candidates: string[] = []
@@ -293,29 +290,21 @@ export async function resolveAgendaTargets(
     // fixed sem nada escolhido → cai no livre abaixo.
   }
 
-  // 2. BINDING "dono da conversa" (carteira) — GATED no god mode (`agenda_owner_routing`,
+  // 2. BINDING "responsável pelo cliente" — GATED no god mode (`agenda_owner_routing`,
   // beta/default-off). Gate OFF → NÃO resolve por dono (fail-closed) → degrada pro livre.
   // Resolve pela CASCATA (dono do contato → atendente da conversa), valida que o dono
-  // SERVE o serviço (furo B) e, não resolvendo, aplica o fallback EXPLÍCITO (§4) em vez
-  // de cair calado no pool inteiro. docs/crm-agenda-owner-routing-design.md.
+  // SERVE o serviço (furo B). SEM responsável → Aleatória (cai no livre abaixo), sem
+  // config extra — decisão do owner, agenda-node-redesign.md §3.3 (fallback eliminado).
   if (spec.mode === "owner" && (spec.conversationId || spec.contactId) && await hasModule(tenantId, "agenda_owner_routing")) {
-    const svcId = svcByName?.id ?? null
+    // ★ + serviço fixado no nó agora é combinação válida (tabela §2) — honra o serviço
+    // (duração/buffers certos + colisão por serviço), antes era descartado.
+    const svcId = spec.serviceId && (services ?? []).some((s) => s.id === spec.serviceId)
+      ? spec.serviceId
+      : (svcByName?.id ?? null)
     const owned = await ownerResource(tenantId, spec.conversationId ?? null, spec.contactId ?? null)
     if (owned && activeIds.has(owned) && servesService(services, svcId, owned)) {
       return { serviceId: svcId, pool: [owned] }
     }
-    // Sem dono resolvível → o AUTOR do fluxo decide (default `pool` = comportamento antigo).
-    const fb = spec.ownerFallback ?? "pool"
-    if (fb === "none") {
-      return { error: "Nenhum atendente responsável disponível para agendar agora.", serviceId: null, pool: [] }
-    }
-    if (fb === "resource") {
-      if (spec.fallbackResourceId && activeIds.has(spec.fallbackResourceId)) {
-        return { serviceId: svcId, pool: [spec.fallbackResourceId] }
-      }
-      return { error: "A agenda de plantão deste passo não está mais ativa. Avise um atendente.", serviceId: null, pool: [] }
-    }
-    // fb === "pool" → segue pro livre abaixo (união do serviço / todas as ativas).
   }
 
   // 3. LIVRE (ai / sem binding): por nome.
@@ -323,6 +312,9 @@ export async function resolveAgendaTargets(
     const opts = (services ?? []).map((s) => s.name).join(", ") || "(nenhum)"
     return { error: `Serviço "${spec.serviceName}" não existe. Serviços disponíveis: ${opts}.`, serviceId: null, pool: [] }
   }
+  // Serviço por ID (nó em ★ sem responsável → Aleatória DO serviço, não todas as agendas).
+  const svcById = spec.serviceId ? (services ?? []).find((s) => s.id === spec.serviceId) ?? null : null
+  const svc = svcByName ?? svcById
   let pool: string[] = []
   if (spec.resourceName) {
     const r = (resources ?? []).find((r) => normName(r.name) === normName(spec.resourceName!))
@@ -331,12 +323,16 @@ export async function resolveAgendaTargets(
       return { error: `Agenda "${spec.resourceName}" não existe. Agendas: ${opts}.`, serviceId: null, pool: [] }
     }
     pool = [r.id]
-  } else if (svcByName && Array.isArray(svcByName.resource_ids) && svcByName.resource_ids.length > 0) {
-    pool = (svcByName.resource_ids as string[]).filter((id) => activeIds.has(id))
+  } else if (svc && Array.isArray(svc.resource_ids) && svc.resource_ids.length > 0) {
+    pool = (svc.resource_ids as string[]).filter((id) => activeIds.has(id))
+    // Fail-closed (auditoria 2026-07-22, BAIXO-2): serviço com pool DECLARADO mas 100%
+    // inativo NÃO cai em "todas as agendas" — seria marcar o serviço em quem não o faz.
+    // Mesma régua do ramo fixed (acima).
+    if (pool.length === 0) return { error: "O serviço não tem agenda ativa no momento. Avise um atendente.", serviceId: svc.id, pool: [] }
   }
   if (pool.length === 0) pool = (resources ?? []).map((r) => r.id)   // fallback: tudo ativo
   if (pool.length === 0) return { error: "Nenhuma agenda configurada — não há como marcar horário.", serviceId: null, pool: [] }
-  return { serviceId: svcByName?.id ?? null, pool }
+  return { serviceId: svc?.id ?? null, pool }
 }
 
 /** UNIÃO de horários livres de um pool ("qualquer disponível") — dedup por start, ordenado. */
@@ -355,12 +351,22 @@ export async function availabilityPool(tenantId: string, input: {
   return merged
 }
 
-/** 1ª agenda do pool com `startsAt` REALMENTE livre (resolução do pool no momento do book). */
+/**
+ * Agenda do pool com `startsAt` REALMENTE livre — por SORTEIO (agenda-node-redesign.md §3.2).
+ * Embaralha antes de testar: sem isto a 1ª do pool ficava lotada e a última na migalha
+ * (ordem fixa de cadastro). Só participa quem TEM o slot de verdade (expediente + livre +
+ * sem bloqueio) — agenda fechada naquele dia nunca entra, o sorteio só desempata.
+ */
 export async function pickFreeInPool(tenantId: string, input: {
   pool: string[]; serviceId?: string | null; startsAt: string
 }): Promise<string | null> {
   const start = new Date(input.startsAt).getTime()
-  for (const resourceId of input.pool) {
+  const shuffled = [...input.pool]
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+  }
+  for (const resourceId of shuffled) {
     const slots = await availabilitySlots(tenantId, {
       resourceId, serviceId: input.serviceId,
       rangeStart: new Date(start - 60_000).toISOString(),

@@ -30,9 +30,11 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     supabaseAdmin.from("pipeline_stages").select("id, name, position").eq("tenant_id", tenantId).order("position"),
     // Etiquetas existentes pro nó "Etiquetar" (seletor, não texto livre).
     supabaseAdmin.from("tags").select("id, name").eq("tenant_id", tenantId).order("name"),
-    // Serviços + agendas pro destino da agenda no nó de IA ("em qual agenda cai").
-    supabaseAdmin.from("tenant_services").select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name"),
-    supabaseAdmin.from("tenant_resources").select("id, name").eq("tenant_id", tenantId).eq("active", true).order("name"),
+    // Serviços + agendas pro destino da agenda ("em qual agenda cai") — resource_ids e
+    // working_hours alimentam a LEGENDA dinâmica do painel (quem entra no sorteio /
+    // quem abre fim de semana). agenda-node-redesign.md §3.5.
+    supabaseAdmin.from("tenant_services").select("id, name, resource_ids").eq("tenant_id", tenantId).eq("active", true).order("name"),
+    supabaseAdmin.from("tenant_resources").select("id, name, working_hours").eq("tenant_id", tenantId).eq("active", true).order("name"),
     // Atendentes ativos pro destino "Atendente específico" do nó Transferir (F1).
     supabaseAdmin.from("tenant_users")
       .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
