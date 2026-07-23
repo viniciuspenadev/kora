@@ -611,6 +611,7 @@ function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set
       <div>
         <label className={LABEL}>Checar</label>
         <SimpleSelect value={check} onChange={(v) => onCheck(v)} options={[
+          { value: "is_new_contact", label: "Cliente novo? (primeiro contato)", group: "Relacionamento" },
           { value: "lifecycle_is", label: "Lifecycle é…",     group: "Relacionamento" },
           { value: "has_tag",      label: "Tem a etiqueta…",  group: "Relacionamento" },
           { value: "channel_is",   label: "Veio do canal…",   group: "Canal" },
@@ -622,6 +623,13 @@ function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set
         ]} />
       </div>
 
+      {check === "is_new_contact" && (
+        <p className="text-[11px] text-slate-400">
+          <b>Sim</b> = acabou de entrar na base (nasceu nesta conversa) · <b>Não</b> = já é <b>da casa</b>
+          — inclui contatos importados/cadastrados que nunca conversaram. Vale igual em qualquer canal
+          (site, WhatsApp, Instagram); ligue o ramo &ldquo;Não&rdquo; num <b>Chamar fluxo</b> pra rotear quem voltou.
+        </p>
+      )}
       {check === "lifecycle_is" && (
         <div>
           <label className={LABEL}>Lifecycle</label>

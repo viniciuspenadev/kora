@@ -110,6 +110,7 @@ function ChannelIcon({ ch }: { ch: string }) {
 const CHECK_LABEL: Record<string, string> = {
   has_email: "Tem e-mail?", has_phone: "Tem telefone?", has_name: "Tem nome?",
   has_document: "Tem CPF/CNPJ?", has_company: "Tem empresa?",
+  is_new_contact: "Cliente novo?",
 }
 const LIFECYCLE_LBL: Record<string, string> = {
   contact: "Novo", lead: "Lead", won: "Cliente", lost: "Perdido", unfit: "Fora do perfil",

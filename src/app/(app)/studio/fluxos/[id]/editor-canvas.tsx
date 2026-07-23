@@ -7,24 +7,25 @@
 // abre o painel de config; arrastar de um handle a outro liga os passos.
 // Salvar/Publicar converte o canvas → FlowGraph (o runtime executa).
 
-import { useState, useCallback, useTransition, useMemo, useEffect } from "react"
+import { useState, useCallback, useTransition, useMemo, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
-  ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Panel,
+  ReactFlow, ReactFlowProvider, Background, BackgroundVariant, Controls, MiniMap, Panel,
   useNodesState, useEdgesState, addEdge, useReactFlow, useUpdateNodeInternals, type OnConnect,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import {
   ArrowLeft, Loader2, CheckCircle2, AlertCircle, Plus,
   MoveHorizontal, MoveVertical, TrendingUp, X,
+  Copy, ClipboardPaste, CopyPlus, Trash2,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { nodeTypes, OrientationContext, TriggerSummaryContext, JourneyMetricsContext } from "./flow-nodes"
 import { edgeTypes, EdgeActionsContext } from "./flow-edge"
 import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
 import { NodePicker } from "./node-picker"
-import { toRF, fromRF, newRFNode, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
+import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
 import { getFlowJourney, getFlowRevenue, getFlowCampaigns, type FlowJourney, type FlowRevenue } from "@/lib/actions/studio/flow-analytics"
 import type { FlowTrigger, FlowNodeType } from "@/lib/ai-v2/flow/types"
@@ -75,9 +76,26 @@ export function FlowEditorCanvas(props: Props) {
   )
 }
 
+// ── Área de transferência do editor (copiar/colar nós) ─────────
+// localStorage → sobrevive à navegação: dá pra copiar um bloco num fluxo e colar
+// em OUTRO (ex: replicar "Condição É novo → Chamar fluxo" nos 3 canais).
+const CLIP_KEY = "kora_studio_clipboard_v1"
+interface ClipPayload {
+  nodes: { id: string; type: string; config: Record<string, unknown>; x: number; y: number }[]
+  edges: { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null }[]
+}
+function readClip(): ClipPayload | null {
+  try { const raw = localStorage.getItem(CLIP_KEY); return raw ? (JSON.parse(raw) as ClipPayload) : null } catch { return null }
+}
+function writeClip(p: ClipPayload): void {
+  try { localStorage.setItem(CLIP_KEY, JSON.stringify(p)) } catch { /* quota/priv — sem drama */ }
+}
+
+type CtxMenu = { x: number; y: number; kind: "node" | "pane" | "edge"; id?: string } | null
+
 function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, ownerRouting, channels, instances, ads }: Props) {
   const router = useRouter()
-  const { fitView } = useReactFlow()
+  const { fitView, screenToFlowPosition } = useReactFlow()
   const updateNodeInternals = useUpdateNodeInternals()
   const initial = toRF(flow.graph)
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(
@@ -185,12 +203,120 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
     }, 0)
   }, [orientation, edges, nodes, setNodes, fitView, updateNodeInternals])
 
+  // ── Interatividade do canvas (menu de contexto + clipboard + spawn central) ──
+  const wrapRef  = useRef<HTMLDivElement>(null)
+  const [menu, setMenu] = useState<CtxMenu>(null)
+  /** Posição pedida pelo "Adicionar nó" do botão direito — consumida no próximo addNode. */
+  const addAtRef   = useRef<{ x: number; y: number } | null>(null)
+  const pasteSeq   = useRef(0)
+
+  /** Centro do que o usuário está VENDO, em coordenadas do fluxo. */
+  const viewportCenter = useCallback(() => {
+    const r = wrapRef.current?.getBoundingClientRect()
+    return screenToFlowPosition(r
+      ? { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      : { x: window.innerWidth / 2, y: window.innerHeight / 2 })
+  }, [screenToFlowPosition])
+
+  // Nó novo nasce no CENTRO do viewport (não mais num canto fixo fora da tela),
+  // com cascata leve pra adds seguidos não empilharem no mesmo pixel.
   const addNode = useCallback((type: FlowNodeType) => {
-    const node = newRFNode(type, { x: 560, y: 60 + (addCount % 6) * 120 })
+    const at = addAtRef.current ?? viewportCenter()
+    addAtRef.current = null
+    const node = newRFNode(type, { x: at.x - 110 + (addCount % 5) * 16, y: at.y - 40 + (addCount % 5) * 16 })
     setAddCount((c) => c + 1)
     setNodes((ns) => [...ns, node])
     setSelectedId(node.id)
-  }, [addCount, setNodes])
+  }, [addCount, setNodes, viewportCenter])
+
+  /** Nós atualmente "em foco": multi-seleção do React Flow ∪ o selecionado no painel. */
+  const focusedNodes = useCallback(
+    () => nodes.filter((n) => n.type !== "start" && (n.selected || n.id === selectedId)),
+    [nodes, selectedId],
+  )
+
+  /** Copiar seleção (config inteira + conexões INTERNAS ao grupo). Início nunca vai. */
+  const copySelected = useCallback((): boolean => {
+    const sel = focusedNodes()
+    if (sel.length === 0) return false
+    const ids = new Set(sel.map((n) => n.id))
+    writeClip({
+      nodes: sel.map((n) => ({
+        id: n.id, type: n.type ?? "message",
+        config: JSON.parse(JSON.stringify((n.data?.config ?? {}))) as Record<string, unknown>,
+        x: n.position.x, y: n.position.y,
+      })),
+      edges: edges
+        .filter((e) => ids.has(e.source) && ids.has(e.target))
+        .map((e) => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle })),
+    })
+    pasteSeq.current = 0
+    return true
+  }, [focusedNodes, edges])
+
+  /** Colar: ids novos, conexões internas remapeadas, posição = alvo (menu) ou centro. */
+  const pasteClip = useCallback((at?: { x: number; y: number }) => {
+    const clip = readClip()
+    if (!clip || clip.nodes.length === 0) return
+    const minX = Math.min(...clip.nodes.map((n) => n.x))
+    const minY = Math.min(...clip.nodes.map((n) => n.y))
+    const base = at ?? viewportCenter()
+    const cascade = at ? 0 : (pasteSeq.current++ % 6) * 28
+    const idMap = new Map<string, string>()
+    const fresh: RFNode[] = clip.nodes.map((n) => {
+      const id = genId()
+      idMap.set(n.id, id)
+      return {
+        id, type: n.type as RFNode["type"],
+        position: { x: base.x + (n.x - minX) + cascade, y: base.y + (n.y - minY) + cascade },
+        data: { config: JSON.parse(JSON.stringify(n.config)) as Record<string, unknown> },
+        selected: true,
+      } as RFNode
+    })
+    const freshEdges: RFEdge[] = clip.edges.map((e) => ({
+      id: genId(),
+      source: idMap.get(e.source)!, target: idMap.get(e.target)!,
+      sourceHandle: e.sourceHandle ?? undefined, targetHandle: e.targetHandle ?? undefined,
+      type: "deletable", animated: true, style: { stroke: "#94a3b8", strokeWidth: 2 },
+    } as RFEdge))
+    setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), ...fresh])
+    setEdges((es) => [...es, ...freshEdges])
+    setSelectedId(fresh[0]?.id ?? null)
+  }, [setNodes, setEdges, viewportCenter])
+
+  /** Duplicar no lugar (offset fixo do original). */
+  const duplicateSelected = useCallback(() => {
+    const sel = focusedNodes()
+    if (sel.length === 0) return
+    if (!copySelected()) return
+    pasteClip({ x: Math.min(...sel.map((n) => n.position.x)) + 36, y: Math.min(...sel.map((n) => n.position.y)) + 36 })
+  }, [focusedNodes, copySelected, pasteClip])
+
+  /** Excluir a seleção (multi ∪ painel) — Início imune; arestas ligadas caem junto. */
+  const deleteFocused = useCallback(() => {
+    const ids = new Set(focusedNodes().map((n) => n.id))
+    if (ids.size === 0) return
+    setNodes((ns) => ns.filter((n) => !ids.has(n.id)))
+    setEdges((es) => es.filter((e) => !ids.has(e.source) && !ids.has(e.target)))
+    if (selectedId && ids.has(selectedId)) setSelectedId(null)
+  }, [focusedNodes, selectedId, setNodes, setEdges])
+
+  // Teclado: Ctrl/Cmd+C copiar · +V colar · +D duplicar · +X recortar. NUNCA dispara
+  // digitando num campo (o Delete nativo do React Flow já tem a mesma guarda).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t?.closest("input, textarea, select, [contenteditable=\"true\"]")) return
+      if (!(e.ctrlKey || e.metaKey)) return
+      const k = e.key.toLowerCase()
+      if (k === "c") { if (copySelected()) e.preventDefault() }
+      else if (k === "v") { e.preventDefault(); pasteClip() }
+      else if (k === "d") { e.preventDefault(); duplicateSelected() }
+      else if (k === "x") { if (copySelected()) { e.preventDefault(); deleteFocused() } }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [copySelected, pasteClip, duplicateSelected, deleteFocused])
 
   const updateConfig = useCallback((config: Record<string, unknown>) => {
     if (!selectedId) return
@@ -285,7 +411,7 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
       {/* Body — sem paleta à esquerda: adicionar passo mora no painel direito */}
       <div className="flex-1 flex min-h-0">
         {/* Canvas */}
-        <div className="flex-1 min-w-0 relative">
+        <div ref={wrapRef} className="flex-1 min-w-0 relative">
           {/* Painel de Jornada (flutuante) — controles do overlay + KPIs */}
           {showJourney && (
             <JourneyControls
@@ -308,14 +434,32 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
             onConnect={onConnect}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            onNodeClick={(_, n) => setSelectedId(n.id)}
-            onPaneClick={() => setSelectedId(null)}
+            onNodeClick={(_, n) => { setSelectedId(n.id); setMenu(null) }}
+            onPaneClick={() => { setSelectedId(null); setMenu(null) }}
+            onMoveStart={() => setMenu(null)}
+            // Delete/Backspace excluem a seleção (Início é `deletable: false`; a guarda
+            // de "não disparar digitando" é nativa do React Flow).
+            deleteKeyCode={["Delete", "Backspace"]}
+            onNodesDelete={(deleted) => { if (deleted.some((d) => d.id === selectedId)) setSelectedId(null) }}
+            onNodeContextMenu={(e, n) => {
+              e.preventDefault()
+              if (n.type === "start") { setMenu(null); return }   // Início: sem copiar/excluir
+              setSelectedId(n.id)
+              setMenu({ x: e.clientX, y: e.clientY, kind: "node", id: n.id })
+            }}
+            onEdgeContextMenu={(e, edge) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: "edge", id: edge.id }) }}
+            onPaneContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, kind: "pane" }) }}
             fitView
+            proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: "deletable", animated: true, style: { stroke: "#94a3b8", strokeWidth: 2 } }}
           >
-            <Background color="#cbd5e1" gap={20} />
+            {/* Grid quadriculado (pedido do owner) — linhas suaves, não compete com os nós. */}
+            <Background variant={BackgroundVariant.Lines} color="#e2e8f0" gap={24} />
             <Controls showInteractive={false} />
             <MiniMap pannable zoomable />
+            <Panel position="bottom-right">
+              <span className="text-[10px] font-semibold tracking-wide text-slate-300 select-none pr-1">Kora Studio</span>
+            </Panel>
             {!showJourney && (
               <Panel position="top-left">
                 <button type="button" onClick={() => setSelectedId(null)}
@@ -331,6 +475,21 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
           </TriggerSummaryContext.Provider>
           </OrientationContext.Provider>
           </EdgeActionsContext.Provider>
+
+          {/* Menu de contexto (botão direito): nó · conexão · canvas */}
+          {menu && (
+            <ContextMenu
+              menu={menu}
+              hasClip={!!readClip()?.nodes.length}
+              onClose={() => setMenu(null)}
+              onCopy={() => { copySelected(); setMenu(null) }}
+              onDuplicate={() => { duplicateSelected(); setMenu(null) }}
+              onDelete={() => { deleteFocused(); setMenu(null) }}
+              onDeleteEdge={() => { if (menu.id) deleteEdge(menu.id); setMenu(null) }}
+              onPasteHere={() => { pasteClip(screenToFlowPosition({ x: menu.x, y: menu.y })); setMenu(null) }}
+              onAddHere={() => { addAtRef.current = screenToFlowPosition({ x: menu.x, y: menu.y }); setSelectedId(null); setMenu(null) }}
+            />
+          )}
         </div>
 
         {/* Painel direito — contextual: sem seleção = ADICIONAR PASSO · Início = GATILHO · nó = CONFIG */}
@@ -352,6 +511,70 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * Menu de contexto do canvas (botão direito). Fixed na posição do clique; fecha em
+ * qualquer clique fora (overlay), Esc, pan ou clique num item.
+ */
+function ContextMenu({ menu, hasClip, onClose, onCopy, onDuplicate, onDelete, onDeleteEdge, onPasteHere, onAddHere }: {
+  menu: NonNullable<CtxMenu>
+  hasClip: boolean
+  onClose: () => void
+  onCopy: () => void
+  onDuplicate: () => void
+  onDelete: () => void
+  onDeleteEdge: () => void
+  onPasteHere: () => void
+  onAddHere: () => void
+}) {
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
+    window.addEventListener("keydown", onEsc)
+    return () => window.removeEventListener("keydown", onEsc)
+  }, [onClose])
+
+  const Item = ({ icon, label, kbd, danger, disabled, onClick }: {
+    icon: React.ReactNode; label: string; kbd?: string; danger?: boolean; disabled?: boolean; onClick: () => void
+  }) => (
+    <button type="button" disabled={disabled} onClick={onClick}
+      className={`w-full flex items-center gap-2 px-2.5 h-8 text-xs rounded-md text-left ${
+        disabled ? "text-slate-300 cursor-default"
+        : danger ? "text-red-600 hover:bg-red-50"
+        : "text-slate-700 hover:bg-slate-50"}`}>
+      {icon}<span className="flex-1">{label}</span>
+      {kbd && <span className="text-[10px] text-slate-300 font-mono">{kbd}</span>}
+    </button>
+  )
+
+  // Ajuste pra não estourar a janela (menu ~180×160).
+  const left = Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 200)
+  const top  = Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 9999) - 180)
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }} />
+      <div className="fixed z-50 w-48 rounded-xl border border-slate-200 bg-white shadow-card p-1" style={{ left, top }}>
+        {menu.kind === "node" && (
+          <>
+            <Item icon={<Copy className="size-3.5" />}     label="Copiar"   kbd="Ctrl+C" onClick={onCopy} />
+            <Item icon={<CopyPlus className="size-3.5" />} label="Duplicar" kbd="Ctrl+D" onClick={onDuplicate} />
+            <div className="my-1 border-t border-slate-100" />
+            <Item icon={<Trash2 className="size-3.5" />}   label="Excluir"  kbd="Del" danger onClick={onDelete} />
+          </>
+        )}
+        {menu.kind === "edge" && (
+          <Item icon={<Trash2 className="size-3.5" />} label="Excluir conexão" danger onClick={onDeleteEdge} />
+        )}
+        {menu.kind === "pane" && (
+          <>
+            <Item icon={<ClipboardPaste className="size-3.5" />} label="Colar aqui" kbd="Ctrl+V" disabled={!hasClip} onClick={onPasteHere} />
+            <Item icon={<Plus className="size-3.5" />}           label="Adicionar nó aqui" onClick={onAddHere} />
+          </>
+        )}
+      </div>
+    </>
   )
 }
 
