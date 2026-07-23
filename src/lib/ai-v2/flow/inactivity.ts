@@ -88,9 +88,8 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
       if (fired >= MAX_FIRES) break
       if (!c.instance_id) continue
 
-      // Consome-uma-vez: já disparou desde a última resposta do cliente? pula.
       const meta = (c.metadata ?? {}) as { inactivity_fired_at?: string }
-      if (meta.inactivity_fired_at && (!c.last_inbound_at || meta.inactivity_fired_at >= c.last_inbound_at)) continue
+      const alreadyStamped = !!meta.inactivity_fired_at && (!c.last_inbound_at || meta.inactivity_fired_at >= c.last_inbound_at)
 
       /** Carimbo consome-uma-vez (reusado pelo teto ancião E pelo disparo normal).
        *  Re-LÊ o metadata na hora (auditoria 2026-07-23 M2): o snapshot do scan pode
@@ -112,20 +111,23 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
         .select("id, status, resume_at, variables").eq("conversation_id", c.id)
         .in("status", ["active", "waiting"]).maybeSingle()
       const waitingOnClient = !!run && run.status === "waiting" && !run.resume_at
-      if (run && !waitingOnClient) continue
       const expireRun = () => supabaseAdmin.from("studio_flow_runs")
         .update({ status: "failed", variables: { ...((run?.variables as Record<string, unknown>) ?? {}), __expired_by: "inactivity" } })
         .eq("id", run!.id)
 
-      // Teto GLOBAL de sanidade (7 dias): abandono ancião NUNCA recebe mensagem —
-      // expira o run zumbi (se houver), CARIMBA (senão o próximo tick dispararia) e
-      // esquece. É o que limpa o limbo no primeiro tick pós-deploy, em silêncio.
+      // Teto GLOBAL de sanidade (7 dias) — ANTES do consome-uma-vez (senão conversa
+      // já carimbada pelo motor antigo nunca teria o run zumbi expirado): ancião NUNCA
+      // recebe mensagem — expira o run (se houver), carimba se preciso, e esquece.
       const lastMs = c.last_message_at ? new Date(c.last_message_at).getTime() : 0
       if (now - lastMs > 7 * 86_400_000) {
         if (waitingOnClient) await expireRun()
-        await stampFired()
+        if (!alreadyStamped) await stampFired()   // sem re-write a cada tick
         continue
       }
+
+      // Consome-uma-vez: já disparou desde a última resposta do cliente? pula.
+      if (alreadyStamped) continue
+      if (run && !waitingOnClient) continue
       if (waitingOnClient) await expireRun()
 
       const { data: inst } = await supabaseAdmin.from("whatsapp_instances")
