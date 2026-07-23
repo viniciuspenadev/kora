@@ -6,6 +6,7 @@ import { recordAppointmentEvent } from "@/lib/agenda/events"
 import { createNotification } from "@/lib/notifications"
 import { hasModule } from "@/lib/modules"
 import { carteiraOwner } from "@/lib/carteira"
+import { fmtFull } from "@/lib/agenda/format"
 
 // ═══════════════════════════════════════════════════════════════
 // Núcleo server-less da Agenda (disponibilidade) — SEM sessão
@@ -156,7 +157,7 @@ export async function bookAppointment(tenantId: string, input: {
   if (agentId && agentId !== createdBy) {
     await createNotification({
       tenantId, recipientId: agentId, type: "appt_created",
-      title: "Novo agendamento", body: `${res2?.name ?? "Recurso"} · ${startsAt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`,
+      title: "Novo agendamento", body: `${res2?.name ?? "Recurso"} · ${fmtFull(startsAt.toISOString())}`,
       payload: { appointment_id: data.id, conversation_id: conversationId },
     })
   }

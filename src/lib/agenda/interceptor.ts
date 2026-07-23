@@ -5,6 +5,7 @@ import { createNotification } from "@/lib/notifications"
 import { getAvailability } from "@/lib/agenda/availability"
 import { moveAppointment } from "@/lib/agenda/booking"
 import { recordAppointmentEvent } from "@/lib/agenda/events"
+import { fmtFull, fmtTitleSlot } from "@/lib/agenda/format"
 
 // ═══════════════════════════════════════════════════════════════
 // Interceptor de inbound da Agenda (round-trip, Fase 3d) — DETERMINÍSTICO
@@ -32,14 +33,9 @@ interface PendingAgenda {
 
 const EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
 
-// Data amigável p/ WhatsApp e sininho: "sex 12/06 às 14h00" (sem vírgulas robóticas).
-const fmt = (iso: string): string => {
-  const d = new Date(iso)
-  const wd = d.toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "short" }).replace(".", "")
-  const dm = d.toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit" })
-  const hm = d.toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).replace(":", "h")
-  return `${wd} ${dm} às ${hm}`
-}
+// Data amigável p/ WhatsApp e sininho — fonte ÚNICA (@/lib/agenda/format): dia da
+// semana por extenso, "Quinta-feira, 23/07 às 08h00" (regra do owner: sigla morreu).
+const fmt = fmtFull
 
 /** Retorna true se TRATOU a mensagem (não deve seguir pra IA/automação). */
 export async function handleAgendaReply(args: {
@@ -185,7 +181,9 @@ async function sendRescheduleMenu(ctx: Ctx, slots: string[], nextFrom: number | 
   const provider = getProvider(ctx.instance)
   const isMeta = (ctx.instance as { provider?: string }).provider === "meta_cloud"
   if (isMeta && provider.sendInteractive) {
-    const rows = slots.map((s, i) => ({ id: `agenda:slot:${i}`, title: fmt(s) }))
+    // Row da Meta corta em 24 → título COMPACTO ("Quinta 23/07 08h00", ≤19); o
+    // fmtFull (28) fica pro corpo/numerado. Regra: nunca mostrar texto cortado.
+    const rows = slots.map((s, i) => ({ id: `agenda:slot:${i}`, title: fmtTitleSlot(s) }))
     rows.push({ id: nextFrom ? "agenda:more" : "agenda:none", title: lastOption })
     try {
       const r = await provider.sendInteractive(ctx.phone, {

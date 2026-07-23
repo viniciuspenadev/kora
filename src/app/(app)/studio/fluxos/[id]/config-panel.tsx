@@ -440,25 +440,39 @@ function MenuConfig({ cfg, set, flowVars }: { cfg: MenuNodeConfig; set: (patch: 
       <div>
         <label className={LABEL}>Opções</label>
         <div className="space-y-1.5">
-          {options.map((o, i) => (
-            <div key={o.id} className="flex items-center gap-1.5">
-              <span className="text-[11px] font-bold text-slate-400 w-3 tabular-nums">{i + 1}</span>
-              <input
-                className={INPUT}
-                value={o.label}
-                onChange={(e) => set({ options: options.map((x) => (x.id === o.id ? { ...x, label: e.target.value } : x)) })}
-                placeholder="Ex: Vendas"
-              />
-              <button
-                type="button"
-                onClick={() => set({ options: options.filter((x) => x.id !== o.id) })}
-                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0"
-                aria-label="Remover"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
-          ))}
+          {options.map((o, i) => {
+            // Limites do interativo Meta: botão corta em 20, linha de lista em 24.
+            // O motor NUNCA corta (degrada pra lista/numerado) — o contador só avisa
+            // o autor do veículo que o cliente vai ver. agenda-node-redesign.md §7.
+            const n = o.label.length
+            const over = n > 24 ? "numerado" : n > 20 ? "lista" : null
+            return (
+              <div key={o.id} className="flex items-center gap-1.5">
+                <span className="text-[11px] font-bold text-slate-400 w-3 tabular-nums">{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <input
+                    className={INPUT}
+                    value={o.label}
+                    onChange={(e) => set({ options: options.map((x) => (x.id === o.id ? { ...x, label: e.target.value } : x)) })}
+                    placeholder="Ex: Vendas"
+                  />
+                  {n > 0 && (
+                    <p className={`text-[10px] mt-0.5 ${over ? "text-amber-600" : "text-slate-300"}`}>
+                      {n}/20{over ? ` — no WhatsApp oficial vira ${over} (não corta, muda o formato)` : ""}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => set({ options: options.filter((x) => x.id !== o.id) })}
+                  className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0"
+                  aria-label="Remover"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+            )
+          })}
         </div>
         <button
           type="button"

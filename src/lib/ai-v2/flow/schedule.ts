@@ -23,6 +23,7 @@ import type { ScheduleNodeConfig } from "./types"
 import { supabaseAdmin } from "@/lib/supabase"
 import { resolveAgendaTargets, availabilityPool, availabilitySlots, pickFreeInPool, bookAppointment, moveAppointment, ownerResource } from "@/lib/agenda/booking"
 import { linkOwnerOnAppointment } from "@/lib/carteira"
+import { fmtFull, fmtFullDay, fmtTitleSlot, fmtTitleDay, fmtTime, periodOf } from "@/lib/agenda/format"
 import { hasModule } from "@/lib/modules"
 
 const TZ = "America/Sao_Paulo"
@@ -43,32 +44,12 @@ const TIME_CAP = 9              // horários por dia (≤9, +1 "outro dia" ≤ 1
 const BYDAY_SLOT_CAP = 140      // teto defensivo do varrimento por-dia
 
 // ── formatação ────────────────────────────────────────────────
-/** "sex 12/06 às 14h00" — legível e ≤24 chars (cabe no title da row Meta). */
-export function fmtSlot(iso: string): string {
-  const d = new Date(iso)
-  const wd = d.toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "short" }).replace(".", "")
-  const dm = d.toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit" })
-  const hm = d.toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).replace(":", "h")
-  return `${wd} ${dm} às ${hm}`
-}
+// Fonte ÚNICA: @/lib/agenda/format (estudo de limites/formatos com o owner —
+// dia da semana NUNCA vira sigla; corpo por extenso, título compacto que cabe).
+/** Corpo/variável: "Quinta-feira, 23/07 às 08h00". (Nome mantido pros consumidores.) */
+export function fmtSlot(iso: string): string { return fmtFull(iso) }
 /** Chave de dia no fuso (YYYY-MM-DD) — ordenável cronologicamente como string. */
 function dayKey(iso: string): string { return new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ }) }
-/** "Hoje 16/06" / "Amanhã 17/06" / "qui 18/06" — ≤24 chars. */
-function fmtDay(iso: string): string {
-  const d = new Date(iso)
-  const k = dayKey(iso)
-  const todayK    = new Date().toLocaleDateString("en-CA", { timeZone: TZ })
-  const tomorrowK = new Date(Date.now() + 86_400_000).toLocaleDateString("en-CA", { timeZone: TZ })
-  const dm = d.toLocaleDateString("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit" })
-  if (k === todayK)    return `Hoje ${dm}`
-  if (k === tomorrowK) return `Amanhã ${dm}`
-  const wd = d.toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "short" }).replace(".", "")
-  return `${wd} ${dm}`
-}
-/** "09h00" — horário curto pra a oferta do dia. */
-function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).replace(":", "h")
-}
 
 // ── stash do nó (entre oferta e pick) — vive em variables[schedule:<id>] ──
 // `reschedule` = id do agendamento a MOVER (ausente = criar novo). Costurado desde a
@@ -77,8 +58,10 @@ export type ScheduleStash =
   | { mode: "slots"; serviceId: string | null; pool: string[]; slots: string[]; reschedule?: string }
   | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "date"; pageStart: number; reschedule?: string }
   | { mode: "by_day"; serviceId: string | null; pool: string[]; byDay: Record<string, string[]>; dayKeys: string[]; phase: "time"; pageStart: number; chosenDay: string; slots: string[]; reschedule?: string }
-  // colisão: contato já tem agendamento(s) DESTE serviço → escolhe qual remarcar OU marcar novo.
-  | { mode: "collision"; appts: { id: string; label: string }[]; resolved: Resolved }
+  // colisão: contato já tem agendamento(s) → escolhe QUAL mexer (lista) e depois a AÇÃO
+  // (mudar horário = mesmo dia · mudar data · marcar um novo). Formato do owner (§7).
+  | { mode: "collision"; appts: { id: string; iso: string; label: string }[]; resolved: Resolved }
+  | { mode: "collision_action"; appt: { id: string; iso: string; label: string }; resolved: Resolved; withNew?: boolean }
   // aiParse: a IA não identificou o serviço → o cliente escolhe (picker determinístico);
   // dia/período já interpretados ficam guardados pra estreitar a oferta depois.
   | { mode: "pick_service"; services: { id: string; name: string }[]; fromDate: string; period: string }
@@ -199,12 +182,13 @@ export async function bookSchedulePick(
 // ── envio das ofertas (slots / data / hora) ────────────────────
 const SCHED_META = { studio_schedule: true }
 
-/** Oferta PLANA (modo slots): horários + "Nenhum desses". */
+/** Oferta PLANA (modo slots): horários + "Nenhum desses". A linha não repete a
+ *  data — o DIA vira seção da lista; o título carrega só a hora. */
 export async function sendScheduleOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, slots: string[]): Promise<void> {
   await sendOptions(ctx, {
     render:     cfg.render,
     body:       cfg.intro?.trim() || "Escolha o melhor horário:",
-    items:      slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtSlot(s) })),
+    items:      slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s), group: fmtTitleDay(s) })),
     last:       { id: NONE_ID, title: NONE_LABEL },
     listButton: "Ver horários",
     meta:       SCHED_META,
@@ -218,20 +202,21 @@ async function sendDateOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extra
   await sendOptions(ctx, {
     render:     cfg.render,
     body:       DATE_PROMPT,
-    items:      page.map((k, i) => ({ id: `schedule:day:${i}`, title: fmtDay(stash.byDay[k][0]) })),
+    items:      page.map((k, i) => ({ id: `schedule:day:${i}`, title: fmtTitleDay(stash.byDay[k][0]) })),
     last:       hasMore ? { id: MORE_ID, title: MORE_LABEL } : { id: NONE_ID, title: NONE_LABEL },
     listButton: "Ver dias",
     meta:       SCHED_META,
   })
 }
 
-/** Oferta de HORÁRIOS de um dia (by_day, fase time): horários + "Outro dia". */
+/** Oferta de HORÁRIOS de um dia (by_day, fase time): horários + "Outro dia".
+ *  O dia já foi escolhido → título é SÓ a hora, agrupada por período (Manhã/Tarde/Noite). */
 async function sendTimeOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extract<ScheduleStash, { phase: "time" }>): Promise<void> {
-  const day = fmtDay(stash.slots[0])
+  const day = fmtFullDay(stash.slots[0])
   await sendOptions(ctx, {
     render:     cfg.render,
-    body:       cfg.intro?.trim() ? `${cfg.intro.trim()} (${day})` : `Horários pra ${day}:`,
-    items:      stash.slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s) })),
+    body:       cfg.intro?.trim() ? `${cfg.intro.trim()} (${day})` : `Horários de ${day}:`,
+    items:      stash.slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s), group: periodOf(s) })),
     last:       { id: BACK_ID, title: BACK_LABEL },
     listButton: "Ver horários",
     meta:       SCHED_META,
@@ -279,11 +264,18 @@ function tokenServiceIndex(optionId: string | undefined, services: { id: string;
   return i >= 0 && i < services.length ? i : null
 }
 
-/** Modo slots: tap (título) > "nenhum"/0 > número digitado. */
+/** Modo slots: tap (título) > "nenhum"/0 > número digitado. Os títulos exibidos hoje
+ *  são SÓ a hora ("08h00", com o dia na seção) → casa fmtTime E o formato completo
+ *  (mensagens antigas/tap Meta) ANTES do fallback numérico — senão "08h00" viraria
+ *  o "8" e marcaria a opção 8. */
 function parseSlotPick(reply: string, slots: string[]): SlotPick | null {
   const r = reply.trim().toLowerCase()
   if (!r) return null
-  for (let i = 0; i < slots.length; i++) if (r === fmtSlot(slots[i]).toLowerCase()) return { kind: "slot", index: i }
+  for (let i = 0; i < slots.length; i++) {
+    if (r === fmtTime(slots[i]).toLowerCase() || r === fmtSlot(slots[i]).toLowerCase() || r === fmtTitleSlot(slots[i]).toLowerCase()) {
+      return { kind: "slot", index: i }
+    }
+  }
   if (/\b0\b/.test(r) || /(nenhum|nenhuma|outro|outra|outros|mais|n[aã]o)/.test(r)) return { kind: "none" }
   const num = r.match(/\d+/)
   if (num) { const idx = parseInt(num[0], 10) - 1; if (idx >= 0 && idx < slots.length) return { kind: "slot", index: idx } }
@@ -292,7 +284,7 @@ function parseSlotPick(reply: string, slots: string[]): SlotPick | null {
 function parseDatePick(reply: string, page: string[], hasMore: boolean): DatePick | null {
   const r = reply.trim().toLowerCase()
   if (!r) return null
-  for (let i = 0; i < page.length; i++) if (r === fmtDay(page[i]).toLowerCase()) return { kind: "day", index: i }
+  for (let i = 0; i < page.length; i++) if (r === fmtTitleDay(page[i]).toLowerCase()) return { kind: "day", index: i }
   if (/(ver mais|mais dias|outros dias|pr[oó]ximos)/.test(r)) return hasMore ? { kind: "more" } : { kind: "none" }
   if (/(nenhum|nenhuma|cancelar|desistir)/.test(r)) return { kind: "none" }
   if (/\b0\b/.test(r)) return hasMore ? { kind: "more" } : { kind: "none" }
@@ -351,7 +343,7 @@ async function book(ctx: ExecCtx, cfg: ScheduleNodeConfig, iso: string, serviceI
  */
 async function findContactAppointments(
   ctx: ExecCtx, scope: { serviceId?: string | null; resourceId?: string | null },
-): Promise<{ id: string; label: string }[]> {
+): Promise<CollisionAppt[]> {
   let q = supabaseAdmin.from("appointments")
     .select("id, starts_at")
     .eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
@@ -359,16 +351,81 @@ async function findContactAppointments(
   if (scope.serviceId)  q = q.eq("service_id", scope.serviceId)
   if (scope.resourceId) q = q.eq("resource_id", scope.resourceId)
   const { data } = await q.order("starts_at", { ascending: true }).limit(9)
-  return ((data ?? []) as { id: string; starts_at: string }[]).map((a) => ({ id: a.id, label: fmtSlot(a.starts_at) }))
+  return ((data ?? []) as { id: string; starts_at: string }[])
+    .map((a) => ({ id: a.id, iso: a.starts_at, label: fmtTitleSlot(a.starts_at) }))
 }
 
-async function sendCollisionMenu(ctx: ExecCtx, cfg: ScheduleNodeConfig, appts: { id: string; label: string }[]): Promise<void> {
-  const body = appts.length === 1
-    ? `Vi que você já tem um horário marcado: ${appts[0].label}. O que prefere?`
-    : "Vi que você já tem estes horários. Qual você quer remarcar?"
-  const items = appts.slice(0, 9).map((a, i) => ({ id: `schedule:appt:${i}`, title: `Remarcar ${a.label}` }))
-  items.push({ id: "schedule:new", title: "Marcar um novo horário" })
-  await sendOptions(ctx, { render: cfg.render, body, items, listButton: "Ver opções", meta: SCHED_META })
+type CollisionAppt = { id: string; iso: string; label: string }
+
+/** Vários agendamentos → lista "qual você quer mexer?" (títulos ≤19, cabem inteiros). */
+async function sendCollisionMenu(ctx: ExecCtx, cfg: ScheduleNodeConfig, appts: CollisionAppt[]): Promise<void> {
+  await sendOptions(ctx, {
+    render:     cfg.render,
+    body:       "Vi que você já tem estes horários. Qual você quer remarcar?",
+    items:      appts.slice(0, 9).map((a, i) => ({ id: `schedule:appt:${i}`, title: a.label })),
+    last:       { id: "schedule:new", title: "Marcar um novo" },
+    listButton: "Ver opções",
+    meta:       SCHED_META,
+  })
+}
+
+/** Menu de AÇÃO sobre UM agendamento — 3 botões fixos e curtos (formato do owner):
+ *  Mudar o horário (mesmo dia) · Mudar a data · Marcar um novo. `withNew=false`
+ *  quando "novo" já foi oferecido na lista anterior. */
+async function sendCollisionAction(ctx: ExecCtx, cfg: ScheduleNodeConfig, appt: CollisionAppt, withNew: boolean): Promise<void> {
+  await sendOptions(ctx, {
+    render: cfg.render,
+    body:   `Você já tem um horário marcado:\n📅 ${fmtFull(appt.iso)}\nO que você prefere?`,
+    items: [
+      { id: "schedule:act:time", title: "Mudar o horário" },
+      { id: "schedule:act:date", title: "Mudar a data" },
+    ],
+    last:       withNew ? { id: "schedule:new", title: "Marcar um novo" } : undefined,
+    listButton: "Ver opções",
+    meta:       SCHED_META,
+  })
+}
+
+type ActionPick = { kind: "time" } | { kind: "date" } | { kind: "new" } | null
+function parseActionPick(optionId: string | undefined, reply: string): ActionPick {
+  const p = tokenParts(optionId)
+  if (p?.[1] === "act" && p[2] === "time") return { kind: "time" }
+  if (p?.[1] === "act" && p[2] === "date") return { kind: "date" }
+  if (p?.[1] === "new") return { kind: "new" }
+  const r = reply.trim().toLowerCase()
+  if (/(novo|nova\b|outro agendamento|marcar um novo)/.test(r)) return { kind: "new" }
+  if (/(data|\bdia\b)/.test(r)) return { kind: "date" }
+  if (/(hor[aá]rio|hora)/.test(r)) return { kind: "time" }
+  const num = r.match(/^\s*(\d)\s*$/)
+  if (num) return num[1] === "1" ? { kind: "time" } : num[1] === "2" ? { kind: "date" } : num[1] === "0" || num[1] === "3" ? { kind: "new" } : null
+  return null
+}
+
+/** "Mudar o horário": oferta os horários do MESMO dia do agendamento (com remarcação
+ *  costurada). Dia lotado → cai graciosamente pro fluxo de datas. */
+async function offerSameDayTimes(ctx: ExecCtx, cfg: ScheduleNodeConfig, appt: CollisionAppt, resolved: Resolved): Promise<ScheduleResume> {
+  const slots = await daySlots(ctx, cfg, resolved, dayKey(appt.iso), "")
+  if (slots.length === 0) return startNormal(ctx, cfg, resolved, appt.id)
+  await sendOptions(ctx, {
+    render:     cfg.render,
+    body:       `Horários de ${fmtFullDay(appt.iso)}:`,
+    items:      slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s), group: periodOf(s) })),
+    last:       { id: NONE_ID, title: NONE_LABEL },
+    listButton: "Ver horários",
+    meta:       SCHED_META,
+  })
+  return { kind: "wait", stash: { mode: "slots", slots, serviceId: resolved.serviceId, pool: resolved.pool, reschedule: appt.id } }
+}
+
+/** Entrada única da colisão: 1 agendamento → menu de AÇÃO direto (3 botões);
+ *  vários → lista "qual?" primeiro e a ação vem depois. */
+async function startCollision(ctx: ExecCtx, cfg: ScheduleNodeConfig, appts: CollisionAppt[], resolved: Resolved): Promise<ScheduleResume> {
+  if (appts.length === 1) {
+    await sendCollisionAction(ctx, cfg, appts[0], true)
+    return { kind: "wait", stash: { mode: "collision_action", appt: appts[0], resolved } }
+  }
+  await sendCollisionMenu(ctx, cfg, appts)
+  return { kind: "wait", stash: { mode: "collision", appts, resolved } }
 }
 
 type CollisionPick = { kind: "appt"; index: number } | { kind: "new" } | null
@@ -393,7 +450,7 @@ export async function resumeSchedule(
   ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: ScheduleStash | undefined, reply: string,
   optionId?: string,   // Oficial: token `schedule:*` do tap → roteio determinístico (id-first)
 ): Promise<ScheduleResume> {
-  // ── colisão: cliente escolheu qual remarcar (ou "novo") → segue pra oferta ──
+  // ── colisão (lista): cliente escolheu QUAL agendamento mexer (ou "novo") ──
   if (stash?.mode === "collision") {
     const pick = parseCollisionPick(optionId, reply, stash.appts)
     if (!pick) {
@@ -401,8 +458,26 @@ export async function resumeSchedule(
       await sendCollisionMenu(ctx, cfg, stash.appts)
       return { kind: "wait", stash }
     }
-    const reschedule = pick.kind === "appt" ? stash.appts[pick.index].id : undefined
-    return startNormal(ctx, cfg, stash.resolved, reschedule)
+    if (pick.kind === "new") return startNormal(ctx, cfg, stash.resolved)
+    const appt = stash.appts[pick.index]
+    // Stash de deploy ANTERIOR (sem `iso`) ainda vivo → sem como ofertar mesmo-dia/data
+    // por extenso: segue direto pro fluxo de datas com a remarcação costurada (leva 1).
+    if (!appt.iso) return startNormal(ctx, cfg, stash.resolved, appt.id)
+    await sendCollisionAction(ctx, cfg, appt, false)   // "novo" já foi oferecido na lista
+    return { kind: "wait", stash: { mode: "collision_action", appt, resolved: stash.resolved, withNew: false } }
+  }
+
+  // ── colisão (ação): mudar o horário (mesmo dia) · mudar a data · marcar um novo ──
+  if (stash?.mode === "collision_action") {
+    const pick = parseActionPick(optionId, reply)
+    if (!pick) {
+      await sendBotText(ctx, "É só escolher uma das opções 👇", SCHED_META)
+      await sendCollisionAction(ctx, cfg, stash.appt, stash.withNew !== false)
+      return { kind: "wait", stash }
+    }
+    if (pick.kind === "new")  return startNormal(ctx, cfg, stash.resolved)
+    if (pick.kind === "date") return startNormal(ctx, cfg, stash.resolved, stash.appt.id)
+    return offerSameDayTimes(ctx, cfg, stash.appt, stash.resolved)
   }
 
   // ── aiParse: cliente escolheu o serviço no picker → resolve + oferta ──
@@ -419,10 +494,7 @@ export async function resumeSchedule(
     // agendamento existente ANTES de ofertar, escopado pelo serviço escolhido.
     if (cfg.offerReschedule !== false) {
       const appts = await findContactAppointments(ctx, { serviceId: stash.services[idx].id })
-      if (appts.length > 0) {
-        await sendCollisionMenu(ctx, cfg, appts)
-        return { kind: "wait", stash: { mode: "collision", appts, resolved: r } }
-      }
+      if (appts.length > 0) return startCollision(ctx, cfg, appts, r)
     }
     return offerForResolved(ctx, cfg, r, stash.fromDate, stash.period)
   }
@@ -654,19 +726,13 @@ export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Prom
     const appts = await findContactAppointments(ctx, { serviceId: fixedServiceId })
     if (appts.length > 0) {
       const resolved = await resolveServiceId(ctx, cfg, fixedServiceId)
-      if (resolved) {
-        await sendCollisionMenu(ctx, cfg, appts)
-        return { kind: "wait", stash: { mode: "collision", appts, resolved } }
-      }
+      if (resolved) return startCollision(ctx, cfg, appts, resolved)
     }
   } else if (offerResched && !servicePick && isOwnerMode) {
     const res = await resolvePool(ctx, cfg)
     if (!res.error && res.pool.length === 1) {
       const appts = await findContactAppointments(ctx, {})
-      if (appts.length > 0) {
-        await sendCollisionMenu(ctx, cfg, appts)
-        return { kind: "wait", stash: { mode: "collision", appts, resolved: { serviceId: res.serviceId, pool: res.pool } } }
-      }
+      if (appts.length > 0) return startCollision(ctx, cfg, appts, { serviceId: res.serviceId, pool: res.pool })
     }
   }
   // ✳ "Cliente escolhe o serviço" (agenda-node-redesign.md): picker DETERMINÍSTICO —
