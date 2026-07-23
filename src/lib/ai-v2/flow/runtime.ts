@@ -125,13 +125,15 @@ async function evalCondition(node: FlowNode, ctx: ExecCtx, run: FlowRunRow): Pro
   switch (cfg.check) {
     // "É novo × É da casa" (owner: "da casa = já está na base" — inclui importado que
     // nunca conversou). NOVO ⇔ o contato NASCEU junto do disparo DESTE run (ε 15min
-    // cobre webhook/merge). O created_at do run CONGELA a régua: o resultado é o mesmo
-    // no nó 1 e no nó 20, hoje ou daqui a 2 dias. Fail-safe: sem created_at do contato
-    // → "da casa" (nunca trata cliente antigo como novo). Design §2.2.
+    // cobre webhook/merge). A régua congelada vive em variables.__run_started_at
+    // (gravada no startFlowRunAt; jsonb existente → zero migration; sobrescrita a cada
+    // novo disparo na mesma conversa → recorrente que volta = "da casa" ✓). Fail-safe:
+    // sem created_at do contato OU run legado sem carimbo → "da casa". Design §2.2.
     case "is_new_contact": {
       const born = c.created_at ? new Date(c.created_at).getTime() : 0
-      const runStart = run.created_at ? new Date(run.created_at).getTime() : Date.now()
-      return born > 0 && born >= runStart - 15 * 60_000
+      const stamp = (run.variables as Record<string, unknown> | null)?.["__run_started_at"]
+      const runStart = typeof stamp === "string" ? new Date(stamp).getTime() : Date.now()
+      return born > 0 && runStart > 0 && born >= runStart - 15 * 60_000
     }
     case "has_email":    return !!c.email?.trim()
     case "has_phone":    return !!c.phone_number?.trim()
@@ -569,6 +571,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           flowControl: { outcomes: cfg.outcomes ?? [], collect: cfg.collect ?? [] },
           extraTools:  cfg.tools,
           agendaBinding: cfg.agenda_target ?? null,
+          toolConfig:  cfg.toolConfig ?? null,
           // Contrato de fronteira: ação determinística logo à frente que este nó
           // não tem como tool → injeta o "defira, não conduza" (boundary.ts).
           deferral:    deferralConcepts(graph, node.id, cfg.tools ?? []),

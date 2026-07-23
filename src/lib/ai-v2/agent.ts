@@ -20,7 +20,8 @@ import {
   ensureCapabilitiesRegistered, getCapability, toolsForAgent, assemblePlaybooks,
   SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE, TAG, MOVE_STAGE,
   CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
-  type ExecCtx, type AgendaBinding,
+  CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES,
+  type ExecCtx, type AgendaBinding, type ToolConfig,
 } from "./capabilities"
 import { deferralContract, type DeferralConcept } from "./flow/boundary"
 
@@ -28,7 +29,10 @@ const MAX_STEPS    = 4
 const PLAN_LEVEL   = 99   // agente core usa só caps nível 0; gating real vem no flow (Fatia 4+)
 const GRANTED_TOOLS = [SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE]
 // Ferramentas extra que um nó de IA PODE liberar (least-privilege: só estas).
-const GRANTABLE_EXTRA = new Set([TAG, MOVE_STAGE, CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT])
+const GRANTABLE_EXTRA = new Set([
+  TAG, MOVE_STAGE, CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
+  CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES,
+])
 
 const FINISH_STEP = "finish_step"
 
@@ -55,6 +59,8 @@ export interface AgentTurnInput {
   extraTools?:  string[]
   /** Destino da agenda fixado pelo nó (input do autor) → entra no ctx das caps. */
   agendaBinding?: AgendaBinding | null
+  /** Sub-opções das tools de consulta fixadas pelo nó → entra no ctx das caps. */
+  toolConfig?:  ToolConfig | null
   /** Conceitos a DEFERIR: ações que um nó determinístico à frente provê e este nó
    *  NÃO tem como tool (derivados do grafo). Injeta o contrato de fronteira. */
   deferral?:    DeferralConcept[]
@@ -110,9 +116,11 @@ type Msg = OpenAI.Chat.Completions.ChatCompletionMessageParam
 
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
   ensureCapabilitiesRegistered()
-  const { model, persona, history, incomingText, instruction, variables, flowControl, extraTools, agendaBinding } = input
-  // Binding de agenda fixado pelo nó vai no ctx → as caps de agenda o honram.
-  const ctx: ExecCtx = agendaBinding ? { ...input.ctx, agendaBinding } : input.ctx
+  const { model, persona, history, incomingText, instruction, variables, flowControl, extraTools, agendaBinding, toolConfig } = input
+  // Binding de agenda + sub-opções de consulta fixados pelo nó vão no ctx → as caps honram.
+  const ctx: ExecCtx = (agendaBinding || toolConfig)
+    ? { ...input.ctx, ...(agendaBinding ? { agendaBinding } : {}), ...(toolConfig ? { toolConfig } : {}) }
+    : input.ctx
 
   // Ferramentas do turno:
   //  • core — mas tira `transfer` quando o nó tem SAÍDAS (grafo é dono do

@@ -43,6 +43,11 @@ export interface AgendaBinding {
   servicePick?: boolean
 }
 
+/** Sub-opções das tools de CONSULTA do nó de IA ({ toolId: { chave: boolean } }) —
+ *  gravadas no nó (banco) e checadas server-side na execução. Só regulam o QUANTO
+ *  mostrar; escopo-contato/só-leitura são doutrina, nunca config. */
+export type ToolConfig = Record<string, Record<string, unknown>>
+
 /**
  * Contexto de execução entregue a toda capacidade. Tudo que um executor
  * precisa pra agir (enviar pelo canal, encaminhar, gravar). Tipos reusam
@@ -68,6 +73,8 @@ export interface ExecCtx {
   /** Destino da agenda FIXADO pelo nó do fluxo (input do autor) — sobrepõe a
    *  escolha livre da IA (docs/agenda-routing.md). Ausente = IA decide. */
   agendaBinding?:       AgendaBinding | null
+  /** Sub-opções das tools de consulta, fixadas pelo nó (autor) — ver ToolConfig. */
+  toolConfig?:          ToolConfig | null
   /** metadata atual da conversa (pra preservar no update de roteamento). */
   conversationMetadata: Record<string, unknown>
   /** Histórico da conversa + modelo — usados na extração do dossiê no handoff. */

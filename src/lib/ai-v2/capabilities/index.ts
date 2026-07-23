@@ -15,6 +15,7 @@ import { tagCapability } from "./tag"
 import { moveStageCapability } from "./move-stage"
 import { assignCapability } from "./assign"
 import { checkAvailabilityCapability, scheduleAppointmentCapability, rescheduleAppointmentCapability } from "./agenda"
+import { consultAppointmentsCapability, consultDealsCapability, consultQuotesCapability } from "./consult"
 
 let _registered = false
 
@@ -33,6 +34,9 @@ export function ensureCapabilitiesRegistered(): void {
     checkAvailabilityCapability,
     scheduleAppointmentCapability,
     rescheduleAppointmentCapability,
+    consultAppointmentsCapability,
+    consultDealsCapability,
+    consultQuotesCapability,
   ])
   _registered = true
 }
@@ -46,5 +50,6 @@ export { TAG } from "./tag"
 export { MOVE_STAGE } from "./move-stage"
 export { ASSIGN } from "./assign"
 export { CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT } from "./agenda"
+export { CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES } from "./consult"
 export * from "./registry"
-export type { Capability, CapabilitySpec, ExecCtx, CapabilityResult, CapabilityCategory, AgendaBinding } from "./types"
+export type { Capability, CapabilitySpec, ExecCtx, CapabilityResult, CapabilityCategory, AgendaBinding, ToolConfig } from "./types"

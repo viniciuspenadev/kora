@@ -81,8 +81,9 @@ export type ConditionCheck =
   | "has_tag"       // contato tem a etiqueta `value`
   | "channel_is"    // conversa veio do canal `value`
   // "É novo × É da casa" (owner: "da casa = já está na base", inclui importado).
-  // NOVO ⇔ o contato NASCEU junto do disparo deste run — congelado pelo created_at
-  // do run, estável mesmo dias depois. docs/studio-client-awareness-design.md §2.
+  // NOVO ⇔ o contato NASCEU junto do disparo deste run — régua congelada em
+  // variables.__run_started_at (gravada no startFlowRunAt; sobrescrita a cada novo
+  // disparo na conversa). docs/studio-client-awareness-design.md §2.
   | "is_new_contact"
 export interface ConditionNodeConfig {
   check:  ConditionCheck
@@ -180,6 +181,9 @@ export interface ScheduleNodeConfig {
 export interface AiAgentNodeConfig {
   /** Missão deste passo (Vendas ≠ Suporte). Vira "# SUA MISSÃO". */
   instruction?: string
+  /** Sub-opções das tools de CONSULTA ({ toolId: { chave: boolean } }) — só regulam
+   *  o QUANTO mostrar; defaults seguros. studio-client-awareness-design.md §1. */
+  toolConfig?:  Record<string, Record<string, boolean>>
   /** Campos que a IA deve extrair antes de concluir → entram nas variáveis. */
   collect?:     { key: string; description?: string }[]
   /** Saídas nomeadas (ramos). A IA escolhe uma ao concluir (finish_step).
@@ -280,8 +284,6 @@ export interface FlowRunRow {
   flow_id:         string
   flow_version:    number
   current_node_id: string | null
-  /** Início do run — régua congelada da condição "É novo × É da casa". */
-  created_at?:     string | null
   variables:       Record<string, unknown>
   /** Pais suspensos (sub-fluxos). Topo do "stack" = frame ativo acima. */
   call_stack:      CallFrame[]

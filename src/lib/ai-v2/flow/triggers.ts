@@ -144,7 +144,7 @@ export async function loadStartableFlow(tenantId: string, flowId: string): Promi
   return (data as FlowRow | null) ?? null
 }
 
-const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, created_at, variables, call_stack, status, resume_at"
+const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, variables, call_stack, status, resume_at"
 
 /** Run ativo (active|waiting) da conversa, se houver. */
 export async function activeFlowRun(conversationId: string): Promise<FlowRunRow | null> {
@@ -172,7 +172,11 @@ export async function startFlowRunAt(tenantId: string, conversationId: string, f
     flow_id: flow.id,
     flow_version: flow.version,
     current_node_id: nodeId,
-    variables: {},
+    // __run_started_at: régua congelada da condição "É novo × É da casa" — vive nas
+    // variables (jsonb EXISTENTE → zero migration; família __* protegida do LLM). Por
+    // estar no payload do upsert, é SOBRESCRITO a cada novo disparo na MESMA conversa
+    // (o run é 1-por-conversa) → o recorrente que volta ganha régua NOVA = "da casa" ✓.
+    variables: { __run_started_at: new Date().toISOString() },
     call_stack: [],
     status: "active" as const,
   }

@@ -85,7 +85,16 @@ interface ClipPayload {
   edges: { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null }[]
 }
 function readClip(): ClipPayload | null {
-  try { const raw = localStorage.getItem(CLIP_KEY); return raw ? (JSON.parse(raw) as ClipPayload) : null } catch { return null }
+  try {
+    const raw = localStorage.getItem(CLIP_KEY)
+    if (!raw) return null
+    const p = JSON.parse(raw) as ClipPayload
+    // Shape-guard (auditoria B3): key corrompida à mão não pode derrubar o handler.
+    if (!Array.isArray(p?.nodes) || !Array.isArray(p?.edges)) return null
+    if (!p.nodes.every((n) => n && typeof n.id === "string" && typeof n.type === "string"
+      && typeof n.x === "number" && typeof n.y === "number" && n.config && typeof n.config === "object")) return null
+    return p
+  } catch { return null }
 }
 function writeClip(p: ClipPayload): void {
   try { localStorage.setItem(CLIP_KEY, JSON.stringify(p)) } catch { /* quota/priv — sem drama */ }
@@ -434,8 +443,8 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
             onConnect={onConnect}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            onNodeClick={(_, n) => { setSelectedId(n.id); setMenu(null) }}
-            onPaneClick={() => { setSelectedId(null); setMenu(null) }}
+            onNodeClick={(_, n) => { setSelectedId(n.id); setMenu(null); addAtRef.current = null }}
+            onPaneClick={() => { setSelectedId(null); setMenu(null); addAtRef.current = null }}
             onMoveStart={() => setMenu(null)}
             // Delete/Backspace excluem a seleção (Início é `deletable: false`; a guarda
             // de "não disparar digitando" é nativa do React Flow).

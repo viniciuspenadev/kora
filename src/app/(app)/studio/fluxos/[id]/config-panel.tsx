@@ -779,10 +779,24 @@ interface Route { id: string; label: string; description?: string }
 interface CollectField { key: string; description?: string }
 
 // Cada toggle concede 1+ capabilities (agendar = consultar + marcar, andam juntas).
-const AGENT_TOOLS: { key: string; ids: string[]; label: string; hint: string }[] = [
+// `subs` = sub-opções de CONSULTA (toolConfig) — regulam só o QUANTO mostrar;
+// `defaultOn` espelha o default do motor (ausente = seguro). Design §1.
+const AGENT_TOOLS: {
+  key: string; ids: string[]; label: string; hint: string
+  subs?: { tool: string; key: string; label: string; defaultOn?: boolean }[]
+}[] = [
   { key: "tag",        ids: ["tag"],        label: "Etiquetar o contato", hint: "aplica/remove etiquetas pra qualificar" },
   { key: "move_stage", ids: ["move_stage"], label: "Mover no pipeline",   hint: "move a conversa de etapa" },
   { key: "agenda",     ids: ["check_availability", "schedule_appointment", "reschedule_appointment"], label: "Agendar e remarcar", hint: "consulta horários reais, marca e remarca na agenda" },
+  { key: "c_appt",  ids: ["consult_appointments"], label: "Consultar agendamentos", hint: "responde “tenho horário marcado?” — só leitura, só deste cliente",
+    subs: [{ tool: "consult_appointments", key: "includeHistory", label: "Incluir últimos atendimentos (90 dias)" }] },
+  { key: "c_deal",  ids: ["consult_deals"], label: "Consultar negócios", hint: "responde “tenho pedido em andamento?” — só leitura, só deste cliente; o NOME da etapa do funil aparece pro cliente",
+    subs: [
+      { tool: "consult_deals", key: "showValue",     label: "Mostrar o valor pro cliente" },
+      { tool: "consult_deals", key: "includeClosed", label: "Incluir concluídos recentes (ganhos)" },
+    ] },
+  { key: "c_quote", ids: ["consult_quotes"], label: "Consultar cotações", hint: "status e validade da proposta que o cliente já recebeu",
+    subs: [{ tool: "consult_quotes", key: "showValue", label: "Mostrar o valor (o PDF já é do cliente)", defaultOn: true }] },
 ]
 function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
@@ -792,6 +806,11 @@ function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
   const isOn = (ids: string[]) => ids.every((id) => tools.includes(id))
   const toggle = (ids: string[]) =>
     set({ tools: isOn(ids) ? tools.filter((t) => !ids.includes(t)) : [...new Set([...tools, ...ids])] })
+  // Sub-opções de consulta (toolConfig) — default seguro quando ausente.
+  const toolCfg = (cfg.toolConfig as Record<string, Record<string, boolean>> | undefined) ?? {}
+  const subOn = (tool: string, key: string, defaultOn?: boolean) => toolCfg[tool]?.[key] ?? !!defaultOn
+  const subToggle = (tool: string, key: string, defaultOn?: boolean) =>
+    set({ toolConfig: { ...toolCfg, [tool]: { ...(toolCfg[tool] ?? {}), [key]: !subOn(tool, key, defaultOn) } } })
 
   const agendaOn  = isOn(["check_availability", "schedule_appointment", "reschedule_appointment"])
   const target    = (cfg.agenda_target as AgendaBinding | undefined) ?? { mode: "fixed" }
@@ -802,10 +821,22 @@ function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
       <label className={LABEL}>A IA pode <span className="text-slate-400 font-normal">(ações)</span></label>
       <div className="space-y-1.5">
         {AGENT_TOOLS.map((t) => (
-          <label key={t.key} className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={isOn(t.ids)} onChange={() => toggle(t.ids)} />
-            <span><b className="font-medium text-slate-700">{t.label}</b> <span className="text-slate-400">— {t.hint}</span></span>
-          </label>
+          <div key={t.key}>
+            <label className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={isOn(t.ids)} onChange={() => toggle(t.ids)} />
+              <span><b className="font-medium text-slate-700">{t.label}</b> <span className="text-slate-400">— {t.hint}</span></span>
+            </label>
+            {t.subs && isOn(t.ids) && (
+              <div className="ml-6 mt-1 space-y-1">
+                {t.subs.map((s) => (
+                  <label key={s.key} className="flex items-start gap-2 text-[11px] text-slate-500 cursor-pointer">
+                    <input type="checkbox" className="mt-0.5" checked={subOn(s.tool, s.key, s.defaultOn)} onChange={() => subToggle(s.tool, s.key, s.defaultOn)} />
+                    <span>{s.label}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         ))}
       </div>
 

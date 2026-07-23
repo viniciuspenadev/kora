@@ -72,7 +72,7 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
     // atendente atendeu e o cliente sumiu ("inatividade do cliente = concluir"); pular
     // as atribuídas esvaziava o propósito. Filtro de canal/número do gatilho.
     let q = supabaseAdmin.from("chat_conversations")
-      .select("id, channel, instance_id, last_inbound_at, metadata")
+      .select("id, channel, instance_id, last_inbound_at, last_message_at, metadata")
       .eq("tenant_id", f.tenant_id)
       .in("status", ["open", "pending"])
       .is("archived_at", null)
@@ -84,7 +84,7 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
     if (insts.length) q = q.in("instance_id", insts)
 
     const { data: convs } = await q
-    for (const c of (convs ?? []) as { id: string; channel: string | null; instance_id: string | null; last_inbound_at: string | null; metadata: Record<string, unknown> | null }[]) {
+    for (const c of (convs ?? []) as { id: string; channel: string | null; instance_id: string | null; last_inbound_at: string | null; last_message_at: string | null; metadata: Record<string, unknown> | null }[]) {
       if (fired >= MAX_FIRES) break
       if (!c.instance_id) continue
 
@@ -92,10 +92,41 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
       const meta = (c.metadata ?? {}) as { inactivity_fired_at?: string }
       if (meta.inactivity_fired_at && (!c.last_inbound_at || meta.inactivity_fired_at >= c.last_inbound_at)) continue
 
-      // Não interrompe um fluxo já rolando.
+      /** Carimbo consome-uma-vez (reusado pelo teto ancião E pelo disparo normal).
+       *  Re-LÊ o metadata na hora (auditoria 2026-07-23 M2): o snapshot do scan pode
+       *  ter minutos — gravar por cima clobberaria chaves escritas no intervalo
+       *  (campaign_engage, reopen_owner, ai_pinned_flow…). */
+      const stampFired = async () => {
+        const { data: fresh } = await supabaseAdmin.from("chat_conversations")
+          .select("metadata").eq("id", c.id).eq("tenant_id", f.tenant_id).maybeSingle()
+        await supabaseAdmin.from("chat_conversations")
+          .update({ metadata: { ...((fresh?.metadata as Record<string, unknown>) ?? c.metadata ?? {}), inactivity_fired_at: new Date().toISOString() } })
+          .eq("id", c.id).eq("tenant_id", f.tenant_id)
+      }
+
+      // Fluxo em curso? (docs/studio-client-awareness-design.md — fix do abandono)
+      //  • executando AGORA (active) ou espera TEMPORIZADA (nó Aguardar, resume_at) → não mexe;
+      //  • esperando o CLIENTE além do limiar → run está ABANDONADO → expira (status
+      //    `failed` + rastro em variables, zero migration) e segue pro re-engajamento.
       const { data: run } = await supabaseAdmin.from("studio_flow_runs")
-        .select("id").eq("conversation_id", c.id).in("status", ["active", "waiting"]).maybeSingle()
-      if (run) continue
+        .select("id, status, resume_at, variables").eq("conversation_id", c.id)
+        .in("status", ["active", "waiting"]).maybeSingle()
+      const waitingOnClient = !!run && run.status === "waiting" && !run.resume_at
+      if (run && !waitingOnClient) continue
+      const expireRun = () => supabaseAdmin.from("studio_flow_runs")
+        .update({ status: "failed", variables: { ...((run?.variables as Record<string, unknown>) ?? {}), __expired_by: "inactivity" } })
+        .eq("id", run!.id)
+
+      // Teto GLOBAL de sanidade (7 dias): abandono ancião NUNCA recebe mensagem —
+      // expira o run zumbi (se houver), CARIMBA (senão o próximo tick dispararia) e
+      // esquece. É o que limpa o limbo no primeiro tick pós-deploy, em silêncio.
+      const lastMs = c.last_message_at ? new Date(c.last_message_at).getTime() : 0
+      if (now - lastMs > 7 * 86_400_000) {
+        if (waitingOnClient) await expireRun()
+        await stampFired()
+        continue
+      }
+      if (waitingOnClient) await expireRun()
 
       const { data: inst } = await supabaseAdmin.from("whatsapp_instances")
         .select("*").eq("id", c.instance_id).eq("tenant_id", f.tenant_id).maybeSingle()
@@ -108,9 +139,7 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
 
       // Carimba ANTES de rodar (evita clobber do metadata que o fluxo possa mexer +
       // evita re-disparo se o run demorar). Depois dispara o fluxo com precedência.
-      await supabaseAdmin.from("chat_conversations")
-        .update({ metadata: { ...(c.metadata ?? {}), inactivity_fired_at: new Date().toISOString() } })
-        .eq("id", c.id).eq("tenant_id", f.tenant_id)
+      await stampFired()
       try {
         const r = await runStudioTurn({ tenantId: f.tenant_id, conversationId: c.id, incomingText: "", instance: inst }, { forceFlowId: f.id })
         if (r.status !== "error") fired++
