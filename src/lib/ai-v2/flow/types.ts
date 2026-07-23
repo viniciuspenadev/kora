@@ -80,6 +80,10 @@ export type ConditionCheck =
   | "lifecycle_is"  // contato.lifecycle == value (novo/lead/cliente/…)
   | "has_tag"       // contato tem a etiqueta `value`
   | "channel_is"    // conversa veio do canal `value`
+  // "É novo × É da casa" (owner: "da casa = já está na base", inclui importado).
+  // NOVO ⇔ o contato NASCEU junto do disparo deste run — congelado pelo created_at
+  // do run, estável mesmo dias depois. docs/studio-client-awareness-design.md §2.
+  | "is_new_contact"
 export interface ConditionNodeConfig {
   check:  ConditionCheck
   /** Parâmetro pros checks que precisam (lifecycle/etiqueta/canal). */
@@ -276,6 +280,8 @@ export interface FlowRunRow {
   flow_id:         string
   flow_version:    number
   current_node_id: string | null
+  /** Início do run — régua congelada da condição "É novo × É da casa". */
+  created_at?:     string | null
   variables:       Record<string, unknown>
   /** Pais suspensos (sub-fluxos). Topo do "stack" = frame ativo acima. */
   call_stack:      CallFrame[]

@@ -144,7 +144,7 @@ export async function loadStartableFlow(tenantId: string, flowId: string): Promi
   return (data as FlowRow | null) ?? null
 }
 
-const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, variables, call_stack, status, resume_at"
+const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, created_at, variables, call_stack, status, resume_at"
 
 /** Run ativo (active|waiting) da conversa, se houver. */
 export async function activeFlowRun(conversationId: string): Promise<FlowRunRow | null> {

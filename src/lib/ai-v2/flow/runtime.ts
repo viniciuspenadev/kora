@@ -118,11 +118,21 @@ function startNodeOf(g: FlowGraph): FlowNode | null {
   return g.nodes.find((n) => n.type === "start") ?? g.nodes[0] ?? null
 }
 
-async function evalCondition(node: FlowNode, ctx: ExecCtx): Promise<boolean> {
+async function evalCondition(node: FlowNode, ctx: ExecCtx, run: FlowRunRow): Promise<boolean> {
   const cfg = node.config as unknown as ConditionNodeConfig
   const c = ctx.contact
   const val = (cfg.value ?? "").trim().toLowerCase()
   switch (cfg.check) {
+    // "É novo × É da casa" (owner: "da casa = já está na base" — inclui importado que
+    // nunca conversou). NOVO ⇔ o contato NASCEU junto do disparo DESTE run (ε 15min
+    // cobre webhook/merge). O created_at do run CONGELA a régua: o resultado é o mesmo
+    // no nó 1 e no nó 20, hoje ou daqui a 2 dias. Fail-safe: sem created_at do contato
+    // → "da casa" (nunca trata cliente antigo como novo). Design §2.2.
+    case "is_new_contact": {
+      const born = c.created_at ? new Date(c.created_at).getTime() : 0
+      const runStart = run.created_at ? new Date(run.created_at).getTime() : Date.now()
+      return born > 0 && born >= runStart - 15 * 60_000
+    }
     case "has_email":    return !!c.email?.trim()
     case "has_phone":    return !!c.phone_number?.trim()
     case "has_name":     return !!(c.custom_name?.trim() || c.push_name?.trim())
@@ -412,7 +422,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         break
       }
       case "condition": {
-        const ok = await evalCondition(node, ctx)
+        const ok = await evalCondition(node, ctx, run)
         currentId = edgeTarget(graph, node.id, ok ? "true" : "false")
         break
       }

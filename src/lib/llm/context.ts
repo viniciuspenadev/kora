@@ -30,6 +30,8 @@ export interface ContactRow {
   source:          string
   primary_channel: string | null
   bsuid:           string | null   // BSUID (Meta) — alvo de envio quando não há telefone
+  /** Nascimento na BASE — alimenta a condição "É novo × É da casa" do Studio. */
+  created_at?:     string | null
 }
 
 const HISTORY_LIMIT = 20
