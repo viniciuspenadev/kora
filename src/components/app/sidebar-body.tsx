@@ -59,22 +59,29 @@ function isGroup(item: NavItem): item is NavGroup {
 
 const subIcon = "w-4 h-4 shrink-0"
 
+// Ícones de TOPO do rail ganham vida no hover da linha (group/item). Keyframes em
+// globals.css. `topIcon` = "pop" com mola (padrão); `topIconSpin` = volta completa
+// (usado onde girar faz sentido, ex: engrenagem de Configurações). Sub-ícones seguem
+// estáticos (subIcon). transform-origin central pra girar/escalar centralizado.
+const topIcon     = "w-5 h-5 shrink-0 origin-center group-hover/item:animate-[nav-icon-pop_0.5s_ease-out]"
+const topIconSpin = "w-5 h-5 shrink-0 origin-center group-hover/item:animate-[nav-icon-spin_0.6s_ease-in-out]"
+
 const NAV: NavItem[] = [
-  { href: "/inbox",      label: "Inbox",      icon: <Inbox     className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "inbox"    },
+  { href: "/inbox",      label: "Inbox",      icon: <Inbox     className={topIcon} strokeWidth={1.75} />, module: "inbox"    },
   {
     key:   "atendimento",
     label: "Atendimento",
-    icon:  <Headset className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    icon:  <Headset className={topIcon} strokeWidth={1.75} />,
     children: [
       { href: "/kanban",       label: "Pipelines",     icon: <Workflow className={subIcon} strokeWidth={1.75} />, module: "kanban"   },
       { href: "/atendimentos", label: "Departamentos", icon: <Columns3 className={subIcon} strokeWidth={1.75} />, module: "inbox"    },
     ],
   },
-  { href: "/contatos", label: "Contatos", icon: <Contact className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "contacts", capability: "contacts_access" },
+  { href: "/contatos", label: "Contatos", icon: <Contact className={topIcon} strokeWidth={1.75} />, module: "contacts", capability: "contacts_access" },
   {
     key:        "negocios",
     label:      "Negócios",
-    icon:       <Briefcase className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    icon:       <Briefcase className={topIcon} strokeWidth={1.75} />,
     module:     "crm",
     capability: "deals_access",   // owner/admin OU atendente com Ver+ de Negócios
     children: [
@@ -85,14 +92,14 @@ const NAV: NavItem[] = [
   },
   // Top-level: visível pra owner/admin OU agente com a capability inventory_access
   // (não fica sob "Negócios" que é adminOnly — senão o atendente não veria).
-  { href: "/estoque", label: "Estoque", icon: <Boxes className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "inventory", capability: "inventory_access" },
+  { href: "/estoque", label: "Estoque", icon: <Boxes className={topIcon} strokeWidth={1.75} />, module: "inventory", capability: "inventory_access" },
   // Catálogo: módulo INDEPENDENTE (serve Negócios e Estoque). Visível pra owner/admin
   // OU agente com catalog_access. Gate de módulo = crm (comum); a página aceita crm OU inventory.
-  { href: "/catalogo", label: "Catálogo", icon: <Package className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "crm", capability: "catalog_access" },
+  { href: "/catalogo", label: "Catálogo", icon: <Package className={topIcon} strokeWidth={1.75} />, module: "crm", capability: "catalog_access" },
   {
     key:        "marketing",
     label:      "Marketing",
-    icon:       <Megaphone className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    icon:       <Megaphone className={topIcon} strokeWidth={1.75} />,
     module:     "broadcasts",
     capability: "marketing_access",   // owner/admin OU atendente com Ver+ de Marketing
     children: [
@@ -100,12 +107,12 @@ const NAV: NavItem[] = [
       { href: "/configuracoes/listas", label: "Listas",    icon: <ListChecks className={subIcon} strokeWidth={1.75} />, capability: "marketing_manage" },
     ],
   },
-  { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className="w-5 h-5 shrink-0" strokeWidth={1.75} />, module: "agenda"  },
-  { href: "/relatorios", label: "Relatórios", icon: <BarChart3    className="w-5 h-5 shrink-0" strokeWidth={1.75} />, adminOnly: true },
+  { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className={topIcon} strokeWidth={1.75} />, module: "agenda"  },
+  { href: "/relatorios", label: "Relatórios", icon: <BarChart3    className={topIcon} strokeWidth={1.75} />, adminOnly: true },
   {
     key:   "automacao",
     label: "Automação",
-    icon:  <Bot className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    icon:  <Bot className={topIcon} strokeWidth={1.75} />,
     adminOnly: true,   // toda a automação pesada é só-admin (páginas gateiam owner/admin). Respostas rápidas sai daqui na P6.
     children: [
       { href: "/studio",                   label: "Kora Studio",           icon: <Blocks       className={subIcon} strokeWidth={1.75} />, module: "ai_studio"       },
@@ -118,7 +125,7 @@ const NAV: NavItem[] = [
   {
     key:       "config",
     label:     "Configurações",
-    icon:      <Settings className="w-5 h-5 shrink-0" strokeWidth={1.75} />,
+    icon:      <Settings className={topIconSpin} strokeWidth={1.75} />,
     adminOnly: true,
     flyout:    true,
     children: [

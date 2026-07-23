@@ -261,3 +261,23 @@
   45%  { opacity: 1; transform: translateX(0) scale(1); }
   100% { opacity: 0; transform: translateX(11px) scale(0.5); }
 }
+
+/* Ícones do menu ganham vida no hover da linha (group/item). One-shot que volta ao
+   repouso: a pop tem overshoot (mola) e termina na identidade; a spin dá uma volta
+   completa (360°) — ambas sem "snap" ao sair do hover. Aplicadas via group-hover/item. */
+@keyframes nav-icon-pop {
+  0%   { transform: scale(1)    rotate(0deg); }
+  30%  { transform: scale(1.22) rotate(-9deg); }
+  55%  { transform: scale(0.94) rotate(5deg); }
+  78%  { transform: scale(1.07) rotate(-2deg); }
+  100% { transform: scale(1)    rotate(0deg); }
+}
+@keyframes nav-icon-spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Respeita quem pediu menos movimento. */
+@media (prefers-reduced-motion: reduce) {
+  .group\/item:hover svg { animation: none !important; }
+}
