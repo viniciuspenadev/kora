@@ -402,7 +402,8 @@ function ServiceDialog({ service, resources, remindersModule, isMeta, confirmSta
   // Dados de exemplo pra prévia das mensagens (ao agendar + lembretes). Canônico
   // `nome` + aliases (contato) via cérebro → a prévia resolve {{nome}} E {{contato}}.
   const exampleVars = withAliases({
-    nome: "Maria", servico: name.trim() || "Consulta", data: "15 de junho", hora: "14:30",
+    // Mesmo formato que o envio REAL produz (reminders.ts buildVars: dia da semana por extenso).
+    nome: "Maria", servico: name.trim() || "Consulta", data: "Segunda-feira, 15 de junho", hora: "14:30",
     recurso: resources.find((r) => resIds.includes(r.id))?.name ?? resources.find((r) => r.active)?.name ?? "—",
   })
 

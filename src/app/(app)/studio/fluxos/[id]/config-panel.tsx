@@ -987,10 +987,16 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
       <WhatsAppPreview
         render={(cfg.render as RenderMode) ?? "auto"}
         body={offerMode === "by_day" ? "Qual dia fica melhor pra você?" : (String(cfg.intro ?? "").trim() || "Escolha o melhor horário:")}
-        items={offerMode === "by_day" ? ["Hoje 16/06", "Amanhã 17/06", "qua 18/06"] : ["seg 16/06 às 09h00", "seg 16/06 às 10h30", "ter 17/06 às 14h00"]}
+        items={offerMode === "by_day"
+          ? ["Hoje - 23/07", "Amanhã - 24/07", "Sexta - 25/07", "Segunda - 28/07"]
+          : [
+              { title: "09h00", group: "Segunda - 28/07" },
+              { title: "10h30", group: "Segunda - 28/07" },
+              { title: "14h00", group: "Terça - 29/07" },
+            ]}
         last={offerMode === "by_day" ? "Ver mais dias" : "Nenhum desses"}
         listButton={offerMode === "by_day" ? "Ver dias" : "Ver horários"}
-        note={offerMode === "by_day" ? "Passo 1 (dias) — depois o cliente escolhe o horário do dia. Exemplos; no envio real vêm da agenda." : "Os horários acima são exemplos — no envio real vêm da sua agenda."}
+        note={offerMode === "by_day" ? "Passo 1 (dias) — depois o cliente escolhe o horário do dia (agrupado por Manhã/Tarde/Noite). Exemplos; no envio real vêm da agenda." : "Os horários acima são exemplos, agrupados por dia — no envio real vêm da sua agenda."}
       />
 
       <p className="text-[11px] text-slate-400 border-t border-slate-100 pt-2">Saídas: <b className="text-emerald-600">Agendado</b> (marcou) e <b className="text-slate-500">Sem horário</b> (sem vaga ou desistiu — ligue num atendente).</p>

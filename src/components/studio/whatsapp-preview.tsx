@@ -1,10 +1,10 @@
 "use client"
 
 // Preview fiel do que o cliente VÊ no WhatsApp pra um nó de opções (Menu/Agendar).
-// Espelha o renderer do runtime (flow/interactive.ts): numerado vs botões (≤3) vs
-// lista (4+). Toggle Oficial/QR mostra a diferença por canal — no QR (Baileys) não
-// há interativo nativo, então cai SEMPRE pro numerado (igual ao fallback real).
-// Tira a engine do escuro: o cliente não escreve o craft, mas enxerga a saída.
+// Espelha o renderer do runtime (flow/interactive.ts) INCLUSIVE os limites da Meta:
+// botões só se ≤3 E títulos ≤20 E sem grupos; lista se ≤10 E títulos ≤24 (com
+// SEÇÕES por grupo); senão degrada pro numerado — nunca corta. Toggle Oficial/QR:
+// no QR (Baileys) não há interativo nativo → sempre numerado (igual ao real).
 
 import { useState } from "react"
 import { ChevronDown } from "lucide-react"
@@ -12,29 +12,43 @@ import type { RenderMode } from "@/lib/ai-v2/flow/types"
 
 const NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
+/** Item do preview: string simples ou { title, group } (grupo = seção da lista). */
+export type PreviewItem = string | { title: string; group?: string }
+
 export function WhatsAppPreview({
   render = "auto", body, items, last, listButton = "Ver opções", note,
 }: {
   render?: RenderMode
   body: string
-  items: string[]
+  items: PreviewItem[]
   last?: string
   listButton?: string
   note?: string
 }) {
   const [channel, setChannel] = useState<"official" | "qr">("official")
 
-  const all = last ? [...items, last] : items
-  // Veículo EFETIVO: QR sempre numerado; Oficial respeita render (numbered força texto).
-  const interactive = channel === "official" && render !== "numbered" && items.length > 0
-  const asButtons = interactive && all.length <= 3
+  const norm = items.map((o) => (typeof o === "string" ? { title: o } : o))
+  const allTitles = last ? [...norm.map((o) => o.title), last] : norm.map((o) => o.title)
+  const maxTitle = allTitles.length ? Math.max(...allTitles.map((t) => t.length)) : 0
+  const grouped = norm.some((o) => o.group)
 
-  const numbered = [
-    body.trim(),
-    "",
-    ...items.map((o, i) => `${NUM_EMOJI[i] ?? `${i + 1}.`} ${o}`),
-    ...(last ? [`0️⃣ ${last}`] : []),
-  ].join("\n")
+  // Veículo EFETIVO — MESMAS regras da boca (flow/interactive.ts): fidelidade primeiro.
+  const wantsInteractive = channel === "official" && render !== "numbered" && norm.length > 0
+  const fitsButtons = wantsInteractive && allTitles.length <= 3 && maxTitle <= 20 && !grouped
+  const fitsList    = wantsInteractive && allTitles.length <= 10 && maxTitle <= 24
+  const interactive = fitsButtons || fitsList
+  const asButtons   = fitsButtons
+
+  const numberedLines: string[] = [body.trim(), ""]
+  {
+    let g: string | undefined
+    norm.forEach((o, i) => {
+      if (o.group && o.group !== g) { g = o.group; numberedLines.push(`— ${g} —`) }
+      numberedLines.push(`${NUM_EMOJI[i] ?? `${i + 1}.`} ${o.title}`)
+    })
+  }
+  if (last) numberedLines.push(`0️⃣ ${last}`)
+  const numbered = numberedLines.join("\n")
 
   return (
     <div className="rounded-xl border border-slate-200 overflow-hidden">
@@ -68,25 +82,31 @@ export function WhatsAppPreview({
               <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-slate-800">{body.trim()}</p>
             </Bubble>
             {asButtons ? (
-              // ── Botões de resposta (≤3) ──
+              // ── Botões de resposta (≤3, títulos ≤20) ──
               <div className="space-y-1">
-                {all.map((label, i) => (
+                {allTitles.map((label, i) => (
                   <div key={i} className="bg-white rounded-lg py-2 text-center text-[12.5px] font-medium text-[#00a5f4] shadow-sm">
                     {label}
                   </div>
                 ))}
               </div>
             ) : (
-              // ── Lista (4+) ──
+              // ── Lista (≤10, títulos ≤24) ──
               <div className="bg-white rounded-lg py-2 flex items-center justify-center gap-1.5 text-[12.5px] font-medium text-[#00a5f4] shadow-sm">
                 <ChevronDown className="size-3.5" /> {listButton}
               </div>
             )}
             {!asButtons && (
-              <div className="rounded-lg border border-slate-200 bg-white/70 divide-y divide-slate-100">
-                {all.map((label, i) => (
-                  <div key={i} className="px-3 py-1.5 text-[11.5px] text-slate-600">{label}</div>
+              <div className="rounded-lg border border-slate-200 bg-white/70">
+                {norm.map((o, i) => (
+                  <div key={i}>
+                    {o.group && o.group !== norm[i - 1]?.group && (
+                      <p className="px-3 pt-1.5 pb-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-slate-400 bg-slate-50/60">{o.group}</p>
+                    )}
+                    <div className="px-3 py-1.5 text-[11.5px] text-slate-600 border-t border-slate-100 first:border-t-0">{o.title}</div>
+                  </div>
                 ))}
+                {last && <div className="px-3 py-1.5 text-[11.5px] text-slate-600 border-t border-slate-100">{last}</div>}
               </div>
             )}
           </>
