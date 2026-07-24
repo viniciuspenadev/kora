@@ -23,12 +23,14 @@
 //                           OU adicionar .delete() explícito ANTES do delete do contato
 //   3. Atualizar lista de tabelas cobertas no comentário abaixo:
 //
-//   Tabelas atualmente cobertas (2026-05-23):
-//     - chat_contacts          (raiz)
-//     - chat_conversations     (FK contact_id, CASCADE)
-//     - chat_messages          (via conversation_id, CASCADE)
-//     - taggings               (taggable_id = contact_id)
-//     - ai_suggestions         (FK contact_id, CASCADE)
+//   Tabelas cobertas no EXPORT (atualizado 2026-07-24):
+//     - chat_contacts, chat_conversations, chat_messages, taggings
+//     - contact_identities, tenant_deals, tenant_tasks, appointments,
+//       commercial_documents, contact_list_members, campaign_recipients,
+//       contact_import_items, keyword_trigger_runs, conversation_events
+//   DELETE cobre via CASCADE (deals/tasks/appointments/identities/imports).
+//   ⚠️ SET NULL retém snapshot: commercial_documents + campaign_recipients
+//      sobrevivem à eliminação (PII em snapshot) — backlog LGPD Art.18 VI.
 //     - storage chat-attachments (cleanup manual no delete)
 
 import { auth } from "@/auth"
@@ -97,17 +99,60 @@ export async function exportPersonalData(contactId: string): Promise<
     .eq("taggable_id", contactId)
     .eq("tenant_id", tenantId)
 
+  // 5. Demais dados pessoais vinculados ao contato (tabelas criadas após 2026-05-23).
+  //    Filtro por contact_id basta: o contato já foi validado como do tenant, e
+  //    contact_id é PK única → toda row linkada pertence ao mesmo tenant. service_role.
+  const [
+    identities, deals, tasks, appts, documents,
+    listMembers, campaignRecipients, importItems, triggerRuns,
+  ] = await Promise.all([
+    supabaseAdmin.from("contact_identities").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("tenant_deals").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("tenant_tasks").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("appointments").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("commercial_documents").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("contact_list_members").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("campaign_recipients").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("contact_import_items").select("*").eq("contact_id", contactId),
+    supabaseAdmin.from("keyword_trigger_runs").select("*").eq("contact_id", contactId),
+  ])
+
+  // 6. Linha do tempo (eventos das conversas do contato).
+  const { data: timelineEvents } = conversationIds.length
+    ? await supabaseAdmin.from("conversation_events").select("*").in("conversation_id", conversationIds)
+    : { data: [] }
+
   const payload = {
     exported_at: new Date().toISOString(),
     exported_by: { id: session.user.id, email: session.user.email },
     contact,
-    conversations: conversations ?? [],
-    messages:      messages ?? [],
-    taggings:      taggings ?? [],
+    conversations:       conversations ?? [],
+    messages:            messages ?? [],
+    taggings:            taggings ?? [],
+    contact_identities:  identities.data ?? [],
+    deals:               deals.data ?? [],
+    tasks:               tasks.data ?? [],
+    appointments:        appts.data ?? [],
+    documents:           documents.data ?? [],
+    list_memberships:    listMembers.data ?? [],
+    campaign_recipients: campaignRecipients.data ?? [],
+    import_items:        importItems.data ?? [],
+    trigger_runs:        triggerRuns.data ?? [],
+    timeline_events:     timelineEvents ?? [],
     counts: {
-      conversations: conversations?.length ?? 0,
-      messages:      messages?.length ?? 0,
-      taggings:      taggings?.length ?? 0,
+      conversations:       conversations?.length ?? 0,
+      messages:            messages?.length ?? 0,
+      taggings:            taggings?.length ?? 0,
+      contact_identities:  identities.data?.length ?? 0,
+      deals:               deals.data?.length ?? 0,
+      tasks:               tasks.data?.length ?? 0,
+      appointments:        appts.data?.length ?? 0,
+      documents:           documents.data?.length ?? 0,
+      list_memberships:    listMembers.data?.length ?? 0,
+      campaign_recipients: campaignRecipients.data?.length ?? 0,
+      import_items:        importItems.data?.length ?? 0,
+      trigger_runs:        triggerRuns.data?.length ?? 0,
+      timeline_events:     timelineEvents?.length ?? 0,
     },
   }
 

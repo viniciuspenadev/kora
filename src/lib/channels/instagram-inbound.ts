@@ -4,6 +4,7 @@ import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { fetchIgProfile } from "@/lib/instagram/api"
+import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
 
 /**
  * Ingestão do Instagram Direct (caminho "API do Instagram com login do Instagram")
@@ -81,23 +82,31 @@ async function connectionFor(igAccountId: string): Promise<{ tenantId: string; t
 }
 
 /** Enriquece o contato (nome/@/foto) via Graph API — precisa do token; senão placeholder. */
-async function maybeEnrich(token: string | null, igsid: string, contactId: string, created: boolean): Promise<void> {
+async function maybeEnrich(token: string | null, tenantId: string, igsid: string, contactId: string, created: boolean): Promise<void> {
   if (!token) {
     if (created) await supabaseAdmin.from("chat_contacts").update({ push_name: IG_PLACEHOLDER_NAME }).eq("id", contactId).is("push_name", null)
     return
   }
+  let needName = created
+  let needAvatar = created
   if (!created) {
-    const { data } = await supabaseAdmin.from("chat_contacts").select("push_name").eq("id", contactId).single()
-    const pn = data?.push_name as string | null
-    if (pn && pn !== IG_PLACEHOLDER_NAME) return
+    const { data } = await supabaseAdmin.from("chat_contacts").select("push_name, profile_pic_url").eq("id", contactId).single()
+    const pn  = data?.push_name as string | null
+    const pic = data?.profile_pic_url as string | null
+    needName = !pn || pn === IG_PLACEHOLDER_NAME
+    // Avatar precisa se: não tem, OU aponta pra URL crua de CDN (padrão antigo que
+    // expira → 403). Contato já migrado (`/api/avatar/...`) não re-baixa. Auto-cura.
+    needAvatar = !pic || pic.includes("cdninstagram.com") || pic.includes("fbcdn.net")
+    if (!needName && !needAvatar) return
   }
   const prof = await fetchIgProfile(igsid, token)
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (prof?.name)       patch.push_name       = prof.name
-  if (prof?.username)   patch.ig_username     = prof.username
-  if (prof?.profilePic) patch.profile_pic_url = prof.profilePic
-  if (!prof?.name && created) patch.push_name = IG_PLACEHOLDER_NAME
+  if (needName && prof?.name)   patch.push_name   = prof.name
+  if (prof?.username)           patch.ig_username = prof.username
+  if (needName && !prof?.name && created) patch.push_name = IG_PLACEHOLDER_NAME
   await supabaseAdmin.from("chat_contacts").update(patch).eq("id", contactId)
+  // Foto: baixa os bytes pro storage e serve por /api/avatar (a URL do CDN do IG expira).
+  if (needAvatar) await saveContactAvatarFromUrl(tenantId, contactId, prof?.profilePic)
 }
 
 async function defaultInstanceId(tenantId: string): Promise<string | null> {
@@ -122,7 +131,7 @@ async function resolveIgContext(igAccountId: string, fromIgsid: string): Promise
   // WhatsApp) cria o fio com null — o canal já discrimina (coalesce(instance,canal)).
   const instanceId = await defaultInstanceId(conn.tenantId)
   const contact = await resolveOrCreateContact(conn.tenantId, { instagram: fromIgsid }, { primaryChannel: "instagram", source: "instagram" })
-  await maybeEnrich(conn.token, fromIgsid, contact.id, contact.created)
+  await maybeEnrich(conn.token, conn.tenantId, fromIgsid, contact.id, contact.created)
   const conv = await getOrCreateIgConversation(conn.tenantId, contact.id, instanceId)
   return { tenantId: conn.tenantId, convId: conv.id, token: conn.token }
 }
@@ -302,7 +311,8 @@ export async function processInstagramWebhook(body: unknown): Promise<void> {
     const igAccountId = entry.id ?? null
 
     for (const m of entry.messaging ?? []) {
-      log("raw-msg", { igAccountId, m })   // DEBUG TEMPORÁRIO: estrutura real do evento (remover após mapear)
+      // Diagnóstico SEM PII: só a FORMA do evento (nunca texto/mídia do cliente).
+      log("msg-shape", { igAccountId, keys: Object.keys(m), att: m.message?.attachments?.[0]?.type ?? null, hasText: !!m.message?.text })
       if (m.message?.is_echo) continue   // eco do nosso envio → não re-ingere
       if (m.reaction)              { await handleReaction(igAccountId, m).catch((e) => log("reaction-err", { err: (e as Error).message })); continue }
       if (m.read)                  { await handleRead(igAccountId, m).catch((e) => log("read-err", { err: (e as Error).message })); continue }
@@ -311,7 +321,8 @@ export async function processInstagramWebhook(body: unknown): Promise<void> {
     }
 
     for (const ch of entry.changes ?? []) {
-      log("raw-change", { igAccountId, field: ch.field ?? null, value: ch.value ?? null })   // DEBUG TEMPORÁRIO
+      // Idem: forma do change, sem o `value` (carrega texto do comentário = PII).
+      log("change-shape", { igAccountId, field: ch.field ?? null, valueKeys: Object.keys(ch.value ?? {}) })
       if (ch.field !== "comments") { log("change", { igAccountId, field: ch.field ?? null }); continue }
       const v = ch.value ?? {}
       const from = v.from as { id?: string; username?: string } | undefined

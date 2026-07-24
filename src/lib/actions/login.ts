@@ -111,7 +111,9 @@ export async function beginLogin(
 
   // ── GATE (F3): confiança válida ou desafio ───────────────────
   const trusted = await hasValidTrust(v.userId, deviceId, v.passwordChangedAt)
-  if (!trusted) {
+  // M6: platform_admin (God mode) SEMPRE faz step-up por e-mail, mesmo em
+  // dispositivo confiável — MFA obrigatório pro maior blast radius do sistema.
+  if (!trusted || v.isPlatformAdmin) {
     const ch = await createLoginChallenge({ userId: v.userId, deviceId, ip, userAgent: ua })
     if (!ch.ok) return { ok: false, error: ch.error }
     return { ok: true, challenge: true }

@@ -67,7 +67,7 @@ export type VerifyResult =
   | { status: "invalid" }
   /** Senha CORRETA mas todos os tenants bloqueados — pode revelar o motivo (a pessoa provou posse). */
   | { status: "blocked"; reason: "pending_approval" | "suspended" }
-  | { status: "ok"; userId: string; tenantId: string; passwordChangedAt: string | null }
+  | { status: "ok"; userId: string; tenantId: string; passwordChangedAt: string | null; isPlatformAdmin: boolean }
 
 /**
  * Valida senha e resolve o tenant acessível — os MESMOS gates que viviam no
@@ -137,6 +137,7 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
     userId:            profile.id,
     tenantId:          accessible[0]?.tenant_id ?? "",
     passwordChangedAt: (profile.password_changed_at as string | null) ?? null,
+    isPlatformAdmin,
   }
 }
 
