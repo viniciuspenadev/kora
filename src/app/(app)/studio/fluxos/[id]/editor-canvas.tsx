@@ -23,7 +23,7 @@ import {
 import { SimpleSelect } from "@/components/ui/select"
 import { nodeTypes, OrientationContext, TriggerSummaryContext, JourneyMetricsContext } from "./flow-nodes"
 import { edgeTypes, EdgeActionsContext } from "./flow-edge"
-import { ConfigPanel, FlowSettingsPanel } from "./config-panel"
+import { ConfigPanel, FlowSettingsPanel, type TagOpt } from "./config-panel"
 import { NodePicker } from "./node-picker"
 import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
@@ -38,9 +38,10 @@ interface Props {
   agents:      { id: string; name: string }[]
   flows:       { id: string; name: string }[]
   stages:      { id: string; name: string }[]
-  tags:        { id: string; name: string }[]
+  tags:        TagOpt[]
   services:    { id: string; name: string }[]
   resources:   { id: string; name: string }[]
+  dealFields:  { id: string; label: string }[]
   ownerRouting: boolean
   channels:    TriggerChannel[]
   instances:   TriggerInstance[]
@@ -102,7 +103,7 @@ function writeClip(p: ClipPayload): void {
 
 type CtxMenu = { x: number; y: number; kind: "node" | "pane" | "edge"; id?: string } | null
 
-function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, ownerRouting, channels, instances, ads }: Props) {
+function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads }: Props) {
   const router = useRouter()
   const { fitView, screenToFlowPosition } = useReactFlow()
   const updateNodeInternals = useUpdateNodeInternals()
@@ -506,7 +507,7 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
           {!selectedNode
             ? <NodePicker onPick={addNode} />
             : selectedNode.type !== "start"
-            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}
                 mode={mode} channels={trigChannels} instances={trigInstances}

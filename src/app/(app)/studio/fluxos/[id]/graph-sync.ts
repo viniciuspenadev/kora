@@ -23,7 +23,8 @@ const DEFAULT_CONFIG: Record<FlowNodeType, () => Record<string, unknown>> = {
   message:   () => ({ text: "" }),
   send_media: () => ({ url: "", mediaType: "image", caption: "" }),
   menu:      () => ({ text: "Como posso ajudar?", options: [{ id: genId(), label: "Opção 1" }], noMatch: "" }),
-  condition: () => ({ check: "has_phone" }),
+  condition: () => ({ check: "is_new_contact", value: "" }),   // nasce em "Ciclo de vida → Cliente novo"
+  data_source: () => ({ source: "agenda", fields: {} }),        // Fonte de Consulta
   set_variable:   () => ({ assignments: [] }),
   switch:         () => ({ variable: "", cases: [{ id: genId(), equals: "" }] }),
   business_hours: () => ({ days: [1, 2, 3, 4, 5], open: "09:00", close: "18:00", timezone: "America/Sao_Paulo" }),

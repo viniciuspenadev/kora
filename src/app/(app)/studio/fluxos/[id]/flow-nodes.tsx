@@ -9,7 +9,7 @@
 
 import { createContext, useContext } from "react"
 import { Handle, Position, useNodeId, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
@@ -108,20 +108,21 @@ function ChannelIcon({ ch }: { ch: string }) {
 }
 
 const CHECK_LABEL: Record<string, string> = {
+  // legados (não mais ofertados no picker, mas nós antigos ainda renderizam)
   has_email: "Tem e-mail?", has_phone: "Tem telefone?", has_name: "Tem nome?",
   has_document: "Tem CPF/CNPJ?", has_company: "Tem empresa?",
   is_new_contact: "Cliente novo?",
 }
 const LIFECYCLE_LBL: Record<string, string> = {
-  contact: "Novo", lead: "Lead", won: "Cliente", lost: "Perdido", unfit: "Fora do perfil",
+  contact: "Contato", lead: "Lead", won: "Cliente", customer: "Cliente", lost: "Perdido", unfit: "Fora do perfil",
 }
 function conditionLabel(cfg: Record<string, unknown>): string {
   const check = String(cfg.check ?? "")
   const value = String(cfg.value ?? "")
   switch (check) {
-    case "lifecycle_is": return `Lifecycle é ${LIFECYCLE_LBL[value] ?? (value || "…")}?`
-    case "has_tag":      return `Tem etiqueta "${value || "…"}"?`
-    case "channel_is":   return `Veio do canal ${value || "…"}?`
+    case "lifecycle_is": return `Ciclo de vida: ${LIFECYCLE_LBL[value] ?? (value || "…")}?`
+    case "has_tag":      return `Tag: "${value || "…"}"?`
+    case "channel_is":   return `Canal de contato: ${value || "…"}?`
     default:             return CHECK_LABEL[check] ?? check
   }
 }
@@ -611,6 +612,20 @@ function ResolveNode(p: NodeProps) {
   )
 }
 
+const DS_LABEL: Record<string, string> = { agenda: "Agenda", deals: "Negócios", quotes: "Cotações" }
+/** Fonte de Consulta: só SAÍDA (liga no Agente IA por um fio de dados). Não recebe fluxo. */
+function DataSourceNode(p: NodeProps) {
+  const cfg = cfgOf(p) as { source?: string }
+  return (
+    <>
+      <Card icon={Database} accent="bg-indigo-100 text-indigo-700" title="Fonte de Consulta" selected={p.selected}>
+        🔒 {DS_LABEL[cfg.source ?? "agenda"] ?? "—"} · só deste contato
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
 export const nodeTypes = {
   start:      StartNode,
   message:    MessageNode,
@@ -626,6 +641,7 @@ export const nodeTypes = {
   schedule:  ScheduleNode,
   ai_agent:  AgentNode,
   ai_router: AiRouterNode,
+  data_source: DataSourceNode,
   call_flow: CallFlowNode,
   template:   TemplateNode,
   outreach:   OutreachNode,

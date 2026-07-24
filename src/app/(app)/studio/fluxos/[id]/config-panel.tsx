@@ -15,6 +15,7 @@ import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 
 /** Serviço/agenda com os campos extras da LEGENDA dinâmica do destino da agenda
  *  (quem entra no sorteio · quem abre fim de semana). agenda-node-redesign.md §3.5. */
+export interface TagOpt { id: string; name: string; color?: string | null }
 export interface SvcOpt { id: string; name: string; resource_ids?: string[] | null }
 export interface ResOpt {
   id: string; name: string
@@ -100,16 +101,17 @@ function RenderSelect({ value, onChange }: { value: RenderMode; onChange: (v: Re
 }
 
 export function ConfigPanel({
-  node, departments, agents = [], flows, stages, tags, services, resources, ownerRouting, flowVars = [], onChange, onDelete,
+  node, departments, agents = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], onChange, onDelete,
 }: {
   node: RFNode
   departments: { id: string; name: string }[]
   agents?: { id: string; name: string }[]
   flows: { id: string; name: string }[]
   stages: { id: string; name: string }[]
-  tags: { id: string; name: string }[]
+  tags: TagOpt[]
   services: SvcOpt[]
   resources: ResOpt[]
+  dealFields?: { id: string; label: string }[]
   ownerRouting: boolean
   /** Variáveis que o cliente criou no fluxo (Coletar/Definir/HTTP/Agendar) — chips extras. */
   flowVars?: string[]
@@ -287,6 +289,8 @@ export function ConfigPanel({
       {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} />}
 
       {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} tags={tags} stages={stages} services={services} resources={resources} ownerRouting={ownerRouting} />}
+
+      {type === "data_source" && <DataSourceConfig cfg={cfg} set={set} dealFields={dealFields} />}
 
       {type === "ai_router" && <RouterConfig cfg={cfg} set={set} />}
 
@@ -536,8 +540,12 @@ function SetVariableConfig({ cfg, set }: { cfg: SetVariableNodeConfig; set: (pat
 
 // Eixo de relacionamento do contato (doc §5). "Perdido" saiu — é desfecho do
 // NEGÓCIO, não estado da pessoa. Pra reagir a perda use os triggers de negócio.
+// Ciclo de vida — "Cliente novo" (primeiro contato, check `is_new_contact`) toma o
+// lugar do antigo "Novo (contato)" (lifecycle=contact); as demais são estágios reais
+// (check `lifecycle_is`). O valor `__new` é o sentinela que troca o CHECK, não só o value.
 const LIFECYCLE_OPTS: { v: string; label: string }[] = [
-  { v: "contact", label: "Novo (contato)" },
+  { v: "__new", label: "Cliente novo" },
+  { v: "contact", label: "Contato" },
   { v: "lead", label: "Lead" },
   { v: "customer", label: "Cliente" },
   { v: "unfit", label: "Fora do perfil" },
@@ -600,60 +608,155 @@ function TemplateConfig({ cfg, set, flowVars }: { cfg: Record<string, unknown>; 
   )
 }
 
-function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void; tags: { id: string; name: string }[] }) {
-  const check = String(cfg.check ?? "has_phone")
-  const onCheck = (next: string) => {
-    const defVal = next === "lifecycle_is" ? "contact" : next === "channel_is" ? "whatsapp" : ""
-    set({ check: next, value: defVal })
+function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void; tags: TagOpt[] }) {
+  const check = String(cfg.check ?? "lifecycle_is")
+  // "Ciclo de vida" no topo cobre DOIS checks: is_new_contact (Cliente novo) e
+  // lifecycle_is (Lead/Cliente/…). O sub-select decide qual.
+  const topValue = check === "is_new_contact" || check === "lifecycle_is" ? "lifecycle" : check
+  const onTop = (next: string) => {
+    if (next === "lifecycle")     set({ check: "is_new_contact", value: "" })   // default = Cliente novo
+    else if (next === "channel_is") set({ check: "channel_is", value: "whatsapp" })
+    else                          set({ check: next, value: "" })               // has_tag
   }
+  // Sub-select do Ciclo de vida: "__new" = Cliente novo (troca o CHECK), demais = estágio.
+  const lifeValue = check === "is_new_contact" ? "__new" : String(cfg.value ?? "lead")
+  const onLife = (v: string) => {
+    if (v === "__new") set({ check: "is_new_contact", value: "" })
+    else               set({ check: "lifecycle_is", value: v })
+  }
+  const tagValue = String(cfg.value ?? "")
   return (
     <div className="space-y-3">
       <div>
         <label className={LABEL}>Checar</label>
-        <SimpleSelect value={check} onChange={(v) => onCheck(v)} options={[
-          { value: "is_new_contact", label: "Cliente novo? (primeiro contato)", group: "Relacionamento" },
-          { value: "lifecycle_is", label: "Lifecycle é…",     group: "Relacionamento" },
-          { value: "has_tag",      label: "Tem a etiqueta…",  group: "Relacionamento" },
-          { value: "channel_is",   label: "Veio do canal…",   group: "Canal" },
-          { value: "has_name",     label: "Tem nome?",        group: "Dados do contato" },
-          { value: "has_phone",    label: "Tem telefone?",    group: "Dados do contato" },
-          { value: "has_email",    label: "Tem e-mail?",      group: "Dados do contato" },
-          { value: "has_document", label: "Tem CPF/CNPJ?",    group: "Dados do contato" },
-          { value: "has_company",  label: "Tem empresa?",     group: "Dados do contato" },
+        <SimpleSelect value={topValue} onChange={onTop} options={[
+          { value: "lifecycle",  label: "Ciclo de vida" },
+          { value: "has_tag",    label: "Tag" },
+          { value: "channel_is", label: "Canal de contato" },
         ]} />
       </div>
 
-      {check === "is_new_contact" && (
-        <p className="text-[11px] text-slate-400">
-          <b>Sim</b> = acabou de entrar na base (nasceu nesta conversa) · <b>Não</b> = já é <b>da casa</b>
-          — inclui contatos importados/cadastrados que nunca conversaram. Vale igual em qualquer canal
-          (site, WhatsApp, Instagram); ligue o ramo &ldquo;Não&rdquo; num <b>Chamar fluxo</b> pra rotear quem voltou.
-        </p>
-      )}
-      {check === "lifecycle_is" && (
+      {topValue === "lifecycle" && (
         <div>
-          <label className={LABEL}>Lifecycle</label>
-          <SimpleSelect value={String(cfg.value ?? "contact")} onChange={(v) => set({ value: v })}
+          <label className={LABEL}>Ciclo de vida</label>
+          <SimpleSelect value={lifeValue} onChange={onLife}
             options={LIFECYCLE_OPTS.map((o) => ({ value: o.v, label: o.label }))} />
-          <p className="text-[11px] text-slate-400 mt-1">Ex: <b>Novo (contato)</b> = ainda não qualificado.</p>
+          {check === "is_new_contact" ? (
+            <p className="text-[11px] text-slate-400 mt-1">
+              <b>Sim</b> = acabou de entrar na base (primeiro contato) · <b>Não</b> = já é <b>da casa</b>
+              (inclui importados que nunca conversaram). Vale em qualquer canal.
+            </p>
+          ) : (
+            <p className="text-[11px] text-slate-400 mt-1">O contato está neste estágio do funil?</p>
+          )}
         </div>
       )}
       {check === "has_tag" && (
         <div>
-          <label className={LABEL}>Etiqueta</label>
-          <input className={INPUT} list="cond-tag-list" value={String(cfg.value ?? "")} onChange={(e) => set({ value: e.target.value })} placeholder={tags.length ? "escolha uma etiqueta" : "cliente"} />
-          <datalist id="cond-tag-list">{tags.map((t) => <option key={t.id} value={t.name} />)}</datalist>
+          <label className={LABEL}>Tag</label>
+          {tags.length === 0 ? (
+            <p className="text-[11px] text-slate-400">Nenhuma tag criada ainda.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {tags.map((t) => {
+                const sel = tagValue === t.name
+                const color = t.color || "#64748b"
+                return (
+                  <button key={t.id} type="button" onClick={() => set({ value: sel ? "" : t.name })}
+                    className={`inline-flex items-center gap-1.5 px-2.5 h-7 rounded-full border text-[11px] font-medium transition-colors ${
+                      sel ? "" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+                    style={sel ? { backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color, borderColor: color } : undefined}>
+                    <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                    {t.name}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          <p className="text-[11px] text-slate-400 mt-1">Toque na tag que o contato precisa ter.</p>
         </div>
       )}
       {check === "channel_is" && (
         <div>
-          <label className={LABEL}>Canal</label>
+          <label className={LABEL}>Canal de contato</label>
           <SimpleSelect value={String(cfg.value ?? "whatsapp")} onChange={(v) => set({ value: v })}
             options={CHANNEL_OPTS.map((o) => ({ value: o.v, label: o.label }))} />
         </div>
       )}
 
       <p className="text-[11px] text-slate-400">Saída <b className="text-emerald-600">sim</b> se verdadeiro, <b>não</b> caso contrário.</p>
+    </div>
+  )
+}
+
+// ── Fonte de Consulta (data_source) ────────────────────────────
+// Governança de exposição: por fonte, os campos 🟢 Sempre são implícitos; aqui só
+// os 🔵 Opcionais (toggle) + custom fields de Negócios. Os 🔴 Nunca não têm toggle
+// (doutrina, imposta no server). docs/studio-data-source-node-design.md §4.
+const DS_SOURCES = [
+  { v: "agenda", label: "Agenda", always: "serviço · data/hora · status" },
+  { v: "deals",  label: "Negócios", always: "nome · etapa" },
+  { v: "quotes", label: "Cotações", always: "número · status · validade" },
+] as const
+const DS_OPT_FIELDS: Record<string, { k: string; label: string; defaultOn?: boolean }[]> = {
+  agenda: [
+    { k: "professional", label: "Profissional (nome da agenda)" },
+    { k: "duration",     label: "Duração" },
+  ],
+  deals: [
+    { k: "funnel",       label: "Funil" },
+    { k: "value",        label: "Valor" },
+    { k: "closeDate",    label: "Previsão de fechamento" },
+  ],
+  quotes: [
+    { k: "value",        label: "Valor", defaultOn: true },
+  ],
+}
+function DataSourceConfig({ cfg, set, dealFields }: {
+  cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
+  dealFields: { id: string; label: string }[]
+}) {
+  const source = String(cfg.source ?? "agenda")
+  const fields = (cfg.fields as Record<string, boolean> | undefined) ?? {}
+  const customFields = (cfg.customFields as string[] | undefined) ?? []
+  const opts = DS_OPT_FIELDS[source] ?? []
+  const on = (k: string, def?: boolean) => fields[k] ?? !!def
+  const toggleField = (k: string, def?: boolean) => set({ fields: { ...fields, [k]: !on(k, def) } })
+  const toggleCustom = (id: string) =>
+    set({ customFields: customFields.includes(id) ? customFields.filter((x) => x !== id) : [...customFields, id] })
+  const src = DS_SOURCES.find((s) => s.v === source)
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">Conecta no <b>Agente IA</b> (arraste do ponto de baixo até o nó da IA). Só <b>leitura</b>, só deste contato — a IA consulta e responde; nunca escreve.</p>
+      <div>
+        <label className={LABEL}>Fonte</label>
+        <SimpleSelect value={source} onChange={(v) => set({ source: v, fields: {}, customFields: [] })}
+          options={DS_SOURCES.map((s) => ({ value: s.v, label: s.label }))} />
+        {src && <p className="text-[11px] text-slate-400 mt-1">Sempre exposto: <b>{src.always}</b>.</p>}
+      </div>
+      <div className="rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-1.5">
+        <label className={LABEL}>Também expor à IA <span className="text-slate-400 font-normal">(opcional)</span></label>
+        {opts.map((o) => (
+          <label key={o.k} className="flex items-start gap-2 text-[11px] text-slate-600 cursor-pointer">
+            <input type="checkbox" className="mt-0.5" checked={on(o.k, o.defaultOn)} onChange={() => toggleField(o.k, o.defaultOn)} />
+            <span>{o.label}</span>
+          </label>
+        ))}
+        {source === "deals" && (
+          <div className="pt-1.5 border-t border-primary-100/70">
+            <p className="text-[11px] font-medium text-slate-500 mb-1">Campos personalizados do negócio</p>
+            {dealFields.length === 0 ? (
+              <p className="text-[11px] text-slate-400">Nenhum campo personalizado de negócio criado.</p>
+            ) : dealFields.map((f) => (
+              <label key={f.id} className="flex items-start gap-2 text-[11px] text-slate-600 cursor-pointer">
+                <input type="checkbox" className="mt-0.5" checked={customFields.includes(f.id)} onChange={() => toggleCustom(f.id)} />
+                <span>{f.label}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-[11px] text-slate-400">🔒 Nunca expõe: dados de outro contato, motivo de perda, notas internas, quem atende — nem com toggle.</p>
     </div>
   )
 }
@@ -788,15 +891,8 @@ const AGENT_TOOLS: {
   { key: "tag",        ids: ["tag"],        label: "Etiquetar o contato", hint: "aplica/remove etiquetas pra qualificar" },
   { key: "move_stage", ids: ["move_stage"], label: "Mover no pipeline",   hint: "move a conversa de etapa" },
   { key: "agenda",     ids: ["check_availability", "schedule_appointment", "reschedule_appointment"], label: "Agendar e remarcar", hint: "consulta horários reais, marca e remarca na agenda" },
-  { key: "c_appt",  ids: ["consult_appointments"], label: "Consultar agendamentos", hint: "responde “tenho horário marcado?” — só leitura, só deste cliente",
-    subs: [{ tool: "consult_appointments", key: "includeHistory", label: "Incluir últimos atendimentos (90 dias)" }] },
-  { key: "c_deal",  ids: ["consult_deals"], label: "Consultar negócios", hint: "responde “tenho pedido em andamento?” — só leitura, só deste cliente; o NOME da etapa do funil aparece pro cliente",
-    subs: [
-      { tool: "consult_deals", key: "showValue",     label: "Mostrar o valor pro cliente" },
-      { tool: "consult_deals", key: "includeClosed", label: "Incluir concluídos recentes (ganhos)" },
-    ] },
-  { key: "c_quote", ids: ["consult_quotes"], label: "Consultar cotações", hint: "status e validade da proposta que o cliente já recebeu",
-    subs: [{ tool: "consult_quotes", key: "showValue", label: "Mostrar o valor (o PDF já é do cliente)", defaultOn: true }] },
+  // As CONSULTAS (agendamentos/negócios/cotações) saíram daqui → agora vivem no nó
+  // "Fonte de Consulta", conectado ao Agente IA (docs/studio-data-source-node-design.md).
 ]
 function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
@@ -1048,7 +1144,7 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
 // do escuro: o cliente não escreve o craft, mas VÊ tudo que acontece.
 function AgentSummary({ cfg, tags, stages, services, resources }: {
   cfg: Record<string, unknown>
-  tags: { id: string; name: string }[]; stages: { id: string; name: string }[]
+  tags: TagOpt[]; stages: { id: string; name: string }[]
   services: { id: string; name: string }[]; resources: { id: string; name: string }[]
 }) {
   const tools   = (cfg.tools as string[] | undefined) ?? []
@@ -1104,7 +1200,7 @@ function AgentSummary({ cfg, tags, stages, services, resources }: {
 
 function AgentConfig({ cfg, set, tags, stages, services, resources, ownerRouting }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
-  tags: { id: string; name: string }[]; stages: { id: string; name: string }[]
+  tags: TagOpt[]; stages: { id: string; name: string }[]
   services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
 }) {
   const outcomes = (cfg.outcomes as Opt[] | undefined) ?? []

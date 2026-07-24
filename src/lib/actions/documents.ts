@@ -9,7 +9,7 @@ import { getProvider } from "@/lib/providers"
 import { isWindowOpen } from "@/lib/channels/policy"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import {
-  createQuote, createNewVersion, getDealDocuments, getDocumentSettings,
+  createQuote, createNewVersion, saveQuoteDraft, activateQuoteDraft, discardQuoteDraft, getDealDocuments, getDocumentSettings,
   markDocumentSent, markDocumentAccepted, markDocumentDeclined, voidDocument,
   docCode,
   type DocumentRow, type DocumentSettings, type DocumentConditionsInput, type CreateQuoteInput,
@@ -77,6 +77,33 @@ export async function generateQuote(input: CreateQuoteInput): Promise<{ id: stri
   if ("error" in gate) return gate
   const res = await createQuote(gate.tenantId, gate.userId, input)
   if (!("error" in res)) refreshDeal(input.dealId)
+  return res
+}
+
+/** Salva/atualiza um RASCUNHO (sem número/PDF). draftId → atualiza; ausente → cria. */
+export async function saveQuoteDraftAction(input: CreateQuoteInput, draftId?: string): Promise<{ id: string } | { error: string }> {
+  const gate = draftId ? await requireDocumentAccess(draftId) : await requireDealAccess(input.dealId)
+  if ("error" in gate) return gate
+  const res = await saveQuoteDraft(gate.tenantId, gate.userId, input, draftId)
+  if (!("error" in res)) refreshDeal(input.dealId)
+  return res
+}
+
+/** Ativa um rascunho → cotação numerada, com PDF (a autorização do humano). */
+export async function activateQuoteDraftAction(draftId: string, input: CreateQuoteInput): Promise<{ id: string; code: string } | { error: string }> {
+  const gate = await requireDocumentAccess(draftId)
+  if ("error" in gate) return gate
+  const res = await activateQuoteDraft(gate.tenantId, gate.userId, draftId, input)
+  if (!("error" in res)) refreshDeal(input.dealId)
+  return res
+}
+
+/** Descarta um rascunho (delete). Gated pelo acesso ao documento. */
+export async function discardQuoteDraftAction(docId: string): Promise<{ ok: true } | { error: string }> {
+  const gate = await requireDocumentAccess(docId)
+  if ("error" in gate) return gate
+  const res = await discardQuoteDraft(gate.tenantId, docId)
+  if (!("error" in res)) refreshDeal(gate.dealId)
   return res
 }
 

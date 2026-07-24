@@ -22,10 +22,26 @@ export const CONSULT_QUOTES       = "consult_quotes"
 
 const brl = (n: number) => `R$ ${Number(n).toLocaleString("pt-BR", { maximumFractionDigits: 2 })}`
 
-/** Sub-toggles do nó (AiAgentNodeConfig.toolConfig[toolId]) — default sempre o SEGURO. */
-function optOf(ctx: ExecCtx, toolId: string, key: string): boolean {
-  const t = (ctx.toolConfig ?? {})[toolId] as Record<string, unknown> | undefined
-  return t?.[key] === true
+function tcfg(ctx: ExecCtx, toolId: string): Record<string, unknown> {
+  return ((ctx.toolConfig ?? {})[toolId] as Record<string, unknown> | undefined) ?? {}
+}
+/** `true` quando a config vem de um nó Fonte de Consulta (modelo de campos NOVO). */
+function managed(ctx: ExecCtx, toolId: string): boolean { return tcfg(ctx, toolId).__src === true }
+
+/**
+ * Um campo 🔵 está exposto? `key` = chave no modelo NOVO (Fonte); `legacyKey`+`legacyDflt`
+ * = comportamento antigo (toggles inline no Agente IA, pré-migração). Fonte governa por
+ * opt-in; legado mantém o default histórico pra não regredir fluxo publicado.
+ */
+function show(ctx: ExecCtx, toolId: string, key: string, opts?: { newDflt?: boolean; legacyKey?: string; legacyDflt?: boolean }): boolean {
+  const t = tcfg(ctx, toolId)
+  if (managed(ctx, toolId)) return typeof t[key] === "boolean" ? (t[key] as boolean) : !!opts?.newDflt
+  const lk = opts?.legacyKey ?? key
+  return typeof t[lk] === "boolean" ? (t[lk] as boolean) : !!opts?.legacyDflt
+}
+function selectedCustomFields(ctx: ExecCtx, toolId: string): string[] {
+  const v = tcfg(ctx, toolId).customFields
+  return Array.isArray(v) ? (v as string[]) : []
 }
 
 // ── Consultar AGENDAMENTOS ─────────────────────────────────────
@@ -50,22 +66,29 @@ export const consultAppointmentsCapability = defineCapability<Record<string, nev
     if (!(await hasModule(ctx.tenantId, "agenda"))) {
       return { ok: true, toolMessage: "Consulta de agendamentos indisponível. Diga que vai verificar com o time." }
     }
+    // Governança de campos (🟢 serviço/data/status sempre · 🔵 profissional/duração).
+    // Legado (inline): profissional era SEMPRE mostrado → legacyDflt true.
+    const showProf = show(ctx, CONSULT_APPOINTMENTS, "professional", { newDflt: false, legacyDflt: true })
+    const showDur  = show(ctx, CONSULT_APPOINTMENTS, "duration",     { newDflt: false, legacyDflt: false })
     const { data } = await supabaseAdmin.from("appointments")
-      .select("starts_at, status, tenant_services ( name ), tenant_resources ( name )")
+      .select("starts_at, ends_at, status, tenant_services ( name ), tenant_resources ( name )")
       .eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
       .in("status", ["scheduled", "confirmed"]).gt("starts_at", new Date().toISOString())
       .order("starts_at", { ascending: true }).limit(5)
-    type Row = { starts_at: string; status: string; tenant_services: { name: string | null } | null; tenant_resources: { name: string | null } | null }
+    type Row = { starts_at: string; ends_at: string | null; status: string; tenant_services: { name: string | null } | null; tenant_resources: { name: string | null } | null }
     const rows = (data ?? []) as unknown as Row[]
     const lines = rows.map((a) => {
       const svc = a.tenant_services?.name ? ` — ${a.tenant_services.name}` : ""
-      const res = a.tenant_resources?.name ? ` (com ${a.tenant_resources.name})` : ""
+      const res = showProf && a.tenant_resources?.name ? ` (com ${a.tenant_resources.name})` : ""
+      const dur = showDur && a.ends_at ? ` · ${Math.round((new Date(a.ends_at).getTime() - new Date(a.starts_at).getTime()) / 60000)}min` : ""
       const st  = a.status === "confirmed" ? "confirmado" : "aguardando confirmação"
-      return `${fmtFull(a.starts_at)}${svc}${res} · ${st}`
+      return `${fmtFull(a.starts_at)}${svc}${res}${dur} · ${st}`
     })
 
+    // "Últimos horários" existia só no toggle inline legado; a Fonte não expõe histórico
+    // (não tem essa key → false). Mantido pra compat de fluxo publicado.
     let history = ""
-    if (optOf(ctx, CONSULT_APPOINTMENTS, "includeHistory")) {
+    if (show(ctx, CONSULT_APPOINTMENTS, "includeHistory", { newDflt: false, legacyDflt: false })) {
       const since = new Date(Date.now() - 90 * 86_400_000).toISOString()
       const { data: past } = await supabaseAdmin.from("appointments")
         .select("starts_at, tenant_services ( name )")
@@ -109,13 +132,17 @@ export const consultDealsCapability = defineCapability<Record<string, never>>({
     if (!(await hasModule(ctx.tenantId, "crm"))) {
       return { ok: true, toolMessage: "Consulta de negócios indisponível. Diga que vai verificar com o time." }
     }
-    const showValue = optOf(ctx, CONSULT_DEALS, "showValue")
+    // Governança de campos (🟢 nome/etapa sempre · 🔵 funil/valor/previsão/custom).
+    const showValue  = show(ctx, CONSULT_DEALS, "value", { newDflt: false, legacyKey: "showValue", legacyDflt: false })
+    const showFunnel = show(ctx, CONSULT_DEALS, "funnel", { newDflt: false })
+    const showClose  = show(ctx, CONSULT_DEALS, "closeDate", { newDflt: false })
+    const customIds  = selectedCustomFields(ctx, CONSULT_DEALS)
     const { data } = await supabaseAdmin.from("tenant_deals")
-      .select("name, status, estimated_value, stage_id")
+      .select("name, status, estimated_value, stage_id, pipeline_id, expected_close_date, custom_fields")
       .eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
       .eq("status", "open")
       .order("updated_at", { ascending: false }).limit(5)
-    type Deal = { name: string | null; status: string; estimated_value: number | null; stage_id: string | null }
+    type Deal = { name: string | null; status: string; estimated_value: number | null; stage_id: string | null; pipeline_id: string | null; expected_close_date: string | null; custom_fields: Record<string, unknown> | null }
     const open = (data ?? []) as Deal[]
 
     // Nome da etapa (2ª query determinística — sem depender de nome de FK).
@@ -126,14 +153,36 @@ export const consultDealsCapability = defineCapability<Record<string, never>>({
         .select("id, name").eq("tenant_id", ctx.tenantId).in("id", stageIds)
       for (const s of (st ?? []) as { id: string; name: string }[]) stageName.set(s.id, s.name)
     }
+    // Nome do funil (só se exposto).
+    const funnelName = new Map<string, string>()
+    if (showFunnel) {
+      const pids = [...new Set(open.map((d) => d.pipeline_id).filter(Boolean))] as string[]
+      if (pids.length) {
+        const { data: ps } = await supabaseAdmin.from("deal_pipelines")
+          .select("id, name").eq("tenant_id", ctx.tenantId).in("id", pids)
+        for (const p of (ps ?? []) as { id: string; name: string }[]) funnelName.set(p.id, p.name)
+      }
+    }
+    // Rótulos dos custom fields expostos (só os selecionados na Fonte).
+    const cfLabel = new Map<string, string>()
+    if (customIds.length) {
+      const { data: cfs } = await supabaseAdmin.from("tenant_custom_fields")
+        .select("id, key, label").eq("tenant_id", ctx.tenantId).in("id", customIds)
+      for (const c of (cfs ?? []) as { id: string; key: string; label: string }[]) cfLabel.set(c.key, c.label)
+    }
     const lines = open.map((d) => {
-      const stage = d.stage_id ? stageName.get(d.stage_id) : null
-      const val   = showValue && d.estimated_value != null ? ` — ${brl(Number(d.estimated_value))}` : ""
-      return `"${d.name ?? "Negócio"}"${stage ? ` na etapa ${stage}` : ""}${val}`
+      const stage  = d.stage_id ? stageName.get(d.stage_id) : null
+      const funnel = showFunnel && d.pipeline_id ? funnelName.get(d.pipeline_id) : null
+      const val    = showValue && d.estimated_value != null ? ` — ${brl(Number(d.estimated_value))}` : ""
+      const close  = showClose && d.expected_close_date ? ` · previsão ${fmtFull(d.expected_close_date)}` : ""
+      const custom = cfLabel.size && d.custom_fields
+        ? [...cfLabel.entries()].filter(([k]) => d.custom_fields![k] != null).map(([k, lbl]) => `${lbl}: ${String(d.custom_fields![k])}`).join(", ")
+        : ""
+      return `"${d.name ?? "Negócio"}"${stage ? ` na etapa ${stage}` : ""}${funnel ? ` (funil ${funnel})` : ""}${val}${close}${custom ? ` · ${custom}` : ""}`
     })
 
     let closed = ""
-    if (optOf(ctx, CONSULT_DEALS, "includeClosed")) {
+    if (show(ctx, CONSULT_DEALS, "includeClosed", { newDflt: false, legacyDflt: false })) {
       // Concluídos = GANHOS apenas. Perdidos/cancelados e motivos são linguagem
       // interna do time — NUNCA vão pro cliente (doutrina, não config).
       const { data: won } = await supabaseAdmin.from("tenant_deals")
@@ -173,28 +222,34 @@ export const consultQuotesCapability = defineCapability<Record<string, never>>({
     if (!(await hasModule(ctx.tenantId, "crm"))) {
       return { ok: true, toolMessage: "Consulta de cotações indisponível. Diga que vai verificar com o time." }
     }
-    // showValue default ON pra cotação (o PDF com o valor JÁ é do cliente) — o
-    // toggle do nó pode desligar. Diferente do deal (leitura interna, default OFF).
-    const t = (ctx.toolConfig ?? {})[CONSULT_QUOTES] as Record<string, unknown> | undefined
-    const showValue = t?.showValue !== false
-    // Só documentos que EXISTEM pro cliente: enviados/aceitos/recusados.
-    // Rascunho e anulado são internos — nunca aparecem (doutrina).
+    // Valor default ON pra cotação (o PDF com o valor JÁ é do cliente) — Fonte ou
+    // toggle inline podem desligar. Novo modelo: key "value"; legado: "showValue".
+    const showValue = show(ctx, CONSULT_QUOTES, "value", { newDflt: true, legacyKey: "showValue", legacyDflt: true })
+    // `active` = o humano GEROU e autorizou (numerada, PDF pronto) — pode nem ter
+    // sido enviada ainda; a IA pode mencionar e (com a ação ligada) enviar.
+    // `draft` = trabalho em andamento, e `void` = anulada → NUNCA aparecem (doutrina).
+    // Filtro de KIND obrigatório: o mesmo (ano, número) existe pra pedido/contrato —
+    // sem ele a "Fonte Cotações" listaria pedido como proposta (auditoria A3).
     const { data } = await supabaseAdmin.from("commercial_documents")
       .select("number, year, kind, status, valid_until, sent_at, accepted_at, snapshot")
       .eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
-      .in("status", ["sent", "accepted", "declined"])
-      .order("sent_at", { ascending: false }).limit(5)
+      .eq("kind", "quote")
+      .in("status", ["active", "sent", "accepted", "declined"])
+      .order("sent_at", { ascending: false, nullsFirst: false }).limit(5)
     type Doc = { number: number | null; year: number | null; status: string; valid_until: string | null; sent_at: string | null; snapshot: Record<string, unknown> | null }
     const docs = (data ?? []) as unknown as Doc[]
     if (docs.length === 0) {
-      return { ok: true, toolMessage: "Este cliente NÃO tem cotação enviada. Se ele espera uma, avise que vai acionar o time." }
+      return { ok: true, toolMessage: "Este cliente NÃO tem proposta. Se ele espera uma, avise que vai acionar o time." }
     }
     const now = Date.now()
     const lines = docs.map((d) => {
-      const num = d.number != null ? `#${d.year ?? ""}-${String(d.number).padStart(3, "0")}` : "proposta"
+      const num = d.number != null ? `COT-${String(d.number).padStart(3, "0")}/${d.year ?? ""}` : "proposta"
       const st  = d.status === "accepted" ? "ACEITA"
-        : d.status === "declined" ? "recusada"
+        // "recusada" ACUSA o cliente de algo que quem marcou foi o time (auditoria):
+        // trata como encerrada e oferece atualizar.
+        : d.status === "declined" ? "encerrada"
         : d.valid_until && new Date(d.valid_until).getTime() < now ? "VENCIDA"
+        : d.status === "active" ? "pronta (ainda não enviada)"
         : "aguardando seu aceite"
       const sent = d.sent_at ? ` enviada ${fmtFull(d.sent_at)}` : ""
       const val  = d.valid_until && st !== "VENCIDA" ? `, válida até ${fmtFull(d.valid_until)}` : ""

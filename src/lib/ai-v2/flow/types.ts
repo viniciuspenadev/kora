@@ -21,6 +21,7 @@ export type FlowNodeType =
   | "collect"    // pergunta, ESPERA a resposta, guarda numa variável (tipado)
   | "schedule"   // AGENDAR determinístico (zero token): oferta → ESPERA → marca; ramifica agendado/sem_horario
   | "ai_agent"   // a IA conduz a etapa, extrai dados e DEVOLVE o controle (§11.3)
+  | "data_source" // FONTE DE CONSULTA (read-only) conectada ao Agente IA — governança campo-a-campo (docs/studio-data-source-node-design.md)
   | "ai_router"  // a IA classifica a intenção e ramifica (§11.4)
   | "call_flow"  // chama outro fluxo (sub-fluxo que volta, ou "ir para") (§11.2)
   | "template"   // envia um TEMPLATE aprovado (Meta oficial) e avança — abre janela/re-engaja
@@ -195,6 +196,20 @@ export interface AiAgentNodeConfig {
   /** Destino da agenda FIXADO por este nó (sobrepõe a escolha livre da IA).
    *  Só relevante quando as tools de agenda estão ligadas. Ausente = IA decide. */
   agenda_target?: AgendaBinding
+}
+/**
+ * Nó FONTE DE CONSULTA (read-only) — conecta ao Agente IA e o alimenta com dado do
+ * sistema, campo a campo, respeitando tenant + contato + só-o-que-libera.
+ * docs/studio-data-source-node-design.md. `fields` = toggles dos campos OPCIONAIS
+ * (🔵); os 🟢 Sempre são implícitos; os 🔴 Nunca não têm toggle (doutrina).
+ */
+export interface DataSourceNodeConfig {
+  /** Qual fonte nativa. (Externa/genérica = F3.) */
+  source: "agenda" | "deals" | "quotes"
+  /** Campos opcionais ligados (por fonte — ver o editor). Ex: { value: true, closed: false }. */
+  fields?: Record<string, boolean>
+  /** Negócios: IDs dos campos personalizados (tenant_custom_fields) a expor. */
+  customFields?: string[]
 }
 export interface AiRouterNodeConfig {
   instruction?: string

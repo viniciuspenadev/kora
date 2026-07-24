@@ -4,12 +4,12 @@ import { useState, useEffect, useTransition, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
-  FileText, Plus, MoreVertical, Eye, Download, Send, Check, X, Copy, Ban, Loader2,
+  FileText, Plus, MoreVertical, Eye, Download, Send, Check, X, Copy, Ban, Loader2, Pencil, Trash2,
 } from "lucide-react"
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
-import { markQuoteAccepted, markQuoteDeclined, voidQuote, sendQuoteInChat } from "@/lib/actions/documents"
+import { markQuoteAccepted, markQuoteDeclined, voidQuote, sendQuoteInChat, discardQuoteDraftAction } from "@/lib/actions/documents"
 import type { DocumentRow, DocumentSettings, DocumentStatus } from "@/lib/commercial/documents"
 import type { DealItemView } from "@/lib/actions/deals"
 
@@ -22,16 +22,17 @@ const shortDate = (iso: string | null) =>
 // ── Status chips ──────────────────────────────────────────────────
 const STATUS_META: Record<DocumentStatus, { label: string; cls: string }> = {
   draft:    { label: "Rascunho", cls: "bg-slate-100 text-slate-600 border-slate-200" },
+  active:   { label: "Ativa",    cls: "bg-violet-50 text-violet-700 border-violet-200" },
   sent:     { label: "Enviada",  cls: "bg-primary-100 text-primary-700 border-primary-200" },
   accepted: { label: "Aceita",   cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   declined: { label: "Recusada", cls: "bg-red-50 text-red-700 border-red-200" },
   signed:   { label: "Assinada", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   void:     { label: "Cancelada", cls: "bg-slate-100 text-slate-500 border-slate-200" },
 }
-/** VENCIDA = estado DERIVADO (validade estourada em rascunho/enviada) — nada muda
+/** VENCIDA = estado DERIVADO (validade estourada em ativa/enviada) — nada muda
     no banco; avisa-não-trava: ainda dá pra enviar/aceitar, mas o vendedor VÊ. */
 export function isExpired(status: DocumentStatus, validUntil: string | null): boolean {
-  if (status !== "draft" && status !== "sent") return false
+  if (status !== "active" && status !== "sent") return false
   if (!validUntil) return false
   return validUntil < new Date().toISOString().slice(0, 10)
 }
@@ -42,8 +43,8 @@ function StatusChip({ status, validUntil = null }: { status: DocumentStatus; val
   const m = STATUS_META[status] ?? STATUS_META.draft
   return <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border ${m.cls}`}>{m.label}</span>
 }
-/** draft/sent aceitam marcar aceita/recusada. */
-const canDecide = (s: DocumentStatus) => s === "draft" || s === "sent"
+/** ativa/enviada aceitam marcar aceita/recusada (rascunho ainda nem foi gerado). */
+const canDecide = (s: DocumentStatus) => s === "active" || s === "sent"
 
 type ViewerRef = { id: string; code: string; status: DocumentStatus }
 
@@ -71,6 +72,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
   const openQ   = quotes.filter((q) => q.status !== "void" && q.status !== "declined")
   const shown   = tab === "open" ? openQ : closedQ
   const [voiding, setVoiding] = useState<DocumentRow | null>(null)
+  const [discarding, setDiscarding] = useState<DocumentRow | null>(null)
 
   // "Gerar" vindo do menu "⋯" do header → página do compositor (modal legado morreu).
   const lastTick = useRef(genTick)
@@ -83,6 +85,16 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
       const r = await (kind === "accept" ? markQuoteAccepted(doc.id) : markQuoteDeclined(doc.id))
       if ("error" in r) { toast.error(r.error); return }
       toast.success(kind === "accept" ? "Cotação marcada como aceita" : "Cotação marcada como recusada")
+      router.refresh()
+    })
+  }
+  function doDiscard() {
+    if (!discarding) return
+    const doc = discarding; setDiscarding(null)
+    start(async () => {
+      const r = await discardQuoteDraftAction(doc.id)
+      if ("error" in r) { toast.error(r.error); return }
+      toast.success("Rascunho descartado")
       router.refresh()
     })
   }
@@ -139,9 +151,14 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
         <ul className="px-2 pb-2 max-h-[248px] overflow-y-auto">
           {shown.map((q) => {
             const dim = q.status === "void"
+            const isDraft = q.status === "draft"
+            // Rascunho não tem PDF → clicar RETOMA (compositor); os demais abrem o viewer.
+            const openRow = () => isDraft
+              ? router.push(`/negocios/${dealId}/cotacao/nova?draft=${q.id}`)
+              : setViewer({ id: q.id, code: q.code, status: q.status })
             return (
               <li key={q.id} className={`group flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-slate-50 ${dim ? "opacity-60" : ""}`}>
-                <button onClick={() => setViewer({ id: q.id, code: q.code, status: q.status })}
+                <button onClick={openRow}
                   className="flex items-center gap-2.5 min-w-0 flex-1 text-left">
                   <span className="size-8 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><FileText className="size-3.5" /></span>
                   <span className="min-w-0">
@@ -159,6 +176,20 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
                     <MoreVertical className="size-3.5" />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-52">
+                    {isDraft ? (
+                      /* Rascunho: retomar (edita) ou descartar. Sem Ver/Baixar/Enviar
+                         (não tem PDF nem número — não é documento ainda). */
+                      <>
+                        <DropdownMenuItem onClick={() => router.push(`/negocios/${dealId}/cotacao/nova?draft=${q.id}`)}>
+                          <Pencil className="size-3.5 text-slate-400" /> Retomar
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => setDiscarding(q)}>
+                          <Trash2 className="size-3.5 text-red-500" /> Descartar rascunho
+                        </DropdownMenuItem>
+                      </>
+                    ) : (
+                    <>
                     <DropdownMenuItem onClick={() => setViewer({ id: q.id, code: q.code, status: q.status })}>
                       <Eye className="size-3.5 text-slate-400" /> Ver
                     </DropdownMenuItem>
@@ -194,6 +225,8 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
                         <Ban className="size-3.5 text-red-500" /> Cancelar cotação
                       </DropdownMenuItem>
                     )}
+                    </>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </li>
@@ -213,6 +246,13 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
           desc={`A cotação ${voiding.code} será cancelada e não poderá mais ser aceita. Esta ação não pode ser desfeita.`}
           confirmLabel="Cancelar cotação" pending={pending}
           onConfirm={doVoid} onClose={() => setVoiding(null)} />
+      )}
+      {discarding && (
+        <ConfirmModal
+          title="Descartar rascunho" icon={Trash2}
+          desc="O rascunho será apagado. Como ainda não foi gerado (sem número), nada mais é afetado."
+          confirmLabel="Descartar" pending={pending}
+          onConfirm={doDiscard} onClose={() => setDiscarding(null)} />
       )}
     </section>
   )

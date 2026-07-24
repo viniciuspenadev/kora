@@ -9,7 +9,7 @@ import { QuoteComposer } from "./composer-client"
 
 export default async function NewQuotePage({ params, searchParams }: {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ from?: string }>
+  searchParams: Promise<{ from?: string; draft?: string }>
 }) {
   const session = await auth()
   if (!session) redirect("/auth/signin")
@@ -17,7 +17,7 @@ export default async function NewQuotePage({ params, searchParams }: {
   if (!(await hasModule(tenantId, "crm"))) redirect("/inbox")
 
   const { id: dealId } = await params
-  const { from } = await searchParams
+  const { from, draft } = await searchParams
   const { data: deal } = await supabaseAdmin.from("tenant_deals")
     .select("id, name, payment_method, installments, proposal_expires_at")
     .eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()
@@ -56,6 +56,28 @@ export default async function NewQuotePage({ params, searchParams }: {
     }
   }
 
+  // ?draft=<docId> → RETOMAR RASCUNHO: mesma leitura de condições, mas só documento
+  // em `draft` (não numerado); ao gerar, ATIVA o mesmo doc. Escopo tenant+deal (anti-IDOR).
+  let draftId: string | null = null
+  if (draft && !from) {
+    const { data: doc } = await supabaseAdmin.from("commercial_documents")
+      .select("id, status, snapshot")
+      .eq("id", draft).eq("tenant_id", tenantId).eq("deal_id", dealId).eq("kind", "quote")
+      .eq("status", "draft").maybeSingle()
+    if (doc) {
+      const snap = doc.snapshot as QuoteSnapshot
+      draftId = doc.id as string
+      initial = {
+        terms:    snap.conditions?.payment_terms ?? null,
+        notes:    snap.conditions?.notes ?? null,
+        contract: snap.conditions?.contract ?? null,
+        validUntil: snap.conditions?.valid_until ?? null,
+      }
+      payMethod    = snap.conditions?.payment_method ?? payMethod
+      installments = snap.conditions?.installments ?? installments
+    }
+  }
+
   return (
     <QuoteComposer
       dealId={dealId}
@@ -67,6 +89,7 @@ export default async function NewQuotePage({ params, searchParams }: {
       dealInstallments={installments}
       dealProposalExpiresAt={initial?.validUntil ?? ((deal.proposal_expires_at as string | null) ?? null)}
       fromDoc={fromDoc}
+      draftId={draftId}
       initialConditions={initial ? { terms: initial.terms, notes: initial.notes, contract: initial.contract } : null}
       templates={templates}
     />

@@ -16,7 +16,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }, { data: tagList }, { data: svcList }, { data: resList }, { data: agentRows }] = await Promise.all([
+  const [{ data: flow }, { data: depts }, { data: flowList }, { data: stageList }, { data: tagList }, { data: svcList }, { data: resList }, { data: agentRows }, { data: dealFieldRows }] = await Promise.all([
     supabaseAdmin.from("studio_flows")
       .select("id, name, status, active, version, trigger, graph")
       .eq("tenant_id", tenantId).eq("id", id).maybeSingle(),
@@ -29,7 +29,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     // Etapas do pipeline pro nó "Mover etapa".
     supabaseAdmin.from("pipeline_stages").select("id, name, position").eq("tenant_id", tenantId).order("position"),
     // Etiquetas existentes pro nó "Etiquetar" (seletor, não texto livre).
-    supabaseAdmin.from("tags").select("id, name").eq("tenant_id", tenantId).order("name"),
+    supabaseAdmin.from("tags").select("id, name, color").eq("tenant_id", tenantId).order("name"),
     // Serviços + agendas pro destino da agenda ("em qual agenda cai") — resource_ids e
     // working_hours alimentam a LEGENDA dinâmica do painel (quem entra no sorteio /
     // quem abre fim de semana). agenda-node-redesign.md §3.5.
@@ -39,6 +39,9 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     supabaseAdmin.from("tenant_users")
       .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
       .eq("tenant_id", tenantId).eq("active", true),
+    // Campos personalizados de NEGÓCIO — a Fonte de Consulta escolhe quais expor à IA.
+    supabaseAdmin.from("tenant_custom_fields").select("id, label")
+      .eq("tenant_id", tenantId).eq("entity", "deal").eq("active", true).order("position"),
   ])
   if (!flow) redirect("/studio/fluxos")
 
@@ -66,9 +69,10 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
       agents={agents}
       flows={(flowList ?? []) as { id: string; name: string }[]}
       stages={(stageList ?? []) as { id: string; name: string }[]}
-      tags={(tagList ?? []) as { id: string; name: string }[]}
+      tags={(tagList ?? []) as { id: string; name: string; color?: string | null }[]}
       services={(svcList ?? []) as { id: string; name: string }[]}
       resources={(resList ?? []) as { id: string; name: string }[]}
+      dealFields={(dealFieldRows ?? []) as { id: string; label: string }[]}
       ownerRouting={ownerRouting}
       channels={channels}
       instances={instances}

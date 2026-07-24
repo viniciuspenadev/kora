@@ -4,10 +4,10 @@ import { useState, useRef, useEffect, useTransition, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { toast } from "sonner"
-import { ArrowLeft, FileText, Loader2, RefreshCw, Check, Pencil, Plus, X, AlertTriangle, Maximize2, BookMarked, ChevronDown } from "lucide-react"
+import { ArrowLeft, FileText, Loader2, RefreshCw, Check, Pencil, Plus, X, AlertTriangle, Maximize2, BookMarked, ChevronDown, Save } from "lucide-react"
 import { RichEditor } from "@/components/commercial/rich-editor"
 import { toRichDoc, richDocToPlain, isEmptyRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
-import { generateQuote, generateQuoteVersion } from "@/lib/actions/documents"
+import { generateQuote, generateQuoteVersion, saveQuoteDraftAction, activateQuoteDraftAction } from "@/lib/actions/documents"
 import type { DocumentSettings } from "@/lib/commercial/documents"
 import type { QuoteTemplate, TemplateContext } from "@/lib/actions/quote-templates"
 
@@ -24,12 +24,14 @@ const mergeDocs = (base: RichDoc, add: RichDoc): RichDoc => ({ v: 1, blocks: [..
 
 export function QuoteComposer({
   dealId, dealName, hasItems, itemCount, defaults, dealPaymentMethod, dealInstallments, dealProposalExpiresAt,
-  fromDoc = null, initialConditions = null, templates = [],
+  fromDoc = null, draftId = null, initialConditions = null, templates = [],
 }: {
   dealId: string; dealName: string; hasItems: boolean; itemCount: number; defaults: DocumentSettings
   dealPaymentMethod: string | null; dealInstallments: number | null; dealProposalExpiresAt: string | null
   /** Modo NOVA VERSÃO: cotação de origem (será anulada e substituída ao gerar). */
   fromDoc?: { id: string; code: string } | null
+  /** Modo RETOMAR RASCUNHO: id do rascunho aberto → salvar sobrescreve, gerar ativa. */
+  draftId?: string | null
   /** Condições pré-carregadas do snapshot de origem (RichDoc|string|null). */
   initialConditions?: { terms: unknown; notes: unknown; contract: unknown } | null
   /** Modelos ATIVOS do tenant (Configurações → Cotação) pra inserir por campo. */
@@ -114,22 +116,35 @@ export function QuoteComposer({
     if (!hasItems) { toast.error("Adicione itens ao negócio antes de gerar a cotação."); return }
     setConfirmOpen(true)
   }
+  const condOf = () => ({
+    validUntil: validUntil || null,
+    paymentTerms: isEmptyRichDoc(terms) ? null : terms,
+    notes:    isEmptyRichDoc(notes) ? null : notes,
+    contract: isEmptyRichDoc(contract) ? null : contract,
+    paymentMethod: payMethod || null,
+    installments:  installmentsN,
+  })
   function generate() {
     startTransition(async () => {
-      const cond = {
-        validUntil: validUntil || null,
-        paymentTerms: isEmptyRichDoc(terms) ? null : terms,
-        notes:    isEmptyRichDoc(notes) ? null : notes,
-        contract: isEmptyRichDoc(contract) ? null : contract,
-        paymentMethod: payMethod || null,
-        installments:  installmentsN,
-      }
-      // Nova versão anula a origem e emite numeração nova (claim atômico no server).
+      const cond = condOf()
+      // Nova versão anula a origem · retomar rascunho ATIVA o mesmo doc · senão cria novo.
       const r = fromDoc
         ? await generateQuoteVersion(fromDoc.id, cond)
+        : draftId
+        ? await activateQuoteDraftAction(draftId, { dealId, ...cond })
         : await generateQuote({ dealId, ...cond })
       if ("error" in r) { toast.error(r.error); return }
       toast.success(fromDoc ? `Cotação ${r.code} gerada — ${fromDoc.code} anulada` : `Cotação ${r.code} gerada`)
+      router.push(`/negocios/${dealId}`)
+    })
+  }
+  // Salvar rascunho: preserva o trabalho SEM numerar/gerar PDF. Cria (1ª vez) ou
+  // atualiza o rascunho aberto. Só faz sentido quando NÃO é "nova versão".
+  function saveDraft() {
+    startTransition(async () => {
+      const r = await saveQuoteDraftAction({ dealId, ...condOf() }, draftId ?? undefined)
+      if ("error" in r) { toast.error(r.error); return }
+      toast.success("Rascunho salvo")
       router.push(`/negocios/${dealId}`)
     })
   }
@@ -146,7 +161,7 @@ export function QuoteComposer({
         </Link>
         <div className="min-w-0">
           <h1 className="text-sm font-bold text-slate-900 leading-tight truncate">
-            {fromDoc ? <>Nova versão <span className="text-slate-400 font-semibold">de {fromDoc.code}</span></> : "Nova cotação"}
+            {fromDoc ? <>Nova versão <span className="text-slate-400 font-semibold">de {fromDoc.code}</span></> : draftId ? "Retomar rascunho" : "Nova cotação"}
           </h1>
           <p className="text-[11px] text-slate-400 truncate leading-tight">{dealName}</p>
         </div>
@@ -155,11 +170,24 @@ export function QuoteComposer({
             {fromDoc.code} será anulada
           </span>
         )}
+        {draftId && (
+          <span className="hidden sm:inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border bg-slate-100 text-slate-600 border-slate-200 shrink-0">
+            Rascunho
+          </span>
+        )}
 
-        <button onClick={openConfirm} disabled={pending || !hasItems}
-          className="ml-auto shrink-0 inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white transition-colors disabled:opacity-50">
-          {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />} Gerar cotação
-        </button>
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          {!fromDoc && (
+            <button onClick={saveDraft} disabled={pending || !hasItems}
+              className="inline-flex items-center gap-2 h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50">
+              {pending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Salvar rascunho
+            </button>
+          )}
+          <button onClick={openConfirm} disabled={pending || !hasItems}
+            className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white transition-colors disabled:opacity-50">
+            {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />} Gerar cotação
+          </button>
+        </div>
       </header>
 
       {/* Corpo full-width — editor 70% · preview 30% */}

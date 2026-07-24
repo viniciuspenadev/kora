@@ -27,6 +27,7 @@ import { classifyIntent } from "./router"
 import { sendMenu, resolveMenuChoice } from "./menu"
 import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
 import { deferralConcepts } from "./boundary"
+import { resolveConnectedSources } from "./data-sources"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
@@ -564,17 +565,23 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         }
         // ai_agent SEMPRE pode devolver o controle (finish_step). Sem outcomes,
         // a saída é única (aresta default).
+        // Fontes de Consulta CONECTADAS a este agente → tools de consulta + governança
+        // de campos (studio-data-source-node-design.md). Funde com a config inline
+        // (compat: fluxos antigos com toggles no próprio nó seguem valendo).
+        const connected = resolveConnectedSources(graph, node.id)
+        const extraTools = [...new Set([...(cfg.tools ?? []), ...connected.tools])]
+        const toolConfig = { ...(cfg.toolConfig ?? {}), ...connected.toolConfig }
         const turn = await runAgentTurn({
           ...input,
           instruction: cfg.instruction ?? null,
           variables,
           flowControl: { outcomes: cfg.outcomes ?? [], collect: cfg.collect ?? [] },
-          extraTools:  cfg.tools,
+          extraTools,
           agendaBinding: cfg.agenda_target ?? null,
-          toolConfig:  cfg.toolConfig ?? null,
+          toolConfig,
           // Contrato de fronteira: ação determinística logo à frente que este nó
           // não tem como tool → injeta o "defira, não conduza" (boundary.ts).
-          deferral:    deferralConcepts(graph, node.id, cfg.tools ?? []),
+          deferral:    deferralConcepts(graph, node.id, extraTools),
         })
         lastAgent = turn
         if (turn.sentMessage) responded = true

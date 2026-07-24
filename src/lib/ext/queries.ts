@@ -514,7 +514,9 @@ export async function dealDetailExt(
     // Cabine ENXUTA (owner 2026-07-20: "lista imensa… rascunho/enviada/anulada"):
     // só as ATIVAS, 3 mais recentes. Canceladas/recusadas moram no app (link ↗).
     quotes: docs
-      .filter((doc) => doc.status !== "void" && doc.status !== "declined")
+      // Cabine só mostra documento ACIONÁVEL — rascunho (WIP, sem PDF/número) fica no
+      // app (Salvar/Retomar); canceladas/recusadas também fora.
+      .filter((doc) => doc.status !== "void" && doc.status !== "declined" && doc.status !== "draft")
       .slice(0, 3)
       .map((doc) => ({
         id: doc.id, code: doc.code, status: doc.status,

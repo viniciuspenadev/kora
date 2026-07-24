@@ -29,7 +29,9 @@ const BUCKET = "chat-attachments"
 
 // ── Tipos de domínio ────────────────────────────────────────────────
 export type DocumentKind = "quote" | "order" | "contract"
-export type DocumentStatus = "draft" | "sent" | "accepted" | "declined" | "signed" | "void"
+// `draft` = trabalho em andamento (SEM número/PDF). `active` = o humano clicou
+// Gerar+Confirmar: numerado, PDF, hash — é a AUTORIZAÇÃO explícita do documento.
+export type DocumentStatus = "draft" | "active" | "sent" | "accepted" | "declined" | "signed" | "void"
 export type Billing = "one_time" | "monthly" | "yearly"
 
 export interface QuoteAddress {
@@ -112,8 +114,8 @@ export interface DocumentRow {
   id:           string
   kind:         DocumentKind
   year:         number
-  number:       number
-  code:         string          // "COT-0001/2026"
+  number:       number | null   // null = rascunho (não numerado)
+  code:         string          // "COT-0001/2026" · "Rascunho" quando sem número
   status:       DocumentStatus
   totalCents:   number
   validUntil:   string | null
@@ -143,6 +145,9 @@ function currentYear(): number {
 async function nextNumber(tenantId: string, kind: DocumentKind, year: number): Promise<number> {
   const { data } = await supabaseAdmin.from("commercial_documents")
     .select("number").eq("tenant_id", tenantId).eq("kind", kind).eq("year", year)
+    // ⚠️ rascunhos têm number=NULL e o `ORDER BY ... DESC` os coloca PRIMEIRO no
+    // Postgres → sem este filtro o "próximo número" viraria sempre 1 (bug 2026-07-24).
+    .not("number", "is", null)
     .order("number", { ascending: false }).limit(1).maybeSingle()
   return ((data as { number: number } | null)?.number ?? 0) + 1
 }
@@ -342,13 +347,15 @@ export async function renderQuotePreviewBuffer(
 // ── Linha do client ─────────────────────────────────────────────────
 const DOC_COLS = "id, kind, year, number, status, snapshot, valid_until, pdf_path, superseded_by, created_at, sent_at, accepted_at, declined_at, voided_at"
 interface RawDoc {
-  id: string; kind: DocumentKind; year: number; number: number; status: DocumentStatus
+  id: string; kind: DocumentKind; year: number; number: number | null; status: DocumentStatus
   snapshot: QuoteSnapshot; valid_until: string | null; pdf_path: string | null; superseded_by: string | null
   created_at: string; sent_at: string | null; accepted_at: string | null; declined_at: string | null; voided_at: string | null
 }
 function mapDoc(r: RawDoc): DocumentRow {
   return {
-    id: r.id, kind: r.kind, year: r.year, number: r.number, code: docCode(r.kind, r.number, r.year),
+    // Rascunho não tem número → code "Rascunho" (o chip na UI já distingue pelo status).
+    id: r.id, kind: r.kind, year: r.year, number: r.number,
+    code: r.number != null ? docCode(r.kind, r.number, r.year) : "Rascunho",
     status: r.status, totalCents: Number(r.snapshot?.totals?.total_cents ?? 0),
     // pdf_path NÃO trafega pro client (exposição mínima — só a rota /api/documents lê do banco).
     validUntil: r.valid_until, supersededBy: r.superseded_by,
@@ -404,7 +411,7 @@ export async function createQuote(
       tenant_id: tenantId, kind: "quote", year, number,
       deal_id: input.dealId, contact_id: contactId, unit_id: unitId,
       snapshot, content_hash: contentHash,
-      status: "draft", valid_until: snapshot.conditions.valid_until, created_by: userId,
+      status: "active", valid_until: snapshot.conditions.valid_until, created_by: userId,
     }).select("id").single()
     if (!error && data) { docId = (data as { id: string }).id; break }
     if (error?.code === "23505") continue   // número tomado → renumera
@@ -459,6 +466,127 @@ export async function createQuote(
   return { id: docId, code }
 }
 
+/** Sanitiza pagamento/parcelas + monta o DocumentConditionsInput (reuso draft/gerar). */
+function condFromInput(input: CreateQuoteInput): DocumentConditionsInput {
+  const safeMethod = input.paymentMethod === undefined ? undefined
+    : (typeof input.paymentMethod === "string" ? (input.paymentMethod.trim().slice(0, 60) || null) : null)
+  const safeInst = input.installments === undefined ? undefined
+    : (typeof input.installments === "number" && Number.isFinite(input.installments)
+        ? Math.min(60, Math.max(1, Math.floor(input.installments))) : null)
+  return {
+    paymentTerms: input.paymentTerms ?? null, notes: input.notes ?? null, validUntil: input.validUntil ?? null,
+    contract: input.contract, paymentMethod: safeMethod, installments: safeInst,
+  }
+}
+
+/**
+ * Salva/atualiza um RASCUNHO de cotação (owner 2026-07-24): trabalho em andamento,
+ * retomável. SEM número (não queima a sequência) e SEM PDF. Congela um snapshot do
+ * estado atual só pra preservar as condições ao reabrir — NÃO é o documento final.
+ * `draftId` presente = atualiza o rascunho (precisa estar em `draft`); ausente = cria.
+ * Não faz write-back no deal nem emite doc_created (rascunho não é fato comercial).
+ */
+export async function saveQuoteDraft(
+  tenantId: string, userId: string, input: CreateQuoteInput, draftId?: string,
+): Promise<{ id: string } | { error: string }> {
+  const cond = condFromInput(input)
+  const built = await buildQuoteSnapshot(tenantId, input.dealId, cond)
+  if ("error" in built) return built
+  const { snapshot, contactId, unitId } = built
+  const contentHash = snapshotHash(snapshot)
+  const now = new Date().toISOString()
+
+  if (draftId) {
+    // Só rascunho pode ser sobrescrito — documento numerado é imutável.
+    const cur = await loadDocStatus(tenantId, draftId)
+    if (!cur) return { error: "Rascunho não encontrado" }
+    if (cur.status !== "draft") return { error: "Esta cotação já foi gerada — não é mais um rascunho." }
+    const { error } = await supabaseAdmin.from("commercial_documents")
+      .update({ snapshot, content_hash: contentHash, valid_until: snapshot.conditions.valid_until, updated_at: now })
+      .eq("id", draftId).eq("tenant_id", tenantId)
+    if (error) return { error: error.message }
+    return { id: draftId }
+  }
+
+  const { data, error } = await supabaseAdmin.from("commercial_documents").insert({
+    tenant_id: tenantId, kind: "quote", year: currentYear(), number: null,
+    deal_id: input.dealId, contact_id: contactId, unit_id: unitId,
+    snapshot, content_hash: contentHash, status: "draft",
+    valid_until: snapshot.conditions.valid_until, created_by: userId,
+  }).select("id").single()
+  if (error || !data) return { error: error?.message ?? "Falha ao salvar rascunho" }
+  return { id: (data as { id: string }).id }
+}
+
+/**
+ * Ativa um RASCUNHO: re-constrói o snapshot do estado ATUAL (itens podem ter mudado
+ * desde o save), numera, gera o PDF e vira `active` — a autorização do humano. Reusa
+ * o caminho de `createQuote` mas ATUALIZA a linha do rascunho (preserva id/timeline).
+ */
+export async function activateQuoteDraft(
+  tenantId: string, userId: string, draftId: string, input: CreateQuoteInput,
+): Promise<{ id: string; code: string } | { error: string }> {
+  const cur = await loadDocStatus(tenantId, draftId)
+  if (!cur) return { error: "Rascunho não encontrado" }
+  if (cur.status !== "draft") return { error: "Esta cotação já foi gerada." }
+  const dealId = cur.deal_id ?? input.dealId
+  const cond = condFromInput(input)
+  const built = await buildQuoteSnapshot(tenantId, dealId, cond)
+  if ("error" in built) return built
+  const { snapshot } = built
+  const year = currentYear()
+  const contentHash = snapshotHash(snapshot)
+
+  // Numera com retry (a unique parcial segura corridas), na PRÓPRIA linha do rascunho.
+  let code = ""
+  let ok = false
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const number = await nextNumber(tenantId, "quote", year)
+    code = docCode("quote", number, year)
+    const { error } = await supabaseAdmin.from("commercial_documents")
+      .update({ number, year, snapshot, content_hash: contentHash, status: "active", valid_until: snapshot.conditions.valid_until, updated_at: new Date().toISOString() })
+      .eq("id", draftId).eq("tenant_id", tenantId).eq("status", "draft")
+    if (!error) { ok = true; break }
+    if ((error as { code?: string }).code === "23505") continue   // número tomado → renumera
+    return { error: error.message }
+  }
+  if (!ok) return { error: "Não foi possível numerar a cotação. Tente novamente." }
+
+  // PDF (prova) — falha reverte pra rascunho (não deixa ativa sem PDF).
+  try {
+    const buffer = await renderQuoteBuffer(snapshot, code, new Date().toISOString(), contentHash)
+    const pdfPath = `documents/${tenantId}/${draftId}.pdf`
+    const { error: upErr } = await supabaseAdmin.storage.from(BUCKET).upload(pdfPath, buffer, { contentType: "application/pdf", upsert: true })
+    if (upErr) throw new Error(upErr.message)
+    await supabaseAdmin.from("commercial_documents").update({ pdf_path: pdfPath, updated_at: new Date().toISOString() }).eq("id", draftId).eq("tenant_id", tenantId)
+  } catch (e) {
+    await supabaseAdmin.from("commercial_documents").update({ status: "draft", number: null, updated_at: new Date().toISOString() }).eq("id", draftId).eq("tenant_id", tenantId)
+    console.error("[documents.activateQuoteDraft] pdf:", (e as Error).message)
+    return { error: "Falha ao gerar o PDF da cotação" }
+  }
+
+  await emitCommercialEvent(tenantId, "doc_created", { subject: { deal_id: dealId, document_id: draftId }, actorId: userId })
+  await recordDealEvent({ tenantId, dealId, type: "note", by: userId, note: `Cotação ${code} gerada`, postCard: false })
+  await supabaseAdmin.from("tenant_deals").update({
+    payment_method: snapshot.conditions.payment_method, installments: snapshot.conditions.installments,
+    proposal_expires_at: snapshot.conditions.valid_until,
+  }).eq("id", dealId).eq("tenant_id", tenantId)
+
+  return { id: draftId, code }
+}
+
+/** Descarta um RASCUNHO (delete de vez — é WIP, sem número/PDF/valor de auditoria).
+ *  Só apaga se ainda for `draft`; documento numerado nunca é deletado (usa anular). */
+export async function discardQuoteDraft(tenantId: string, docId: string): Promise<{ ok: true } | { error: string }> {
+  const cur = await loadDocStatus(tenantId, docId)
+  if (!cur) return { error: "Rascunho não encontrado" }
+  if (cur.status !== "draft") return { error: "Só um rascunho pode ser descartado. Documento gerado usa Cancelar." }
+  const { error } = await supabaseAdmin.from("commercial_documents")
+    .delete().eq("id", docId).eq("tenant_id", tenantId).eq("status", "draft")
+  if (error) return { error: error.message }
+  return { ok: true }
+}
+
 // ── Leituras ────────────────────────────────────────────────────────
 export async function getDealDocuments(tenantId: string, dealId: string): Promise<DocumentRow[]> {
   const { data } = await supabaseAdmin.from("commercial_documents")
@@ -484,7 +612,8 @@ async function loadDocStatus(tenantId: string, docId: string): Promise<{ status:
 export async function markDocumentSent(tenantId: string, userId: string, docId: string): Promise<{ ok: true } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
-  if (doc.status !== "draft" && doc.status !== "sent") return { error: "Só uma cotação em rascunho pode ser enviada." }
+  // Rascunho NÃO é enviável (não tem número nem PDF) — só documento ATIVO/já enviado.
+  if (doc.status !== "active" && doc.status !== "sent") return { error: "Só uma cotação gerada (ativa) pode ser enviada." }
   await supabaseAdmin.from("commercial_documents")
     .update({ status: "sent", sent_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", docId).eq("tenant_id", tenantId)
@@ -495,7 +624,7 @@ export async function markDocumentSent(tenantId: string, userId: string, docId: 
 export async function markDocumentAccepted(tenantId: string, userId: string, docId: string): Promise<{ ok: true } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
-  if (doc.status !== "draft" && doc.status !== "sent") return { error: "Esta cotação não pode ser marcada como aceita." }
+  if (doc.status !== "active" && doc.status !== "sent") return { error: "Esta cotação não pode ser marcada como aceita." }
   await supabaseAdmin.from("commercial_documents")
     .update({ status: "accepted", accepted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", docId).eq("tenant_id", tenantId)
@@ -506,7 +635,7 @@ export async function markDocumentAccepted(tenantId: string, userId: string, doc
 export async function markDocumentDeclined(tenantId: string, userId: string, docId: string): Promise<{ ok: true } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
-  if (doc.status !== "draft" && doc.status !== "sent") return { error: "Esta cotação não pode ser marcada como recusada." }
+  if (doc.status !== "active" && doc.status !== "sent") return { error: "Esta cotação não pode ser marcada como recusada." }
   await supabaseAdmin.from("commercial_documents")
     .update({ status: "declined", declined_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", docId).eq("tenant_id", tenantId)

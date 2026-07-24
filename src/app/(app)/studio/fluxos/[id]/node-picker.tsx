@@ -11,7 +11,7 @@ import {
   Search, ChevronRight, Sparkles, Plus,
   MessageSquare, Image as ImageIcon, FileBadge, ListChecks, ClipboardList, CalendarPlus,
   GitBranch, Split, Clock, Braces, Timer, Bot, GitFork, Tag, Columns3, UserPlus,
-  ArrowRightLeft, Globe, Workflow, CheckCircle2, CornerUpLeft, Flag, Send,
+  ArrowRightLeft, Globe, Workflow, CheckCircle2, CornerUpLeft, Flag, Send, Database,
 } from "lucide-react"
 import type { FlowNodeType } from "@/lib/ai-v2/flow/types"
 
@@ -39,8 +39,9 @@ const GROUPS: Group[] = [
     { type: "wait",           label: "Esperar",           desc: "pausa o fluxo por um tempo", icon: Timer },
   ] },
   { key: "ai", label: "Inteligência (IA)", tint: "text-violet-600 bg-violet-50", items: [
-    { type: "ai_agent",  label: "Agente IA",  desc: "a IA conduz a etapa e devolve o controle", icon: Bot, ai: true },
-    { type: "ai_router", label: "Roteador IA", desc: "a IA entende a intenção e ramifica", icon: GitFork, ai: true },
+    { type: "ai_agent",    label: "Agente IA",  desc: "a IA conduz a etapa e devolve o controle", icon: Bot, ai: true },
+    { type: "ai_router",   label: "Roteador IA", desc: "a IA entende a intenção e ramifica", icon: GitFork, ai: true },
+    { type: "data_source", label: "Fonte de Consulta", desc: "conecta ao Agente IA pra ele consultar agenda, negócios…", icon: Database },
   ] },
   { key: "crm", label: "CRM & conversa", tint: "text-emerald-600 bg-emerald-50", items: [
     { type: "tag",        label: "Etiquetar",  desc: "adiciona ou remove uma etiqueta", icon: Tag },

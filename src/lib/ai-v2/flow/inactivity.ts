@@ -103,6 +103,13 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
           .eq("id", c.id).eq("tenant_id", f.tenant_id)
       }
 
+      const lastMs = c.last_message_at ? new Date(c.last_message_at).getTime() : 0
+      const isAncient = now - lastMs > 7 * 86_400_000
+
+      // Atalho (auditoria 2026-07-23): dentro do teto E já carimbada = nada a fazer —
+      // evita a query de run pra CADA conversa stale-mas-carimbada do scan.
+      if (!isAncient && alreadyStamped) continue
+
       // Fluxo em curso? (docs/studio-client-awareness-design.md — fix do abandono)
       //  • executando AGORA (active) ou espera TEMPORIZADA (nó Aguardar, resume_at) → não mexe;
       //  • esperando o CLIENTE além do limiar → run está ABANDONADO → expira (status
@@ -118,15 +125,14 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
       // Teto GLOBAL de sanidade (7 dias) — ANTES do consome-uma-vez (senão conversa
       // já carimbada pelo motor antigo nunca teria o run zumbi expirado): ancião NUNCA
       // recebe mensagem — expira o run (se houver), carimba se preciso, e esquece.
-      const lastMs = c.last_message_at ? new Date(c.last_message_at).getTime() : 0
-      if (now - lastMs > 7 * 86_400_000) {
+      if (isAncient) {
         if (waitingOnClient) await expireRun()
         if (!alreadyStamped) await stampFired()   // sem re-write a cada tick
         continue
       }
 
-      // Consome-uma-vez: já disparou desde a última resposta do cliente? pula.
-      if (alreadyStamped) continue
+      // Aqui: dentro do teto e NÃO carimbada. Não interrompe run em curso/temporizado;
+      // abandonado (waiting-cliente) → expira e segue pro disparo.
       if (run && !waitingOnClient) continue
       if (waitingOnClient) await expireRun()
 
