@@ -4,6 +4,10 @@ const nextConfig: NextConfig = {
   // Saída otimizada pra Docker: copia só o necessário (não o node_modules inteiro).
   output: "standalone",
 
+  // Não anunciar o framework (remove header `X-Powered-By: Next.js` — reduz
+  // fingerprint pro atacante). Auditoria 2026-07-24.
+  poweredByHeader: false,
+
   // @react-pdf/renderer (fontkit, etc.) não deve ser empacotado pelo bundler —
   // roda como dep externa no server (gera a fatura em PDF).
   serverExternalPackages: ["@react-pdf/renderer"],

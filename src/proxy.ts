@@ -88,6 +88,15 @@ const PERMISSIONS_POLICY = [
 ].join(", ")
 
 export function proxy(req: NextRequest) {
+  // Métodos perigosos/sem uso: TRACE/TRACK habilitam Cross-Site Tracing (XST).
+  // A app só usa GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS → rejeita explícito (405).
+  if (req.method === "TRACE" || req.method === "TRACK") {
+    return new NextResponse("Method Not Allowed", {
+      status: 405,
+      headers: { Allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS" },
+    })
+  }
+
   const res  = NextResponse.next()
   const path = req.nextUrl.pathname
 

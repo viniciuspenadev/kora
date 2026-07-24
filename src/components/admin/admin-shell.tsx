@@ -3,7 +3,7 @@
 import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Building2, Mail, LogOut, Smartphone, MailOpen, Package, Wallet, MonitorSmartphone } from "lucide-react"
+import { LayoutDashboard, Building2, Mail, LogOut, Smartphone, MailOpen, Package, Wallet, MonitorSmartphone, ShieldAlert } from "lucide-react"
 import { signOut } from "next-auth/react"
 
 const nav = [
@@ -13,6 +13,7 @@ const nav = [
   { href: "/admin/financeiro", label: "Financeiro",  icon: Wallet },
   { href: "/admin/whatsapp",   label: "WhatsApp",    icon: Smartphone },
   { href: "/admin/sessoes",    label: "Sessões",     icon: MonitorSmartphone },
+  { href: "/admin/seguranca",  label: "Segurança",   icon: ShieldAlert },
   { href: "/admin/invites",  label: "Convites",    icon: Mail },
   { href: "/admin/emails",   label: "Emails",      icon: MailOpen },
 ]
