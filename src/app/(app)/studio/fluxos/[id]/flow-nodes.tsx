@@ -9,7 +9,7 @@
 
 import { createContext, useContext } from "react"
 import { Handle, Position, useNodeId, type NodeProps } from "@xyflow/react"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
@@ -613,16 +613,26 @@ function ResolveNode(p: NodeProps) {
 }
 
 const DS_LABEL: Record<string, string> = { agenda: "Agenda", deals: "Negócios", quotes: "Cotações" }
-/** Fonte de Consulta: só SAÍDA (liga no Agente IA por um fio de dados). Não recebe fluxo. */
+/** Fonte de Consulta: nó REDONDO — linguagem de "ferramenta plugada" (MCP/n8n), distinta
+ *  dos passos retangulares do fluxo. Borda tracejada indigo antecipa o fio de dados (F2).
+ *  Só SAÍDA (liga no Agente IA por um fio de dados). Não recebe fluxo. */
 function DataSourceNode(p: NodeProps) {
-  const cfg = cfgOf(p) as { source?: string }
+  const cfg = cfgOf(p) as { source?: string; verify?: boolean }
+  const label = DS_LABEL[cfg.source ?? "agenda"] ?? "—"
   return (
-    <>
-      <Card icon={Database} accent="bg-indigo-100 text-indigo-700" title="Fonte de Consulta" selected={p.selected}>
-        🔒 {DS_LABEL[cfg.source ?? "agenda"] ?? "—"} · só deste contato
-      </Card>
+    <div className="relative flex flex-col items-center" title="Fonte de Consulta · leitura, só deste contato">
+      <div className={`relative size-[76px] rounded-full bg-white flex flex-col items-center justify-center gap-0.5 shadow-sm transition-all ${
+        p.selected ? "border-2 border-primary ring-4 ring-primary/15" : "border-2 border-dashed border-indigo-300"}`}>
+        <Database className="size-5 text-indigo-600" />
+        <span className="text-[10px] font-semibold text-slate-700 leading-none">{label}</span>
+        {cfg.verify && (
+          <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-emerald-500 ring-2 ring-white" title="Verificação leve ativa">
+            <ShieldCheck className="size-2.5 text-white" />
+          </span>
+        )}
+      </div>
       <SourceHandle />
-    </>
+    </div>
   )
 }
 
