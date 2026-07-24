@@ -16,6 +16,7 @@ import { moveStageCapability } from "./move-stage"
 import { assignCapability } from "./assign"
 import { checkAvailabilityCapability, scheduleAppointmentCapability, rescheduleAppointmentCapability } from "./agenda"
 import { consultAppointmentsCapability, consultDealsCapability, consultQuotesCapability } from "./consult"
+import { sendQuoteCapability } from "./send-quote"
 
 let _registered = false
 
@@ -37,6 +38,7 @@ export function ensureCapabilitiesRegistered(): void {
     consultAppointmentsCapability,
     consultDealsCapability,
     consultQuotesCapability,
+    sendQuoteCapability,
   ])
   _registered = true
 }
@@ -51,5 +53,6 @@ export { MOVE_STAGE } from "./move-stage"
 export { ASSIGN } from "./assign"
 export { CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT } from "./agenda"
 export { CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES } from "./consult"
+export { SEND_QUOTE } from "./send-quote"
 export * from "./registry"
 export type { Capability, CapabilitySpec, ExecCtx, CapabilityResult, CapabilityCategory, AgendaBinding, ToolConfig } from "./types"

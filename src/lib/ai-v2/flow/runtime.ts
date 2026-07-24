@@ -570,6 +570,13 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // (compat: fluxos antigos com toggles no próprio nó seguem valendo).
         const connected = resolveConnectedSources(graph, node.id)
         const extraTools = [...new Set([...(cfg.tools ?? []), ...connected.tools])]
+        // ⚠️ SEGURANÇA: `connected.toolConfig` já passou pela lista branca FIELD_ALLOW
+        // (data-sources.ts) e é espalhado DEPOIS → um managed sempre vence o inline.
+        // O `cfg.toolConfig` inline/legado entra CRU (sem __src, sem whitelist) — hoje
+        // seguro porque consult.ts nunca lê chave 🔴 e a coluna 🔴 nem é selecionada.
+        // A fronteira real de 🔴 é a MINIMIZAÇÃO DA QUERY em consult.ts, não esta linha.
+        // Se um dia adicionar chave sensível ao consult.ts, ela PRECISA ser barrada aqui
+        // também (passar o inline por uma peneira análoga) — não confie só no FIELD_ALLOW.
         const toolConfig = { ...(cfg.toolConfig ?? {}), ...connected.toolConfig }
         const turn = await runAgentTurn({
           ...input,

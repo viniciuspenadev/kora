@@ -213,9 +213,12 @@ export async function applyFunnelTemplate(blueprintId: string): Promise<{ ids: s
 export async function updatePipeline(id: string, data: Partial<{ name: string; description: string | null; color: string }>) {
   const session = await requireAdmin()
 
+  // Allow-list: só estas colunas — nunca o objeto cru (senão data.tenant_id no SET
+  // migraria o funil pra outro tenant). undefined é dropado pelo supabase-js.
+  const { name, description, color } = data
   const { error } = await supabaseAdmin
     .from("pipelines")
-    .update({ ...data, updated_at: new Date().toISOString() })
+    .update({ name, description, color, updated_at: new Date().toISOString() })
     .eq("id", id)
     .eq("tenant_id", session.user.tenantId)
 

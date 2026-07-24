@@ -14,6 +14,7 @@ import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { fmtFull } from "@/lib/agenda/format"
+import { safeValue } from "../safe-text"
 import type { ExecCtx } from "./types"
 
 export const CONSULT_APPOINTMENTS = "consult_appointments"
@@ -78,8 +79,9 @@ export const consultAppointmentsCapability = defineCapability<Record<string, nev
     type Row = { starts_at: string; ends_at: string | null; status: string; tenant_services: { name: string | null } | null; tenant_resources: { name: string | null } | null }
     const rows = (data ?? []) as unknown as Row[]
     const lines = rows.map((a) => {
-      const svc = a.tenant_services?.name ? ` — ${a.tenant_services.name}` : ""
-      const res = showProf && a.tenant_resources?.name ? ` (com ${a.tenant_resources.name})` : ""
+      // safeValue: nome de serviço/recurso é texto do banco → higienizar (anti-injeção).
+      const svc = a.tenant_services?.name ? ` — ${safeValue(a.tenant_services.name)}` : ""
+      const res = showProf && a.tenant_resources?.name ? ` (com ${safeValue(a.tenant_resources.name)})` : ""
       const dur = showDur && a.ends_at ? ` · ${Math.round((new Date(a.ends_at).getTime() - new Date(a.starts_at).getTime()) / 60000)}min` : ""
       const st  = a.status === "confirmed" ? "confirmado" : "aguardando confirmação"
       return `${fmtFull(a.starts_at)}${svc}${res}${dur} · ${st}`
@@ -97,7 +99,7 @@ export const consultAppointmentsCapability = defineCapability<Record<string, nev
         .gte("starts_at", since)
         .order("starts_at", { ascending: false }).limit(3)
       const p = ((past ?? []) as unknown as { starts_at: string; tenant_services: { name: string | null } | null }[])
-        .map((a) => `${fmtFull(a.starts_at)}${a.tenant_services?.name ? ` — ${a.tenant_services.name}` : ""}`)
+        .map((a) => `${fmtFull(a.starts_at)}${a.tenant_services?.name ? ` — ${safeValue(a.tenant_services.name)}` : ""}`)
       // "Horários marcados", não "atendimentos" (auditoria B2): passado scheduled/
       // confirmed pode ter sido no-show — não afirmar comparecimento.
       if (p.length) history = ` Últimos horários marcados: ${p.join("; ")}.`
@@ -132,28 +134,22 @@ export const consultDealsCapability = defineCapability<Record<string, never>>({
     if (!(await hasModule(ctx.tenantId, "crm"))) {
       return { ok: true, toolMessage: "Consulta de negócios indisponível. Diga que vai verificar com o time." }
     }
-    // Governança de campos (🟢 nome/etapa sempre · 🔵 funil/valor/previsão/custom).
+    // Governança de campos. 🔴 SEM TOGGLE (doutrina, aprovado owner 2026-07-24):
+    // NOME do negócio, ETAPA do funil e PREVISÃO de fechamento NUNCA vão pro cliente
+    // (linguagem interna do time / dado sensível). Só existem 🔵 opt-in: valor, funil
+    // (nome do pipeline, não a etapa) e campos personalizados escolhidos na Fonte.
     const showValue  = show(ctx, CONSULT_DEALS, "value", { newDflt: false, legacyKey: "showValue", legacyDflt: false })
     const showFunnel = show(ctx, CONSULT_DEALS, "funnel", { newDflt: false })
-    const showClose  = show(ctx, CONSULT_DEALS, "closeDate", { newDflt: false })
     const customIds  = selectedCustomFields(ctx, CONSULT_DEALS)
     const { data } = await supabaseAdmin.from("tenant_deals")
-      .select("name, status, estimated_value, stage_id, pipeline_id, expected_close_date, custom_fields")
+      .select("estimated_value, pipeline_id, custom_fields")
       .eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
       .eq("status", "open")
       .order("updated_at", { ascending: false }).limit(5)
-    type Deal = { name: string | null; status: string; estimated_value: number | null; stage_id: string | null; pipeline_id: string | null; expected_close_date: string | null; custom_fields: Record<string, unknown> | null }
+    type Deal = { estimated_value: number | null; pipeline_id: string | null; custom_fields: Record<string, unknown> | null }
     const open = (data ?? []) as Deal[]
 
-    // Nome da etapa (2ª query determinística — sem depender de nome de FK).
-    const stageIds = [...new Set(open.map((d) => d.stage_id).filter(Boolean))] as string[]
-    const stageName = new Map<string, string>()
-    if (stageIds.length) {
-      const { data: st } = await supabaseAdmin.from("deal_pipeline_stages")
-        .select("id, name").eq("tenant_id", ctx.tenantId).in("id", stageIds)
-      for (const s of (st ?? []) as { id: string; name: string }[]) stageName.set(s.id, s.name)
-    }
-    // Nome do funil (só se exposto).
+    // Nome do funil (só se exposto — 🔵).
     const funnelName = new Map<string, string>()
     if (showFunnel) {
       const pids = [...new Set(open.map((d) => d.pipeline_id).filter(Boolean))] as string[]
@@ -163,40 +159,47 @@ export const consultDealsCapability = defineCapability<Record<string, never>>({
         for (const p of (ps ?? []) as { id: string; name: string }[]) funnelName.set(p.id, p.name)
       }
     }
-    // Rótulos dos custom fields expostos (só os selecionados na Fonte).
+    // Rótulos dos custom fields expostos — SÓ os selecionados na Fonte, SÓ de negócio
+    // (entity="deal": evita colisão com campo de contato de mesma key — auditoria).
     const cfLabel = new Map<string, string>()
     if (customIds.length) {
       const { data: cfs } = await supabaseAdmin.from("tenant_custom_fields")
-        .select("id, key, label").eq("tenant_id", ctx.tenantId).in("id", customIds)
+        .select("id, key, label").eq("tenant_id", ctx.tenantId).eq("entity", "deal").in("id", customIds)
       for (const c of (cfs ?? []) as { id: string; key: string; label: string }[]) cfLabel.set(c.key, c.label)
     }
-    const lines = open.map((d) => {
-      const stage  = d.stage_id ? stageName.get(d.stage_id) : null
+    // Sem NOME/ETAPA, cada negócio é referido de forma neutra. Só emite uma linha de
+    // detalhe quando há campo 🔵 ligado; senão o cliente recebe só a contagem.
+    const details = open.map((d) => {
       const funnel = showFunnel && d.pipeline_id ? funnelName.get(d.pipeline_id) : null
-      const val    = showValue && d.estimated_value != null ? ` — ${brl(Number(d.estimated_value))}` : ""
-      const close  = showClose && d.expected_close_date ? ` · previsão ${fmtFull(d.expected_close_date)}` : ""
+      const val    = showValue && d.estimated_value != null ? `valor ${brl(Number(d.estimated_value))}` : ""
       const custom = cfLabel.size && d.custom_fields
-        ? [...cfLabel.entries()].filter(([k]) => d.custom_fields![k] != null).map(([k, lbl]) => `${lbl}: ${String(d.custom_fields![k])}`).join(", ")
+        ? [...cfLabel.entries()].filter(([k]) => d.custom_fields![k] != null)
+            .map(([k, lbl]) => `${safeValue(lbl, 40)}: ${safeValue(String(d.custom_fields![k]))}`).join(", ")
         : ""
-      return `"${d.name ?? "Negócio"}"${stage ? ` na etapa ${stage}` : ""}${funnel ? ` (funil ${funnel})` : ""}${val}${close}${custom ? ` · ${custom}` : ""}`
-    })
+      const parts = [val, funnel ? `funil ${safeValue(funnel)}` : "", custom].filter(Boolean)
+      return parts.length ? `um negócio (${parts.join(" · ")})` : null
+    }).filter(Boolean) as string[]
 
     let closed = ""
     if (show(ctx, CONSULT_DEALS, "includeClosed", { newDflt: false, legacyDflt: false })) {
-      // Concluídos = GANHOS apenas. Perdidos/cancelados e motivos são linguagem
-      // interna do time — NUNCA vão pro cliente (doutrina, não config).
+      // Concluídos = GANHOS apenas (perdidos/cancelados e motivos são internos, doutrina).
+      // Sem NOME (🔴): só a contagem/data do fechamento.
       const { data: won } = await supabaseAdmin.from("tenant_deals")
-        .select("name, won_at").eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
+        .select("won_at").eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
         .eq("status", "won").order("won_at", { ascending: false }).limit(3)
-      const w = ((won ?? []) as { name: string | null; won_at: string | null }[])
-        .map((d) => `"${d.name ?? "Negócio"}"${d.won_at ? ` concluído em ${fmtFull(d.won_at)}` : ""}`)
+      const w = ((won ?? []) as { won_at: string | null }[])
+        .map((d) => d.won_at ? `um fechado em ${fmtFull(d.won_at)}` : "um fechado")
       if (w.length) closed = ` Concluídos recentes: ${w.join("; ")}.`
     }
 
-    if (lines.length === 0 && !closed) {
+    if (open.length === 0 && !closed) {
       return { ok: true, toolMessage: "Este cliente NÃO tem negócio em andamento. Se fizer sentido, ofereça ajuda pra começar um." }
     }
-    return { ok: true, toolMessage: `Negócios em andamento deste cliente: ${lines.join("; ") || "nenhum"}.${closed}` }
+    // Nome/etapa não são revelados — a IA confirma que HÁ negócio(s) e os detalhes 🔵.
+    const count = open.length
+    const head  = count === 0 ? "Nenhum negócio em andamento." : `Este cliente tem ${count} negócio(s) em andamento.`
+    const body  = details.length ? ` ${details.join("; ")}.` : (count > 0 ? " (Sem detalhes liberados pra revelar — não invente nome, etapa nem previsão; se ele quiser o andamento, diga que vai acionar o time.)" : "")
+    return { ok: true, toolMessage: `${head}${body}${closed}` }
   },
 })
 

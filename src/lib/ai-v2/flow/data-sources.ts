@@ -18,6 +18,20 @@ const SOURCE_TOOL: Record<string, string> = {
   quotes: CONSULT_QUOTES,
 }
 
+// Lista branca de campos 🔵 POR FONTE — imposta no SERVIDOR (gate no banco, não na UI).
+// Só estas chaves atravessam pro toolConfig; qualquer outra (ex: uma key 🔴 injetada
+// num config adulterado) é DESCARTADA aqui, antes de chegar ao consult.ts. Campos 🔴
+// (nome/etapa/previsão/custo/margem…) NÃO têm chave — não existe toggle pra ligá-los.
+// ⚠️ Espelha os toggles de DS_OPT_FIELDS (config-panel). includeHistory/includeClosed
+// NÃO entram: são só do modo legado inline (a Fonte não expõe histórico/concluídos).
+const FIELD_ALLOW: Record<string, ReadonlySet<string>> = {
+  agenda: new Set(["professional", "duration"]),
+  deals:  new Set(["value", "funnel"]),
+  quotes: new Set(["value"]),
+}
+// customFields só faz sentido em Negócios (e é filtrado por entity="deal" no consult).
+const CUSTOM_FIELDS_SOURCES = new Set(["deals"])
+
 /** Tools + toolConfig derivados das Fontes de Consulta conectadas a `agentNodeId`. */
 export function resolveConnectedSources(
   graph: FlowGraph, agentNodeId: string,
@@ -35,11 +49,22 @@ export function resolveConnectedSources(
     tools.push(toolId)
     // `__src` marca "governado por Fonte" → consult.ts usa o modelo de campos NOVO
     // (opt-in). Sem ele = config inline legada (defaults antigos). Campos 🔵 ligados
-    // (fields) + custom fields (Negócios).
+    // (fields) + custom fields (Negócios) — TODOS passados pela lista branca do server.
+    const allow = FIELD_ALLOW[cfg.source] ?? new Set<string>()
+    const safeFields: Record<string, boolean> = {}
+    for (const [k, v] of Object.entries(cfg.fields ?? {})) {
+      // Preserva o boolean EXPLÍCITO (inclusive false): "desligado pelo autor" ≠ "não
+      // configurado". Campo com newDflt=true (ex: quotes.value) precisa do false pra
+      // respeitar o opt-out — senão o consult.ts reexpõe pelo default (regressão 07-24).
+      if (allow.has(k) && typeof v === "boolean") safeFields[k] = v
+    }
+    const customFields = CUSTOM_FIELDS_SOURCES.has(cfg.source) && cfg.customFields?.length
+      ? cfg.customFields.filter((id) => typeof id === "string")
+      : []
     toolConfig[toolId] = {
       __src: true,
-      ...(cfg.fields ?? {}),
-      ...(cfg.customFields?.length ? { customFields: cfg.customFields } : {}),
+      ...safeFields,
+      ...(customFields.length ? { customFields } : {}),
     }
   }
   return { tools: [...new Set(tools)], toolConfig }

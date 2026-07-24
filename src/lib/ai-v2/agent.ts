@@ -20,10 +20,11 @@ import {
   ensureCapabilitiesRegistered, getCapability, toolsForAgent, assemblePlaybooks,
   SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE, TAG, MOVE_STAGE,
   CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
-  CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES,
+  CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES, SEND_QUOTE,
   type ExecCtx, type AgendaBinding, type ToolConfig,
 } from "./capabilities"
 import { deferralContract, type DeferralConcept } from "./flow/boundary"
+import { safeValue } from "./safe-text"
 
 const MAX_STEPS    = 4
 const PLAN_LEVEL   = 99   // agente core usa só caps nível 0; gating real vem no flow (Fatia 4+)
@@ -31,7 +32,7 @@ const GRANTED_TOOLS = [SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE]
 // Ferramentas extra que um nó de IA PODE liberar (least-privilege: só estas).
 const GRANTABLE_EXTRA = new Set([
   TAG, MOVE_STAGE, CHECK_AVAILABILITY, SCHEDULE_APPOINTMENT, RESCHEDULE_APPOINTMENT,
-  CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES,
+  CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES, SEND_QUOTE,
 ])
 
 const FINISH_STEP = "finish_step"
@@ -134,7 +135,10 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   // Studio Engine §Pilar 1 — o prompt = persona/intenção (cliente) + os PLAYBOOKS
   // das capacidades CONCEDIDAS (craft do sistema). assemblePlaybooks só monta o
   // playbook das caps em `granted` → tag/move_stage/agenda só entram quando ligadas.
-  const contactName = ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || "o cliente"
+  // safeValue: custom_name/push_name são ESCRITOS PELO CLIENTE → higienizar antes de
+  // entrar no prompt (anti prompt-injection). Um nome real passa intacto; um "nome"
+  // com ordem embutida é neutralizado. Ver src/lib/ai-v2/safe-text.ts.
+  const contactName = safeValue(ctx.contact.custom_name) || safeValue(ctx.contact.push_name) || "o cliente"
   const playbooks = assemblePlaybooks(granted, {
     contactName,
     departments: ctx.departments,

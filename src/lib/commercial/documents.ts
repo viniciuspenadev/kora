@@ -490,10 +490,6 @@ export async function saveQuoteDraft(
   tenantId: string, userId: string, input: CreateQuoteInput, draftId?: string,
 ): Promise<{ id: string } | { error: string }> {
   const cond = condFromInput(input)
-  const built = await buildQuoteSnapshot(tenantId, input.dealId, cond)
-  if ("error" in built) return built
-  const { snapshot, contactId, unitId } = built
-  const contentHash = snapshotHash(snapshot)
   const now = new Date().toISOString()
 
   if (draftId) {
@@ -501,12 +497,22 @@ export async function saveQuoteDraft(
     const cur = await loadDocStatus(tenantId, draftId)
     if (!cur) return { error: "Rascunho não encontrado" }
     if (cur.status !== "draft") return { error: "Esta cotação já foi gerada — não é mais um rascunho." }
+    // dealId vem do RASCUNHO carregado (auditoria 2026-07-24), não de input.dealId —
+    // senão um client forjado gravaria o snapshot (total/itens) de OUTRO deal do tenant.
+    const dealId = cur.deal_id ?? input.dealId
+    const built = await buildQuoteSnapshot(tenantId, dealId, cond)
+    if ("error" in built) return built
     const { error } = await supabaseAdmin.from("commercial_documents")
-      .update({ snapshot, content_hash: contentHash, valid_until: snapshot.conditions.valid_until, updated_at: now })
-      .eq("id", draftId).eq("tenant_id", tenantId)
+      .update({ snapshot: built.snapshot, content_hash: snapshotHash(built.snapshot), valid_until: built.snapshot.conditions.valid_until, updated_at: now })
+      .eq("id", draftId).eq("tenant_id", tenantId).eq("status", "draft")   // TOCTOU: só sobrescreve enquanto AINDA rascunho
     if (error) return { error: error.message }
     return { id: draftId }
   }
+
+  const built = await buildQuoteSnapshot(tenantId, input.dealId, cond)
+  if ("error" in built) return built
+  const { snapshot, contactId, unitId } = built
+  const contentHash = snapshotHash(snapshot)
 
   const { data, error } = await supabaseAdmin.from("commercial_documents").insert({
     tenant_id: tenantId, kind: "quote", year: currentYear(), number: null,
@@ -537,22 +543,30 @@ export async function activateQuoteDraft(
   const year = currentYear()
   const contentHash = snapshotHash(snapshot)
 
-  // Numera com retry (a unique parcial segura corridas), na PRÓPRIA linha do rascunho.
+  // Numera com retry na PRÓPRIA linha do rascunho. CLAIM ATÔMICO (auditoria 2026-07-24,
+  // padrão do createNewVersion): o UPDATE devolve a linha via .select() — 0 linhas = OUTRA
+  // ativação concorrente já pegou o rascunho → aborta SEM re-emitir evento/write-back
+  // duplicado. `.eq("status","draft")` garante que só o VENCEDOR muda o estado.
   let code = ""
-  let ok = false
+  let claimed = false
   for (let attempt = 0; attempt < 3; attempt++) {
     const number = await nextNumber(tenantId, "quote", year)
     code = docCode("quote", number, year)
-    const { error } = await supabaseAdmin.from("commercial_documents")
+    const { data: rows, error } = await supabaseAdmin.from("commercial_documents")
       .update({ number, year, snapshot, content_hash: contentHash, status: "active", valid_until: snapshot.conditions.valid_until, updated_at: new Date().toISOString() })
       .eq("id", draftId).eq("tenant_id", tenantId).eq("status", "draft")
-    if (!error) { ok = true; break }
-    if ((error as { code?: string }).code === "23505") continue   // número tomado → renumera
-    return { error: error.message }
+      .select("id")
+    if (error) {
+      if ((error as { code?: string }).code === "23505") continue   // número tomado → renumera
+      return { error: error.message }
+    }
+    if (!rows?.length) return { error: "Esta cotação já foi gerada." }   // perdeu a corrida → aborta
+    claimed = true; break
   }
-  if (!ok) return { error: "Não foi possível numerar a cotação. Tente novamente." }
+  if (!claimed) return { error: "Não foi possível numerar a cotação. Tente novamente." }
 
-  // PDF (prova) — falha reverte pra rascunho (não deixa ativa sem PDF).
+  // PDF (prova) — falha reverte pra rascunho. O revert só toca ESTA linha SE ainda for
+  // deste ativar (guarda por status=active + number setado — nunca derruba uma ativa alheia).
   try {
     const buffer = await renderQuoteBuffer(snapshot, code, new Date().toISOString(), contentHash)
     const pdfPath = `documents/${tenantId}/${draftId}.pdf`
@@ -560,7 +574,9 @@ export async function activateQuoteDraft(
     if (upErr) throw new Error(upErr.message)
     await supabaseAdmin.from("commercial_documents").update({ pdf_path: pdfPath, updated_at: new Date().toISOString() }).eq("id", draftId).eq("tenant_id", tenantId)
   } catch (e) {
-    await supabaseAdmin.from("commercial_documents").update({ status: "draft", number: null, updated_at: new Date().toISOString() }).eq("id", draftId).eq("tenant_id", tenantId)
+    await supabaseAdmin.from("commercial_documents")
+      .update({ status: "draft", number: null, updated_at: new Date().toISOString() })
+      .eq("id", draftId).eq("tenant_id", tenantId).eq("status", "active").is("pdf_path", null)
     console.error("[documents.activateQuoteDraft] pdf:", (e as Error).message)
     return { error: "Falha ao gerar o PDF da cotação" }
   }
@@ -609,7 +625,7 @@ async function loadDocStatus(tenantId: string, docId: string): Promise<{ status:
   return (data as { status: DocumentStatus; deal_id: string | null } | null) ?? null
 }
 
-export async function markDocumentSent(tenantId: string, userId: string, docId: string): Promise<{ ok: true } | { error: string }> {
+export async function markDocumentSent(tenantId: string, userId: string | null, docId: string): Promise<{ ok: true } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
   // Rascunho NÃO é enviável (não tem número nem PDF) — só documento ATIVO/já enviado.

@@ -8,7 +8,10 @@
 
 import { normalizeRichDoc, type Block, type RichDoc, type Run } from "./richdoc"
 
-const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+// Escapa `"`/`'` também: senão uma URL com aspas quebra o atributo href={esc(link)}
+// e injeta on*=… (stored XSS — templates/cláusulas são compartilhados no tenant).
+const esc = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
 
 // ── RichDoc → HTML (conteúdo inicial do editor) ────────────────
 function runToHtml(r: Run): string {
@@ -73,7 +76,9 @@ function walkInline(node: Node, marks: Marks, out: Run[]): void {
     }
     if (tag === "a") {
       const href = el.getAttribute("href") ?? ""
-      if (/^https?:\/\//i.test(href)) nm.link = href
+      // Só http(s) E sem espaço/aspas/<> — rejeita URL que carregue quebra de
+      // atributo mesmo com o esc() já endurecido (defesa em profundidade na captura).
+      if (/^https?:\/\/[^\s"'<>]+$/i.test(href)) nm.link = href
     }
     walkInline(el, nm, out)
   })

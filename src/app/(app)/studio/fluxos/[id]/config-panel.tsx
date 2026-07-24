@@ -695,18 +695,19 @@ function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set
 // (doutrina, imposta no server). docs/studio-data-source-node-design.md §4.
 const DS_SOURCES = [
   { v: "agenda", label: "Agenda", always: "serviço · data/hora · status" },
-  { v: "deals",  label: "Negócios", always: "nome · etapa" },
+  { v: "deals",  label: "Negócios", always: "que há negócio em andamento (sem nome nem etapa)" },
   { v: "quotes", label: "Cotações", always: "número · status · validade" },
 ] as const
+// 🔴 Nunca (sem toggle, doutrina no server): nome do negócio, etapa do funil, previsão
+// de fechamento, custo/margem, motivo de perda, notas, quem atende — não aparecem aqui.
 const DS_OPT_FIELDS: Record<string, { k: string; label: string; defaultOn?: boolean }[]> = {
   agenda: [
     { k: "professional", label: "Profissional (nome da agenda)" },
     { k: "duration",     label: "Duração" },
   ],
   deals: [
-    { k: "funnel",       label: "Funil" },
+    { k: "funnel",       label: "Funil (nome do pipeline)" },
     { k: "value",        label: "Valor" },
-    { k: "closeDate",    label: "Previsão de fechamento" },
   ],
   quotes: [
     { k: "value",        label: "Valor", defaultOn: true },
@@ -756,7 +757,7 @@ function DataSourceConfig({ cfg, set, dealFields }: {
           </div>
         )}
       </div>
-      <p className="text-[11px] text-slate-400">🔒 Nunca expõe: dados de outro contato, motivo de perda, notas internas, quem atende — nem com toggle.</p>
+      <p className="text-[11px] text-slate-400">🔒 Nunca expõe: dados de outro contato, nome/etapa/previsão do negócio, custo, margem, motivo de perda, notas internas — nem com toggle.</p>
     </div>
   )
 }
@@ -891,6 +892,7 @@ const AGENT_TOOLS: {
   { key: "tag",        ids: ["tag"],        label: "Etiquetar o contato", hint: "aplica/remove etiquetas pra qualificar" },
   { key: "move_stage", ids: ["move_stage"], label: "Mover no pipeline",   hint: "move a conversa de etapa" },
   { key: "agenda",     ids: ["check_availability", "schedule_appointment", "reschedule_appointment"], label: "Agendar e remarcar", hint: "consulta horários reais, marca e remarca na agenda" },
+  { key: "send_quote", ids: ["send_quote"], label: "Reenviar a proposta", hint: "reenvia o PDF de uma cotação JÁ gerada quando o cliente pedir — nunca rascunho, só deste cliente" },
   // As CONSULTAS (agendamentos/negócios/cotações) saíram daqui → agora vivem no nó
   // "Fonte de Consulta", conectado ao Agente IA (docs/studio-data-source-node-design.md).
 ]

@@ -137,8 +137,10 @@ export async function createDealPipeline(name: string, color?: string): Promise<
 
 export async function updateDealPipeline(id: string, data: Partial<{ name: string; description: string | null; color: string }>) {
   const session = await requireCrmAdmin()
+  // Allow-list: só estas colunas — nunca o objeto cru (anti mass-assignment de tenant_id).
+  const { name, description, color } = data
   const { error } = await supabaseAdmin.from("deal_pipelines")
-    .update({ ...data, updated_at: new Date().toISOString() }).eq("id", id).eq("tenant_id", session.user.tenantId)
+    .update({ name, description, color, updated_at: new Date().toISOString() }).eq("id", id).eq("tenant_id", session.user.tenantId)
   if (error) throw new Error(error.message)
   revalidate()
 }
