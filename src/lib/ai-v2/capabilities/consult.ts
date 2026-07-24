@@ -45,6 +45,23 @@ function selectedCustomFields(ctx: ExecCtx, toolId: string): string[] {
   return Array.isArray(v) ? (v as string[]) : []
 }
 
+/**
+ * Portão da VERIFICAÇÃO LEVE (confirm-identity.ts). Quando a Fonte liga `__verify`, a
+ * consulta fica TRAVADA até `conversationMetadata.__id_ok`. Devolve a mensagem que manda
+ * a IA confirmar (deriva CPF-parcial × nome pelo cadastro) — ou `null` se pode seguir.
+ */
+function verifyGate(ctx: ExecCtx, toolId: string): string | null {
+  if (tcfg(ctx, toolId).__verify !== true) return null       // Fonte não exige
+  const m = ctx.conversationMetadata ?? {}
+  if (m.__id_ok === true) return null                         // já confirmado nesta conversa
+  if (m.__id_blocked === true)
+    return "IDENTIDADE NÃO CONFIRMADA (tentativas esgotadas). NÃO revele NADA deste cadastro; diga que, por segurança, um atendente humano vai continuar."
+  const ask = ctx.contact.doc_id?.trim()
+    ? "peça os 4 PRIMEIROS dígitos do CPF dele"
+    : "peça o NOME COMPLETO dele"
+  return `IDENTIDADE NÃO CONFIRMADA. Por segurança, antes de revelar qualquer dado deste cliente, ${ask} e confirme com a ferramenta confirm_identity. Só detalhe DEPOIS que ela retornar OK — pode enquadrar como "só pra confirmar que é você".`
+}
+
 // ── Consultar AGENDAMENTOS ─────────────────────────────────────
 export const consultAppointmentsCapability = defineCapability<Record<string, never>>({
   id:           CONSULT_APPOINTMENTS,
@@ -67,6 +84,8 @@ export const consultAppointmentsCapability = defineCapability<Record<string, nev
     if (!(await hasModule(ctx.tenantId, "agenda"))) {
       return { ok: true, toolMessage: "Consulta de agendamentos indisponível. Diga que vai verificar com o time." }
     }
+    const gate1 = verifyGate(ctx, CONSULT_APPOINTMENTS)
+    if (gate1) return { ok: true, toolMessage: gate1 }
     // Governança de campos (🟢 serviço/data/status sempre · 🔵 profissional/duração).
     // Legado (inline): profissional era SEMPRE mostrado → legacyDflt true.
     const showProf = show(ctx, CONSULT_APPOINTMENTS, "professional", { newDflt: false, legacyDflt: true })
@@ -134,6 +153,8 @@ export const consultDealsCapability = defineCapability<Record<string, never>>({
     if (!(await hasModule(ctx.tenantId, "crm"))) {
       return { ok: true, toolMessage: "Consulta de negócios indisponível. Diga que vai verificar com o time." }
     }
+    const gate2 = verifyGate(ctx, CONSULT_DEALS)
+    if (gate2) return { ok: true, toolMessage: gate2 }
     // Governança de campos. 🔴 SEM TOGGLE (doutrina, aprovado owner 2026-07-24):
     // NOME do negócio, ETAPA do funil e PREVISÃO de fechamento NUNCA vão pro cliente
     // (linguagem interna do time / dado sensível). Só existem 🔵 opt-in: valor, funil
@@ -225,6 +246,8 @@ export const consultQuotesCapability = defineCapability<Record<string, never>>({
     if (!(await hasModule(ctx.tenantId, "crm"))) {
       return { ok: true, toolMessage: "Consulta de cotações indisponível. Diga que vai verificar com o time." }
     }
+    const gate3 = verifyGate(ctx, CONSULT_QUOTES)
+    if (gate3) return { ok: true, toolMessage: gate3 }
     // Valor default ON pra cotação (o PDF com o valor JÁ é do cliente) — Fonte ou
     // toggle inline podem desligar. Novo modelo: key "value"; legado: "showValue".
     const showValue = show(ctx, CONSULT_QUOTES, "value", { newDflt: true, legacyKey: "showValue", legacyDflt: true })

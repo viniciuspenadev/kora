@@ -1,7 +1,7 @@
 import "server-only"
 import type { FlowGraph, DataSourceNodeConfig } from "./types"
 import type { ToolConfig } from "../capabilities/types"
-import { CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES } from "../capabilities"
+import { CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES, CONFIRM_IDENTITY } from "../capabilities"
 
 // ═══════════════════════════════════════════════════════════════
 // Fonte de Consulta → tools do Agente IA (docs/studio-data-source-node-design.md)
@@ -39,6 +39,7 @@ export function resolveConnectedSources(
   const byId = new Map(graph.nodes.map((n) => [n.id, n]))
   const tools: string[] = []
   const toolConfig: ToolConfig = {}
+  let verifyRequired = false
   for (const e of graph.edges) {
     if (e.to !== agentNodeId) continue
     const src = byId.get(e.from)
@@ -61,11 +62,18 @@ export function resolveConnectedSources(
     const customFields = CUSTOM_FIELDS_SOURCES.has(cfg.source) && cfg.customFields?.length
       ? cfg.customFields.filter((id) => typeof id === "string")
       : []
+    // Verificação leve (opt-in por Fonte): marca a tool → consult.ts trava até a IA
+    // confirmar a identidade. `__verify` não é campo (não passa por FIELD_ALLOW).
+    const verify = cfg.verify === true
+    if (verify) verifyRequired = true
     toolConfig[toolId] = {
       __src: true,
+      ...(verify ? { __verify: true } : {}),
       ...safeFields,
       ...(customFields.length ? { customFields } : {}),
     }
   }
+  // Se QUALQUER Fonte conectada exige verificação, a IA ganha a tool pra confirmar.
+  if (verifyRequired) tools.push(CONFIRM_IDENTITY)
   return { tools: [...new Set(tools)], toolConfig }
 }

@@ -210,6 +210,10 @@ export interface DataSourceNodeConfig {
   fields?: Record<string, boolean>
   /** Negócios: IDs dos campos personalizados (tenant_custom_fields) a expor. */
   customFields?: string[]
+  /** Verificação leve: exige a IA confirmar a identidade do cliente (últimos 3 dígitos
+   *  do CPF, ou o nome se não houver CPF) ANTES de detalhar. Opt-in, default off —
+   *  resposta ao número reciclado. Deriva o dado por contato; ver confirm-identity.ts. */
+  verify?: boolean
 }
 export interface AiRouterNodeConfig {
   instruction?: string

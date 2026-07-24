@@ -725,6 +725,7 @@ function DataSourceConfig({ cfg, set, dealFields }: {
   const toggleField = (k: string, def?: boolean) => set({ fields: { ...fields, [k]: !on(k, def) } })
   const toggleCustom = (id: string) =>
     set({ customFields: customFields.includes(id) ? customFields.filter((x) => x !== id) : [...customFields, id] })
+  const verify = cfg.verify === true
   const src = DS_SOURCES.find((s) => s.v === source)
   return (
     <div className="space-y-3">
@@ -757,6 +758,13 @@ function DataSourceConfig({ cfg, set, dealFields }: {
           </div>
         )}
       </div>
+      <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/50 p-2.5 cursor-pointer">
+        <input type="checkbox" className="mt-0.5" checked={verify} onChange={() => set({ verify: !verify })} />
+        <span className="text-[11px] text-slate-600">
+          <b>Confirmar identidade antes de detalhar</b> <span className="text-slate-400">(verificação leve)</span>
+          <span className="block text-slate-400 mt-0.5">A IA pede os 4 primeiros dígitos do CPF (ou o nome, se não houver CPF) e só revela depois que bater. Protege contra número reciclado. 3 tentativas → atendente humano.</span>
+        </span>
+      </label>
       <p className="text-[11px] text-slate-400">🔒 Nunca expõe: dados de outro contato, nome/etapa/previsão do negócio, custo, margem, motivo de perda, notas internas — nem com toggle.</p>
     </div>
   )
