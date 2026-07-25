@@ -7,8 +7,10 @@
 // (handle id = branch). Agente IA tem 1 saída por outcome (ou única) — DEVOLVE
 // o controle. transfer/return/end são terminais. start não tem entrada.
 
-import { createContext, useContext } from "react"
-import { Handle, Position, useNodeId, type NodeProps } from "@xyflow/react"
+import { createContext, useContext, useMemo } from "react"
+import { Handle, Position, useNodeId, useStore, type NodeProps } from "@xyflow/react"
+import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
+import type { FlowGraph } from "@/lib/ai-v2/flow/types"
 import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
@@ -415,10 +417,21 @@ function ScheduleNode(p: NodeProps) {
   )
 }
 
+/** Grafo mínimo (do store do React Flow) pra derivar o rótulo da saída pelo destino. */
+function useAgentGraph(): FlowGraph {
+  const nodes = useStore((s) => s.nodes)
+  const edges = useStore((s) => s.edges)
+  return useMemo(() => ({
+    nodes: nodes.map((n) => ({ id: n.id, type: n.type, config: (n.data as { config?: Record<string, unknown> })?.config ?? {} })),
+    edges: edges.map((e) => ({ from: e.source, to: e.target, branch: e.sourceHandle ?? undefined })),
+  }) as unknown as FlowGraph, [nodes, edges])
+}
+
 function AgentNode(p: NodeProps) {
   const cfg = cfgOf(p) as unknown as AiAgentNodeConfig
   const outcomes = cfg.outcomes ?? []
   const instr = String(cfg.instruction ?? "")
+  const graph = useAgentGraph()   // derivação: cada saída se nomeia pelo nó ligado
   return (
     <>
       <TargetHandle />
@@ -426,12 +439,18 @@ function AgentNode(p: NodeProps) {
         {instr ? instr.slice(0, 60) : "a IA conduz e devolve o controle"}
         {outcomes.length > 0 && (
           <div className="mt-1.5 flex flex-col gap-1">
-            {outcomes.map((o) => (
-              <div key={o.id} className="relative text-[10px] bg-violet-50 text-violet-700 border border-violet-100 rounded px-1.5 py-0.5">
-                <span className="block truncate">{o.label || o.id}</span>
-                <BranchHandle id={o.id} color="#7c3aed" />
-              </div>
-            ))}
+            {outcomes.map((o) => {
+              const manual  = o.label?.trim()
+              const derived = manual || describeNode(outcomeTarget(graph, p.id, o.id), graph)
+              const unlinked = !derived
+              return (
+                <div key={o.id} className={`relative text-[10px] border rounded px-1.5 py-0.5 ${
+                  unlinked ? "bg-slate-50 text-slate-400 border-dashed border-slate-200" : "bg-violet-50 text-violet-700 border-violet-100"}`}>
+                  <span className="block truncate">{derived || "não ligada"}</span>
+                  <BranchHandle id={o.id} color="#7c3aed" />
+                </div>
+              )
+            })}
           </div>
         )}
       </Card>

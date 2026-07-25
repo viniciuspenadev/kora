@@ -101,7 +101,7 @@ function RenderSelect({ value, onChange }: { value: RenderMode; onChange: (v: Re
 }
 
 export function ConfigPanel({
-  node, departments, agents = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], onChange, onDelete,
+  node, departments, agents = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], outcomeLabels = {}, onChange, onDelete,
 }: {
   node: RFNode
   departments: { id: string; name: string }[]
@@ -115,6 +115,8 @@ export function ConfigPanel({
   ownerRouting: boolean
   /** Variáveis que o cliente criou no fluxo (Coletar/Definir/HTTP/Agendar) — chips extras. */
   flowVars?: string[]
+  /** Rótulo DERIVADO do nó de destino por outcome id (derivação de saídas) — placeholder. */
+  outcomeLabels?: Record<string, string>
   onChange: (config: Record<string, unknown>) => void
   onDelete: () => void
 }) {
@@ -288,7 +290,7 @@ export function ConfigPanel({
 
       {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} />}
 
-      {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} tags={tags} stages={stages} services={services} resources={resources} ownerRouting={ownerRouting} />}
+      {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} tags={tags} stages={stages} services={services} resources={resources} ownerRouting={ownerRouting} outcomeLabels={outcomeLabels} />}
 
       {type === "data_source" && <DataSourceConfig cfg={cfg} set={set} dealFields={dealFields} />}
 
@@ -1208,10 +1210,11 @@ function AgentSummary({ cfg, tags, stages, services, resources }: {
   )
 }
 
-function AgentConfig({ cfg, set, tags, stages, services, resources, ownerRouting }: {
+function AgentConfig({ cfg, set, tags, stages, services, resources, ownerRouting, outcomeLabels = {} }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
   tags: TagOpt[]; stages: { id: string; name: string }[]
   services: { id: string; name: string }[]; resources: { id: string; name: string }[]; ownerRouting: boolean
+  outcomeLabels?: Record<string, string>
 }) {
   const outcomes = (cfg.outcomes as Opt[] | undefined) ?? []
   const collect  = (cfg.collect as CollectField[] | undefined) ?? []
@@ -1260,22 +1263,28 @@ function AgentConfig({ cfg, set, tags, stages, services, resources, ownerRouting
       <div>
         <label className={LABEL}>Saídas <span className="text-slate-400 font-normal">(opcional)</span></label>
         <div className="space-y-1.5">
-          {outcomes.map((o) => (
-            <div key={o.id} className="flex items-center gap-1.5">
-              <input className={INPUT} value={o.label} placeholder="Ex: quer_comprar"
-                onChange={(e) => set({ outcomes: outcomes.map((x) => (x.id === o.id ? { ...x, label: e.target.value } : x)) })} />
-              <button type="button" onClick={() => set({ outcomes: outcomes.filter((x) => x.id !== o.id) })}
-                className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0" aria-label="Remover">
-                <Trash2 className="size-3.5" />
-              </button>
-            </div>
-          ))}
+          {outcomes.map((o) => {
+            const derived = outcomeLabels[o.id]?.trim()
+            return (
+              <div key={o.id} className="flex items-center gap-1.5">
+                {/* Rótulo DERIVADO do nó ligado vira placeholder (fantasma); digitar cria o
+                    override. Sem destino → "ligue a uma etapa…". */}
+                <input className={INPUT} value={o.label ?? ""}
+                  placeholder={derived || "ligue a uma etapa…"}
+                  onChange={(e) => set({ outcomes: outcomes.map((x) => (x.id === o.id ? { ...x, label: e.target.value } : x)) })} />
+                <button type="button" onClick={() => set({ outcomes: outcomes.filter((x) => x.id !== o.id) })}
+                  className="inline-flex items-center justify-center size-8 text-slate-400 hover:text-danger shrink-0" aria-label="Desligar saída">
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+            )
+          })}
         </div>
         <button type="button" onClick={() => set({ outcomes: [...outcomes, { id: genId(), label: "" }] })}
           className="mt-1.5 inline-flex items-center gap-1 h-7 px-2 text-[11px] font-medium text-primary-600 hover:bg-primary-50 rounded-md">
           <Plus className="size-3" /> Saída
         </button>
-        <p className="text-[11px] text-slate-400 mt-1">Cada saída vira uma bolinha no nó — a IA escolhe ao concluir. Sem saídas = saída única.</p>
+        <p className="text-[11px] text-slate-400 mt-1">Clique <b>＋ Saída</b>, ligue a bolinha roxa a uma etapa, e ela se <b>nomeia sozinha</b> pelo destino. Digite só se quiser renomear.</p>
       </div>
     </div>
   )

@@ -26,6 +26,7 @@ import { edgeTypes, EdgeActionsContext } from "./flow-edge"
 import { ConfigPanel, FlowSettingsPanel, type TagOpt } from "./config-panel"
 import { NodePicker } from "./node-picker"
 import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
+import { outcomeLabel } from "@/lib/ai-v2/flow/describe"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
 import { getFlowJourney, getFlowRevenue, getFlowCampaigns, type FlowJourney, type FlowRevenue } from "@/lib/actions/studio/flow-analytics"
 import type { FlowTrigger, FlowNodeType } from "@/lib/ai-v2/flow/types"
@@ -191,11 +192,63 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
   // chips no editor, junto dos campos de contato. Atualiza ao vivo conforme monta.
   const flowVars = useMemo(() => collectFlowVars(nodes), [nodes])
 
+  // Derivação de saídas (owner 2026-07-25): o rótulo de cada saída do Agente IA vem do NÓ
+  // ligado nela (describeNode). Computado aqui (onde vivem nodes+edges) e passado ao painel
+  // como placeholder — label manual continua vencendo (override, é o value do input).
+  const flowName = useCallback((id: string) => flows.find((f) => f.id === id)?.name, [flows])
+  const agentOutcomeLabels = useMemo<Record<string, string>>(() => {
+    if (selectedNode?.type !== "ai_agent") return {}
+    const graph = fromRF(nodes, edges, orientation)
+    const outs = ((selectedNode.data as { config?: { outcomes?: { id: string; label?: string }[] } })?.config?.outcomes) ?? []
+    const map: Record<string, string> = {}
+    for (const o of outs) map[o.id] = outcomeLabel(graph, selectedNode.id, o, { flowName })
+    return map
+  }, [selectedNode, nodes, edges, orientation, flowName])
+
+  // Ligar-primeiro: arrasta-se do handle "＋" (id "__add") do Agente IA; ao conectar,
+  // materializa uma saída nova (label vazio → derivado do destino) e usa o id dela como
+  // handle. Assim a saída "aparece sozinha" na config ao ligar (ideia do owner).
   const onConnect: OnConnect = useCallback((conn) => {
+    let handle = conn.sourceHandle ?? null
+    if (handle === "__add" && conn.source) {
+      const src = nodes.find((n) => n.id === conn.source)
+      if (src?.type === "ai_agent") {
+        const id = genId()
+        setNodes((ns) => ns.map((n) => {
+          if (n.id !== conn.source) return n
+          const cfg = (n.data as { config?: Record<string, unknown> })?.config ?? {}
+          const outs = (cfg.outcomes as { id: string; label?: string }[] | undefined) ?? []
+          return { ...n, data: { ...n.data, config: { ...cfg, outcomes: [...outs, { id }] } } }
+        }))
+        handle = id
+      }
+    }
+    const c = { ...conn, sourceHandle: handle }
     setEdges((eds) =>
-      addEdge(conn, eds.filter((e) => !(e.source === conn.source && (e.sourceHandle ?? null) === (conn.sourceHandle ?? null)))),
+      addEdge(c, eds.filter((e) => !(e.source === c.source && (e.sourceHandle ?? null) === (c.sourceHandle ?? null)))),
     )
-  }, [setEdges])
+  }, [nodes, setNodes, setEdges])
+
+  // Desligar no canvas = tirar a saída órfã do config (mantém o espelho limpo: apagar a
+  // aresta de um outcome do Agente IA remove esse outcome).
+  const onEdgesDelete = useCallback((deleted: RFEdge[]) => {
+    const byNode = new Map<string, Set<string>>()
+    for (const e of deleted) {
+      const src = nodes.find((n) => n.id === e.source)
+      if (src?.type === "ai_agent" && e.sourceHandle) {
+        if (!byNode.has(e.source)) byNode.set(e.source, new Set())
+        byNode.get(e.source)!.add(e.sourceHandle)
+      }
+    }
+    if (byNode.size === 0) return
+    setNodes((ns) => ns.map((n) => {
+      const drop = byNode.get(n.id)
+      if (!drop) return n
+      const cfg = (n.data as { config?: Record<string, unknown> })?.config ?? {}
+      const outs = (cfg.outcomes as { id: string }[] | undefined) ?? []
+      return { ...n, data: { ...n.data, config: { ...cfg, outcomes: outs.filter((o) => !drop.has(o.id)) } } }
+    }))
+  }, [nodes, setNodes])
 
   // Remover uma conexão (× na aresta selecionada). Vai pro contexto da aresta.
   const deleteEdge   = useCallback((id: string) => setEdges((es) => es.filter((e) => e.id !== id)), [setEdges])
@@ -442,6 +495,7 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onEdgesDelete={onEdgesDelete}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             onNodeClick={(_, n) => { setSelectedId(n.id); setMenu(null); addAtRef.current = null }}
@@ -507,7 +561,7 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
           {!selectedNode
             ? <NodePicker onPick={addNode} />
             : selectedNode.type !== "start"
-            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} outcomeLabels={agentOutcomeLabels} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}
                 mode={mode} channels={trigChannels} instances={trigInstances}
