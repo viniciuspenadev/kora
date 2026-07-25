@@ -1,7 +1,7 @@
 import "server-only"
 import type { FlowGraph, DataSourceNodeConfig } from "./types"
 import type { ToolConfig } from "../capabilities/types"
-import { CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES, CONFIRM_IDENTITY } from "../capabilities"
+import { CONSULT_APPOINTMENTS, CONSULT_DEALS, CONSULT_QUOTES, CONFIRM_IDENTITY, SEND_QUOTE } from "../capabilities"
 
 // ═══════════════════════════════════════════════════════════════
 // Fonte de Consulta → tools do Agente IA (docs/studio-data-source-node-design.md)
@@ -72,6 +72,10 @@ export function resolveConnectedSources(
       ...safeFields,
       ...(customFields.length ? { customFields } : {}),
     }
+    // AÇÃO opt-in da Fonte Cotações: reenviar proposta pronta (send_quote). Fica AQUI
+    // (não num toggle solto no Agente) pra a config de Cotações ser um lugar só. O
+    // enforcement (só doc active/sent do contato, janela) segue no servidor.
+    if (cfg.source === "quotes" && cfg.resendQuote === true) tools.push(SEND_QUOTE)
   }
   // Se QUALQUER Fonte conectada exige verificação, a IA ganha a tool pra confirmar.
   if (verifyRequired) tools.push(CONFIRM_IDENTITY)

@@ -214,6 +214,10 @@ export interface DataSourceNodeConfig {
    *  do CPF, ou o nome se não houver CPF) ANTES de detalhar. Opt-in, default off —
    *  resposta ao número reciclado. Deriva o dado por contato; ver confirm-identity.ts. */
   verify?: boolean
+  /** Fonte "quotes" apenas — AÇÃO opt-in: deixar a IA REENVIAR ao cliente uma proposta
+   *  JÁ gerada/aprovada (send_quote). Nunca cria cotação. Off por padrão. Enforcement no
+   *  servidor (send-quote.ts): só doc active/sent do próprio contato, janela fail-closed. */
+  resendQuote?: boolean
 }
 export interface AiRouterNodeConfig {
   instruction?: string
