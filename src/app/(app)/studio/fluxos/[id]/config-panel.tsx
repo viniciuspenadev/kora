@@ -728,6 +728,7 @@ function DataSourceConfig({ cfg, set, dealFields }: {
   const toggleCustom = (id: string) =>
     set({ customFields: customFields.includes(id) ? customFields.filter((x) => x !== id) : [...customFields, id] })
   const verify = cfg.verify === true
+  const resendQuote = cfg.resendQuote === true
   const src = DS_SOURCES.find((s) => s.v === source)
   return (
     <div className="space-y-3">
@@ -760,6 +761,18 @@ function DataSourceConfig({ cfg, set, dealFields }: {
           </div>
         )}
       </div>
+      {source === "quotes" && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-2.5">
+          <label className={LABEL}>A IA pode <span className="text-slate-400 font-normal">(ação)</span></label>
+          <label className="flex items-start gap-2 text-[11px] text-slate-600 cursor-pointer mt-1">
+            <input type="checkbox" className="mt-0.5" checked={resendQuote} onChange={() => set({ resendQuote: !resendQuote })} />
+            <span>
+              <b className="text-slate-700">Reenviar a proposta pronta ao cliente</b>
+              <span className="block text-slate-400 mt-0.5">Se o cliente pedir a proposta de novo, a IA reenvia o PDF de uma cotação <b>já gerada</b>. Nunca cria nem edita — só reenvia o que existe.</span>
+            </span>
+          </label>
+        </div>
+      )}
       <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/50 p-2.5 cursor-pointer">
         <input type="checkbox" className="mt-0.5" checked={verify} onChange={() => set({ verify: !verify })} />
         <span className="text-[11px] text-slate-600">
@@ -902,9 +915,10 @@ const AGENT_TOOLS: {
   { key: "tag",        ids: ["tag"],        label: "Etiquetar o contato", hint: "aplica/remove etiquetas pra qualificar" },
   { key: "move_stage", ids: ["move_stage"], label: "Mover no pipeline",   hint: "move a conversa de etapa" },
   { key: "agenda",     ids: ["check_availability", "schedule_appointment", "reschedule_appointment"], label: "Agendar e remarcar", hint: "consulta horários reais, marca e remarca na agenda" },
-  { key: "send_quote", ids: ["send_quote"], label: "Reenviar a proposta", hint: "reenvia o PDF de uma cotação JÁ gerada quando o cliente pedir — nunca rascunho, só deste cliente" },
-  // As CONSULTAS (agendamentos/negócios/cotações) saíram daqui → agora vivem no nó
-  // "Fonte de Consulta", conectado ao Agente IA (docs/studio-data-source-node-design.md).
+  // As CONSULTAS (agendamentos/negócios/cotações) E o REENVIO de proposta (send_quote)
+  // saíram daqui → agora vivem no nó "Fonte de Consulta" (Cotações), conectado ao Agente
+  // IA (docs/studio-data-source-node-design.md). Fluxos antigos com send_quote em
+  // cfg.tools seguem funcionando (o motor honra cfg.tools); só a config mudou de lugar.
 ]
 function AgentToolsConfig({ cfg, set, services, resources, ownerRouting }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void

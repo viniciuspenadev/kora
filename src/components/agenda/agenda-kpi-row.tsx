@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { CalendarDays, Gauge, CalendarCheck, UserX, CalendarClock, type LucideIcon } from "lucide-react"
+import { CalendarDays, Gauge, CalendarCheck, UserX, CalendarClock } from "lucide-react"
 import { getAgendaKpis, type AgendaKpis } from "@/lib/actions/agenda"
 import { STATUS_COLORS } from "@/components/agenda/board/lanes"
+import { KpiTile } from "@/components/ui/kpi-tile"
 
 // ═══════════════════════════════════════════════════════════════
 // Fileira de KPIs da Agenda — topo da Visão Geral (redesign 2026-07-18)
@@ -36,7 +37,7 @@ export function AgendaKpiRow() {
 
   return (
     <div className={GRID}>
-      <Tile icon={CalendarDays} iconClass="text-primary-600" label="Hoje" value={String(kpis.todayTotal)}
+      <KpiTile icon={CalendarDays} iconClass="text-primary-600" label="Hoje" value={String(kpis.todayTotal)}
         caption={
           <span className="flex items-center gap-2.5 flex-wrap">
             <Chip color={STATUS_COLORS.confirmed.bg} n={kpis.todayConfirmed} txt="confirmados" />
@@ -46,35 +47,14 @@ export function AgendaKpiRow() {
           </span>
         }
       />
-      <Tile icon={Gauge} iconClass="text-sky-500" label="Ocupação" value={pct(kpis.occupancyPct)} bar={kpis.occupancyPct ?? 0}
+      <KpiTile icon={Gauge} iconClass="text-sky-500" label="Ocupação" value={pct(kpis.occupancyPct)} bar={kpis.occupancyPct ?? 0}
         caption="da capacidade · semana atual" />
-      <Tile icon={CalendarCheck} iconClass="text-emerald-600" label="Confirmação" value={pct(kpis.confirmPct)}
+      <KpiTile icon={CalendarCheck} iconClass="text-emerald-600" label="Confirmação" value={pct(kpis.confirmPct)}
         caption={`próximos 7 dias · ${kpis.pendingUpcoming} aguardando`} />
-      <Tile icon={UserX} iconClass="text-red-600" label="No-show" value={pct(kpis.noShowPct)}
+      <KpiTile icon={UserX} iconClass="text-red-600" label="No-show" value={pct(kpis.noShowPct)}
         caption={`últimos 30 dias · ${kpis.noShowCount} de ${kpis.finishedCount}`} />
-      <Tile icon={CalendarClock} iconClass="text-amber-600" label="Remarcações" value={String(kpis.reschedules7d)}
+      <KpiTile icon={CalendarClock} iconClass="text-amber-600" label="Remarcações" value={String(kpis.reschedules7d)}
         caption="últimos 7 dias" />
-    </div>
-  )
-}
-
-function Tile({ icon: Icon, iconClass, label, value, caption, bar }: {
-  icon: LucideIcon; iconClass: string; label: string; value: string
-  caption: React.ReactNode; bar?: number | null
-}) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white px-4 py-3.5">
-      <p className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-        <Icon className={`size-3.5 shrink-0 ${iconClass}`} />
-        {label}
-      </p>
-      <p className="text-2xl font-bold text-slate-900 tabular-nums leading-none mt-2">{value}</p>
-      {bar != null && (
-        <div className="h-1 rounded-full bg-slate-100 mt-2 overflow-hidden">
-          <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, bar))}%` }} />
-        </div>
-      )}
-      <div className="text-[11px] text-slate-400 mt-2 leading-snug">{caption}</div>
     </div>
   )
 }

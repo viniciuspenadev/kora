@@ -85,7 +85,8 @@ const NAV: NavItem[] = [
     module:     "crm",
     capability: "deals_access",   // owner/admin OU atendente com Ver+ de Negócios
     children: [
-      { href: "/negocios/painel", label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, capability: "deals_manage" },
+      { href: "/negocios/painel",    label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, capability: "deals_manage" },
+      { href: "/negocios/propostas", label: "Propostas",       icon: <FileText  className={subIcon} strokeWidth={1.75} />, capability: "deals_manage" },
       // "Funil de Vendas" = link ao board + botão dedicado que expande os funis ativos.
       { href: "/negocios",        label: "Funil de Vendas", icon: <Funnel   className={subIcon} strokeWidth={1.75} />, dealSwitcher: true },
     ],

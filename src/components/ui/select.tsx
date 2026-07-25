@@ -57,7 +57,9 @@ function SelectContent({ className, children, ...props }: SelectPrimitive.Popup.
           className={cn(
             // Abertura: desce do trigger com fade + zoom + slide, easing expo-out
             // (rápido no início, assentando suave — a sensação "premium").
-            "z-50 max-h-[min(24rem,var(--available-height))] w-(--anchor-width) min-w-32 origin-(--transform-origin)",
+            // largura: NO MÍNIMO a do trigger, mas CRESCE pra caber a opção mais longa
+            // (até um teto) — antes travava no trigger e quebrava nomes grandes.
+            "z-50 max-h-[min(24rem,var(--available-height))] min-w-(--anchor-width) max-w-[min(26rem,var(--available-width))] origin-(--transform-origin)",
             "overflow-x-hidden overflow-y-auto rounded-xl bg-white p-1.5 shadow-xl shadow-slate-900/10 ring-1 ring-slate-900/[0.08] outline-none",
             "duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
             "data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2",
@@ -78,7 +80,7 @@ function SelectItem({ className, children, ...props }: SelectPrimitive.Item.Prop
     <SelectPrimitive.Item
       data-slot="select-item"
       className={cn(
-        "relative flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pr-8 pl-2.5 text-sm text-slate-700 outline-hidden select-none",
+        "relative flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pr-8 pl-2.5 text-sm text-slate-700 outline-hidden select-none whitespace-nowrap",
         "transition-colors duration-100",
         // Hover/teclado: wash primary (branded) — o item "acende" ao passar.
         "data-highlighted:bg-primary-50 data-highlighted:text-primary-900",
