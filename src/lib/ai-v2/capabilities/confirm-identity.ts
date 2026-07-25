@@ -87,20 +87,25 @@ export const confirmIdentityCapability = defineCapability<Args>({
       return { ok: true, toolMessage: "As tentativas já se esgotaram. NÃO revele nenhum dado; diga com calma que, por segurança, um atendente humano vai continuar." }
     }
 
-    const doc  = (ctx.contact.doc_id ?? "").replace(/\D/g, "")
-    const name = (ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || "")
-    const ans  = safeValue(args.answer, 80)
-
-    let matched = false
-    if (doc.length >= 4) {
-      const ansDigits = ans.replace(/\D/g, "")
-      matched = ansDigits.length >= 4 && ansDigits.slice(0, 4) === doc.slice(0, 4)
-    } else if (name) {
-      matched = nameMatches(name, ans)
-    } else {
+    const doc    = (ctx.contact.doc_id ?? "").replace(/\D/g, "")
+    const name   = (ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || "")
+    const hasDoc = doc.length >= 4
+    if (!hasDoc && !name) {
       // Sem CPF e sem nome no cadastro → não há como confirmar. Fail-closed p/ humano.
       return { ok: true, toolMessage: "Não há dado de identidade no cadastro pra confirmar. NÃO revele; diga que um atendente humano vai continuar." }
     }
+
+    const ans       = safeValue(args.answer, 80)
+    const ansDigits = ans.replace(/\D/g, "")
+    // Fix C (bug 2026-07-25): só conta tentativa se houver resposta SUBSTANTIVA do cliente.
+    // Sem isto, a IA chamando confirm_identity ANTES do cliente responder (loop bounded)
+    // queimaria as 3 tentativas no vazio e bloquearia sem ninguém ter sido perguntado.
+    const substantive = hasDoc ? ansDigits.length >= 4 : ans.trim().length >= 2
+    if (!substantive) {
+      return { ok: true, toolMessage: "Ainda não recebi a resposta do cliente. Peça o dado e AGUARDE ele responder antes de confirmar — NÃO confirme no vazio (isto não conta como tentativa)." }
+    }
+
+    const matched = hasDoc ? ansDigits.slice(0, 4) === doc.slice(0, 4) : nameMatches(name, ans)
 
     if (matched) {
       await stampMeta(ctx, { __id_ok: true })

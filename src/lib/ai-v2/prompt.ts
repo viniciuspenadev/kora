@@ -8,6 +8,24 @@
 
 import { safeValue } from "./safe-text"
 
+/**
+ * Chaves SEMÂNTICAS pra a IA escolher a saída — NUNCA o UUID cru (o modelo trunca
+ * UUID de 36 chars: bug real 2026-07-25, "encerramento" caía em "agendar"). A IA copia
+ * a palavra ("encerramento"); o motor mapeia key→id. Rótulo vazio → posicional; rótulos
+ * iguais → desduplica. Mesmo helper alimenta o prompt E o enum do finish_step (agent.ts).
+ */
+export function outcomeChoices(outcomes: { id: string; label?: string }[]): { key: string; id: string }[] {
+  const used = new Map<string, number>()
+  return outcomes.map((o, i) => {
+    let key = (o.label ?? "").trim() || `Saída ${i + 1}`
+    const lc = key.toLowerCase()
+    const n = used.get(lc) ?? 0
+    used.set(lc, n + 1)
+    if (n > 0) key = `${key} (${n + 1})`
+    return { key, id: o.id }
+  })
+}
+
 export interface PersonaInput {
   name:               string | null
   tone:               string | null
@@ -79,7 +97,8 @@ export function compileStudioPrompt(args: {
     lines.push(``, `# VOCÊ FAZ PARTE DE UM FLUXO`)
     lines.push(`Esta é uma ETAPA de um fluxo maior. Cumpra o objetivo acima conversando o necessário. Quando concluir, chame a ferramenta finish_step para DEVOLVER o controle ao fluxo (os próximos passos continuam). Não fique preso — assim que tiver o que precisa, conclua.`)
     if (flowControl.outcomes.length > 0) {
-      lines.push(`Ao concluir, escolha uma saída (outcome): ${flowControl.outcomes.map((o) => `${o.id}${o.label ? ` = ${o.label}` : ""}`).join(" · ")}.`)
+      const choices = outcomeChoices(flowControl.outcomes)
+      lines.push(`Ao concluir, escolha a saída (outcome) copiando EXATAMENTE um destes rótulos: ${choices.map((c) => `"${c.key}"`).join(" · ")}.`)
     }
   }
 

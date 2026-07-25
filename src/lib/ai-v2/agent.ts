@@ -15,7 +15,7 @@ import "server-only"
 import type OpenAI from "openai"
 import { runChat } from "@/lib/llm/openai"
 import { sendBotText } from "./outbound"
-import { compileStudioPrompt, type PersonaInput } from "./prompt"
+import { compileStudioPrompt, outcomeChoices, type PersonaInput } from "./prompt"
 import {
   ensureCapabilitiesRegistered, getCapability, toolsForAgent, assemblePlaybooks,
   SEND_MESSAGE, TRANSFER, UPDATE_CONTACT, SEARCH_KNOWLEDGE, TAG, MOVE_STAGE,
@@ -83,10 +83,12 @@ export interface AgentTurnResult {
   usage:        { inputTokens: number; outputTokens: number }
 }
 
-/** Schema da tool de controle de fluxo, montado a partir das saídas do nó. */
-function finishStepTool(fc: FlowControl): OpenAI.Chat.Completions.ChatCompletionTool {
-  const outcome: Record<string, unknown> = fc.outcomes.length > 0
-    ? { type: "string", enum: fc.outcomes.map((o) => o.id), description: "Qual saída do fluxo seguir." }
+/** Schema da tool de controle de fluxo, montado a partir das saídas do nó.
+ *  O enum são as CHAVES SEMÂNTICAS (rótulos), não os UUIDs — o modelo copia "encerramento",
+ *  não um id de 36 chars que ele trunca (bug 2026-07-25). `resolveOutcome` mapeia de volta. */
+function finishStepTool(choices: { key: string }[]): OpenAI.Chat.Completions.ChatCompletionTool {
+  const outcome: Record<string, unknown> = choices.length > 0
+    ? { type: "string", enum: choices.map((c) => c.key), description: "Qual saída do fluxo seguir (copie exatamente um dos rótulos)." }
     : { type: "string", description: "(opcional) rótulo da saída." }
   // NÃO acoplar coletar com concluir: o `collect` é "o que descobrir AO LONGO da
   // conversa" (vai no prompt), não "colete e CONCLUA". Acoplar fazia a IA finish_step
@@ -111,6 +113,17 @@ function finishStepTool(fc: FlowControl): OpenAI.Chat.Completions.ChatCompletion
       },
     },
   }
+}
+
+/** Mapeia o que o LLM devolveu no finish_step → id REAL da saída (ou null se não casar).
+ *  Caminho normal: casa a chave semântica. Legado/tolerância: se ecoou um id válido, aceita.
+ *  Não-casado → null → o runtime encerra com segurança (nunca cai num ramo arbitrário). */
+function resolveOutcome(raw: string, choices: { key: string; id: string }[], outcomes: { id: string }[]): string | null {
+  if (!raw) return null
+  const byKey = choices.find((c) => c.key.toLowerCase() === raw.toLowerCase())
+  if (byKey) return byKey.id
+  if (outcomes.some((o) => o.id === raw)) return raw
+  return null
 }
 
 type Msg = OpenAI.Chat.Completions.ChatCompletionMessageParam
@@ -164,8 +177,10 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   if (history.length > 0) for (const h of history) messages.push({ role: h.role, content: h.content })
   else messages.push({ role: "user", content: incomingText })
 
+  const outcomes = flowControl?.outcomes ?? []
+  const choices  = outcomeChoices(outcomes)
   const tools = toolsForAgent(granted, PLAN_LEVEL)
-  if (flowControl) tools.push(finishStepTool(flowControl))
+  if (flowControl) tools.push(finishStepTool(choices))
 
   const usage = { inputTokens: 0, outputTokens: 0 }
   const toolsCalled: { name: string; arguments: string }[] = []
@@ -218,22 +233,43 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
         let raw: Record<string, unknown> = {}
         try { const p = JSON.parse(tc.arguments || "{}"); if (p && typeof p === "object") raw = p as Record<string, unknown> } catch { /* tolerante */ }
 
+        // Fix B (bug prod 2026-07-25): UM envio de texto ao cliente por turno. Se o turno JÁ
+        // mandou texto (sentMessage) OU roteou (transfer), um 2º send_message no MESMO batch
+        // NÃO repete — mata a saudação duplicada e o flip de ai_handling na transferência.
+        // Gatilho = sentMessage/routed (NÃO `terminal`): um finish_step com mensagem VAZIA
+        // encerra mas não mandou texto → o send_message seguinte AINDA sai (carrega a fala).
+        // Ações não-terminais (consult, send_quote) e o finish_step seguem rodando normalmente.
+        if ((sentMessage || status === "routed") && tc.name === SEND_MESSAGE) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: "Você já respondeu o cliente neste turno — não mande outra mensagem." })
+          continue
+        }
+
         // finish_step: a IA devolve o controle ao fluxo (§11.3) — terminal.
         if (tc.name === FINISH_STEP) {
+          // Fix B: 2º finish_step no mesmo batch → já concluiu; ignora (senão o 2º
+          // sobrescreve o outcome/fields do 1º pela ordem do array).
+          if (status === "step_done") {
+            messages.push({ role: "tool", tool_call_id: tc.id, content: "Passo já concluído neste turno — ignorado." })
+            continue
+          }
           const msg = typeof raw.message === "string" ? raw.message.trim() : ""
           // 🔒 TRAVA DETERMINÍSTICA: não dá pra concluir FAZENDO uma pergunta. Se a
           // IA tentou finish_step com uma pergunta (e o nó não é de roteamento), ENVIA
           // a pergunta e ESPERA a resposta — o passo NÃO avança (a conversa continua).
           // Mata o "perguntei 'quer agendar?' e transferi na mesma resposta".
-          const routing = !!flowControl && flowControl.outcomes.length > 0
-          if (msg && !routing && /\?[\s\p{Extended_Pictographic}️]*$/u.test(msg)) {
-            await sendBotText(ctx, msg)
-            status = "responded"; sentMessage = true; terminal = true
+          // Fix D: detecta "?" em QUALQUER posição (antes só pegava no fim; "Quer? Já te
+          // passo." escapava). Fail-safe: na dúvida, envia e espera — nunca conclui em cima
+          // de uma pergunta. (`routing` reusado do escopo do turno — Fix E, sem recomputar.)
+          if (msg && !routing && msg.includes("?")) {
+            if (!sentMessage) { await sendBotText(ctx, msg); sentMessage = true }
+            status = "responded"; terminal = true
             messages.push({ role: "tool", tool_call_id: tc.id, content: "Você fez uma pergunta ao cliente — espere a resposta. NÃO conclua o passo ainda." })
             continue
           }
-          if (msg) { await sendBotText(ctx, msg); sentMessage = true }
-          stepOutcome = typeof raw.outcome === "string" && raw.outcome.trim() ? raw.outcome.trim() : null
+          // Só manda a fala-ponte se ainda NÃO enviou texto neste turno (Fix B: não duplica
+          // quando a IA já mandou um send_message antes de concluir). Concluir segue normal.
+          if (msg && !sentMessage) { await sendBotText(ctx, msg); sentMessage = true }
+          stepOutcome = resolveOutcome(typeof raw.outcome === "string" ? raw.outcome.trim() : "", choices, outcomes)
           stepFields  = raw.fields && typeof raw.fields === "object" ? (raw.fields as Record<string, unknown>) : null
           status = "step_done"; terminal = true
           messages.push({ role: "tool", tool_call_id: tc.id, content: "Etapa concluída; controle devolvido ao fluxo." })

@@ -28,6 +28,7 @@ import { sendMenu, resolveMenuChoice } from "./menu"
 import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
 import { deferralConcepts } from "./boundary"
 import { resolveConnectedSources } from "./data-sources"
+import { outcomeLabel } from "./describe"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
@@ -578,11 +579,19 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // Se um dia adicionar chave sensível ao consult.ts, ela PRECISA ser barrada aqui
         // também (passar o inline por uma peneira análoga) — não confie só no FIELD_ALLOW.
         const toolConfig = { ...(cfg.toolConfig ?? {}), ...connected.toolConfig }
+        // Derivação de saídas (owner 2026-07-25): o RÓTULO que a IA vê vem do NÓ ligado na
+        // saída (via describeNode) — label manual continua vencendo (override). Sem destino
+        // → "" → outcomeChoices cai no posicional "Saída N". call_flow degrada pra "Sub-fluxo"
+        // aqui (o nome real do fluxo é resolvido no editor, que tem a lista de fluxos).
+        const resolvedOutcomes = (cfg.outcomes ?? []).map((o) => ({
+          id:    o.id,
+          label: outcomeLabel(graph, node.id, o) || undefined,
+        }))
         const turn = await runAgentTurn({
           ...input,
           instruction: cfg.instruction ?? null,
           variables,
-          flowControl: { outcomes: cfg.outcomes ?? [], collect: cfg.collect ?? [] },
+          flowControl: { outcomes: resolvedOutcomes, collect: cfg.collect ?? [] },
           extraTools,
           agendaBinding: cfg.agenda_target ?? null,
           toolConfig,
@@ -607,6 +616,16 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           if (turn.fields) for (const [k, v] of Object.entries(turn.fields)) {
             if (k.startsWith("__") || k.startsWith("menu:") || k.startsWith("schedule:")) continue
             variables[k] = v
+          }
+          // Nó COM saídas mas outcome NÃO-casado (ex: LLM truncou/errou) → NÃO cair num
+          // ramo arbitrário (bug 2026-07-25: "agendar" depois do "até mais"). Encerra
+          // limpo e devolve pro humano/fila — nunca dirige automação errada.
+          const outs = (cfg.outcomes ?? []) as { id: string }[]
+          if (outs.length > 0 && !(turn.outcome != null && outs.some((o) => o.id === turn.outcome))) {
+            console.warn("[ai_agent] outcome não-casado — encerrando com segurança", { node: node.id, outcome: turn.outcome })
+            await finishRun(run.id)
+            await restoreReopenOwner(ctx)
+            return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
           }
           currentId = edgeTarget(graph, node.id, turn.outcome ?? undefined)
           break   // continua avançando o grafo NESTE turno
