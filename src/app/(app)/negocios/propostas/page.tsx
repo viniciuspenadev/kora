@@ -6,7 +6,7 @@ import { PropostasClient } from "./propostas-client"
 // do client (aberto + vencendo primeiro) pra a 1ª renderização casar.
 export default async function PropostasPage() {
   const [initial, summary, agents] = await Promise.all([
-    getProposals({ filters: { status: "open" }, sort: "expiring", limit: 30 }),
+    getProposals({ filters: { status: "open" }, sort: { by: "valid", dir: "asc" }, limit: 30 }),
     getProposalsSummary(),
     getProposalAgents(),
   ])

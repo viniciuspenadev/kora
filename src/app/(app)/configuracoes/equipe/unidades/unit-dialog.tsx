@@ -1,13 +1,21 @@
 "use client"
 
-import { useRef, useState, useTransition } from "react"
-import { Loader2, Check, Archive, RotateCcw, Trash2, Building2, Camera } from "lucide-react"
+import { useRef, useState, useTransition, useEffect } from "react"
+import { Loader2, Check, Archive, RotateCcw, Trash2, Building2, Camera, Search } from "lucide-react"
 import { Sheet } from "@/components/ui/sheet"
 import { FormRow } from "@/components/ui/form-row"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
   createUnit, updateUnit, deleteUnit, uploadUnitLogo, removeUnitLogo, type Unit,
 } from "@/lib/actions/team"
+import { maskCpfCnpj, maskCep, maskPhone, isValidCnpj } from "@/lib/masks"
+import { formatPhoneDisplay, normalizePhone } from "@/lib/phone-utils"
+import { lookupCep } from "@/lib/cep"
+import { lookupCnpj } from "@/lib/cnpj"
+import { listCities } from "@/lib/ibge"
+import { CnpjConsultaModal } from "@/components/crm/cnpj-consulta-modal"
+
+const UFS = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"]
 
 const COLORS = [
   "#0EA5E9", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6",
@@ -55,6 +63,53 @@ export function UnitDialog({ unit, onClose, onFeedback }: Props) {
   const [pending, startTransition] = useTransition()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Autofill (mesmo motor do cliente): CNPJ → Receita · CEP → endereço · cidades IBGE.
+  const [cnpjLoading, setCnpjLoading]   = useState(false)
+  const [cepLoading, setCepLoading]     = useState(false)
+  const [consultaOpen, setConsultaOpen] = useState(false)
+  const [cities, setCities]             = useState<string[]>([])
+
+  const taxDigits   = taxId.replace(/\D/g, "")
+  const cnpjComplete = taxDigits.length === 14
+  const cnpjInvalid = cnpjComplete && !isValidCnpj(taxDigits)
+
+  useEffect(() => {
+    if (uf.length !== 2) { setCities([]); return }
+    let alive = true
+    listCities(uf).then((cs) => { if (alive) setCities(cs) })
+    return () => { alive = false }
+  }, [uf])
+
+  async function onCnpjBlur() {
+    if (!isValidCnpj(taxDigits)) return   // só CNPJ válido (dígito verificador)
+    setCnpjLoading(true)
+    const r = await lookupCnpj(taxDigits)
+    if (r) {
+      if (!legalName.trim()) setLegalName(r.razao_social)
+      if (r.phone) { const np = normalizePhone(r.phone, "BR"); if (np) setPhone(formatPhoneDisplay(np)) }
+      if (r.email && !email.trim()) setEmail(r.email)
+      if (r.address.cep) setZipCode(maskCep(r.address.cep))
+      setStreet(r.address.street ?? ""); setNumber(r.address.number ?? "")
+      setComplement(r.address.complement ?? ""); setDistrict(r.address.district ?? "")
+      setUf(r.address.state ?? ""); setCity(r.address.city ?? "")
+      if (r.situacao && r.situacao !== "ATIVA") onFeedback("error", `Situação na Receita: ${r.situacao}`)
+    } else {
+      onFeedback("error", "CNPJ não encontrado na Receita.")
+    }
+    setCnpjLoading(false)
+  }
+
+  async function onCepBlur() {
+    if (zipCode.replace(/\D/g, "").length !== 8) return
+    setCepLoading(true)
+    const r = await lookupCep(zipCode)
+    if (r) {
+      setStreet((s) => s || r.street); setDistrict((d) => d || r.district)
+      setCity(r.city); setUf(r.state)
+    }
+    setCepLoading(false)
+  }
 
   function handleSave() {
     setError(null)
@@ -225,20 +280,33 @@ export function UnitDialog({ unit, onClose, onFeedback }: Props) {
             </FormRow>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <FormRow label="CNPJ">
-                <input
-                  type="text"
-                  value={taxId}
-                  onChange={(e) => setTaxId(e.target.value)}
-                  placeholder="00.000.000/0001-00"
-                  className={INPUT}
-                />
+              <FormRow label="CNPJ" hint="Digite pra puxar razão social e endereço da Receita.">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={taxId}
+                    onChange={(e) => setTaxId(maskCpfCnpj(e.target.value))}
+                    onBlur={onCnpjBlur}
+                    placeholder="00.000.000/0001-00"
+                    className={`${INPUT} ${cnpjInvalid ? "border-rose-300 focus:ring-rose-200" : ""}`}
+                  />
+                  {cnpjLoading && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 size-4 animate-spin text-slate-400" />}
+                </div>
+                {cnpjInvalid
+                  ? <p className="mt-1 text-[11px] text-rose-500">CNPJ inválido — confira os números.</p>
+                  : cnpjComplete && (
+                    <button type="button" onClick={() => setConsultaOpen(true)}
+                      className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-700 hover:text-primary-800">
+                      <Search className="size-3" /> Consultar na Receita
+                    </button>
+                  )}
               </FormRow>
               <FormRow label="Telefone">
                 <input
                   type="text"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
+                  onBlur={() => { const n = normalizePhone(phone, "BR"); if (n) setPhone(formatPhoneDisplay(n)) }}
                   placeholder="(00) 00000-0000"
                   className={INPUT}
                 />
@@ -262,32 +330,34 @@ export function UnitDialog({ unit, onClose, onFeedback }: Props) {
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <FormRow label="CEP" className="col-span-1">
-                <input
-                  type="text"
-                  value={zipCode}
-                  onChange={(e) => setZipCode(e.target.value)}
-                  placeholder="00000-000"
-                  className={INPUT}
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={zipCode}
+                    onChange={(e) => setZipCode(maskCep(e.target.value))}
+                    onBlur={onCepBlur}
+                    placeholder="00000-000"
+                    className={INPUT}
+                  />
+                  {cepLoading && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 size-4 animate-spin text-slate-400" />}
+                </div>
               </FormRow>
               <FormRow label="Cidade" className="col-span-1 sm:col-span-2">
                 <input
                   type="text"
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
-                  placeholder="São Paulo"
+                  list="unit-cities"
+                  placeholder={uf ? "Selecione ou digite" : "Escolha a UF"}
                   className={INPUT}
                 />
+                <datalist id="unit-cities">{cities.map((c) => <option key={c} value={c} />)}</datalist>
               </FormRow>
               <FormRow label="UF" className="col-span-1">
-                <input
-                  type="text"
-                  value={uf}
-                  onChange={(e) => setUf(e.target.value)}
-                  placeholder="SP"
-                  maxLength={2}
-                  className={INPUT}
-                />
+                <select value={uf} onChange={(e) => setUf(e.target.value)} className={INPUT}>
+                  <option value="">—</option>
+                  {UFS.map((u) => <option key={u} value={u}>{u}</option>)}
+                </select>
               </FormRow>
             </div>
 
@@ -363,6 +433,7 @@ export function UnitDialog({ unit, onClose, onFeedback }: Props) {
           onClose={() => setConfirmDelete(false)}
         />
       )}
+      {consultaOpen && <CnpjConsultaModal cnpj={taxId} onClose={() => setConsultaOpen(false)} onUse={() => { void onCnpjBlur() }} />}
     </>
   )
 }

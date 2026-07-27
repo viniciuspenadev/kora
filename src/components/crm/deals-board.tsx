@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import {
   Trophy, XCircle, FileText, Clock, User, Loader2, MessageCircle, Plus, Calendar,
-  DollarSign, Tag, ExternalLink, ListPlus, Sparkles,
+  DollarSign, Tag, ExternalLink, ListPlus, Sparkles, Building2,
 } from "lucide-react"
 import {
   DndContext, DragOverlay, PointerSensor, useSensor, useSensors, useDraggable, useDroppable,
@@ -260,7 +260,7 @@ function DealCard({ d, allTags, onToggleTag, onOpen, onOpenContact, dragRef, lis
   const value    = hasValue ? BRL(Number(d.estimated_value)) : "R$ 0"
   const won      = d.status === "won", lost = d.status === "lost"
   const dateStr  = d.stage_entered_at ? new Date(d.stage_entered_at).toLocaleDateString("pt-BR") : null
-  const who      = d.contact_name || d.name?.trim() || "Sem contato"
+  const who      = d.contact_name || d.company_name || d.name?.trim() || "Sem contato"
   const tagIds   = new Set(d.tags.map((t) => t.id))
 
   const cls = `group relative bg-white rounded-xl border transition-all ${
@@ -310,6 +310,13 @@ function DealCard({ d, allTags, onToggleTag, onOpen, onOpenContact, dragRef, lis
           )}
           <span className="text-[10px] font-bold text-slate-400 tabular-nums shrink-0">#{d.id.slice(0, 4).toUpperCase()}</span>
         </div>
+
+        {/* empresa (F2) — badge sutil quando o negócio é de uma empresa e não é o próprio "who" */}
+        {d.company_name && d.company_name !== who && (
+          <div className="flex items-center gap-1 mt-1.5 text-[10px] text-slate-400 min-w-0">
+            <Building2 className="size-3 shrink-0" /><span className="truncate">{d.company_name}</span>
+          </div>
+        )}
 
         {/* linhas: responsável · valor · data · atividade */}
         <div className="mt-2.5 space-y-1.5">

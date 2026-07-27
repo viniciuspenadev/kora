@@ -3,7 +3,7 @@
 import { useState, useTransition, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { FileText, Loader2, Clock, CircleDollarSign, MailQuestion, CalendarClock, Search, MoreVertical, Check, X, ExternalLink, UserRound, Eye, Download } from "lucide-react"
+import { FileText, Loader2, CircleDollarSign, MailQuestion, CalendarClock, Search, MoreVertical, Check, X, ExternalLink, UserRound, Eye, Download, Plus } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { FilterPill, PILL_SELECT } from "@/components/ui/filter-pills"
 import { SectionCard } from "@/components/ui/section-card"
@@ -11,10 +11,12 @@ import { KpiTile } from "@/components/ui/kpi-tile"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu"
 import { StatusChip, brlCents, shortDate } from "@/components/crm/quote-status"
+import { QuoteViewer } from "@/components/crm/quote-viewer"
+import { NovaPropostaWizard } from "@/components/crm/nova-proposta-wizard"
 import { markQuoteAccepted, markQuoteDeclined } from "@/lib/actions/documents"
 import {
-  getProposals, type ProposalRow, type ProposalsPage, type ProposalsSummary,
-  type ProposalSort, type ProposalFilters,
+  getProposals, exportProposalsCsv, type ProposalRow, type ProposalsPage, type ProposalsSummary,
+  type ProposalSort, type ProposalSortBy, type ProposalFilters,
 } from "@/lib/actions/proposals"
 
 type StatusFilter = NonNullable<ProposalFilters["status"]>
@@ -36,10 +38,10 @@ const COLUMNS: Column<ProposalRow>[] = [
         </p>
       </div>
     ) },
-  { id: "value", header: "Valor", width: "160px", align: "right", mobile: true,
+  { id: "value", header: "Valor", width: "160px", align: "right", mobile: true, sortKey: "value",
     cell: (p) => <span className="text-[15px] font-bold text-slate-900 tabular-nums">{brlCents(p.totalCents)}</span> },
   { id: "sp", header: "", width: "28px", cell: () => null },   // respiro Valor ↔ Status
-  { id: "status", header: "Status", width: "150px", mobile: true,
+  { id: "status", header: "Status", width: "150px", mobile: true, sortKey: "status",
     cell: (p) => {
       const aging = canAct(p.status) ? daysSince(p.sentAt ?? p.createdAt) : 0
       return (
@@ -49,7 +51,7 @@ const COLUMNS: Column<ProposalRow>[] = [
         </div>
       )
     } },
-  { id: "dates", header: "Válida até", width: "148px",
+  { id: "dates", header: "Válida até", width: "148px", sortKey: "valid",
     cell: (p) => (
       <div className="leading-tight">
         <p className="text-xs text-slate-600 tabular-nums">{shortDate(p.validUntil)}</p>
@@ -69,13 +71,29 @@ export function PropostasClient({ initial, summary, agents }: {
   const [cursor, setCursor]   = useState(initial.nextCursor)
   const [hasMore, setHasMore] = useState(initial.hasMore)
   const [status, setStatus]   = useState<StatusFilter>("open")
-  const [sort, setSort]       = useState<ProposalSort>("expiring")
+  const [sort, setSort]       = useState<ProposalSort>({ by: "valid", dir: "asc" })   // vencendo primeiro
   const [quick, setQuick]     = useState<Quick>(null)     // chip ativo (sobrepõe status)
   const [agentId, setAgentId] = useState("")              // "" = todos
   const [search, setSearch]   = useState("")
   const [pending, start]      = useTransition()
   const [loadingMore, setLoadingMore] = useState(false)
-  const [viewer, setViewer]   = useState<{ id: string; code: string } | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [novaOpen, setNovaOpen] = useState(false)
+  const [viewer, setViewer]   = useState<Pick<ProposalRow, "id" | "code" | "status" | "validUntil"> | null>(null)
+
+  async function onExport() {
+    if (exporting) return
+    setExporting(true)
+    const r = await exportProposalsCsv({ filters: filtersFor({}), sort })
+    if ("error" in r) toast.error(r.error)
+    else {
+      const url = URL.createObjectURL(new Blob([r.csv], { type: "text/csv;charset=utf-8" }))
+      const a = document.createElement("a")
+      a.href = url; a.download = `propostas-${new Date().toISOString().slice(0, 10)}.csv`
+      a.click(); URL.revokeObjectURL(url)
+    }
+    setExporting(false)
+  }
 
   function filtersFor(over: Over): ProposalFilters {
     const qk = over.quick !== undefined ? over.quick : quick
@@ -97,6 +115,16 @@ export function PropostasClient({ initial, summary, agents }: {
       const r = await getProposals({ filters: filtersFor(next), sort: so, limit: 30 })
       setItems(r.items); setCursor(r.nextCursor); setHasMore(r.hasMore)
     })
+  }
+
+  // Clique no cabeçalho: mesma coluna → inverte direção; nova coluna → default
+  // (valor começa "maior primeiro", validade/status em ordem crescente).
+  function onSort(key: string) {
+    const by = key as ProposalSortBy
+    const next: ProposalSort = sort.by === by
+      ? { by, dir: sort.dir === "asc" ? "desc" : "asc" }
+      : { by, dir: by === "value" ? "desc" : "asc" }
+    setSort(next); reload({ sort: next })
   }
 
   // Busca com debounce 300ms (padrão de lista do projeto). Ignora o 1º render.
@@ -138,7 +166,7 @@ export function PropostasClient({ initial, summary, agents }: {
           <DropdownMenuContent align="end" className="w-52">
             {p.code !== "Rascunho" && (
               <>
-                <DropdownMenuItem onClick={() => setViewer({ id: p.id, code: p.code })}><Eye className="size-3.5" /> Ver proposta</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setViewer(p)}><Eye className="size-3.5" /> Ver proposta</DropdownMenuItem>
                 <DropdownMenuSeparator />
               </>
             )}
@@ -160,13 +188,25 @@ export function PropostasClient({ initial, summary, agents }: {
 
   return (
     <div className="min-h-full bg-canvas">
-      {/* Header (§2.1) — só título; filtros descem pra a toolbar da lista */}
-      <div className="px-4 sm:px-6 pt-10 pb-8">
-        <div className="flex items-center gap-2">
-          <h1 className="text-xl font-bold text-slate-900 tracking-tight">Propostas</h1>
-          {pending && <Loader2 className="size-4 animate-spin text-slate-400 shrink-0" />}
+      {/* Header (§2.1) — título + export; filtros descem pra a toolbar da lista */}
+      <div className="px-4 sm:px-6 pt-10 pb-8 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Propostas</h1>
+            {pending && <Loader2 className="size-4 animate-spin text-slate-400 shrink-0" />}
+          </div>
+          <p className="text-xs text-slate-400 mt-0.5">Acompanhe e cobre as cotações de todos os negócios.</p>
         </div>
-        <p className="text-xs text-slate-400 mt-0.5">Acompanhe e cobre as cotações de todos os negócios.</p>
+        <div className="flex items-center gap-2 shrink-0">
+          <button type="button" onClick={onExport} disabled={exporting}
+            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-50">
+            {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />} Exportar CSV
+          </button>
+          <button type="button" onClick={() => setNovaOpen(true)}
+            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
+            <Plus className="size-3.5" /> Nova proposta
+          </button>
+        </div>
       </div>
 
       <div className="px-4 sm:px-6 pb-8 space-y-4">
@@ -178,7 +218,7 @@ export function PropostasClient({ initial, summary, agents }: {
             value={String(summary.awaiting)} caption="propostas emitidas sem decisão" />
           <KpiTile icon={CalendarClock} iconClass="text-amber-600" label="Vencendo em 7 dias"
             value={String(summary.expiringSoon)} caption="clique pra filtrar" active={quick === "soon"}
-            onClick={() => { const nk: Quick = quick === "soon" ? null : "soon"; setQuick(nk); setSort("expiring"); reload({ quick: nk, sort: "expiring" }) }} />
+            onClick={() => { const nk: Quick = quick === "soon" ? null : "soon"; setQuick(nk); reload({ quick: nk }) }} />
         </div>
 
         {/* Toolbar: busca (esquerda) + atendente + status + ordenação (direita) */}
@@ -208,14 +248,6 @@ export function PropostasClient({ initial, summary, agents }: {
                 { value: "declined", label: "Recusadas" },
               ]} />
           </FilterPill>
-          <FilterPill icon={Clock} w="w-44">
-            <SimpleSelect className={PILL_SELECT} value={sort}
-              onChange={(v) => { setSort(v as ProposalSort); reload({ sort: v as ProposalSort }) }}
-              options={[
-                { value: "expiring", label: "Vencendo primeiro" },
-                { value: "recent",   label: "Mais recentes" },
-              ]} />
-          </FilterPill>
         </div>
 
         {/* Chips rápidos — recortes de cobrança de 1 clique */}
@@ -224,7 +256,7 @@ export function PropostasClient({ initial, summary, agents }: {
             const on = quick === k
             return (
               <button key={k} type="button"
-                onClick={() => { const nk: Quick = on ? null : k; setQuick(nk); const so = nk === "soon" || nk === "expired" ? "expiring" : sort; setSort(so); reload({ quick: nk, sort: so }) }}
+                onClick={() => { const nk: Quick = on ? null : k; setQuick(nk); reload({ quick: nk }) }}
                 className={`h-7 px-3 text-xs font-semibold rounded-full border transition-colors ${on ? "bg-primary text-white border-primary" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}>
                 {lbl}
               </button>
@@ -237,6 +269,8 @@ export function PropostasClient({ initial, summary, agents }: {
           <DataTable
             rows={items}
             columns={[...COLUMNS, actionsCol]}
+            sort={{ key: sort.by, dir: sort.dir }}
+            onSort={onSort}
             rowKey={(p) => p.id}
             onRowClick={(p) => { if (p.dealId) router.push(`/negocios/${p.dealId}`) }}
             empty={{ icon: FileText, title: "Nenhuma proposta aqui", description: "As cotações geradas nos negócios aparecem aqui pra acompanhamento e cobrança." }}
@@ -252,35 +286,8 @@ export function PropostasClient({ initial, summary, agents }: {
         </SectionCard>
       </div>
 
-      {viewer && <QuickLook doc={viewer} onClose={() => setViewer(null)} />}
-    </div>
-  )
-}
-
-/** Quick-look do PDF — modal COMPACTO (formato de documento, não gigante). Iframe da
- *  rota autenticada /api/documents/[id]/pdf (mesma fonte da ficha do negócio). */
-function QuickLook({ doc, onClose }: { doc: { id: string; code: string }; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
-      <div onClick={(e) => e.stopPropagation()}
-        className="relative flex flex-col w-full max-w-[680px] h-[86vh] bg-white rounded-2xl shadow-2xl shadow-slate-900/20 overflow-hidden">
-        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-slate-100">
-          <FileText className="size-4 text-primary-600 shrink-0" />
-          <span className="text-sm font-semibold text-slate-800 truncate">{doc.code}</span>
-          <div className="ml-auto flex items-center gap-1 shrink-0">
-            <a href={`/api/documents/${doc.id}/pdf?download=1`} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
-              <Download className="size-3.5" /> Baixar
-            </a>
-            <button type="button" onClick={onClose} aria-label="Fechar"
-              className="size-8 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors">
-              <X className="size-4" />
-            </button>
-          </div>
-        </div>
-        <iframe src={`/api/documents/${doc.id}/pdf`} title={`Proposta ${doc.code}`} className="w-full flex-1 bg-slate-100" />
-      </div>
+      {viewer && <QuoteViewer id={viewer.id} code={viewer.code} status={viewer.status} validUntil={viewer.validUntil} onClose={() => setViewer(null)} />}
+      {novaOpen && <NovaPropostaWizard onClose={() => setNovaOpen(false)} />}
     </div>
   )
 }

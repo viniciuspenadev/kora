@@ -1,7 +1,7 @@
 "use client"
 
 import { cn } from "@/lib/utils"
-import type { LucideIcon } from "lucide-react"
+import { ArrowUp, ArrowDown, ArrowUpDown, type LucideIcon } from "lucide-react"
 
 export interface Column<T> {
   id:      string
@@ -21,7 +21,15 @@ export interface Column<T> {
    * Apenas em telas md+. Default: true.
    */
   desktop?: boolean
+  /**
+   * Chave de ordenação. Se presente (+ `sort`/`onSort` na tabela), o cabeçalho vira
+   * clicável e mostra a seta. Ausente = coluna estática (comportamento padrão).
+   */
+  sortKey?: string
 }
+
+/** Estado de ordenação: qual chave + direção. */
+export interface SortState { key: string; dir: "asc" | "desc" }
 
 interface Props<T> {
   rows:      T[]
@@ -34,9 +42,13 @@ interface Props<T> {
     description?: string
   }
   className?: string
+  /** Ordenação atual (pra a seta no cabeçalho). */
+  sort?:     SortState | null
+  /** Clique no cabeçalho ordenável → chave da coluna. */
+  onSort?:   (key: string) => void
 }
 
-export function DataTable<T>({ rows, columns, rowKey, onRowClick, empty, className }: Props<T>) {
+export function DataTable<T>({ rows, columns, rowKey, onRowClick, empty, className, sort, onSort }: Props<T>) {
   const desktopCols = columns.filter((c) => c.desktop !== false)
   const gridTemplate = desktopCols.map((c) => c.width).join(" ")
 
@@ -63,18 +75,32 @@ export function DataTable<T>({ rows, columns, rowKey, onRowClick, empty, classNa
         className="hidden md:grid items-center gap-4 px-5 py-2.5 bg-slate-50/60 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider"
         style={{ gridTemplateColumns: gridTemplate }}
       >
-        {desktopCols.map((c) => (
-          <span
-            key={c.id}
-            className={cn(
-              "truncate",
-              c.align === "right"  && "text-right",
-              c.align === "center" && "text-center",
-            )}
-          >
-            {c.header}
-          </span>
-        ))}
+        {desktopCols.map((c) => {
+          const sortable = !!(c.sortKey && onSort)
+          const active   = sortable && sort?.key === c.sortKey
+          const alignCls = cn(
+            c.align === "right"  && "justify-end text-right",
+            c.align === "center" && "justify-center text-center",
+          )
+          if (!sortable) {
+            return (
+              <span key={c.id} className={cn("truncate", c.align === "right" && "text-right", c.align === "center" && "text-center")}>
+                {c.header}
+              </span>
+            )
+          }
+          return (
+            <button
+              key={c.id} type="button" onClick={() => onSort!(c.sortKey!)}
+              className={cn("flex items-center gap-1 truncate uppercase tracking-wider hover:text-slate-700 transition-colors", alignCls, active && "text-slate-700")}
+            >
+              <span className="truncate">{c.header}</span>
+              {active
+                ? (sort!.dir === "asc" ? <ArrowUp className="size-3 shrink-0" /> : <ArrowDown className="size-3 shrink-0" />)
+                : <ArrowUpDown className="size-3 shrink-0 opacity-30" />}
+            </button>
+          )
+        })}
       </div>
 
       {/* Rows */}

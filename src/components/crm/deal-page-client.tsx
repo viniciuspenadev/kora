@@ -3,15 +3,16 @@
 import { ContactPic } from "@/components/chat/contact-pic"
 import { SimpleSelect } from "@/components/ui/select"
 
-import { useState, useEffect, useMemo, useTransition } from "react"
+import { useState, useEffect, useMemo, useTransition, useRef } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
-  Package, Wrench, Trash2, Search, MoreHorizontal, Hourglass, Bot, ChevronDown,
+  Package, Wrench, Trash2, Search, MoreHorizontal, Hourglass, Bot, ChevronDown, Building2,
 } from "lucide-react"
+import { maskCpfCnpj } from "@/lib/masks"
 import { lifecycleMeta } from "@/lib/lifecycle"
 import { toast } from "sonner"
 import { ContactSheet } from "@/components/crm/contact-sheet"
@@ -22,9 +23,9 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import {
-  moveDeal, moveDealById, openDeal, cancelDeal, reopenDeal, updateDeal, addDealNote,
-  addDealItem, updateDealItem, removeDealItem, getCatalogForPicker,
-  type DealDetail, type DealEventView, type DealItemView, type CatalogPickerItem,
+  moveDeal, moveDealById, openDeal, cancelDeal, cancelDealById, reopenDeal, reopenDealById, updateDeal, addDealNote, addDealNoteById,
+  addDealItem, updateDealItem, removeDealItem, searchCatalogForPicker, getCatalogCategories,
+  type DealDetail, type DealEventView, type DealItemView, type CatalogPickerItem, type CatalogPickerCursor,
 } from "@/lib/actions/deals"
 import { computeDealValue, lineSubtotal, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
 import { createTask, setTaskDone, type TaskRow } from "@/lib/actions/tasks"
@@ -180,9 +181,9 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
     run(() => updateDeal(deal.id, { unitId: v || null }))
   }
   function submitNote() {
-    if (!convId || !noteDraft.trim()) return
+    if (!noteDraft.trim()) return
     const text = noteDraft.trim(); setNoteDraft(""); setActiveModal(null)
-    run(() => addDealNote(convId, deal.id, text))
+    run(() => convId ? addDealNote(convId, deal.id, text) : addDealNoteById(deal.id, text))
   }
   function openTaskModal(preset: string | null) {
     setRescheduleOf(null); setTaskPreset(preset); setActiveModal("task")
@@ -219,16 +220,16 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
     const n = valueVal.trim() ? Number(valueVal.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, "")) : null
     run(() => updateDeal(deal.id, { estimatedValue: n != null && !Number.isNaN(n) ? n : null }))
   }
-  function moveTo(stageId: string) { if (convId && stageId !== curStageId) run(() => moveDeal(convId, deal.id, stageId)) }
+  function moveTo(stageId: string) { if (stageId !== curStageId) run(() => convId ? moveDeal(convId, deal.id, stageId) : moveDealById(deal.id, stageId)) }
   // Clicar numa etapa do stepper: perdido → motivo · ganho → direto · normal → ficha da movimentação.
   function clickStage(s: { id: string; name: string; is_won: boolean; is_lost: boolean }) {
-    if (!convId || s.id === curStageId) return
+    if (s.id === curStageId) return
     if (s.is_lost) { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setPendingMove(null); setLosing(true); return }
     if (s.is_won)  { moveTo(s.id); return }
     setLosing(false); setCanceling(false); setPendingMove({ id: s.id, name: s.name })
   }
   function confirmMove(r: MoveDealResult) {
-    if (!convId || !pendingMove) return
+    if (!pendingMove) return
     const stageId = pendingMove.id
     setPendingMove(null)
     start(async () => {
@@ -237,7 +238,9 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
         valueChange: valueChanged ? { from: deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—", to: brl(r.value as number) } : null,
         followUp: r.task ? { title: r.task.title, due: r.task.dueAt ? fmtDue(r.task.dueAt) : null } : null,
       }
-      const mv = await moveDeal(convId, deal.id, stageId, null, r.note || null, extras)
+      const mv = convId
+        ? await moveDeal(convId, deal.id, stageId, null, r.note || null, extras)
+        : await moveDealById(deal.id, stageId, { note: r.note || null, extras })
       if ("error" in mv) { alert(mv.error); return }
       if (valueChanged) await updateDeal(deal.id, { estimatedValue: r.value }, { silentCard: true })
       if (r.task) await createTask({ dealId: deal.id, title: r.task.title, dueAt: r.task.dueAt })
@@ -248,18 +251,17 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   const selRequiresNote = losing && (deal.lostReasons.find((r) => r.label === reasonSel)?.requireNote ?? false)
 
   function confirmLose() {
-    if (!convId || !lostStage) return
+    if (!lostStage) return
     if (selRequiresNote && !noteTxt.trim()) return
     const reason = reasonSel === "Outro" ? (reasonTxt.trim() || "Outro") : reasonSel
     const note   = noteTxt.trim() || null
     setLosing(false); setReasonSel(""); setReasonTxt(""); setNoteTxt("")
-    run(() => moveDeal(convId, deal.id, lostStage.id, reason || null, note))
+    run(() => convId ? moveDeal(convId, deal.id, lostStage.id, reason || null, note) : moveDealById(deal.id, lostStage.id, { lostReason: reason || null, note }))
   }
   function confirmCancel() {
-    if (!convId) return
     const reason = reasonSel === "Outro" ? (reasonTxt.trim() || "Outro") : reasonSel
     setCanceling(false); setReasonSel(""); setReasonTxt("")
-    run(() => cancelDeal(convId, deal.id, reason || null))
+    run(() => convId ? cancelDeal(convId, deal.id, reason || null) : cancelDealById(deal.id, reason || null))
   }
   function doAddTask(title: string, dueAt: string | null) {
     if (!title.trim()) return
@@ -376,16 +378,16 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                 <DropdownMenuContent align="end" className="w-56">
                   {isOpen ? (
                     <>
-                      <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}>
+                      <DropdownMenuItem disabled={pending} onClick={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}>
                         <XCircle className="size-3.5 text-red-500" /> Marcar como perdido
                       </DropdownMenuItem>
-                      <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }}>
+                      <DropdownMenuItem disabled={pending} onClick={() => { setReasonSel(CANCEL_REASONS[0]); setLosing(false); setCanceling(true) }}>
                         <Ban className="size-3.5 text-slate-400" /> Cancelar negócio
                       </DropdownMenuItem>
                     </>
                   ) : (
                     (deal.status !== "won" || isManager) && (
-                      <DropdownMenuItem disabled={!convId || pending} onClick={() => { setReopenNote(""); setReopening(true) }}>
+                      <DropdownMenuItem disabled={pending} onClick={() => { setReopenNote(""); setReopening(true) }}>
                         <RotateCcw className="size-3.5 text-primary-500" /> Reabrir negócio
                       </DropdownMenuItem>
                     )
@@ -396,7 +398,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               <div className="flex items-center gap-2 self-center">
                 {pending && <Loader2 className="size-4 animate-spin text-slate-400" />}
                 {convId && <Link href={`/inbox?conversation=${convId}`} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><MessageSquare className="size-3.5 text-primary-500" /> Abrir conversa</Link>}
-                {isOpen && wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={!convId || pending} className={`${HBTN} border-primary bg-primary hover:bg-primary-700 text-white`}><Trophy className="size-3.5" /> Ganhar negócio</button>}
+                {isOpen && wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={pending} className={`${HBTN} border-primary bg-primary hover:bg-primary-700 text-white`}><Trophy className="size-3.5" /> Ganhar negócio</button>}
                 {!isOpen && deal.status === "won" && convId && deal.pipelines.length > 1 && (
                   <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary bg-primary hover:bg-primary-700 text-white`}><Route className="size-3.5" /> Próximo fluxo</button>
                 )}
@@ -407,7 +409,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-56">
                     {/* Registrar (referência: ações saíram do corpo pro menu, abrem modal) */}
-                    <DropdownMenuItem disabled={!convId || pending} onClick={() => { setNoteDraft(""); setActiveModal("note") }}>
+                    <DropdownMenuItem disabled={pending} onClick={() => { setNoteDraft(""); setActiveModal("note") }}>
                       <StickyNote className="size-3.5 text-slate-400" /> Registrar nota
                     </DropdownMenuItem>
                     <DropdownMenuItem disabled={pending} onClick={() => openTaskModal(null)}>
@@ -450,7 +452,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               const tdays  = daysByStage.get(s.name)
               const isLast = i === stepStages.length - 1
               return (
-                <button key={s.id} onClick={() => clickStage(s)} disabled={!convId || pending || active}
+                <button key={s.id} onClick={() => clickStage(s)} disabled={pending || active}
                   className="group/step relative flex-1 min-w-[104px] text-center pt-4 disabled:cursor-default">
                   {active && curProb > 0 && !s.is_won && !s.is_lost && (
                     <span className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1 text-[9px] font-extrabold text-primary bg-primary-50 border border-primary-100 rounded-full px-2 py-px whitespace-nowrap z-10">{curProb}% de chance</span>
@@ -489,7 +491,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               identidade (azul), stroke editorial — decisão owner 2026-07-04. */}
           {/* KPIs desceram pro corpo (abaixo do banner de próximo passo) — feedback owner 2026-07-13 */}
           <div className="pb-3.5" />
-          {!convId && <p className="pb-2 text-[11px] text-amber-600">Negócio sem conversa vinculada — mover/ganhar/perder/observar ficam indisponíveis nesta tela.</p>}
+          {!convId && <p className="pb-2 text-[11px] text-slate-400">Negócio sem conversa vinculada — as ações funcionam por aqui; só “abrir conversa” e “próximo fluxo” dependem de uma conversa.</p>}
 
           {losing && (
             <div className="mt-3 rounded-lg border border-red-200 bg-red-50/50 p-3 max-w-md">
@@ -571,7 +573,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                 <div className="flex items-center justify-end gap-2 px-5 py-3 bg-slate-50 border-t border-slate-100">
                   <button onClick={() => setReopening(false)} className="h-9 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Voltar</button>
                   <button disabled={pending || (deal.status === "won" && !reopenNote.trim())}
-                    onClick={() => { if (!convId) return; const note = reopenNote.trim() || null; setReopening(false); run(() => reopenDeal(convId, deal.id, { note })) }}
+                    onClick={() => { const note = reopenNote.trim() || null; setReopening(false); run(() => convId ? reopenDeal(convId, deal.id, { note }) : reopenDealById(deal.id)) }}
                     className="h-9 px-4 text-xs font-semibold text-white bg-primary hover:bg-primary-700 rounded-lg disabled:opacity-50">Reabrir</button>
                 </div>
               </div>
@@ -774,6 +776,15 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                 ) : "—"}
               </Row>
               <Row label="Funil e etapa">{[deal.pipeline_name, deal.stage?.name].filter(Boolean).join(" · ") || "—"}</Row>
+              {deal.company && (
+                <Row label="Empresa">
+                  <span className="inline-flex items-center gap-1.5 min-w-0">
+                    <Building2 className="size-3.5 text-slate-400 shrink-0" />
+                    <span className="truncate font-semibold text-slate-700">{deal.company.name}</span>
+                    {deal.company.doc_id && <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{maskCpfCnpj(deal.company.doc_id)}</span>}
+                  </span>
+                </Row>
+              )}
               {(units.length > 0 || deal.unit_id) && (
                 <Row label="Unidade">
                   <SimpleSelect value={deal.unit_id ?? ""} onChange={saveUnit} disabled={pending} className="h-7 text-xs -my-0.5 min-w-[120px]" options={unitOptions} />
@@ -872,12 +883,22 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           tables={deal.priceTables}
           defaultTableId={deal.priceTable?.id ?? null}
           pending={pending}
+          dealItemCount={deal.items.length}
+          dealTotal={valueSummary?.total ?? 0}
+          dealMrr={valueSummary?.mrr ?? 0}
           onClose={() => setItemModal(null)}
           onSubmit={(p) => {
             const m = itemModal
             setItemModal(null)
             if (m.mode === "edit") run(() => updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths }))
             else run(() => addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, priceTableId: p.priceTableId }))
+          }}
+          onAdd={async (p) => {
+            // Quick-add: grava e MANTÉM o modal aberto (montar venda de vários itens de uma vez).
+            const r = await addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, priceTableId: p.priceTableId })
+            if ("error" in r) { toast.error(r.error); return false }
+            router.refresh()
+            return true
           }}
         />
       )}
@@ -1616,14 +1637,19 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
 
 
 /** Modal de item — adicionar (picker do catálogo → configurar) ou ajustar (direto). */
-function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose, onSubmit }: {
+function DealItemModal({ dealId, edit, tables, defaultTableId, pending, dealItemCount, dealTotal, dealMrr, onClose, onSubmit, onAdd }: {
   dealId: string
   edit: DealItemView | null
   tables: { id: string; name: string; is_default: boolean; active: boolean }[]
   defaultTableId: string | null
   pending: boolean
+  /** Estado vivo do negócio (recomputado no server a cada add → footer-recibo). */
+  dealItemCount: number
+  dealTotal: number
+  dealMrr: number
   onClose: () => void
   onSubmit: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null }) => void
+  onAdd: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null }) => Promise<boolean>
 }) {
   // Multi-tabela (T2, decisão owner 2026-07-11): escolhe a tabela POR item, aqui no
   // add. Seletor só aparece com 2+ tabelas visíveis; "" = tabela padrão do tenant.
@@ -1631,8 +1657,16 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
   const multiTable = visibleTables.length > 1
   const defaultSel = defaultTableId && visibleTables.find((p) => p.id === defaultTableId && !p.is_default) ? defaultTableId : ""
   const [tableId, setTableId]   = useState<string>(defaultSel)
-  const [catalog, setCatalog]   = useState<CatalogPickerItem[] | null>(edit ? [] : null)   // null = carregando
-  const [pickError, setPickError] = useState<string | null>(null)
+  // Lista server-side (escala): páginas acumuladas via searchCatalogForPicker.
+  const [items, setItems]       = useState<CatalogPickerItem[] | null>(edit ? [] : null)   // null = carregando 1ª pág
+  const [cursor, setCursor]     = useState<CatalogPickerCursor | null>(null)
+  const [hasMore, setHasMore]   = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [listError, setListError] = useState<string | null>(null)
+  const [category, setCategory] = useState<string | null>(null)
+  const [categories, setCategories] = useState<string[]>([])
+  const [basket, setBasket] = useState<Map<string, number>>(new Map())   // qtd que ENTROU nesta sessão, por item (realce/×N)
+  const reqIdRef = useRef(0)   // "latest wins": server action não aborta → ignora resposta antiga
   const [search, setSearch]     = useState("")
   const [picked, setPicked]     = useState<CatalogPickerItem | null>(null)
   const [qty, setQty]           = useState(edit ? fmtQty(edit.quantity) : "1")
@@ -1645,19 +1679,40 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
   const [term, setTerm]         = useState(edit?.term_months != null ? String(edit.term_months) : "")
   const [error, setError]       = useState<string | null>(null)
 
+  // Categorias (uma vez, no add) — alimenta os chips de filtro.
   useEffect(() => {
     if (edit) return
-    let alive = true
-    // T2: preços/tetos vêm da TABELA escolhida no seletor (Atacado…); trocar a tabela
-    // re-preça a lista. Tabela sem grade → erro fail-closed.
-    setCatalog(null); setPickError(null); setPicked(null)
-    getCatalogForPicker(dealId, tableId).then((r) => {
-      if (!alive) return
-      if (Array.isArray(r)) setCatalog(r)
-      else { setCatalog([]); setPickError(r.error) }
-    }).catch(() => { if (alive) setCatalog([]) })
-    return () => { alive = false }
-  }, [edit, dealId, tableId])
+    getCatalogCategories().then(setCategories).catch(() => {})
+  }, [edit])
+
+  // 1ª página server-side — refaz ao mudar busca/categoria/tabela (debounce 300ms, latest-wins).
+  // Trocar a tabela re-preça (resolveDealPricing no server). Fail-closed: tabela sem grade → erro.
+  useEffect(() => {
+    if (edit) return
+    const reqId = ++reqIdRef.current
+    setItems(null); setListError(null); setCursor(null); setHasMore(false)
+    const t = setTimeout(async () => {
+      const r = await searchCatalogForPicker({ dealId, tableId, query: search, category, limit: 30 })
+      if (reqId !== reqIdRef.current) return   // resposta antiga — ignora
+      if ("error" in r) { setItems([]); setListError(r.error); return }
+      setItems(r.items); setCursor(r.nextCursor); setHasMore(r.hasMore)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [edit, dealId, tableId, search, category])
+
+  async function loadMore() {
+    if (loadingMore || !hasMore || !cursor) return
+    setLoadingMore(true)
+    const r = await searchCatalogForPicker({ dealId, tableId, query: search, category, cursor, limit: 30 })
+    if (!("error" in r)) { setItems((prev) => [...(prev ?? []), ...r.items]); setCursor(r.nextCursor); setHasMore(r.hasMore) }
+    setLoadingMore(false)
+  }
+
+  // Quick-add: qtd 1, preço da tabela, e MANTÉM o modal aberto (realce na lista). Config fina = clicar no item.
+  async function quickAdd(c: CatalogPickerItem) {
+    const ok = await onAdd({ catalogItemId: c.id, quantity: 1, unitPrice: c.price, discount: null, termMonths: null, priceTableId: tableId || null })
+    if (ok) setBasket((m) => new Map(m).set(c.id, (m.get(c.id) ?? 0) + 1))
+  }
 
   // Item "ativo" da configuração: o escolhido no picker OU o snapshot em edição.
   // listPrice/maxPct = base do PISO (teto de desconto snapshotado).
@@ -1669,13 +1724,6 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
         : null
   ), [edit, picked])
   const recurring = active != null && active.billing !== "one_time"
-
-  const filtered = useMemo(() => {
-    if (!catalog) return []
-    const q = search.trim().toLowerCase()
-    if (!q) return catalog
-    return catalog.filter((c) => c.name.toLowerCase().includes(q) || (c.sku ?? "").toLowerCase().includes(q) || (c.category ?? "").toLowerCase().includes(q))
-  }, [catalog, search])
 
   // Preço efetivo da linha: o digitado; vazio = sugestão do catálogo/snapshot.
   const effPrice = useMemo(() => {
@@ -1720,7 +1768,7 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
     setDiscMode(m)
   }
 
-  function submit() {
+  async function submit() {
     setError(null)
     const q = Number(qty.replace(",", "."))
     if (!Number.isFinite(q) || q <= 0) { setError("Quantidade inválida"); return }
@@ -1741,94 +1789,167 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
         return
       }
     }
-    onSubmit({ catalogItemId: picked?.id, quantity: q, unitPrice: effPrice, discount: d, termMonths: recurring ? tm : null, priceTableId: tableId || null })
+    const payload = { catalogItemId: picked?.id, quantity: q, unitPrice: effPrice, discount: d, termMonths: recurring ? tm : null, priceTableId: tableId || null }
+    // Ajuste (edit) → grava e FECHA. Add configurado → grava e VOLTA pra lista (modal
+    // fica aberto pra montar a venda inteira; item vira realce).
+    if (edit) { onSubmit(payload); return }
+    const ok = await onAdd(payload)
+    if (ok) {
+      if (picked) setBasket((m) => new Map(m).set(picked.id, (m.get(picked.id) ?? 0) + q))
+      setPicked(null); setQty("1"); setPrice(""); setDiscount(""); setTerm(""); setDiscMode("brl")
+    }
   }
 
-  const field = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40"
+  const field = "w-full h-10 px-3 text-sm bg-white border border-slate-200 rounded-lg placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300"
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 shrink-0">
-          <h3 className="text-sm font-semibold text-slate-900">{edit ? "Ajustar item" : picked ? "Configurar item" : "Adicionar item do catálogo"}</h3>
-          <button type="button" onClick={onClose} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100"><X className="size-4" /></button>
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className={`bg-white rounded-2xl shadow-2xl shadow-slate-900/20 w-full max-w-2xl flex flex-col overflow-hidden ${active ? "max-h-[88vh]" : "h-[85vh] max-h-[calc(100vh-2rem)]"}`} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-200 shrink-0">
+          <span className="size-9 rounded-xl bg-primary-50 text-primary-600 grid place-items-center shrink-0"><Package className="size-5" /></span>
+          <div className="min-w-0">
+            <p className="text-[15px] font-semibold text-slate-900 tracking-tight">{edit ? "Ajustar item" : picked ? "Configurar item" : "Adicionar produto/serviço"}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">{active ? "Preço, quantidade e desconto desta venda" : "Do seu catálogo — com tabela de preço e desconto máximo"}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Fechar" className="ml-auto size-8 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 shrink-0"><X className="size-4" /></button>
         </div>
 
         {!active ? (
-          /* passo 1 — escolher a tabela e o produto */
-          <div className="flex-1 overflow-y-auto p-4">
-            {multiTable && (
-              <div className="mb-3">
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Tabela de preço</label>
-                <SimpleSelect value={tableId} onChange={setTableId} className="h-9 text-xs w-full"
-                  options={visibleTables.map((p) => ({ value: p.is_default ? "" : p.id, label: p.active ? p.name : `${p.name} (desativada)` }))} />
-                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">Preços e teto de desconto vêm desta tabela. Você pode usar tabelas diferentes por item.</p>
+          /* passo 1 — catálogo: busca server-side + chips de categoria + quick-add (escala pra milhares) */
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="px-4 pt-3 pb-2.5 border-b border-slate-100 shrink-0 space-y-2.5">
+              {multiTable && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-medium text-slate-500 shrink-0">Tabela</span>
+                  <SimpleSelect value={tableId} onChange={setTableId} className="h-8 text-xs flex-1"
+                    options={visibleTables.map((p) => ({ value: p.is_default ? "" : p.id, label: p.active ? p.name : `${p.name} (desativada)` }))} />
+                </div>
+              )}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400" />
+                <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nome, SKU ou categoria…"
+                  className="w-full h-10 pl-9 pr-3 text-sm bg-white border border-slate-200 rounded-lg placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300" />
               </div>
-            )}
-            <div className="relative mb-3">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400" />
-              <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar produto ou serviço…"
-                className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
+              {categories.length > 0 && (
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 -mx-0.5 px-0.5">
+                  <button type="button" onClick={() => setCategory(null)}
+                    className={`shrink-0 px-2.5 h-7 rounded-full text-[11px] font-semibold border transition-colors ${category === null ? "bg-primary text-white border-primary" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>Todos</button>
+                  {categories.map((cat) => (
+                    <button key={cat} type="button" onClick={() => setCategory(cat)}
+                      className={`shrink-0 px-2.5 h-7 rounded-full text-[11px] font-semibold border transition-colors whitespace-nowrap ${category === cat ? "bg-primary text-white border-primary" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>{cat}</button>
+                  ))}
+                </div>
+              )}
             </div>
-            {catalog === null && <p className="text-[11px] text-slate-400 text-center py-8"><Loader2 className="size-4 animate-spin inline" /></p>}
-            {pickError && (
-              <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5 leading-relaxed">{pickError}</p>
-            )}
-            {catalog !== null && catalog.length === 0 && !pickError && (
-              <p className="text-[11px] text-slate-400 text-center py-8 leading-relaxed">
-                Seu catálogo está vazio.<br />
-                <Link href="/catalogo" className="text-primary-600 font-semibold hover:underline">Cadastre produtos e serviços</Link> pra compor o valor dos negócios.
-              </p>
-            )}
-            {filtered.length > 0 && (
-              <div className="space-y-1">
-                {filtered.map((c) => (
-                  <button key={c.id} type="button"
-                    onClick={() => { setPicked(c); setPrice(c.price > 0 ? c.price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "") }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors hover:bg-slate-50">
-                    {c.image_path ? (
-                      /* eslint-disable-next-line @next/next/no-img-element */
-                      <img src={`/api/catalog-image/${c.id}`} alt="" className="size-7 rounded-lg object-cover shrink-0 ring-1 ring-slate-200" />
-                    ) : (
-                      <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${c.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
-                        {c.type === "service" ? <Wrench className="size-3.5" /> : <Package className="size-3.5" />}
-                      </span>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold text-slate-800 truncate">{c.name}</p>
-                      <p className="text-[10px] text-slate-400 truncate">
-                        {[c.sku, c.category].filter(Boolean).join(" · ") || (c.type === "service" ? "Serviço" : "Produto")}{c.max_discount_pct > 0 && <span className="text-emerald-600 font-semibold"> · até {c.max_discount_pct}% desc.</span>}
-                      </p>
+
+            <div className="flex-1 overflow-y-auto px-4 py-2">
+              {items === null && (
+                <div className="space-y-1.5 py-1">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="flex items-center gap-2.5 px-3 py-2">
+                      <div className="size-8 rounded-lg bg-slate-100 animate-pulse shrink-0" />
+                      <div className="flex-1 space-y-1.5"><div className="h-2.5 w-1/2 bg-slate-100 rounded animate-pulse" /><div className="h-2 w-1/3 bg-slate-100 rounded animate-pulse" /></div>
+                      <div className="h-3 w-14 bg-slate-100 rounded animate-pulse shrink-0" />
                     </div>
-                    <span className="text-right shrink-0">
-                      <span className="text-xs font-bold text-slate-700 tabular-nums">
-                        {brl(c.price)}<span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[c.billing].suffix}</span>
-                      </span>
-                      {c.table_label && <span className="block text-[9px] font-semibold text-sky-600">{c.table_label}</span>}
-                    </span>
-                  </button>
-                ))}
+                  ))}
+                </div>
+              )}
+              {listError && (
+                <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5 leading-relaxed my-2">{listError}</p>
+              )}
+              {items !== null && items.length === 0 && !listError && (
+                <div className="text-center py-10 px-4 leading-relaxed">
+                  {search.trim() || category ? (
+                    <p className="text-[11px] text-slate-400">Nada encontrado{category ? " nesta categoria" : ""}{search.trim() ? ` para "${search.trim()}"` : ""}.</p>
+                  ) : (
+                    <p className="text-[11px] text-slate-400">
+                      Seu catálogo está vazio.<br />
+                      <Link href="/catalogo" className="text-primary-600 font-semibold hover:underline">Cadastre produtos e serviços</Link> pra compor o valor dos negócios.
+                    </p>
+                  )}
+                </div>
+              )}
+              {items !== null && items.length > 0 && (
+                <div className="space-y-1">
+                  {items.map((c) => {
+                    const inBasket = basket.get(c.id) ?? 0
+                    return (
+                      <div key={c.id}
+                        className={`group flex items-center gap-3 pl-2.5 pr-2 py-2 rounded-xl transition-colors ${inBasket ? "bg-primary-50 ring-1 ring-inset ring-primary-100" : "hover:bg-slate-50"}`}>
+                        <button type="button"
+                          onClick={() => { setPicked(c); setPrice(c.price > 0 ? c.price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : ""); setQty("1"); setDiscount(""); setTerm(""); setDiscMode("brl"); setError(null) }}
+                          className="flex items-center gap-3 min-w-0 flex-1 text-left">
+                          {c.image_path ? (
+                            /* eslint-disable-next-line @next/next/no-img-element */
+                            <img src={`/api/catalog-image/${c.id}`} alt="" className="size-10 rounded-xl object-cover shrink-0 ring-1 ring-slate-200" />
+                          ) : (
+                            <span className={`size-10 rounded-xl grid place-items-center shrink-0 ${c.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+                              {c.type === "service" ? <Wrench className="size-5" /> : <Package className="size-5" />}
+                            </span>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <p className="text-sm font-semibold text-slate-800 truncate">{c.name}</p>
+                              {inBasket > 0 && <span className="shrink-0 inline-flex items-center rounded-md bg-primary text-white text-[10px] font-bold px-1.5 h-4 leading-none tabular-nums">×{fmtQty(inBasket)}</span>}
+                            </div>
+                            <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                              {[c.sku, c.category].filter(Boolean).join(" · ") || (c.type === "service" ? "Serviço" : "Produto")}
+                              {c.max_discount_pct > 0 && <span className="ml-1.5 inline-flex items-center rounded bg-emerald-50 px-1.5 py-px text-[10px] font-semibold text-emerald-700 align-middle">até {c.max_discount_pct}%</span>}
+                            </p>
+                          </div>
+                          <span className="text-right shrink-0 pl-1">
+                            <span className="text-sm font-bold text-slate-900 tabular-nums">
+                              {brl(c.price)}<span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[c.billing].suffix}</span>
+                            </span>
+                            {c.table_label && <span className="block text-[9px] font-semibold text-sky-600">{c.table_label}</span>}
+                          </span>
+                        </button>
+                        <button type="button" disabled={pending} onClick={() => quickAdd(c)} title="Adicionar (qtd 1)" aria-label={`Adicionar ${c.name}`}
+                          className={`size-9 grid place-items-center rounded-lg border shrink-0 transition-colors disabled:opacity-40 ${inBasket ? "border-primary-200 bg-primary-100 text-primary-700 hover:bg-primary-200" : "border-slate-200 text-slate-500 hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600"}`}>
+                          <Plus className="size-4" />
+                        </button>
+                      </div>
+                    )
+                  })}
+                  {hasMore && (
+                    <button type="button" onClick={loadMore} disabled={loadingMore}
+                      className="w-full mt-1 py-2 text-[11px] font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-lg transition-colors inline-flex items-center justify-center gap-1.5">
+                      {loadingMore ? <><Loader2 className="size-3.5 animate-spin" /> Carregando…</> : "Carregar mais"}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {dealItemCount > 0 && (
+              /* rodapé-recibo: o valor do negócio (motor computeDealValue) cresce a cada add */
+              <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-slate-200 bg-white shrink-0">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium text-slate-400 leading-none">{dealItemCount} {dealItemCount === 1 ? "item no negócio" : "itens no negócio"}</p>
+                  <p className="text-base font-bold text-slate-900 tabular-nums mt-1 leading-none">
+                    {brl(dealTotal)}
+                    {dealMrr > 0 && <span className="ml-2 text-xs font-semibold text-primary-700">+ {brl(dealMrr)}/mês</span>}
+                  </p>
+                </div>
+                <button type="button" onClick={onClose} className="h-9 px-5 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors shrink-0">Concluir</button>
               </div>
-            )}
-            {catalog !== null && catalog.length > 0 && filtered.length === 0 && (
-              <p className="text-[11px] text-slate-400 text-center py-8">Nada encontrado com esse termo.</p>
             )}
           </div>
         ) : (
           /* passo 2 — configurar quantidade/desconto/prazo */
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {!edit && <button type="button" onClick={() => setPicked(null)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-700"><ArrowLeft className="size-3" /> trocar item</button>}
-            <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
-              <span className={`size-8 rounded-lg grid place-items-center shrink-0 ${active.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-100 text-primary-600"}`}>
-                {active.type === "service" ? <Wrench className="size-4" /> : <Package className="size-4" />}
+            <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200">
+              <span className={`size-10 rounded-xl grid place-items-center shrink-0 ${active.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+                {active.type === "service" ? <Wrench className="size-5" /> : <Package className="size-5" />}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold text-slate-800 truncate">
+                <p className="text-sm font-semibold text-slate-800 truncate">
                   {active.name}
                   {(picked?.table_label ?? edit?.price_table_label) && <span className="ml-1.5 text-[9px] font-bold text-sky-600 align-middle">{picked?.table_label ?? edit?.price_table_label}</span>}
                 </p>
-                <p className="text-[10px] text-slate-400">
-                  {BILLING_PT[active.billing].label} · tabela {brl(active.listPrice)}{BILLING_PT[active.billing].suffix}
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {BILLING_PT[active.billing].label} · tabela <span className="font-semibold text-slate-600 tabular-nums">{brl(active.listPrice)}{BILLING_PT[active.billing].suffix}</span>
                   {active.maxPct > 0
                     ? <span className="text-emerald-600 font-semibold"> · pode chegar a {brl(active.listPrice * (1 - active.maxPct / 100))} (até {active.maxPct}%)</span>
                     : <span className="text-slate-400"> · sem desconto</span>}
@@ -1838,7 +1959,7 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Preço unitário</label>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">Preço unitário</label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>
                   <input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0,00"
@@ -1849,7 +1970,7 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
                 )}
               </div>
               <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Quantidade{active.unit !== "un" ? ` · ${unitSpec(active.unit).symbol}` : ""}</label>
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">Quantidade{active.unit !== "un" ? ` · ${unitSpec(active.unit).symbol}` : ""}</label>
                 <input value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" autoFocus className={field} />
               </div>
             </div>
@@ -1857,7 +1978,7 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="text-[11px] font-semibold text-slate-600">Desconto <span className="text-slate-300 font-normal">(opcional)</span></label>
+                  <label className="text-[11px] font-medium text-slate-500">Desconto <span className="text-slate-300 font-normal">(opcional)</span></label>
                   <div className="inline-flex rounded-md border border-slate-200 overflow-hidden">
                     <button type="button" onClick={() => switchDiscMode("brl")}
                       className={`px-2 py-0.5 text-[10px] font-bold transition-colors ${discMode === "brl" ? "bg-primary text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}>R$</button>
@@ -1876,17 +1997,20 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
                   const q = Number(qty.replace(",", "."))
                   const base = Number.isFinite(q) ? effPrice * q : 0
                   const pct = base > 0 ? (discValue / base) * 100 : 0
+                  const over = active.maxPct > 0 && pct > active.maxPct + 0.05
                   return (
                     <p className="text-[10px] tabular-nums mt-1 text-slate-400">
                       = {discMode === "pct" ? `−${brl(discValue)}${BILLING_PT[active.billing].suffix}` : `${(Math.round(pct * 10) / 10).toLocaleString("pt-BR")}%`}
-                      {active.maxPct > 0 && pct > active.maxPct + 0.05 && <span className="text-red-600 font-semibold"> · acima do teto ({active.maxPct}%)</span>}
+                      {active.maxPct > 0 && (over
+                        ? <span className="text-red-600 font-semibold"> · acima do teto ({active.maxPct}%)</span>
+                        : <span className="text-emerald-600 font-semibold"> · dentro do teto ({active.maxPct}%)</span>)}
                     </p>
                   )
                 })()}
               </div>
               {recurring && (
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Prazo <span className="text-slate-300 font-normal">(meses)</span></label>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">Prazo <span className="text-slate-300 font-normal">(meses)</span></label>
                   <input value={term} onChange={(e) => setTerm(e.target.value.replace(/[^\d]/g, ""))} inputMode="numeric" placeholder={`${DEFAULT_TERM_MONTHS} (padrão)`} className={`${field} tabular-nums`} />
                 </div>
               )}
@@ -1896,17 +2020,24 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, onClose,
             )}
 
             {preview != null && (() => {
+              const q  = Number(qty.replace(",", "."))
               const tm = term.trim() ? Math.floor(Number(term)) : DEFAULT_TERM_MONTHS
               const f  = active.billing === "monthly" ? tm : active.billing === "yearly" ? tm / 12 : 1
+              const d  = discount.trim() && !Number.isNaN(discValue) ? discValue : 0
               return (
-                <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-primary-50/50 border border-primary-100 text-xs">
-                  <span className="text-slate-500">Linha</span>
-                  <span className="text-right">
-                    <span className="font-bold text-primary-700 tabular-nums">{brl(preview)}{BILLING_PT[active.billing].suffix}</span>
+                <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-xl bg-primary-50 border border-primary-100">
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-primary-700">Total da linha</p>
+                    <p className="text-[11px] text-slate-500 tabular-nums mt-0.5 truncate">
+                      {brl(effPrice ?? 0)} × {fmtQty(q)}{d > 0 && <> − {brl(d)} de desconto</>}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="text-2xl font-extrabold text-slate-900 tabular-nums leading-none">{brl(preview)}<span className="text-xs font-semibold text-slate-500">{BILLING_PT[active.billing].suffix}</span></span>
                     {recurring && Number.isFinite(f) && f > 0 && (
-                      <span className="block text-[10px] text-slate-400 tabular-nums">{tm} meses no total: {brl(preview * f)}</span>
+                      <span className="block text-[10px] text-slate-400 tabular-nums mt-1">{tm} meses no total: {brl(preview * f)}</span>
                     )}
-                  </span>
+                  </div>
                 </div>
               )
             })()}

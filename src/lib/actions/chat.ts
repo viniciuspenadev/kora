@@ -1607,6 +1607,10 @@ export interface ContactInfoInput {
   marketing_opt_in?: boolean | null
   /** Tabela de preço do cliente (T2 — "esse cliente é atacado"). Null = padrão. */
   price_table_id?: string | null
+  /** PF/PJ explícito (F2 — não deriva de dígitos). */
+  person_type?: string | null
+  /** Empresa (PJ) vinculada — entidade tenant_companies (F2). Null = desvincula. */
+  company_id?: string | null
 }
 
 export async function updateContactInfo(
@@ -1650,6 +1654,21 @@ export async function updateContactInfo(
       if (!tb) return { error: "Tabela de preço inválida" }
     }
     payload.price_table_id = next
+  }
+  // PF/PJ explícito (F2) — só aceita valores conhecidos.
+  if (input.person_type !== undefined) {
+    payload.person_type = input.person_type === "pf" || input.person_type === "pj" ? input.person_type : null
+  }
+  // Empresa vinculada (F2) — anti-IDOR: a empresa tem que ser DO tenant (o trigger no banco
+  // também barra, mas validamos aqui pra devolver erro limpo).
+  if (input.company_id !== undefined) {
+    const next = input.company_id || null
+    if (next) {
+      const { data: co } = await supabaseAdmin.from("tenant_companies")
+        .select("id").eq("id", next).eq("tenant_id", session.user.tenantId).maybeSingle()
+      if (!co) return { error: "Empresa inválida" }
+    }
+    payload.company_id = next
   }
 
   // Validação rápida — email no formato básico (não vamos rodar regex perfeita)

@@ -9,7 +9,7 @@ import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
   Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Blocks, FileText, Headset, BookMarked, IdCard,
-  Plug, PanelLeftClose, PanelLeftOpen, Package, Boxes, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send, Funnel, Plus,
+  Plug, PanelLeftClose, PanelLeftOpen, Package, Boxes, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send, Funnel, Plus, Building2,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -78,25 +78,28 @@ const NAV: NavItem[] = [
     ],
   },
   { href: "/contatos", label: "Contatos", icon: <Contact className={topIcon} strokeWidth={1.75} />, module: "contacts", capability: "contacts_access" },
+  // Empresas (PJ, CRM F2) — tenant-wide por design. Gate = módulo "crm" só (sem
+  // capability): paridade EXATA com a página (reads = módulo+tenant). Se um dia
+  // quiser esconder de atendente comum, adicionar a MESMA capability aqui E no gate da página.
+  { href: "/empresas", label: "Empresas", icon: <Building2 className={topIcon} strokeWidth={1.75} />, module: "crm" },
   {
     key:        "negocios",
     label:      "Negócios",
     icon:       <Briefcase className={topIcon} strokeWidth={1.75} />,
-    module:     "crm",
-    capability: "deals_access",   // owner/admin OU atendente com Ver+ de Negócios
+    // Grupo-CONTÊINER sem gate próprio (owner 2026-07-25): aparece se houver QUALQUER
+    // filho visível — cada filho tem seu módulo+capability. Assim um atendente só de
+    // Estoque/Catálogo ainda vê o item dele aqui, sem exigir acesso a Negócios.
     children: [
-      { href: "/negocios/painel",    label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, capability: "deals_manage" },
-      { href: "/negocios/propostas", label: "Propostas",       icon: <FileText  className={subIcon} strokeWidth={1.75} />, capability: "deals_manage" },
+      { href: "/negocios/painel",    label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_manage" },
+      { href: "/negocios/propostas", label: "Propostas",       icon: <FileText  className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_access" },
       // "Funil de Vendas" = link ao board + botão dedicado que expande os funis ativos.
-      { href: "/negocios",        label: "Funil de Vendas", icon: <Funnel   className={subIcon} strokeWidth={1.75} />, dealSwitcher: true },
+      { href: "/negocios",        label: "Funil de Vendas", icon: <Funnel   className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_access", dealSwitcher: true },
+      // Catálogo (serve Negócios e Estoque) + Estoque movidos pra CÁ (org do owner) —
+      // cada um gateado pelo seu próprio módulo/capability (independentes de Negócios).
+      { href: "/catalogo",        label: "Catálogo",        icon: <Package  className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "catalog_access" },
+      { href: "/estoque",         label: "Estoque",         icon: <Boxes    className={subIcon} strokeWidth={1.75} />, module: "inventory", capability: "inventory_access" },
     ],
   },
-  // Top-level: visível pra owner/admin OU agente com a capability inventory_access
-  // (não fica sob "Negócios" que é adminOnly — senão o atendente não veria).
-  { href: "/estoque", label: "Estoque", icon: <Boxes className={topIcon} strokeWidth={1.75} />, module: "inventory", capability: "inventory_access" },
-  // Catálogo: módulo INDEPENDENTE (serve Negócios e Estoque). Visível pra owner/admin
-  // OU agente com catalog_access. Gate de módulo = crm (comum); a página aceita crm OU inventory.
-  { href: "/catalogo", label: "Catálogo", icon: <Package className={topIcon} strokeWidth={1.75} />, module: "crm", capability: "catalog_access" },
   {
     key:        "marketing",
     label:      "Marketing",

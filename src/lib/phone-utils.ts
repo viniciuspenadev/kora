@@ -45,15 +45,22 @@ export function normalizeWhatsAppPhone(input: string | null | undefined, default
   return { phone: digits, jid: `${digits}@s.whatsapp.net` }
 }
 
-/** Formata número para exibição: +55 (11) 99999-9999. Vazio/null → "" (contato sem telefone, ex: site-chat). */
+/**
+ * Formata número para exibição. World-ready:
+ * - BR (13/12 díg começando com 55): mantém o formato com parênteses — padrão do app.
+ * - Estrangeiro / formato incomum: libphonenumber formata corretamente (+1 415 555-2671).
+ * Vazio/null → "" (contato sem telefone, ex: site-chat).
+ */
 export function formatPhoneDisplay(phone: string | null | undefined): string {
   if (!phone) return ""
   const digits = phone.replace(/\D/g, "")
-  if (digits.length === 13) {
-    return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`
+  if (digits.length === 13 && digits.startsWith("55")) {
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 9)}-${digits.slice(9)}`
   }
-  if (digits.length === 12) {
-    return `+${digits.slice(0, 2)} (${digits.slice(2, 4)}) ${digits.slice(4, 8)}-${digits.slice(8)}`
+  if (digits.length === 12 && digits.startsWith("55")) {
+    return `+55 (${digits.slice(2, 4)}) ${digits.slice(4, 8)}-${digits.slice(8)}`
   }
+  const parsed = parsePhoneNumberFromString(`+${digits}`)
+  if (parsed?.isValid()) return parsed.formatInternational()
   return `+${digits}`
 }

@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect } from "react"
 import { SimpleSelect } from "@/components/ui/select"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
-import { Search, X, LayoutGrid, List, SlidersHorizontal, BarChart3, Funnel } from "lucide-react"
+import { Search, X, LayoutGrid, List, SlidersHorizontal, BarChart3, Funnel, Building2 } from "lucide-react"
 import type { DealsPageData, DealRow, DealPipeline } from "@/lib/actions/deals"
 import { DealsBoard } from "@/components/crm/deals-board"
 
@@ -59,7 +59,7 @@ export function NegociosClient({ data, pipelines }: { data: DealsPageData; pipel
       if (status && d.status !== status) return false
       if (agent && d.created_by !== agent) return false
       if (unit === "none" ? d.unit_id != null : unit && d.unit_id !== unit) return false
-      if (q && !(d.name ?? "").toLowerCase().includes(q) && !(d.contact_name ?? "").toLowerCase().includes(q)) return false
+      if (q && !(d.name ?? "").toLowerCase().includes(q) && !(d.contact_name ?? "").toLowerCase().includes(q) && !(d.company_name ?? "").toLowerCase().includes(q)) return false
       return true
     })
   }, [data.deals, search, pipe, status, agent, unit])
@@ -181,7 +181,12 @@ function DealTableRow({ d, onOpen }: { d: DealRow; onOpen: () => void }) {
   return (
     <tr onClick={onOpen} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/50 transition-colors cursor-pointer">
       <td className="py-2.5 px-3"><span className="font-medium text-slate-900">{d.name?.trim() || "Negócio sem nome"}</span></td>
-      <td className="py-2.5 px-3 text-slate-600"><span className="block truncate max-w-[160px]">{d.contact_name ?? "—"}</span></td>
+      <td className="py-2.5 px-3 text-slate-600">
+        <span className="block truncate max-w-[180px]">{d.contact_name ?? d.company_name ?? "—"}</span>
+        {d.company_name && d.company_name !== d.contact_name && (
+          <span className="flex items-center gap-1 text-[10px] text-slate-400 truncate max-w-[180px]"><Building2 className="size-3 shrink-0" />{d.company_name}</span>
+        )}
+      </td>
       <td className="py-2.5 px-3 text-slate-500 text-xs hidden md:table-cell">{d.pipeline_name ?? "—"}</td>
       <td className="py-2.5 px-3">
         {d.status === "won" ? (

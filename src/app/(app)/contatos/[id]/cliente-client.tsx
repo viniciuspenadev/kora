@@ -17,6 +17,7 @@ import { SourceLogo } from "@/components/chat/source-logo"
 import { NewDealDialog } from "@/components/chat/new-deal-dialog"
 import { MergeContactButton } from "@/components/chat/merge-contact-dialog"
 import { updateContactInfo } from "@/lib/actions/chat"
+import { lookupCep as lookupCepApi } from "@/lib/cep"
 import { updateContactIdentity, setContactOwner, transferClient } from "@/lib/actions/contacts"
 import { TransferClientModal } from "@/components/crm/transfer-client-modal"
 import { setContactCustomFields, type ContactFieldDef } from "@/lib/actions/custom-fields"
@@ -393,11 +394,9 @@ function IdentityEdit({ contact, canEditIdentity, customFields, priceTables, onD
     const cep = f.address_cep.replace(/\D/g, "")
     if (cep.length !== 8) return
     setCepLoading(true)
-    try {
-      const r = await fetch(`https://viacep.com.br/ws/${cep}/json/`)
-      const d = await r.json()
-      if (!d.erro) setF((s) => ({ ...s, address_street: d.logradouro || s.address_street, address_district: d.bairro || s.address_district, address_city: d.localidade || s.address_city, address_state: d.uf || s.address_state }))
-    } catch { /* offline / cep inválido — ignora */ }
+    // Proxy do servidor — o browser não pode chamar viacep direto (CSP connect-src 'self').
+    const d = await lookupCepApi(cep)
+    if (d) setF((s) => ({ ...s, address_street: d.street || s.address_street, address_district: d.district || s.address_district, address_city: d.city || s.address_city, address_state: d.state || s.address_state }))
     setCepLoading(false)
   }
 

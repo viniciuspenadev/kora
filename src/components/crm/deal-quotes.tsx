@@ -13,6 +13,7 @@ import { markQuoteAccepted, markQuoteDeclined, voidQuote, sendQuoteInChat, disca
 import type { DocumentRow, DocumentSettings, DocumentStatus } from "@/lib/commercial/documents"
 import type { DealItemView } from "@/lib/actions/deals"
 import { brlCents, shortDate, StatusChip } from "@/components/crm/quote-status"
+import { QuoteViewer } from "@/components/crm/quote-viewer"
 
 /** ativa/enviada aceitam marcar aceita/recusada (rascunho ainda nem foi gerado). */
 const canDecide = (s: DocumentStatus) => s === "active" || s === "sent"
@@ -206,7 +207,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
         </ul>
       )}
 
-      {viewer && <QuoteViewer doc={viewer} onClose={() => setViewer(null)} />}
+      {viewer && <QuoteViewer id={viewer.id} code={viewer.code} status={viewer.status} onClose={() => setViewer(null)} />}
       {sendDoc && (
         <SendModal doc={sendDoc} onClose={() => setSendDoc(null)}
           onSent={() => { setSendDoc(null); toast.success("Cotação enviada no WhatsApp"); router.refresh() }} />
@@ -226,36 +227,6 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
           onConfirm={doDiscard} onClose={() => setDiscarding(null)} />
       )}
     </section>
-  )
-}
-
-// ── Viewer embutido (iframe da rota autenticada — sem link externo) ──
-function QuoteViewer({ doc, onClose }: { doc: ViewerRef; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [onClose])
-  return (
-    <div className="fixed inset-4 z-[80] bg-white rounded-2xl border border-slate-200 shadow-2xl flex flex-col overflow-hidden">
-      <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-200 shrink-0">
-        <span className="size-8 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><FileText className="size-4" /></span>
-        <div className="flex items-center gap-2 min-w-0">
-          <p className="text-sm font-bold text-slate-900 tabular-nums truncate">{doc.code}</p>
-          <StatusChip status={doc.status} />
-        </div>
-        <div className="ml-auto flex items-center gap-2 shrink-0">
-          <a href={`/api/documents/${doc.id}/pdf?download=1`} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 bg-white hover:bg-slate-50">
-            <Download className="size-3.5" /> Baixar
-          </a>
-          <button onClick={onClose} className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 bg-white hover:bg-slate-50">
-            <X className="size-3.5" /> Fechar
-          </button>
-        </div>
-      </div>
-      <iframe src={`/api/documents/${doc.id}/pdf`} title={`Cotação ${doc.code}`} className="w-full flex-1 rounded-b-2xl bg-slate-100" />
-    </div>
   )
 }
 
