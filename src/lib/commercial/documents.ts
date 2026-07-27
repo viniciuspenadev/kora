@@ -47,7 +47,16 @@ export interface QuoteIssuer {
   address:    QuoteAddress | null
   logo_path:  string | null   // storage path do logo da unidade (não é URL)
 }
-export interface QuoteClient { name: string; phone: string | null }
+export interface QuoteClient {
+  name:    string
+  phone:   string | null
+  // Cliente rico (P0 2026-07-26) — campos OPCIONAIS: snapshots antigos só têm name+phone.
+  doc_id?:  string | null   // CPF/CNPJ como digitado (label PF/PJ derivado no PDF pelo nº de dígitos)
+  email?:   string | null
+  company?: string | null   // razão social da empresa (F2: vem da entidade tenant_companies; senão texto livre)
+  attn?:    string | null   // interlocutor "A/C: Fulano" (F2 — a pessoa do contato quando o cliente é PJ)
+  address?: QuoteAddress | null
+}
 export interface QuoteDealRef { id: string; name: string | null; seller: string | null }
 export interface QuoteItem {
   name:             string
@@ -211,6 +220,33 @@ function termFactor(billing: Billing, termMonths: number | null): number {
   return billing === "monthly" ? term : term / 12
 }
 
+type ContactRow = {
+  push_name: string | null; custom_name: string | null; phone_number: string | null
+  doc_id: string | null; email: string | null; company: string | null
+  address_cep: string | null; address_street: string | null; address_number: string | null
+  address_complement: string | null; address_district: string | null; address_city: string | null; address_state: string | null
+}
+
+/** Contato → cliente rico do snapshot. Endereço só entra se tiver ao menos um campo. */
+function contactToClient(c: ContactRow | null): QuoteClient {
+  const name  = c?.custom_name?.trim() || c?.push_name?.trim() || "Cliente"
+  const phone = c?.phone_number ? formatPhoneDisplay(c.phone_number) : null
+  if (!c) return { name, phone }
+  const address: QuoteAddress = {
+    zip_code:   c.address_cep,        street:  c.address_street, number: c.address_number,
+    complement: c.address_complement, district: c.address_district,
+    city:       c.address_city,       state:   c.address_state,
+  }
+  const hasAddr = Object.values(address).some(Boolean)
+  return {
+    name, phone,
+    doc_id:  c.doc_id?.trim()  || null,
+    email:   c.email?.trim()   || null,
+    company: c.company?.trim() || null,
+    address: hasAddr ? address : null,
+  }
+}
+
 /**
  * Constrói o snapshot IMUTÁVEL da cotação a partir do estado atual do negócio.
  * Usado tanto pra gerar (createQuote) quanto pra prévia no modal.
@@ -219,15 +255,38 @@ export async function buildQuoteSnapshot(
   tenantId: string, dealId: string, cond: DocumentConditionsInput,
 ): Promise<{ snapshot: QuoteSnapshot; contactId: string | null; unitId: string | null } | { error: string }> {
   const { data: d } = await supabaseAdmin.from("tenant_deals").select(`
-    id, name, assigned_to, contact_id, unit_id, payment_method, installments,
-    chat_contacts ( push_name, custom_name, phone_number )
+    id, name, assigned_to, contact_id, unit_id, payment_method, installments, company_id,
+    chat_contacts ( push_name, custom_name, phone_number, doc_id, email, company, company_id,
+      address_cep, address_street, address_number, address_complement, address_district, address_city, address_state )
   `).eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()
   if (!d) return { error: "Negócio não encontrado" }
   const deal = d as Record<string, unknown>
 
-  const c = deal.chat_contacts as { push_name: string | null; custom_name: string | null; phone_number: string | null } | null
-  const clientName = c?.custom_name?.trim() || c?.push_name?.trim() || "Cliente"
-  const clientPhone = c?.phone_number ? formatPhoneDisplay(c.phone_number) : null
+  const contactRow = deal.chat_contacts as (ContactRow & { company_id: string | null }) | null
+  const client = contactToClient(contactRow)
+
+  // Empresa (F2) — destinatário canônico: derive-at-read (carimbo do negócio ‖ empresa do
+  // contato). Existindo a entidade, ela SOBRESCREVE o texto livre `company` + doc/endereço no
+  // snapshot (o contato vira o interlocutor A/C). Sem entidade = comportamento clássico.
+  const companyId = (deal.company_id as string | null) ?? contactRow?.company_id ?? null
+  if (companyId) {
+    const { data: co } = await supabaseAdmin.from("tenant_companies")
+      .select("name, legal_name, doc_id, address_cep, address_street, address_number, address_complement, address_district, address_city, address_state")
+      .eq("id", companyId).eq("tenant_id", tenantId).maybeSingle()
+    if (co) {
+      const co2 = co as Record<string, string | null>
+      const coAddr: QuoteAddress = {
+        zip_code: co2.address_cep, street: co2.address_street, number: co2.address_number,
+        complement: co2.address_complement, district: co2.address_district, city: co2.address_city, state: co2.address_state,
+      }
+      client.company = (co2.legal_name?.trim() || co2.name?.trim()) ?? client.company ?? null
+      client.doc_id  = co2.doc_id?.trim() || client.doc_id || null
+      // A/C só quando o interlocutor é uma PESSOA distinta da razão (evita "A/C: [própria razão]"
+      // no caso PJ em que o contato foi cadastrado com o nome da empresa).
+      client.attn    = client.name && client.name !== client.company ? client.name : null
+      if (Object.values(coAddr).some(Boolean)) client.address = coAddr
+    }
+  }
 
   // Vendedor = dono do negócio (assigned_to → profiles.full_name).
   let seller: string | null = null
@@ -270,7 +329,7 @@ export async function buildQuoteSnapshot(
 
   const snapshot: QuoteSnapshot = {
     issuer,
-    client: { name: clientName, phone: clientPhone },
+    client,
     deal:   { id: dealId, name: (deal.name as string | null) ?? null, seller },
     items,
     conditions: {
@@ -305,7 +364,15 @@ async function snapshotToPdfData(snapshot: QuoteSnapshot, code: string, issuedAt
       phone: snapshot.issuer.phone, email: snapshot.issuer.email, address: snapshot.issuer.address,
     },
     logoDataUri,
-    client: snapshot.client,
+    client: {
+      name:    snapshot.client.name,
+      phone:   snapshot.client.phone,
+      doc_id:  snapshot.client.doc_id  ?? null,
+      email:   snapshot.client.email   ?? null,
+      company: snapshot.client.company ?? null,
+      attn:    snapshot.client.attn    ?? null,
+      address: snapshot.client.address ?? null,
+    },
     deal: { name: snapshot.deal.name, seller: snapshot.deal.seller },
     items: snapshot.items.map((i) => ({
       name: i.name, type: i.type, qty: i.qty, unit: i.unit,

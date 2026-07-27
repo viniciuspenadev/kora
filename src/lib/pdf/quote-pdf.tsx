@@ -56,7 +56,8 @@ export interface QuotePdfData {
   issuer:       QuotePdfIssuer
   /** Logo da unidade como data URI base64 (baixado do storage no server). */
   logoDataUri:  string | null
-  client:       { name: string; phone: string | null }
+  // Cliente rico (P0 2026-07-26) — campos opcionais (docs legados só têm name+phone).
+  client:       { name: string; phone: string | null; doc_id?: string | null; email?: string | null; company?: string | null; attn?: string | null; address?: QuotePdfAddress | null }
   deal:         { name: string | null; seller: string | null }
   items:        QuotePdfItem[]
   totals:       { subtotal_cents: number; discount_cents: number; total_cents: number }
@@ -76,6 +77,14 @@ function condHasContent(v: RichDoc | string | null): boolean {
   if (v == null) return false
   if (typeof v === "string") return v.trim() !== ""
   return !isEmptyRichDoc(v)
+}
+
+/** Rótulo do documento do cliente derivando PF/PJ pelo nº de dígitos (11=CPF, 14=CNPJ). */
+function clientDocLabel(doc: string | null): string | null {
+  if (!doc?.trim()) return null
+  const digits = doc.replace(/\D/g, "")
+  const kind = digits.length === 11 ? "CPF" : digits.length === 14 ? "CNPJ" : "Documento"
+  return `${kind}: ${doc.trim()}`
 }
 
 /** Endereço do emissor em até 3 linhas (mesmo formato da fatura). */
@@ -346,7 +355,12 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
           <View style={s.party}>
             <Text style={s.partyLabel}>Preparada para</Text>
             <Text style={s.partyName}>{data.client.name}</Text>
+            {data.client.company && data.client.company !== data.client.name ? <Text style={s.partyLine}>{data.client.company}</Text> : null}
+            {data.client.attn && data.client.attn !== data.client.name ? <Text style={s.partyLine}>A/C: {data.client.attn}</Text> : null}
+            {clientDocLabel(data.client.doc_id ?? null) ? <Text style={s.partyLine}>{clientDocLabel(data.client.doc_id ?? null)}</Text> : null}
+            {issuerAddrLines(data.client.address ?? null).map((l, i) => <Text key={i} style={s.partyLine}>{l}</Text>)}
             {data.client.phone ? <Text style={s.partyLine}>{data.client.phone}</Text> : null}
+            {data.client.email ? <Text style={s.partyLine}>{data.client.email}</Text> : null}
           </View>
           <View style={s.party}>
             <Text style={s.partyLabel}>Referente a</Text>

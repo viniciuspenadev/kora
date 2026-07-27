@@ -37,13 +37,16 @@ export async function createTask(input: {
   const t = session.user.tenantId
 
   let contactId = input.contactId ?? null
+  let dealAssignedTo: string | null = null
   const dealId  = input.dealId ?? null
   if (dealId) {
-    const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+    const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, assigned_to").eq("id", dealId).eq("tenant_id", t).maybeSingle()
     if (!deal) return { error: "Negócio inválido" }
-    contactId = (deal as { contact_id: string | null }).contact_id
+    const dl = deal as { contact_id: string | null; assigned_to: string | null }
+    contactId = dl.contact_id
+    dealAssignedTo = dl.assigned_to
   }
-  if (!(await canAccessDeal(t, contactId))) return { error: "Sem acesso" }
+  if (!(await canAccessDeal(t, contactId, dealAssignedTo))) return { error: "Sem acesso" }
 
   const { data, error } = await supabaseAdmin.from("tenant_tasks").insert({
     tenant_id:   t,
@@ -65,10 +68,10 @@ export async function setTaskDone(taskId: string, done: boolean): Promise<{ ok: 
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
-  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id, deal_id, title").eq("id", taskId).eq("tenant_id", t).maybeSingle()
+  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id, deal_id, title, assigned_to").eq("id", taskId).eq("tenant_id", t).maybeSingle()
   if (!task) return { error: "Tarefa não encontrada" }
-  const tk = task as { contact_id: string | null; deal_id: string | null; title: string }
-  if (!(await canAccessDeal(t, tk.contact_id))) return { error: "Sem acesso" }
+  const tk = task as { contact_id: string | null; deal_id: string | null; title: string; assigned_to: string | null }
+  if (!(await canAccessDeal(t, tk.contact_id, tk.assigned_to))) return { error: "Sem acesso" }
   await supabaseAdmin.from("tenant_tasks").update({
     status:  done ? "done" : "pending",
     done_at: done ? new Date().toISOString() : null,
@@ -85,9 +88,10 @@ export async function snoozeTask(taskId: string, dueAt: string): Promise<{ ok: t
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
   const t = session.user.tenantId
-  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id").eq("id", taskId).eq("tenant_id", t).maybeSingle()
+  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id, assigned_to").eq("id", taskId).eq("tenant_id", t).maybeSingle()
   if (!task) return { error: "Tarefa não encontrada" }
-  if (!(await canAccessDeal(t, (task as { contact_id: string | null }).contact_id))) return { error: "Sem acesso" }
+  const tk = task as { contact_id: string | null; assigned_to: string | null }
+  if (!(await canAccessDeal(t, tk.contact_id, tk.assigned_to))) return { error: "Sem acesso" }
   // NOTA: rearmar o lembrete (reminded_at = null) entra quando a migration reminded_at for aplicada.
   await supabaseAdmin.from("tenant_tasks")
     .update({ due_at: dueAt, updated_at: new Date().toISOString() })
@@ -101,8 +105,10 @@ export async function listDealTasks(dealId: string): Promise<TaskRow[]> {
   if (!session?.user?.tenantId) return []
   try { await requireModule("crm") } catch { return [] }
   const t = session.user.tenantId
-  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id").eq("id", dealId).eq("tenant_id", t).maybeSingle()
-  if (!deal || !(await canAccessDeal(t, (deal as { contact_id: string | null }).contact_id))) return []
+  const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, assigned_to").eq("id", dealId).eq("tenant_id", t).maybeSingle()
+  if (!deal) return []
+  const dl = deal as { contact_id: string | null; assigned_to: string | null }
+  if (!(await canAccessDeal(t, dl.contact_id, dl.assigned_to))) return []
 
   const { data } = await supabaseAdmin.from("tenant_tasks")
     .select("id, title, due_at, status, done_at, created_at, assigned_to")
