@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/ping-evolution",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/daily-reports",
+      "schedule": "0 21 * * *"
+    },
+    {
+      "path": "/api/cron/billing",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/trial-housekeeping",
+      "schedule": "5 8 * * *"
+    }
+  ]
+}

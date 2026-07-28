@@ -1,0 +1,49 @@
+"use server"
+
+import { supabaseAdmin } from "@/lib/supabase"
+import bcrypt from "bcryptjs"
+import { validatePassword } from "@/lib/password"
+import { seedTrustForCurrentDevice } from "@/lib/auth/trust"
+
+export async function registerSuperAdmin(formData: FormData): Promise<{ error?: string; ok?: boolean }> {
+  const { count } = await supabaseAdmin
+    .from("platform_admins")
+    .select("id", { count: "exact", head: true })
+
+  if ((count ?? 0) > 0) {
+    return { error: "Setup já foi concluído." }
+  }
+
+  const email    = (formData.get("email") as string)?.trim().toLowerCase()
+  const fullName = (formData.get("full_name") as string)?.trim()
+  const password = formData.get("password") as string
+
+  if (!email || !fullName) return { error: "Preencha todos os campos." }
+  const pwErr = validatePassword(password)
+  if (pwErr) return { error: pwErr }
+
+  const passwordHash = await bcrypt.hash(password, 10)
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from("profiles")
+    .insert({ email, full_name: fullName, password_hash: passwordHash })
+    .select("id")
+    .single()
+
+  if (profileError) return { error: `Erro ao criar perfil: ${profileError.message}` }
+
+  const { error: adminError } = await supabaseAdmin
+    .from("platform_admins")
+    .insert({ user_id: profile.id })
+
+  if (adminError) {
+    await supabaseAdmin.from("profiles").delete().eq("id", profile.id)
+    return { error: `Erro ao registrar admin: ${adminError.message}` }
+  }
+
+  // Device trust: bootstrap único da plataforma, a pessoa acabou de criar a
+  // própria conta → semeia confiança pro auto-login não cair em desafio.
+  await seedTrustForCurrentDevice(profile.id)
+
+  return { ok: true }
+}
