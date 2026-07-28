@@ -3,6 +3,7 @@ import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
+import { allowedFrom, statusPatch, type MessageStatus } from "@/lib/channels/message-status"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/llm/context"
@@ -641,16 +642,12 @@ interface MetaStatus {
 }
 
 async function processStatus(tenantId: string, st: MetaStatus) {
-  const map: Record<string, { status: string; field?: string }> = {
-    sent:      { status: "sent" },
-    delivered: { status: "delivered", field: "delivered_at" },
-    read:      { status: "read", field: "read_at" },
-    failed:    { status: "failed" },
+  const KNOWN: Record<string, MessageStatus> = {
+    sent: "sent", delivered: "delivered", read: "read", failed: "failed",
   }
-  const m = map[st.status]
-  if (m) {
-    const update: Record<string, unknown> = { status: m.status }
-    if (m.field) update[m.field] = new Date().toISOString()
+  const next = KNOWN[st.status]
+  if (next) {
+    const update: Record<string, unknown> = statusPatch(next)
     // Falha → guarda o MOTIVO no metadata (merge) pra bolha exibir "por que falhou".
     if (st.status === "failed" && st.errors?.length) {
       const e = st.errors[0]
@@ -660,7 +657,14 @@ async function processStatus(tenantId: string, st: MetaStatus) {
       const meta = (row?.metadata ?? {}) as Record<string, unknown>
       update.metadata = { ...meta, error: { code: e.code ?? null, title: e.title ?? null, message: e.message ?? null } }
     }
-    await supabaseAdmin.from("chat_messages").update(update).eq("whatsapp_msg_id", st.id).eq("tenant_id", tenantId)
+    // ⚠️ Checar o erro NÃO é opcional: o supabase-js não lança em falha do PostgREST.
+    // Ficar sem esse if custou ~2 meses de recibos no canal oficial (delivered_at/read_at
+    // não existiam → o UPDATE inteiro era recusado, calado). Falhou, tem que aparecer.
+    const { error: upErr } = await supabaseAdmin
+      .from("chat_messages").update(update)
+      .eq("whatsapp_msg_id", st.id).eq("tenant_id", tenantId)
+      .in("status", allowedFrom(next))   // forward-only: webhook atrasado não regride
+    if (upErr) console.error("[meta-status] update chat_messages:", upErr.code, upErr.message)
 
     // Campanha: casa o status pelo wamid (funil da Transmissão). Forward-only —
     // filtra pelos status ANTERIORES pra webhook fora de ordem nunca regredir.

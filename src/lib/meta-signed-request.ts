@@ -33,6 +33,36 @@ export function parseSignedRequest(signed: string, appSecret: string): SignedReq
   }
 }
 
+/**
+ * Valida o `signed_request` contra TODOS os apps Meta da Kora (WhatsApp e Kora-IG),
+ * que têm segredos distintos, e devolve qual deles assinou.
+ *
+ * Fonte única pros dois callbacks (desautorização e exclusão de dados): validar só com
+ * `META_APP_SECRET` faria toda chamada do app do Instagram voltar 401 — e a Análise do
+ * App do Instagram testa exatamente essas URLs.
+ */
+export type MetaApp = "meta" | "instagram"
+
+export function verifySignedRequestAnyApp(
+  signed: string,
+): { payload: SignedRequestPayload; app: MetaApp } | null {
+  const candidates: Array<[MetaApp, string | undefined]> = [
+    ["meta",      process.env.META_APP_SECRET],
+    ["instagram", process.env.INSTAGRAM_APP_SECRET],
+  ]
+  for (const [app, secret] of candidates) {
+    if (!secret) continue
+    const payload = parseSignedRequest(signed, secret)
+    if (payload) return { payload, app }
+  }
+  return null
+}
+
+/** Algum segredo de app configurado? Sem nenhum, os callbacks são fail-closed (503). */
+export function hasAnyAppSecret(): boolean {
+  return Boolean(process.env.META_APP_SECRET || process.env.INSTAGRAM_APP_SECRET)
+}
+
 /** Lê o `signed_request` do corpo (form-urlencoded ou JSON). */
 export async function readSignedRequest(raw: string, contentType: string): Promise<string | null> {
   if (contentType.includes("application/json")) {

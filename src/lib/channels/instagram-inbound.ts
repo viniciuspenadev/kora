@@ -2,6 +2,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
+import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { fetchIgProfile } from "@/lib/instagram/api"
 import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
@@ -297,9 +298,13 @@ async function handleRead(igAccountId: string | null, m: IgMessaging): Promise<v
   if (!igAccountId || !mid) return
   const conn = await connectionFor(igAccountId)
   if (!conn) return
-  await supabaseAdmin.from("chat_messages")
-    .update({ status: "read", read_at: new Date().toISOString() })
+  // `read_at` só passou a existir na migration 20260728 — antes disso o PostgREST
+  // recusava este UPDATE inteiro e o ✓✓ do Instagram nunca acendia (falha calada).
+  const { error } = await supabaseAdmin.from("chat_messages")
+    .update(statusPatch("read"))
     .eq("tenant_id", conn.tenantId).eq("whatsapp_msg_id", mid).eq("sender_type", "agent")
+    .in("status", allowedFrom("read"))
+  if (error) console.error("[ig-status] update chat_messages:", error.code, error.message)
   log("read", { mid })
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { jidToPhone } from "@/lib/phone-utils"
+import { allowedFrom, statusPatch, type MessageStatus } from "@/lib/channels/message-status"
 import { getProvider } from "@/lib/providers"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
@@ -664,7 +665,7 @@ async function handleMessageUpdate(instance: { tenant_id: string }, data: unknow
     const u = update as { key?: { id?: string }; status?: string }
     if (!u.key?.id || !u.status) continue
 
-    const statusMap: Record<string, string> = {
+    const statusMap: Record<string, MessageStatus> = {
       DELIVERY_ACK: "delivered",
       READ:         "read",
       PLAYED:       "read",
@@ -672,11 +673,15 @@ async function handleMessageUpdate(instance: { tenant_id: string }, data: unknow
 
     const newStatus = statusMap[u.status]
     if (newStatus) {
-      await supabaseAdmin
+      // Mesma regra dos outros canais (message-status.ts): carimba delivered_at/read_at
+      // e trava forward-only — DELIVERY_ACK atrasado não pode desmarcar um READ.
+      const { error } = await supabaseAdmin
         .from("chat_messages")
-        .update({ status: newStatus })
+        .update(statusPatch(newStatus))
         .eq("whatsapp_msg_id", u.key.id)
         .eq("tenant_id", instance.tenant_id)
+        .in("status", allowedFrom(newStatus))
+      if (error) console.error("[evolution-status] update chat_messages:", error.code, error.message)
     }
   }
 }
