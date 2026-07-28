@@ -71,6 +71,11 @@ const TEMPLATE_FIELDS = new Set([
   "message_template_status_update",
   "message_template_quality_update",
   "message_template_category_update",
+  // Aliases do painel atual (v25.0): a Meta lista os fields de categoria com nome curto.
+  // Aceitar os dois evita o modo de falha clássico daqui — assinar no painel, achar que
+  // está ligado, e o handler nunca disparar porque o `field` chegou com outro nome.
+  "template_category_update",
+  "template_correct_category_detection",
 ])
 
 /** Value cru de um change de template (campos opcionais — Meta omite o que não muda). */
