@@ -11,6 +11,8 @@ import { getEnabledModuleSlugs } from "@/lib/modules"
 import { checkLimit } from "@/lib/limits"
 import { PageShell } from "@/components/ui/page-shell"
 import { OfficialDashboard } from "@/components/integrations/official/official-dashboard"
+import { BillingCard } from "@/components/integrations/official/billing-card"
+import { getInstanceBillingSummary } from "@/lib/actions/wa-billing"
 import { EmbeddedSignupButton } from "@/components/integrations/official/embedded-signup-button"
 import { BadgeCheck, ArrowLeft, Lock, ShieldAlert, AlertTriangle } from "lucide-react"
 
@@ -175,6 +177,10 @@ export default async function WhatsappOficialPage({ searchParams }: { searchPara
     error = (e as Error).message
   }
 
+  // Cobrança é dado NOSSO (banco), não da Meta — fica fora do try acima de propósito:
+  // a Graph API fora do ar não pode apagar o card.
+  const billing = await getInstanceBillingSummary(inst!.id as string)
+
   return (
     <PageShell
       title="WhatsApp API Oficial"
@@ -195,6 +201,8 @@ export default async function WhatsappOficialPage({ searchParams }: { searchPara
             Não foi possível carregar todos os dados ao vivo da Meta: {error}
           </div>
         )}
+
+        {billing && <BillingCard summary={billing} />}
 
         <OfficialDashboard
           phone={phone}
