@@ -382,7 +382,7 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
 
       // Status (delivered/read/failed + erro/cobrança)
       for (const st of (value.statuses as MetaStatus[] | undefined) ?? []) {
-        await processStatus(instance.tenant_id, st).catch((e) => console.error("[meta-webhook] status:", e))
+        await processStatus(instance.tenant_id, instance.id, st).catch((e) => console.error("[meta-webhook] status:", e))
       }
 
       // Nome + username do contato (vêm em contacts[]) — indexados por telefone (wa_id)
@@ -641,7 +641,7 @@ interface MetaStatus {
   errors?:       Array<{ code?: number; title?: string; message?: string }>
 }
 
-async function processStatus(tenantId: string, st: MetaStatus) {
+async function processStatus(tenantId: string, instanceId: string, st: MetaStatus) {
   const KNOWN: Record<string, MessageStatus> = {
     sent: "sent", delivered: "delivered", read: "read", failed: "failed",
   }
@@ -682,17 +682,25 @@ async function processStatus(tenantId: string, st: MetaStatus) {
     }
   }
 
-  // Fundação do financeiro: categoria/cobrança da conversa (dedup por conversation.id
-  // via índice único parcial → 23505 ignorado; a Meta reemite o mesmo id na janela).
-  if (st.conversation?.id) {
+  // Ledger de cobrança da Meta — 1 linha por MENSAGEM cobrável.
+  //
+  // ⚠️ O gate ANTIGO era `st.conversation?.id`. Sob preço por mensagem (v25.0) a Meta
+  // parou de mandar o objeto `conversation` nos statuses e manda só `pricing` — o `if`
+  // nunca abria e a tabela ficou VAZIA por ~2 meses, com tráfego real acontecendo.
+  // Agora aceita qualquer um dos dois e carimba o NÚMERO (o card de custo é por-número).
+  // Dedup por wamid (índice único parcial) → 23505 é esperado: a Meta reemite o mesmo
+  // id em sent/delivered/read da mesma mensagem.
+  if (st.pricing || st.conversation?.id) {
     const { error } = await supabaseAdmin.from("wa_billing_events").insert({
       tenant_id:          tenantId,
-      wa_conversation_id: st.conversation.id,
-      category:           st.pricing?.category ?? st.conversation.origin?.type ?? null,
+      instance_id:        instanceId,
+      wamid:              st.id,
+      wa_conversation_id: st.conversation?.id ?? null,
+      category:           st.pricing?.category ?? st.conversation?.origin?.type ?? null,
       pricing_model:      st.pricing?.pricing_model ?? null,
       billable:           st.pricing?.billable ?? null,
     })
-    if (error && error.code !== "23505") console.error("[meta-billing]", error.message)
+    if (error && error.code !== "23505") console.error("[meta-billing]", error.code, error.message)
   }
 }
 
