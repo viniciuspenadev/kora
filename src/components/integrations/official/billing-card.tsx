@@ -22,13 +22,13 @@ export function BillingCard({ summary }: { summary: InstanceBillingSummary }) {
       title={
         <span className="flex items-center gap-2">
           <Receipt className="size-4 text-primary-600" />
-          Mensagens cobráveis · últimos {summary.days} dias
+          Mensagens da Meta · últimos {summary.days} dias
         </span>
       }
     >
       {summary.total === 0 ? (
         <p className="text-sm text-slate-500">
-          Nenhuma mensagem cobrável registrada ainda neste número.
+          Nenhuma mensagem registrada ainda neste número.
         </p>
       ) : (
         <>
@@ -36,6 +36,7 @@ export function BillingCard({ summary }: { summary: InstanceBillingSummary }) {
             {summary.rows.map((r) => {
               const meta = LABEL[r.category] ?? LABEL.other
               const pct  = summary.total > 0 ? Math.round((r.count / summary.total) * 100) : 0
+              const free = r.billable === 0
               return (
                 <div
                   key={r.category}
@@ -43,7 +44,14 @@ export function BillingCard({ summary }: { summary: InstanceBillingSummary }) {
                 >
                   <span className={`size-2 rounded-full shrink-0 ${meta.dot}`} aria-hidden />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-slate-900">{meta.label}</p>
+                    <p className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+                      {meta.label}
+                      {free && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-100">
+                          sem custo
+                        </span>
+                      )}
+                    </p>
                     <p className="text-[11px] text-slate-500 truncate">{meta.hint}</p>
                   </div>
                   <div className="text-right shrink-0">
@@ -56,10 +64,12 @@ export function BillingCard({ summary }: { summary: InstanceBillingSummary }) {
           </div>
 
           <p className="mt-3 text-[11px] text-slate-500">
-            {summary.total} mensagem{summary.total === 1 ? "" : "s"} cobrável
-            {summary.total === 1 ? "" : "eis"} no período. A Kora informa o que gera custo;
-            o valor é cobrado pela Meta direto na sua conta — confira na fatura do
-            Gerenciador de Negócios.
+            <strong className="text-slate-700">
+              {summary.billable} de {summary.total}
+            </strong>{" "}
+            {summary.total === 1 ? "mensagem gera" : "mensagens geram"} custo no período — o
+            atendimento dentro da janela de 24h é gratuito. A Kora mostra o que gera custo; o
+            valor é cobrado pela Meta direto na sua conta, na fatura do Gerenciador de Negócios.
           </p>
         </>
       )}
