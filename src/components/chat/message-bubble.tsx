@@ -888,7 +888,17 @@ function StatusIcon({ status }: { status: string }) {
   }
 }
 
-/** Motivo amigável da falha de envio (mapeia códigos da Meta; senão usa o título/mensagem). */
+/**
+ * Motivo amigável da falha de envio (mapeia códigos da Meta; senão usa o título/mensagem).
+ *
+ * ⚠️ Os códigos de CONTA (pagamento/bloqueio) importam mais desde a decisão de cobrança
+ * de 2026-07-28: o cliente paga a Meta direto, então "cartão recusado na WABA" virou a
+ * falha mais provável do canal oficial — e sem tradução ela chegava ao atendente como
+ * texto cru em inglês, que abre chamado achando que a Kora quebrou.
+ *
+ * A lista cresce conforme falhas reais aparecerem; código não mapeado cai no título da
+ * Meta, que continua sendo melhor que "Não entregue".
+ */
 const FAIL_CODE_LABEL: Record<number, string> = {
   131047: "Janela de 24h fechada — envie um template",
   131026: "Número não está no WhatsApp",
@@ -896,6 +906,12 @@ const FAIL_CODE_LABEL: Record<number, string> = {
   131053: "Falha ao enviar a mídia",
   130472: "Cliente em experiência limitada do WhatsApp",
   131049: "Limite de marketing — a Meta segurou o envio",
+  // ── Conta / cobrança (quem paga é o cliente, direto na Meta) ──
+  131042: "Pagamento pendente na Meta — regularize a forma de pagamento no Gerenciador de Negócios",
+  131031: "Conta bloqueada pela Meta — verifique o Gerenciador de Negócios",
+  133010: "Número não registrado na API oficial",
+  130429: "Limite de envio atingido — tente novamente em instantes",
+  368:    "Bloqueio temporário por violação de política da Meta",
 }
 function failReason(meta: MessageMeta): string {
   const e = meta.error
