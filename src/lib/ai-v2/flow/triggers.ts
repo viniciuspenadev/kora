@@ -45,7 +45,11 @@ function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boole
   if ((t.mode ?? "receptive") !== "receptive") return false
   // Filtros de canal/instância (ausente/vazio = qualquer).
   if (t.channels?.length  && !t.channels.includes(sig.channel ?? "")) return false
-  if (t.instances?.length && !t.instances.includes(sig.instanceId ?? "")) return false
+  // ⚠️ Filtro por NÚMERO só existe no WhatsApp. Conversa de Instagram/Site "empresta" um
+  // `whatsapp_instances.id` como placeholder (ver defaultInstanceId no ingestor do IG) —
+  // sem este guarda, um fluxo restrito ao número X casaria conversa de Instagram.
+  const isWhatsApp = (sig.channel ?? "whatsapp") === "whatsapp"
+  if (isWhatsApp && t.instances?.length && !t.instances.includes(sig.instanceId ?? "")) return false
   switch (t.type) {
     case "any_message": return true
     case "new_contact": return isNewContact

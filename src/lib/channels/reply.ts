@@ -11,6 +11,7 @@
 
 import "server-only"
 import { getProvider } from "@/lib/providers"
+import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import type { ContentType, InteractivePayload, ReplyContext } from "@/lib/providers/types"
 
 type ProviderInstance = Parameters<typeof getProvider>[0]
@@ -22,6 +23,10 @@ export interface ReplyTarget {
   phoneNumber: string
   /** BSUID (Meta) — endereço quando o telefone não está disponível. Doc BSUID §2.3. */
   bsuid?:      string | null
+  /** Id externo do canal não-WhatsApp (Instagram: IGSID = contato.primary_external_id). */
+  externalId?: string | null
+  /** Tenant — necessário nos canais cuja credencial vive fora de `whatsapp_instances`. */
+  tenantId?:   string | null
 }
 
 /** Endereço WhatsApp do alvo: telefone quando há, senão o BSUID (Meta). */
@@ -51,7 +56,19 @@ export async function sendChannelText(
       // Widget-chat: nada a enviar externamente. Quem persiste a mensagem é o
       // chamador (run.ts); o widget busca a resposta via polling em /api/site/messages.
       return { messageId: null }
-    // case "instagram": ...  (entra com o canal Instagram Direct)
+    case "instagram": {
+      // Instagram Direct — mesmo caminho já provado no inbox (actions/chat.ts): token
+      // cifrado da conexão + IGSID do contato. Só vale DENTRO da janela de 24h; fora
+      // dela a Meta recusa e o erro sobe pro runtime (vira status "error" no turno).
+      if (!target.tenantId) throw new Error("Envio no Instagram sem tenant no alvo.")
+      const sender = await getInstagramSender(target.tenantId)
+      if (!sender) throw new Error("Conta do Instagram não conectada (conecte em Integrações).")
+      const igsid = target.externalId
+      if (!igsid) throw new Error("Contato sem identidade do Instagram (IGSID).")
+      const r = await sendInstagramText(sender.igAccountId, igsid, sender.token, text)
+      if ("error" in r) throw new Error(r.error)
+      return { messageId: r.messageId || null }
+    }
     default:
       throw new Error(`Resposta no canal '${channel}' ainda não suportada`)
   }

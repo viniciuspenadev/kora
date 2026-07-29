@@ -18,12 +18,14 @@ import { runStudioTurn } from "./run"
 import { logConversationEvent } from "@/lib/atendimento/events"
 
 // ═══ Quais CANAIS despacham a IA (verdade do motor, não config) ═══
-// Espelha quais pipelines de entrada chamam routeAutomationTurn. Instagram
-// ainda NÃO (bot do IG é frente pendente) → conversa de IG nunca nasce/reabre
-// "IA atendendo". Quando o bot do IG for ligado, adicionar "instagram" aqui —
-// 1 linha, e seed/reopen/painel derivam sozinhos. Config do TENANT (IA ligada,
-// fluxos/gatilhos por canal) mora no Studio; isto aqui é só capacidade do motor.
-const AI_DISPATCH_CHANNELS = new Set(["whatsapp", "site"])
+// Espelha quais pipelines de entrada chamam routeAutomationTurn. Config do TENANT
+// (IA ligada, fluxos/gatilhos por canal) mora no Studio; isto aqui é só capacidade
+// do motor.
+// ⚠️ `instagram` entrou em 2026-07-28 junto com o ingestor passando a chamar
+// `routeAutomationTurn` (instagram-inbound) e a "boca" do canal em reply.ts. Efeito
+// colateral consciente: conversa de IG passa a nascer/reabrir com `ai_handling` — o
+// mesmo comportamento que WhatsApp e Site já tinham.
+const AI_DISPATCH_CHANNELS = new Set(["whatsapp", "site", "instagram"])
 
 /** O canal despacha a IA? (null/undefined = whatsapp, default do banco) */
 export function channelDispatchesAI(channel: string | null | undefined): boolean {

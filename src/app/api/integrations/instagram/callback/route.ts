@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { encryptSecret } from "@/lib/crypto/secrets"
-import { exchangeIgCode, fetchIgAccount, subscribeIgWebhooks } from "@/lib/instagram/api"
+import { exchangeIgCode, fetchIgAccount, subscribeIgWebhooks, wakeIgConversations } from "@/lib/instagram/api"
+import { getEnabledModuleSlugs } from "@/lib/modules"
 import { publicOrigin } from "@/lib/http"
 
 /**
@@ -22,6 +23,13 @@ export async function GET(req: NextRequest) {
   const session = await auth()
   if (!session?.user?.tenantId || !["owner", "admin"].includes(session.user.role)) {
     return NextResponse.redirect(new URL("/inbox", origin))
+  }
+
+  // Gate de licença — fail-closed. Repetido aqui de propósito: esta URL é chamada pela
+  // Meta, não pelo nosso botão, então não dá pra assumir que passou pelo /start.
+  const modules = await getEnabledModuleSlugs(session.user.tenantId)
+  if (!modules.has("instagram_direct")) {
+    return back(origin, `error=${encodeURIComponent("O módulo Instagram Direct não está habilitado para sua conta.")}`)
   }
 
   const sp = req.nextUrl.searchParams
@@ -63,6 +71,11 @@ export async function GET(req: NextRequest) {
   // não depende de toggle manual no painel. Não-fatal: conexão vale mesmo se falhar.
   const sub = await subscribeIgWebhooks(ex.token)
   console.log(JSON.stringify({ src: "ig-connect", kind: "subscribe", account: externalAccountId, result: "error" in sub ? sub.error : "ok" }))
+
+  // Conta Creator só recebe webhook DEPOIS da 1ª chamada à Conversations API (regra da
+  // Meta). Sem isso o cliente conecta e nada chega, calado. Best-effort, não-fatal.
+  const woke = await wakeIgConversations(ex.token)
+  console.log(JSON.stringify({ src: "ig-connect", kind: "wake", account: externalAccountId, ok: woke.ok }))
 
   const res = back(origin, "connected=1")
   res.cookies.delete("ig_oauth_state")

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
+import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { fetchIgProfile } from "@/lib/instagram/api"
 import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
@@ -210,8 +211,17 @@ function extractIgContent(m: IgMessaging): IgDecoded {
       return { contentType: "text", content: t, metadata: meta, routableText: t }
     }
     if (att.type === "story_mention") {
+      // 🔴 REGRA DA META (docs/instagram-api/story-mention-and-moderation.md):
+      // "You must not store or cache the media content on your server." Story é efêmero —
+      // pode guardar a URL do CDN, NUNCA os bytes. Por isso NÃO devolvemos `attachment`
+      // (que dispararia o download pro nosso bucket, como fazia antes).
+      // A URL vai pro metadata e o StoryReplyCard renderiza direto do CDN no navegador do
+      // atendente, com placeholder automático quando o story expira (onError).
+      // contentType "text" de propósito: sem mídia nossa, "image" acenderia o ícone de
+      // mídia órfão na bolha.
       meta.ig_story = "mention"
-      return { contentType: "image", content: msg.text?.trim() || null, metadata: meta, routableText: null, attachment: att.payload?.url ? { url: att.payload.url, kind: "image" } : null }
+      if (att.payload?.url) meta.ig_story_reply = { url: att.payload.url, id: null }
+      return { contentType: "text", content: msg.text?.trim() || null, metadata: meta, routableText: null, attachment: null }
     }
     const kind = attachmentKind(att.type)
     return { contentType: kind, content: msg.text?.trim() || null, metadata: meta, routableText: msg.text?.trim() ?? null, attachment: att.payload?.url ? { url: att.payload.url, kind } : null }
@@ -274,6 +284,32 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
 
   await bumpConv(ctx.convId, preview)
   log("dm-ok", { tenantId: ctx.tenantId, convId: ctx.convId, kind: dec.contentType })
+
+  // 🔴 F0 — a chamada que faltava. Até 2026-07-28 o ingestor do Instagram gravava a
+  // mensagem e PARAVA: `routeAutomationTurn` nunca era chamado, então nenhum fluxo do
+  // Studio disparava no Direct. Espelha meta-inbound.ts (canal oficial).
+  // A "boca" do canal vive em reply.ts (case "instagram"); sem ela isto lançaria.
+  const routable = dec.routableText ?? content
+  if (routable?.trim()) {
+    try {
+      // O motor exige uma instância (contrato do provider). O IG "empresta" a 1ª do
+      // tenant, como já faz pra conversa. Tenant IG-first (sem WhatsApp) → sem instância
+      // → pula o turno em vez de quebrar.
+      const { data: inst } = await supabaseAdmin
+        .from("whatsapp_instances").select("*")
+        .eq("tenant_id", ctx.tenantId).order("created_at", { ascending: true }).limit(1).maybeSingle()
+      if (!inst) { log("ai-skip", { reason: "no-instance", tenantId: ctx.tenantId }); return }
+
+      await routeAutomationTurn({
+        tenantId:       ctx.tenantId,
+        conversationId: ctx.convId,
+        incomingText:   routable,
+        instance:       inst as Parameters<typeof routeAutomationTurn>[0]["instance"],
+      })
+    } catch (e) {
+      log("ai-err", { convId: ctx.convId, err: (e as Error).message })
+    }
+  }
 }
 
 /** Reação (emoji numa mensagem) → message content_type='reaction' (UI sobrepõe no alvo). */

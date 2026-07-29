@@ -75,15 +75,62 @@ export function InstagramConnectClient({ connection, notice }: { connection: Con
           {error && <p className="text-xs text-red-600 px-1">{error}</p>}
         </div>
       ) : (
-        <div className="rounded-xl border border-slate-200 bg-white p-5">
-          <p className="text-sm font-bold text-slate-900">Conectar sua conta do Instagram</p>
-          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-            Você será levado ao Instagram pra autorizar a Kora a receber e responder mensagens. Rápido e seguro — sem copiar token.
-          </p>
-          <a href="/api/integrations/instagram/start"
-            className="mt-4 inline-flex items-center gap-2 h-10 px-5 text-sm font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
-            <Link2 className="size-4" /> Conectar com Instagram
-          </a>
+        <div className="space-y-3">
+          {/* Conexão expirada — a renovação automática falhou (cliente revogou, conta mudou
+              de tipo). Sem este aviso o usuário só veria "conectar" de novo, sem entender. */}
+          {connection?.status === "needs_reauth" && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 flex items-start gap-2 text-xs text-amber-800">
+              <AlertCircle className="size-4 shrink-0 mt-px" />
+              <span>
+                <span className="font-semibold">A conexão expirou.</span> O acesso que o Instagram
+                concedeu à Kora deixou de valer e as mensagens do Direct pararam de chegar.
+                Reconecte abaixo para voltar a receber.
+              </span>
+            </div>
+          )}
+
+          <div className="rounded-xl border border-slate-200 bg-white p-5">
+            <p className="text-sm font-bold text-slate-900">Conectar sua conta do Instagram</p>
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+              Você será levado ao Instagram pra autorizar a Kora a receber e responder mensagens. Rápido e seguro — sem copiar token.
+            </p>
+
+            {/* ⚠️ Dois pré-requisitos que moram DENTRO do app do Instagram e não temos como
+                fazer por você. Sem eles a conexão conclui e nenhuma mensagem chega — falha
+                sem sintoma, que vira chamado de suporte. Ver docs/instagram-api/. */}
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Antes de conectar, confira no app do Instagram
+              </p>
+              <ol className="mt-2 space-y-2 text-xs text-slate-600">
+                <li className="flex gap-2">
+                  <span className="font-bold text-slate-400 shrink-0">1.</span>
+                  <span>
+                    Sua conta é <span className="font-medium text-slate-800">profissional</span> (Empresa ou Criador de conteúdo).
+                    Conta pessoal não recebe mensagens por API.
+                  </span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="font-bold text-slate-400 shrink-0">2.</span>
+                  <span>
+                    <span className="font-medium text-slate-800">Ferramentas conectadas</span> está ativado em{" "}
+                    <span className="font-medium text-slate-800">
+                      Configurações → Mensagens e respostas de stories → Controles de mensagens → Ferramentas conectadas
+                    </span>{" "}
+                    → <span className="font-medium text-slate-800">Permitir acesso a mensagens</span>.
+                    <span className="block mt-0.5 text-slate-500">
+                      Sem isso a conexão funciona, mas nenhuma mensagem chega até a Kora.
+                    </span>
+                  </span>
+                </li>
+              </ol>
+            </div>
+
+            <a href="/api/integrations/instagram/start"
+              className="mt-4 inline-flex items-center gap-2 h-10 px-5 text-sm font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
+              <Link2 className="size-4" /> Conectar com Instagram
+            </a>
+          </div>
         </div>
       )}
 

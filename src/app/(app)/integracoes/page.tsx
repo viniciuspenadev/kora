@@ -79,7 +79,9 @@ export default async function IntegracoesPage() {
       source:      "instagram",
       category:    "Canais",
       href:        "/integracoes/instagram",
-      status:      igConnected ? "connected" : "available",
+      // Licenciado por `instagram_direct` — mesmo tratamento do widget do site. Sem o
+      // módulo o card aparece bloqueado, e o gate de verdade está no /start e no callback.
+      status:      igConnected ? "connected" : modules.has("instagram_direct") ? "available" : "soon",
     },
     {
       slug:        "messenger",

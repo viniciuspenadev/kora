@@ -61,7 +61,8 @@ export async function sendBotText(
   const sent = ctx.dryRun
     ? { messageId: null }
     : await sendChannelText(
-        { channel: (ctx.channel ?? ctx.contact.primary_channel), phoneNumber: ctx.contact.phone_number },
+        { channel: (ctx.channel ?? ctx.contact.primary_channel), phoneNumber: ctx.contact.phone_number,
+          externalId: ctx.contact.primary_external_id, tenantId: ctx.tenantId },
         text,
         ctx.instance,
       )
@@ -155,7 +156,8 @@ export async function sendBotMedia(
   const sent = ctx.dryRun
     ? { messageId: null }
     : await sendChannelMedia(
-        { channel: (ctx.channel ?? ctx.contact.primary_channel), phoneNumber: ctx.contact.phone_number },
+        { channel: (ctx.channel ?? ctx.contact.primary_channel), phoneNumber: ctx.contact.phone_number,
+          externalId: ctx.contact.primary_external_id, tenantId: ctx.tenantId },
         media,
         ctx.instance,
       )

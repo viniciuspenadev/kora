@@ -40,13 +40,18 @@ export async function loadTenantInstances(tenantId: string): Promise<TriggerInst
 
 /** Canais que o tenant realmente usa (whatsapp se há número; site se o widget está ligado). */
 export async function loadTenantChannels(tenantId: string): Promise<TriggerChannel[]> {
-  const [{ count: instCount }, { data: site }] = await Promise.all([
+  const [{ count: instCount }, { data: site }, { data: ig }] = await Promise.all([
     supabaseAdmin.from("whatsapp_instances").select("id", { count: "exact", head: true }).eq("tenant_id", tenantId),
     supabaseAdmin.from("site_widget_config").select("enabled").eq("tenant_id", tenantId).maybeSingle(),
+    // Instagram: só oferece o canal se há conexão ATIVA (status ≠ active = revogada ou
+    // precisando reconectar → o fluxo não teria como responder).
+    supabaseAdmin.from("channel_connections").select("id")
+      .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active").maybeSingle(),
   ])
   const channels: TriggerChannel[] = []
-  if ((instCount ?? 0) > 0) channels.push({ key: "whatsapp", label: "WhatsApp" })
-  if (site?.enabled)        channels.push({ key: "site", label: "Site" })
+  if ((instCount ?? 0) > 0) channels.push({ key: "whatsapp",  label: "WhatsApp" })
+  if (site?.enabled)        channels.push({ key: "site",      label: "Site" })
+  if (ig)                   channels.push({ key: "instagram", label: "Instagram" })
   return channels
 }
 
