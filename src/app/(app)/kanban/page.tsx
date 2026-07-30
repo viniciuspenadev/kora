@@ -56,7 +56,13 @@ export default async function KanbanPage({
     return { id: (a as { user_id: string }).user_id, full_name: fullName, department_id: (a as { department_id: string | null }).department_id ?? null }
   })
   const tintColumns = cfg?.kanban_tinted_columns ?? false
-  // Badge de canal só com 2+ instâncias (ex: Baileys + Oficial).
+  // Badge de NÚMERO só com 2+ instâncias (ex: Baileys + Oficial).
+  // ⚠️ Isto conta números de WhatsApp, não canais. O card do kanban já mostra o canal
+  // pelo `conv.channel` (SourceLogo), que é o único dado confiável: conversa de
+  // Instagram/site vem com `instance_id = NULL` e embed `whatsapp_instances` nulo, então
+  // qualquer selo derivado do provider cairia no fallback e estamparia "QR" num fio de
+  // Direct. Se um dia religar um badge por número no card, ele PRECISA sair quando
+  // `instance_id` for nulo.
   const showChannel = (instRows ?? []).length > 1
 
   if (!pipelines || pipelines.length === 0) {

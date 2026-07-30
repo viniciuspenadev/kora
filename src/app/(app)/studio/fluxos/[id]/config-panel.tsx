@@ -3,7 +3,7 @@
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
 import { useRef, useState, useEffect } from "react"
 import {
-  Trash2, Plus, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2,
+  Trash2, Plus, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2, AtSign,
   Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info,
 } from "lucide-react"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
@@ -12,6 +12,7 @@ import { SimpleSelect } from "@/components/ui/select"
 import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
+import { IgCommentConfig, type IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
 
 /** Serviço/agenda com os campos extras da LEGENDA dinâmica do destino da agenda
  *  (quem entra no sorteio · quem abre fim de semana). agenda-node-redesign.md §3.5. */
@@ -1359,6 +1360,7 @@ export function FlowSettingsPanel({
   triggerType, keywords, mode, channels, instances,
   channelOptions, instanceOptions, keywordMatch, adIds, adOptions, inactivityValue, inactivityUnit,
   onType, onKeywords, onMode, onChannels, onInstances, onKeywordMatch, onAds, onInactivity,
+  igConfig, onIgConfig, igUsername,
 }: {
   triggerType: string
   keywords: string
@@ -1380,6 +1382,10 @@ export function FlowSettingsPanel({
   onKeywordMatch: (m: "contains" | "exact") => void
   onAds: (a: string[]) => void
   onInactivity: (value: number, unit: "minutes" | "hours") => void
+  /** Gatilho `ig_comment` — opcionais: fluxo antigo/sem Instagram não passa nada. */
+  igConfig?:   IgCommentTriggerConfig
+  onIgConfig?: (v: IgCommentTriggerConfig) => void
+  igUsername?: string | null
 }) {
   const [q, setQ] = useState("")
   // Filtro só faz sentido com 2+ opções — quem tem 1 canal/1 número não escolhe nada.
@@ -1402,6 +1408,14 @@ export function FlowSettingsPanel({
       { id: "new_contact", label: "Contato novo",      desc: "a primeira vez que a pessoa fala", icon: UserPlus },
       { id: "reopened",    label: "Retornou",          desc: "conversa reaberta depois de concluída", icon: RotateCcw },
       { id: "from_ad",     label: "Veio de anúncio",   desc: "lead do Click-to-WhatsApp (Meta)", icon: Megaphone },
+    ] },
+    // Instagram tem grupo próprio: o comentário NÃO é mensagem — não existe conversa
+    // ainda quando ele chega. Ver docs/instagram-studio-node-design.md §8.3.
+    { key: "ig", label: "Instagram", tint: "text-pink-600 bg-pink-50", items: [
+      // ⚠️ `soon` até a F2 (persistência + runtime do webhook) existir. Sem ela, escolher
+      // este gatilho torna o fluxo INERTE — `matchesTrigger` cai no default:false e nada
+      // dispara, sem erro. Vitrine sim; armadilha não.
+      { id: "ig_comment", label: "Comentário no Instagram", desc: "alguém comenta num post e você chama no direct", icon: AtSign, soon: true },
     ] },
     { key: "act", label: "Você dispara", tint: "text-violet-600 bg-violet-50", items: [
       { id: "manual", label: "No chat ou por campanha", desc: "um agente aciona, ou uma campanha dispara", icon: Zap },
@@ -1457,6 +1471,24 @@ export function FlowSettingsPanel({
 
   function config(id: string) {
     const box = "mt-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3.5 space-y-3"
+    // Instagram: a configuração inteira (post, palavra, direct, resposta pública, prévia)
+    // vive num componente próprio — é ela que carrega as regras da Meta pra o usuário.
+    // Sem `onIgConfig` (fluxo antigo ou tenant sem IG) o gatilho não é configurável.
+    if (id === "ig_comment") return (
+      <div className={box}>
+        {onIgConfig ? (
+          <IgCommentConfig
+            value={igConfig ?? { posts: [], keywords: [], keywordMatch: "contains", dm: "", publicReplies: [] }}
+            onChange={onIgConfig}
+            username={igUsername}
+          />
+        ) : (
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Conecte uma conta do Instagram em Integrações para configurar este gatilho.
+          </p>
+        )}
+      </div>
+    )
     if (id === "keyword") return (
       <div className={box}>
         <div>

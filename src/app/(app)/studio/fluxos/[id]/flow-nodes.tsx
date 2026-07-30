@@ -11,7 +11,7 @@ import { createContext, useContext, useMemo } from "react"
 import { Handle, Position, useNodeId, useStore, type NodeProps } from "@xyflow/react"
 import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
 import type { FlowGraph } from "@/lib/ai-v2/flow/types"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck, AtSign } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
@@ -96,13 +96,16 @@ export interface TriggerSummary {
   /** Só p/ inatividade (modo auto): quanto tempo sem resposta pra disparar. */
   inactivityValue?: number
   inactivityUnit?:  "minutes" | "hours"
+  /** Só p/ `ig_comment`: snapshot congelado do post + o direct, pra desenhar o card. */
+  igPosts?: Array<{ id: string; thumbUrl: string | null; caption: string | null }>
+  igDm?:    string
 }
 export const TriggerSummaryContext = createContext<TriggerSummary>({ type: "keyword", mode: "receptive", channels: [], keywords: "" })
 
 const TRIGGER_LABEL: Record<string, string> = {
   any_message: "qualquer mensagem", keyword: "palavra-chave",
   new_contact: "novo contato", reopened: "retornou", from_ad: "veio de anúncio",
-  inactivity: "inatividade",
+  inactivity: "inatividade", ig_comment: "comentário no Instagram",
 }
 function ChannelIcon({ ch }: { ch: string }) {
   if (ch === "site") return <Globe className="size-3.5 text-slate-400" />
@@ -184,6 +187,12 @@ function Bubble({ text, placeholder }: { text: string; placeholder: string }) {
 function StartNode(p: NodeProps) {
   const t = useContext(TriggerSummaryContext)
   const kw = t.keywords.split(",").map((k) => k.trim()).filter(Boolean)
+
+  // Gatilho de comentário: o card de Início VESTE a cara do Instagram (miniatura do post
+  // + palavra), em vez de existir um nó solto. É assim que o "nó dedicado" acontece sem
+  // criar um segundo motor — docs/instagram-studio-node-design.md §8.3.
+  if (t.type === "ig_comment") return <IgCommentStartCard t={t} kw={kw} selected={p.selected} />
+
   return (
     <>
       <Card icon={Play} accent="bg-emerald-100 text-emerald-700" title="Início" selected={p.selected}
@@ -207,6 +216,51 @@ function StartNode(p: NodeProps) {
             ? <span className="text-[10px] text-slate-400">todos os canais</span>
             : t.channels.map((c) => <ChannelIcon key={c} ch={c} />)}
         </div>
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+/**
+ * Card de Início vestido de Instagram. Sem handle de entrada (igual ao Início normal) —
+ * é o que comunica visualmente "isto COMEÇA aqui", sem precisar de uma linha de texto.
+ * O chip ENTRADA existe porque o fluxo passa a ter duas portas e o dono precisa ver isso.
+ */
+function IgCommentStartCard({ t, kw, selected }: { t: TriggerSummary; kw: string[]; selected?: boolean }) {
+  const post = t.igPosts?.[0] ?? null
+  const more = (t.igPosts?.length ?? 0) - 1
+  return (
+    <>
+      <Card icon={AtSign} accent="bg-pink-100 text-pink-700" title="Comentário no Instagram" selected={selected}
+        badge={
+          <span className="inline-flex items-center rounded px-1 py-px text-[9px] font-semibold ring-1 bg-emerald-50 text-emerald-700 ring-emerald-100">
+            Entrada
+          </span>
+        }>
+        {post?.thumbUrl ? (
+          <div className="relative h-16 w-full rounded-lg overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={post.thumbUrl} alt="" className="size-full object-cover" />
+            {more > 0 && (
+              <span className="absolute top-1 right-1 rounded bg-slate-900/60 px-1 text-[9px] font-bold text-white">+{more}</span>
+            )}
+          </div>
+        ) : (
+          <div className="h-16 w-full rounded-lg border border-dashed border-slate-200 bg-slate-50/60 grid place-items-center">
+            <span className="text-[10px] text-slate-400">escolha o post…</span>
+          </div>
+        )}
+
+        {post?.caption && <p className="mt-1 text-[11px] text-slate-600 truncate">{post.caption}</p>}
+
+        <p className="mt-1 text-[11px] text-slate-600">
+          {kw.length
+            ? <>palavra: <span className="font-medium text-slate-700">{kw[0]}{kw.length > 1 ? ` +${kw.length - 1}` : ""}</span></>
+            : <span className="italic text-slate-400">qualquer comentário</span>}
+        </p>
+
+        <Bubble text={t.igDm ?? ""} placeholder="escreva o direct…" />
       </Card>
       <SourceHandle />
     </>

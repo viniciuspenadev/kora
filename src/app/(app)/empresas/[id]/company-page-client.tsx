@@ -4,9 +4,9 @@ import { useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
-  Building2, Pencil, Archive, ArchiveRestore, Loader2, ChevronDown, ExternalLink,
-  MessageSquare, Plus, Search, Filter, BarChart3, FileText, MessageCircle, AtSign, Globe,
-  CalendarClock, Trophy, Phone, Mail, MapPin, Package,
+  Pencil, Archive, ArchiveRestore, Loader2, ChevronDown, ExternalLink,
+  MessageSquare, MoreHorizontal, Plus, Search, Filter, BarChart3, FileText, MessageCircle, AtSign, Globe,
+  CalendarClock, Trophy, Phone, Mail, MapPin, Package, ArrowRight,
 } from "lucide-react"
 import { toast } from "sonner"
 import { ContactPic } from "@/components/chat/contact-pic"
@@ -85,14 +85,19 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
   const [busy, start] = useTransition()
 
   const archived = !!co.archived_at
-  const status = regStatusMeta(co.registration_status)
   const openDeals = deals.filter((d) => d.status === "open")
+  const tabCount: Partial<Record<TabKey, number>> = {
+    contatos: contacts.length,
+    negocios: deals.length,
+    propostas: proposals.length,
+    atividades: timeline.length,
+  }
 
   // proposta mais recente por negócio (proposals vêm ordenadas created_at desc → 1ª = última)
   const dealProposal = new Map<string, CompanyProposalLite>()
   for (const p of proposals) if (p.dealId && !dealProposal.has(p.dealId)) dealProposal.set(p.dealId, p)
 
-  const subtitle = [co.doc_id ? maskCpfCnpj(co.doc_id) : null, co.segment, co.address_city ? `${co.address_city}${co.address_state ? `/${co.address_state}` : ""}` : null].filter(Boolean).join("  ·  ")
+  const headerCnpj = co.doc_id ? maskCpfCnpj(co.doc_id) : null
   const addrLine1 = [[co.address_street, co.address_number].filter(Boolean).join(", "), co.address_complement].filter(Boolean).join(" · ")
   const addrLine2 = [co.address_district, [co.address_city, co.address_state].filter(Boolean).join("/")].filter(Boolean).join(", ") + (co.address_cep ? ` - ${maskCep(co.address_cep)}` : "")
   const hasAddr = !!(addrLine1 || co.address_district || co.address_city)
@@ -115,53 +120,61 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
   }
 
   return (
-    <div className="min-h-full bg-slate-50/60">
+    <div className="min-h-full bg-canvas">
       {/* ── Header ── */}
       <div className="bg-white border-b border-slate-200">
         <div className="px-4 sm:px-6 pt-5">
-          <div className="flex items-start gap-4">
-            <span className="size-14 rounded-2xl bg-primary-50 grid place-items-center shrink-0 ring-1 ring-primary-100">
-              <Building2 className="size-7 text-primary-600" strokeWidth={1.6} />
-            </span>
+          <div className="flex flex-wrap items-start gap-x-4 gap-y-4">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2.5 flex-wrap">
-                <h1 className="text-[22px] font-bold text-slate-900 tracking-tight leading-tight">{co.name}</h1>
-                <span className={`inline-flex items-center gap-1.5 text-[11px] font-semibold ${status.text}`}>
-                  <span className={`size-1.5 rounded-full ${status.dot}`} />{status.label}
-                </span>
+                <h1 className="min-w-0 text-[22px] font-bold text-slate-900 tracking-tight leading-tight">{co.name}</h1>
                 {archived && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Arquivada</span>}
               </div>
-              {subtitle && <p className="text-xs text-slate-400 mt-1">{subtitle}</p>}
+              {headerCnpj && <p className="text-xs text-slate-400 mt-1 tabular-nums">{headerCnpj}</p>}
             </div>
 
-            {/* ações */}
-            <div className="flex items-center gap-2 shrink-0">
-              {contacts.length > 0 ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 transition-colors">
-                    <MessageSquare className="size-3.5" /> Nova conversa
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
-                    {contacts.slice(0, 8).map((c) => (
-                      <DropdownMenuItem key={c.id} onClick={() => router.push(`/contatos/${c.id}`)}>{c.name}</DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : (
-                <button disabled title="Vincule um contato primeiro" className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg border border-slate-200 text-slate-300 bg-white cursor-not-allowed">
-                  <MessageSquare className="size-3.5" /> Nova conversa
-                </button>
-              )}
+            {/* Mobile: ações consolidadas para preservar espaço do título. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                aria-label="Ações da empresa"
+                className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 sm:hidden"
+              >
+                <MoreHorizontal className="size-[18px]" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52 sm:hidden">
+                <DropdownMenuItem disabled={busy} onClick={openNewDeal}>
+                  <Plus className="size-3.5" /> Novo negócio
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={busy} onClick={openNewDeal}>
+                  <FileText className="size-3.5" /> Nova proposta
+                </DropdownMenuItem>
+                {canManage && <DropdownMenuSeparator />}
+                {canManage && (
+                  <DropdownMenuItem onClick={() => setEditOpen(true)}>
+                    <Pencil className="size-3.5" /> Editar empresa
+                  </DropdownMenuItem>
+                )}
+                {canManage && (
+                  <DropdownMenuItem onClick={() => (archived ? toggleArchive() : setArchiveConfirm(true))}>
+                    {archived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
+                    {archived ? "Reativar empresa" : "Arquivar empresa"}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Desktop: ações principais permanecem visíveis. */}
+            <div className="hidden flex-wrap justify-end gap-2 sm:flex xl:shrink-0">
               <button onClick={openNewDeal} disabled={busy}
-                className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg border border-primary/40 text-primary-700 bg-white hover:bg-primary-50 transition-colors disabled:opacity-50">
+                className="inline-flex w-full items-center justify-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white transition-colors disabled:opacity-50 whitespace-nowrap sm:w-auto">
                 {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Novo negócio
               </button>
               <button onClick={openNewDeal} disabled={busy}
-                className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white transition-colors disabled:opacity-50">
+                className="inline-flex w-full items-center justify-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg border border-primary-200 text-primary-700 bg-white hover:bg-primary-50 transition-colors disabled:opacity-50 whitespace-nowrap sm:w-auto">
                 <Plus className="size-3.5" /> Nova proposta
               </button>
               <DropdownMenu>
-                <DropdownMenuTrigger className="inline-flex items-center gap-1 h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 transition-colors">
+                <DropdownMenuTrigger className="inline-flex w-full items-center justify-center gap-1 h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 transition-colors sm:w-auto">
                   Mais ações <ChevronDown className="size-3.5" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
@@ -179,13 +192,18 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
           </div>
 
           {/* abas — client-side; dados já vêm no loader (cockpit) */}
-          <div className="flex items-center gap-6 mt-4 -mb-px overflow-x-auto">
+          <div className="flex items-center gap-6 mt-7 -mb-px overflow-x-auto border-t border-slate-100 pt-4">
             {TABS.map((t) => {
               const active = tab === t.key
               return (
                 <button key={t.key} onClick={() => setTab(t.key)}
                   className={`shrink-0 pb-2.5 text-sm border-b-2 transition-colors ${active ? "border-primary text-primary-700 font-semibold" : "border-transparent text-slate-400 hover:text-slate-600"}`}>
                   {t.label}
+                  {tabCount[t.key] != null && (
+                    <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${active ? "bg-primary-50 text-primary-700" : "bg-slate-100 text-slate-500"}`}>
+                      {tabCount[t.key]}
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -197,7 +215,39 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
         <>
           {/* ── KPIs ── */}
           <div className="px-4 sm:px-6 pt-5">
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <MetricCard icon={Filter} label="Pipeline aberto" value={brl(kpis.pipelineValue)}
+                detail={`${kpis.pipelineCount} ${kpis.pipelineCount === 1 ? "negócio" : "negócios"}`} primary />
+              <MetricCard icon={BarChart3} label="Negócios ativos" value={String(kpis.pipelineCount)}
+                detail={brl(kpis.pipelineValue)} />
+              <MetricCard icon={FileText} label="Propostas em aberto" value={String(kpis.proposalsOpenCount)}
+                detail={brl(kpis.proposalsOpenValue)} />
+              <MetricCard icon={Trophy} label="Valor ganho" value={brl(kpis.wonValue)}
+                detail={`${kpis.wonCount} ${kpis.wonCount === 1 ? "negócio" : "negócios"}`} success={kpis.wonValue > 0} />
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-3 mt-3">
+              <OperationalMetric
+                icon={kpis.lastInteraction ? channelOf(kpis.lastInteraction.channel).Icon : MessageCircle}
+                label="Última interação"
+                value={kpis.lastInteraction ? fmtWhen(kpis.lastInteraction.at) : "Sem interações"}
+                detail={kpis.lastInteraction ? channelOf(kpis.lastInteraction.channel).label : "Registre o primeiro contato com esta empresa"}
+                attention={!kpis.lastInteraction}
+                actionLabel={kpis.lastInteraction ? "Ver conversas" : "Registrar interação"}
+                onClick={() => setTab("conversas")}
+              />
+              <OperationalMetric
+                icon={CalendarClock}
+                label="Próxima atividade"
+                value={kpis.nextActivity ? fmtWhen(kpis.nextActivity.at) : "Nada agendado"}
+                detail={kpis.nextActivity?.title ?? "Defina o próximo passo desta conta"}
+                attention={!kpis.nextActivity}
+                actionLabel={kpis.nextActivity ? "Ver atividades" : "Agendar atividade"}
+                onClick={() => setTab("atividades")}
+              />
+            </div>
+
+            <div className="hidden">
               <Kpi icon={Filter}        tone="primary" label="Pipeline aberto"    value={brl(kpis.pipelineValue)}      sub={`${kpis.pipelineCount} ${kpis.pipelineCount === 1 ? "negócio" : "negócios"}`} />
               <Kpi icon={BarChart3}     tone="violet"  label="Negócios ativos"    value={String(kpis.pipelineCount)}   sub={brl(kpis.pipelineValue)} />
               <Kpi icon={FileText}      tone="amber"   label="Propostas em aberto" value={String(kpis.proposalsOpenCount)} sub={brl(kpis.proposalsOpenValue)} />
@@ -221,7 +271,7 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
                         <thead>
                           <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wide text-slate-400">
                             <th className="px-5 py-2 font-medium">Lead</th>
-                            <th className="px-3 py-2 font-medium hidden md:table-cell">Produto</th>
+                            <th className="px-3 py-2 font-medium hidden 2xl:table-cell">Produto</th>
                             <th className="px-3 py-2 font-medium hidden sm:table-cell">Atendente</th>
                             <th className="px-3 py-2 font-medium">Etapa</th>
                             <th className="px-3 py-2 font-medium">Dados</th>
@@ -240,7 +290,7 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
             </div>
 
             {/* ── Rail ── */}
-            <div className="space-y-5">
+            <div className="space-y-5 xl:sticky xl:top-4">
               <section className="bg-white rounded-2xl border border-slate-200 p-5">
                 <div className="flex items-center mb-3">
                   <h2 className="text-sm font-bold text-slate-900">Resumo da empresa</h2>
@@ -251,6 +301,9 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
                   )}
                 </div>
                 <dl>
+                  <InfoRow label="CNPJ">
+                    {co.doc_id ? <span className="tabular-nums">{maskCpfCnpj(co.doc_id)}</span> : null}
+                  </InfoRow>
                   <InfoRow label="Responsável">
                     {responsavel ? (
                       <span className="inline-flex items-center gap-2">
@@ -345,7 +398,7 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
                   <thead>
                     <tr className="border-b border-slate-100 text-[10px] uppercase tracking-wide text-slate-400">
                       <th className="px-5 py-2 font-medium">Lead</th>
-                      <th className="px-3 py-2 font-medium hidden md:table-cell">Produto</th>
+                      <th className="px-3 py-2 font-medium hidden 2xl:table-cell">Produto</th>
                       <th className="px-3 py-2 font-medium hidden sm:table-cell">Atendente</th>
                       <th className="px-3 py-2 font-medium">Etapa</th>
                       <th className="px-3 py-2 font-medium">Dados</th>
@@ -418,7 +471,77 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
   )
 }
 
-// ── KPI tile (identidade do mockup: ícone tinto + label + número herói + sub) ──
+function MetricCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  primary = false,
+  success = false,
+}: {
+  icon: typeof Filter
+  label: string
+  value: string
+  detail: string
+  primary?: boolean
+  success?: boolean
+}) {
+  const iconTone = primary
+    ? "border-primary-100 bg-primary-50 text-primary-600"
+    : success
+      ? "border-emerald-100 bg-emerald-50 text-emerald-600"
+      : "border-slate-100 bg-slate-50 text-slate-500"
+
+  return (
+    <div className={`rounded-xl border bg-white px-4 py-3.5 ${primary ? "border-primary-200" : "border-slate-200"}`}>
+      <div className="flex items-center gap-2">
+        <span className={`size-7 rounded-lg border grid place-items-center shrink-0 ${iconTone}`}>
+          <Icon className="size-3.5" strokeWidth={1.9} />
+        </span>
+        <p className="min-w-0 truncate text-[11px] font-medium text-slate-500">{label}</p>
+      </div>
+      <p className="mt-2 text-xl font-bold leading-none tracking-tight text-slate-900 tabular-nums">{value}</p>
+      <p className="mt-1.5 truncate text-[11px] text-slate-400">{detail}</p>
+    </div>
+  )
+}
+
+function OperationalMetric({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  actionLabel,
+  attention,
+  onClick,
+}: {
+  icon: typeof MessageCircle
+  label: string
+  value: string
+  detail: string
+  actionLabel: string
+  attention?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button type="button" onClick={onClick}
+      className="group flex min-w-0 items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition-colors hover:border-slate-300 hover:bg-slate-50/50">
+      <span className={`size-8 rounded-lg border grid place-items-center shrink-0 ${attention ? "border-amber-100 bg-amber-50 text-amber-600" : "border-slate-100 bg-slate-50 text-slate-500"}`}>
+        <Icon className="size-3.5" strokeWidth={1.9} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</span>
+        <span className="mt-0.5 block truncate text-sm font-semibold text-slate-800">{value}</span>
+        <span className="block truncate text-[10px] text-slate-400">{detail}</span>
+      </span>
+      <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-primary-700">
+        <span className="hidden md:inline">{actionLabel}</span>
+        <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5" />
+      </span>
+    </button>
+  )
+}
+
 const KPI_TONE: Record<string, string> = {
   primary: "bg-primary-50 text-primary-600", violet: "bg-violet-50 text-violet-600",
   amber: "bg-amber-50 text-amber-600", emerald: "bg-emerald-50 text-emerald-600", sky: "bg-sky-50 text-sky-600",
@@ -488,7 +611,7 @@ function DealRow({ deal: d, proposal, onView }: { deal: CockpitDeal; proposal?: 
         </div>
       </td>
       {/* Produto */}
-      <td className="px-3 py-2.5 hidden md:table-cell">
+      <td className="px-3 py-2.5 hidden 2xl:table-cell">
         {first ? (
           <div className="flex items-center gap-1.5 min-w-0">
             <Package className="size-3.5 text-slate-300 shrink-0" />

@@ -187,6 +187,10 @@ export function ChatPanel({
     : null
   const windowOpen = !hasWindow ? true : (windowMsLeft !== null && windowMsLeft > 0)
   const windowClosed = hasWindow && !windowOpen && policy.outsideWindow === "template"
+  // Janela fechada em canal SEM caminho de reabertura pago (Instagram/Messenger: a política
+  // é "tag", não "template"). Antes isto não existia: `windowClosed` era falso, o composer
+  // ficava normal, o atendente digitava e só o servidor recusava — atrito sem explicação.
+  const windowNoReopen = hasWindow && !windowOpen && policy.outsideWindow !== "template"
 
   // Preservação de scroll quando msgs antigas são prepended.
   // Roda ANTES do paint pra evitar flicker.
@@ -606,6 +610,8 @@ export function ChatPanel({
         quickReplies={quickReplies}
         disabled={conversation.status === "resolved"}
         windowClosed={windowClosed}
+        windowNoReopen={windowNoReopen}
+        channelLabel={policy.label}
         windowNeverOpened={windowClosed && !lastInboundAt}
         contactFirstName={name.split(/\s+/)[0] ?? ""}
         onSendText={onSendText}

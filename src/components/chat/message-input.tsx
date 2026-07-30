@@ -19,6 +19,10 @@ interface Props {
   disabled?:      boolean
   /** Janela de 24h fechada (WhatsApp Oficial) → bloqueia texto livre, exige template. */
   windowClosed?:  boolean
+  /** Janela fechada em canal sem reabertura paga (Instagram/Messenger). */
+  windowNoReopen?: boolean
+  /** Rótulo do canal pro texto ("Instagram", "Messenger"). */
+  channelLabel?:  string
   /** Conversa nova/oficial que nunca teve inbound (janela nunca abriu) — copy diferente. */
   windowNeverOpened?: boolean
   /** Primeiro nome do contato — pré-preenche {{1}} no picker de template. */
@@ -65,7 +69,7 @@ function formatBytes(b: number) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
+export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, windowNoReopen, channelLabel, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
   const [text, setText]                = useState("")
   const [isPrivate, setIsPrivate]      = useState(false)
   const [showQuickReplies, setShowQR]  = useState(false)
@@ -231,6 +235,13 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   }
 
   const hasContent = !!attachedFile || text.trim().length > 0
+
+  // Janela fechada em canal SEM reabertura paga (Instagram/Messenger). Diferente do
+  // WhatsApp: lá o template reabre pagando; aqui não existe template — só a pessoa
+  // voltando a falar. Explicar o mecanismo evita o atendente digitar e levar recusa.
+  if (windowNoReopen) {
+    return <NoReopenComposer channelLabel={channelLabel ?? "Instagram"} />
+  }
 
   // Janela de 24h fechada (Oficial): só template aprovado reabre a conversa.
   if (windowClosed) {
@@ -704,6 +715,30 @@ function ContactDialog({ onClose, onSend }: {
         </div>
       </div>
     </DialogShell>
+  )
+}
+
+// ── Composer quando a janela fechou e NÃO há como reabrir enviando ─────────
+// Instagram e Messenger: a política é "tag", não "template". Não existe mensagem
+// paga de re-engajamento — só a pessoa voltando a falar reabre. Em vez de bloquear
+// mudo, ensina o mecanismo e mostra as portas que existem de verdade.
+function NoReopenComposer({ channelLabel }: { channelLabel: string }) {
+  return (
+    <div className="border-t border-slate-200 bg-white p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 flex items-start gap-2.5">
+        <Lock className="size-4 text-amber-600 shrink-0 mt-px" />
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-amber-900">
+            A janela de 24h fechou
+          </p>
+          <p className="text-[11px] text-amber-800 leading-relaxed mt-0.5">
+            No {channelLabel} não dá pra reabrir enviando — diferente do WhatsApp, não existe
+            mensagem paga de retomada. A conversa reabre quando <strong>a pessoa falar de novo</strong>:
+            respondendo aqui, comentando num post seu ou tocando num link seu.
+          </p>
+        </div>
+      </div>
+    </div>
   )
 }
 

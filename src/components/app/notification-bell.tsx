@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, type LucideIcon } from "lucide-react"
+import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, type LucideIcon } from "lucide-react"
 import { getRealtimeClient } from "@/lib/realtime"
 import {
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,
@@ -146,41 +146,66 @@ export function NotificationBell({
       <button
         type="button"
         onClick={toggle}
+        aria-expanded={open}
+        aria-haspopup="dialog"
         aria-label={`Notificações${unread ? ` · ${unread} não lidas` : ""}`}
-        className="relative size-9 flex items-center justify-center rounded-lg text-nav-dim hover:bg-nav-hover hover:text-nav-strong transition-colors"
+        className={`relative inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-xl border px-2 transition-colors ${
+          open
+            ? "border-primary-200 bg-primary-50 text-primary-700"
+            : "border-transparent text-nav-dim hover:border-nav-line hover:bg-nav-hover hover:text-nav-strong"
+        }`}
       >
-        <Bell className="size-5" strokeWidth={1.75} />
+        <Bell className="size-[18px]" strokeWidth={1.8} />
         {unread > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full bg-red-500 text-white text-[9px] font-semibold flex items-center justify-center ring-2 ring-nav tabular-nums">
-            {badge}
-          </span>
+          <>
+            <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-red-500 ring-2 ring-nav sm:hidden" />
+            <span className="hidden h-5 min-w-5 items-center justify-center rounded-md bg-red-50 px-1.5 text-[10px] font-bold text-red-700 tabular-nums sm:inline-flex">
+              {badge}
+            </span>
+          </>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-[380px] max-w-[calc(100vw-1rem)] rounded-xl border border-slate-200 bg-white shadow-lg z-50 overflow-hidden">
-          <div className="flex items-center justify-between px-4 h-12 border-b border-slate-100">
-            <span className="text-sm font-semibold text-slate-900">Notificações</span>
-            {unread > 0 && (
-              <button onClick={onMarkAll} className="text-xs text-slate-400 hover:text-slate-900 font-medium inline-flex items-center gap-1 transition-colors">
-                <Check className="size-3.5" /> Marcar todas como lidas
+        <div
+          role="dialog"
+          aria-label="Central de notificações"
+          className="fixed inset-x-3 top-[4.25rem] z-50 w-auto overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_20px_60px_-18px_rgba(15,23,42,0.35)] sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[400px]"
+        >
+          <div className="flex min-h-14 items-center gap-3 border-b border-slate-100 px-4">
+            <span className="size-8 rounded-lg border border-slate-100 bg-slate-50 text-slate-600 grid place-items-center shrink-0">
+              <Bell className="size-4" strokeWidth={1.9} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900">Notificações</p>
+              <p className="text-[10px] text-slate-400">{unread > 0 ? `${unread} ${unread === 1 ? "não lida" : "não lidas"}` : "Tudo acompanhado"}</p>
+            </div>
+            <div className="ml-auto flex items-center gap-1">
+              {unread > 0 && (
+                <button onClick={onMarkAll} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-900">
+                  <Check className="size-3.5" /> <span className="hidden min-[360px]:inline">Marcar como lidas</span>
+                </button>
+              )}
+              <button type="button" onClick={() => setOpen(false)} aria-label="Fechar notificações"
+                className="size-8 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 sm:hidden">
+                <X className="size-4" />
               </button>
-            )}
+            </div>
           </div>
 
-          <div className="max-h-[440px] overflow-y-auto">
+          <div className="max-h-[calc(100dvh-8.5rem)] overflow-y-auto overscroll-contain sm:max-h-[480px]">
             {items.length === 0 ? (
-              <div className="px-4 py-12 flex flex-col items-center text-center">
-                <span className="size-10 rounded-full bg-slate-100 grid place-items-center mb-3">
-                  <Bell className="size-5 text-slate-300" strokeWidth={1.75} />
+              <div className="px-5 py-14 flex flex-col items-center text-center">
+                <span className="size-10 rounded-xl border border-slate-100 bg-slate-50 grid place-items-center mb-3">
+                  {loaded ? <Check className="size-4 text-emerald-600" /> : <Loader2 className="size-4 animate-spin text-slate-400" />}
                 </span>
-                <p className="text-sm font-medium text-slate-500">{loaded ? "Tudo em dia" : "Carregando…"}</p>
-                {loaded && <p className="text-xs text-slate-400 mt-0.5">Avisos de agenda e atendimento aparecem aqui.</p>}
+                <p className="text-sm font-semibold text-slate-700">{loaded ? "Tudo em dia" : "Carregando notificações"}</p>
+                <p className="text-xs text-slate-400 mt-1">{loaded ? "Novos avisos de agenda e atendimento aparecerão aqui." : "Só um instante…"}</p>
               </div>
             ) : (
               groups.map((g) => (
                 <div key={g.key}>
-                  <p className="px-4 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{g.label}</p>
+                  <p className="px-4 pt-3.5 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">{g.label}</p>
                   {g.rows.map((n) => {
                     const Icon = ICONS[n.type] ?? Bell
                     const isUnread = !n.read_at
@@ -188,19 +213,27 @@ export function NotificationBell({
                       <button
                         key={n.id}
                         onClick={() => onItemClick(n)}
-                        className={`w-full text-left px-4 py-2.5 border-b border-slate-100 last:border-b-0 transition-colors ${
-                          isUnread ? "bg-primary-50/50 hover:bg-primary-50" : "hover:bg-slate-50"
+                        className={`group w-full border-b border-slate-100 px-4 py-3 text-left transition-colors last:border-b-0 ${
+                          isUnread ? "bg-primary-50/35 hover:bg-primary-50/70" : "hover:bg-slate-50/80"
                         }`}
                       >
-                        <span className="flex items-center gap-2">
-                          <Icon className={`size-4 shrink-0 ${isUnread ? "text-primary-600" : "text-slate-300"}`} strokeWidth={2.25} />
-                          <span className={`text-sm truncate ${isUnread ? "font-semibold text-slate-900" : "font-medium text-slate-500"}`}>
-                            {n.title}
+                        <span className="flex items-start gap-3">
+                          <span className={`mt-0.5 size-8 rounded-lg border grid place-items-center shrink-0 ${
+                            isUnread ? "border-primary-100 bg-white text-primary-600" : "border-slate-100 bg-slate-50 text-slate-400"
+                          }`}>
+                            <Icon className="size-3.5" strokeWidth={2} />
                           </span>
-                          {isUnread && <span className="size-1.5 rounded-full bg-primary shrink-0" />}
-                          <span className="ml-auto shrink-0 text-[11px] text-slate-400 tabular-nums">{timeAgo(n.created_at)}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-2">
+                              <span className={`min-w-0 flex-1 truncate text-sm ${isUnread ? "font-semibold text-slate-900" : "font-medium text-slate-600"}`}>
+                                {n.title}
+                              </span>
+                              <span className="shrink-0 text-[10px] text-slate-400 tabular-nums">{timeAgo(n.created_at)}</span>
+                            </span>
+                            {n.body && <span className="mt-0.5 block line-clamp-2 text-xs leading-relaxed text-slate-400">{n.body}</span>}
+                          </span>
+                          {isUnread && <span className="mt-2 size-1.5 rounded-full bg-primary shrink-0" />}
                         </span>
-                        {n.body && <span className="block text-xs text-slate-400 truncate mt-0.5 pl-6">{n.body}</span>}
                       </button>
                     )
                   })}

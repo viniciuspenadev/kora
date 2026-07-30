@@ -4,7 +4,7 @@ import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
-  Building2, Search, X, Plus, Filter, Layers, MoreHorizontal, ExternalLink,
+  Building2, Search, X, Plus, Layers, MoreHorizontal, ExternalLink,
   FileText, Archive, ArchiveRestore, Loader2,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -18,11 +18,10 @@ import { archiveCompany, type CompanyRosterItem } from "@/lib/actions/companies"
 import { startQuoteFirstForCompany } from "@/lib/actions/deals"
 import { CompanyFormDialog } from "./company-form-dialog"
 
-const brl    = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
 // Compacto pra célula (igual ao roster de /contatos): sem centavos acima de 100.
 const brlFmt = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: v >= 100 ? 0 : 2 })
 
-const inputBase = "h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40"
+const inputBase = "h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/40 sm:h-8 sm:text-xs"
 
 // Situação cadastral (Receita) → badge. Sem dado = null.
 function regMeta(raw: string | null): { label: string; cls: string; dot: string } | null {
@@ -92,20 +91,21 @@ export function EmpresasClient({ companies, canManage }: { companies: CompanyRos
   return (
     <PageShell
       variant="list"
+      listHeaderClass="px-4 pt-10 pb-10 sm:px-6 sm:pt-7 sm:pb-7"
       title="Empresas"
       description={description}
       actions={canManage ? (
-        <button type="button" onClick={() => setDialogOpen(true)}
-          className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors shrink-0">
-          <Plus className="size-3.5" /> Nova empresa
+        <button type="button" onClick={() => setDialogOpen(true)} aria-label="Nova empresa" title="Nova empresa"
+          className="inline-flex size-9 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary text-xs font-semibold text-white transition-colors hover:bg-primary-700 sm:w-auto sm:px-4">
+          <Plus className="size-3.5" /> <span className="hidden sm:inline">Nova empresa</span>
         </button>
       ) : undefined}
     >
-      <div className="space-y-4">
-        {/* Toolbar — busca + abas + chips de segmento (espelha o /contatos) */}
+      <div className="space-y-3">
+        {/* Toolbar — busca, segmento e lentes de status em uma superfície compacta. */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden">
-          <div className="p-4">
-            <div className="relative">
+          <div className="flex items-center gap-2 p-3 sm:p-2.5">
+            <div className="relative min-w-0 flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
               <input type="text" value={query} onChange={(e) => setQuery(e.target.value)}
                 placeholder="Nome fantasia, razão social, CNPJ, cidade..." className={`${inputBase} pl-9 pr-9`} />
@@ -116,40 +116,36 @@ export function EmpresasClient({ companies, canManage }: { companies: CompanyRos
                 </button>
               )}
             </div>
+            {segments.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger className={`inline-flex h-9 max-w-52 shrink-0 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition-colors sm:h-8 ${
+                  segment ? "border-primary-200 bg-primary-50 text-primary-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                }`}>
+                  <Layers className="size-3.5 shrink-0" />
+                  <span className="hidden max-w-32 truncate sm:block">{segment ?? "Segmento"}</span>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuItem onClick={() => setSegment(null)}>Todos os segmentos</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {segments.map((s) => (
+                    <DropdownMenuItem key={s} onClick={() => setSegment(s)}>{s}</DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
 
           {/* abas de filtro com contagem */}
-          <div className="flex items-center gap-1 px-4 py-2 border-t border-slate-100 overflow-x-auto">
+          <div className="flex items-center gap-1 border-t border-slate-100 px-3 py-1.5 sm:py-1 overflow-x-auto">
             {tabs.map((t) => (
               <button key={t.value} onClick={() => setTab(t.value)}
-                className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 sm:py-1 rounded-lg text-xs font-semibold transition-colors ${
                   tab === t.value ? "bg-primary-50 text-primary-700" : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"}`}>
                 {t.label}
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full tabular-nums ${tab === t.value ? "bg-primary-100 text-primary-700" : "bg-slate-100 text-slate-500"}`}>{t.count}</span>
               </button>
             ))}
           </div>
-
-          {/* chips de segmento (só os presentes) */}
-          {segments.length > 0 && (
-            <div className="flex items-center gap-1.5 px-4 py-2 border-t border-slate-100 overflow-x-auto">
-              <Layers className="size-3 text-slate-400 shrink-0" />
-              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider shrink-0 mr-1">Segmento:</span>
-              {segments.map((s) => {
-                const active = segment === s
-                return (
-                  <button key={s} onClick={() => setSegment(active ? null : s)}
-                    className={`shrink-0 inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold transition-all ${
-                      active ? "bg-primary-100 text-primary-700 ring-1 ring-primary/30" : "bg-slate-100 text-slate-500 hover:bg-slate-200/70"}`}>
-                    {s}
-                  </button>
-                )
-              })}
-              {segment && (
-                <button onClick={() => setSegment(null)} className="shrink-0 text-[10px] text-slate-400 hover:text-red-500 ml-1">Limpar</button>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Roster */}
@@ -167,16 +163,15 @@ export function EmpresasClient({ companies, canManage }: { companies: CompanyRos
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <div className="lg:min-w-[960px] xl:min-w-[1120px]">
+            <div>
+              <div>
                 {/* header do roster */}
-                <div className="flex items-center gap-3 px-5 py-2.5 border-b border-slate-100 bg-slate-50/60 text-[11px] font-medium text-slate-400">
-                  <span className="size-10 shrink-0" />
-                  <span className="w-56 xl:w-64 shrink-0">Empresa</span>
-                  <span className="hidden md:block flex-1 min-w-[120px]">Classificação</span>
-                  <span className="hidden xl:block w-36 shrink-0">Responsável</span>
-                  <span className="hidden lg:block w-[372px] shrink-0">Dados comerciais</span>
-                  <span className="w-8 shrink-0" />
+                <div className="hidden md:grid md:grid-cols-[minmax(220px,1fr)_minmax(180px,1fr)_32px] lg:grid-cols-[minmax(220px,1.1fr)_minmax(170px,.8fr)_340px_32px] xl:grid-cols-[minmax(240px,1.2fr)_minmax(190px,1fr)_150px_360px_32px] items-center gap-4 px-5 py-2 border-b border-slate-100 bg-slate-50/60 text-[10px] font-medium text-slate-400">
+                  <span>Empresa</span>
+                  <span>Classificação</span>
+                  <span className="hidden xl:block">Responsável</span>
+                  <span className="hidden lg:block">Dados comerciais</span>
+                  <span />
                 </div>
 
                 <div className="divide-y divide-slate-100">
@@ -197,7 +192,7 @@ function CompanyRow({ c, canManage }: { c: CompanyRosterItem; canManage: boolean
   const router = useRouter()
   const [busy, start] = useTransition()
   const rm = regMeta(c.registration_status)
-  const secondary = [c.legal_name, c.doc_id ? maskCpfCnpj(c.doc_id) : null, c.city].filter(Boolean).join(" · ")
+  const companyDoc = c.doc_id ? maskCpfCnpj(c.doc_id) : "CNPJ não informado"
   const archived = !!c.archived_at
 
   function openNewDeal() {
@@ -218,25 +213,60 @@ function CompanyRow({ c, canManage }: { c: CompanyRosterItem; canManage: boolean
   }
 
   return (
+    <>
+    {/* Mobile — card informativo próprio, sem cabeçalho de tabela fantasma. */}
     <div onClick={() => router.push(`/empresas/${c.id}`)}
-      className={`group flex items-center gap-3 px-5 py-3 hover:bg-slate-50/60 transition-colors cursor-pointer ${archived ? "opacity-70" : ""}`}>
-      {/* Brasão */}
-      <div className="size-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0 group-hover:bg-primary-50 transition-colors">
-        <Building2 className="size-[18px] text-slate-400 group-hover:text-primary-600 transition-colors" strokeWidth={1.75} />
+      className={`cursor-pointer p-3.5 transition-colors hover:bg-slate-50 md:hidden ${archived ? "opacity-70" : ""}`}>
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <p className="truncate text-sm font-semibold leading-5 text-slate-900">{c.name}</p>
+            {archived && <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-500">Arquivada</span>}
+          </div>
+          <p className="mt-0.5 text-[11px] tabular-nums text-slate-400">{companyDoc}</p>
+        </div>
+        <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+          <DropdownMenu>
+            <DropdownMenuTrigger title="Ações" className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <MoreHorizontal className="size-4" />}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onClick={() => router.push(`/empresas/${c.id}`)}><ExternalLink className="size-3.5 text-slate-400" /> Abrir ficha</DropdownMenuItem>
+              <DropdownMenuItem onClick={openNewDeal}><FileText className="size-3.5 text-primary-500" /> Novo negócio</DropdownMenuItem>
+              {canManage && <DropdownMenuSeparator />}
+              {canManage && <DropdownMenuItem onClick={toggleArchive}>{archived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}{archived ? "Reativar empresa" : "Arquivar empresa"}</DropdownMenuItem>}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        {rm && <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${rm.cls}`}><span className={`size-1 rounded-full ${rm.dot}`} />{rm.label}</span>}
+        {c.segment && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600"><Layers className="size-2.5" />{c.segment}</span>}
+        <span className="ml-auto truncate text-[10px] text-slate-400">{c.owner_name ?? "Sem responsável"}</span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 divide-x divide-slate-100 rounded-lg border border-slate-100 bg-slate-50/70 py-2">
+        <div className="px-3"><MiniStat label="Em aberto" value={c.openValue > 0 ? brlFmt(c.openValue) : "R$ 0"} strong={c.openValue > 0} tone={c.openValue > 0 ? undefined : "muted"} /></div>
+        <div className="px-3"><MiniStat label="Negócios" value={String(c.openDealCount)} strong={c.openDealCount > 0} tone={c.openDealCount > 0 ? undefined : "muted"} /></div>
+        <div className="px-3"><MiniStat label="Contatos" value={String(c.contactCount)} tone={c.contactCount > 0 ? undefined : "muted"} /></div>
+      </div>
+    </div>
+
+    <div onClick={() => router.push(`/empresas/${c.id}`)}
+      className={`group hidden md:grid md:grid-cols-[minmax(220px,1fr)_minmax(180px,1fr)_32px] lg:grid-cols-[minmax(220px,1.1fr)_minmax(170px,.8fr)_340px_32px] xl:grid-cols-[minmax(240px,1.2fr)_minmax(190px,1fr)_150px_360px_32px] items-center gap-4 px-5 py-2.5 hover:bg-slate-50/60 transition-colors cursor-pointer ${archived ? "opacity-70" : ""}`}>
       {/* Empresa — identidade compacta (largura fixa estrutura as colunas) */}
-      <div className="w-56 xl:w-64 min-w-0 shrink-0">
+      <div className="min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <Link href={`/empresas/${c.id}`} onClick={(e) => e.stopPropagation()}
-            className="block text-sm font-semibold text-slate-900 truncate hover:text-primary-700 transition-colors">{c.name}</Link>
+            className="truncate text-sm font-semibold leading-5 text-slate-900 hover:text-primary-700 transition-colors">{c.name}</Link>
           {archived && <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">Arquivada</span>}
         </div>
-        <p className="text-[11px] text-slate-400 truncate mt-0.5">{secondary || "Sem dados cadastrais"}</p>
+        <p className="mt-0.5 text-[11px] tabular-nums text-slate-400">{companyDoc}</p>
       </div>
 
       {/* Classificação — badges (situação + segmento), preenche o meio */}
-      <div className="hidden md:flex items-center gap-1.5 flex-wrap flex-1 min-w-[120px] content-center">
+      <div className="flex min-w-0 items-center gap-1.5 flex-wrap content-center">
         {rm && (
           <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${rm.cls}`}>
             <span className={`size-1 rounded-full ${rm.dot}`} />{rm.label}
@@ -250,7 +280,7 @@ function CompanyRow({ c, canManage }: { c: CompanyRosterItem; canManage: boolean
       </div>
 
       {/* Responsável */}
-      <div className="hidden xl:flex items-center gap-1.5 w-36 shrink-0 min-w-0">
+      <div className="hidden xl:flex items-center gap-1.5 min-w-0">
         {c.owner_id ? (
           <>
             <UserAvatar userId={c.owner_id} name={c.owner_name} size={22} />
@@ -260,9 +290,9 @@ function CompanyRow({ c, canManage }: { c: CompanyRosterItem; canManage: boolean
       </div>
 
       {/* Dados comerciais — grid de colunas fixas (o valor cresce DENTRO da célula). Zero = mudo. */}
-      <div className="hidden lg:grid grid-cols-[104px_84px_96px_64px] items-center gap-2 w-[372px] shrink-0">
+      <div className="hidden lg:grid grid-cols-[94px_64px_86px_60px] items-center gap-3 min-w-0">
         <MiniStat label="Em aberto" value={c.openValue > 0 ? brlFmt(c.openValue) : "R$ 0"} strong={c.openValue > 0} tone={c.openValue > 0 ? undefined : "muted"} />
-        <DealsRing count={c.openDealCount} />
+        <MiniStat label="Negócios" value={String(c.openDealCount)} strong={c.openDealCount > 0} tone={c.openDealCount > 0 ? undefined : "muted"} />
         <MiniStat label="Ganho"    value={c.wonValue > 0 ? brlFmt(c.wonValue) : "—"} tone={c.wonValue > 0 ? "ok" : "muted"} />
         <MiniStat label="Contatos" value={String(c.contactCount)} tone={c.contactCount > 0 ? undefined : "muted"} />
       </div>
@@ -294,6 +324,7 @@ function CompanyRow({ c, canManage }: { c: CompanyRosterItem; canManage: boolean
         </DropdownMenu>
       </div>
     </div>
+    </>
   )
 }
 
@@ -309,20 +340,6 @@ function MiniStat({ label, value, strong = false, tone }: { label: string; value
     <div className="min-w-0">
       <p className={`text-xs font-bold tabular-nums leading-tight truncate ${color}`} title={value}>{value}</p>
       <p className="text-[10px] text-slate-400 leading-tight whitespace-nowrap">{label}</p>
-    </div>
-  )
-}
-
-/** Anel de negócios abertos — círculo com o nº dentro (espelha o PurchasesRing). */
-function DealsRing({ count }: { count: number }) {
-  const active = count > 0
-  return (
-    <div className="flex items-center gap-1.5 shrink-0" title={`${count} negócio${count !== 1 ? "s" : ""} aberto${count !== 1 ? "s" : ""}`}>
-      <span className={`size-8 rounded-full border-2 grid place-items-center text-[11px] font-bold tabular-nums shrink-0 ${
-        active ? "border-primary/40 text-primary-600" : "border-slate-200 text-slate-300"}`}>
-        {count}
-      </span>
-      <span className="text-[10px] text-slate-400 leading-tight whitespace-nowrap">Negócios</span>
     </div>
   )
 }

@@ -52,18 +52,26 @@ export async function POST(req: NextRequest) {
     return cors(NextResponse.json({ error: "origem não autorizada" }, { status: 403 }))
   }
 
-  // Instância WhatsApp do tenant (instance_id é NOT NULL na conversa; não envia no site)
+  // ⚠️ O comentário antigo aqui dizia "instance_id é NOT NULL na conversa". Era FALSO — a
+  // coluna é nullable desde 20260626. O widget do site NÃO tem número, e emprestar um
+  // escondia o canal de atendente escopado, mentia no selo e sujava relatório por número.
+  // Pior: a busca era `.limit(1)` SEM `order` — escolha arbitrária. Por isso as conversas
+  // de site em produção acabaram espalhadas por DOIS números diferentes.
+  //
+  // A instância continua sendo carregada, mas só pro motor de automação (contrato do
+  // `routeAutomationTurn`); ela NÃO entra mais na conversa. Tenant sem número deixa de
+  // levar 409: o widget passa a funcionar em conta site-first.
   const { data: instance } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("id, tenant_id, provider, evolution_url, evolution_key, instance_name, meta_phone_number_id, meta_business_account_id, meta_access_token, meta_app_secret")
     .eq("tenant_id", tenant.id)
+    .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle()
-  if (!instance) return cors(NextResponse.json({ error: "tenant sem instância" }, { status: 409 }))
 
   try {
     const contactId = await getOrCreateSiteContact(tenant.id, visitorId)
-    const conv      = await getOrCreateSiteConversation(tenant.id, contactId, instance.id)
+    const conv      = await getOrCreateSiteConversation(tenant.id, contactId, null)
     const convId    = conv.id
 
     // Persiste a mensagem do visitante
@@ -88,7 +96,11 @@ export async function POST(req: NextRequest) {
     // widget pega via polling). Sem debounce: chat ao vivo quer resposta já.
     after(async () => {
       try {
-        await routeAutomationTurn({ tenantId: tenant.id, conversationId: convId, incomingText: text, instance, signals: { isReopened: conv.reopened } })
+        // Tenant site-first (sem número nenhum) → `instance` é null. O motor exige a forma
+        // do provider no contrato, mas o canal `site` não transmite por provider — a
+        // resposta é persistida e o widget busca por polling. Objeto vazio satisfaz o
+        // contrato sem prometer um provider que não existe.
+        await routeAutomationTurn({ tenantId: tenant.id, conversationId: convId, incomingText: text, instance: instance ?? {}, signals: { isReopened: conv.reopened } })
       } catch (err) {
         console.error("[/api/site/message] runAITurn falhou:", err)
       }

@@ -556,7 +556,11 @@ export function ConversationList({
                     )}
                   </span>
 
-                  {showChannel && (
+                  {/* ⚠️ O selo identifica o NÚMERO, não o canal. Conversa sem número
+                      (Instagram, site) não tem o que mostrar aqui — e sem o guarda o
+                      fallback estampava "QR" + ícone de celular numa conversa de
+                      Instagram, dizendo ao atendente uma coisa que não é verdade. */}
+                  {showChannel && conv.instance_id && (
                     <ChannelBadge provider={conv.whatsapp_instances?.provider ?? null} name={conv.whatsapp_instances?.display_name} />
                   )}
 
