@@ -1,6 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
-import { isWindowOpen } from "@/lib/channels/policy"
+import { isWindowOpen, isWhatsAppChannel } from "@/lib/channels/policy"
 import { runStudioTurn } from "../run"
 import type { FlowTrigger, FlowGraph, FlowNodeType } from "./types"
 
@@ -81,12 +81,22 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
       .order("last_message_at", { ascending: true })
       .limit(SCAN_PER_FLOW)
     if (chans.length) q = q.in("channel", chans)
-    if (insts.length) q = q.in("instance_id", insts)
+    // ⚠️ Filtro por NÚMERO só recorta a família WhatsApp — é lá que a conversa tem um
+    // `whatsapp_instances.id` de verdade. Instagram e site têm `instance_id = NULL`, então
+    // `.in("instance_id", […])` os descartaria TODOS: um gatilho de inatividade com filtro
+    // de número mataria o re-engajamento nesses canais em silêncio. Mesma correção já feita
+    // em `triggers.ts` — aqui tinha ficado de fora.
+    const scopesWhatsAppOnly = chans.length > 0 && chans.every((c) => isWhatsAppChannel(c))
+    if (insts.length && scopesWhatsAppOnly) q = q.in("instance_id", insts)
 
     const { data: convs } = await q
     for (const c of (convs ?? []) as { id: string; channel: string | null; instance_id: string | null; last_inbound_at: string | null; last_message_at: string | null; metadata: Record<string, unknown> | null }[]) {
       if (fired >= MAX_FIRES) break
-      if (!c.instance_id) continue
+      // ⚠️ A instância é OPCIONAL: conversa de Instagram/site não tem número. Antes isto
+      // era `if (!c.instance_id) continue`, que funcionava por acidente (o id emprestado
+      // passava) e, com nulo, descartaria TODAS essas conversas — sem log, sem expirar o
+      // run zumbi (o `expireRun` fica depois deste laço). O envio real vai por
+      // `sendChannelText`, que roteia por canal e não usa a instância fora do WhatsApp.
 
       const meta = (c.metadata ?? {}) as { inactivity_fired_at?: string }
       const alreadyStamped = !!meta.inactivity_fired_at && (!c.last_inbound_at || meta.inactivity_fired_at >= c.last_inbound_at)
@@ -136,9 +146,18 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
       if (run && !waitingOnClient) continue
       if (waitingOnClient) await expireRun()
 
-      const { data: inst } = await supabaseAdmin.from("whatsapp_instances")
-        .select("*").eq("id", c.instance_id).eq("tenant_id", f.tenant_id).maybeSingle()
-      if (!inst) continue
+      // ⚠️ `.eq("id", null)` no PostgREST NÃO é "0 linhas" — é HTTP 400 (22P02, uuid
+      // inválido), engolido pelo `maybeSingle()` em `data: null`. Por isso a busca é
+      // condicional: conversa sem número (IG/site) segue com `inst = null` e o envio vai
+      // pela boca do canal, que não precisa de instância.
+      let inst: Record<string, unknown> | null = null
+      if (c.instance_id) {
+        const { data, error } = await supabaseAdmin.from("whatsapp_instances")
+          .select("*").eq("id", c.instance_id).eq("tenant_id", f.tenant_id).maybeSingle()
+        if (error) console.error("[inactivity] instance lookup:", error.code, error.message)
+        if (!data) continue   // número da conversa sumiu → não dá pra reengajar por lá
+        inst = data
+      }
 
       // GATE FAIL-CLOSED da janela: fora das 24h, texto livre é rejeitado pela Meta.
       // Só dispara fechado se o fluxo abrir com template (reabre a janela). Senão, pula.
@@ -149,7 +168,11 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
       // evita re-disparo se o run demorar). Depois dispara o fluxo com precedência.
       await stampFired()
       try {
-        const r = await runStudioTurn({ tenantId: f.tenant_id, conversationId: c.id, incomingText: "", instance: inst }, { forceFlowId: f.id })
+        // `inst ?? {}` — o contrato do motor exige a forma do provider, mas canal sem
+        // número não transmite por provider (a boca é `sendChannelText`). Objeto vazio
+        // satisfaz o tipo sem prometer um provider que não existe. Mesmo padrão do
+        // `/api/site/message` e do `studio/flows.ts`.
+        const r = await runStudioTurn({ tenantId: f.tenant_id, conversationId: c.id, incomingText: "", instance: inst ?? {} }, { forceFlowId: f.id })
         if (r.status !== "error") fired++
       } catch (e) {
         console.error("[inactivity tick]", c.id, (e as Error).message)

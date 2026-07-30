@@ -62,11 +62,18 @@ export function KanbanView({
   const visible      = useMemo(() => conversations.filter((c) => cardMatchesFilters(c, filters)), [conversations, filters])
   const openValue    = visible.reduce((s, c) => s + effectiveValue(c), 0)
   const agentOpts    = useMemo(() => agents.map((a) => ({ value: a.id, label: a.full_name ?? "—" })), [agents])
+  // Opções do filtro "Número" — só conversas que TÊM número entram. Instagram/site
+  // vêm com `instance_id = NULL` e não viram opção (não há número pra escolher); o
+  // filtro as ignora em cardMatchesFilters em vez de sumir com elas.
+  // ⚠️ "QR" só quando o embed da instância existe: sem embed (número apagado) o card
+  // não é Baileys — é órfão. Rotular de "QR" seria um selo mentiroso.
   const instanceOpts = useMemo(() => {
     const m = new Map<string, string>()
     for (const c of conversations) {
       const id = c.instance_id
-      if (id && !m.has(id)) m.set(id, c.whatsapp_instances?.display_name?.trim() || (c.whatsapp_instances?.provider === "meta_cloud" ? "Oficial" : "QR"))
+      if (!id || m.has(id)) continue
+      const inst = c.whatsapp_instances
+      m.set(id, inst?.display_name?.trim() || (inst ? (inst.provider === "meta_cloud" ? "Oficial" : "QR") : "Número removido"))
     }
     return Array.from(m, ([value, label]) => ({ value, label }))
   }, [conversations])

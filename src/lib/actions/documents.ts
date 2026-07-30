@@ -6,7 +6,7 @@ import { requireModule } from "@/lib/modules"
 import { getViewerScope, seesAllDeals, canViewConversation } from "@/lib/visibility"
 import { canAccessDeal } from "@/lib/actions/deals"
 import { getProvider } from "@/lib/providers"
-import { isWindowOpen } from "@/lib/channels/policy"
+import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import {
   createQuote, createNewVersion, saveQuoteDraft, activateQuoteDraft, discardQuoteDraft, getDealDocuments, getDocumentSettings,
@@ -207,15 +207,26 @@ export async function sendQuoteInChat(
   if (!doc.pdf_path) return { error: "PDF da cotação indisponível." }
   if (!doc.contact_id) return { error: "Cotação sem cliente vinculado." }
 
-  // Conversa do contato: a mais recente não-arquivada do tenant.
+  // Conversa do contato: a mais recente não-arquivada do tenant — mas SÓ das threads
+  // da família WhatsApp (`channel` nulo = legado, nasceu WhatsApp).
+  //
+  // ⚠️ O filtro de canal é de SEGURANÇA, não cosmético: o PDF só tem veículo no
+  // WhatsApp, e sem ele o "mais recente" podia ser a thread de Instagram/site do
+  // mesmo contato. Como essas threads carregam um `instance_id` EMPRESTADO de um
+  // número WhatsApp real, o getProvider montava um provider FUNCIONAL e a cotação
+  // saía de verdade (cobrada) no WhatsApp de quem só falou com a gente no Direct —
+  // e ficava persistida na thread do Instagram como se tivesse saído por lá.
   const { data: convRow } = await supabaseAdmin
     .from("chat_conversations")
     .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("tenant_id", tenantId).eq("contact_id", doc.contact_id).is("archived_at", null)
+    .or("channel.is.null,channel.in.(whatsapp,meta_cloud)")
     .order("last_message_at", { ascending: false }).limit(1).maybeSingle()
-  if (!convRow) return { error: "Abra uma conversa com o cliente primeiro." }
+  if (!convRow) return { error: "Abra uma conversa de WhatsApp com o cliente primeiro — a cotação em PDF só sai por esse canal." }
   const conv = convRow as unknown as {
-    id: string; instance_id: string; assigned_to: string | null; participants: string[] | null
+    // `instance_id` é NULLABLE (canal sem número). Tipar como `string` aqui era um cast
+    // que MENTIA pro compilador — ver o gate logo abaixo.
+    id: string; instance_id: string | null; assigned_to: string | null; participants: string[] | null
     department_id: string | null; channel: string | null; last_inbound_at: string | null
     whatsapp_instances?: { provider: string | null } | { provider: string | null }[] | null
     chat_contacts?: { phone_number: string | null; primary_channel: string | null; bsuid: string | null } | null
@@ -228,10 +239,25 @@ export async function sendQuoteInChat(
     return { error: "Sem permissão para enviar nesta conversa. Peça para o atendente atribuído te adicionar como participante." }
   }
 
-  // Documento só sai no WhatsApp (site-chat não tem envio de arquivo).
+  // Documento só sai no WhatsApp (site-chat/Direct não têm envio de arquivo).
+  // Gate pelo canal da CONVERSA (o fio), NUNCA pelo primary_channel do contato: o
+  // contato é hub multicanal, então o `primary_channel` dele podia dizer "whatsapp"
+  // enquanto o fio escolhido era outro (e vice-versa — contato site-primary com fio
+  // de WhatsApp legítimo era barrado à toa). Cinto do filtro do select acima.
   const contact = (Array.isArray(conv.chat_contacts) ? conv.chat_contacts[0] : conv.chat_contacts) ?? null
-  const channel = contact?.primary_channel ?? "whatsapp"
-  if (channel !== "whatsapp") return { error: "Envio de cotação disponível só no WhatsApp." }
+  const channel = conv.channel ?? "whatsapp"
+  if (!isWhatsAppChannel(channel)) {
+    return { error: `Envio de cotação disponível só no WhatsApp — esta conversa é do canal ${getChannelPolicy(channel).label}.` }
+  }
+
+  // Sem número na thread não há por onde o PDF sair. O filtro de canal acima já deveria
+  // garantir uma thread da família WhatsApp (que tem número), mas `instance_id` é
+  // nullable: fail-closed com recado acionável ANTES de gravar a mensagem — senão o
+  // envio explodia lá embaixo e deixava uma mensagem `failed` órfã na conversa.
+  const instanceId = conv.instance_id
+  if (!instanceId) {
+    return { error: "Esta conversa não está ligada a nenhum número de WhatsApp. Abra a conversa pelo número da empresa e reenvie a cotação." }
+  }
 
   // Gate fail-closed da janela de sessão (mesmo motor de canal do chat.ts).
   const inst = conv.whatsapp_instances
@@ -273,12 +299,12 @@ export async function sendQuoteInChat(
   if (dbErr || !msg) return { error: dbErr?.message ?? "Erro ao salvar a mensagem." }
 
   try {
-    const provider = await providerForConversationInstance(conv.instance_id, tenantId)
+    const provider = await providerForConversationInstance(instanceId, tenantId)
     const result = await provider.sendMedia(contact?.phone_number ?? contact?.bsuid ?? "", signed.signedUrl, "document", text ?? undefined, fileName)
     await supabaseAdmin.from("chat_messages")
       .update({ whatsapp_msg_id: result.messageId || null, status: "sent" }).eq("id", msg.id)
     await supabaseAdmin.from("whatsapp_instances")
-      .update({ last_outbound_message_at: now }).eq("id", conv.instance_id)
+      .update({ last_outbound_message_at: now }).eq("id", instanceId)
   } catch (err) {
     await supabaseAdmin.from("chat_messages").update({ status: "failed" }).eq("id", msg.id)
     const m = (err as Error).message ?? ""

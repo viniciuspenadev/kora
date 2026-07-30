@@ -9,6 +9,8 @@ interface PageShellProps {
   actions?:        React.ReactNode
   /** Padding do body. Default cobre mobile + desktop. */
   bodyClass?:      string
+  /** Override pontual do espaçamento do header da variante list. */
+  listHeaderClass?: string
   /**
    * `bar` (default) — header full-width branco com ícone (design-system §2).
    * `list` — título grande NO CANVAS, sem barra branca nem ícone, descrição
@@ -35,6 +37,7 @@ export function PageShell({
   iconClass     = "size-5 text-[#004add]",
   actions,
   bodyClass,
+  listHeaderClass,
   variant = "bar",
   children,
 }: PageShellProps) {
@@ -42,7 +45,7 @@ export function PageShell({
     return (
       <div className="min-h-full bg-canvas">
         {/* Respiro simétrico topo/baixo — mesmo padrão do header analítico (§2.1). */}
-        <div className="px-4 sm:px-6 pt-10 pb-10">
+        <div className={listHeaderClass ?? "px-4 sm:px-6 pt-10 pb-10"}>
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0">
               <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{title}</h1>

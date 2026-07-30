@@ -1,7 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
-import { isWindowOpen } from "@/lib/channels/policy"
+import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { docCode, markDocumentSent, type DocumentKind, type DocumentStatus } from "./documents"
 
@@ -55,11 +55,27 @@ export async function sendQuoteToConversation(params: {
   // ⛔ ANTI-IDOR: a cotação PRECISA ser do contato desta conversa (o único elo que
   // impede a IA — ou um docId trocado — de vazar proposta de terceiro).
   if (!conv.contact_id || conv.contact_id !== doc.contact_id) return { error: "A cotação não pertence a este cliente." }
-  if (!conv.instance_id) return { error: "Conversa sem instância." }
-
   const contact = (Array.isArray(conv.chat_contacts) ? conv.chat_contacts[0] : conv.chat_contacts) ?? null
-  const channel = contact?.primary_channel ?? conv.channel ?? "whatsapp"
-  if (channel !== "whatsapp" && channel !== "meta_cloud") return { error: "Envio de cotação disponível só no WhatsApp." }
+  // ⛔ Gate de CANAL — pelo canal da CONVERSA (o fio), nunca pelo primary_channel do
+  // contato. O contato é hub multicanal: um `primary_channel = "whatsapp"` VENCIA o
+  // `conv.channel = "instagram"` e, como a thread de Direct carrega um instance_id
+  // EMPRESTADO de um número WhatsApp real, o getProvider abaixo montava um provider
+  // FUNCIONAL — o PDF saía cobrado no WhatsApp de quem só falou no Direct, e ficava
+  // persistido na thread do Instagram como se tivesse saído por lá. Núcleo da tool
+  // send_quote da IA: aqui é onde a IA seria induzida a entregar no canal errado.
+  const channel = conv.channel ?? "whatsapp"
+  if (!isWhatsAppChannel(channel)) {
+    return { error: `Envio de cotação disponível só no WhatsApp — esta conversa é do canal ${getChannelPolicy(channel).label}. Peça o WhatsApp do cliente e envie por lá.` }
+  }
+
+  // ⚠️ Gate de NÚMERO **depois** do gate de canal, nunca antes. Invertido, uma conversa de
+  // Instagram (que não tem número) nunca alcançava a mensagem de canal e recebia
+  // "Conversa sem instância." — e como esta função é a tool `send_quote` da IA, o modelo
+  // recebia esse texto como resultado e tendia a repassá-lo ao cliente. Ordem correta:
+  // primeiro "não é o canal certo", só então "o número sumiu".
+  if (!conv.instance_id) {
+    return { error: "Esta conversa está sem número de WhatsApp — o número foi removido. Reative um número em Integrações para enviar por aqui." }
+  }
 
   const inst = conv.whatsapp_instances
   const providerKind = Array.isArray(inst) ? (inst[0]?.provider ?? null) : (inst?.provider ?? null)

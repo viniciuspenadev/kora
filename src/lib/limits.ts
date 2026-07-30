@@ -154,12 +154,56 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
     }
 
     case "storage_mb": {
-      const { data } = await supabaseAdmin
-        .from("chat_messages")
-        .select("media_size_bytes")
-        .eq("tenant_id", tenantId)
-        .not("media_size_bytes", "is", null)
-      const totalBytes = (data ?? []).reduce((sum, r) => sum + (r.media_size_bytes ?? 0), 0)
+      // ⚠️ GAP CONHECIDO — este número é uma SUBESTIMATIVA, hoje sempre 0.
+      //
+      // Até 2026-07-29 este case selecionava `media_size_bytes`, coluna que
+      // NUNCA existiu em chat_messages: o PostgREST devolvia 42703, o erro era
+      // descartado junto com o `data`, e a cota exibia 0 MB pra sempre.
+      //
+      // O tamanho do arquivo não é persistido em lugar nenhum: os 3 ingestores
+      // (chat.ts, meta-inbound.ts, instagram-inbound.ts) gravam só
+      // `metadata.storage_path`, e o schema `storage` não é exposto no
+      // PostgREST (só public/graphql_public) — então não dá pra somar
+      // storage.objects daqui. Somar via Storage API exigiria um list()
+      // recursivo por conversa (N+1 requests) a cada render da página de uso.
+      //
+      // PRA FECHAR O GAP (ordem obrigatória — schema-before-deploy):
+      //   1. os 3 ingestores + documents.ts/send-quote.ts passam a gravar
+      //      `metadata.storage_size_bytes` (bytes do buffer que já têm em mãos);
+      //   2. backfill dos arquivos antigos (script lendo o bucket);
+      //   3. índice parcial pra soma não virar seq scan:
+      //      CREATE INDEX ... ON chat_messages (tenant_id)
+      //        WHERE metadata ? 'storage_size_bytes';
+      //   4. este case já soma sozinho — nada mais a mudar aqui.
+      //
+      // Enquanto (1) não roda, a query abaixo retorna 0 linhas e o uso fica 0 —
+      // que é a VERDADE do que sabemos, não um número inventado.
+      const MAX_PAGES = 200 // trava de sanidade: 200k mensagens com mídia
+      const PAGE      = 1000 // PostgREST corta a resposta em 1000 linhas
+      let totalBytes = 0
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const from = page * PAGE
+        const { data, error } = await supabaseAdmin
+          .from("chat_messages")
+          .select("id, metadata")
+          .eq("tenant_id", tenantId)
+          .not("metadata->>storage_size_bytes", "is", null)
+          .order("id", { ascending: true })
+          .range(from, from + PAGE - 1)
+        // Erro não pode virar "0 MB" silencioso de novo — foi exatamente assim
+        // que este bug sobreviveu 2 meses. Loga alto e devolve o parcial real.
+        if (error) {
+          console.error("[limits] storage_mb: falha ao somar mídia", JSON.stringify({ tenantId, error: error.message }))
+          break
+        }
+        const rows = (data ?? []) as { metadata: unknown }[]
+        for (const row of rows) {
+          const raw = (row.metadata as { storage_size_bytes?: unknown } | null)?.storage_size_bytes
+          const bytes = typeof raw === "number" ? raw : Number(raw)
+          if (Number.isFinite(bytes) && bytes > 0) totalBytes += bytes
+        }
+        if (rows.length < PAGE) break
+      }
       return Math.round(totalBytes / (1024 * 1024))
     }
 

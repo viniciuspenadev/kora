@@ -121,8 +121,16 @@ export async function assignNextAgent(
   const memberList = (members ?? []) as unknown as MemberRow[]
   const eligible = memberList.filter((m) => {
     // Restrição de número: instance_ids vazio/null = todos; senão precisa incluir o número.
+    //
+    // ⚠️ O gate só se aplica quando a conversa TEM número. Conversa de canal sem
+    // número (Instagram, site → instance_id null) entra no rodízio de TODO mundo:
+    // antes, `!convInstanceId` derrubava todo agente número-scopado e a conversa
+    // caía em "no_eligible_agents" (ficava eternamente no pool). Mesma regra do
+    // `memberAttendsNumber`/`numberOk` em @/lib/visibility — paridade.
+    // (Aqui o papel NÃO bypassa o número: rodízio é escala operacional, não
+    // visibilidade — admin com número escolhido só recebe daquele número.)
     const ids = m.instance_ids
-    if (Array.isArray(ids) && ids.length > 0 && (!convInstanceId || !ids.includes(convInstanceId))) return false
+    if (convInstanceId && Array.isArray(ids) && ids.length > 0 && !ids.includes(convInstanceId)) return false
     // Pause manual ativo?
     if (m.auto_assign_paused) {
       if (!m.auto_assign_paused_until) return false

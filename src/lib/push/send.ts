@@ -1,7 +1,7 @@
 import "server-only"
 import webpush from "web-push"
 import { supabaseAdmin } from "@/lib/supabase"
-import { memberSeesPool, memberAttendsNumber } from "@/lib/visibility"
+import { memberSeesUnassigned, type FanoutMemberRow } from "@/lib/visibility"
 
 // ── Config VAPID (lazy) ─────────────────────────────────────────
 // Sem chaves no env → tudo vira no-op silencioso (não quebra o webhook em dev
@@ -79,12 +79,15 @@ export async function notifyInboundMessage(opts: {
 
     const { data: conv } = await supabaseAdmin
       .from("chat_conversations")
-      .select("assigned_to, participants, instance_id")
+      .select("assigned_to, participants, instance_id, department_id")
       .eq("id", opts.conversationId)
       .maybeSingle()
 
     const participants = ((conv?.participants ?? []) as string[])
-    const convInstanceId = (conv as { instance_id?: string | null } | null)?.instance_id ?? null
+    const convScope = {
+      instance_id:   (conv as { instance_id?: string | null } | null)?.instance_id ?? null,
+      department_id: (conv as { department_id?: string | null } | null)?.department_id ?? null,
+    }
 
     // Destinatários = quem REALMENTE pode ver a conversa (mesma regra de
     // @/lib/visibility). Não basta "todos os ativos": um atendente see_pool=false
@@ -95,16 +98,20 @@ export async function notifyInboundMessage(opts: {
       // cada conversa de cada atendente; eles consultam o inbox).
       userIds = [conv.assigned_to as string, ...participants]
     } else {
-      // Pool → só quem enxerga o pool (owner/admin, view_all ou see_pool) + participantes.
+      // Não atribuída → quem enxerga a conversa por DESCOBERTA + participantes.
+      // A regra vem inteira de `memberSeesUnassigned` (@/lib/visibility) — pool,
+      // fila do setor e supervisão escopada. Antes daqui só saía o ramo de pool,
+      // então o atendente com see_pool=false ficava sem push da PRÓPRIA fila de
+      // setor (conversa que ele vê no inbox). Nunca reimplementar a regra aqui.
+      // Número (Fase D): pool de um número só notifica quem atende esse número —
+      // mas conversa SEM número (Instagram, site) notifica todos que descobrem.
       const { data: members } = await supabaseAdmin
         .from("tenant_users")
-        .select("user_id, role, view_all, see_pool, instance_ids")
+        .select("user_id, role, view_all, see_pool, instance_ids, department_id, supervises_departments")
         .eq("tenant_id", opts.tenantId)
         .eq("active", true)
       const poolViewers = (members ?? [])
-        .filter((m) => memberSeesPool(m as { role: string; view_all: boolean | null; see_pool: boolean | null }))
-        // Número (Fase D): pool de um número só notifica quem atende esse número (ou todos).
-        .filter((m) => memberAttendsNumber(m as { role: string; view_all: boolean | null; instance_ids: string[] | null }, convInstanceId))
+        .filter((m) => memberSeesUnassigned(m as unknown as FanoutMemberRow, convScope))
         .map((m) => (m as { user_id: string }).user_id)
       userIds = [...poolViewers, ...participants]
     }

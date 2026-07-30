@@ -179,7 +179,12 @@ export type SortKey = "recent" | "value" | "stale"
 
 export function cardMatchesFilters(c: Conversation, f: KanbanFilters): boolean {
   if (f.agentId && c.assigned_to !== f.agentId) return false
-  if (f.instanceId && c.instance_id !== f.instanceId) return false
+  // ⚠️ O filtro "Número" só recorta quem TEM número. Conversa de canal sem número
+  // (Instagram, site → `instance_id = NULL`) fica FORA do gate e continua no board:
+  // ela não é "de outro número", ela está fora dessa dimensão — e o dropdown só lista
+  // números, então filtrar sumiria com ela sem nenhuma opção que a trouxesse de volta.
+  // Mesma decisão do `numberOk` em @/lib/visibility (paridade da regra em todo lugar).
+  if (f.instanceId && c.instance_id != null && c.instance_id !== f.instanceId) return false
   const q = f.search.trim().toLowerCase()
   if (q) {
     const name = c.chat_contacts ? displayContactName(c.chat_contacts).toLowerCase() : ""

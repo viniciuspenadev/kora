@@ -111,12 +111,6 @@ async function maybeEnrich(token: string | null, tenantId: string, igsid: string
   if (needAvatar) await saveContactAvatarFromUrl(tenantId, contactId, prof?.profilePic)
 }
 
-async function defaultInstanceId(tenantId: string): Promise<string | null> {
-  const { data } = await supabaseAdmin.from("whatsapp_instances")
-    .select("id").eq("tenant_id", tenantId).order("created_at", { ascending: true }).limit(1).maybeSingle()
-  return (data?.id as string) ?? null
-}
-
 async function getOrCreateIgConversation(tenantId: string, contactId: string, instanceId: string | null): Promise<{ id: string; isNew: boolean }> {
   // Porta ÚNICA de recebimento — mesmo helper do WhatsApp/site. Resolve dedup/reopen
   // + nasce com pipeline/etapa do funil padrão (senão a conversa de IG ficava fora do
@@ -131,7 +125,13 @@ async function resolveIgContext(igAccountId: string, fromIgsid: string): Promise
   if (!conn) { log("skip", { reason: "no-connection", igAccountId }); return null }
   // instance_id é "emprestado" do WhatsApp por compatibilidade; tenant IG-first (sem
   // WhatsApp) cria o fio com null — o canal já discrimina (coalesce(instance,canal)).
-  const instanceId = await defaultInstanceId(conn.tenantId)
+  // ⚠️ NÃO empresta mais um número de WhatsApp. A conversa de Instagram nasce SEM número
+  // (`instance_id = NULL`) porque ela não tem um — o `channel` já discrimina o fio.
+  // O empréstimo causava: cascata de DELETE levando o histórico de IG junto com o número,
+  // gate de visibilidade por número escondendo o canal inteiro de um atendente escopado,
+  // selo mentindo "QR/Oficial" na conversa, e métrica de custo contando janela de 24h paga
+  // onde template pago nem existe.
+  const instanceId = null
   const contact = await resolveOrCreateContact(conn.tenantId, { instagram: fromIgsid }, { primaryChannel: "instagram", source: "instagram" })
   await maybeEnrich(conn.token, conn.tenantId, fromIgsid, contact.id, contact.created)
   const conv = await getOrCreateIgConversation(conn.tenantId, contact.id, instanceId)
@@ -289,7 +289,10 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   // mensagem e PARAVA: `routeAutomationTurn` nunca era chamado, então nenhum fluxo do
   // Studio disparava no Direct. Espelha meta-inbound.ts (canal oficial).
   // A "boca" do canal vive em reply.ts (case "instagram"); sem ela isto lançaria.
-  const routable = dec.routableText ?? content
+  // ⚠️ `routableText: null` é sinal EXPLÍCITO de "não acorda a automação" (menção em
+  // story, mídia sem legenda). Cair pro `content` anularia esse sinal — e pior: quando o
+  // download da mídia falha, `content` vira o rótulo "📷 Imagem" e a IA responderia a ele.
+  const routable = dec.routableText
   if (routable?.trim()) {
     try {
       // O motor exige uma instância (contrato do provider). O IG "empresta" a 1ª do
@@ -338,7 +341,9 @@ async function handleRead(igAccountId: string | null, m: IgMessaging): Promise<v
   // recusava este UPDATE inteiro e o ✓✓ do Instagram nunca acendia (falha calada).
   const { error } = await supabaseAdmin.from("chat_messages")
     .update(statusPatch("read"))
-    .eq("tenant_id", conn.tenantId).eq("whatsapp_msg_id", mid).eq("sender_type", "agent")
+    // "bot" junto: desde que o Studio responde no Direct, a maioria das mensagens do
+    // negócio é do bot — só `agent` deixaria o ✓✓ cobrindo o que o humano mandou.
+    .eq("tenant_id", conn.tenantId).eq("whatsapp_msg_id", mid).in("sender_type", ["agent", "bot"])
     .in("status", allowedFrom("read"))
   if (error) console.error("[ig-status] update chat_messages:", error.code, error.message)
   log("read", { mid })

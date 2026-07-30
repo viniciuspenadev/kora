@@ -222,18 +222,74 @@ export async function adminReprovisionInstance(id: string) {
   const slug = (instance.tenants as unknown as { slug: string } | null)?.slug
   if (!slug) return { error: "Tenant da instância não encontrado" }
 
-  // Remove o registro atual e recria
+  // ⚠️ As conversas apontam pra este número. A FK é `ON DELETE SET NULL` (migration
+  // 20260729) — antes era CASCADE, que APAGAVA conversa, mensagem e linha do tempo junto.
+  // Só que SET NULL sozinho também quebra: conversa de WhatsApp sem instância não consegue
+  // mais ser respondida (`getProviderForInstance(null)` lança) e o contato acaba com dois
+  // fios ativos. Por isso o reprovisionamento RE-APONTA explicitamente, em vez de confiar
+  // no comportamento da FK.
+  // Só as da família WhatsApp: as de Instagram/site que ainda carregam este id emprestado
+  // NÃO devem ser reatadas a número nenhum — elas nascem sem número por desenho.
+  const { count: convCount } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id", { count: "exact", head: true })
+    .eq("instance_id", id)
+    .or("channel.is.null,channel.in.(whatsapp,meta_cloud)")
+
+  // Marca QUAIS conversas eram deste número, pra reatar exatamente elas depois. Sem isso
+  // o repoint pegava toda órfã do tenant — inclusive as deixadas por um delete anterior de
+  // um número DIFERENTE — e realocava histórico entre números, sem rastro.
+  const { data: ownedConvs } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id")
+    .eq("instance_id", id)
+    .or("channel.is.null,channel.in.(whatsapp,meta_cloud)")
+  const ownedIds = (ownedConvs ?? []).map((c) => c.id as string)
+
   await supabaseAdmin.from("whatsapp_instances").delete().eq("id", id)
 
   const result = await autoProvisionWhatsApp(instance.tenant_id, slug)
   if (!result.ok) return { error: result.error ?? "Falha no reprovisionamento" }
 
+  // Reata as conversas órfãs ao número novo. Falhar aqui é grave (o tenant fica com
+  // conversa que não responde), então o erro sobe em vez de sumir no log.
+  if (ownedIds.length > 0 && result.instanceId) {
+    const { error: repointErr } = await supabaseAdmin
+      .from("chat_conversations")
+      .update({ instance_id: result.instanceId })
+      .in("id", ownedIds)            // exatamente as que eram deste número
+      .is("instance_id", null)       // e que a FK acabou de zerar
+      .eq("tenant_id", instance.tenant_id)
+    if (repointErr) {
+      console.error("[admin-whatsapp] repoint:", repointErr.code, repointErr.message)
+      return { error: `Número recriado, mas ${convCount} conversa(s) ficaram sem número. Contate o suporte antes de usar.` }
+    }
+  }
+
   revalidatePath("/admin/whatsapp")
   return { ok: true as const, instanceId: result.instanceId }
 }
 
-export async function adminDeleteInstance(id: string) {
+export async function adminDeleteInstance(id: string, opts?: { force?: boolean }) {
   await requireAdmin()
+
+  // ⚠️ Apagar um número NÃO é operação isolada: as conversas apontam pra ele. Com a FK
+  // `ON DELETE SET NULL` (migration 20260729) o histórico sobrevive — mas as conversas
+  // ficam órfãs e não podem mais ser respondidas. Antes da migration era CASCADE: apagava
+  // conversa, mensagem e linha do tempo junto, sem aviso.
+  // Por isso: avisa e exige confirmação explícita quando há dependência.
+  const { count } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("id", { count: "exact", head: true })
+    .eq("instance_id", id)
+
+  if ((count ?? 0) > 0 && !opts?.force) {
+    return {
+      error: `Este número tem ${count} conversa(s). Apagá-lo deixa esse histórico sem número e sem como responder. Prefira reprovisionar (que reata as conversas ao número novo) ou confirme para apagar mesmo assim.`,
+      needsConfirm: true as const,
+      conversationCount: count ?? 0,
+    }
+  }
 
   const { error } = await supabaseAdmin
     .from("whatsapp_instances")

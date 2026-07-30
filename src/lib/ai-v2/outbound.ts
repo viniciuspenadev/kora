@@ -9,6 +9,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { sendChannelText, sendChannelMedia, sendChannelInteractive } from "@/lib/channels/reply"
 import { getProvider } from "@/lib/providers"
+import { isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import type { InteractivePayload } from "@/lib/providers/types"
 import type { ExecCtx } from "./capabilities/types"
 
@@ -187,9 +188,36 @@ export async function sendBotMedia(
 }
 
 /**
+ * Nota interna no fio (o cliente NÃO vê) explicando por que o nó não entregou.
+ * Padrão da casa pra falha de nó (capabilities/transfer.ts): recusar é aceitável,
+ * recusar CALADO não — o atendente precisa ver no inbox e agir.
+ */
+async function noteFlowSkip(ctx: OutboundCtx, content: string, meta: Record<string, unknown>): Promise<void> {
+  const { error } = await supabaseAdmin.from("chat_messages").insert({
+    conversation_id: ctx.conversationId, tenant_id: ctx.tenantId,
+    sender_type: "system", content_type: "text", content,
+    status: "delivered", is_private_note: true,
+    metadata: { studio: true, skipped: true, ...meta },
+  })
+  if (error) console.error("[ai-v2.outbound] nota de recusa não gravada:", error.message)
+}
+
+/**
  * Envia um TEMPLATE aprovado (nó Template — Meta oficial) + persiste. Provider
  * resolvido de ctx.instance (só meta_cloud tem sendTemplate; Baileys = no-op).
  * `params` já vêm interpolados do runtime. v1: variáveis POSICIONAIS.
+ *
+ * ⛔ Gate de CANAL. Template é veículo EXCLUSIVO da família WhatsApp e o roteamento
+ * é pelo canal da CONVERSA (o fio), como manda channels/policy.ts — nunca pelo
+ * primary_channel do contato (hub multicanal) nem pelo provider da instância. Sem
+ * este gate, um fluxo com nó Template rodando em thread de Instagram/site pegava o
+ * `instance_id` EMPRESTADO (que é meta_cloud), montava um provider FUNCIONAL e
+ * disparava um template COBRADO pro WhatsApp de quem só falou no Direct — ou, se o
+ * contato não tivesse telefone, mandava pra string vazia e explodia no meio do fluxo
+ * (com o run travado `active`, re-executando a cada mensagem seguinte).
+ *
+ * Nunca lança: o `case "template"` do runtime não trata exceção, então um throw aqui
+ * congelaria o fluxo. Recusa = nota interna + no-op, e o fluxo segue pro próximo nó.
  */
 export async function sendBotTemplate(
   ctx:  OutboundCtx,
@@ -198,12 +226,31 @@ export async function sendBotTemplate(
 ): Promise<{ messageId: string | null }> {
   const display = `[template: ${tpl.name}]`
   if (ctx.dryRun) { ctx.captured?.push({ kind: "text", content: display }); return { messageId: null } }
+
+  const channel = ctx.channel ?? ctx.contact.primary_channel ?? "whatsapp"
+  if (!isWhatsAppChannel(channel)) {
+    await noteFlowSkip(ctx,
+      `⚠️ Nó Template não enviou "${tpl.name}": modelos são exclusivos do WhatsApp e esta conversa é do canal ${getChannelPolicy(channel).label}. Troque o nó por "Enviar mensagem" neste ramo do fluxo (Kora Studio).`,
+      { node: "template", template: tpl.name, channel })
+    return { messageId: null }
+  }
+
+  // Endereço WhatsApp: telefone quando há, senão BSUID (mesma regra do reply.ts).
+  // Vazio = não há pra onde mandar → recusa visível em vez de chamada com "".
+  const to = ctx.contact.phone_number || ctx.contact.bsuid || ""
+  if (!to) {
+    await noteFlowSkip(ctx,
+      `⚠️ Nó Template não enviou "${tpl.name}": o contato não tem número de WhatsApp nem identificador da Meta.`,
+      { node: "template", template: tpl.name, channel })
+    return { messageId: null }
+  }
+
   await humanPace(ctx, 80)
 
   const provider = getProvider(ctx.instance)
-  if (!provider.sendTemplate) return { messageId: null }   // canal sem template (Baileys) → no-op
+  if (!provider.sendTemplate) return { messageId: null }   // provider sem template (Baileys) → no-op
   const bodyParams = (tpl.params ?? []).filter((p) => p.trim() !== "").map((p) => ({ text: p }))
-  const sent = await provider.sendTemplate(ctx.contact.phone_number ?? "", tpl.name, tpl.language, bodyParams.length ? bodyParams : undefined)
+  const sent = await provider.sendTemplate(to, tpl.name, tpl.language, bodyParams.length ? bodyParams : undefined)
 
   await supabaseAdmin.from("chat_messages").insert({
     conversation_id: ctx.conversationId,

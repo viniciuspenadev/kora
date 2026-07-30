@@ -6,6 +6,7 @@
 
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isWhatsAppChannel } from "@/lib/channels/policy"
 import type { FlowRow, FlowRunRow, FlowTrigger } from "./types"
 
 const FLOW_SELECT = "id, tenant_id, name, version, trigger, graph"
@@ -45,11 +46,17 @@ function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boole
   if ((t.mode ?? "receptive") !== "receptive") return false
   // Filtros de canal/instância (ausente/vazio = qualquer).
   if (t.channels?.length  && !t.channels.includes(sig.channel ?? "")) return false
-  // ⚠️ Filtro por NÚMERO só existe no WhatsApp. Conversa de Instagram/Site "empresta" um
-  // `whatsapp_instances.id` como placeholder (ver defaultInstanceId no ingestor do IG) —
-  // sem este guarda, um fluxo restrito ao número X casaria conversa de Instagram.
-  const isWhatsApp = (sig.channel ?? "whatsapp") === "whatsapp"
-  if (isWhatsApp && t.instances?.length && !t.instances.includes(sig.instanceId ?? "")) return false
+  // ⚠️ Filtro por NÚMERO só existe na família WhatsApp (Baileys + Oficial) — é lá que a
+  // conversa tem um `whatsapp_instances.id` de verdade. Instagram e site nascem com
+  // `instance_id = NULL`, então o `?? ""` NUNCA casa com a lista: aplicar o filtro fora
+  // do WhatsApp mataria o fluxo em silêncio (um trigger com `channels:["whatsapp","site"]`
+  // + `instances:[X]` jamais dispararia no site). Fora do WhatsApp o recorte é `t.channels`.
+  //
+  // Antes isto era `channel === "instagram"`: um hack da época em que o IG EMPRESTAVA o
+  // id de um número real, e o casamento saía por ACIDENTE conforme qual número o tenant
+  // tinha criado primeiro — e o canal `site` continuava quebrado. `isWhatsAppChannel`
+  // (registry de canais) resolve os dois de uma vez: canal novo entra sem tocar aqui.
+  if (isWhatsAppChannel(sig.channel) && t.instances?.length && !t.instances.includes(sig.instanceId ?? "")) return false
   switch (t.type) {
     case "any_message": return true
     case "new_contact": return isNewContact

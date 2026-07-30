@@ -67,12 +67,20 @@ export async function getOrCreateSiteContact(tenantId: string, visitorId: string
 export async function getOrCreateSiteConversation(
   tenantId:   string,
   contactId:  string,
-  instanceId: string,
+  /** ⚠️ Sempre `null` desde 2026-07-29: o widget do site NÃO tem número. O parâmetro
+   *  fica pra não quebrar chamador, mas emprestar id de WhatsApp aqui foi a causa de
+   *  selo mentiroso, gate de visibilidade errado e relatório por número poluído. */
+  instanceId: string | null,
 ): Promise<{ id: string; reopened: boolean }> {
   // NOTA: o split por instância (instanceId no dedup) é só pros canais WhatsApp
-  // (Baileys vs Oficial). O widget do site mantém o comportamento legado (continua
-  // a conversa existente do contato), por isso NÃO passa instanceId aqui.
-  const dedup = await findOrReopenConversation({ tenantId, contactId, skipOwnershipCheck: true })
+  // (Baileys vs Oficial). O widget do site NÃO tem número próprio (o instance_id é
+  // emprestado só pra satisfazer o schema), por isso NÃO passa instanceId aqui.
+  //
+  // ⚠️ `channel: "site"` é OBRIGATÓRIO. Sem ele o dedup não filtra por canal e reusa
+  // a conversa ATIVA de QUALQUER canal do contato — na prática a thread de WhatsApp:
+  // a mensagem do visitante caía lá e a IA respondia no CELULAR da pessoa, enquanto o
+  // widget (que faz polling da conversa de site) ficava mudo. Fio = (contato, canal).
+  const dedup = await findOrReopenConversation({ tenantId, contactId, channel: "site", skipOwnershipCheck: true })
   if (dedup.found !== "none") return { id: dedup.conversation.id, reopened: dedup.found === "reopened" }
 
   // Coloca no funil padrão (consistente com o lead de form).

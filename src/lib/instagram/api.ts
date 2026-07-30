@@ -115,6 +115,77 @@ export async function exchangeIgCode(
   }
 }
 
+/** Um post/reel da conta conectada — o que a grade do seletor precisa mostrar. */
+export interface IgMediaItem {
+  id:            string
+  caption:       string | null
+  mediaType:     string          // IMAGE | VIDEO | CAROUSEL_ALBUM
+  isReel:        boolean
+  thumbUrl:      string | null   // ⚠️ URL de CDN — EXPIRA. Ver nota abaixo.
+  permalink:     string | null
+  timestamp:     string | null
+  commentsCount: number | null   // dado-herói do tile: é o que faz escolher o post certo
+}
+
+/**
+ * Lista os posts/reels da conta conectada — alimenta o seletor visual de post da
+ * automação de comentário. Coberto por `instagram_business_basic` (leitura de mídia
+ * da própria conta), **sem permissão nova**.
+ *
+ * ⚠️ **`thumbUrl` é URL de CDN da Meta e EXPIRA** (mesma dor já resolvida no avatar do
+ * Instagram). Vale pra grade, que é efêmera. Pro card do fluxo — que fica semanas na
+ * tela — a thumbnail do post ESCOLHIDO tem que ser baixada e congelada no momento da
+ * escolha, senão o canvas quebra em dias.
+ *
+ * ⚠️ A API **não busca por legenda**. A busca do seletor é client-side sobre o que já
+ * foi carregado; pro arquivo antigo, o caminho é colar o link do post.
+ *
+ * Paginação por cursor (`after`), como o resto do Graph.
+ */
+export async function listIgMedia(
+  token: string, opts?: { limit?: number; after?: string },
+): Promise<{ items: IgMediaItem[]; nextCursor: string | null } | { error: string }> {
+  const fields = "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,comments_count"
+  const params = new URLSearchParams({
+    fields,
+    limit:        String(opts?.limit ?? 24),
+    access_token: token,
+  })
+  if (opts?.after) params.set("after", opts.after)
+
+  try {
+    const r = await fetch(`${IG_BASE}/me/media?${params.toString()}`)
+    const j = await r.json() as {
+      data?: Array<{
+        id?: string; caption?: string; media_type?: string; media_product_type?: string
+        media_url?: string; thumbnail_url?: string; permalink?: string
+        timestamp?: string; comments_count?: number
+      }>
+      paging?: { cursors?: { after?: string }; next?: string }
+      error?: { message?: string }
+    }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+
+    const items: IgMediaItem[] = (j.data ?? []).map((m) => ({
+      id:            String(m.id ?? ""),
+      caption:       m.caption?.trim() || null,
+      mediaType:     m.media_type ?? "IMAGE",
+      isReel:        m.media_product_type === "REELS",
+      // Vídeo/reel não tem `media_url` servível como imagem → usa a thumbnail.
+      thumbUrl:      m.thumbnail_url ?? m.media_url ?? null,
+      permalink:     m.permalink ?? null,
+      timestamp:     m.timestamp ?? null,
+      commentsCount: typeof m.comments_count === "number" ? m.comments_count : null,
+    })).filter((m) => m.id)
+
+    // Só devolve cursor se há próxima página de verdade (senão a UI pagina no vazio).
+    const nextCursor = j.paging?.next ? (j.paging?.cursors?.after ?? null) : null
+    return { items, nextCursor }
+  } catch (e) {
+    return { error: (e as Error).message }
+  }
+}
+
 /**
  * **Private Reply** — resposta privada no Direct a quem comentou num post/reel.
  *

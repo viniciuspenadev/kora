@@ -87,7 +87,13 @@ export interface ChatConversation {
   id:                    string
   tenant_id:             string
   contact_id:            string | null
-  instance_id:           string
+  // ⚠️ NULLABLE de propósito — o tipo MENTIA: a coluna já era nullable no banco.
+  // Canal sem número (Instagram, site) não tem instância de WhatsApp. Antes essas
+  // conversas "emprestavam" o id de um número real, o que fazia envio, filtro e selo
+  // de canal mentirem (PDF saindo no WhatsApp de quem só falou no Direct; badge "QR"
+  // num fio de Instagram). Quem consome tem que degradar com sentido: recusar o envio
+  // de WhatsApp com recado acionável; ignorar o filtro/selo de número.
+  instance_id:           string | null
   assigned_to:           string | null
   department_id:         string | null
   status:                ConversationStatus

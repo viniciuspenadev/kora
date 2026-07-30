@@ -274,6 +274,11 @@ export async function getAdsReportData(filters: AdsFilters): Promise<AdsReportDa
   const top10 = byAd.slice(0, 10)
 
   // ── byInstance (leads por número) ─────────────────────────────
+  // ⚠️ Só entra quem TEM número. Lead de canal sem número (Instagram Direct, site →
+  // `instance_id = NULL`) fica de fora do recorte "por número" — de propósito: não há
+  // número a que atribuir, e chutar um seria atribuição falsa. Consequência esperada:
+  // a soma de `byInstance.leads` pode ser MENOR que `totalLeads` — o KPI conta todos os
+  // canais, a tabela só recorta os números. Não "consertar" somando os nulos num bucket.
   const instMap = new Map<string, { leads: number; won: number }>()
   for (const c of current) {
     if (!c.instance_id) continue

@@ -1,6 +1,8 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
+import { sendChannelText } from "@/lib/channels/reply"
+import { isWhatsAppChannel, isWindowOpen, getChannelPolicy } from "@/lib/channels/policy"
 import { createNotification } from "@/lib/notifications"
 import { hasModule } from "@/lib/modules"
 import { sendAgendaConfirm } from "./official-template"
@@ -73,7 +75,9 @@ function buildConfirmMessage(tenantText: string, vars: Record<string, string>): 
 interface ApptForEvent {
   id: string; tenant_id: string; conversation_id: string | null; starts_at: string; notify_customer: boolean
   created_at?: string; resource_id?: string
-  chat_contacts: { push_name: string | null; custom_name: string | null; phone_number: string | null; bsuid: string | null } | null
+  // `primary_external_id` = endereço fora do WhatsApp (Instagram: IGSID) — o aviso
+  // sai pelo canal da CONVERSA, então precisa do endereço daquele canal.
+  chat_contacts: { push_name: string | null; custom_name: string | null; phone_number: string | null; bsuid: string | null; primary_external_id: string | null } | null
   tenant_services: { name: string | null; reminder_policy: { steps?: PolicyStep[] } | null } | null
   tenant_resources: { name: string | null; assigned_agent_id?: string | null } | null
 }
@@ -102,7 +106,7 @@ export async function runAppointmentEvent(appointmentId: string, event: AgendaEv
 
     const { data } = await supabaseAdmin.from("appointments")
       .select(`id, tenant_id, conversation_id, starts_at, notify_customer,
-               chat_contacts ( push_name, custom_name, phone_number, bsuid ),
+               chat_contacts ( push_name, custom_name, phone_number, bsuid, primary_external_id ),
                tenant_services ( name, reminder_policy ),
                tenant_resources ( name )`)
       .eq("id", appointmentId).maybeSingle()
@@ -164,7 +168,6 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   if (!enabled) return logReminder(appt, stepKey, "whatsapp", "skipped", "avisos desativados (tenant_config)")
 
   const text = render(step.text ?? "", vars).trim()
-  const phone = appt.chat_contacts?.phone_number ?? appt.chat_contacts?.bsuid ?? ""
   // Round-trip (3d.4): step de confirmação vai pelo veículo certo do canal —
   // Baileys texto numerado · Meta botão nativo (dentro da janela) · template (fora) —
   // e grava o pending_agenda pra o interceptor mapear a resposta (§6.10).
@@ -172,13 +175,22 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   // ⚠️ Confirmação NÃO exige texto livre — a âncora é montada do agendamento + botões/template.
   // Só o aviso PLANO (não-confirm) precisa de texto. (Bug: confirm sem texto era skipado "step sem texto".)
   if (!text && !isConfirm) return logReminder(appt, stepKey, "whatsapp", "skipped", "step sem texto")
-  if (!phone) return logReminder(appt, stepKey, "whatsapp", "skipped", "contato sem telefone nem BSUID")
   // 3b envia pela conversa existente (janela fresca). Sem conversa → 3c (cron/template).
   if (!appt.conversation_id) return logReminder(appt, stepKey, "whatsapp", "skipped", "sem conversa (3b)")
 
-  // Resolve a instância da conversa (fallback: 1ª do tenant) + a janela 24h.
+  // ⚠️ CANAL DA CONVERSA manda no envio (channels/policy.ts) — não o primary_channel do
+  // contato nem o provider da instância. A thread de Instagram/site carrega um
+  // `instance_id` EMPRESTADO de um número WhatsApp real, então o getProvider abaixo
+  // montava um provider FUNCIONAL: o lembrete saía COBRADO pro WhatsApp de quem marcou
+  // pelo Direct/widget, e ficava persistido na thread do outro canal como se tivesse
+  // saído por lá. Daqui pra frente o fio decide o veículo, o endereço e a janela.
   const { data: conv } = await supabaseAdmin.from("chat_conversations")
-    .select("instance_id, last_inbound_at").eq("id", appt.conversation_id).maybeSingle()
+    .select("channel, instance_id, last_inbound_at").eq("id", appt.conversation_id).maybeSingle()
+  const channel = (conv?.channel as string | null) ?? "whatsapp"
+  const isWA    = isWhatsAppChannel(channel)
+
+  // Instância só é obrigatória na família WhatsApp (é ela que entrega). Nos demais
+  // canais a credencial mora fora de `whatsapp_instances` (ex: conexão do Instagram).
   let instance: Record<string, unknown> | null = null
   if (conv?.instance_id) {
     const { data } = await supabaseAdmin.from("whatsapp_instances").select("*").eq("id", conv.instance_id).maybeSingle()
@@ -186,30 +198,70 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
   }
   // Multi-número: SEM fallback "1ª do tenant" — mandaria o lembrete pro número ERRADO.
   // Sem a instância da conversa, não dá pra saber qual número usar → pula com log (fail-safe).
-  if (!instance) return logReminder(appt, stepKey, "whatsapp", "failed", "conversa sem instância resolvível")
+  if (isWA && !instance) return logReminder(appt, stepKey, channel, "failed", "conversa sem instância resolvível")
 
-  const inWindow = conv?.last_inbound_at
-    ? Date.now() - new Date(conv.last_inbound_at as string).getTime() < 24 * 3600_000
-    : false
+  // Endereço DO CANAL: WhatsApp = telefone (ou BSUID da Meta); fora dele = id externo
+  // do canal (Instagram: IGSID). Site não tem endereço — o widget lê a thread por polling.
+  const c = appt.chat_contacts
+  const address = isWA ? (c?.phone_number ?? c?.bsuid ?? "") : (c?.primary_external_id ?? "")
+  if (!address && channel !== "site") {
+    return logReminder(appt, stepKey, channel, "skipped",
+      isWA ? "contato sem telefone nem BSUID" : `contato sem endereço no ${getChannelPolicy(channel).label}`)
+  }
+
+  // Janela pelo cérebro único da policy (WhatsApp Oficial 24h · Baileys/site sem janela ·
+  // Instagram 24h) — antes era 24h hardcoded, que aplicava regra de WhatsApp em todo canal.
+  const inWindow = isWindowOpen(channel, (instance?.provider as string | null) ?? null, conv?.last_inbound_at as string | null)
+
+  // ⛔ Fora do WhatsApp: só o WhatsApp Oficial tem template pra reabrir janela fechada.
+  // Sem veículo legal → recusa fail-closed (Meta recusaria de qualquer forma) e, se era
+  // confirmação, chama o dono da agenda pra confirmar na mão.
+  if (!isWA && !inWindow) {
+    await logReminder(appt, stepKey, channel, "skipped", `janela de 24h do ${getChannelPolicy(channel).label} fechada — canal sem template pra reabrir`)
+    if (isConfirm) await notifyConfirmFallback(appt, vars)
+    return true
+  }
+
+  // ⛔ Confirmação (round-trip) fora do WhatsApp: o `handleAgendaReply` que casa a
+  // resposta com o `pending_agenda` só roda nos webhooks de WhatsApp (Evolution e
+  // meta-inbound) — no Instagram/site a resposta do cliente NUNCA seria lida, e o
+  // pending_agenda ficaria pendurado 48h sequestrando o fio. Perguntar sem conseguir
+  // ouvir é pior que não perguntar → degrada pro aviso in-app ao dono da agenda.
+  if (!isWA && isConfirm) {
+    await logReminder(appt, stepKey, channel, "skipped", `confirmação com resposta ainda não suportada no ${getChannelPolicy(channel).label} — confirme manualmente`)
+    await notifyConfirmFallback(appt, vars)
+    return true
+  }
 
   try {
     let messageId: string | null
     let displayText: string
     if (isConfirm) {
       const send = await sendAgendaConfirm({
-        tenantId: appt.tenant_id, instance, phone, apptId: appt.id, vars, inWindow,
+        tenantId: appt.tenant_id, instance: instance!, phone: address, apptId: appt.id, vars, inWindow,
         anchorText: buildConfirmAnchor(text, vars), numberedText: buildConfirmMessage(text, vars),
         templateName: step.template_name ?? null,
       })
       if ("degraded" in send) {
         // Gate fail-closed: não saiu (sem template aprovado) → loga + avisa o atendente.
-        await logReminder(appt, stepKey, "whatsapp", "skipped", send.degraded)
+        await logReminder(appt, stepKey, channel, "skipped", send.degraded)
         await notifyConfirmFallback(appt, vars)
         return true
       }
       messageId = send.messageId; displayText = send.displayText
+    } else if (isWA) {
+      const r = await getProvider(instance!).sendText(address, text)
+      messageId = r.messageId || null; displayText = text
     } else {
-      const r = await getProvider(instance).sendText(phone, text)
+      // Aviso PLANO nos demais canais pela "boca" channel-agnostic: Instagram sai pela
+      // Graph API (token da conexão + IGSID); site é no-op de rede — a persistência
+      // logo abaixo já é a entrega (o widget faz polling da thread).
+      const r = await sendChannelText(
+        { channel, phoneNumber: c?.phone_number ?? "", bsuid: c?.bsuid ?? null, externalId: address, tenantId: appt.tenant_id },
+        text,
+        // Instância nunca é dereferenciada nestes canais (o objeto vazio só satisfaz o tipo).
+        (instance ?? {}) as Parameters<typeof sendChannelText>[2],
+      )
       messageId = r.messageId || null; displayText = text
     }
 
@@ -226,11 +278,11 @@ async function dispatchCustomerStep(appt: ApptForEvent, step: PolicyStep, stepKe
       // Pede confirmação → arma o contexto pra o interceptor (3d.2).
       ...(isConfirm ? { pending_agenda: { kind: "confirm", appointment_id: appt.id, expires_at: new Date(Date.now() + 48 * 3600_000).toISOString() } } : {}),
     }).eq("id", appt.conversation_id)
-    await logReminder(appt, stepKey, "whatsapp", "sent")
+    await logReminder(appt, stepKey, channel, "sent")
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     // #131047 = janela 24h fechada no Meta → precisa template (Fase 3d.4).
-    await logReminder(appt, stepKey, "whatsapp", "failed", /131047/.test(msg) ? "janela fechada (template = 3d.4)" : msg)
+    await logReminder(appt, stepKey, channel, "failed", /131047/.test(msg) ? "janela fechada (template = 3d.4)" : msg)
     // Fail-closed: confirmação que ESTOUROU (ex: Meta recusou o template) também avisa o dono
     // pra confirmar na mão — senão o agendamento fica sem confirmação e ninguém sabe.
     if (isConfirm) await notifyConfirmFallback(appt, vars)
@@ -320,7 +372,7 @@ async function sweepTenant(tenantId: string): Promise<number> {
   const now = Date.now()
   const { data } = await supabaseAdmin.from("appointments")
     .select(`id, tenant_id, conversation_id, starts_at, created_at, notify_customer, resource_id,
-             chat_contacts ( push_name, custom_name, phone_number, bsuid ),
+             chat_contacts ( push_name, custom_name, phone_number, bsuid, primary_external_id ),
              tenant_services ( name, reminder_policy ),
              tenant_resources ( name, assigned_agent_id )`)
     .eq("tenant_id", tenantId)

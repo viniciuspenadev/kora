@@ -79,6 +79,9 @@ export async function getContactChannels(contactId: string): Promise<ContactChan
         channel: "whatsapp", handle: fmtPhone(phone), isPrimary: isPrimary("whatsapp"),
         conversationId: c.id, status: c.status, lastMessageAt: c.last_message_at,
         lastPreview: c.last_message_preview, unread: c.unread_count ?? 0,
+        // ⚠️ NÃO simplificar o `inst ? "QR" : null` pra um "QR" seco: `instance_id` é
+        // nullable (canal sem número) e o embed vem NULO. Sem instância não existe selo
+        // de número — null some da linha; "QR" viraria um selo mentiroso.
         instanceName: inst?.display_name?.trim() || (inst?.provider === "meta_cloud" ? "Oficial" : inst ? "QR" : null),
         provider: inst?.provider ?? null, windowOpen: windowOpen(inst?.provider ?? null, c.last_inbound_at),
       })

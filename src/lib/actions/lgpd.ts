@@ -47,6 +47,46 @@ async function requireAdmin() {
   return session
 }
 
+const CHAT_BUCKET = "chat-attachments"
+
+/**
+ * ⚠️ O PostgREST corta a resposta em 1000 linhas (db-max-rows do projeto —
+ * verificado em 2026-07-29: select sem paginação devolve `Content-Range: 0-999/1562`).
+ *
+ * Aqui isso é risco JURÍDICO, não performance: sem paginar, o export certificaria
+ * menos mensagens do que existem (Art. 18 II) e o cleanup de mídia deixaria
+ * arquivo com PII no bucket (Art. 18 VI) — nos dois casos em SILÊNCIO, porque
+ * a resposta truncada chega sem `error`.
+ */
+const PAGE_SIZE = 1000
+
+/** Máx. de paths por chamada de storage.remove() — evita payload gigante. */
+const REMOVE_CHUNK = 100
+
+/** Trava de sanidade (200k linhas). Estourar = erro alto, nunca truncar calado. */
+const MAX_PAGES = 200
+
+/**
+ * Lê TODAS as páginas de uma query. Falha alto: qualquer erro do PostgREST
+ * vira `{ error }` — nada aqui pode seguir com lista parcial e depois
+ * carimbar no audit log que a operação foi completa.
+ */
+async function fetchAllPages<T>(
+  label: string,
+  run: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<{ rows: T[] } | { error: string }> {
+  const rows: T[] = []
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE_SIZE
+    const { data, error } = await run(from, from + PAGE_SIZE - 1)
+    if (error) return { error: `Falha ao ler ${label}: ${error.message}` }
+    const batch = data ?? []
+    rows.push(...batch)
+    if (batch.length < PAGE_SIZE) return { rows }
+  }
+  return { error: `Volume de ${label} acima do limite seguro (${MAX_PAGES * PAGE_SIZE} linhas). Operação abortada pra não gerar resultado parcial.` }
+}
+
 /**
  * LGPD Art. 18 II — Direito de acesso aos dados.
  *
@@ -64,40 +104,56 @@ export async function exportPersonalData(contactId: string): Promise<
   const tenantId = session.user.tenantId
 
   // 1. Contato (deve pertencer ao tenant)
-  const { data: contact } = await supabaseAdmin
+  const { data: contact, error: contactErr } = await supabaseAdmin
     .from("chat_contacts")
     .select("*")
     .eq("id", contactId)
     .eq("tenant_id", tenantId)
     .maybeSingle()
+  if (contactErr) return { error: `Erro ao ler o contato: ${contactErr.message}` }
   if (!contact) return { error: "Contato não encontrado" }
 
-  // 2. Conversas
-  const { data: conversations } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("*")
-    .eq("contact_id", contactId)
-    .eq("tenant_id", tenantId)
+  // 2. Conversas (paginado — ver PAGE_SIZE)
+  const convRes = await fetchAllPages<Record<string, unknown> & { id: string }>("conversas", (from, to) =>
+    supabaseAdmin
+      .from("chat_conversations")
+      .select("*")
+      .eq("contact_id", contactId)
+      .eq("tenant_id", tenantId)
+      .order("id", { ascending: true })
+      .range(from, to),
+  )
+  if ("error" in convRes) return { error: convRes.error }
+  const conversations    = convRes.rows
+  const conversationIds  = conversations.map((c) => c.id)
 
-  const conversationIds = (conversations ?? []).map((c) => c.id)
-
-  // 3. Mensagens (de todas as conversas do contato)
-  const { data: messages } = conversationIds.length
-    ? await supabaseAdmin
-        .from("chat_messages")
-        .select("*")
-        .in("conversation_id", conversationIds)
-        .eq("tenant_id", tenantId)
-        .order("created_at", { ascending: true })
-    : { data: [] }
+  // 3. Mensagens (de todas as conversas do contato).
+  //    Paginado: um contato antigo passa fácil de 1000 mensagens, e entregar
+  //    só as 1000 primeiras seria acesso INCOMPLETO carimbado como completo.
+  //    Tie-break por id porque created_at empata (ingestão em lote).
+  const msgRes = conversationIds.length
+    ? await fetchAllPages<Record<string, unknown>>("mensagens", (from, to) =>
+        supabaseAdmin
+          .from("chat_messages")
+          .select("*")
+          .in("conversation_id", conversationIds)
+          .eq("tenant_id", tenantId)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
+      )
+    : { rows: [] as Record<string, unknown>[] }
+  if ("error" in msgRes) return { error: msgRes.error }
+  const messages = msgRes.rows
 
   // 4. Tags aplicadas
-  const { data: taggings } = await supabaseAdmin
+  const { data: taggings, error: tagErr } = await supabaseAdmin
     .from("taggings")
     .select("*, tags(*)")
     .eq("taggable_type", "contact")
     .eq("taggable_id", contactId)
     .eq("tenant_id", tenantId)
+  if (tagErr) return { error: `Erro ao ler tags: ${tagErr.message}` }
 
   // 5. Demais dados pessoais vinculados ao contato (tabelas criadas após 2026-05-23).
   //    Filtro por contact_id basta: o contato já foi validado como do tenant, e
@@ -117,17 +173,41 @@ export async function exportPersonalData(contactId: string): Promise<
     supabaseAdmin.from("keyword_trigger_runs").select("*").eq("contact_id", contactId),
   ])
 
-  // 6. Linha do tempo (eventos das conversas do contato).
-  const { data: timelineEvents } = conversationIds.length
-    ? await supabaseAdmin.from("conversation_events").select("*").in("conversation_id", conversationIds)
-    : { data: [] }
+  // 5b. Erro em QUALQUER uma delas aborta: entregar o JSON sem a tabela que
+  //     falhou seria dizer ao titular "não temos esse dado" sem ser verdade.
+  const failed = ([
+    ["identidades",          identities],
+    ["negócios",             deals],
+    ["tarefas",              tasks],
+    ["agendamentos",         appts],
+    ["documentos",           documents],
+    ["listas",               listMembers],
+    ["destinatários de campanha", campaignRecipients],
+    ["itens de importação",  importItems],
+    ["execuções de gatilho", triggerRuns],
+  ] as const).find(([, res]) => res.error)
+  if (failed) return { error: `Erro ao exportar ${failed[0]}: ${failed[1].error?.message}` }
+
+  // 6. Linha do tempo (eventos das conversas do contato) — paginado.
+  const timelineRes = conversationIds.length
+    ? await fetchAllPages<Record<string, unknown>>("linha do tempo", (from, to) =>
+        supabaseAdmin
+          .from("conversation_events")
+          .select("*")
+          .in("conversation_id", conversationIds)
+          .order("id", { ascending: true })
+          .range(from, to),
+      )
+    : { rows: [] as Record<string, unknown>[] }
+  if ("error" in timelineRes) return { error: timelineRes.error }
+  const timelineEvents = timelineRes.rows
 
   const payload = {
     exported_at: new Date().toISOString(),
     exported_by: { id: session.user.id, email: session.user.email },
     contact,
-    conversations:       conversations ?? [],
-    messages:            messages ?? [],
+    conversations,
+    messages,
     taggings:            taggings ?? [],
     contact_identities:  identities.data ?? [],
     deals:               deals.data ?? [],
@@ -138,10 +218,10 @@ export async function exportPersonalData(contactId: string): Promise<
     campaign_recipients: campaignRecipients.data ?? [],
     import_items:        importItems.data ?? [],
     trigger_runs:        triggerRuns.data ?? [],
-    timeline_events:     timelineEvents ?? [],
+    timeline_events:     timelineEvents,
     counts: {
-      conversations:       conversations?.length ?? 0,
-      messages:            messages?.length ?? 0,
+      conversations:       conversations.length,
+      messages:            messages.length,
       taggings:            taggings?.length ?? 0,
       contact_identities:  identities.data?.length ?? 0,
       deals:               deals.data?.length ?? 0,
@@ -152,7 +232,7 @@ export async function exportPersonalData(contactId: string): Promise<
       campaign_recipients: campaignRecipients.data?.length ?? 0,
       import_items:        importItems.data?.length ?? 0,
       trigger_runs:        triggerRuns.data?.length ?? 0,
-      timeline_events:     timelineEvents?.length ?? 0,
+      timeline_events:     timelineEvents.length,
     },
   }
 
@@ -180,9 +260,11 @@ export async function exportPersonalData(contactId: string): Promise<
  *
  * Cascateamento via FOREIGN KEY ON DELETE CASCADE (já configurado
  * no schema). Storage de mídia precisa de cleanup manual via
- * Supabase Storage API (não-cascateado por design).
+ * Supabase Storage API (não-cascateado por design) — e roda ANTES do
+ * DELETE, senão o path se perde junto com a row (ver comentário no passo 5).
  *
- * Audit log mantém prova da exclusão (snapshot pré-delete).
+ * Audit log mantém prova da exclusão (snapshot pré-delete) com os números
+ * REAIS de arquivos removidos — nunca o que "deveria" ter sido removido.
  */
 export async function deletePersonalData(contactId: string): Promise<
   | { ok: true; deletedAt: string }
@@ -192,76 +274,123 @@ export async function deletePersonalData(contactId: string): Promise<
   const tenantId = session.user.tenantId
 
   // 1. Snapshot pre-delete (pro audit log)
-  const { data: contact } = await supabaseAdmin
+  const { data: contact, error: contactErr } = await supabaseAdmin
     .from("chat_contacts")
     .select("*")
     .eq("id", contactId)
     .eq("tenant_id", tenantId)
     .maybeSingle()
+  if (contactErr) return { error: `Erro ao ler o contato: ${contactErr.message}` }
   if (!contact) return { error: "Contato não encontrado" }
 
-  // Conta o que vai ser deletado pra audit
-  const { count: conversationCount } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("id", { count: "exact", head: true })
-    .eq("contact_id", contactId)
-    .eq("tenant_id", tenantId)
+  // 2. Conversas do contato — lidas UMA vez (antes a mesma query rodava 3×,
+  //    inclusive aninhada dentro do .in()).
+  const convRes = await fetchAllPages<{ id: string }>("conversas", (from, to) =>
+    supabaseAdmin
+      .from("chat_conversations")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("tenant_id", tenantId)
+      .order("id", { ascending: true })
+      .range(from, to),
+  )
+  if ("error" in convRes) return { error: convRes.error }
+  const conversationIds = convRes.rows.map((c) => c.id)
 
-  const { count: messageCount } = await supabaseAdmin
-    .from("chat_messages")
-    .select("id", { count: "exact", head: true })
-    .eq("tenant_id", tenantId)
-    .in(
-      "conversation_id",
-      ((await supabaseAdmin
-        .from("chat_conversations")
-        .select("id")
-        .eq("contact_id", contactId)
+  // 3. Quantas mensagens caem no cascade (número pro audit log)
+  let messageCount = 0
+  if (conversationIds.length > 0) {
+    const { count, error: countErr } = await supabaseAdmin
+      .from("chat_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", tenantId)
+      .in("conversation_id", conversationIds)
+    if (countErr) return { error: `Erro ao contar mensagens: ${countErr.message}` }
+    messageCount = count ?? 0
+  }
+
+  // 4. Paths da mídia no bucket.
+  //    ⚠️ O caminho mora em `metadata.storage_path` (jsonb). NÃO existe coluna
+  //    `storage_path` em chat_messages — até 2026-07-29 este select pedia a
+  //    coluna inexistente: PostgREST devolvia 42703, o erro era descartado, a
+  //    lista saía vazia, o storage.remove() nunca rodava e o audit log gravava
+  //    `cascaded_media_files: 0` — certificando uma eliminação que não ocorreu.
+  //    Por isso agora o erro ABORTA em vez de virar lista vazia.
+  //    Set: a mesma mídia pode estar em 2 mensagens (ex: cotação reenviada) —
+  //    sem dedup o "removidos" ficaria menor que o "esperado" sem motivo real.
+  const storagePathSet = new Set<string>()
+  if (conversationIds.length > 0) {
+    const mediaRes = await fetchAllPages<{ metadata: unknown }>("mídia das mensagens", (from, to) =>
+      supabaseAdmin
+        .from("chat_messages")
+        .select("id, metadata")
         .eq("tenant_id", tenantId)
-      ).data ?? []).map((c) => c.id)
+        .in("conversation_id", conversationIds)
+        .not("metadata->>storage_path", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to),
     )
+    if ("error" in mediaRes) return { error: mediaRes.error }
+    for (const row of mediaRes.rows) {
+      const path = (row.metadata as { storage_path?: unknown } | null)?.storage_path
+      if (typeof path === "string" && path.length > 0) storagePathSet.add(path)
+    }
+  }
+  const storagePaths = [...storagePathSet]
 
-  // 2. Coleta storage_path de mensagens com mídia (pra limpar bucket depois)
-  const { data: mediaMessages } = await supabaseAdmin
-    .from("chat_messages")
-    .select("storage_path")
-    .eq("tenant_id", tenantId)
-    .not("storage_path", "is", null)
-    .in(
-      "conversation_id",
-      ((await supabaseAdmin
-        .from("chat_conversations")
-        .select("id")
-        .eq("contact_id", contactId)
-        .eq("tenant_id", tenantId)
-      ).data ?? []).map((c) => c.id)
-    )
+  // 5. Mídia PRIMEIRO, banco depois.
+  //    O path só existe DENTRO da row. Se o DELETE viesse antes e o storage
+  //    falhasse, o arquivo com dado pessoal ficaria órfão no bucket pra sempre
+  //    (sem ponteiro, ninguém mais acha) — o pior desfecho possível num pedido
+  //    de eliminação. Nesta ordem, falha = nada de banco foi apagado e a
+  //    operação é re-tentável (remover path que já sumiu é no-op).
+  //    Nota: cotação enviada no chat compartilha o arquivo com
+  //    commercial_documents.pdf_path — apagar aqui deixa o documento (que
+  //    sobrevive por SET NULL) sem PDF. É o comportamento desejado no Art. 18 VI.
+  let removedFiles = 0
+  for (let i = 0; i < storagePaths.length; i += REMOVE_CHUNK) {
+    const chunk = storagePaths.slice(i, i + REMOVE_CHUNK)
+    const { data: removed, error: rmErr } = await supabaseAdmin.storage
+      .from(CHAT_BUCKET)
+      .remove(chunk)
+    if (rmErr) {
+      console.error("[lgpd] storage.remove falhou", JSON.stringify({
+        contactId, tenantId,
+        expected: storagePaths.length, removedSoFar: removedFiles,
+        error: rmErr.message,
+      }))
+      return {
+        error: `Não consegui apagar a mídia do contato (${removedFiles}/${storagePaths.length} arquivos). ` +
+               `A exclusão foi interrompida ANTES de apagar os registros — nada foi certificado. ` +
+               `Tente de novo. Detalhe: ${rmErr.message}`,
+      }
+    }
+    // `data` traz só os objetos realmente removidos → contagem REAL.
+    removedFiles += removed?.length ?? 0
+  }
+  // Path que já não estava no bucket não é erro (arquivo sumiu antes), mas vai
+  // pro audit como "missing" — a prova jurídica tem que bater com a realidade.
+  const missingFiles = storagePaths.length - removedFiles
 
-  const storagePaths = (mediaMessages ?? [])
-    .map((m) => m.storage_path)
-    .filter((p): p is string => !!p)
-
-  // 3. DELETE — cascade apaga conversations + messages + taggings + ai_suggestions
+  // 6. DELETE — cascade apaga conversations + messages + taggings + ai_suggestions
   const { error: deleteErr } = await supabaseAdmin
     .from("chat_contacts")
     .delete()
     .eq("id", contactId)
     .eq("tenant_id", tenantId)
 
-  if (deleteErr) return { error: `Erro ao deletar contato: ${deleteErr.message}` }
-
-  // 4. Limpa mídia do storage (best-effort, não bloqueia)
-  if (storagePaths.length > 0) {
-    try {
-      await supabaseAdmin.storage.from("chat-attachments").remove(storagePaths)
-    } catch (err) {
-      console.error("[lgpd] failed to remove storage files", err)
-    }
+  if (deleteErr) {
+    // Estado assimétrico: mídia já foi, registros ficaram. Não pode sumir do log.
+    console.error("[lgpd] DELETE do contato falhou DEPOIS de remover a mídia", JSON.stringify({
+      contactId, tenantId, removedFiles, error: deleteErr.message,
+    }))
+    return { error: `Erro ao deletar contato: ${deleteErr.message}` }
   }
 
   const deletedAt = new Date().toISOString()
 
-  // 5. Audit log (snapshot sanitizado)
+  // 7. Audit log (snapshot sanitizado). Os números são os REAIS: `removedFiles`
+  //    vem da resposta do storage, não do tamanho da lista que pedimos.
   await logAudit({
     tenantId,
     actorId:    session.user.id,
@@ -271,10 +400,12 @@ export async function deletePersonalData(contactId: string): Promise<
     targetId:   contactId,
     before:     sanitizeForAudit(contact),
     metadata: {
-      reason:               "LGPD Art. 18 VI — direito à eliminação",
-      cascaded_conversations: conversationCount ?? 0,
-      cascaded_messages:      messageCount ?? 0,
-      cascaded_media_files:   storagePaths.length,
+      reason:                 "LGPD Art. 18 VI — direito à eliminação",
+      cascaded_conversations: conversationIds.length,
+      cascaded_messages:      messageCount,
+      cascaded_media_files:   removedFiles,          // apagados de verdade
+      media_files_expected:   storagePaths.length,   // apontados pelas mensagens
+      media_files_missing:    missingFiles,          // já não estavam no bucket
     },
   })
 

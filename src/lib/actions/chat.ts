@@ -8,7 +8,7 @@ import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation, seesAllContacts, reachableContactIds } from "@/lib/visibility"
-import { isWindowOpen, isWhatsAppChannel } from "@/lib/channels/policy"
+import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { rateLimit } from "@/lib/rate-limit"
@@ -25,7 +25,20 @@ import { logConversationEvent } from "@/lib/atendimento/events"
  * Provider da instância ESPECÍFICA de uma conversa (multi-instância).
  * Envio sempre sai pela instância dona da conversa (conv.instance_id).
  */
-async function getProviderForInstance(instanceId: string, tenantId: string): Promise<WhatsAppProvider> {
+/**
+ * Provider do número da conversa.
+ *
+ * ⚠️ Aceita `null` DE PROPÓSITO: `chat_conversations.instance_id` é nullable, e desde a
+ * migration `20260729_conv_instance_fk_set_null` uma conversa de WhatsApp pode ficar sem
+ * número (o número foi apagado). Antes, os chamadores mascaravam isso com
+ * `as { instance_id: string }` — um cast que MENTE pro compilador: `null` chegava aqui,
+ * virava `.eq("id", null)`, não casava nada e saía como "Instância não encontrada", que
+ * manda o atendente procurar no lugar errado.
+ */
+async function getProviderForInstance(instanceId: string | null, tenantId: string): Promise<WhatsAppProvider> {
+  if (!instanceId) {
+    throw new Error("Esta conversa está sem número de WhatsApp — o número foi removido. Reative um número em Integrações para voltar a responder por aqui.")
+  }
   const { data } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("*")
@@ -430,7 +443,7 @@ export async function sendMessage(
     const channel = (conv as { channel: string | null }).channel ?? "whatsapp"
     if (isWhatsAppChannel(channel)) {
       try {
-        const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
+        const provider = await getProviderForInstance((conv as { instance_id: string | null }).instance_id, tenantId)
         const result   = await provider.sendText(contact.phone_number ?? contact.bsuid ?? "", content, replyCtx)
 
         await supabaseAdmin
@@ -442,7 +455,7 @@ export async function sendMessage(
         await supabaseAdmin
           .from("whatsapp_instances")
           .update({ last_outbound_message_at: new Date().toISOString() })
-          .eq("id", (conv as { instance_id: string }).instance_id)
+          .eq("id", (conv as { instance_id: string | null }).instance_id)
       } catch (err) {
         await supabaseAdmin
           .from("chat_messages")
@@ -526,7 +539,7 @@ export async function sendOfficialTemplate(
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id, chat_contacts(phone_number, primary_channel, bsuid)")
+    .select("id, instance_id, assigned_to, participants, department_id, channel, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -546,6 +559,17 @@ export async function sendOfficialTemplate(
   if (!canViewConversation(scope, { assigned_to: assignedTo, participants: (conv as { participants?: string[] | null }).participants, department_id: (conv as { department_id?: string | null }).department_id, instance_id: (conv as { instance_id?: string | null }).instance_id })) {
     throw new Error("Sem permissão para responder nesta conversa.")
   }
+
+  // Gate de CANAL (fail-closed) — template é veículo exclusivo da família WhatsApp.
+  // Roteia pelo canal da CONVERSA (o fio), nunca pelo primary_channel do contato: a
+  // conversa de Instagram/site carrega um instance_id EMPRESTADO de um número WhatsApp
+  // real, então sem esta trava o getProvider montava um provider FUNCIONAL e o template
+  // saía de verdade (cobrado) pro WhatsApp de quem só falou com a gente no Direct.
+  const tplChannel = (conv as { channel: string | null }).channel ?? "whatsapp"
+  if (!isWhatsAppChannel(tplChannel)) {
+    throw new Error(`Modelos (templates) são exclusivos do WhatsApp — esta conversa é do canal ${getChannelPolicy(tplChannel).label}. Responda com uma mensagem normal aqui mesmo.`)
+  }
+
   const isPool = assignedTo === null
   if (isPool) {
     await supabaseAdmin.from("chat_conversations")
@@ -576,7 +600,7 @@ export async function sendOfficialTemplate(
   if (error || !msg) throw new Error(error?.message ?? "Erro ao salvar mensagem")
 
   try {
-    const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
+    const provider = await getProviderForInstance((conv as { instance_id: string | null }).instance_id, tenantId)
     if (!provider.sendTemplate) throw new Error("Esta instância não suporta templates (use o canal oficial).")
     // Carrossel: sobe a mídia de cada card → media_id, na ordem dos cards.
     let carouselCards: Array<{ index: number; mediaType: "image" | "video"; mediaId: string }> | undefined
@@ -598,7 +622,7 @@ export async function sendOfficialTemplate(
       .eq("id", msg.id)
     await supabaseAdmin.from("whatsapp_instances")
       .update({ last_outbound_message_at: new Date().toISOString() })
-      .eq("id", (conv as { instance_id: string }).instance_id)
+      .eq("id", (conv as { instance_id: string | null }).instance_id)
   } catch (err) {
     await supabaseAdmin.from("chat_messages").update({ status: "failed" }).eq("id", msg.id)
     throw new Error(`Erro ao enviar template: ${(err as Error).message}`)
@@ -697,7 +721,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   const { data: inst } = await supabaseAdmin
     .from("whatsapp_instances")
     .select("provider")
-    .eq("id", (conv as { instance_id: string }).instance_id)
+    .eq("id", (conv as { instance_id: string | null }).instance_id)
     .maybeSingle()
 
   let uploadBuffer: Buffer = Buffer.from(await file.arrayBuffer())
@@ -791,7 +815,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
 
   let providerName = "baileys"
   try {
-    const provider = await getProviderForInstance((conv as { instance_id: string }).instance_id, tenantId)
+    const provider = await getProviderForInstance((conv as { instance_id: string | null }).instance_id, tenantId)
     providerName = provider.providerName
     const result   = sendAsVoiceNote
       ? await provider.sendVoiceNote(contact.phone_number ?? contact.bsuid ?? "", signed.signedUrl)
@@ -812,7 +836,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     await supabaseAdmin
       .from("whatsapp_instances")
       .update({ last_outbound_message_at: new Date().toISOString() })
-      .eq("id", (conv as { instance_id: string }).instance_id)
+      .eq("id", (conv as { instance_id: string | null }).instance_id)
   } catch (err) {
     await supabaseAdmin
       .from("chat_messages")
@@ -879,6 +903,15 @@ async function resolveSendContext(
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; primary_channel: string | null; bsuid: string | null }
   if (!isWhatsAppChannel((conv as { channel: string | null }).channel)) return { error: "Disponível apenas no WhatsApp." }
 
+  // Canal é WhatsApp mas a conversa está sem número — acontece quando o número é
+  // removido (FK `ON DELETE SET NULL`, migration 20260729). Recusa AQUI, antes de
+  // atribuir a conversa a alguém, com mensagem que diz o que fazer. Antes isto era
+  // mascarado por um cast e estourava lá na frente como "Instância não encontrada".
+  const sendInstanceId = (conv as { instance_id: string | null }).instance_id
+  if (!sendInstanceId) {
+    return { error: "Esta conversa está sem número de WhatsApp — o número foi removido. Reative um número em Integrações para responder por aqui." }
+  }
+
   if (opts?.autoAssign && assignedTo === null) {
     await supabaseAdmin.from("chat_conversations")
       .update({ assigned_to: session.user.id, updated_at: new Date().toISOString() })
@@ -887,7 +920,7 @@ async function resolveSendContext(
     await logConversationEvent({ tenantId, conversationId, type: "assigned", actorKind: "agent", actorId: session.user.id, toAgentId: session.user.id, reason: "auto_assign_pool" })
   }
 
-  return { tenantId, userId: session.user.id, instanceId: (conv as { instance_id: string }).instance_id, phone: contact.phone_number ?? contact.bsuid ?? "" }
+  return { tenantId, userId: session.user.id, instanceId: sendInstanceId, phone: contact.phone_number ?? contact.bsuid ?? "" }
 }
 
 async function bumpConv(conversationId: string, preview: string) {

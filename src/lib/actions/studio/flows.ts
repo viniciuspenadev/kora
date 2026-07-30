@@ -307,14 +307,28 @@ export async function triggerFlowInConversation(
     return { error: "Sem permissão para disparar nesta conversa." }
   }
 
-  // Instância pro provider (o runtime do fluxo envia as mensagens).
-  const { data: instance } = await supabaseAdmin
-    .from("whatsapp_instances")
-    .select("*")
-    .eq("id", (conv as { instance_id: string }).instance_id)
-    .eq("tenant_id", tenantId)
-    .maybeSingle()
-  if (!instance) return { error: "Número da conversa indisponível." }
+  // Instância pro provider — só existe em canal COM número (WhatsApp). Instagram e site
+  // não têm número: a conversa nasce com `instance_id = NULL` e o runtime envia pela
+  // "boca" do canal (`reply.ts`), que não usa a instância.
+  //
+  // ⚠️ Antes isto era `(conv as { instance_id: string })` — um cast que MENTE. Com nulo,
+  // o PostgREST não devolve "0 linhas": devolve **HTTP 400 (22P02, uuid inválido)**, que o
+  // `maybeSingle()` engole em `data: null` → caía sempre no erro abaixo, e o atendente
+  // recebia "Número da conversa indisponível" numa conversa de Direct, que nunca teve
+  // número. Resultado: disparar fluxo pelo inbox era 100% quebrado em IG/site.
+  const convInstanceId = (conv as { instance_id: string | null }).instance_id
+  let instance: Record<string, unknown> = {}
+  if (convInstanceId) {
+    const { data, error } = await supabaseAdmin
+      .from("whatsapp_instances")
+      .select("*")
+      .eq("id", convInstanceId)
+      .eq("tenant_id", tenantId)
+      .maybeSingle()
+    if (error) console.error("[studio/flows] instance lookup:", error.code, error.message)
+    if (!data) return { error: "O número desta conversa não está mais disponível. Reative um número em Integrações." }
+    instance = data
+  }
 
   // Gate fail-closed da janela de canal: um fluxo manda texto livre/mídia. No Oficial
   // fora das 24h isso é rejeitado pela Meta — então recusamos ANTES de disparar e

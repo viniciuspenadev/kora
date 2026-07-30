@@ -241,7 +241,16 @@ export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFiel
   if ((conv.participants ?? []).includes(scope.userId)) return true
   // Ramos de DESCOBERTA (pool / fila do setor): gated pelo número que ele atende.
   // instanceIds = null → atende todos (sem restrição).
-  const numberOk = !scope.instanceIds || (conv.instance_id != null && scope.instanceIds.includes(conv.instance_id))
+  //
+  // ⚠️ O gate SÓ se aplica quando a conversa TEM número. Conversa com
+  // `instance_id = null` (Instagram, site — canais sem número) NÃO é filtrada por
+  // número: a etiqueta na UI é "Números que atende", e restringir alguém a um
+  // número não pode esconder um canal que não tem número nenhum. Quem precisa
+  // travar o atendente usa `see_pool=false` (esse sim é o botão de travar).
+  const numberOk =
+    !scope.instanceIds ||                       // atende todos
+    conv.instance_id == null ||                 // conversa sem número → fora do gate
+    scope.instanceIds.includes(conv.instance_id)
   if (conv.assigned_to === null && scope.seePool && numberOk) return true
   if (conv.assigned_to === null && scope.departmentId && conv.department_id === scope.departmentId && numberOk) return true
   return false
@@ -267,6 +276,10 @@ export function memberSeesPool(m: { role: string; view_all?: boolean | null; see
  * número-scopado (instance_ids vazio/null = todos), OU é admin/supervisor (cross-
  * número por papel), OU o número está na lista dele. Espelha o gate de descoberta
  * de `canViewConversation` pra avaliar VÁRIOS membros server-side (ex: push).
+ *
+ * ⚠️ `instanceId = null` (conversa de canal SEM número — Instagram, site) passa
+ * sempre: o gate só existe pra escolher ENTRE números, e não há número pra
+ * escolher. Mesma decisão do `numberOk` em `canViewConversation` — paridade.
  */
 export function memberAttendsNumber(
   m: { role: string; view_all?: boolean | null; instance_ids?: string[] | null },
@@ -275,7 +288,43 @@ export function memberAttendsNumber(
   if (["owner", "admin"].includes(m.role) || m.view_all === true) return true
   const ids = m.instance_ids
   if (!Array.isArray(ids) || ids.length === 0) return true
-  return instanceId != null && ids.includes(instanceId)
+  if (instanceId == null) return true   // conversa sem número → fora do gate
+  return ids.includes(instanceId)
+}
+
+/** Linha de tenant_users no formato de fan-out (push): só os campos de escopo. */
+export interface FanoutMemberRow {
+  role: string
+  view_all?: boolean | null
+  see_pool?: boolean | null
+  department_id?: string | null
+  instance_ids?: string[] | null
+  supervises_departments?: string[] | null
+}
+
+/**
+ * Fan-out de conversa NÃO ATRIBUÍDA (pool). Espelha, ramo a ramo, os caminhos de
+ * DESCOBERTA de `canViewConversation` — pool (`see_pool`), fila do setor
+ * (`department_id`) e supervisão escopada (`supervises_departments`) — pra avaliar
+ * VÁRIOS membros server-side, sem sessão de cada um (ex: push).
+ *
+ * Existe pra o push NÃO manter uma 3ª cópia divergente da regra: antes ele só
+ * conhecia o ramo de pool, então o atendente com `see_pool=false` que enxerga a
+ * FILA DO SETOR dele nunca recebia push da própria fila.
+ */
+export function memberSeesUnassigned(
+  m: FanoutMemberRow,
+  conv: { department_id?: string | null; instance_id: string | null },
+): boolean {
+  // Papel amplo: owner/admin e supervisor geral veem tudo — sem gate de número.
+  if (["owner", "admin"].includes(m.role) || m.view_all === true) return true
+  // Supervisão ESCOPADA: vê tudo dos setores que supervisiona, também sem número.
+  const sup = m.supervises_departments
+  if (conv.department_id && Array.isArray(sup) && sup.includes(conv.department_id)) return true
+  // Ramos de descoberta — gated por número (que já tolera conversa sem número).
+  if (!memberAttendsNumber(m, conv.instance_id)) return false
+  if (m.see_pool !== false) return true                                 // pool (default true)
+  return !!m.department_id && conv.department_id === m.department_id    // fila do setor
 }
 
 export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
@@ -283,7 +332,15 @@ export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
   // Restrição de número (Fase D): entra DENTRO dos ramos de descoberta (pool/fila),
   // nunca global — senão restringiria também assigned/participants (grant explícito).
   // instanceIds = null → string vazia → ramos idênticos ao comportamento clássico.
-  const inInst = scope.instanceIds ? `,instance_id.in.(${scope.instanceIds.join(",")})` : ""
+  //
+  // ⚠️ Espelha o `numberOk` de canViewConversation: conversa SEM número
+  // (`instance_id IS NULL` — Instagram, site) fica FORA do gate. Em PostgREST isso
+  // exige um `or()` ANINHADO dentro do `and()` do ramo, senão o ramo inteiro vira
+  // um OR solto no topo e vaza conversa atribuída a terceiros.
+  //   → and(assigned_to.is.null,or(instance_id.is.null,instance_id.in.(…)))
+  const inInst = scope.instanceIds
+    ? `,or(instance_id.is.null,instance_id.in.(${scope.instanceIds.join(",")}))`
+    : ""
   const clauses = [
     `assigned_to.eq.${scope.userId}`,
     `participants.cs.{${scope.userId}}`,
