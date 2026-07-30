@@ -265,8 +265,51 @@ export interface MoveStageNodeConfig {
 }
 
 // ── Trigger (quando o fluxo dispara) ──
+
+/** Snapshot do post do Instagram CONGELADO na config do gatilho.
+ *  `thumbUrl` guarda a URL ESTÁVEL nossa (`/api/ig-thumb/<mediaId>`), gravada por
+ *  `freezeInstagramThumbs` — os bytes ficam no Storage privado. Nunca gravar aqui a URL
+ *  de CDN da Meta: ela é assinada e morre em ~1-2 dias, e o card do canvas quebra junto.
+ *  (Fluxo antigo pode ter a URL de CDN legada — o render tem fallback e o painel
+ *  re-congela ao abrir.) O que o runtime usa de fato é o `id` (media_id). */
+export interface IgCommentPostRef {
+  id:        string
+  permalink: string | null
+  caption:   string | null
+  isReel:    boolean
+  timestamp: string | null
+  thumbUrl:  string | null
+}
+
+/**
+ * Configuração do gatilho `ig_comment` (comentário no Instagram → Direct).
+ *
+ * Mora no TRIGGER, não num nó do canvas: a private reply acontece ANTES de existir
+ * conversa, e a Meta proíbe a 2ª mensagem até a pessoa responder — um passo no meio do
+ * fluxo quebraria no nó seguinte (docs/instagram-studio-node-design.md §8.3).
+ *
+ * ⚠️ Espelho estrutural de `IgCommentTriggerConfig`
+ * (src/components/integrations/instagram/ig-comment-config.tsx) — o componente de UI é a
+ * fonte visual, este é o contrato persistido. Mudou um, muda o outro.
+ */
+export interface IgCommentTrigger {
+  /** Posts alvo (v1: 1 a 3 — "mesma campanha em vários reels"). Vazio = inerte. */
+  posts:         IgCommentPostRef[]
+  /** Palavras no comentário. Vazio = qualquer comentário. */
+  keywords:      string[]
+  keywordMatch:  "contains" | "exact"
+  /** O Direct (private reply). Limite da Meta: 1000 caracteres. */
+  dm:            string
+  /** Variações da resposta pública ao comentário (a Kora alterna entre elas). */
+  publicReplies: string[]
+}
+
 export interface FlowTrigger {
   type:       "any_message" | "keyword" | "new_contact" | "reopened" | "from_ad" | "inactivity"
+              // Instagram: NÃO é mensagem — não existe conversa quando o comentário chega.
+              // Nunca casa no inbound (`matchesTrigger` → default:false); quem dispara é o
+              // webhook de `comments`, e o fluxo é retomado no 1º reply (carimba-e-espera).
+              | "ig_comment"
   keywords?:  string[]
   /** Match da palavra-chave: "contains" (default, substring) | "exact" (palavra inteira). Ambos ignoram acento. */
   keywordMatch?: "contains" | "exact"
@@ -282,6 +325,10 @@ export interface FlowTrigger {
   instances?: string[]
   /** Só p/ type "from_ad": mira anúncios específicos (sourceId). Ausente/vazio = qualquer anúncio. */
   adIds?:     string[]
+  /** Só p/ type "ig_comment": post + palavra + Direct + resposta pública.
+   *  A REGRA derivada daqui vive em `instagram_comment_rules` (o runtime lê a tabela,
+   *  indexada por conexão+post; o fluxo continua sendo a fonte de edição). */
+  ig?:        IgCommentTrigger
 }
 
 // ── Linhas do banco ──

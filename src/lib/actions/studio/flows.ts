@@ -31,6 +31,110 @@ async function requireAdmin() {
   return session
 }
 
+// ── Gatilho `ig_comment`: o fluxo é a fonte, a REGRA é derivada ──────────────
+// O runtime do webhook não pode varrer todos os fluxos a cada comentário: ele precisa de
+// "que regra vale pra este post desta conta?" com índice. Então `instagram_comment_rules`
+// é uma PROJEÇÃO do gatilho, reescrita a cada save/publish/pausa/arquivo.
+// Desenho: docs/instagram-studio-node-design.md §6 · docs/instagram-build-plan.md (Frente B).
+
+/** Conexão ATIVA do Instagram do tenant (a que envia). null = nada a automatizar. */
+async function activeIgConnectionId(tenantId: string): Promise<string | null> {
+  // ⚠️ `.limit(1)` e não `.maybeSingle()`: com 2 contas conectadas o maybeSingle devolve
+  // erro e derrubaria o SAVE do fluxo inteiro (é a mesma armadilha do `getInstagramSender`).
+  const { data, error } = await supabaseAdmin
+    .from("channel_connections")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("channel", "instagram")
+    .eq("status", "active")
+    .order("created_at", { ascending: true })
+    .limit(1)
+  if (error) { console.error("[studio/flows] ig connection:", error.code, error.message); return null }
+  return (data?.[0]?.id as string | undefined) ?? null
+}
+
+/** A regra está pronta pra capturar? (post escolhido + direct escrito) */
+function igRuleReady(t: FlowTrigger | null | undefined): boolean {
+  const ig = t?.ig
+  return !!ig && ig.posts.length > 0 && ig.dm.trim().length > 0
+}
+
+/**
+ * Espelha o gatilho do fluxo em `instagram_comment_rules`.
+ *
+ * `live` = o fluxo captura agora (publicado E ativo). A regra NUNCA carrega licença nem
+ * cota: quem checa isso é o runtime, ao vivo (`checkIgAutomationAllowed`) — senão ligar o
+ * módulo no god mode exigiria re-salvar cada fluxo pra "descongelar" a regra.
+ *
+ * Gatilho trocado / fluxo arquivado / fluxo pausado → a regra é DESATIVADA, não apagada:
+ * o ledger aponta pra ela (`rule_id`) e o relatório do funil ficaria órfão.
+ */
+async function syncIgCommentRule(
+  tenantId: string,
+  flowId:   string,
+  trigger:  FlowTrigger | null,
+  live:     boolean,
+): Promise<{ error?: string }> {
+  const isIg = trigger?.type === "ig_comment"
+  const ig   = isIg ? trigger?.ig : undefined
+
+  const connectionId = isIg && ig ? await activeIgConnectionId(tenantId) : null
+
+  // Sem gatilho de comentário (ou sem conexão/config) → desliga o que existir e sai.
+  if (!isIg || !ig || !connectionId) {
+    const { error } = await supabaseAdmin
+      .from("instagram_comment_rules")
+      .update({ enabled: false, updated_at: new Date().toISOString() })
+      .eq("tenant_id", tenantId)
+      .eq("flow_id", flowId)
+      .eq("enabled", true)
+    // 42P01 = migration ainda não aplicada (I9). Não é motivo pra impedir de salvar o fluxo.
+    if (error && error.code !== "42P01") {
+      console.error("[studio/flows] ig rule off:", error.code, error.message)
+      return { error: "O fluxo foi salvo, mas não consegui desativar a automação de comentário dele. Tente de novo." }
+    }
+    return {}
+  }
+
+  const { error } = await supabaseAdmin
+    .from("instagram_comment_rules")
+    .upsert({
+      tenant_id:     tenantId,
+      connection_id: connectionId,
+      flow_id:       flowId,
+      // Lista congelada de posts alvo (v1: 1–3). Vazio nunca chega aqui como "qualquer
+      // post" — `igRuleReady` barra antes; capturar TODO comentário da conta queimaria a
+      // bala única em "lindo 😍".
+      media_ids:     ig.posts.map((p) => p.id).filter(Boolean),
+      keywords:      ig.keywords.map((k) => k.trim()).filter(Boolean),
+      keyword_match: ig.keywordMatch === "exact" ? "exact" : "contains",
+      reply_text:    ig.dm.trim(),
+      public_reply:  ig.publicReplies.map((r) => r.trim()).filter(Boolean),
+      enabled:       live && igRuleReady(trigger),
+      updated_at:    new Date().toISOString(),
+    }, { onConflict: "flow_id" })
+  if (error) {
+    if (error.code === "42P01") return {}   // tabela ainda não existe em prod (I9)
+    console.error("[studio/flows] ig rule upsert:", error.code, error.message)
+    return { error: "O fluxo foi salvo, mas a automação de comentário do Instagram não foi registrada — ela não vai capturar até isso funcionar." }
+  }
+  return {}
+}
+
+/** Recusa server-side de publicar um `ig_comment` que não teria como rodar (fail-closed). */
+async function validateIgPublish(tenantId: string, trigger: FlowTrigger): Promise<string | null> {
+  if (trigger.type !== "ig_comment") return null
+  if (!(await hasModule(tenantId, "instagram_automation"))) {
+    return "A automação de comentário do Instagram não está habilitada nesta conta. Fale com o suporte pra liberar."
+  }
+  if (!(await activeIgConnectionId(tenantId))) {
+    return "Conecte uma conta do Instagram em Integrações antes de publicar este fluxo."
+  }
+  if (!trigger.ig?.posts.length) return "Escolha ao menos um post do Instagram no gatilho."
+  if (!trigger.ig.dm.trim())     return "Escreva o direct que a pessoa recebe ao comentar."
+  return null
+}
+
 export async function listFlows(): Promise<StudioFlowSummary[]> {
   const session = await requireAdmin()
   const { data, error } = await supabaseAdmin
@@ -138,7 +242,7 @@ export async function saveFlow(
   patch: { name: string; trigger: FlowTrigger; graph: FlowGraph },
 ): Promise<{ error?: string }> {
   const session = await requireAdmin()
-  const { error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("studio_flows")
     .update({
       name:    patch.name.trim() || "Fluxo sem nome",
@@ -148,7 +252,19 @@ export async function saveFlow(
     })
     .eq("tenant_id", session.user.tenantId)
     .eq("id", id)
+    .select("status, active")
+    .maybeSingle()
   if (error) return { error: error.message }
+  // 🔒 Sem linha = o id não é deste tenant. Antes isso era um no-op silencioso; agora que
+  // um `save` PROJETA a regra do Instagram, seguir adiante gravaria uma regra do tenant A
+  // apontando pro fluxo do tenant B (IDOR). Fail-closed.
+  if (!data) return { error: "Fluxo não encontrado." }
+
+  // Salvar um fluxo JÁ publicado muda o que está no ar — a regra do Instagram acompanha.
+  const live = data.status === "published" && data.active === true
+  const sync = await syncIgCommentRule(session.user.tenantId, id, patch.trigger, live)
+  if (sync.error) return sync
+
   revalidatePath("/studio/fluxos")
   revalidatePath(`/studio/fluxos/${id}`)
   return {}
@@ -160,6 +276,12 @@ export async function publishFlow(
 ): Promise<{ error?: string }> {
   const session = await requireAdmin()
 
+  // Gatilho do Instagram: recusa ANTES de publicar. Publicar um fluxo que não tem como
+  // capturar (sem licença, sem conta, sem post ou sem direct) é a armadilha silenciosa —
+  // o cliente acha que está no ar e os comentários passam batidos.
+  const igErr = await validateIgPublish(session.user.tenantId, patch.trigger)
+  if (igErr) return { error: igErr }
+
   // Pega a versão atual pra incrementar + snapshot.
   const { data: cur } = await supabaseAdmin
     .from("studio_flows")
@@ -167,7 +289,9 @@ export async function publishFlow(
     .eq("tenant_id", session.user.tenantId)
     .eq("id", id)
     .maybeSingle()
-  const nextVersion = ((cur?.version as number | undefined) ?? 0) + 1
+  // 🔒 Id de outro tenant → para aqui (senão a regra do IG seria projetada pro fluxo alheio).
+  if (!cur) return { error: "Fluxo não encontrado." }
+  const nextVersion = ((cur.version as number | undefined) ?? 0) + 1
 
   const { error } = await supabaseAdmin
     .from("studio_flows")
@@ -183,6 +307,10 @@ export async function publishFlow(
     .eq("tenant_id", session.user.tenantId)
     .eq("id", id)
   if (error) return { error: error.message }
+
+  // Publicar = ativar: a regra do Instagram entra no ar junto (ou some, se o gatilho mudou).
+  const sync = await syncIgCommentRule(session.user.tenantId, id, patch.trigger, true)
+  if (sync.error) return sync
 
   // Snapshot pra rollback (best-effort — não bloqueia a publicação).
   await supabaseAdmin.from("studio_flow_versions").insert({
@@ -200,12 +328,22 @@ export async function publishFlow(
 
 export async function setFlowActive(id: string, active: boolean): Promise<{ error?: string }> {
   const session = await requireAdmin()
-  const { error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("studio_flows")
     .update({ active, updated_at: new Date().toISOString() })
     .eq("tenant_id", session.user.tenantId)
     .eq("id", id)
+    .select("status, active, trigger")
+    .maybeSingle()
   if (error) return { error: error.message }
+  if (!data) return { error: "Fluxo não encontrado." }   // 🔒 id de outro tenant
+
+  // Pausar o fluxo tem que parar de CAPTURAR comentário — senão a pessoa recebe direct de
+  // um fluxo que o dono desligou. (Conversa em andamento segue: ela já não passa por aqui.)
+  const live = data.status === "published" && data.active === true
+  const sync = await syncIgCommentRule(session.user.tenantId, id, (data.trigger as FlowTrigger | null) ?? null, live)
+  if (sync.error) return sync
+
   revalidatePath("/studio/fluxos")
   return {}
 }
@@ -249,12 +387,21 @@ export async function cloneFlow(id: string): Promise<{ id?: string; error?: stri
 export async function deleteFlow(id: string): Promise<{ error?: string }> {
   const session = await requireAdmin()
   // Soft-delete: arquiva (preserva runs/versions; nunca apaga dado de prod).
-  const { error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("studio_flows")
     .update({ status: "archived", active: false, updated_at: new Date().toISOString() })
     .eq("tenant_id", session.user.tenantId)
     .eq("id", id)
+    .select("id")
+    .maybeSingle()
   if (error) return { error: error.message }
+  if (!data) return { error: "Fluxo não encontrado." }   // 🔒 id de outro tenant
+
+  // Fluxo arquivado não captura mais nada. Desativa (não apaga: o ledger referencia a
+  // regra e o relatório do funil ficaria órfão).
+  const sync = await syncIgCommentRule(session.user.tenantId, id, null, false)
+  if (sync.error) return sync
+
   revalidatePath("/studio/fluxos")
   return {}
 }

@@ -29,7 +29,7 @@ import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, t
 import { outcomeLabel } from "@/lib/ai-v2/flow/describe"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
 import { getFlowJourney, getFlowRevenue, getFlowCampaigns, type FlowJourney, type FlowRevenue } from "@/lib/actions/studio/flow-analytics"
-import type { FlowTrigger, FlowNodeType } from "@/lib/ai-v2/flow/types"
+import type { FlowTrigger, FlowNodeType, IgCommentTrigger } from "@/lib/ai-v2/flow/types"
 import type { TriggerChannel, TriggerInstance, TriggerAd } from "@/lib/studio/trigger-meta"
 import type { StudioFlowFull } from "@/types/studio"
 
@@ -47,7 +47,13 @@ interface Props {
   channels:    TriggerChannel[]
   instances:   TriggerInstance[]
   ads:         TriggerAd[]
+  /** Estado do Instagram pro gatilho de comentário: conexão ativa + licença do módulo
+   *  `instagram_automation`. Sem conexão não há o que configurar; sem licença, cadeado. */
+  ig:          { connected: boolean; username: string | null; licensed: boolean }
 }
+
+/** Config vazia do gatilho `ig_comment` — fluxo que nunca configurou o Instagram. */
+const EMPTY_IG: IgCommentTrigger = { posts: [], keywords: [], keywordMatch: "contains", dm: "", publicReplies: [] }
 
 // Variáveis CRIADAS pelo cliente ao longo do fluxo (saída de Coletar/HTTP/Definir/
 // Agendar/IA) — viram chips no editor, ao lado dos campos de contato.
@@ -104,7 +110,7 @@ function writeClip(p: ClipPayload): void {
 
 type CtxMenu = { x: number; y: number; kind: "node" | "pane" | "edge"; id?: string } | null
 
-function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads }: Props) {
+function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads, ig }: Props) {
   const router = useRouter()
   const { fitView, screenToFlowPosition } = useReactFlow()
   const updateNodeInternals = useUpdateNodeInternals()
@@ -124,6 +130,8 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
   const [kwMatch, setKwMatch]       = useState<"contains" | "exact">(flow.trigger?.keywordMatch ?? "contains")
   const [inactValue, setInactValue] = useState<number>(flow.trigger?.inactivityValue ?? 24)
   const [inactUnit, setInactUnit]   = useState<"minutes" | "hours">(flow.trigger?.inactivityUnit ?? "hours")
+  // Gatilho `ig_comment`: post congelado + palavra + direct + resposta pública.
+  const [igCfg, setIgCfg]           = useState<IgCommentTrigger>(flow.trigger?.ig ?? EMPTY_IG)
   const [orientation, setOrientation] = useState<Orientation>(flow.graph.orientation ?? "vertical")
   const [addCount, setAddCount]     = useState(0)
   const [pending, startTransition]  = useTransition()
@@ -185,8 +193,16 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
   // Resumo do gatilho injetado no nó "Início" (modo + canais + tipo), ao vivo.
   const triggerSummary = useMemo(
-    () => ({ type: triggerType, mode, channels: trigChannels, keywords, inactivityValue: inactValue, inactivityUnit: inactUnit }),
-    [triggerType, mode, trigChannels, keywords, inactValue, inactUnit],
+    () => ({
+      type: triggerType, mode, channels: trigChannels, keywords,
+      inactivityValue: inactValue, inactivityUnit: inactUnit,
+      // `ig_comment`: o card de Início veste a cara do Instagram (post + palavra + direct).
+      // A palavra vem da config do IG, não do campo de keyword do gatilho de mensagem.
+      ...(triggerType === "ig_comment"
+        ? { keywords: igCfg.keywords.join(", "), igPosts: igCfg.posts, igDm: igCfg.dm }
+        : {}),
+    }),
+    [triggerType, mode, trigChannels, keywords, inactValue, inactUnit, igCfg],
   )
   // Variáveis que o cliente CRIOU no fluxo (Coletar/Definir/HTTP/Agendar/IA) → viram
   // chips no editor, junto dos campos de contato. Atualiza ao vivo conforme monta.
@@ -414,6 +430,10 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
         ...(kwMatch === "exact" ? { keywordMatch: "exact" as const } : {}),
       } : {}),
       ...(triggerType === "from_ad" && trigAds.length ? { adIds: trigAds } : {}),
+      // Instagram: o objeto inteiro vai junto (posts CONGELADOS + palavra + direct +
+      // variações da resposta pública). O servidor deriva daqui a regra em
+      // `instagram_comment_rules` — o fluxo continua sendo a fonte de edição.
+      ...(triggerType === "ig_comment" ? { ig: igCfg } : {}),
       ...(mode !== "receptive" ? { mode } : {}),       // receptivo é o default → não polui o JSON
       ...(mode === "auto" ? { inactivityValue: inactValue, inactivityUnit: inactUnit } : {}),
       ...(trigChannels.length  ? { channels: trigChannels }   : {}),
@@ -571,7 +591,11 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
                 onType={(t) => setTrigType(t as FlowTrigger["type"])} onKeywords={setKeywords}
                 onMode={setMode} onChannels={setChannels} onInstances={setInsts}
                 onKeywordMatch={setKwMatch} onAds={setAds}
-                onInactivity={(v, u) => { setInactValue(v); setInactUnit(u) }} />}
+                onInactivity={(v, u) => { setInactValue(v); setInactUnit(u) }}
+                igConfig={igCfg} igUsername={ig.username} igLicensed={ig.licensed}
+                // Sem conexão ativa não há o que configurar (o painel orienta a conectar) —
+                // é o contrato do FlowSettingsPanel: sem `onIgConfig`, gatilho não editável.
+                onIgConfig={ig.connected ? setIgCfg : undefined} />}
         </div>
       </div>
     </div>

@@ -23,14 +23,18 @@
 //                           OU adicionar .delete() explícito ANTES do delete do contato
 //   3. Atualizar lista de tabelas cobertas no comentário abaixo:
 //
-//   Tabelas cobertas no EXPORT (atualizado 2026-07-24):
+//   Tabelas cobertas no EXPORT (atualizado 2026-07-30):
 //     - chat_contacts, chat_conversations, chat_messages, taggings
 //     - contact_identities, tenant_deals, tenant_tasks, appointments,
 //       commercial_documents, contact_list_members, campaign_recipients,
-//       contact_import_items, keyword_trigger_runs, conversation_events
+//       contact_import_items, keyword_trigger_runs, conversation_events,
+//       instagram_automation_runs
 //   DELETE cobre via CASCADE (deals/tasks/appointments/identities/imports).
 //   ⚠️ SET NULL retém snapshot: commercial_documents + campaign_recipients
 //      sobrevivem à eliminação (PII em snapshot) — backlog LGPD Art.18 VI.
+//   ⚠️ SET NULL + ANONIMIZAÇÃO: instagram_automation_runs é ledger de COBRANÇA
+//      (cascatear devolveria cota paga). O delete zera from_igsid/from_username
+//      ANTES do DELETE do contato — a linha contábil sobrevive sem PII.
 //     - storage chat-attachments (cleanup manual no delete)
 
 import { auth } from "@/auth"
@@ -67,19 +71,37 @@ const REMOVE_CHUNK = 100
 const MAX_PAGES = 200
 
 /**
+ * `42P01` = "relation does not exist". Única tolerância aceita numa operação LGPD, e
+ * só pra tabela cuja migration ainda não foi aplicada em produção: aí zero linha é a
+ * VERDADE (a feature nunca rodou), não uma leitura que falhou. Mesma exceção — e mesmo
+ * motivo — de `getUsage("instagram_automations_per_month")` em src/lib/limits.ts.
+ *
+ * ⚠️ Só vale enquanto a migration 20260730_instagram_automation_f2.sql não subir.
+ * Depois de aplicada, some daqui: a partir daí 42P01 vira sintoma de outra coisa.
+ */
+const TOLERATE_MISSING_TABLE = ["42P01"] as const
+
+/**
  * Lê TODAS as páginas de uma query. Falha alto: qualquer erro do PostgREST
  * vira `{ error }` — nada aqui pode seguir com lista parcial e depois
  * carimbar no audit log que a operação foi completa.
+ *
+ * `tolerateCodes` é a exceção cirúrgica (ver TOLERATE_MISSING_TABLE): código listado
+ * devolve lista VAZIA em vez de abortar. Nunca use pra erro que possa esconder dado.
  */
 async function fetchAllPages<T>(
   label: string,
-  run: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  run: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string; code?: string } | null }>,
+  opts?: { tolerateCodes?: readonly string[] },
 ): Promise<{ rows: T[] } | { error: string }> {
   const rows: T[] = []
   for (let page = 0; page < MAX_PAGES; page++) {
     const from = page * PAGE_SIZE
     const { data, error } = await run(from, from + PAGE_SIZE - 1)
-    if (error) return { error: `Falha ao ler ${label}: ${error.message}` }
+    if (error) {
+      if (opts?.tolerateCodes?.includes(error.code ?? "")) return { rows: [] }
+      return { error: `Falha ao ler ${label}: ${error.message}` }
+    }
     const batch = data ?? []
     rows.push(...batch)
     if (batch.length < PAGE_SIZE) return { rows }
@@ -188,6 +210,31 @@ export async function exportPersonalData(contactId: string): Promise<
   ] as const).find(([, res]) => res.error)
   if (failed) return { error: `Erro ao exportar ${failed[0]}: ${failed[1].error?.message}` }
 
+  // 5c. Ledger de automações do Instagram (comment-to-DM & cia): guarda contact_id,
+  //     from_igsid e o @ de quem comentou → é dado pessoal e entra no acesso (Art. 18 II).
+  //     O texto do comentário nunca é guardado, então não há o que exportar dele.
+  //
+  //     Fora do Promise.all acima por DOIS motivos, os dois de correção:
+  //     • PAGINADO (fetchAllPages): um post viral gera milhares de execuções e o
+  //       PostgREST corta em 1000 SEM erro — o export certificaria 1000 de N. Certificação
+  //       falsa em pedido de acesso é risco jurídico, não detalhe de performance.
+  //     • TOLERA 42P01: a migration do ledger ainda não subiu em prod. Com a tabela
+  //       ausente, o abort do bloco anterior derrubaria o export de QUALQUER contato de
+  //       QUALQUER tenant — o direito de acesso inteiro fora do ar por uma feature nova.
+  const igRunsRes = await fetchAllPages<Record<string, unknown>>(
+    "automações do Instagram",
+    (from, to) =>
+      supabaseAdmin
+        .from("instagram_automation_runs")
+        .select("*")
+        .eq("contact_id", contactId)
+        .order("id", { ascending: true })
+        .range(from, to),
+    { tolerateCodes: TOLERATE_MISSING_TABLE },
+  )
+  if ("error" in igRunsRes) return { error: igRunsRes.error }
+  const igAutomationRuns = igRunsRes.rows
+
   // 6. Linha do tempo (eventos das conversas do contato) — paginado.
   const timelineRes = conversationIds.length
     ? await fetchAllPages<Record<string, unknown>>("linha do tempo", (from, to) =>
@@ -218,6 +265,7 @@ export async function exportPersonalData(contactId: string): Promise<
     campaign_recipients: campaignRecipients.data ?? [],
     import_items:        importItems.data ?? [],
     trigger_runs:        triggerRuns.data ?? [],
+    instagram_automation_runs: igAutomationRuns,
     timeline_events:     timelineEvents,
     counts: {
       conversations:       conversations.length,
@@ -232,6 +280,7 @@ export async function exportPersonalData(contactId: string): Promise<
       campaign_recipients: campaignRecipients.data?.length ?? 0,
       import_items:        importItems.data?.length ?? 0,
       trigger_runs:        triggerRuns.data?.length ?? 0,
+      instagram_automation_runs: igAutomationRuns.length,
       timeline_events:     timelineEvents.length,
     },
   }
@@ -259,7 +308,9 @@ export async function exportPersonalData(contactId: string): Promise<
  * conversas, mensagens, mídia (storage), tags, sugestões IA.
  *
  * Cascateamento via FOREIGN KEY ON DELETE CASCADE (já configurado
- * no schema). Storage de mídia precisa de cleanup manual via
+ * no schema). O que é `ON DELETE SET NULL` por desenho contábil
+ * (instagram_automation_runs) é ANONIMIZADO antes — ver passo 5b.
+ * Storage de mídia precisa de cleanup manual via
  * Supabase Storage API (não-cascateado por design) — e roda ANTES do
  * DELETE, senão o path se perde junto com a row (ver comentário no passo 5).
  *
@@ -372,6 +423,36 @@ export async function deletePersonalData(contactId: string): Promise<
   // pro audit como "missing" — a prova jurídica tem que bater com a realidade.
   const missingFiles = storagePaths.length - removedFiles
 
+  // 5b. ANONIMIZAR o ledger de automações do Instagram — ANTES do DELETE do contato.
+  //     `instagram_automation_runs.contact_id` é `ON DELETE SET NULL` DE PROPÓSITO (mesmo
+  //     padrão de campaign_recipients): a linha é base de COBRANÇA, e cascatear devolveria
+  //     cota paga e apagaria execuções do relatório do funil. Então o Art. 18 VI é cumprido
+  //     por anonimização: aqui zeramos a PII (o IGSID e o @ de quem comentou) e o
+  //     `contact_id` some sozinho pelo FK no passo 6 — sobra a linha contábil, sem titular.
+  //     Ordem importa: depois do DELETE não há mais como achar as linhas (o vínculo é o
+  //     próprio contact_id) — seria exatamente o furo que o storage órfão já ensinou.
+  //     Falha ABORTA (nada de banco foi apagado ainda) — exceto 42P01: migration do ledger
+  //     ainda não aplicada = não existe linha pra anonimizar.
+  let anonymizedIgRuns = 0
+  {
+    const { data: anonymized, error: anonErr } = await supabaseAdmin
+      .from("instagram_automation_runs")
+      .update({ from_igsid: null, from_username: null, updated_at: new Date().toISOString() })
+      .eq("contact_id", contactId)
+      .eq("tenant_id", tenantId)
+      .select("id")
+    if (anonErr && anonErr.code !== "42P01") {
+      console.error("[lgpd] anonimização do ledger do Instagram falhou", JSON.stringify({
+        contactId, tenantId, code: anonErr.code, error: anonErr.message,
+      }))
+      return {
+        error: `Não consegui anonimizar o ledger de automações do Instagram: ${anonErr.message}. ` +
+               `NENHUM registro foi apagado — a exclusão parou aqui de propósito. Tente de novo.`,
+      }
+    }
+    anonymizedIgRuns = anonymized?.length ?? 0
+  }
+
   // 6. DELETE — cascade apaga conversations + messages + taggings + ai_suggestions
   const { error: deleteErr } = await supabaseAdmin
     .from("chat_contacts")
@@ -406,6 +487,8 @@ export async function deletePersonalData(contactId: string): Promise<
       cascaded_media_files:   removedFiles,          // apagados de verdade
       media_files_expected:   storagePaths.length,   // apontados pelas mensagens
       media_files_missing:    missingFiles,          // já não estavam no bucket
+      // Linhas do ledger de cobrança que sobreviveram SEM PII (não foram apagadas).
+      anonymized_ig_automation_runs: anonymizedIgRuns,
     },
   })
 

@@ -2,7 +2,7 @@
 
 import {
   Users, Server, QrCode, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact,
-  Infinity as InfinityIcon, AlertCircle, CheckCircle2, Mail, Sparkles, Captions, Workflow,
+  Infinity as InfinityIcon, AlertCircle, CheckCircle2, Mail, Sparkles, Captions, Workflow, AtSign,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { LIMIT_META, type LimitInfo, type LimitResource } from "@/lib/limits-shared"
@@ -36,6 +36,7 @@ const RESOURCE_ICONS: Record<LimitResource, typeof Users> = {
   broadcasts_per_month: Megaphone,
   storage_mb:           Database,
   automations:          Brain,
+  instagram_automations_per_month: AtSign,
 }
 
 function formatNum(n: number, unit: string): string {

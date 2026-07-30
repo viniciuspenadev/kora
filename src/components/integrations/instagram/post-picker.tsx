@@ -56,6 +56,30 @@ function fmtDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })
 }
 
+/**
+ * Imagem do tile. A URL do CDN aqui é FRESCA (acabou de vir da Graph), mas se a Meta
+ * recusar o carregamento o tile não pode virar um ícone quebrado sem texto: cai no
+ * mesmo placeholder do "post sem thumb", e o `alt` descreve o post.
+ */
+function TileImage({ item }: { item: IgMediaItem }) {
+  const [broken, setBroken] = useState(false)
+  const cap = item.caption?.trim()
+  const kind = item.isReel ? "Reel" : "Post"
+  const label = cap ? `${kind}: ${cap.slice(0, 80)}` : `${kind} sem legenda`
+
+  if (!item.thumbUrl || broken) {
+    return (
+      <div title={label} className="size-full bg-slate-100 flex items-center justify-center">
+        <ImageOff className="size-5 text-slate-300" />
+      </div>
+    )
+  }
+  return (
+    /* eslint-disable-next-line @next/next/no-img-element */
+    <img src={item.thumbUrl} alt={label} onError={() => setBroken(true)} className="size-full object-cover" />
+  )
+}
+
 export function PostPicker({ open, onClose, username, selected = [], onPick, multiple = false }: PostPickerProps) {
   const [items,   setItems]   = useState<IgMediaItem[]>([])
   const [cursor,  setCursor]  = useState<string | null>(null)
@@ -209,14 +233,7 @@ export function PostPicker({ open, onClose, username, selected = [], onPick, mul
                       <div className={`relative aspect-square rounded-lg overflow-hidden ring-1 transition-all ${
                         isMarked ? "ring-2 ring-primary" : "ring-slate-200 group-hover:ring-2 group-hover:ring-primary/60"
                       }`}>
-                        {m.thumbUrl ? (
-                          /* eslint-disable-next-line @next/next/no-img-element */
-                          <img src={m.thumbUrl} alt="" className="size-full object-cover" />
-                        ) : (
-                          <div className="size-full bg-slate-100 flex items-center justify-center">
-                            <ImageOff className="size-5 text-slate-300" />
-                          </div>
-                        )}
+                        <TileImage item={m} />
 
                         {(m.isReel || m.mediaType === "CAROUSEL_ALBUM") && (
                           <span className="absolute top-1.5 right-1.5 rounded bg-slate-900/50 backdrop-blur-sm p-1">

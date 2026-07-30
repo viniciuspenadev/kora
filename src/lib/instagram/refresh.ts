@@ -23,6 +23,15 @@ import { sendPushToUsers } from "@/lib/push/send"
 
 const REFRESH_WINDOW_DAYS = 15
 
+/**
+ * Idade a partir da qual um `claimed` do ledger é considerado ÓRFÃO.
+ *
+ * O envio real leva segundos (todo fetch da Graph API tem timeout ≤ 25s em
+ * src/lib/instagram/api.ts), então nada legítimo continua `claimed` depois de 15 min —
+ * a folga é generosa de propósito pra jamais reconciliar execução em voo.
+ */
+const STALE_CLAIM_MINUTES = 15
+
 export interface RefreshResult {
   checked:   number
   refreshed: number
@@ -77,6 +86,55 @@ export async function runInstagramTokenRefresh(): Promise<RefreshResult> {
   }
 
   return out
+}
+
+/**
+ * Reconciliação de CLAIM ÓRFÃO do ledger de automações (`instagram_automation_runs`).
+ *
+ * **Por que existe:** o runtime é claim-first — grava a linha `claimed` ANTES de chamar a
+ * Meta (é o que fecha o webhook duplicado, via `uq_ig_runs_dedup`). Se o processo morrer
+ * entre o claim e o envio (deploy no meio, timeout do runtime, crash), a linha fica
+ * `claimed` PRA SEMPRE: ninguém mais a toca, e o índice de dedup impede reprocessar aquele
+ * comentário.
+ *
+ * **Por que dói:** `claimed` é status COBRÁVEL (src/lib/limits.ts conta
+ * `['claimed','sent','replied']`) — cada órfão queima uma unidade da cota do cliente pelo
+ * resto do ciclo, sem uma única DM entregue. Reconciliar pra `failed` (não cobrável)
+ * devolve a cota.
+ *
+ * Roda no cron diário do Instagram. Varredura apoiada no índice parcial `idx_ig_runs_stale`.
+ * Cross-tenant de propósito: é manutenção de plataforma, com service_role.
+ */
+export async function reconcileStaleIgClaims(): Promise<{ reconciled: number }> {
+  const cutoff = new Date(Date.now() - STALE_CLAIM_MINUTES * 60_000).toISOString()
+
+  const { data, error } = await supabaseAdmin
+    .from("instagram_automation_runs")
+    .update({
+      status:     "failed",
+      error:      "reconciled: claim órfão (processo interrompido antes do envio)",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("status", "claimed")
+    .lt("created_at", cutoff)
+    .select("id")   // contagem REAL do que mudou, não a que "deveria" ter mudado
+
+  if (error) {
+    // 42P01 = migration do ledger ainda não aplicada → não há ledger pra reconciliar.
+    // Qualquer outro código é falha de verdade e tem que aparecer no log do cron.
+    if (error.code !== "42P01") {
+      console.error("[ig-reconcile] update:", error.code, error.message)
+    }
+    return { reconciled: 0 }
+  }
+
+  const reconciled = data?.length ?? 0
+  if (reconciled > 0) {
+    console.log("[ig-reconcile]", JSON.stringify({
+      event: "stale_claims_reconciled", reconciled, olderThanMin: STALE_CLAIM_MINUTES, cutoff,
+    }))
+  }
+  return { reconciled }
 }
 
 /** Marca a conexão como "precisa reconectar" e avisa quem pode agir. */

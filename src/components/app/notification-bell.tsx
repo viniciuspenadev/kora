@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, type LucideIcon } from "lucide-react"
+import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, type LucideIcon } from "lucide-react"
 import { getRealtimeClient } from "@/lib/realtime"
 import {
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,
@@ -29,6 +29,8 @@ const ICONS: Record<string, LucideIcon> = {
   appt_no_show:         CalendarX,
   daily_briefing:       Sun,
   transfer_received:    UserCheck,
+  ig_quota_warning:     Gauge,
+  ig_quota_exhausted:   Gauge,
 }
 
 function timeAgo(iso: string): string {
@@ -43,6 +45,9 @@ function timeAgo(iso: string): string {
 
 function hrefFor(n: NotificationItem): string {
   const p = n.payload ?? {}
+  // Destino explícito do produtor (ex: cota → /configuracoes/uso). Só caminho interno:
+  // o payload vem do banco, então URL absoluta seria um open-redirect de graça.
+  if (typeof p.url === "string" && p.url.startsWith("/") && !p.url.startsWith("//")) return p.url
   if (p.conversation_id) return `/inbox?conversation=${p.conversation_id}`
   if (p.appointment_id) return "/agenda"
   return "/agenda"

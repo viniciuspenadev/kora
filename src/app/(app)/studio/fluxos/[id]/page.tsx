@@ -55,11 +55,17 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
 
   // Gate (god mode): binding "Dono da conversa" nos nós de agendamento (beta).
   // + opções de canal/instância pro filtro do gatilho (derivadas do tenant).
-  const [ownerRouting, channels, instances, ads] = await Promise.all([
+  // + estado do Instagram pro gatilho de comentário: conexão ATIVA (senão não há o que
+  //   configurar) e licença do módulo `instagram_automation` (filho do Kora Studio —
+  //   `hasModule` já exige o pai recursivamente, fail-closed no banco).
+  const [ownerRouting, channels, instances, ads, igLicensed, { data: igConn }] = await Promise.all([
     hasModule(tenantId, "agenda_owner_routing"),
     loadTenantChannels(tenantId),
     loadTenantInstances(tenantId),
     loadTenantAds(tenantId),
+    hasModule(tenantId, "instagram_automation"),
+    supabaseAdmin.from("channel_connections").select("username")
+      .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active").maybeSingle(),
   ])
 
   return (
@@ -77,6 +83,11 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
       channels={channels}
       instances={instances}
       ads={ads}
+      ig={{
+        connected: !!igConn,
+        username:  (igConn?.username as string | null) ?? null,
+        licensed:  igLicensed,
+      }}
     />
   )
 }

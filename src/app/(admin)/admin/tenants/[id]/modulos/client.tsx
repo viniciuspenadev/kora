@@ -34,6 +34,27 @@ const CATEGORIES: Record<string, { label: string; icon: typeof Boxes; color: str
 
 const CATEGORY_ORDER = ["core", "atendimento", "crm", "agenda", "studio", "campanhas", "multichannel", "operational", "billing"]
 
+/**
+ * Recalcula o EFETIVO (próprio + pai recursivo) depois de um toggle otimista — espelha
+ * `tenant_has_module`/`listAllModulesForTenant`. Sem isto, desligar um pai deixaria os
+ * filhos pintados de verde na tela enquanto o gate já os nega no servidor.
+ */
+function withEffective(list: TenantModuleStatus[]): TenantModuleStatus[] {
+  const byslug = new Map(list.map((m) => [m.slug, m] as const))
+  const memo   = new Map<string, boolean>()
+  const eff = (slug: string, seen = new Set<string>()): boolean => {
+    const c = memo.get(slug)
+    if (c !== undefined) return c
+    if (seen.has(slug)) return false
+    seen.add(slug)
+    const m  = byslug.get(slug)
+    const ok = !!m && m.enabled && (!m.parent_slug || eff(m.parent_slug, seen))
+    memo.set(slug, ok)
+    return ok
+  }
+  return list.map((m) => ({ ...m, effective: eff(m.slug) }))
+}
+
 // ── Componente principal ────────────────────────────────────────
 
 export function ModulesClient({ tenantId, tenantName, modules: initialModules }: Props) {
@@ -54,7 +75,9 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
     return g
   }, [visible])
 
-  const enabledCount = visible.filter((m) => m.enabled).length
+  // Conta o EFETIVO (o que o cliente tem de fato): filho ligado com o pai desligado não
+  // vale nada — `tenant_has_module` diz não. Contar o próprio inflaria o número.
+  const enabledCount = visible.filter((m) => m.effective).length
   const totalCount   = visible.length
 
   function flash(kind: "ok" | "error", text: string) {
@@ -63,7 +86,7 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
   }
 
   function patchLocal(slug: string, partial: Partial<TenantModuleStatus>) {
-    setModules((prev) => prev.map((m) => m.slug === slug ? { ...m, ...partial } : m))
+    setModules((prev) => withEffective(prev.map((m) => m.slug === slug ? { ...m, ...partial } : m)))
   }
 
   return (
@@ -118,7 +141,7 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
                 </span>
                 {meta.label}
                 <span className="text-[10px] font-normal text-slate-400 tabular-nums">
-                  {items.filter((i) => i.enabled).length}/{items.length}
+                  {items.filter((i) => i.effective).length}/{items.length}
                 </span>
               </span>
             }
@@ -143,6 +166,7 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
                             key={k.slug}
                             module={k}
                             tenantId={tenantId}
+                            parentName={!root.effective ? root.name : null}
                             onChange={(partial) => patchLocal(k.slug, partial)}
                             onFlash={flash}
                             onEditDetails={() => setEditing(k)}
@@ -179,10 +203,12 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
 // ── Linha de módulo ────────────────────────────────────────────
 
 function ModuleRow({
-  module, tenantId, onChange, onFlash, onEditDetails,
+  module, tenantId, parentName = null, onChange, onFlash, onEditDetails,
 }: {
   module:        TenantModuleStatus
   tenantId:      string
+  /** Nome do módulo-pai quando ele está DESLIGADO (filho não vale, mesmo ligado). */
+  parentName?:   string | null
   onChange:      (partial: Partial<TenantModuleStatus>) => void
   onFlash:       (kind: "ok" | "error", text: string) => void
   onEditDetails: () => void
@@ -212,11 +238,15 @@ function ModuleRow({
   const hasExpiry = !!module.expires_at
   const expiryMs  = hasExpiry ? new Date(module.expires_at!).getTime() : 0
   const daysLeft  = hasExpiry ? Math.max(0, Math.ceil((expiryMs - Date.now()) / 86400000)) : 0
+  // Ligado no próprio, mas o PAI está desligado → o cliente NÃO tem (gate recursivo).
+  const blockedByParent = !!parentName && module.enabled && !module.effective
 
   return (
     <div className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
       module.is_core
         ? "border-slate-200 bg-slate-50/50"
+        : blockedByParent
+        ? "border-amber-200 bg-amber-50/30 hover:bg-amber-50/60"
         : module.enabled
         ? "border-emerald-200 bg-emerald-50/30 hover:bg-emerald-50/60"
         : "border-slate-200 bg-white hover:bg-slate-50"
@@ -226,6 +256,10 @@ function ModuleRow({
         {module.is_core ? (
           <div className="size-8 rounded-full bg-slate-200 flex items-center justify-center" title="Módulo core — sempre ativo">
             <Lock className="size-3.5 text-slate-500" strokeWidth={2.5} />
+          </div>
+        ) : blockedByParent ? (
+          <div className="size-8 rounded-full bg-amber-100 border-2 border-amber-300 flex items-center justify-center" title={`Sem efeito: "${parentName}" está desligado`}>
+            <AlertCircle className="size-4 text-amber-600" strokeWidth={2.5} />
           </div>
         ) : module.enabled ? (
           <div className="size-8 rounded-full bg-emerald-500 flex items-center justify-center">
@@ -249,6 +283,11 @@ function ModuleRow({
             }`}>
               <Clock className="size-2.5" />
               expira em {daysLeft}d
+            </span>
+          )}
+          {blockedByParent && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+              sem efeito · ligue &quot;{parentName}&quot;
             </span>
           )}
           {module.reason && (

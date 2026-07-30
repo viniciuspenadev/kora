@@ -19,6 +19,7 @@ import type { AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
 import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, startFlowRunAt, type MatchSignals } from "./flow/triggers"
 import { markRecipientReplied, isOptOut } from "@/lib/campaigns/engine"
+import { markIgAutomationReplied } from "@/lib/instagram/api"
 import { openerTemplateNode, templateNodeByName, nodeAfter } from "@/lib/campaigns/flow-opener"
 import type { PersonaInput } from "./prompt"
 import type { ExecCtx } from "./capabilities"
@@ -207,10 +208,11 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   if (opts?.forceFlowId) {
     const flow = await loadStartableFlow(tenantId, opts.forceFlowId)
     if (!flow) return { status: "skipped", reason: "flow_unavailable" }
-    // Safeguard: um fluxo manual assume a conversa → apaga o carimbo de campanha
-    // (senão o 1º reply seguinte rodaria a campanha por cima do fluxo manual).
-    if (convMeta.campaign_engage) {
-      const m = { ...convMeta }; delete m.campaign_engage
+    // Safeguard: um fluxo manual assume a conversa → apaga os carimbos de espera
+    // (campanha e comentário do IG); senão o 1º reply seguinte rodaria um deles por
+    // cima do fluxo manual que o atendente acabou de disparar.
+    if (convMeta.campaign_engage || convMeta.ig_comment_engage) {
+      const m = { ...convMeta }; delete m.campaign_engage; delete m.ig_comment_engage
       await supabaseAdmin.from("chat_conversations")
         .update({ metadata: m }).eq("id", conversationId).eq("tenant_id", tenantId)
     }
@@ -227,6 +229,18 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   const ceFresh = ceRaw?.at ? (new Date().getTime() - new Date(ceRaw.at).getTime()) < 86_400_000 : true
   const campaignEngage = ceRaw?.flowId && ceRaw.recipientId && ceFresh
     ? { flowId: ceRaw.flowId, recipientId: ceRaw.recipientId, templateName: ceRaw.templateName ?? "" }
+    : null
+
+  // Carimbo do COMENTÁRIO do Instagram (comment-to-DM). Mesmo padrão carimba-e-espera
+  // do campaign_engage: o Direct saiu FORA do fluxo (a private reply não pode ser um nó —
+  // docs/instagram-studio-node-design.md §8.3), o ingestor fixou o carimbo na conversa, e
+  // é AQUI que o fluxo começa — no primeiro reply da pessoa, que é quando a Meta libera a
+  // conversa. Consome-uma-vez. Janela de 7 dias: o mesmo prazo em que a private reply
+  // podia sair; depois disso o carimbo é lixo velho e o inbound é atendimento comum.
+  const igRaw = convMeta.ig_comment_engage as { flowId?: string; runId?: string; at?: string } | undefined
+  const igFresh = igRaw?.at ? (new Date().getTime() - new Date(igRaw.at).getTime()) < 7 * 86_400_000 : true
+  const igCommentEngage = igRaw?.flowId && igRaw.runId && igFresh
+    ? { flowId: igRaw.flowId, runId: igRaw.runId }
     : null
 
   const pinnedFlowId = typeof convMeta.ai_pinned_flow === "string" ? convMeta.ai_pinned_flow : null
@@ -272,6 +286,27 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
       }
       // Fluxo despublicado → flowResult null → cai no agente (degrada). Carimbo já consumido.
     }
+  } else if (igCommentEngage) {
+    // 6c) CARIMBO DO COMENTÁRIO (Instagram comment-to-DM) — a pessoa comentou, recebeu o
+    // Direct e ESTÁ RESPONDENDO agora. Intenção específica: precede um run de bot em
+    // andamento, igual ao carimbo de campanha (humano já foi barrado nos gates acima).
+    // Consome-uma-vez: apaga agora, dê certo ou não.
+    //
+    // ⚠️ Começa do START do fluxo, e isso é de propósito: ao contrário da campanha — cujo
+    // 1º nó É o template já enviado, e por isso ela retoma no `nodeAfter` — aqui o Direct
+    // saiu da CONFIGURAÇÃO DO GATILHO, não de um nó. Não há o que pular; o primeiro nó do
+    // grafo ainda não rodou.
+    const m = { ...convMeta }; delete m.ig_comment_engage
+    await supabaseAdmin.from("chat_conversations")
+      .update({ metadata: m }).eq("id", conversationId).eq("tenant_id", tenantId)
+    const flow = await loadStartableFlow(tenantId, igCommentEngage.flowId)
+    if (flow) {
+      await markIgAutomationReplied(tenantId, igCommentEngage.runId)   // fecha o funil no ledger
+      const run    = await startFlowRun(tenantId, conversationId, flow)
+      activeFlowId = flow.id
+      flowResult   = await runFlow(flowInput, flow, run)
+    }
+    // Fluxo despublicado/arquivado → flowResult null → degrada pro agente. Carimbo consumido.
   } else if (existingRun) {
     // Resume SÓ se o fluxo ainda está PUBLICADO + ATIVO (loadStartableFlow filtra).
     // Pausado/arquivado/sumido → o run NÃO pode sequestrar a conversa.

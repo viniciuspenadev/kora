@@ -54,10 +54,14 @@ export async function createNotification(input: CreateNotificationInput): Promis
     const p = input.payload ?? {}
     const convId = typeof p.conversation_id === "string" ? p.conversation_id : null
     const apptId = typeof p.appointment_id === "string" ? p.appointment_id : null
+    // `payload.url` (opcional) manda no destino — produtor fora da agenda/inbox (ex: aviso
+    // de cota → /configuracoes/uso) não tem por que cair no /agenda. Só caminho interno:
+    // URL absoluta viraria redirect pra fora do app a partir de um dado gravado no banco.
+    const rawUrl = typeof p.url === "string" && p.url.startsWith("/") && !p.url.startsWith("//") ? p.url : null
     await sendPushToUsers([input.recipientId], {
       title: input.title,
       body:  input.body ?? "",
-      url:   convId ? `/inbox?conversation=${convId}` : "/agenda",
+      url:   rawUrl ?? (convId ? `/inbox?conversation=${convId}` : "/agenda"),
       tag:   `${input.type}:${apptId ?? convId ?? input.recipientId}`,
     })
   } catch (e) {

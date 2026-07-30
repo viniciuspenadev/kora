@@ -3,8 +3,8 @@
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
 import { useRef, useState, useEffect } from "react"
 import {
-  Trash2, Plus, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2, AtSign,
-  Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info,
+  Trash2, Plus, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2,
+  Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info, Lock,
 } from "lucide-react"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { SourceLogo } from "@/components/chat/source-logo"
@@ -13,6 +13,7 @@ import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import { IgCommentConfig, type IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
+import { PlatformIcon } from "@/components/ui/platform-icon"
 
 /** Serviço/agenda com os campos extras da LEGENDA dinâmica do destino da agenda
  *  (quem entra no sorteio · quem abre fim de semana). agenda-node-redesign.md §3.5. */
@@ -1360,7 +1361,7 @@ export function FlowSettingsPanel({
   triggerType, keywords, mode, channels, instances,
   channelOptions, instanceOptions, keywordMatch, adIds, adOptions, inactivityValue, inactivityUnit,
   onType, onKeywords, onMode, onChannels, onInstances, onKeywordMatch, onAds, onInactivity,
-  igConfig, onIgConfig, igUsername,
+  igConfig, onIgConfig, igUsername, igLicensed = false,
 }: {
   triggerType: string
   keywords: string
@@ -1386,6 +1387,9 @@ export function FlowSettingsPanel({
   igConfig?:   IgCommentTriggerConfig
   onIgConfig?: (v: IgCommentTriggerConfig) => void
   igUsername?: string | null
+  /** Licença do módulo `instagram_automation` (filho do Kora Studio). Sem ela o gatilho
+   *  aparece CADEADO — vitrine, não armadilha (mesma doutrina do add-on `ai`). */
+  igLicensed?: boolean
 }) {
   const [q, setQ] = useState("")
   // Filtro só faz sentido com 2+ opções — quem tem 1 canal/1 número não escolhe nada.
@@ -1400,7 +1404,18 @@ export function FlowSettingsPanel({
     onMode("receptive"); onType(id)
   }
 
-  type TrigItem = { id: string; label: string; desc: string; icon: typeof Inbox; soon?: boolean }
+  // `icon` aceita qualquer componente que receba className — não só ícone do lucide —
+  // pra caber o PlatformIcon (marca real dos canais).
+  type TrigItem = {
+    id: string; label: string; desc: string; icon: React.ComponentType<{ className?: string }>
+    /** Não existe ainda (roadmap). */
+    soon?: boolean
+    /** Existe, mas o plano não licencia — chip com este rótulo + item inerte. */
+    locked?: string
+  }
+  // Marca real do Instagram (mesmo `PlatformIcon` do inbox e dos nós) em vez de um ícone
+  // genérico do lucide — o canal tem identidade visual própria no app inteiro.
+  const IgTriggerIcon = (p: { className?: string }) => <PlatformIcon app="instagram" size={14} className={p.className} />
   const GROUPS: { key: string; label: string; note?: string; tint: string; items: TrigItem[] }[] = [
     { key: "recv", label: "Recebendo uma mensagem", tint: "text-sky-600 bg-sky-50", items: [
       { id: "keyword",     label: "Palavra-chave",     desc: "quando a mensagem contém uma palavra", icon: MessageSquareText },
@@ -1412,10 +1427,10 @@ export function FlowSettingsPanel({
     // Instagram tem grupo próprio: o comentário NÃO é mensagem — não existe conversa
     // ainda quando ele chega. Ver docs/instagram-studio-node-design.md §8.3.
     { key: "ig", label: "Instagram", tint: "text-pink-600 bg-pink-50", items: [
-      // ⚠️ `soon` até a F2 (persistência + runtime do webhook) existir. Sem ela, escolher
-      // este gatilho torna o fluxo INERTE — `matchesTrigger` cai no default:false e nada
-      // dispara, sem erro. Vitrine sim; armadilha não.
-      { id: "ig_comment", label: "Comentário no Instagram", desc: "alguém comenta num post e você chama no direct", icon: AtSign, soon: true },
+      // Licenciado pelo módulo `instagram_automation` (filho do Kora Studio). Sem licença
+      // fica CADEADO — vitrine, não armadilha: o servidor recusa publicar mesmo forçado.
+      { id: "ig_comment", label: "Comentário no Instagram", desc: "alguém comenta num post e você chama no direct",
+        icon: IgTriggerIcon, ...(igLicensed ? {} : { locked: "no plano" }) },
     ] },
     { key: "act", label: "Você dispara", tint: "text-violet-600 bg-violet-50", items: [
       { id: "manual", label: "No chat ou por campanha", desc: "um agente aciona, ou uma campanha dispara", icon: Zap },
@@ -1604,22 +1619,30 @@ export function FlowSettingsPanel({
               {g.label}{g.note && <span className="font-medium normal-case tracking-normal text-slate-400/80"> {g.note}</span>}
             </p>
             {g.items.map((it) => {
-              const on = sel === it.id
+              const on   = sel === it.id
+              const dead = !!it.soon || !!it.locked
               return (
                 <div key={it.id}>
-                  <button type="button" disabled={it.soon} onClick={() => !it.soon && pick(it.id)} aria-pressed={on}
+                  <button type="button" disabled={dead} onClick={() => !dead && pick(it.id)} aria-pressed={on}
                     className={`group/it w-full flex items-start gap-3 px-2 py-2 rounded-xl border transition-colors text-left ${
-                      it.soon ? "border-transparent opacity-60 cursor-default"
+                      dead ? "border-transparent opacity-60 cursor-default"
                       : on ? "border-primary-200 bg-primary-50" : "border-transparent hover:bg-slate-50 hover:border-slate-200"}`}>
                     <span className={`size-8 shrink-0 rounded-lg grid place-items-center ${g.tint}`}><it.icon className="size-4" /></span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800">
                         {it.label}
                         {it.soon && <span className="rounded-full bg-amber-50 text-amber-600 ring-1 ring-amber-100 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide">em breve</span>}
+                        {!it.soon && it.locked && (
+                          <span className="inline-flex items-center gap-0.5 rounded-full bg-slate-100 text-slate-500 ring-1 ring-slate-200 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide">
+                            <Lock className="size-2.5" /> {it.locked}
+                          </span>
+                        )}
                       </span>
-                      <span className="block text-[11.5px] text-slate-400 mt-0.5 leading-snug">{it.desc}</span>
+                      <span className="block text-[11.5px] text-slate-400 mt-0.5 leading-snug">
+                        {!it.soon && it.locked ? "Disponível no plano com automação de Instagram." : it.desc}
+                      </span>
                     </span>
-                    {!it.soon && <ChevronRight className={`size-4 self-center shrink-0 transition ${on ? "text-primary-600 rotate-90" : "text-slate-300 opacity-0 group-hover/it:opacity-100"}`} />}
+                    {!dead && <ChevronRight className={`size-4 self-center shrink-0 transition ${on ? "text-primary-600 rotate-90" : "text-slate-300 opacity-0 group-hover/it:opacity-100"}`} />}
                   </button>
                   {on && config(it.id)}
                 </div>

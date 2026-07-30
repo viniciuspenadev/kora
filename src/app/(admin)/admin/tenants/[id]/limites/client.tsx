@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import {
-  Gauge, Users, Server, QrCode, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact,
+  Gauge, Users, Server, QrCode, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact, AtSign,
   Loader2, CheckCircle2, AlertCircle, X, Infinity as InfinityIcon, Edit3,
   RotateCcw, Clock,
 } from "lucide-react"
@@ -35,6 +35,7 @@ const RESOURCE_ICONS: Record<LimitResource, typeof Users> = {
   broadcasts_per_month: Megaphone,
   storage_mb:           Database,
   automations:          Brain,
+  instagram_automations_per_month: AtSign,
 }
 
 const RESOURCE_TONE: Record<LimitResource, { ok: string; warning: string; danger: string }> = {
@@ -47,6 +48,7 @@ const RESOURCE_TONE: Record<LimitResource, { ok: string; warning: string; danger
   broadcasts_per_month: { ok: "text-pink-700",    warning: "text-amber-700",  danger: "text-red-700" },
   storage_mb:           { ok: "text-amber-700",   warning: "text-amber-700",  danger: "text-red-700" },
   automations:          { ok: "text-violet-700",  warning: "text-amber-700",  danger: "text-red-700" },
+  instagram_automations_per_month: { ok: "text-pink-700", warning: "text-amber-700", danger: "text-red-700" },
 }
 
 function formatNum(n: number, unit: string): string {

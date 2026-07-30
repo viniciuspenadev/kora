@@ -23,6 +23,7 @@ export type { LimitResource, LimitInfo } from "@/lib/limits-shared"
 const ALL_RESOURCES: LimitResource[] = [
   "users", "whatsapp_official", "whatsapp_qr", "messages_per_month",
   "conversations_per_month", "broadcasts_per_month", "storage_mb", "contacts", "automations",
+  "instagram_automations_per_month",
 ]
 
 /** Parse SEGURO do jsonb `plans.limits`: só aceita number≥0 ou null; ignora lixo. */
@@ -82,6 +83,29 @@ async function resolveMax(
 }
 
 // ── Contagem de uso por recurso ────────────────────────────────
+
+/** Início do mês corrente — mesma régua já usada por messages/conversations_per_month.
+ *  (Nome longo de propósito: os cases antigos declaram um `const monthStart` local.)
+ *
+ *  ⚠️ UTC EXPLÍCITO. `setDate`/`setHours` usam o fuso do PROCESSO, e `created_at` é
+ *  `now()` em UTC: fora de um container UTC a janela desloca até 3h e, na virada do mês,
+ *  as mesmas linhas contam nos DOIS ciclos. Em container UTC isto é no-op; fora dele,
+ *  conserta. O ciclo de cobrança não pode depender de variável de ambiente. */
+function currentMonthStart(): string {
+  const d = new Date()
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0, 0)).toISOString()
+}
+
+/** Quando a cota mensal zera (início do mês seguinte) — vai no aviso de cota. */
+export function monthlyQuotaResetsAt(): string {
+  const d = new Date()
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0, 0)).toISOString()
+}
+
+/** Início do ciclo de cota mensal (ISO) — pro produtor de aviso deduplicar por ciclo. */
+export function monthlyQuotaPeriodStart(): string {
+  return currentMonthStart()
+}
 
 async function getUsage(tenantId: string, resource: LimitResource): Promise<number> {
   switch (resource) {
@@ -219,6 +243,36 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
         .neq("status", "archived")
       return count ?? 0
     }
+
+    case "instagram_automations_per_month": {
+      // 🔴 A cota é ÚNICA e SOMADA (docs/instagram-modulo-e-limites.md §4.1): count(*) por
+      // (tenant, período), SEM agrupar por `kind` / `rule_id` / `flow_id`. Esses campos
+      // existem pro RELATÓRIO ("qual fluxo mais executou"), nunca pro limite — cliente com
+      // 10 fluxos de comentário não tem 10 cotas, tem uma, e os 10 somam nela.
+      // 🔴 `failed` NÃO conta. A unidade cobrada é "automação EXECUTADA": o claim-first
+      // grava a linha ANTES de chamar a Meta, então token expirado / 429 / janela fechada
+      // produziriam centenas de linhas sem UMA direct entregue — e o cliente veria "cota
+      // esgotada" tendo recebido zero. `claimed` conta (está em voo, vira `sent`); um
+      // claim órfão é reconciliado pra `failed` pelo cron e devolve a cota.
+      // ⚠️ Este predicado é o MESMO de `claim_ig_automation_run` (SQL) e do índice parcial
+      //    `idx_ig_runs_quota`. Mudou aqui, muda nos três.
+      const { count, error } = await supabaseAdmin
+        .from("instagram_automation_runs")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId)
+        .in("status", ["claimed", "sent", "replied"])
+        .gte("created_at", currentMonthStart())
+      // Erro NÃO pode virar "0 em silêncio" (foi assim que o storage_mb mentiu por 2 meses).
+      // Exceção única: 42P01 = a migration do ledger ainda não foi aplicada — aí o uso é
+      // 0 de verdade (não houve execução nenhuma), e logar isso a cada render seria ruído.
+      if (error) {
+        if (error.code !== "42P01") {
+          console.error("[limits] instagram_automations_per_month:", JSON.stringify({ tenantId, code: error.code, message: error.message }))
+        }
+        return 0
+      }
+      return count ?? 0
+    }
   }
 }
 
@@ -244,6 +298,18 @@ export async function checkLimit(tenantId: string, resource: LimitResource): Pro
   }
 }
 
+/**
+ * Só o TETO, sem contar o uso.
+ *
+ * Existe pro claim atômico (`claim_ig_automation_run`): lá a contagem acontece DENTRO da
+ * transação, sob lock — contar aqui antes seria o TOCTOU que a função existe pra fechar.
+ */
+export async function resolveLimitMax(
+  tenantId: string, resource: LimitResource,
+): Promise<{ max: number | null; source: "override" | "plan" | "default" }> {
+  return resolveMax(tenantId, resource, await getPlanContext(tenantId))
+}
+
 export async function requireLimit(tenantId: string, resource: LimitResource): Promise<void> {
   const info = await checkLimit(tenantId, resource)
   if (!info.ok) {
@@ -260,6 +326,7 @@ export async function listAllLimits(tenantId: string): Promise<LimitInfo[]> {
     "users", "whatsapp_official", "whatsapp_qr", "contacts",
     "conversations_per_month", "messages_per_month",
     "broadcasts_per_month", "storage_mb", "automations",
+    "instagram_automations_per_month",
   ]
   return Promise.all(resources.map((r) => checkLimit(tenantId, r)))
 }

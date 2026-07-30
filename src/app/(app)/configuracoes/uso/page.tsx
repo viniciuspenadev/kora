@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { Gauge } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { listAllLimits } from "@/lib/limits"
+import { hasModule } from "@/lib/modules"
 import { supabaseAdmin } from "@/lib/supabase"
 import { UsageClient } from "./client"
 
@@ -12,7 +13,7 @@ export default async function UsagePage() {
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
 
   const day30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  const [limits, { data: tenant }, { data: aiRows }] = await Promise.all([
+  const [allLimits, { data: tenant }, { data: aiRows }, igAutomation] = await Promise.all([
     listAllLimits(session.user.tenantId),
     supabaseAdmin
       .from("tenants")
@@ -26,7 +27,14 @@ export default async function UsagePage() {
       .select("kind")
       .eq("tenant_id", session.user.tenantId)
       .gte("created_at", day30),
+    hasModule(session.user.tenantId, "instagram_automation"),
   ])
+
+  // Cota de recurso que o tenant NÃO licencia é ruído ("0 / 50" de algo que ele não tem).
+  // O god mode segue vendo todos os recursos — lá o ponto é justamente ajustar o teto.
+  const limits = igAutomation
+    ? allLimits
+    : allLimits.filter((l) => l.resource !== "instagram_automations_per_month")
 
   let aiReplies = 0, aiTranscriptions = 0, aiSupport = 0
   for (const r of aiRows ?? []) {

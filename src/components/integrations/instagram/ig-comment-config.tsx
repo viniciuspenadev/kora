@@ -1,8 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import { Image as ImageIcon, Play, Plus, Trash2, ChevronDown, ExternalLink } from "lucide-react"
+import { PlatformIcon } from "@/components/ui/platform-icon"
 import { PostPicker } from "./post-picker"
+import { freezeInstagramThumbs } from "@/lib/actions/instagram-media"
 import type { IgMediaItem } from "@/lib/instagram/api"
 
 /**
@@ -17,7 +19,14 @@ import type { IgMediaItem } from "@/lib/instagram/api"
  * o que faz funcionar.
  */
 
-/** Snapshot do post CONGELADO na config — a URL do CDN da Meta expira. */
+/**
+ * Snapshot do post CONGELADO na config.
+ *
+ * ⚠️ `thumbUrl` tem que ser a URL ESTÁVEL nossa (`/api/ig-thumb/<mediaId>`), nunca a do
+ * CDN da Meta: aquela é assinada e morre em 1-2 dias, e este objeto vive meses no
+ * `trigger` jsonb do fluxo. Quem escolhe o post chama `freezeInstagramThumbs`, que baixa
+ * os bytes pro Storage e devolve a URL estável (ver src/lib/instagram/thumb.ts).
+ */
 export interface IgPostRef {
   id:        string
   permalink: string | null
@@ -26,6 +35,11 @@ export interface IgPostRef {
   timestamp: string | null
   thumbUrl:  string | null
 }
+
+/** Espelha `IG_THUMB_PROXY_PREFIX` de src/lib/instagram/thumb.ts (aquele é server-only). */
+const THUMB_PROXY_PREFIX = "/api/ig-thumb/"
+const isFrozenThumb = (url: string | null | undefined) =>
+  typeof url === "string" && url.startsWith(THUMB_PROXY_PREFIX)
 
 export interface IgCommentTriggerConfig {
   posts:        IgPostRef[]
@@ -57,17 +71,54 @@ export function IgCommentConfig({ value, onChange, username }: {
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [showRules, setShowRules]   = useState(false)
+  const [, startFreeze]             = useTransition()
 
   const set = (patch: Partial<IgCommentTriggerConfig>) => onChange({ ...value, ...patch })
   const hint = dmHint(value.dm)
 
+  // A config muda por fora enquanto o congelamento roda (é async) — o patch tem que ser
+  // aplicado sobre o valor VIVO, não sobre o que existia quando a chamada saiu.
+  const valueRef = useRef(value)
+  useEffect(() => { valueRef.current = value })
+
+  // Uma tentativa por id por sessão do painel: se a Meta recusar, não vira loop de retry.
+  const triedRef = useRef<Set<string>>(new Set())
+
+  /**
+   * Baixa os bytes da thumb pro nosso Storage e troca a URL do CDN pela estável.
+   * Best-effort: se falhar, fica a URL do CDN (renderiza hoje, cai no placeholder quando
+   * expirar) e a próxima abertura do painel tenta de novo.
+   */
+  function freezeThumbs(ids: string[]) {
+    const todo = ids.filter((id) => id && !triedRef.current.has(id))
+    if (!todo.length) return
+    todo.forEach((id) => triedRef.current.add(id))
+    startFreeze(async () => {
+      const res = await freezeInstagramThumbs(todo)
+      if ("error" in res) return
+      const cur = valueRef.current
+      const posts = cur.posts.map((p) => (res.urls[p.id] ? { ...p, thumbUrl: res.urls[p.id] } : p))
+      if (posts.some((p, i) => p.thumbUrl !== cur.posts[i]?.thumbUrl)) onChange({ ...cur, posts })
+    })
+  }
+
+  // Auto-cura do legado: fluxo salvo antes do congelamento guardou a URL crua do CDN
+  // (quebrada em dias). Ao abrir o painel, re-congela — mesma auto-cura do avatar do IG.
+  useEffect(() => {
+    const stale = valueRef.current.posts.filter((p) => !isFrozenThumb(p.thumbUrl)).map((p) => p.id)
+    if (stale.length) freezeThumbs(stale)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   function onPick(items: IgMediaItem[]) {
+    // `m.thumbUrl` (CDN) entra só como prévia imediata; `freezeThumbs` troca pela estável.
     set({
       posts: items.map((m) => ({
         id: m.id, permalink: m.permalink, caption: m.caption,
         isReel: m.isReel, timestamp: m.timestamp, thumbUrl: m.thumbUrl,
       })),
     })
+    freezeThumbs(items.map((m) => m.id))
   }
 
   return (
@@ -276,14 +327,45 @@ export function IgCommentConfig({ value, onChange, username }: {
   )
 }
 
+/** Descreve o post pra leitor de tela — e pro `title` do placeholder. */
+function postLabel(post: IgPostRef): string {
+  const kind = post.isReel ? "Reel" : "Post"
+  const cap = post.caption?.trim()
+  return cap ? `${kind} do Instagram: ${cap.slice(0, 80)}` : `${kind} do Instagram selecionado`
+}
+
+/**
+ * Miniatura do post. Dois motivos pra cair no placeholder: post sem thumb congelada
+ * ainda, e legado gravado com URL de CDN já expirada (403) — daí o `onError`.
+ * O placeholder usa a marca do canal (mesmo `PlatformIcon` do inbox), não um ícone
+ * genérico: quebrado, o card ainda diz "isto é um post do Instagram".
+ */
 function Thumb({ post, className = "" }: { post: IgPostRef; className?: string }) {
-  return post.thumbUrl ? (
+  const [broken, setBroken] = useState(false)
+  // Trocou de post/URL → a miniatura merece nova chance (padrão "derivar de prop no render").
+  const [seenUrl, setSeenUrl] = useState(post.thumbUrl)
+  if (seenUrl !== post.thumbUrl) { setSeenUrl(post.thumbUrl); setBroken(false) }
+
+  const label = postLabel(post)
+
+  if (!post.thumbUrl || broken) {
+    return (
+      <div
+        title={broken ? `${label} — prévia indisponível` : label}
+        className={`rounded border border-slate-200 bg-gradient-to-br from-fuchsia-50 to-amber-50 grid place-items-center ${className}`}
+      >
+        {broken ? <PlatformIcon app="instagram" size={14} /> : <ImageIcon className="size-3.5 text-slate-300" />}
+      </div>
+    )
+  }
+  return (
     /* eslint-disable-next-line @next/next/no-img-element */
-    <img src={post.thumbUrl} alt="" className={`rounded object-cover ${className}`} />
-  ) : (
-    <div className={`rounded bg-slate-100 grid place-items-center ${className}`}>
-      <ImageIcon className="size-3.5 text-slate-300" />
-    </div>
+    <img
+      src={post.thumbUrl}
+      alt={label}
+      onError={() => setBroken(true)}
+      className={`rounded object-cover ${className}`}
+    />
   )
 }
 

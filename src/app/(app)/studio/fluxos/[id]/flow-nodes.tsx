@@ -7,11 +7,11 @@
 // (handle id = branch). Agente IA tem 1 saída por outcome (ou única) — DEVOLVE
 // o controle. transfer/return/end são terminais. start não tem entrada.
 
-import { createContext, useContext, useMemo } from "react"
+import { createContext, useContext, useMemo, useState } from "react"
 import { Handle, Position, useNodeId, useStore, type NodeProps } from "@xyflow/react"
 import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
 import type { FlowGraph } from "@/lib/ai-v2/flow/types"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck, AtSign } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
@@ -227,30 +227,72 @@ function StartNode(p: NodeProps) {
  * é o que comunica visualmente "isto COMEÇA aqui", sem precisar de uma linha de texto.
  * O chip ENTRADA existe porque o fluxo passa a ter duas portas e o dono precisa ver isso.
  */
+/** Marca real do Instagram — o MESMO `PlatformIcon` usado no inbox, na bolha e no
+ *  `ChannelIcon` daqui. Antes era um `AtSign` genérico do lucide: o nó exibia um "@"
+ *  enquanto o resto do app mostrava o logo, quebrando o padrão visual do canal. */
+function IgIcon({ className }: { className?: string }) {
+  return <PlatformIcon app="instagram" size={14} className={className} />
+}
+
+/**
+ * Miniatura do post no card de Início.
+ *
+ * `thumbUrl` deveria ser a URL ESTÁVEL `/api/ig-thumb/<id>` (congelada no Storage ao
+ * escolher o post). Fluxo salvo ANTES disso guardou a URL crua do CDN da Meta, que é
+ * assinada e expira em 1-2 dias → 403 e imagem quebrada num card que fica meses na tela.
+ * Por isso o `onError`: cai num placeholder com a marca do canal, e o `alt` descreve o
+ * post (o painel de config re-congela sozinho quando é aberto).
+ */
+function IgPostThumb({ post, more }: {
+  post: { thumbUrl: string | null; caption: string | null } | null
+  more: number
+}) {
+  const [broken, setBroken] = useState(false)
+  const [seenUrl, setSeenUrl] = useState(post?.thumbUrl ?? null)
+  if (seenUrl !== (post?.thumbUrl ?? null)) { setSeenUrl(post?.thumbUrl ?? null); setBroken(false) }
+
+  if (!post) {
+    return (
+      <div className="h-16 w-full rounded-lg border border-dashed border-slate-200 bg-slate-50/60 grid place-items-center">
+        <span className="text-[10px] text-slate-400">escolha o post…</span>
+      </div>
+    )
+  }
+
+  const cap = post.caption?.trim()
+  const label = cap ? `Post do Instagram: ${cap.slice(0, 80)}` : "Post do Instagram do gatilho"
+
+  return (
+    <div className="relative h-16 w-full rounded-lg overflow-hidden">
+      {post.thumbUrl && !broken ? (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img src={post.thumbUrl} alt={label} onError={() => setBroken(true)} className="size-full object-cover" />
+      ) : (
+        <div title={label}
+          className="size-full rounded-lg border border-slate-200 bg-gradient-to-br from-fuchsia-50 to-amber-50 flex flex-col items-center justify-center gap-0.5">
+          <PlatformIcon app="instagram" size={16} />
+          <span className="text-[9px] text-slate-400">prévia indisponível</span>
+        </div>
+      )}
+      {more > 0 && (
+        <span className="absolute top-1 right-1 rounded bg-slate-900/60 px-1 text-[9px] font-bold text-white">+{more}</span>
+      )}
+    </div>
+  )
+}
+
 function IgCommentStartCard({ t, kw, selected }: { t: TriggerSummary; kw: string[]; selected?: boolean }) {
   const post = t.igPosts?.[0] ?? null
   const more = (t.igPosts?.length ?? 0) - 1
   return (
     <>
-      <Card icon={AtSign} accent="bg-pink-100 text-pink-700" title="Comentário no Instagram" selected={selected}
+      <Card icon={IgIcon} accent="bg-pink-100 text-pink-700" title="Comentário no Instagram" selected={selected}
         badge={
           <span className="inline-flex items-center rounded px-1 py-px text-[9px] font-semibold ring-1 bg-emerald-50 text-emerald-700 ring-emerald-100">
             Entrada
           </span>
         }>
-        {post?.thumbUrl ? (
-          <div className="relative h-16 w-full rounded-lg overflow-hidden">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={post.thumbUrl} alt="" className="size-full object-cover" />
-            {more > 0 && (
-              <span className="absolute top-1 right-1 rounded bg-slate-900/60 px-1 text-[9px] font-bold text-white">+{more}</span>
-            )}
-          </div>
-        ) : (
-          <div className="h-16 w-full rounded-lg border border-dashed border-slate-200 bg-slate-50/60 grid place-items-center">
-            <span className="text-[10px] text-slate-400">escolha o post…</span>
-          </div>
-        )}
+        <IgPostThumb post={post} more={more} />
 
         {post?.caption && <p className="mt-1 text-[11px] text-slate-600 truncate">{post.caption}</p>}
 

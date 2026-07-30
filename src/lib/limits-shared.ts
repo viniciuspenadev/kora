@@ -14,6 +14,7 @@ export type LimitResource =
   | "storage_mb"
   | "contacts"
   | "automations"
+  | "instagram_automations_per_month"
 
 export interface LimitInfo {
   resource:  LimitResource
@@ -34,6 +35,10 @@ export const LIMIT_META: Record<LimitResource, { label: string; unit: string; de
   storage_mb:              { label: "Storage",               unit: "MB",       description: "Mídia armazenada no bucket" },
   contacts:                { label: "Contatos",              unit: "",         description: "Total de contatos cadastrados" },
   automations:             { label: "Automações",            unit: "fluxo",    description: "Fluxos do Kora Studio (não-arquivados)" },
+  // Cota ÚNICA e SOMADA do tenant: TODOS os fluxos premium e TODOS os tipos de automação
+  // (comment-to-DM hoje; story reply, menção, live, anúncio depois) consomem o mesmo teto.
+  // Rótulo pro cliente é "automações executadas" — não "capturas de comentário".
+  instagram_automations_per_month: { label: "Automações do Instagram/mês", unit: "execução", description: "Automações premium do Instagram executadas no mês (comentário → direct e afins)" },
 }
 
 export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number | null>> = {
@@ -47,6 +52,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     storage_mb:              500,
     contacts:                500,
     automations:             15,
+    instagram_automations_per_month: 50,
   },
   starter: {
     users:                   5,
@@ -58,6 +64,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     storage_mb:              2_000,
     contacts:                5_000,
     automations:             40,
+    instagram_automations_per_month: 500,
   },
   pro: {
     users:                   15,
@@ -69,6 +76,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     storage_mb:              20_000,
     contacts:                50_000,
     automations:             150,
+    instagram_automations_per_month: 3_000,
   },
   enterprise: {
     users:                   null,
@@ -80,6 +88,7 @@ export const DEFAULT_LIMITS_BY_PLAN: Record<string, Record<LimitResource, number
     storage_mb:              null,
     contacts:                null,
     automations:             null,
+    instagram_automations_per_month: null,
   },
 }
 

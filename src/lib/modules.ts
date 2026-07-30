@@ -35,6 +35,10 @@ export type ModuleSlug =
   | "widget_site" | "keyword_triggers" | "welcome_message" | "business_hours"
   // AI / Kora Studio
   | "ai_atendente" | "ai_suggestions" | "ai_knowledge_base" | "ai_studio" | "ai"
+  // Automação do Instagram (comment-to-DM & cia) — FILHO de `ai_studio`.
+  // ⚠️ É a AUTOMAÇÃO, não o canal: `instagram_direct` (inbox) segue sem pai, senão
+  // desligar o Studio derrubaria o Direct do cliente junto.
+  | "instagram_automation"
   // Engagement
   | "broadcasts" | "sequences" | "chatbot_builder"
   // Multi-channel
@@ -61,11 +65,15 @@ export interface TenantModuleStatus {
   name:        string
   description: string | null
   is_core:     boolean
+  /** Chave PRÓPRIA (a linha em tenant_modules) — é o que o toggle do god mode escreve. */
   enabled:     boolean
   reason:      string | null
   expires_at:  string | null
   set_at:      string | null
   parent_slug: string | null   // hierarquia pai/filho (null = raiz)
+  /** Está ligado E o pai (recursivo) também? É o que `tenant_has_module` responde — o
+   *  que o CLIENTE realmente tem. Sem isto o god vê "ligado" num filho que o gate nega. */
+  effective:   boolean
 }
 
 // ── API ────────────────────────────────────────────────────────
@@ -110,11 +118,10 @@ export async function requireModule(slug: ModuleSlug): Promise<void> {
  * Usado no layout/sidebar pra filtrar itens visíveis.
  */
 export async function getEnabledModuleSlugs(tenantId: string): Promise<Set<string>> {
-  const [{ data: core }, { data: tm }] = await Promise.all([
+  const [{ data: catalog }, { data: tm }] = await Promise.all([
     supabaseAdmin
       .from("module_catalog")
-      .select("slug")
-      .eq("is_core", true),
+      .select("slug, is_core, parent_slug"),
     supabaseAdmin
       .from("tenant_modules")
       .select("module_slug, expires_at")
@@ -122,15 +129,34 @@ export async function getEnabledModuleSlugs(tenantId: string): Promise<Set<strin
       .eq("enabled", true),
   ])
 
+  const rows   = (catalog ?? []) as { slug: string; is_core: boolean; parent_slug: string | null }[]
+  // Slug fora do catálogo = fail-closed (mesma regra do `tenant_has_module`).
+  const parent = new Map(rows.map((r) => [r.slug, r.parent_slug] as const))
   const now    = Date.now()
-  const slugs  = new Set<string>()
-  ;(core ?? []).forEach((r) => slugs.add(r.slug))
+  const own    = new Set<string>()
+  rows.filter((r) => r.is_core).forEach((r) => own.add(r.slug))
   ;(tm ?? []).forEach((r) => {
     if (!r.expires_at || new Date(r.expires_at).getTime() > now) {
-      slugs.add(r.module_slug)
+      own.add(r.module_slug)
     }
   })
-  return slugs
+
+  // 🔴 PARIDADE com `tenant_has_module` (recursivo desde 2026-07-18): filho só vale com o
+  // PAI ligado. Sem isto o gate por Set (sidebar + páginas de integração) ficaria mais
+  // FROUXO que o gate por RPC — o mesmo módulo diria "sim" numa porta e "não" na outra.
+  const resolved = new Map<string, boolean>()
+  const has = (slug: string, seen = new Set<string>()): boolean => {
+    const cached = resolved.get(slug)
+    if (cached !== undefined) return cached
+    if (seen.has(slug)) return false                 // ciclo no catálogo = fail-closed
+    seen.add(slug)
+    if (!parent.has(slug)) return false              // slug fora do catálogo = fail-closed
+    const p  = parent.get(slug) ?? null
+    const ok = own.has(slug) && (!p || has(p, seen))
+    resolved.set(slug, ok)
+    return ok
+  }
+  return new Set([...own].filter((s) => has(s)))
 }
 
 /**
@@ -158,7 +184,7 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
   }))
 
   const now = Date.now()
-  return (catalog ?? []).map((c) => {
+  const rows = (catalog ?? []).map((c) => {
     const override = tmMap.get(c.slug)
     const enabled =
       c.is_core ? true :
@@ -176,9 +202,26 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
       reason:      override?.reason ?? null,
       expires_at:  override?.expires_at ?? null,
       set_at:      override?.set_at ?? null,
-      parent_slug: c.parent_slug ?? null,
+      parent_slug: (c.parent_slug ?? null) as string | null,
+      effective:   false,   // resolvido abaixo (precisa do mapa completo)
     }
   })
+
+  // Efetivo = próprio ligado E pai (recursivo) ligado — espelha `tenant_has_module`.
+  const byslug = new Map(rows.map((r) => [r.slug, r] as const))
+  const memo   = new Map<string, boolean>()
+  const eff = (slug: string, seen = new Set<string>()): boolean => {
+    const cached = memo.get(slug)
+    if (cached !== undefined) return cached
+    if (seen.has(slug)) return false
+    seen.add(slug)
+    const r  = byslug.get(slug)
+    const ok = !!r && r.enabled && (!r.parent_slug || eff(r.parent_slug, seen))
+    memo.set(slug, ok)
+    return ok
+  }
+  for (const r of rows) r.effective = eff(r.slug)
+  return rows
 }
 
 /**

@@ -5,8 +5,9 @@ import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { decryptSecret } from "@/lib/crypto/secrets"
-import { fetchIgProfile } from "@/lib/instagram/api"
+import { fetchIgProfile, sendIgPrivateReply, replyToIgComment } from "@/lib/instagram/api"
 import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
+import { claimIgAutomation } from "@/lib/instagram/automation-quota"
 
 /**
  * Ingestão do Instagram Direct (caminho "API do Instagram com login do Instagram")
@@ -75,12 +76,14 @@ async function storeIgMedia(tenantId: string, conversationId: string, url: strin
 }
 
 // ── Tenant/contato/conversa ──────────────────────────────────────
-/** Conta IG conectada → tenant + token (decifrado). 1 conta = 1 tenant. */
-async function connectionFor(igAccountId: string): Promise<{ tenantId: string; token: string | null } | null> {
+/** Conta IG conectada → conexão + tenant + token (decifrado). 1 conta = 1 tenant.
+ *  `id` (a CONEXÃO) é o eixo do ledger e das regras de comentário — multi-conta de
+ *  Instagram no mesmo tenant já cabe sem ambiguidade. */
+async function connectionFor(igAccountId: string): Promise<{ id: string; tenantId: string; token: string | null } | null> {
   const { data } = await supabaseAdmin.from("channel_connections")
-    .select("tenant_id, access_token").eq("channel", "instagram").eq("external_account_id", igAccountId).eq("status", "active").maybeSingle()
+    .select("id, tenant_id, access_token").eq("channel", "instagram").eq("external_account_id", igAccountId).eq("status", "active").maybeSingle()
   if (!data) return null
-  return { tenantId: data.tenant_id as string, token: decryptSecret(data.access_token as string | null) }
+  return { id: data.id as string, tenantId: data.tenant_id as string, token: decryptSecret(data.access_token as string | null) }
 }
 
 /** Enriquece o contato (nome/@/foto) via Graph API — precisa do token; senão placeholder. */
@@ -349,6 +352,348 @@ async function handleRead(igAccountId: string | null, m: IgMessaging): Promise<v
   log("read", { mid })
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Comentário → Direct (comment-to-DM) — automação PREMIUM do Instagram
+// ═══════════════════════════════════════════════════════════════
+// docs/instagram-studio-node-design.md §8.3 · docs/instagram-modulo-e-limites.md §4.1
+//
+// 🔴 A private reply NÃO é (e não pode ser) um passo do fluxo. O IGSID só existe DEPOIS
+//    dela — vem no `recipient_id` da resposta da Meta —, então antes não há contato nem
+//    conversa, e o motor de fluxo exige `conversationId`. Pior: pela regra da Meta, DEPOIS
+//    da private reply o app não pode enviar mais nada até a pessoa responder; um fluxo que
+//    começasse no comentário quebraria no segundo nó.
+//
+//    O runtime certo é **carimba-e-espera**, e ele já roda em produção nas campanhas
+//    (`recordCampaignOpener` fixa `metadata.campaign_engage`; `run.ts` consome no 1º reply
+//    e retoma o fluxo). Aqui é linha por linha o mesmo formato: manda o Direct FORA do
+//    fluxo → cria contato/conversa → persiste a mensagem → carimba `ig_comment_engage`.
+//    O run.ts retoma quando a pessoa responder. Não inventar um segundo motor.
+//
+// ⚠️ INERTE até a Meta aprovar `instagram_business_manage_comments`: `comments` não está
+//    em IG_WEBHOOK_FIELDS de propósito (assinar campo sem permissão derruba o subscribe
+//    inteiro, em silêncio). Este handler existe pronto pra virada de UMA linha lá.
+
+const IG_COMMENT_KIND    = "comment_dm"
+/** Prazo da Meta pra private reply: 7 dias do comentário (em Live, só durante). */
+const IG_PRIVATE_REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+
+/** `changes[].value` do campo `comments`. ⚠️ `text` é lido pra CASAR a palavra-chave e
+ *  descartado em seguida — nunca persistido (I6: PII de terceiro que sequer é cliente). */
+interface IgCommentValue {
+  id?:           string
+  from?:         { id?: string; username?: string }
+  media?:        { id?: string; media_product_type?: string; ad_id?: string }
+  parent_id?:    string
+  verb?:         string
+  text?:         string
+  created_time?: number | string
+}
+
+/** Regra derivada do fluxo (studio_flows.trigger type='ig_comment') pelo editor —
+ *  PROJEÇÃO reescrita a cada save/publish (src/lib/actions/studio/flows.ts). */
+interface IgCommentRule {
+  id:            string
+  flow_id:       string
+  /** Posts alvo congelados (1–3). Vazio/null = qualquer post. */
+  media_ids:     string[] | null
+  keywords:      string[] | null
+  keyword_match: string | null
+  reply_text:    string
+  public_reply:  string[] | null
+}
+
+/** Normaliza p/ comparação PT-BR: minúsculas + sem acento (olá → ola). Mesma régua do
+ *  matcher de gatilho do Studio (ai-v2/flow/triggers.ts) — o cliente vê um campo só. */
+function normComment(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+}
+
+function ruleMatchesKeywords(rule: IgCommentRule, text: string): boolean {
+  const kws = (rule.keywords ?? []).map((k) => normComment((k ?? "").trim())).filter(Boolean)
+  if (!kws.length) return true                       // sem palavra = qualquer comentário
+  const hay = normComment(text)
+  if (rule.keyword_match === "exact") {
+    const tokens = new Set(hay.split(/[^\p{L}\p{N}]+/u).filter(Boolean))
+    return kws.some((k) => tokens.has(k))
+  }
+  return kws.some((k) => hay.includes(k))
+}
+
+/**
+ * Regra vencedora: a que MIRA este post ganha da genérica ("qualquer post").
+ * Empate entre duas que miram o mesmo post → a MAIS ANTIGA (mesma régua do
+ * `findFlowToStart`). O desempate importa: o cliente clona um fluxo pra testar um DM
+ * novo e passa a ter duas regras casando a mesma palavra no mesmo post. Sem ordem
+ * estável, QUAL direct sai depende da ordem física das linhas no Postgres — que muda
+ * depois de um UPDATE/VACUUM. Mesma entrada, resultado diferente em dias diferentes,
+ * sem nada no log que explique.
+ */
+function pickCommentRule(rules: IgCommentRule[], mediaId: string | null, text: string): IgCommentRule | null {
+  const matched = rules.filter((r) => ruleMatchesKeywords(r, text))
+  const targets = (r: IgCommentRule) => (r.media_ids ?? []).filter(Boolean)
+  const winner = matched.find((r) => !!mediaId && targets(r).includes(mediaId))
+             ?? matched.find((r) => targets(r).length === 0)
+             ?? null
+  // Diagnóstico do empate: sem isto, "por que rodou o fluxo errado?" é indepurável.
+  if (winner && matched.length > 1) {
+    log("comment-rule-ambiguous", { chosen: winner.id, candidates: matched.map((r) => r.id), mediaId })
+  }
+  return winner
+}
+
+/** Teto de regras carregadas. Acima do maior plano (`automations: 150`) de propósito —
+ *  o corte silencioso era o mesmo defeito do 1000 do PostgREST: resultado parcial, zero erro. */
+const IG_RULES_CAP = 500
+
+async function loadCommentRules(connectionId: string): Promise<IgCommentRule[]> {
+  const { data, error } = await supabaseAdmin
+    .from("instagram_comment_rules")
+    .select("id, flow_id, media_ids, keywords, keyword_match, reply_text, public_reply")
+    .eq("connection_id", connectionId)
+    .eq("enabled", true)
+    .order("created_at", { ascending: true })     // desempate ESTÁVEL (ver pickCommentRule)
+    .order("id",         { ascending: true })     // created_at idêntico (upsert em lote)
+    .limit(IG_RULES_CAP)
+  if (error) { log("comment-rules-err", { connectionId, err: error.message }); return [] }
+  const rows = (data ?? []) as unknown as IgCommentRule[]
+  if (rows.length === IG_RULES_CAP) log("comment-rules-capped", { connectionId, cap: IG_RULES_CAP })
+  return rows
+}
+
+/** Variação da resposta pública (o IG pode esconder respostas repetidas idênticas). */
+function pickPublicReply(variants: string[] | null): string | null {
+  const list = (variants ?? []).map((v) => (v ?? "").trim()).filter(Boolean)
+  if (!list.length) return null
+  return list[Math.floor(Math.random() * list.length)]
+}
+
+/**
+ * Momento do comentário NA META (o prazo de 7 dias da private reply conta daqui).
+ *
+ * ⚠️ `known: false` quando o payload NÃO traz `created_time` — que é o caso normal do
+ * webhook `comments` do Instagram (ele manda id/from/media/parent_id/text e mais nada).
+ * O fallback `entry.time` é o instante da ENTREGA do webhook, ou seja "agora": usá-lo pra
+ * decidir idade transformava o guard num teste que nunca reprova, e ainda mentia na
+ * direção perigosa (comentário antigo reentregue pela Meta passava, gastava a bala e
+ * voltava recusado). Com `known: false` a decisão é da Meta — e o `failed` resultante
+ * não consome cota.
+ */
+function commentTimeMs(c: IgCommentValue, entryTimeSec: number | null): { ms: number | null; known: boolean } {
+  const raw = c.created_time
+  if (typeof raw === "number" && Number.isFinite(raw)) return { ms: raw > 1e12 ? raw : raw * 1000, known: true }
+  if (typeof raw === "string") { const p = Date.parse(raw); if (!Number.isNaN(p)) return { ms: p, known: true } }
+  if (typeof entryTimeSec === "number" && Number.isFinite(entryTimeSec)) {
+    return { ms: entryTimeSec > 1e12 ? entryTimeSec : entryTimeSec * 1000, known: false }
+  }
+  return { ms: null, known: false }
+}
+
+/** Patch do run — allow-list explícita (nunca objeto vindo de fora). */
+interface RunPatch {
+  status?:          "claimed" | "sent" | "failed" | "skipped" | "replied"
+  error?:           string | null
+  contact_id?:      string | null
+  conversation_id?: string | null
+  from_igsid?:      string | null
+}
+/**
+ * 🔴 SÓ SAI DE `claimed` (forward-only, mesma disciplina de `allowedFrom` em
+ * channels/message-status.ts). As TRÊS chamadas desta função partem de `claimed` — é o
+ * estado em que o claim atômico cria a linha.
+ * Sem a guarda existe uma corrida real: o cron reconcilia um claim órfão pra `failed`
+ * (devolvendo a cota) e um processo lento, que só agora terminou, sobrescreve pra `sent`
+ * — a linha volta a ser cobrável e a cota do cliente é consumida duas vezes pelo mesmo
+ * comentário. Com timeout de 10s contra os 15min do cron isso é quase inalcançável;
+ * "quase" não é uma garantia que sirva pra faturamento.
+ */
+async function updateAutomationRun(runId: string, patch: RunPatch): Promise<void> {
+  const { error } = await supabaseAdmin.from("instagram_automation_runs")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("id", runId).eq("status", "claimed")
+  if (error) log("comment-run-update-err", { runId, err: error.message })
+}
+
+/**
+ * I5 — nome do contato SEM chamar a API de perfil. Quem só comentou não tem perfil
+ * acessível (regra de consentimento da Meta: o `GET /<IGSID>` responde ERRO, não vazio),
+ * então `fetchIgProfile`/`maybeEnrich` estão FORA deste caminho de propósito. O `@` que
+ * vem no próprio webhook É o nome — e some sozinho no primeiro reply, quando o
+ * `maybeEnrich` do handleDm passa a ter permissão e busca nome/foto de verdade.
+ */
+async function seedCommentContact(tenantId: string, contactId: string, username: string | null): Promise<void> {
+  if (!username) return
+  const { error } = await supabaseAdmin.from("chat_contacts")
+    .update({ ig_username: username, updated_at: new Date().toISOString() })
+    .eq("id", contactId).eq("tenant_id", tenantId)
+  if (error) log("comment-contact-err", { contactId, err: error.message })
+  // Nome só quando ainda NÃO há: sobrescrever apagaria o nome real de quem já conversou.
+  const { error: nameErr } = await supabaseAdmin.from("chat_contacts")
+    .update({ push_name: `@${username}` })
+    .eq("id", contactId).eq("tenant_id", tenantId).is("push_name", null)
+  if (nameErr) log("comment-contact-name-err", { contactId, err: nameErr.message })
+}
+
+/**
+ * Persiste o Direct na conversa (aparece no inbox) + fixa o CARIMBO de engajamento.
+ * Espelho literal de `recordCampaignOpener` (campaigns/engine.ts) — o padrão
+ * carimba-e-espera que o run.ts já sabe consumir.
+ *
+ * 🔴 O CARIMBO É A PEÇA QUE FAZ O FLUXO RODAR — não o ledger. Se ele não gravar, a DM
+ *    saiu, a cota queimou e o fluxo NUNCA roda (a pessoa responde e cai como mensagem
+ *    solta no inbox). Por isso o retorno é honesto: `false` faz o chamador marcar o run
+ *    como falho em vez de `sent`, senão o ledger certifica um sucesso que não houve.
+ *
+ * 🔴 CONVERSA EM ATENDIMENTO HUMANO NÃO É SEQUESTRADA. Cliente antigo, conversa aberta
+ *    com uma atendente, comenta num post de promoção: a private reply cai na MESMA thread
+ *    (isso é a Meta, não temos escolha) — mas o carimbo, não. Sem esse corte, o fluxo
+ *    atropelaria o atendimento em curso, ou ficaria pendurado até 7 dias e dispararia
+ *    fora de contexto quando a conversa fosse liberada.
+ */
+async function recordCommentOpener(args: {
+  tenantId: string; convId: string; igAccountId: string; text: string
+  messageId: string | null; flowId: string; runId: string
+}): Promise<boolean> {
+  const now = new Date().toISOString()
+  const { error } = await supabaseAdmin.from("chat_messages").insert({
+    conversation_id: args.convId, tenant_id: args.tenantId,
+    sender_type: "bot", sender_id: null,
+    content_type: "text", content: args.text,
+    status: "sent", whatsapp_msg_id: args.messageId || null, is_private_note: false,
+    metadata: { channel: "instagram", ig_account_id: args.igAccountId, ig_comment_dm: true, automation_run_id: args.runId },
+  })
+  if (error) { log("comment-msg-err", { convId: args.convId, err: error.message }); return false }
+
+  const { data: cRow, error: readErr } = await supabaseAdmin.from("chat_conversations")
+    .select("metadata, assigned_to").eq("id", args.convId).eq("tenant_id", args.tenantId).maybeSingle()
+  if (readErr) { log("comment-conv-read-err", { convId: args.convId, err: readErr.message }); return false }
+  const row  = cRow as { metadata?: Record<string, unknown>; assigned_to?: string | null } | null
+  const meta = row?.metadata ?? {}
+
+  const humanOwned = !!row?.assigned_to
+  const patch: Record<string, unknown> = {
+    last_message_at: now, last_message_preview: args.text.slice(0, 100), last_message_dir: "out", updated_at: now,
+    // ⚠️ `unread_count` e `last_inbound_at` intocados: isto é SAÍDA nossa, não mensagem
+    // do cliente — bolinha de não-lida aqui seria mentira e a janela de 24h não abriu.
+  }
+  if (!humanOwned) {
+    patch.metadata = { ...meta, ig_comment_engage: { flowId: args.flowId, runId: args.runId, at: now } }
+  }
+
+  const { error: upErr } = await supabaseAdmin.from("chat_conversations").update(patch)
+    .eq("id", args.convId).eq("tenant_id", args.tenantId)
+  if (upErr) { log("comment-conv-err", { convId: args.convId, err: upErr.message }); return false }
+
+  if (humanOwned) log("comment-no-stamp", { convId: args.convId, reason: "human-assigned" })
+  return true
+}
+
+/** Webhook `comments` → private reply → resposta pública → contato → conversa → carimbo. */
+async function handleComment(igAccountId: string | null, value: Record<string, unknown>, entryTimeSec: number | null): Promise<void> {
+  const c         = value as IgCommentValue
+  const commentId = typeof c.id === "string" ? c.id : null
+  const fromId    = c.from?.id ?? null
+  const username  = c.from?.username ?? null
+  const mediaId   = typeof c.media?.id === "string" ? c.media.id : null
+
+  if (!igAccountId || igAccountId === "0" || !commentId || !fromId) { log("comment-skip", { reason: "missing-id", igAccountId }); return }
+  // (a) AUTO-COMENTÁRIO: sem isto, o dono responde "obrigado!" no próprio post e a conta
+  //     manda DM pra si mesma — e ainda queima uma automação da cota.
+  if (fromId === igAccountId) { log("comment-skip", { reason: "self-comment", commentId }); return }
+  // (b) Só CRIAÇÃO. Edição/remoção não é gatilho (ausente = criação, formato do IG).
+  if (c.verb && c.verb !== "add") { log("comment-skip", { reason: `verb:${c.verb}`, commentId }); return }
+  // (c) 7 DIAS: fora da janela a Meta recusa. Só corta quando a idade é CONHECIDA —
+  //     `entry.time` é o instante da entrega ("agora") e reprovaria zero comentários.
+  const occurred = commentTimeMs(c, entryTimeSec)
+  if (occurred.known && occurred.ms && Date.now() - occurred.ms > IG_PRIVATE_REPLY_WINDOW_MS) {
+    log("comment-skip", { reason: "too-old", commentId }); return
+  }
+
+  const conn = await connectionFor(igAccountId)
+  if (!conn)       { log("comment-skip", { reason: "no-connection", igAccountId }); return }
+  if (!conn.token) { log("comment-skip", { reason: "no-token", igAccountId }); return }
+
+  const rules = await loadCommentRules(conn.id)
+  // ⚠️ `text` entra SÓ aqui (casar a palavra) e morre neste escopo — nunca vai pro banco
+  //    nem pro log (I6).
+  const rule  = pickCommentRule(rules, mediaId, typeof c.text === "string" ? c.text : "")
+  if (!rule) { log("comment-skip", { reason: "no-rule", commentId, hasRules: rules.length > 0 }); return }
+  if (!rule.reply_text?.trim()) { log("comment-skip", { reason: "empty-dm", ruleId: rule.id }); return }
+
+  // ── LICENÇA + COTA + CLAIM, ATÔMICO (fail-closed) ───────────────────────────
+  // Aqui, e não antes: só consulta (e só notifica em 80%/estouro) quando a captura de
+  // fato ACONTECERIA — comentário que não casa regra nenhuma não pode disparar aviso de
+  // cota. Checar e reservar são UM comando (pg_advisory_xact_lock por tenant): contar no
+  // app e inserir depois é TOCTOU, e num post viral 40 handlers leem "49 de 50" e passam.
+  // Bloquear = parar de CAPTURAR comentário novo; quem já respondeu segue sendo atendido
+  // normalmente (a conversa em andamento não passa por aqui).
+  const claim = await claimIgAutomation({
+    tenantId: conn.tenantId, connectionId: conn.id, kind: IG_COMMENT_KIND, sourceId: commentId,
+    ruleId: rule.id, flowId: rule.flow_id, mediaId, fromUsername: username,
+    occurredAt: occurred.ms ? new Date(occurred.ms).toISOString() : new Date().toISOString(),
+  })
+  const runId = claim.runId
+  if (claim.outcome !== "claimed" || !runId) {
+    // 'duplicate' e 'person' são funcionamento saudável, não incidente.
+    log("comment-skip", { reason: claim.outcome, commentId, tenantId: conn.tenantId, used: claim.used, limit: claim.limit })
+    return
+  }
+
+  // 1) O DIRECT — a bala única. Sai ANTES da resposta pública: se a pública falhar, o
+  //    Direct já está entregue; o inverso desperdiçaria a única chance.
+  const pr = await sendIgPrivateReply(conn.token, igAccountId, commentId, rule.reply_text)
+  if ("error" in pr) {
+    // `failed` NÃO consome cota (o contador filtra por status) — token expirado ou 429 da
+    // Meta não podem zerar o mês do cliente sem ter entregue uma direct sequer.
+    await updateAutomationRun(runId, { status: "failed", error: pr.error.slice(0, 300) })
+    log("comment-dm-err", { commentId, err: pr.error })
+    return
+  }
+
+  // 🔴 DAQUI PRA BAIXO A DM JÁ ESTÁ ENTREGUE e é irrecuperável (a Meta permite UMA private
+  //    reply por comentário, e o `uq_ig_runs_dedup` já reservou este comment_id — não há
+  //    reprocessamento possível). `resolveOrCreateContact` e `createInboundConversation`
+  //    LANÇAM; sem este try/catch a exceção subia pro catch do webhook, o run ficava
+  //    `claimed` pra sempre e o lead sumia: a pessoa recebia o direct, respondia, e caía
+  //    no inbox sem carimbo — o fluxo nunca rodava e o relatório não denunciava nada.
+  try {
+    // 2) Identidade: o IGSID vem no `recipient_id` da resposta da Meta — é o ÚNICO jeito
+    //    de descobrir quem é a pessoa nesta etapa.
+    const contact = await resolveOrCreateContact(
+      conn.tenantId, { instagram: pr.recipientId }, { primaryChannel: "instagram", source: "instagram" },
+    )
+    await seedCommentContact(conn.tenantId, contact.id, username)
+
+    // 3) Conversa (porta única — dedup/reopen + etapa do funil) e o CARIMBO, que é o que
+    //    de fato faz o fluxo rodar quando a pessoa responder.
+    //    instance_id null: conversa de Instagram não tem número (o canal já discrimina).
+    const conv = await createInboundConversation({ tenantId: conn.tenantId, contactId: contact.id, instanceId: null, channel: "instagram" })
+    const stamped = await recordCommentOpener({
+      tenantId: conn.tenantId, convId: conv.id, igAccountId,
+      text: rule.reply_text, messageId: pr.messageId || null, flowId: rule.flow_id, runId,
+    })
+
+    // A DM saiu: a automação FOI executada e é cobrável, mesmo que o carimbo tenha falhado.
+    // O `error` preserva a pista — sem ele o ledger certificaria um sucesso que não houve.
+    await updateAutomationRun(runId, {
+      status: "sent", contact_id: contact.id, conversation_id: conv.id, from_igsid: pr.recipientId,
+      error: stamped ? null : "post_send: carimbo não gravado — o fluxo não vai disparar na resposta",
+    })
+    log("comment-ok", { tenantId: conn.tenantId, convId: conv.id, runId, ruleId: rule.id, stamped })
+  } catch (e) {
+    await updateAutomationRun(runId, { status: "sent", from_igsid: pr.recipientId, error: `post_send: ${(e as Error).message}`.slice(0, 300) })
+    log("comment-post-send-err", { commentId, runId, err: (e as Error).message })
+  }
+
+  // 4) Resposta pública (best-effort) — é o que avisa quem NÃO segue a abrir a aba
+  //    "Solicitações", onde a private reply cai pra ele. Por último de propósito: é a
+  //    etapa menos importante e não pode atrasar nem derrubar o carimbo.
+  const publicText = pickPublicReply(rule.public_reply)
+  if (publicText) {
+    const rr = await replyToIgComment(conn.token, commentId, publicText)
+    if ("error" in rr) log("comment-public-err", { commentId, err: rr.error })
+  }
+}
+
 export async function processInstagramWebhook(body: unknown): Promise<void> {
   const wh = body as IgWebhook
   if (wh?.object !== "instagram") { log("skip", { reason: "object", object: wh?.object ?? null }); return }
@@ -369,11 +714,13 @@ export async function processInstagramWebhook(body: unknown): Promise<void> {
     for (const ch of entry.changes ?? []) {
       // Idem: forma do change, sem o `value` (carrega texto do comentário = PII).
       log("change-shape", { igAccountId, field: ch.field ?? null, valueKeys: Object.keys(ch.value ?? {}) })
+      // ⚠️ SÓ `comments`. `live_comments` é caminho SEPARATO de propósito: o volume
+      // explode durante a transmissão e a janela é só enquanto a live está no ar.
       if (ch.field !== "comments") { log("change", { igAccountId, field: ch.field ?? null }); continue }
       const v = ch.value ?? {}
       const from = v.from as { id?: string; username?: string } | undefined
       log("comment", { igAccountId, commentId: (v.id as string) ?? null, fromIgsid: from?.id ?? null, username: from?.username ?? null, hasText: typeof v.text === "string" })
-      // TODO F2: keyword → private reply (Send API recipient.comment_id) + fluxo no DM.
+      await handleComment(igAccountId, v, entry.time ?? null).catch((e) => log("comment-err", { err: (e as Error).message }))
     }
   }
 }

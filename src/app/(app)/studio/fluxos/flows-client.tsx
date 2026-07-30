@@ -22,7 +22,7 @@ const CHANNEL_LOGO: Record<string, string> = {
 }
 const TRIGGER_LABEL: Record<string, string> = {
   keyword: "Palavra-chave", any_message: "Qualquer mensagem", new_contact: "Contato novo", reopened: "Retornou",
-  from_ad: "Veio de anúncio",
+  from_ad: "Veio de anúncio", ig_comment: "Comentário no Instagram", inactivity: "Inatividade",
 }
 
 type FlowState = "published" | "paused" | "draft"
