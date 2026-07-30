@@ -66,7 +66,26 @@ export async function resubscribeInstagramWebhooks(): Promise<{ ok: true; commen
   if (!sender) return { error: "Nenhuma conta do Instagram ativa." }
   const r = await subscribeIgWebhooks(sender.token)
   if ("error" in r) return { error: r.error }
+  await recordIgSubscription(sender.igAccountId, r)
   return { ok: true, comments: r.comments }
+}
+
+/**
+ * Carimba na conexão QUAIS campos de webhook ficaram valendo.
+ *
+ * 🔴 Existe porque a ausência dele custou caro: no dia da ativação dos comentários, o
+ * resultado da assinatura só existia no log do container — não dava pra responder "essa
+ * conta recebe comentário?" nem pelo banco nem pela tela, e log de container tem retenção
+ * curta. Com o carimbo, "criei o fluxo e não acontece nada" vira uma consulta.
+ * Best-effort: falhar aqui não invalida a assinatura, que já aconteceu.
+ */
+export async function recordIgSubscription(
+  externalAccountId: string, sub: { fields: string; comments: boolean },
+): Promise<void> {
+  const { error } = await supabaseAdmin.from("channel_connections")
+    .update({ meta: { webhook_fields: sub.fields, webhook_comments: sub.comments, subscribed_at: new Date().toISOString() } })
+    .eq("channel", "instagram").eq("external_account_id", externalAccountId)
+  if (error) console.error("[ig-subscribe] carimbo na conexão:", error.code, error.message)
 }
 
 /** Desconecta (revoga) a conta IG do tenant — limpa o token. */
