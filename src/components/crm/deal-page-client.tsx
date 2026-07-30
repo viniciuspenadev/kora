@@ -375,7 +375,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full border self-center transition-colors hover:brightness-95 ${st.cls}`}>
                   {isOpen ? "Em negociação" : st.label} <ChevronDown className="size-3" />
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuContent align="end">
                   {isOpen ? (
                     <>
                       <DropdownMenuItem disabled={pending} onClick={() => { setReasonSel(deal.lostReasons[0]?.label ?? ""); setCanceling(false); setLosing(true) }}>
@@ -407,7 +407,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                     className="size-[34px] rounded-lg border border-slate-200 bg-white text-slate-500 grid place-items-center hover:border-slate-300 transition-colors data-[popup-open]:bg-slate-50">
                     <MoreHorizontal className="size-4" />
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuContent align="end">
                     {/* Registrar (referência: ações saíram do corpo pro menu, abrem modal) */}
                     <DropdownMenuItem disabled={pending} onClick={() => { setNoteDraft(""); setActiveModal("note") }}>
                       <StickyNote className="size-3.5 text-slate-400" /> Registrar nota

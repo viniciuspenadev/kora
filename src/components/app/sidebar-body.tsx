@@ -119,7 +119,9 @@ const NAV: NavItem[] = [
     icon:  <Bot className={topIcon} strokeWidth={1.75} />,
     adminOnly: true,   // toda a automação pesada é só-admin (páginas gateiam owner/admin). Respostas rápidas sai daqui na P6.
     children: [
-      { href: "/studio",                   label: "Kora Studio",           icon: <Blocks       className={subIcon} strokeWidth={1.75} />, module: "ai_studio"       },
+      // Aponta pra LISTA, não pro hub: /studio virou redirect (o hub morreu em 2026-07-30).
+      // Link direto evita o salto extra e deixa o item do menu acender na página certa.
+      { href: "/studio/fluxos",            label: "Kora Studio",           icon: <Blocks       className={subIcon} strokeWidth={1.75} />, module: "ai_studio"       },
       { href: "/automacao/mensagens",      label: "Mensagens automáticas", icon: <Bell         className={subIcon} strokeWidth={1.75} />, module: "welcome_message"  },
       { href: "/automacao/palavras-chave", label: "Palavras-chave",        icon: <Wand2        className={subIcon} strokeWidth={1.75} />, module: "keyword_triggers" },
       { href: "/configuracoes/respostas",  label: "Respostas rápidas",     icon: <MessageSquare className={subIcon} strokeWidth={1.75} />, module: "quick_replies"   },

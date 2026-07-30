@@ -124,7 +124,7 @@ export function EmpresasClient({ companies, canManage }: { companies: CompanyRos
                   <Layers className="size-3.5 shrink-0" />
                   <span className="hidden max-w-32 truncate sm:block">{segment ?? "Segmento"}</span>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuContent align="end">
                   <DropdownMenuItem onClick={() => setSegment(null)}>Todos os segmentos</DropdownMenuItem>
                   <DropdownMenuSeparator />
                   {segments.map((s) => (
@@ -230,7 +230,7 @@ function CompanyRow({ c, canManage }: { c: CompanyRosterItem; canManage: boolean
             <DropdownMenuTrigger title="Ações" className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700">
               {busy ? <Loader2 className="size-4 animate-spin" /> : <MoreHorizontal className="size-4" />}
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => router.push(`/empresas/${c.id}`)}><ExternalLink className="size-3.5 text-slate-400" /> Abrir ficha</DropdownMenuItem>
               <DropdownMenuItem onClick={openNewDeal}><FileText className="size-3.5 text-primary-500" /> Novo negócio</DropdownMenuItem>
               {canManage && <DropdownMenuSeparator />}
@@ -304,7 +304,7 @@ function CompanyRow({ c, canManage }: { c: CompanyRosterItem; canManage: boolean
             className="size-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 grid place-items-center transition-colors">
             {busy ? <Loader2 className="size-4 animate-spin" /> : <MoreHorizontal className="size-4" />}
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
+          <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => router.push(`/empresas/${c.id}`)}>
               <ExternalLink className="size-3.5 text-slate-400" /> Abrir ficha
             </DropdownMenuItem>

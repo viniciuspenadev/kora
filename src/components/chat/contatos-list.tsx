@@ -536,7 +536,7 @@ function ContactRow({
           >
             <MoreHorizontal className="size-4" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => router.push(`/inbox?contact=${contact.id}`)}>
               <MessageCircle className="size-3.5 text-primary-500" /> Abrir conversa
             </DropdownMenuItem>

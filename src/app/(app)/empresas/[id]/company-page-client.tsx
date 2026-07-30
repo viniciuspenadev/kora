@@ -141,7 +141,7 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
               >
                 <MoreHorizontal className="size-[18px]" />
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-52 sm:hidden">
+              <DropdownMenuContent align="end" className="sm:hidden">
                 <DropdownMenuItem disabled={busy} onClick={openNewDeal}>
                   <Plus className="size-3.5" /> Novo negócio
                 </DropdownMenuItem>
@@ -177,7 +177,7 @@ export function CompanyPageClient({ cockpit, canManage }: { cockpit: CompanyCock
                 <DropdownMenuTrigger className="inline-flex w-full items-center justify-center gap-1 h-9 px-3 text-xs font-semibold rounded-lg border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 transition-colors sm:w-auto">
                   Mais ações <ChevronDown className="size-3.5" />
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuContent align="end">
                   {canManage && <DropdownMenuItem onClick={() => setEditOpen(true)}><Pencil className="size-3.5" /> Editar empresa</DropdownMenuItem>}
                   {canManage && <DropdownMenuSeparator />}
                   {canManage && (

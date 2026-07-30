@@ -31,12 +31,20 @@ interface Props {
 export function MessageContextMenu({
   x, y, message, conversationId, canTriggerFlow = true, onReply, onReact, onSchedule, onClose,
 }: Props) {
-  const [view, setView]       = useState<"root" | "flows">("root")
+  // 🔴 SUBMENU, não troca de tela. Antes o clique em "Disparar fluxo" SUBSTITUÍA o menu
+  //    inteiro pela lista (com um "‹ voltar"): a pessoa perdia de vista Responder /
+  //    Copiar / Agendar e tinha que decorar onde estava. Menu de contexto do sistema
+  //    operacional nunca faz isso — ele abre um painel AO LADO e mantém a raiz. Agora é
+  //    assim: `subOpen` acende o painel vizinho; a raiz continua na tela e clicável.
+  const [subOpen, setSubOpen] = useState(false)
   const [flows, setFlows]     = useState<{ id: string; name: string }[] | null>(null)
   const [confirm, setConfirm] = useState<{ id: string; name: string } | null>(null)
   const [firing, startFire]   = useTransition()
   const menuRef = useRef<HTMLDivElement>(null)
+  const trigRef = useRef<HTMLButtonElement>(null)
   const [pos, setPos] = useState({ left: x, top: y })
+  /** Lado e topo do submenu, calculados na abertura (vira pra esquerda se não couber). */
+  const [sub, setSub] = useState<{ side: "right" | "left"; top: number }>({ side: "right", top: 0 })
 
   // Fecha no ESC.
   useEffect(() => {
@@ -54,10 +62,22 @@ export function MessageContextMenu({
     if (left + r.width  > window.innerWidth  - 8) left = Math.max(8, window.innerWidth  - r.width  - 8)
     if (top  + r.height > window.innerHeight - 8) top  = Math.max(8, window.innerHeight - r.height - 8)
     setPos({ left, top })
-  }, [x, y, view])
+    // ⚠️ Sem `subOpen` nas deps de propósito: a raiz não muda de tamanho quando o
+    // submenu abre (ele é absoluto, irmão dela). Reclampar ali só faria o menu pular
+    // debaixo do cursor. Antes havia `view` aqui porque a troca de tela mudava a altura.
+  }, [x, y])
 
+  const SUB_W = 224   // largura do submenu (w-56) — usada pra decidir o lado
   function openFlows() {
-    setView("flows")
+    // Lado ANTES de abrir: com o menu colado na direita da tela, um submenu à direita
+    // nasceria fora da janela — e o cliente veria meia lista cortada.
+    const r = menuRef.current?.getBoundingClientRect()
+    const t = trigRef.current?.getBoundingClientRect()
+    if (r) {
+      const fitsRight = r.right + 4 + SUB_W <= window.innerWidth - 8
+      setSub({ side: fitsRight ? "right" : "left", top: t ? t.top - r.top : 0 })
+    }
+    setSubOpen(true)
     if (flows === null) listActiveFlows().then(setFlows).catch(() => setFlows([]))
   }
 
@@ -121,8 +141,8 @@ export function MessageContextMenu({
         style={{ left: pos.left, top: pos.top }}
         className="fixed z-50 w-56 rounded-xl border border-slate-200 bg-white shadow-card py-1.5"
       >
-        {view === "root" ? (
-          <>
+        {/* A RAIZ FICA SEMPRE MONTADA — é o ponto da mudança. */}
+        <>
             {onReact && message && (
               <div className="flex items-center justify-between px-2 pb-1.5 mb-1 border-b border-slate-100">
                 {QUICK_REACTIONS.map((e) => (
@@ -133,28 +153,40 @@ export function MessageContextMenu({
                 ))}
               </div>
             )}
+            {/* Apontar um item de cima FECHA o submenu — é o que faz o conjunto se
+                comportar como um menu só, e não como dois painéis independentes. */}
             {onReply && message && (
-              <MenuItem icon={Reply} label="Responder" onClick={() => { onReply(message); onClose() }} />
+              <MenuItem icon={Reply} label="Responder" onMouseEnter={() => setSubOpen(false)}
+                onClick={() => { onReply(message); onClose() }} />
             )}
             {message?.content && (
-              <MenuItem icon={Copy} label="Copiar texto" onClick={copyText} />
+              <MenuItem icon={Copy} label="Copiar texto" onMouseEnter={() => setSubOpen(false)} onClick={copyText} />
             )}
             {onSchedule && (
-              <MenuItem icon={CalendarPlus} label="Agendar" onClick={() => { onSchedule(); onClose() }} />
+              <MenuItem icon={CalendarPlus} label="Agendar" onMouseEnter={() => setSubOpen(false)}
+                onClick={() => { onSchedule(); onClose() }} />
             )}
             {canTriggerFlow && (
               <>
                 {(message || onSchedule) && <div className="my-1 border-t border-slate-100" />}
-                <MenuItem icon={Megaphone} label="Disparar fluxo" chevron onClick={openFlows} />
+                {/* `onMouseEnter` além do clique: em menu de contexto, apontar já abre —
+                    esperar o clique num item que tem seta é atrito à toa. */}
+                <MenuItem ref={trigRef} icon={Megaphone} label="Disparar fluxo" chevron
+                  active={subOpen} onClick={openFlows} onMouseEnter={openFlows} />
               </>
             )}
-          </>
-        ) : (
-          <>
-            <button type="button" onClick={() => setView("root")}
-              className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-600">
-              ‹ Disparar fluxo
-            </button>
+        </>
+
+        {/* SUBMENU — irmão da raiz, posicionado ao lado dela. */}
+        {subOpen && (
+          <div
+            style={{ top: sub.top, ...(sub.side === "right" ? { left: "100%" } : { right: "100%" }) }}
+            className={`absolute z-10 w-56 rounded-xl border border-slate-200 bg-white shadow-card py-1.5 ${
+              sub.side === "right" ? "ml-1" : "mr-1"}`}
+          >
+            <p className="px-3 pb-1.5 mb-1 border-b border-slate-100 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Fluxos ativos
+            </p>
             {flows === null ? (
               <div className="flex items-center gap-2 px-3 py-2 text-xs text-slate-400">
                 <Loader2 className="size-3.5 animate-spin" /> Carregando…
@@ -172,25 +204,30 @@ export function MessageContextMenu({
                 </button>
               ))
             )}
-          </>
+          </div>
         )}
       </div>
     </>
   )
 }
 
-function MenuItem({ icon: Icon, label, onClick, chevron }: {
+function MenuItem({ icon: Icon, label, onClick, chevron, active, onMouseEnter, ref }: {
   icon: React.ComponentType<{ className?: string }>
   label: string
   onClick: () => void
   chevron?: boolean
+  /** Item cujo submenu está aberto — fica destacado, como em menu de sistema. */
+  active?: boolean
+  onMouseEnter?: () => void
+  ref?: React.Ref<HTMLButtonElement>
 }) {
   return (
-    <button type="button" onClick={onClick}
-      className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left">
+    <button type="button" ref={ref} onClick={onClick} onMouseEnter={onMouseEnter}
+      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left transition-colors ${
+        active ? "bg-slate-100 text-slate-900" : "text-slate-700 hover:bg-slate-50"}`}>
       <Icon className="size-4 text-slate-400 shrink-0" />
       <span className="flex-1">{label}</span>
-      {chevron && <span className="text-slate-300">›</span>}
+      {chevron && <span className={active ? "text-slate-500" : "text-slate-300"}>›</span>}
     </button>
   )
 }

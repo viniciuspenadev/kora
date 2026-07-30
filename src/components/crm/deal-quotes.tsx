@@ -147,7 +147,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0 }: {
                   <DropdownMenuTrigger title="Ações" className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 shrink-0 opacity-0 group-hover:opacity-100 data-[popup-open]:opacity-100 data-[popup-open]:bg-slate-100 transition-opacity">
                     <MoreVertical className="size-3.5" />
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuContent align="end">
                     {isDraft ? (
                       /* Rascunho: retomar (edita) ou descartar. Sem Ver/Baixar/Enviar
                          (não tem PDF nem número — não é documento ainda). */

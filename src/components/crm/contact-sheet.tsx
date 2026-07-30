@@ -185,7 +185,7 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
                         className="size-5 rounded-full grid place-items-center border border-dashed border-slate-300 text-slate-400 hover:border-primary hover:text-primary transition-colors">
                         <Plus className="size-3" />
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="center" className="w-52">
+                      <DropdownMenuContent align="center">
                         <div className="px-1.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1"><TagIcon className="size-3" /> Tags</div>
                         {data.allTags.length === 0 && <p className="px-2 py-1.5 text-[11px] text-slate-400">Nenhuma tag criada.</p>}
                         {data.allTags.map((t) => (
@@ -211,7 +211,7 @@ export function ContactSheet({ contactId, onClose }: { contactId: string | null;
                         className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border border-dashed border-slate-300 text-slate-400 hover:border-primary hover:text-primary transition-colors">
                         <Plus className="size-2.5" /> Adicionar listas
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="center" className="w-52">
+                      <DropdownMenuContent align="center">
                         <div className="px-1.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1"><ListChecks className="size-3" /> Listas estáticas</div>
                         {data.lists.length === 0 && <p className="px-2 py-1.5 text-[11px] text-slate-400">Crie listas em Configurações → Comercial.</p>}
                         {data.lists.map((l) => (

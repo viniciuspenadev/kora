@@ -163,7 +163,7 @@ export function PropostasClient({ initial, summary, agents }: {
           <DropdownMenuTrigger title="Ações" className="size-8 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors">
             <MoreVertical className="size-4" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuContent align="end">
             {p.code !== "Rascunho" && (
               <>
                 <DropdownMenuItem onClick={() => setViewer(p)}><Eye className="size-3.5" /> Ver proposta</DropdownMenuItem>

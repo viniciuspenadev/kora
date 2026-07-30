@@ -1,13 +1,17 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
-import Link from "next/link"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { checkLimit, monthlyQuotaResetsAt } from "@/lib/limits"
-import { Network, ArrowLeft } from "lucide-react"
+import { Network } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { FlowsClient } from "./flows-client"
+import { FlowsActions } from "./flows-actions"
 import type { StudioFlowSummary } from "@/types/studio"
+
+/** Início da janela de 30 dias (ISO). Fora do componente: `Date.now()` chamado direto no
+ *  corpo do render cai na regra `react-hooks/purity`. */
+const windowStart30d = () => new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
 export default async function FluxosPage() {
   const session = await auth()
@@ -17,7 +21,12 @@ export default async function FluxosPage() {
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "ai_studio"))) redirect("/inbox")
 
-  const [{ data }, { data: steps }] = await Promise.all([
+  // Janela de 30 dias: o card do topo diz "acionamentos (30 dias)", então a coluna da
+  // tabela conta a MESMA janela. Número de topo e número de linha que discordam é o tipo
+  // de coisa que faz o dono desconfiar da tela inteira.
+  const since = windowStart30d()
+
+  const [{ data }, { data: steps }, { data: errRuns }] = await Promise.all([
     supabaseAdmin
       .from("studio_flows")
       .select("id, name, status, active, version, purpose, trigger, updated_at")
@@ -31,6 +40,19 @@ export default async function FluxosPage() {
       .select("flow_id, run_id")
       .eq("tenant_id", tenantId)
       .is("entered_from", null)
+      .gte("at", since)
+      .limit(50000),
+    // ⚠️ COBERTURA PARCIAL, de propósito e documentada: `studio_runs` é o ledger de
+    // **IA** — só ganha linha quando um nó de IA roda. Fluxo de automação pura (menu,
+    // mensagem, comentário do Instagram) NUNCA escreve aqui, então uma falha nele não
+    // aparece neste número. Enquanto o runtime não persistir erro por passo, este card
+    // responde "erro na IA", não "erro no fluxo" — e o rótulo na tela diz isso.
+    supabaseAdmin
+      .from("studio_runs")
+      .select("flow_id")
+      .eq("tenant_id", tenantId)
+      .not("error", "is", null)
+      .gte("created_at", since)
       .limit(50000),
   ])
 
@@ -44,6 +66,10 @@ export default async function FluxosPage() {
     ? await checkLimit(tenantId, "instagram_automations_per_month").catch(() => null)
     : null
 
+  // Add-on `ai`: sem ele Persona/Conhecimento não existem pro tenant, e o menu da IA some
+  // (a página de destino já recusa — aqui é o espelho na UI, não a trava).
+  const hasAi = await hasModule(tenantId, "ai")
+
   const activations: Record<string, number> = {}
   const seen = new Map<string, Set<string>>()
   for (const s of (steps ?? []) as { flow_id: string; run_id: string }[]) {
@@ -53,23 +79,24 @@ export default async function FluxosPage() {
   }
   for (const [f, set] of seen) activations[f] = set.size
 
+  // Fluxos DISTINTOS com pelo menos um erro na janela (não o total de erros): o card
+  // conta fluxo, e é fluxo que o dono vai abrir pra consertar.
+  const errored = new Set((errRuns ?? []).map((r) => (r as { flow_id: string | null }).flow_id).filter(Boolean) as string[])
+
+  // Título assume "Kora Studio": esta página É o Studio agora (o hub virou redirect), e o
+  // item do menu tem esse nome — cabeçalho com outro nome faz o dono achar que clicou
+  // errado. O "← Studio" saiu junto: apontava pra uma página que só redireciona pra cá.
   return (
     <PageShell
-      title="Fluxos"
+      title="Kora Studio"
       description="Automações que conduzem a conversa. A IA é um passo opcional dentro delas."
       icon={Network}
-      actions={
-        <Link
-          href="/studio"
-          className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-        >
-          <ArrowLeft className="size-3.5" /> Studio
-        </Link>
-      }
+      actions={<FlowsActions hasAi={hasAi} />}
     >
       <FlowsClient
         flows={(data ?? []) as StudioFlowSummary[]}
         activations={activations}
+        erroredFlowIds={[...errored]}
         igQuota={igQuota && !igQuota.ok
           ? { used: igQuota.used, max: igQuota.max ?? 0, resetsAt: monthlyQuotaResetsAt() }
           : null}

@@ -381,7 +381,7 @@ function DealCard({ d, allTags, onToggleTag, onOpen, onOpenContact, dragRef, lis
               <Tag className="size-3.5" />
               {d.tags.length > 0 && <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-primary ring-2 ring-white" />}
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="left" className="w-56">
+            <DropdownMenuContent align="end" side="left">
               <div className="px-1.5 py-1 text-xs font-medium text-slate-400">Tags do contato</div>
               {allTags.length === 0 && <p className="px-2 py-1.5 text-[11px] text-slate-400">Nenhuma tag criada ainda.</p>}
               {allTags.map((t) => (
@@ -405,7 +405,7 @@ function DealCard({ d, allTags, onToggleTag, onOpen, onOpenContact, dragRef, lis
               className="size-7 rounded-full grid place-items-center bg-white border-[1.5px] border-slate-200 text-slate-400 hover:border-primary hover:text-primary transition-colors data-[popup-open]:border-primary data-[popup-open]:text-primary">
               <Plus className="size-3.5" />
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="left" className="w-48">
+            <DropdownMenuContent align="end" side="left">
               <DropdownMenuItem onClick={() => onOpen(d.id)}><ExternalLink className="size-3.5 text-slate-400" /> Abrir negócio</DropdownMenuItem>
               <DropdownMenuItem onClick={() => onOpen(d.id)}><ListPlus className="size-3.5 text-slate-400" /> Nova atividade</DropdownMenuItem>
               {d.conversation_id && (

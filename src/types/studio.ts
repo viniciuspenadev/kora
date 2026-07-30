@@ -46,7 +46,9 @@ export interface StudioFlowSummary {
   active:     boolean
   version:    number
   /** Organização: atendimento (responde inbound) | marketing (campanha dispara). */
-  purpose:    "atendimento" | "marketing"
+  /** O que o fluxo FAZ pro negócio. ⚠️ Não confundir com o GATILHO (como ele começa),
+   *  que vive em `trigger` — são eixos diferentes e a lista mostra os dois. */
+  purpose:    "atendimento" | "marketing" | "automacao"
   trigger:    _FlowTrigger | null
   updated_at: string
 }

@@ -1,28 +1,32 @@
- "use client"
+"use client"
 
 import { useState, useTransition, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
-  Plus, Loader2, Network, Pencil, Trash2, Copy, Sparkles, X, Pause, Play, Inbox, Megaphone,
-  Search, Headset, ChevronDown, Zap, Radio,
+  Loader2, Network, Pencil, Trash2, Copy, Pause, Play, Globe,
+  Search, Headset, ChevronDown, Zap, AlertTriangle,
 } from "lucide-react"
 import { EmptyState } from "@/components/ui/empty-state"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu"
 import { toast } from "sonner"
-import { createFlow, createFlowWithAI, deleteFlow, cloneFlow, setFlowActive } from "@/lib/actions/studio/flows"
+import { createFlow, deleteFlow, cloneFlow, setFlowActive } from "@/lib/actions/studio/flows"
 import type { StudioFlowSummary, FlowTrigger } from "@/types/studio"
+import { PURPOSE_META, PURPOSE_ORDER, type Purpose } from "./purpose"
 
-type Purpose = "atendimento" | "marketing"
+// Categoria vive em ./purpose (header e lista precisam dos MESMOS rótulos).
 
 const CHANNEL_LOGO: Record<string, string> = {
   whatsapp: "whatsapp_inbound", site: "webform", instagram: "instagram", messenger: "messenger",
 }
+const CHANNEL_LABEL: Record<string, string> = {
+  whatsapp: "WhatsApp", site: "Site", instagram: "Instagram", messenger: "Messenger",
+}
 const TRIGGER_LABEL: Record<string, string> = {
-  keyword: "Palavra-chave", any_message: "Qualquer mensagem", new_contact: "Contato novo", reopened: "Retornou",
-  from_ad: "Veio de anúncio", ig_comment: "Comentário no Instagram", inactivity: "Inatividade",
+  keyword: "Palavra-chave", any_message: "Qualquer mensagem", new_contact: "Contato novo",
+  reopened: "Retornou", from_ad: "Veio de anúncio", ig_comment: "Comentário", inactivity: "Após inatividade",
 }
 
 type FlowState = "published" | "paused" | "draft"
@@ -32,17 +36,16 @@ function flowState(f: StudioFlowSummary): FlowState {
 }
 const purposeOf = (f: StudioFlowSummary): Purpose => f.purpose ?? "atendimento"
 
-const PURPOSE_META: Record<Purpose, { label: string; icon: typeof Headset; tint: string; ring: string; badge: string }> = {
-  atendimento: { label: "Atendimento", icon: Headset,   tint: "text-sky-600 bg-sky-50",       ring: "ring-sky-200",    badge: "bg-sky-50 text-sky-700 ring-sky-200" },
-  marketing:   { label: "Marketing",   icon: Megaphone,  tint: "text-violet-600 bg-violet-50", ring: "ring-violet-200", badge: "bg-violet-50 text-violet-700 ring-violet-200" },
-}
 
-const STATUS_FILTERS: { key: "all" | FlowState; label: string }[] = [
-  { key: "all", label: "Todos os status" },
-  { key: "published", label: "Publicados" },
-  { key: "paused", label: "Pausados" },
-  { key: "draft", label: "Rascunhos" },
-]
+/**
+ * Canais do gatilho. `ig_comment` é do Instagram por DEFINIÇÃO (não depende de
+ * `trigger.channels`, que o editor nem preenche nesse caso) — sem esta linha o fluxo de
+ * comentário cairia em "Todos os canais" e sumiria do filtro de Instagram.
+ */
+function flowChannels(t: FlowTrigger | null): string[] {
+  if (t?.type === "ig_comment") return ["instagram"]
+  return t?.channels ?? []
+}
 
 function relTime(iso: string): string {
   const diff = new Date().getTime() - new Date(iso).getTime()
@@ -50,163 +53,280 @@ function relTime(iso: string): string {
   if (m < 1) return "agora"
   if (m < 60) return `há ${m} min`
   const h = Math.floor(m / 60)
-  if (h < 24) return `há ${h}h`
+  if (h < 24) return `há ${h} h`
   const d = Math.floor(h / 24)
-  if (d < 30) return `há ${d}d`
+  if (d < 30) return `há ${d} d`
   return new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })
-}
-
-function TriggerMeta({ trigger }: { trigger: FlowTrigger | null }) {
-  const active   = trigger?.mode === "active"
-  const channels = trigger?.channels ?? []
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap">
-      <span className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-semibold ${
-        active ? "bg-amber-50 text-amber-700 ring-1 ring-amber-200" : "bg-slate-50 text-slate-600 ring-1 ring-slate-200"}`}>
-        {active ? <Radio className="size-3" /> : <Inbox className="size-3" />}
-        {active ? "Disparo ativo" : "Receptivo"}
-      </span>
-      {channels.length > 0
-        ? channels.map((c) => <SourceLogo key={c} source={CHANNEL_LOGO[c] ?? "manual"} size={14} />)
-        : <span className="text-[10px] text-slate-400">Todos os canais</span>}
-      {!active && trigger?.type && (
-        <span className="text-[10px] text-slate-400">· {TRIGGER_LABEL[trigger.type] ?? trigger.type}</span>
-      )}
-    </div>
-  )
-}
-
-function FlowRow({ f, count, maxAct, busy, igQuota, onToggle, onClone, onDelete }: {
-  f: StudioFlowSummary; count: number; maxAct: number; busy: boolean; igQuota?: IgQuotaState | null
-  onToggle: () => void; onClone: () => void; onDelete: () => void
-}) {
-  const st = flowState(f)
-  // Selo só onde a cota MORDE: fluxo de comentário, publicado e ativo. Num rascunho ou
-  // pausado o dono já sabe por que não roda — o aviso ali seria ruído.
-  const quotaHalted = !!igQuota && f.trigger?.type === "ig_comment" && st === "published"
-  const pm = PURPOSE_META[purposeOf(f)]
-  const PIcon = pm.icon
-  const iconBtn = "inline-flex items-center justify-center size-8 rounded-lg text-slate-400 transition-colors disabled:opacity-50 hover:bg-slate-100"
-  const pct = maxAct > 0 && count > 0 ? Math.max(6, Math.round((count / maxAct) * 100)) : 0
-  return (
-    <div className="group flex items-center gap-4 px-4 py-3.5 hover:bg-slate-50/70 transition-colors">
-      <div className={`size-10 rounded-xl flex items-center justify-center shrink-0 ${pm.tint}`}>
-        <PIcon className="size-5" />
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Link href={`/studio/fluxos/${f.id}`} className="text-sm font-bold text-slate-900 hover:text-primary-600 truncate leading-tight">
-            {f.name}
-          </Link>
-          <span className={`inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-bold ring-1 ${pm.badge}`}>
-            <PIcon className="size-2.5" /> {pm.label}
-          </span>
-          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
-            st === "published" ? "text-emerald-600" : st === "paused" ? "text-slate-400" : "text-amber-600"}`}>
-            <span className={`size-1.5 rounded-full ${st === "published" ? "bg-emerald-500" : st === "paused" ? "bg-slate-300" : "bg-amber-400"}`} />
-            {st === "published" ? "Publicado" : st === "paused" ? "Pausado" : "Rascunho"}
-          </span>
-          {quotaHalted && (
-            <Link href="/configuracoes/uso"
-              title={`Você usou ${igQuota!.used} de ${igQuota!.max} automações do Instagram neste mês. Comentários novos voltam a virar direct em ${new Date(igQuota!.resetsAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "UTC" })}.`}
-              className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-bold ring-1 bg-amber-50 text-amber-700 ring-amber-200 hover:bg-amber-100 transition-colors">
-              <Zap className="size-2.5" /> Cota esgotada
-            </Link>
-          )}
-        </div>
-        <div className="mt-1.5"><TriggerMeta trigger={f.trigger} /></div>
-        {quotaHalted && (
-          // Frase do TENANT, não do fluxo: "todos os fluxos premium", senão o dono mexe
-          // neste fluxo, não resolve, e repete nos outros nove.
-          <p className="mt-1 text-[10px] text-amber-700">
-            Este fluxo está publicado, mas parou de capturar comentários: a cota de automações do Instagram do mês acabou (todos os fluxos premium estão pausados).
-          </p>
-        )}
-      </div>
-
-      {/* Acionamentos — o número que o owner pediu, com barra relativa entre os fluxos */}
-      <div className="hidden sm:block w-36 shrink-0">
-        <div className="flex items-baseline gap-1">
-          <span className="text-lg font-bold tabular-nums text-slate-900 leading-none">{count.toLocaleString("pt-BR")}</span>
-          <span className="text-[10px] text-slate-400">acionamentos</span>
-        </div>
-        <div className="h-1.5 bg-slate-100 rounded-full mt-1.5 overflow-hidden">
-          <div className="h-full bg-primary/60 rounded-full transition-all" style={{ width: `${pct}%` }} />
-        </div>
-      </div>
-
-      <span className="hidden lg:block text-[11px] text-slate-400 tabular-nums w-14 shrink-0 text-right">{relTime(f.updated_at)}</span>
-
-      <div className="flex items-center gap-0.5 shrink-0">
-        <Link href={`/studio/fluxos/${f.id}`}
-          className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold text-slate-700 border border-slate-200 hover:bg-white hover:border-slate-300 rounded-lg transition-colors">
-          <Pencil className="size-3.5" /> Editar
-        </Link>
-        {f.status === "published" && (
-          <button type="button" onClick={onToggle} disabled={busy}
-            className={`${iconBtn} ${f.active ? "hover:text-amber-600" : "hover:text-emerald-600"}`}
-            title={f.active ? "Pausar (para de rodar, sem arquivar)" : "Ativar"} aria-label={f.active ? "Pausar" : "Ativar"}>
-            {busy ? <Loader2 className="size-4 animate-spin" /> : f.active ? <Pause className="size-4" /> : <Play className="size-4" />}
-          </button>
-        )}
-        <button type="button" onClick={onClone} disabled={busy} className={`${iconBtn} hover:text-primary-600`} title="Clonar" aria-label="Clonar"><Copy className="size-4" /></button>
-        <button type="button" onClick={onDelete} disabled={busy} className={`${iconBtn} hover:text-danger`} title="Excluir" aria-label="Excluir"><Trash2 className="size-4" /></button>
-      </div>
-    </div>
-  )
 }
 
 /** Cota de automação do Instagram ESTOURADA (null = tem folga, ou o tenant nem licencia). */
 export interface IgQuotaState { used: number; max: number; resetsAt: string }
 
-export function FlowsClient({ flows, activations, igQuota }: {
-  flows: StudioFlowSummary[]; activations: Record<string, number>; igQuota?: IgQuotaState | null
+// ── Peças da tela ──────────────────────────────────────────────────
+
+function KpiCard({ icon: Icon, tint, value, label, hint }: {
+  icon: typeof Play; tint: string; value: number; label: string; hint?: string
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4" title={hint}>
+      <div className={`size-10 rounded-xl flex items-center justify-center shrink-0 ${tint}`}>
+        <Icon className="size-5" />
+      </div>
+      <div className="min-w-0">
+        <div className="text-2xl font-bold text-slate-900 tabular-nums leading-tight">{value.toLocaleString("pt-BR")}</div>
+        <div className="text-[11px] text-slate-400 truncate">{label}</div>
+      </div>
+    </div>
+  )
+}
+
+/** Filtro em dropdown. Rótulo mostra a seleção — o dono vê o filtro ativo sem abrir. */
+function FilterSelect({ icon: Icon, label, value, options, onChange }: {
+  icon: typeof Network; label: string; value: string
+  options: { key: string; label: string }[]; onChange: (v: string) => void
+}) {
+  const current = options.find((o) => o.key === value)
+  const on = value !== "all"
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        className={`inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium rounded-lg border transition-colors ${
+          on ? "border-primary-200 bg-primary/5 text-primary-700" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}>
+        <Icon className="size-3.5" />
+        {on ? current?.label : label}
+        <ChevronDown className="size-3.5 opacity-60" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {options.map((o) => (
+          <DropdownMenuItem key={o.key} onClick={() => onChange(o.key)}>
+            <span className={o.key === value ? "font-semibold text-slate-900" : ""}>{o.label}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function StatusPill({ st }: { st: FlowState }) {
+  const meta = st === "published"
+    ? { cls: "bg-emerald-50 text-emerald-700 ring-emerald-200", dot: "bg-emerald-500", label: "Ativo" }
+    : st === "paused"
+    ? { cls: "bg-amber-50 text-amber-700 ring-amber-200",       dot: "bg-amber-500",   label: "Pausado" }
+    : { cls: "bg-slate-50 text-slate-600 ring-slate-200",       dot: "bg-slate-400",   label: "Rascunho" }
+  return (
+    <span className={`inline-flex items-center gap-1.5 h-6 px-2 rounded-full text-[11px] font-semibold ring-1 ${meta.cls}`}>
+      <span className={`size-1.5 rounded-full ${meta.dot}`} /> {meta.label}
+    </span>
+  )
+}
+
+/** Ícone da linha: a marca do CANAL (não o ícone de propósito) — bate com a coluna
+ *  "Entrada / gatilho" e com o resto do app. Multi-canal ou nenhum → globo. */
+function FlowIcon({ t }: { t: FlowTrigger | null }) {
+  const chs = flowChannels(t)
+  if (chs.length !== 1) {
+    return (
+      <div className="size-9 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
+        <Globe className="size-4 text-slate-500" />
+      </div>
+    )
+  }
+  return (
+    <div className="size-9 rounded-xl bg-white ring-1 ring-slate-200 flex items-center justify-center shrink-0 overflow-hidden">
+      <SourceLogo source={CHANNEL_LOGO[chs[0]] ?? "manual"} size={26} />
+    </div>
+  )
+}
+
+function EntryCell({ t }: { t: FlowTrigger | null }) {
+  const chs = flowChannels(t)
+  const trig = t?.mode === "active" ? "Disparo" : (t?.type ? TRIGGER_LABEL[t.type] ?? t.type : "—")
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      {chs.length === 1
+        ? <SourceLogo source={CHANNEL_LOGO[chs[0]] ?? "manual"} size={16} />
+        : <Globe className="size-4 text-slate-400 shrink-0" />}
+      <span className="text-[13px] text-slate-600 truncate">
+        {chs.length === 1 ? CHANNEL_LABEL[chs[0]] ?? chs[0] : "Todos os canais"}
+        <span className="text-slate-300"> · </span>{trig}
+      </span>
+    </div>
+  )
+}
+
+function FlowRow({ f, count, busy, igQuota, errored, onToggle, onClone, onDelete }: {
+  f: StudioFlowSummary; count: number; busy: boolean; igQuota?: IgQuotaState | null; errored: boolean
+  onToggle: () => void; onClone: () => void; onDelete: () => void
+}) {
+  const st = flowState(f)
+  // Selo só onde a cota MORDE: fluxo de comentário publicado. Em rascunho ou pausado o
+  // dono já sabe por que não roda — o aviso ali seria ruído.
+  const quotaHalted = !!igQuota && f.trigger?.type === "ig_comment" && st === "published"
+  const pm = PURPOSE_META[purposeOf(f)]
+
+  return (
+    <tr className="group hover:bg-slate-50/70 transition-colors">
+      <td className="px-5 py-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <FlowIcon t={f.trigger} />
+          <div className="min-w-0">
+            <Link href={`/studio/fluxos/${f.id}`} className="block text-[13px] font-bold text-slate-900 hover:text-primary-600 truncate leading-tight">
+              {f.name}
+            </Link>
+            {quotaHalted && (
+              // Frase do TENANT, não do fluxo: se soar local, o dono mexe NESTE fluxo,
+              // não resolve, e repete nos outros nove.
+              <Link href="/configuracoes/uso"
+                title={`Você usou ${igQuota!.used} de ${igQuota!.max} automações do Instagram neste mês. Volta a capturar em ${new Date(igQuota!.resetsAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "UTC" })}.`}
+                className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 hover:underline">
+                <Zap className="size-2.5" /> cota de automações esgotada — todos os fluxos premium pausados
+              </Link>
+            )}
+          </div>
+        </div>
+      </td>
+
+      <td className="px-5 py-3 whitespace-nowrap">
+        <span title={pm.hint}
+          className={`inline-flex items-center h-6 px-2 rounded-full text-[11px] font-semibold ring-1 ${pm.badge}`}>{pm.label}</span>
+      </td>
+
+      <td className="px-5 py-3 max-w-[260px]"><EntryCell t={f.trigger} /></td>
+
+      <td className="px-5 py-3 whitespace-nowrap">
+        <div className="flex items-center gap-1.5">
+          <StatusPill st={st} />
+          {errored && (
+            <span title="Houve erro de IA neste fluxo nos últimos 30 dias" className="text-danger">
+              <AlertTriangle className="size-3.5" />
+            </span>
+          )}
+        </div>
+      </td>
+
+      <td className="px-5 py-3 text-[13px] font-semibold tabular-nums text-slate-700">{count.toLocaleString("pt-BR")}</td>
+
+      <td className="px-5 py-3 text-[12px] text-slate-400 whitespace-nowrap">{relTime(f.updated_at)}</td>
+
+      <td className="px-5 py-3">
+        <div className="flex items-center justify-end gap-1">
+          <Link href={`/studio/fluxos/${f.id}`}
+            className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold text-slate-700 border border-slate-200 hover:bg-white hover:border-slate-300 rounded-lg transition-colors">
+            <Pencil className="size-3.5" /> Editar
+          </Link>
+          {/* Tudo que não é "Editar" mora aqui (pedido do dono): a linha fica com 2
+              controles em vez de 4, e o destrutivo deixa de estar a um clique de distância. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger disabled={busy}
+              className="inline-flex items-center justify-center size-8 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50 transition-colors"
+              aria-label="Mais ações">
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <MoreDots />}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {f.status === "published" && (
+                <DropdownMenuItem onClick={onToggle}>
+                  {f.active
+                    ? <><Pause className="size-3.5 text-amber-600" /> Pausar</>
+                    : <><Play className="size-3.5 text-emerald-600" /> Ativar</>}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={onClone}><Copy className="size-3.5 text-slate-500" /> Duplicar</DropdownMenuItem>
+              <DropdownMenuItem onClick={onDelete}><Trash2 className="size-3.5 text-danger" /> Excluir</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+/** 3 pontinhos verticais — o lucide `MoreVertical` mudou de nome entre versões; SVG
+ *  local evita quebrar no upgrade e é 3 círculos. */
+function MoreDots() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <circle cx="8" cy="3" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" />
+    </svg>
+  )
+}
+
+// ── Tela ───────────────────────────────────────────────────────────
+
+type SortKey = "recent" | "most" | "name"
+
+export function FlowsClient({ flows, activations, erroredFlowIds, igQuota }: {
+  flows: StudioFlowSummary[]
+  activations: Record<string, number>
+  erroredFlowIds?: string[]
+  igQuota?: IgQuotaState | null
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [busyId, setBusyId]   = useState<string | null>(null)
+  const [busyId, setBusyId]     = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
-  const [query, setQuery]     = useState("")
-  const [tab, setTab]         = useState<"all" | Purpose>("all")
-  const [status, setStatus]   = useState<"all" | FlowState>("all")
-  const [aiOpen, setAiOpen]   = useState(false)
-  const [aiDesc, setAiDesc]   = useState("")
-  const [aiError, setAiError] = useState<string | null>(null)
-  const [aiPending, startAi]  = useTransition()
+  const [query, setQuery]       = useState("")
+  const [tab, setTab]           = useState<"all" | FlowState>("all")
+  const [category, setCategory] = useState<string>("all")
+  const [channel, setChannel]   = useState<string>("all")
+  const [trigger, setTrigger]   = useState<string>("all")
+  const [sort, setSort]         = useState<SortKey>("recent")
 
-  const purposeCounts = useMemo(() => {
-    const c = { all: flows.length, atendimento: 0, marketing: 0 }
-    for (const f of flows) c[purposeOf(f)]++
+  const errored = useMemo(() => new Set(erroredFlowIds ?? []), [erroredFlowIds])
+
+  const counts = useMemo(() => {
+    const c = { all: flows.length, published: 0, paused: 0, draft: 0 }
+    for (const f of flows) c[flowState(f)]++
     return c
   }, [flows])
 
-  const maxAct    = useMemo(() => Math.max(0, ...flows.map((f) => activations[f.id] ?? 0)), [flows, activations])
-  const totalAct  = useMemo(() => flows.reduce((a, f) => a + (activations[f.id] ?? 0), 0), [flows, activations])
-  const publishedCount = useMemo(() => flows.filter((f) => flowState(f) === "published").length, [flows])
+  const totalAct = useMemo(() => flows.reduce((a, f) => a + (activations[f.id] ?? 0), 0), [flows, activations])
+
+  // Opções derivadas do que EXISTE: filtro que oferece canal sem nenhum fluxo é uma
+  // gaveta vazia. Menos escolha, mais confiança.
+  const channelOpts = useMemo(() => {
+    const s = new Set<string>()
+    for (const f of flows) for (const c of flowChannels(f.trigger)) s.add(c)
+    return [{ key: "all", label: "Todos os canais" },
+            ...[...s].map((c) => ({ key: c, label: CHANNEL_LABEL[c] ?? c }))]
+  }, [flows])
+
+  const triggerOpts = useMemo(() => {
+    const s = new Set<string>()
+    for (const f of flows) {
+      if (f.trigger?.mode === "active") s.add("__active")
+      else if (f.trigger?.type) s.add(f.trigger.type)
+    }
+    return [{ key: "all", label: "Todos os gatilhos" },
+            ...[...s].map((t) => ({ key: t, label: t === "__active" ? "Disparo" : TRIGGER_LABEL[t] ?? t }))]
+  }, [flows])
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return flows.filter((f) =>
-      (tab === "all" || purposeOf(f) === tab) &&
-      (status === "all" || flowState(f) === status) &&
-      (!q || f.name.toLowerCase().includes(q)),
-    )
-  }, [flows, query, tab, status])
+    const out = flows.filter((f) => {
+      if (tab !== "all" && flowState(f) !== tab) return false
+      if (category !== "all" && purposeOf(f) !== category) return false
+      if (channel !== "all" && !flowChannels(f.trigger).includes(channel)) return false
+      if (trigger !== "all") {
+        const isActive = f.trigger?.mode === "active"
+        if (trigger === "__active" ? !isActive : (isActive || f.trigger?.type !== trigger)) return false
+      }
+      if (q && !f.name.toLowerCase().includes(q)) return false
+      return true
+    })
+    return out.sort((a, b) =>
+      sort === "most" ? (activations[b.id] ?? 0) - (activations[a.id] ?? 0)
+      : sort === "name" ? a.name.localeCompare(b.name, "pt-BR")
+      : new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+  }, [flows, query, tab, category, channel, trigger, sort, activations])
+
+  const filtersOn = category !== "all" || channel !== "all" || trigger !== "all" || !!query.trim() || tab !== "all"
+  function clearFilters() { setQuery(""); setTab("all"); setCategory("all"); setChannel("all"); setTrigger("all") }
 
   function handleNew(purpose: Purpose) {
     startTransition(async () => {
       const r = await createFlow(purpose === "marketing" ? "Novo fluxo de marketing" : "Novo fluxo", purpose)
       if (r.id) router.push(`/studio/fluxos/${r.id}`)
       else if (r.error) toast.error(r.error)   // ex.: limite de automações atingido
-    })
-  }
-  function handleAI() {
-    setAiError(null)
-    startAi(async () => {
-      const r = await createFlowWithAI(aiDesc)
-      if (r.id) { setAiOpen(false); router.push(`/studio/fluxos/${r.id}`) }
-      else setAiError(r.error ?? "Não consegui gerar. Tente reformular.")
     })
   }
   function handleDelete(id: string) {
@@ -219,160 +339,123 @@ export function FlowsClient({ flows, activations, igQuota }: {
     setBusyId(id); startTransition(async () => { await setFlowActive(id, active); setBusyId(null); router.refresh() })
   }
 
-  const TABS: { key: "all" | Purpose; label: string; icon: typeof Network; count: number }[] = [
-    { key: "all",         label: "Todos",       icon: Network,  count: purposeCounts.all },
-    { key: "atendimento", label: "Atendimento", icon: Headset,  count: purposeCounts.atendimento },
-    { key: "marketing",   label: "Marketing",   icon: Megaphone, count: purposeCounts.marketing },
+  const TABS: { key: "all" | FlowState; label: string; count: number }[] = [
+    { key: "all",       label: "Todos",     count: counts.all },
+    { key: "published", label: "Ativos",    count: counts.published },
+    { key: "paused",    label: "Pausados",  count: counts.paused },
+    { key: "draft",     label: "Rascunhos", count: counts.draft },
   ]
+
+  if (flows.length === 0) {
+    return (
+      <>
+        <EmptyState icon={Network} title="Nenhum fluxo ainda"
+          description="Monte um fluxo pra rotear, responder e encaminhar automaticamente — com ou sem IA. Separe por propósito: atendimento (responde quem chega) ou marketing (conversa das campanhas)."
+          action={
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {PURPOSE_ORDER.map((p, i) => {
+                const m = PURPOSE_META[p]
+                const MIcon = m.icon
+                return (
+                  <button key={p} type="button" onClick={() => handleNew(p)} disabled={pending} title={m.hint}
+                    className={`inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 ${
+                      i === 0 ? "bg-primary hover:bg-primary-700 text-white"
+                              : `${m.badge} hover:brightness-95 ring-1`}`}>
+                    <MIcon className="size-3.5" /> {m.label}
+                  </button>
+                )
+              })}
+            </div>
+          } />
+      </>
+    )
+  }
 
   return (
     <div className="space-y-5">
-      {/* Faixa de resumo — o total de acionamentos em destaque */}
-      {flows.length > 0 && (
-        <div className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-2xl border border-slate-200 bg-white px-5 py-4">
-          <div>
-            <div className="text-[11px] font-medium text-slate-400">Fluxos ativos</div>
-            <div className="text-2xl font-bold text-slate-900 tabular-nums leading-tight">
-              {publishedCount}<span className="text-sm font-medium text-slate-400">/{flows.length}</span>
-            </div>
-          </div>
-          <div className="h-10 w-px bg-slate-100" />
-          <div>
-            <div className="flex items-center gap-1 text-[11px] font-medium text-slate-400"><Zap className="size-3 text-primary-500" /> Acionamentos no total</div>
-            <div className="text-2xl font-bold text-primary-700 tabular-nums leading-tight">{totalAct.toLocaleString("pt-BR")}</div>
-          </div>
-        </div>
-      )}
+      {/* KPIs. As ações da página (Novo fluxo · IA) NÃO moram aqui: vão no header via
+          `PageShell actions`, que é o padrão do app (design-system §2). Ver flows-actions.tsx. */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KpiCard icon={Play}  tint="text-emerald-600 bg-emerald-50" value={counts.published} label="ativos" />
+        <KpiCard icon={Pause} tint="text-amber-600 bg-amber-50"     value={counts.paused}    label="pausados" />
+        <KpiCard icon={Zap}   tint="text-primary-600 bg-primary/10" value={totalAct}         label="acionamentos (30 dias)" />
+        <KpiCard icon={AlertTriangle} tint="text-danger bg-red-50"  value={errored.size}     label="com erro de IA (30 dias)"
+          hint="Conta fluxos com falha de IA nos últimos 30 dias. Fluxo de automação pura (sem nó de IA) ainda não registra erro — está no roadmap." />
+      </div>
 
-      {/* Eixo primário: PROPÓSITO (segmented control grande) + criar */}
-      <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-        <div className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-full lg:w-auto">
+      {/* Abas por STATUS — é o eixo do dia a dia ("o que está no ar agora?") */}
+      <div className="border-b border-slate-200">
+        <div className="flex items-center gap-1 -mb-px overflow-x-auto">
           {TABS.map((t) => {
             const on = tab === t.key
-            const TIcon = t.icon
             return (
               <button key={t.key} type="button" onClick={() => setTab(t.key)}
-                className={`inline-flex items-center justify-center gap-2 h-9 px-4 flex-1 lg:flex-none text-sm font-semibold rounded-lg transition-colors ${
-                  on ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-                <TIcon className={`size-4 ${on && t.key === "marketing" ? "text-violet-600" : on && t.key === "atendimento" ? "text-sky-600" : ""}`} />
+                className={`inline-flex items-center gap-2 h-10 px-4 text-sm font-semibold border-b-2 whitespace-nowrap transition-colors ${
+                  on ? "border-primary text-primary-700" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
                 {t.label}
-                <span className={`tabular-nums text-[11px] ${on ? "text-slate-400" : "text-slate-400/70"}`}>{t.count}</span>
+                <span className={`tabular-nums text-[11px] ${on ? "text-primary-400" : "text-slate-400"}`}>{t.count}</span>
               </button>
             )
           })}
         </div>
+      </div>
 
-        <div className="flex items-center gap-2 lg:ml-auto">
-          <button type="button" onClick={() => { setAiError(null); setAiOpen(true) }}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold text-violet-700 bg-violet-50 hover:bg-violet-100 ring-1 ring-violet-200 rounded-lg transition-colors">
-            <Sparkles className="size-3.5" /> Criar com IA
-          </button>
-          {tab === "all" ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger disabled={pending}
-                className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
-                {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Novo fluxo <ChevronDown className="size-3.5" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-52">
-                <DropdownMenuItem onClick={() => handleNew("atendimento")}><Headset className="size-3.5 text-sky-600" /> Fluxo de atendimento</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleNew("marketing")}><Megaphone className="size-3.5 text-violet-600" /> Fluxo de marketing</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <button type="button" onClick={() => handleNew(tab)} disabled={pending}
-              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
-              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />} Novo fluxo de {tab === "marketing" ? "marketing" : "atendimento"}
+      {/* Busca + filtros. Status NÃO repete aqui: já é a aba acima — o mesmo eixo em dois
+          controles faz o dono filtrar num, esquecer o outro e achar que a lista sumiu. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+        <div className="relative flex-1 min-w-[220px] max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar automação…"
+            className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200" />
+        </div>
+        <FilterSelect icon={Headset} label="Categoria" value={category} onChange={setCategory}
+          options={[{ key: "all", label: "Todas as categorias" },
+                    ...PURPOSE_ORDER.map((p) => ({ key: p, label: PURPOSE_META[p].label }))]} />
+        <FilterSelect icon={Globe}   label="Canal"   value={channel} onChange={setChannel} options={channelOpts} />
+        <FilterSelect icon={Zap}     label="Gatilho" value={trigger} onChange={setTrigger} options={triggerOpts} />
+        <div className="ml-auto flex items-center gap-2">
+          <FilterSelect icon={Network} label="Ordenar por" value={sort === "recent" ? "all" : sort} onChange={(v) => setSort((v === "all" ? "recent" : v) as SortKey)}
+            options={[{ key: "all", label: "Última atividade" }, { key: "most", label: "Mais acionamentos" }, { key: "name", label: "Nome (A-Z)" }]} />
+          {filtersOn && (
+            <button type="button" onClick={clearFilters}
+              className="h-9 px-3 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors">
+              Limpar
             </button>
           )}
         </div>
       </div>
 
-      {/* Contexto da aba + busca + status */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-        <div className="relative flex-1 min-w-0 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar fluxo…"
-            className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200" />
-        </div>
-        {flows.length > 0 && (
-          <div className="flex items-center gap-1.5 flex-wrap sm:ml-auto">
-            {STATUS_FILTERS.map((sf) => (
-              <button key={sf.key} type="button" onClick={() => setStatus(sf.key)}
-                className={`h-7 px-2.5 text-xs font-medium rounded-lg transition-colors ${status === sf.key ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"}`}>
-                {sf.label}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Aviso contextual da aba Marketing (fluxo é a conversa pós-engajamento) */}
-      {tab === "marketing" && (
-        <div className="flex items-start gap-2.5 rounded-xl bg-violet-50/60 border border-violet-100 px-4 py-3">
-          <Zap className="size-4 text-violet-500 shrink-0 mt-0.5" />
-          <p className="text-[11px] text-violet-900/80 leading-relaxed">
-            <b>Fluxos de marketing</b> são a conversa que roda quando o cliente <b>engaja</b> com uma campanha (ou quando um agente/gatilho os aciona). No canal oficial, o primeiro toque a frio é sempre um <b>template aprovado</b> — o fluxo assume a partir daí.
-          </p>
-        </div>
-      )}
-
-      {flows.length === 0 ? (
-        <EmptyState icon={Network} title="Nenhum fluxo ainda"
-          description="Monte um fluxo pra rotear, responder e encaminhar automaticamente — com ou sem IA. Separe por propósito: atendimento (responde quem chega) ou marketing (conversa das campanhas)."
-          action={
-            <div className="flex items-center gap-2">
-              <button type="button" onClick={() => handleNew("atendimento")} disabled={pending}
-                className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
-                <Headset className="size-3.5" /> Fluxo de atendimento
-              </button>
-              <button type="button" onClick={() => handleNew("marketing")} disabled={pending}
-                className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold text-violet-700 bg-violet-50 hover:bg-violet-100 ring-1 ring-violet-200 rounded-lg transition-colors">
-                <Megaphone className="size-3.5" /> Fluxo de marketing
-              </button>
-            </div>
-          } />
-      ) : visible.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-16 text-center">
-          <p className="text-sm text-slate-500">Nenhum fluxo {tab !== "all" ? `de ${tab === "marketing" ? "marketing" : "atendimento"} ` : ""}encontrado.</p>
-          <button type="button" onClick={() => { setQuery(""); setStatus("all"); setTab("all") }} className="mt-1 text-xs font-medium text-primary-600 hover:text-primary-700">
+      {visible.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 py-16 text-center">
+          <p className="text-sm text-slate-500">Nenhum fluxo encontrado com esses filtros.</p>
+          <button type="button" onClick={clearFilters} className="mt-1 text-xs font-medium text-primary-600 hover:text-primary-700">
             Limpar filtros
           </button>
         </div>
       ) : (
-        <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100 overflow-hidden">
-          {visible.map((f) => (
-            <FlowRow key={f.id} f={f} count={activations[f.id] ?? 0} maxAct={maxAct} busy={busyId === f.id} igQuota={igQuota}
-              onToggle={() => handleToggleActive(f.id, !f.active)}
-              onClone={() => handleClone(f.id)} onDelete={() => setDeleting(f.id)} />
-          ))}
-        </div>
-      )}
-
-      {aiOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={() => !aiPending && setAiOpen(false)}>
-          <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-2 px-5 py-3.5 border-b border-slate-100">
-              <div className="size-7 rounded-lg bg-gradient-to-br from-violet-500 to-blue-600 inline-flex items-center justify-center"><Sparkles className="size-4 text-white" /></div>
-              <div className="flex-1">
-                <h3 className="text-sm font-semibold text-slate-900">Criar fluxo com IA</h3>
-                <p className="text-[11px] text-slate-400">Descreva o que a IA deve fazer — eu monto o fluxo pra você revisar.</p>
-              </div>
-              <button type="button" onClick={() => setAiOpen(false)} className="text-slate-400 hover:text-slate-600" aria-label="Fechar"><X className="size-4" /></button>
-            </div>
-            <div className="p-5 space-y-3">
-              <textarea className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
-                rows={4} autoFocus value={aiDesc} onChange={(e) => setAiDesc(e.target.value)}
-                placeholder="Ex: Atender quem chega, responder dúvidas sobre o sistema, qualificar o lead (segmento e tamanho do time), oferecer uma demonstração e passar pro Comercial quando estiver pronto." />
-              {aiError && <p className="text-xs text-danger">{aiError}</p>}
-              <p className="text-[11px] text-slate-400">A IA cria um <b>rascunho</b> — você revisa e ajusta no editor antes de publicar. Nada vai ao ar automaticamente.</p>
-              <div className="flex justify-end gap-2 pt-1">
-                <button type="button" onClick={() => setAiOpen(false)} disabled={aiPending} className="h-9 px-4 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50">Cancelar</button>
-                <button type="button" onClick={handleAI} disabled={aiPending || aiDesc.trim().length < 8}
-                  className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
-                  {aiPending ? <><Loader2 className="size-3.5 animate-spin" /> Montando…</> : <><Sparkles className="size-3.5" /> Gerar fluxo</>}
-                </button>
-              </div>
-            </div>
+        <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[880px] text-left">
+              <thead>
+                <tr className="border-b border-slate-100 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  <th className="px-5 py-3 font-semibold">Automação</th>
+                  <th className="px-5 py-3 font-semibold">Categoria</th>
+                  <th className="px-5 py-3 font-semibold">Entrada / gatilho</th>
+                  <th className="px-5 py-3 font-semibold">Status</th>
+                  <th className="px-5 py-3 font-semibold">Acionamentos</th>
+                  <th className="px-5 py-3 font-semibold">Última atividade</th>
+                  <th className="px-5 py-3 font-semibold text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {visible.map((f) => (
+                  <FlowRow key={f.id} f={f} count={activations[f.id] ?? 0} busy={busyId === f.id}
+                    igQuota={igQuota} errored={errored.has(f.id)}
+                    onToggle={() => handleToggleActive(f.id, !f.active)}
+                    onClone={() => handleClone(f.id)} onDelete={() => setDeleting(f.id)} />
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

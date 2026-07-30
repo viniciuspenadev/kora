@@ -159,15 +159,23 @@ export async function getFlow(id: string): Promise<StudioFlowFull | null> {
   return (data as StudioFlowFull | null) ?? null
 }
 
+/** Nome padrão por categoria — mapa em vez de ternário, pra categoria nova não cair
+ *  silenciosamente no rótulo de "atendimento". */
+const DEFAULT_NAME: Record<"atendimento" | "marketing" | "automacao", string> = {
+  atendimento: "Novo fluxo",
+  marketing:   "Novo fluxo de marketing",
+  automacao:   "Nova automação",
+}
+
 export async function createFlow(
   name: string,
-  purpose: "atendimento" | "marketing" = "atendimento",
+  purpose: "atendimento" | "marketing" | "automacao" = "atendimento",
   opts?: { seedCampaign?: boolean },
 ): Promise<{ id?: string; error?: string }> {
   const session = await requireAdmin()
   const quota = await assertAutomationQuota(session.user.tenantId)
   if (quota) return { error: quota }
-  const clean = name.trim() || (purpose === "marketing" ? "Novo fluxo de marketing" : "Novo fluxo")
+  const clean = name.trim() || DEFAULT_NAME[purpose]
   // Semente: só o nó start. Campanha-por-fluxo nasce com o nó TEMPLATE de acionamento
   // já ligado (start → template) — a regra "campanha começa por template" vira ponto de partida.
   const graph: FlowGraph = opts?.seedCampaign
@@ -179,11 +187,14 @@ export async function createFlow(
         edges: [{ from: "start", to: "opener" }],
       }
     : { nodes: [{ id: "start", type: "start", config: {} }], edges: [] }
-  // Marketing = disparo ATIVO (campanha/agente) por default; atendimento = receptivo.
-  // É só o DEFAULT — o editor troca o gatilho livremente (nunca engessa — decisão owner).
-  const trigger: FlowTrigger = purpose === "marketing"
-    ? { type: "keyword", keywords: [], mode: "active" }
-    : { type: "keyword", keywords: [] }
+  // Marketing e automação = disparo ATIVO por default (campanha/agente/evento);
+  // atendimento = receptivo. É só o DEFAULT — o editor troca o gatilho livremente
+  // (nunca engessa — decisão do dono). Automação entra em "ativo" porque o caso típico
+  // dela é ser acionada (agendar pela atendente, capturar comentário), não esperar
+  // alguém digitar uma palavra.
+  const trigger: FlowTrigger = purpose === "atendimento"
+    ? { type: "keyword", keywords: [] }
+    : { type: "keyword", keywords: [], mode: "active" }
 
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
