@@ -369,9 +369,13 @@ async function handleRead(igAccountId: string | null, m: IgMessaging): Promise<v
 //    fluxo → cria contato/conversa → persiste a mensagem → carimba `ig_comment_engage`.
 //    O run.ts retoma quando a pessoa responder. Não inventar um segundo motor.
 //
-// ⚠️ INERTE até a Meta aprovar `instagram_business_manage_comments`: `comments` não está
-//    em IG_WEBHOOK_FIELDS de propósito (assinar campo sem permissão derruba o subscribe
-//    inteiro, em silêncio). Este handler existe pronto pra virada de UMA linha lá.
+// ✅ ATIVO desde 2026-07-30 — mas só chega comentário de conta que TEM a permissão
+//    `instagram_business_manage_comments` (hoje: a conta de teste do dono; a Meta ainda
+//    não aprovou pra geral). `subscribeIgWebhooks` tenta com `comments` e cai de volta
+//    pros campos base quando a conta não tem — nenhuma conta perde messaging por isso.
+//    ⚠️ Chegar o webhook NÃO basta pra disparar: a licença `instagram_automation` é
+//    checada aqui dentro (claimIgAutomation → outcome 'module'), e hoje ZERO tenants a
+//    têm. São dois gates independentes; nenhum cliente executa automação sem os dois.
 
 const IG_COMMENT_KIND    = "comment_dm"
 /** Prazo da Meta pra private reply: 7 dias do comentário (em Live, só durante). */

@@ -98,27 +98,48 @@ export async function sendInstagramText(
  * sem assinar esse campo, a reação reverte no app e nunca chega no webhook.
  */
 export const IG_WEBHOOK_FIELDS = "messages,message_reactions,messaging_postbacks,messaging_seen,messaging_referral"
-// ⚠️ `comments` sai daqui junto com o escopo de comentários (ver IG_SCOPES). Assinar um
-// campo cuja permissão não foi aprovada faz a chamada inteira de subscribe falhar — e como
-// ela é não-fatal, a conta ficaria conectada SEM receber mensagem nenhuma.
-// 🔴 O RUNTIME da F2 já existe (handleComment em channels/instagram-inbound.ts) e fica
-// INERTE de propósito até a Meta aprovar `instagram_business_manage_comments`. Ao aprovar,
-// a virada é de DOIS lugares, na ordem: (1) `comments` aqui, (2) o escopo em IG_SCOPES —
-// e o (2) obriga TODA conta já conectada a refazer o OAuth (refreshIgToken renova o token,
-// NÃO o escopo). Isso é comunicação de produto, não código.
+/** Base + `comments` (comment-to-DM). Exige `instagram_business_manage_comments` NA CONTA. */
+export const IG_WEBHOOK_FIELDS_COMMENTS = `${IG_WEBHOOK_FIELDS},comments`
 
 /**
  * Auto-assina a conta autorizada nos campos de webhook (self-provision — o controle
  * fica no backend, não num toggle manual do painel da Meta). Idempotente; não-fatal.
+ *
+ * 🔴 DEGRAU, NÃO INTERRUPTOR. Tenta com `comments`; se a Meta recusar (conta sem a
+ *    permissão — ela não foi aprovada pra todo mundo ainda), **repete sem** e mantém o
+ *    messaging vivo. Sem esse degrau, assinar um campo não aprovado derruba a chamada
+ *    INTEIRA — e como ela é não-fatal, a conta ficaria conectada sem receber mensagem
+ *    nenhuma, em silêncio. É o pior desfecho possível e o mais difícil de perceber.
+ *
+ * Efeito prático: a conta de teste do dono (que já tem a permissão) passa a receber
+ * comentário HOJE; qualquer outra conta segue exatamente como antes. Quando a Meta
+ * aprovar pra geral, ninguém precisa mexer aqui — o 1º ramo simplesmente passa a valer
+ * pra todos, conforme cada conta refizer o OAuth.
+ *
+ * Devolve quais campos ficaram valendo — quem chama loga isso, senão o degrau vira uma
+ * degradação invisível (o mesmo erro que a gente passou o dia caçando).
  */
-export async function subscribeIgWebhooks(token: string): Promise<{ ok: true } | { error: string }> {
-  try {
-    const r = await fetch(`${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(IG_WEBHOOK_FIELDS)}&access_token=${encodeURIComponent(token)}`, {
+export async function subscribeIgWebhooks(
+  token: string,
+): Promise<{ ok: true; fields: string; comments: boolean } | { error: string }> {
+  // Tipo de retorno EXPLÍCITO: sem ele o TS infere um union com props opcionais
+  // (`{error: string; ok?: undefined} | ...`) e `"error" in base` não estreita direito.
+  const attempt = async (fields: string): Promise<{ ok: true } | { error: string }> => {
+    const r = await fetch(`${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`, {
       method: "POST", signal: AbortSignal.timeout(T_READ),
     })
     const j = await r.json() as { success?: boolean; error?: { message?: string } }
     if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
-    return { ok: true }
+    return { ok: true as const }
+  }
+  try {
+    const withComments = await attempt(IG_WEBHOOK_FIELDS_COMMENTS)
+    if (!("error" in withComments)) return { ok: true, fields: IG_WEBHOOK_FIELDS_COMMENTS, comments: true }
+
+    console.warn("[ig-subscribe] sem `comments` (conta provavelmente ainda não tem a permissão):", withComments.error)
+    const base = await attempt(IG_WEBHOOK_FIELDS)
+    if ("error" in base) return { error: base.error }
+    return { ok: true, fields: IG_WEBHOOK_FIELDS, comments: false }
   } catch (e) {
     return { error: netErr(e, T_READ, "assinatura do webhook") }
   }
@@ -128,15 +149,28 @@ const APP_ID     = () => process.env.INSTAGRAM_APP_ID ?? ""
 const APP_SECRET = () => process.env.INSTAGRAM_APP_SECRET ?? ""
 
 /**
- * Escopos pedidos no Business Login. **Tem que bater exatamente com o que foi APROVADO
- * na Análise do App** — pedir permissão não aprovada faz o OAuth do cliente falhar.
+ * Escopos pedidos no Business Login.
  *
- * `instagram_business_manage_comments` foi REMOVIDO na 1ª submissão (2026-07-28): o
- * ingestor recebe comentário mas só loga (comment-to-DM é a F2), e a Meta reprova
- * permissão que o screencast não demonstra em uso. Volta na 2ª rodada, junto com a F2 —
- * e aí `comments` volta também pro IG_WEBHOOK_FIELDS.
+ * 🔴 `instagram_business_manage_comments` VOLTOU em 2026-07-30 (pedido do dono) pra
+ *    gravar o screencast do comment-to-DM, que é justamente a evidência que a Meta exige
+ *    pra aprovar essa permissão. Sem ela no OAuth, a conta de teste não recebe o webhook
+ *    de comentário e o vídeo não existe — é um ovo-e-galinha que só se resolve pedindo.
+ *
+ * ⚠️ RISCO CONHECIDO E ACEITO PELO DONO, enquanto a Meta não aprova pra geral: quem NÃO
+ *    é admin/desenvolvedor/testador do app pode receber erro ao clicar em Conectar
+ *    Instagram (a Meta reage a permissão não aprovada ora omitindo-a, ora recusando o
+ *    OAuth inteiro — o comportamento não é o mesmo em todo fluxo). Hoje só a conta do
+ *    dono tem Instagram conectado, então o risco é teórico — mas **não conectar
+ *    Instagram pra cliente novo até a aprovação sair**. Reverter = tirar daqui e refazer
+ *    o OAuth; nada no banco muda.
+ *
+ * ⚠️ Escopo NÃO se renova sozinho: `refreshIgToken` renova o TOKEN, não a permissão.
+ *    Toda conta já conectada precisa refazer o Conectar pra ganhar comentários.
+ *
+ * O `subscribeIgWebhooks` acima é resiliente a isso: conta sem a permissão cai de volta
+ * pros campos base e segue recebendo mensagem normalmente.
  */
-export const IG_SCOPES = "instagram_business_basic,instagram_business_manage_messages"
+export const IG_SCOPES = "instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments"
 
 /** URL de autorização do Instagram Business Login (o "botão Conectar"). */
 export function buildIgAuthorizeUrl(redirectUri: string, state: string): string {

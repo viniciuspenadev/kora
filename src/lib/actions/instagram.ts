@@ -52,8 +52,13 @@ export async function connectInstagramAccount(token: string): Promise<{ ok: true
 /**
  * Re-assina os campos de webhook (inclui `message_reactions`) da conta JÁ conectada
  * — self-heal sem reautorizar. Reação só chega se esse campo estiver assinado.
+ *
+ * ⚠️ `comments` NÃO se conserta por aqui: campo de webhook se assina com o token que já
+ * existe, mas a PERMISSÃO de comentários vem do OAuth. Conta conectada antes de
+ * 2026-07-30 precisa refazer o **Conectar** (não adianta re-assinar). Por isso o retorno
+ * carrega `comments` — a tela usa pra dizer "reconecte" em vez de fingir sucesso.
  */
-export async function resubscribeInstagramWebhooks(): Promise<{ ok: true } | { error: string }> {
+export async function resubscribeInstagramWebhooks(): Promise<{ ok: true; comments: boolean } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado" }
   if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
@@ -61,7 +66,7 @@ export async function resubscribeInstagramWebhooks(): Promise<{ ok: true } | { e
   if (!sender) return { error: "Nenhuma conta do Instagram ativa." }
   const r = await subscribeIgWebhooks(sender.token)
   if ("error" in r) return { error: r.error }
-  return { ok: true }
+  return { ok: true, comments: r.comments }
 }
 
 /** Desconecta (revoga) a conta IG do tenant — limpa o token. */

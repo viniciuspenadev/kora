@@ -70,7 +70,11 @@ export async function GET(req: NextRequest) {
   // Auto-assina os campos de webhook (inclui message_reactions) — self-provision,
   // não depende de toggle manual no painel. Não-fatal: conexão vale mesmo se falhar.
   const sub = await subscribeIgWebhooks(ex.token)
-  console.log(JSON.stringify({ src: "ig-connect", kind: "subscribe", account: externalAccountId, result: "error" in sub ? sub.error : "ok" }))
+  // `comments:false` = a conta NÃO recebe comentário (caiu pros campos base). É o sinal
+  // que explica "criei o fluxo de comentário e não acontece nada" — sem ele no log, esse
+  // diagnóstico custa horas.
+  console.log(JSON.stringify({ src: "ig-connect", kind: "subscribe", account: externalAccountId,
+    result: "error" in sub ? sub.error : "ok", comments: "error" in sub ? null : sub.comments }))
 
   // Conta Creator só recebe webhook DEPOIS da 1ª chamada à Conversations API (regra da
   // Meta). Sem isso o cliente conecta e nada chega, calado. Best-effort, não-fatal.
