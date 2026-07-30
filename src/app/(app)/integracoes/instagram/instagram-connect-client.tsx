@@ -39,7 +39,13 @@ export function InstagramConnectClient({ connection, notice }: { connection: Con
     start(async () => {
       const r = await resubscribeInstagramWebhooks()
       if ("error" in r) { setError(r.error); return }
-      setOkMsg("Recebimento reativado — reações e eventos do Direct atualizados.")
+      // Dizer só "reativado" quando os comentários NÃO entraram seria mentira útil por 5
+      // minutos e cara por horas: é a diferença entre "o fluxo de comentário vai rodar" e
+      // "essa conta nunca vai receber comentário". E re-assinar não conserta — a permissão
+      // vem do OAuth, então o remédio é reconectar.
+      setOkMsg(r.comments
+        ? "Recebimento reativado — Direct, reações e comentários."
+        : "Recebimento reativado, mas SEM comentários: esta conta não tem a permissão de comentários do Instagram. Desconecte e conecte de novo para concedê-la.")
     })
   }
 

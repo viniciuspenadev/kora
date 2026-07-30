@@ -3,6 +3,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { exchangeIgCode, fetchIgAccount, subscribeIgWebhooks, wakeIgConversations } from "@/lib/instagram/api"
+import { recordIgSubscription } from "@/lib/actions/instagram"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { publicOrigin } from "@/lib/http"
 
@@ -75,6 +76,9 @@ export async function GET(req: NextRequest) {
   // diagnóstico custa horas.
   console.log(JSON.stringify({ src: "ig-connect", kind: "subscribe", account: externalAccountId,
     result: "error" in sub ? sub.error : "ok", comments: "error" in sub ? null : sub.comments }))
+  // Carimba no banco também: log de container não responde "essa conta recebe comentário?"
+  // dois dias depois, e é exatamente essa a pergunta quando o fluxo "não faz nada".
+  if (!("error" in sub)) await recordIgSubscription(externalAccountId, sub)
 
   // Conta Creator só recebe webhook DEPOIS da 1ª chamada à Conversations API (regra da
   // Meta). Sem isso o cliente conecta e nada chega, calado. Best-effort, não-fatal.
