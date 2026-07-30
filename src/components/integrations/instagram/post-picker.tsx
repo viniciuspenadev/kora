@@ -149,7 +149,11 @@ export function PostPicker({ open, onClose, username, selected = [], onPick, mul
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose() }}>
-      <DialogContent className="max-w-3xl p-0 gap-0 overflow-hidden">
+      {/* Largura: escolher post é tarefa VISUAL — quanto mais miniatura cabe de uma vez,
+          menos rolagem e menos erro de escolher o post errado. `max-w-3xl` (768px) dava 4
+          colunas apertadas; `max-w-5xl` (1024px) com 5 colunas no desktop mostra ~2 semanas
+          de posts sem rolar. `w-[92vw]` segura em tela menor sem estourar. */}
+      <DialogContent className="w-[92vw] max-w-5xl p-0 gap-0 overflow-hidden">
         <DialogHeader className="px-5 py-4 border-b border-slate-100">
           <DialogTitle className="text-base font-bold text-slate-900">Escolher post do Instagram</DialogTitle>
           <p className="text-xs text-slate-500">
@@ -197,8 +201,8 @@ export function PostPicker({ open, onClose, username, selected = [], onPick, mul
               <AlertCircle className="size-4 shrink-0 mt-px" /> <span>{error}</span>
             </div>
           ) : loading && !items.length ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-              {Array.from({ length: 8 }).map((_, i) => (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {Array.from({ length: 10 }).map((_, i) => (
                 <div key={i}>
                   <div className="aspect-square rounded-lg bg-slate-100 animate-pulse" />
                   <div className="h-2 w-10 mt-1.5 rounded bg-slate-100 animate-pulse" />
@@ -220,7 +224,7 @@ export function PostPicker({ open, onClose, username, selected = [], onPick, mul
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                 {visible.map((m) => {
                   const isMarked = marked.includes(m.id)
                   return (

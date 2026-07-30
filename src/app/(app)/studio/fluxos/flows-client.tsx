@@ -76,10 +76,14 @@ function TriggerMeta({ trigger }: { trigger: FlowTrigger | null }) {
   )
 }
 
-function FlowRow({ f, count, maxAct, busy, onToggle, onClone, onDelete }: {
-  f: StudioFlowSummary; count: number; maxAct: number; busy: boolean; onToggle: () => void; onClone: () => void; onDelete: () => void
+function FlowRow({ f, count, maxAct, busy, igQuota, onToggle, onClone, onDelete }: {
+  f: StudioFlowSummary; count: number; maxAct: number; busy: boolean; igQuota?: IgQuotaState | null
+  onToggle: () => void; onClone: () => void; onDelete: () => void
 }) {
   const st = flowState(f)
+  // Selo só onde a cota MORDE: fluxo de comentário, publicado e ativo. Num rascunho ou
+  // pausado o dono já sabe por que não roda — o aviso ali seria ruído.
+  const quotaHalted = !!igQuota && f.trigger?.type === "ig_comment" && st === "published"
   const pm = PURPOSE_META[purposeOf(f)]
   const PIcon = pm.icon
   const iconBtn = "inline-flex items-center justify-center size-8 rounded-lg text-slate-400 transition-colors disabled:opacity-50 hover:bg-slate-100"
@@ -103,8 +107,22 @@ function FlowRow({ f, count, maxAct, busy, onToggle, onClone, onDelete }: {
             <span className={`size-1.5 rounded-full ${st === "published" ? "bg-emerald-500" : st === "paused" ? "bg-slate-300" : "bg-amber-400"}`} />
             {st === "published" ? "Publicado" : st === "paused" ? "Pausado" : "Rascunho"}
           </span>
+          {quotaHalted && (
+            <Link href="/configuracoes/uso"
+              title={`Você usou ${igQuota!.used} de ${igQuota!.max} automações do Instagram neste mês. Comentários novos voltam a virar direct em ${new Date(igQuota!.resetsAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", timeZone: "UTC" })}.`}
+              className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-bold ring-1 bg-amber-50 text-amber-700 ring-amber-200 hover:bg-amber-100 transition-colors">
+              <Zap className="size-2.5" /> Cota esgotada
+            </Link>
+          )}
         </div>
         <div className="mt-1.5"><TriggerMeta trigger={f.trigger} /></div>
+        {quotaHalted && (
+          // Frase do TENANT, não do fluxo: "todos os fluxos premium", senão o dono mexe
+          // neste fluxo, não resolve, e repete nos outros nove.
+          <p className="mt-1 text-[10px] text-amber-700">
+            Este fluxo está publicado, mas parou de capturar comentários: a cota de automações do Instagram do mês acabou (todos os fluxos premium estão pausados).
+          </p>
+        )}
       </div>
 
       {/* Acionamentos — o número que o owner pediu, com barra relativa entre os fluxos */}
@@ -139,7 +157,12 @@ function FlowRow({ f, count, maxAct, busy, onToggle, onClone, onDelete }: {
   )
 }
 
-export function FlowsClient({ flows, activations }: { flows: StudioFlowSummary[]; activations: Record<string, number> }) {
+/** Cota de automação do Instagram ESTOURADA (null = tem folga, ou o tenant nem licencia). */
+export interface IgQuotaState { used: number; max: number; resetsAt: string }
+
+export function FlowsClient({ flows, activations, igQuota }: {
+  flows: StudioFlowSummary[]; activations: Record<string, number>; igQuota?: IgQuotaState | null
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [busyId, setBusyId]   = useState<string | null>(null)
@@ -318,7 +341,7 @@ export function FlowsClient({ flows, activations }: { flows: StudioFlowSummary[]
       ) : (
         <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100 overflow-hidden">
           {visible.map((f) => (
-            <FlowRow key={f.id} f={f} count={activations[f.id] ?? 0} maxAct={maxAct} busy={busyId === f.id}
+            <FlowRow key={f.id} f={f} count={activations[f.id] ?? 0} maxAct={maxAct} busy={busyId === f.id} igQuota={igQuota}
               onToggle={() => handleToggleActive(f.id, !f.active)}
               onClone={() => handleClone(f.id)} onDelete={() => setDeleting(f.id)} />
           ))}

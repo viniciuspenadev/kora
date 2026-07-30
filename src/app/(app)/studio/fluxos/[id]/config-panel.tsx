@@ -13,7 +13,6 @@ import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import { IgCommentConfig, type IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
-import { PlatformIcon } from "@/components/ui/platform-icon"
 
 /** Serviço/agenda com os campos extras da LEGENDA dinâmica do destino da agenda
  *  (quem entra no sorteio · quem abre fim de semana). agenda-node-redesign.md §3.5. */
@@ -1413,9 +1412,9 @@ export function FlowSettingsPanel({
     /** Existe, mas o plano não licencia — chip com este rótulo + item inerte. */
     locked?: string
   }
-  // Marca real do Instagram (mesmo `PlatformIcon` do inbox e dos nós) em vez de um ícone
-  // genérico do lucide — o canal tem identidade visual própria no app inteiro.
-  const IgTriggerIcon = (p: { className?: string }) => <PlatformIcon app="instagram" size={14} className={p.className} />
+  // Logo REDONDO da marca — o mesmo `SourceLogo` da lista de fluxos e do card do nó (e
+  // NÃO o `PlatformIcon`, que é o glifo chapado de chart/chip). Um canal, uma arte.
+  const IgTriggerIcon = (p: { className?: string }) => <SourceLogo source="instagram" size={18} className={p.className} />
   const GROUPS: { key: string; label: string; note?: string; tint: string; items: TrigItem[] }[] = [
     { key: "recv", label: "Recebendo uma mensagem", tint: "text-sky-600 bg-sky-50", items: [
       { id: "keyword",     label: "Palavra-chave",     desc: "quando a mensagem contém uma palavra", icon: MessageSquareText },

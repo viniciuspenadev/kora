@@ -13,6 +13,7 @@ import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
 import type { FlowGraph } from "@/lib/ai-v2/flow/types"
 import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
+import { SourceLogo } from "@/components/chat/source-logo"
 import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
 const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
@@ -227,11 +228,13 @@ function StartNode(p: NodeProps) {
  * é o que comunica visualmente "isto COMEÇA aqui", sem precisar de uma linha de texto.
  * O chip ENTRADA existe porque o fluxo passa a ter duas portas e o dono precisa ver isso.
  */
-/** Marca real do Instagram — o MESMO `PlatformIcon` usado no inbox, na bolha e no
- *  `ChannelIcon` daqui. Antes era um `AtSign` genérico do lucide: o nó exibia um "@"
- *  enquanto o resto do app mostrava o logo, quebrando o padrão visual do canal. */
+/** Logo REDONDO da marca — o mesmo `SourceLogo` da lista de fluxos (/studio/fluxos) e do
+ *  inbox. Não é o `PlatformIcon`: aquele é o glifo chapado (usado em chart e chip de
+ *  canal); este é o badge circular full-bleed, que é a arte do canal no app. O card do nó
+ *  é "cara do canal", então usa a mesma peça que a lista — se divergir, o mesmo fluxo
+ *  aparece com dois Instagram diferentes em duas telas. */
 function IgIcon({ className }: { className?: string }) {
-  return <PlatformIcon app="instagram" size={14} className={className} />
+  return <SourceLogo source="instagram" size={18} className={className} />
 }
 
 /**
@@ -243,15 +246,51 @@ function IgIcon({ className }: { className?: string }) {
  * Por isso o `onError`: cai num placeholder com a marca do canal, e o `alt` descreve o
  * post (o painel de config re-congela sozinho quando é aberto).
  */
-function IgPostThumb({ post, more }: {
-  post: { thumbUrl: string | null; caption: string | null } | null
-  more: number
+const igPostLabel = (p: { caption: string | null }) => {
+  const cap = p.caption?.trim()
+  return cap ? `Post do Instagram: ${cap.slice(0, 80)}` : "Post do Instagram do gatilho"
+}
+
+/** Placeholder da marca quando a prévia não carrega (ou o post nem foi escolhido). */
+function IgThumbFallback({ label, compact }: { label: string; compact?: boolean }) {
+  return (
+    <div title={label}
+      className="size-full rounded-lg border border-slate-200 bg-gradient-to-br from-fuchsia-50 to-amber-50 flex flex-col items-center justify-center gap-0.5">
+      <PlatformIcon app="instagram" size={compact ? 14 : 20} />
+      {!compact && <span className="text-[9px] text-slate-400">prévia indisponível</span>}
+    </div>
+  )
+}
+
+/** Uma imagem com fallback próprio — cada post tem o seu estado de "quebrou". */
+function IgThumbImg({ post, className, compact }: {
+  post: { thumbUrl: string | null; caption: string | null }
+  className: string
+  compact?: boolean
 }) {
   const [broken, setBroken] = useState(false)
-  const [seenUrl, setSeenUrl] = useState(post?.thumbUrl ?? null)
-  if (seenUrl !== (post?.thumbUrl ?? null)) { setSeenUrl(post?.thumbUrl ?? null); setBroken(false) }
+  const [seenUrl, setSeenUrl] = useState(post.thumbUrl)
+  if (seenUrl !== post.thumbUrl) { setSeenUrl(post.thumbUrl); setBroken(false) }
+  const label = igPostLabel(post)
+  if (!post.thumbUrl || broken) return <IgThumbFallback label={label} compact={compact} />
+  /* eslint-disable-next-line @next/next/no-img-element */
+  return <img src={post.thumbUrl} alt={label} title={label} onError={() => setBroken(true)} className={className} />
+}
 
-  if (!post) {
+/**
+ * Prévia do(s) post(s) no card de Início.
+ *
+ * 🔴 DUAS FORMAS, decisão do dono (2026-07-30):
+ *   • 1 post  → aparece INTEIRO (`object-contain`). Era `h-16` + `object-cover`: uma faixa
+ *     de 64px cortando o miolo de uma arte quadrada/vertical — justamente o conteúdo que
+ *     diz QUAL post é. Sem corte a pessoa reconhece o criativo de relance.
+ *   • 2+ posts → tirinha de quadradinhos em cima, texto embaixo. Aqui `object-cover` é o
+ *     certo: em miniatura pequena, `contain` viraria uma tarja com barras dos dois lados.
+ *
+ * O `max-h` existe pra um Reel (9:16) não esticar o card até virar uma torre no canvas.
+ */
+function IgPostThumb({ posts }: { posts: Array<{ thumbUrl: string | null; caption: string | null }> }) {
+  if (!posts.length) {
     return (
       <div className="h-16 w-full rounded-lg border border-dashed border-slate-200 bg-slate-50/60 grid place-items-center">
         <span className="text-[10px] text-slate-400">escolha o post…</span>
@@ -259,31 +298,31 @@ function IgPostThumb({ post, more }: {
     )
   }
 
-  const cap = post.caption?.trim()
-  const label = cap ? `Post do Instagram: ${cap.slice(0, 80)}` : "Post do Instagram do gatilho"
+  if (posts.length === 1) {
+    return (
+      <div className="w-full rounded-lg overflow-hidden bg-slate-50 border border-slate-100 grid place-items-center" style={{ minHeight: 96 }}>
+        <IgThumbImg post={posts[0]} className="block w-full h-auto max-h-[220px] object-contain" />
+      </div>
+    )
+  }
 
   return (
-    <div className="relative h-16 w-full rounded-lg overflow-hidden">
-      {post.thumbUrl && !broken ? (
-        /* eslint-disable-next-line @next/next/no-img-element */
-        <img src={post.thumbUrl} alt={label} onError={() => setBroken(true)} className="size-full object-cover" />
-      ) : (
-        <div title={label}
-          className="size-full rounded-lg border border-slate-200 bg-gradient-to-br from-fuchsia-50 to-amber-50 flex flex-col items-center justify-center gap-0.5">
-          <PlatformIcon app="instagram" size={16} />
-          <span className="text-[9px] text-slate-400">prévia indisponível</span>
+    <div className="flex items-center gap-1.5">
+      {posts.map((p, i) => (
+        <div key={i} className="relative size-14 rounded-lg overflow-hidden border border-slate-100 shrink-0">
+          <IgThumbImg post={p} compact className="size-full object-cover" />
         </div>
-      )}
-      {more > 0 && (
-        <span className="absolute top-1 right-1 rounded bg-slate-900/60 px-1 text-[9px] font-bold text-white">+{more}</span>
-      )}
+      ))}
+      <span className="text-[10px] text-slate-400 ml-0.5">{posts.length} posts</span>
     </div>
   )
 }
 
 function IgCommentStartCard({ t, kw, selected }: { t: TriggerSummary; kw: string[]; selected?: boolean }) {
-  const post = t.igPosts?.[0] ?? null
-  const more = (t.igPosts?.length ?? 0) - 1
+  const posts = t.igPosts ?? []
+  // Legenda só com 1 post: com vários, a legenda de um só confundiria (parece que o
+  // gatilho é daquele). Com vários, quem identifica é a própria tirinha de miniaturas.
+  const caption = posts.length === 1 ? posts[0].caption : null
   return (
     <>
       <Card icon={IgIcon} accent="bg-pink-100 text-pink-700" title="Comentário no Instagram" selected={selected}
@@ -292,9 +331,9 @@ function IgCommentStartCard({ t, kw, selected }: { t: TriggerSummary; kw: string
             Entrada
           </span>
         }>
-        <IgPostThumb post={post} more={more} />
+        <IgPostThumb posts={posts} />
 
-        {post?.caption && <p className="mt-1 text-[11px] text-slate-600 truncate">{post.caption}</p>}
+        {caption && <p className="mt-1 text-[11px] text-slate-600 truncate">{caption}</p>}
 
         <p className="mt-1 text-[11px] text-slate-600">
           {kw.length

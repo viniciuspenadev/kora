@@ -28,7 +28,14 @@
 //     - contact_identities, tenant_deals, tenant_tasks, appointments,
 //       commercial_documents, contact_list_members, campaign_recipients,
 //       contact_import_items, keyword_trigger_runs, conversation_events,
-//       instagram_automation_runs
+//       instagram_automation_runs, studio_runs (PARCIAL — ver abaixo)
+//   ⚠️ studio_runs entra SEM `compiled_prompt` (decisão do dono, 2026-07-30): o prompt
+//      compilado mistura dado do titular com a ENGENHARIA do produto (persona, instruções,
+//      regras). O titular tem direito aos dados DELE — que já vão, mais legíveis, em
+//      `messages`/`conversations`. O que exportamos aqui é o RASTRO do tratamento
+//      automatizado (quando, modelo, resposta), que sustenta o Art. 20. **Nunca trocar por
+//      `select("*")`**: coluna nova no ledger de IA passaria a vazar sem ninguém decidir.
+//      Eliminação: coberta por CASCADE via conversation_id.
 //   DELETE cobre via CASCADE (deals/tasks/appointments/identities/imports).
 //   ⚠️ SET NULL retém snapshot: commercial_documents + campaign_recipients
 //      sobrevivem à eliminação (PII em snapshot) — backlog LGPD Art.18 VI.
@@ -235,6 +242,38 @@ export async function exportPersonalData(contactId: string): Promise<
   if ("error" in igRunsRes) return { error: igRunsRes.error }
   const igAutomationRuns = igRunsRes.rows
 
+  // 5d. Execuções de IA nas conversas do contato (`studio_runs`).
+  //
+  //     🔴 SELEÇÃO EXPLÍCITA DE COLUNAS, e o `compiled_prompt` fica DE FORA — decisão do
+  //     dono, 2026-07-30. O prompt compilado mistura DUAS coisas: dados do titular (nome,
+  //     trechos da conversa, o que veio da base de conhecimento) e a ENGENHARIA do produto
+  //     (persona, instruções internas, regras de negócio). A LGPD dá ao titular direito aos
+  //     dados DELE — não à receita de quem trata. Entregar o prompt inteiro num pedido de
+  //     acesso publicaria o diferencial do Kora pra qualquer um que pedir.
+  //     O que ele contém sobre o titular já é entregue de forma direta e mais legível em
+  //     `messages` e `conversations`; aqui vai o RASTRO do tratamento automatizado
+  //     (quando, qual modelo, o que a IA respondeu) — que é o que sustenta o Art. 20
+  //     (revisão de decisão automatizada). Nunca use `select("*")` aqui: coluna nova no
+  //     ledger de IA passaria a vazar sozinha, sem ninguém decidir.
+  //
+  //     Chave é `conversation_id` (não há contact_id nesta tabela) → depende das conversas.
+  const aiRunsRes = conversationIds.length
+    ? await fetchAllPages<Record<string, unknown>>(
+        "execuções de IA",
+        (from, to) =>
+          supabaseAdmin
+            .from("studio_runs")
+            .select("id, conversation_id, flow_id, node_id, kind, llm_response, model, input_tokens, output_tokens, duration_ms, error, created_at")
+            .in("conversation_id", conversationIds)
+            .eq("tenant_id", tenantId)
+            .order("id", { ascending: true })
+            .range(from, to),
+        { tolerateCodes: TOLERATE_MISSING_TABLE },
+      )
+    : { rows: [] as Record<string, unknown>[] }
+  if ("error" in aiRunsRes) return { error: aiRunsRes.error }
+  const aiRuns = aiRunsRes.rows
+
   // 6. Linha do tempo (eventos das conversas do contato) — paginado.
   const timelineRes = conversationIds.length
     ? await fetchAllPages<Record<string, unknown>>("linha do tempo", (from, to) =>
@@ -266,6 +305,8 @@ export async function exportPersonalData(contactId: string): Promise<
     import_items:        importItems.data ?? [],
     trigger_runs:        triggerRuns.data ?? [],
     instagram_automation_runs: igAutomationRuns,
+    // Rastro do tratamento automatizado (Art. 20). SEM o prompt de sistema — ver 5d.
+    ai_runs:             aiRuns,
     timeline_events:     timelineEvents,
     counts: {
       conversations:       conversations.length,
@@ -281,6 +322,7 @@ export async function exportPersonalData(contactId: string): Promise<
       import_items:        importItems.data?.length ?? 0,
       trigger_runs:        triggerRuns.data?.length ?? 0,
       instagram_automation_runs: igAutomationRuns.length,
+      ai_runs:             aiRuns.length,
       timeline_events:     timelineEvents.length,
     },
   }

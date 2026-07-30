@@ -1,3 +1,10 @@
+"use client"
+// ⚠️ CLIENT de propósito: `PlatformIcon` usa `useId()` pro gradiente (ver InstagramLogo).
+// Sem esta diretiva, o primeiro uso em Server Component quebraria em runtime — e os 8
+// consumidores atuais são todos client, então a marcação é de graça hoje e barata amanhã.
+// (O `SourceLogo` em components/chat/source-logo.tsx é o contrário: id fixo, hook-free,
+//  justamente pra continuar utilizável em RSC.)
+
 /**
  * Ícones e badges das plataformas de origem de leads (anúncios Meta CTWA).
  *
@@ -10,7 +17,7 @@
  * Pra adicionar plataforma nova (TikTok, etc): adiciona em PLATFORM_META + novo SVG.
  */
 
-import type { CSSProperties } from "react"
+import { useId, type CSSProperties } from "react"
 
 export interface PlatformMeta {
   key:        string
@@ -42,9 +49,16 @@ export function getPlatformMeta(app: string | null | undefined): PlatformMeta {
 // ── SVG logos (single-color, currentColor) ─────────────────────────
 
 function InstagramLogo({ size }: { size: number }) {
-  // Gradient oficial do Instagram (rosa → laranja → roxo). ID único per render
-  // não é necessário pq dentro de um SVG isolado. Usamos linearGradient inline.
-  const gradId = "ig-grad"
+  // Gradient oficial do Instagram (amarelo → rosa → roxo).
+  //
+  // 🔴 `useId()`, NUNCA id fixo. `id` de SVG é GLOBAL no documento, não escopado ao
+  //    `<svg>`: com dois logos na tela (canvas + painel, ou a lista de gatilhos), todos
+  //    declaram o mesmo `#ig-grad` e o `fill="url(#ig-grad)"` de TODOS resolve pro
+  //    PRIMEIRO do DOM. Enquanto ninguém desmonta, ninguém vê. Quando o primeiro sai —
+  //    e no React Flow os nós montam/desmontam ao mover o canvas —, a referência fica
+  //    pendurada e os outros logos renderizam PRETOS ou invisíveis. Sintoma clássico:
+  //    "o ícone aparece errado às vezes". Vale pro Messenger também.
+  const gradId = `ig-grad-${useId()}`
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-label="Instagram">
       <defs>
@@ -76,7 +90,7 @@ function FacebookLogo({ size }: { size: number }) {
 }
 
 function MessengerLogo({ size }: { size: number }) {
-  const gradId = "msg-grad"
+  const gradId = `msg-grad-${useId()}`   // id de SVG é global — ver InstagramLogo
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-label="Messenger">
       <defs>

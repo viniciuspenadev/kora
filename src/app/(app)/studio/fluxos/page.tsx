@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
+import { checkLimit, monthlyQuotaResetsAt } from "@/lib/limits"
 import { Network, ArrowLeft } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { FlowsClient } from "./flows-client"
@@ -33,6 +34,16 @@ export default async function FluxosPage() {
       .limit(50000),
   ])
 
+  // Cota de automação do Instagram — 4ª camada de aviso (docs/instagram-modulo-e-limites.md
+  // §4.1): "no momento da confusão". As outras três (sininho, push, /configuracoes/uso)
+  // avisam ANTES; esta é a que responde à pergunta que o dono faz DEPOIS, olhando pro
+  // fluxo: "está Publicado · Ativo, por que parou de capturar?". Sem ela, ele mexe no
+  // fluxo — que não tem defeito nenhum — em vez de subir de plano.
+  // Só consulta quem tem a licença: pra todo o resto isso não é um estado que exista.
+  const igQuota = (await hasModule(tenantId, "instagram_automation"))
+    ? await checkLimit(tenantId, "instagram_automations_per_month").catch(() => null)
+    : null
+
   const activations: Record<string, number> = {}
   const seen = new Map<string, Set<string>>()
   for (const s of (steps ?? []) as { flow_id: string; run_id: string }[]) {
@@ -56,7 +67,13 @@ export default async function FluxosPage() {
         </Link>
       }
     >
-      <FlowsClient flows={(data ?? []) as StudioFlowSummary[]} activations={activations} />
+      <FlowsClient
+        flows={(data ?? []) as StudioFlowSummary[]}
+        activations={activations}
+        igQuota={igQuota && !igQuota.ok
+          ? { used: igQuota.used, max: igQuota.max ?? 0, resetsAt: monthlyQuotaResetsAt() }
+          : null}
+      />
     </PageShell>
   )
 }
