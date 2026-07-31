@@ -319,9 +319,13 @@ export async function updateWidgetConfig(input: Partial<WidgetConfig>): Promise<
   // ─── Upsert ─────────────────────────────────────────────────
   const { error } = await supabaseAdmin
     .from("site_widget_config")
+    // 🔒 tenant_id DEPOIS do spread: o valor da SESSÃO sempre vence um tenant_id forjado em
+    // `input` (Partial<WidgetConfig> vem do cliente). Sem isso, um admin do tenant A passava
+    // input.tenant_id=B e o upsert (onConflict tenant_id) reescrevia a config do widget de B
+    // (cross-tenant write — a trigger de imutabilidade NÃO pega, pois tenant_id fica = B nos 2 lados).
     .upsert({
-      tenant_id: tenantId,
       ...input,
+      tenant_id: tenantId,
       updated_at: new Date().toISOString(),
     }, { onConflict: "tenant_id" })
 

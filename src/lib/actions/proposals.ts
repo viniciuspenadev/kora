@@ -191,7 +191,17 @@ export async function getProposalAgents(): Promise<{ id: string; name: string }[
 
 // ── Export CSV ───────────────────────────────────────────────────────
 const CSV_TETO = 5000   // teto de linhas por export (segurança/performance)
-const csvCell = (v: string) => /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+// M-01 (auditoria 2026-07-30): neutraliza CSV formula injection. Célula que COMEÇA com
+// = + - @ TAB(0x09) CR(0x0D) pode ser interpretada como FÓRMULA pelo Excel/Sheets/LibreOffice
+// ao abrir (exec de comando via DDE, exfiltração via =HYPERLINK/WEBSERVICE). Campos livres do
+// cliente (nome de contato/negócio/vendedor) entram no CSV — um contato chamado `=cmd|...`
+// viraria fórmula na máquina de quem abre. Prefixa com aspa simples (Excel trata como texto).
+const csvSanitize = (v: string) => /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
+// Sanitiza a fórmula ANTES do quoting RFC-4180 (aspas/vírgula/newline).
+const csvCell = (raw: string) => {
+  const v = csvSanitize(raw)
+  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+}
 const csvBrl  = (c: number) => (c / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 const csvDay  = (iso: string | null) => iso ? new Date(iso).toLocaleDateString("pt-BR") : ""
 const CSV_STATUS: Record<DocumentStatus, string> = {

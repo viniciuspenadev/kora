@@ -12,9 +12,12 @@ import { supabaseAdmin } from "@/lib/supabase"
  *
  * Este teto é SEPARADO da cota premium do WhatsApp (decisão do owner 2026-07-31): um ataque
  * no widget não pode queimar a cota real que o cliente usa no atendimento. Fonte de verdade =
- * o próprio ledger `studio_runs` (cross-réplica, já gravado a cada chamada LLM) → zero schema
- * novo. Conta as chamadas LLM (cada linha = 1 custo) das conversas `channel='site'` nas
- * últimas 24h (janela ROLANTE — não meia-noite, pra atacante não resetar o contador).
+ * o próprio ledger `studio_runs` (cross-réplica, já gravado a cada turno com LLM) → zero schema
+ * novo. Conta LINHAS do ledger das conversas `channel='site'` nas últimas 24h (janela ROLANTE
+ * — não meia-noite, pra atacante não resetar o contador). Nota: cada turno com LLM grava ≥1
+ * linha, mas o turno do Agente IA AGREGA várias completions (até ~5) numa única linha — logo o
+ * cap conta TURNOS, não chamadas; o custo real atrás de N linhas é ≤ ~5N completions (ainda
+ * limitado, cada turno é bounded por MAX_STEPS/MAX_HOPS). O breaker garante teto, não custo exato.
  *
  * Ao estourar: **silêncio total** (owner) — o turno de IA é ignorado, a mensagem do visitante
  * já ficou persistida, e nenhuma resposta do bot é gerada. Sem erro pro visitante.

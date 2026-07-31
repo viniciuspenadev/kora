@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, canManageContacts, seesAllContacts, reachableContactIds } from "@/lib/visibility"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
+import { deleteContactAvatar } from "@/lib/contacts/avatar"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 import { logAudit } from "@/lib/audit"
 
@@ -233,6 +234,13 @@ export async function mergeContacts(
     p_survivor: survivorId, p_loser: loserId, p_tenant: scope.tenantId,
   })
   if (error) return { error: error.message }
+
+  // 🔴 A RPC APAGA o contato absorvido — e não toca em arquivo. O avatar dele ficava no
+  //    bucket pra sempre, com o id do titular no caminho (QA 2026-07-31 mediu 18 desses
+  //    em prod). Fusão é a porta que MAIS apaga contato no dia a dia: o audit_log tem
+  //    1 merge e 0 exclusões por LGPD. Depois da RPC, nunca antes: se a fusão falhar, o
+  //    contato continua existindo e o avatar dele tem que continuar lá.
+  await deleteContactAvatar(scope.tenantId, loserId)
 
   revalidatePath("/contatos")
   revalidatePath(`/contatos/${survivorId}`)

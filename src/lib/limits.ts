@@ -178,56 +178,32 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
     }
 
     case "storage_mb": {
-      // ⚠️ GAP CONHECIDO — este número é uma SUBESTIMATIVA, hoje sempre 0.
+      // ✅ GAP FECHADO 2026-07-31. Antes: sempre 0 MB pra todo mundo — o case selecionava
+      // `media_size_bytes`, coluna que NUNCA existiu, o PostgREST devolvia 42703, o erro
+      // era descartado junto com o `data`, e a cota mentiu por ~2 meses.
       //
-      // Até 2026-07-29 este case selecionava `media_size_bytes`, coluna que
-      // NUNCA existiu em chat_messages: o PostgREST devolvia 42703, o erro era
-      // descartado junto com o `data`, e a cota exibia 0 MB pra sempre.
+      // 🔴 O número vem do BUCKET, não de ponteiro em `chat_messages`. Contar por ponteiro
+      //    já nasceria errado: medido em 2026-07-31, há 59 objetos sem ponteiro (14,57 MB)
+      //    e 118 ponteiros sem objeto. Lendo `storage.objects` a deriva é ZERO — e o
+      //    número bate com o que a Supabase COBRA, que é a validação que importa.
+      //    Conferido ao vivo: 970 MB atribuídos × 972 MB no bucket (a diferença são 8
+      //    arquivos de um tenant já removido — item da faxina, passo 6).
       //
-      // O tamanho do arquivo não é persistido em lugar nenhum: os 3 ingestores
-      // (chat.ts, meta-inbound.ts, instagram-inbound.ts) gravam só
-      // `metadata.storage_path`, e o schema `storage` não é exposto no
-      // PostgREST (só public/graphql_public) — então não dá pra somar
-      // storage.objects daqui. Somar via Storage API exigiria um list()
-      // recursivo por conversa (N+1 requests) a cada render da página de uso.
-      //
-      // PRA FECHAR O GAP (ordem obrigatória — schema-before-deploy):
-      //   1. os 3 ingestores + documents.ts/send-quote.ts passam a gravar
-      //      `metadata.storage_size_bytes` (bytes do buffer que já têm em mãos);
-      //   2. backfill dos arquivos antigos (script lendo o bucket);
-      //   3. índice parcial pra soma não virar seq scan:
-      //      CREATE INDEX ... ON chat_messages (tenant_id)
-      //        WHERE metadata ? 'storage_size_bytes';
-      //   4. este case já soma sozinho — nada mais a mudar aqui.
-      //
-      // Enquanto (1) não roda, a query abaixo retorna 0 linhas e o uso fica 0 —
-      // que é a VERDADE do que sabemos, não um número inventado.
-      const MAX_PAGES = 200 // trava de sanidade: 200k mensagens com mídia
-      const PAGE      = 1000 // PostgREST corta a resposta em 1000 linhas
-      let totalBytes = 0
-      for (let page = 0; page < MAX_PAGES; page++) {
-        const from = page * PAGE
-        const { data, error } = await supabaseAdmin
-          .from("chat_messages")
-          .select("id, metadata")
-          .eq("tenant_id", tenantId)
-          .not("metadata->>storage_size_bytes", "is", null)
-          .order("id", { ascending: true })
-          .range(from, from + PAGE - 1)
-        // Erro não pode virar "0 MB" silencioso de novo — foi exatamente assim
-        // que este bug sobreviveu 2 meses. Loga alto e devolve o parcial real.
-        if (error) {
-          console.error("[limits] storage_mb: falha ao somar mídia", JSON.stringify({ tenantId, error: error.message }))
-          break
+      // ⚠️ RPC e não query: agregado do PostgREST está DESLIGADO neste projeto
+      //    (`PGRST123`). `SUM()` não existe pro supabaseAdmin — e paginar `select("bytes")`
+      //    recriaria o scan que este case existia pra matar.
+      //    Desenho completo: docs/tenant-storage-foundation-design.md §1.
+      const { data, error } = await supabaseAdmin.rpc("tenant_storage_usage", { p_tenant_id: tenantId })
+      // Erro NÃO pode virar "0 MB" silencioso — foi exatamente assim que o bug anterior
+      // sobreviveu 2 meses. Exceção única: 42883 = a função ainda não foi aplicada.
+      if (error) {
+        if (error.code !== "42883") {
+          console.error("[limits] storage_mb:", JSON.stringify({ tenantId, code: error.code, message: error.message }))
         }
-        const rows = (data ?? []) as { metadata: unknown }[]
-        for (const row of rows) {
-          const raw = (row.metadata as { storage_size_bytes?: unknown } | null)?.storage_size_bytes
-          const bytes = typeof raw === "number" ? raw : Number(raw)
-          if (Number.isFinite(bytes) && bytes > 0) totalBytes += bytes
-        }
-        if (rows.length < PAGE) break
+        return 0
       }
+      const rows = (data ?? []) as { bytes: number | string }[]
+      const totalBytes = rows.reduce((acc, r) => acc + (Number(r.bytes) || 0), 0)
       return Math.round(totalBytes / (1024 * 1024))
     }
 
@@ -308,6 +284,40 @@ export async function resolveLimitMax(
   tenantId: string, resource: LimitResource,
 ): Promise<{ max: number | null; source: "override" | "plan" | "default" }> {
   return resolveMax(tenantId, resource, await getPlanContext(tenantId))
+}
+
+/** Rótulo de cada natureza de arquivo na tela de uso. Desconhecido cai em "Outros" —
+ *  `kind` novo não pode inventar uma linha com nome cru na cara do cliente. */
+const STORAGE_KIND_LABEL: Record<string, string> = {
+  conversation: "Conversas", avatar: "Fotos de contato", document: "Documentos",
+  catalog: "Catálogo", ig_thumb: "Posts do Instagram", unit_logo: "Logos",
+  user_avatar: "Fotos de perfil", widget: "Widget do site", card: "Cartões",
+}
+
+export interface StorageBreakdownItem { kind: string; label: string; bytes: number; objects: number }
+
+/**
+ * Uso de armazenamento POR ORIGEM (conversas · documentos · catálogo…).
+ *
+ * "Você usou 1,8 GB" não é acionável — o dono não sabe o que apagar. Com a quebra, sabe.
+ * Mesma fonte do `storage_mb` (a RPC sobre o bucket), então os dois NUNCA divergem: um é
+ * a soma do outro.
+ */
+export async function getStorageBreakdown(tenantId: string): Promise<StorageBreakdownItem[]> {
+  const { data, error } = await supabaseAdmin.rpc("tenant_storage_usage", { p_tenant_id: tenantId })
+  if (error) {
+    if (error.code !== "42883") console.error("[limits] breakdown:", error.code, error.message)
+    return []
+  }
+  return ((data ?? []) as { kind: string; bytes: number | string; objects: number | string }[])
+    .map((r) => ({
+      kind:    r.kind,
+      label:   STORAGE_KIND_LABEL[r.kind] ?? "Outros",
+      bytes:   Number(r.bytes) || 0,
+      objects: Number(r.objects) || 0,
+    }))
+    .filter((r) => r.bytes > 0)
+    .sort((a, b) => b.bytes - a.bytes)
 }
 
 export async function requireLimit(tenantId: string, resource: LimitResource): Promise<void> {

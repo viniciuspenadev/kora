@@ -13,6 +13,15 @@ interface Props {
   tenantPlan: string
   /** Uso de IA (30d) em UNIDADES — custo é assunto interno da plataforma. */
   aiUsage?:   { replies: number; transcriptions: number; support: number }
+  /** Armazenamento POR ORIGEM. Mesma fonte do limite `storage_mb` — as partes somam o total. */
+  storage?:   { kind: string; label: string; bytes: number; objects: number }[]
+}
+
+function formatBytes(b: number): string {
+  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GB`
+  if (b >= 1024 ** 2) return `${Math.round(b / 1024 ** 2)} MB`
+  if (b >= 1024)      return `${Math.round(b / 1024)} kB`
+  return `${b} B`
 }
 
 const PLAN_LABELS: Record<string, string> = {
@@ -45,7 +54,8 @@ function formatNum(n: number, unit: string): string {
   return `${n.toLocaleString("pt-BR")}${unit ? ` ${unit}` : ""}`
 }
 
-export function UsageClient({ limits, tenantName, tenantPlan, aiUsage }: Props) {
+export function UsageClient({ limits, tenantName, tenantPlan, aiUsage, storage }: Props) {
+  const storageTotal = (storage ?? []).reduce((a, s) => a + s.bytes, 0)
   const overLimit  = limits.filter((l) => !l.ok)
   const nearLimit  = limits.filter((l) => l.ok && l.max && l.used / l.max >= 0.8)
   const healthy    = limits.filter((l) => l.ok && (!l.max || l.used / l.max < 0.8))
@@ -95,6 +105,41 @@ export function UsageClient({ limits, tenantName, tenantPlan, aiUsage }: Props) 
           </div>
         </div>
       </SectionCard>
+
+      {/* Armazenamento POR ORIGEM. "Você usou 1,8 GB" não é acionável — o dono não sabe o
+          que apagar. Com a quebra, sabe (e quase sempre a resposta é "conversas"). */}
+      {storageTotal > 0 && (
+        <SectionCard
+          title={
+            <span className="flex items-center gap-2">
+              <Database className="size-4 text-slate-400" />
+              Armazenamento por origem
+              <span className="text-xs font-normal text-slate-400">· {formatBytes(storageTotal)} no total</span>
+            </span>
+          }
+        >
+          <div className="space-y-2.5">
+            {(storage ?? []).map((s) => {
+              const pct = Math.max(1, Math.round((s.bytes / storageTotal) * 100))
+              return (
+                <div key={s.kind}>
+                  <div className="flex items-baseline justify-between gap-3 text-xs">
+                    <span className="font-medium text-slate-700">{s.label}</span>
+                    <span className="text-slate-500 tabular-nums shrink-0">
+                      {formatBytes(s.bytes)}
+                      <span className="text-slate-300"> · </span>
+                      {s.objects.toLocaleString("pt-BR")} {s.objects === 1 ? "arquivo" : "arquivos"}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                    <div className="h-full rounded-full bg-primary/60" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </SectionCard>
+      )}
 
       {/* Recursos no limite (destaque) */}
       {overLimit.length > 0 && (

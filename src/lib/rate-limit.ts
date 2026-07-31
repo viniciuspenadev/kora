@@ -16,6 +16,11 @@ interface Bucket {
 
 const buckets = new Map<string, Bucket>()
 
+// H-09 (DoS): teto DURO do nº de buckets. O sweep periódico (10min) só tira ociosos >1h —
+// durante um flood ATIVO de chaves únicas (janelas frescas < 1h), o Map cresceria sem limite
+// até OOM antes do próximo sweep. Este teto reclama memória na hora, sob ataque.
+const MAX_BUCKETS = Math.max(1000, Number(process.env.RATE_LIMIT_MAX_BUCKETS ?? 50_000) || 50_000)
+
 // Cleanup de buckets stale a cada 10min (sem await, fire-and-forget)
 let cleanupStarted = false
 function startCleanup() {
@@ -27,6 +32,27 @@ function startCleanup() {
       if (b.resetAt < now - 3_600_000) buckets.delete(key) // 1h sem uso
     }
   }, 600_000)
+}
+
+/**
+ * Mantém o Map abaixo do teto (só age quando ESTOURA — custo zero no caminho normal).
+ * (1) varre expirados (janela já fechada) — remoção barata, não afeta quem está ativo.
+ * (2) ainda cheio (flood de >MAX_BUCKETS chaves DENTRO da janela)? remove os mais próximos de
+ *     expirar até 90% do teto (headroom p/ ~10% inserts antes do próximo evict → amortiza o
+ *     sort a ~O(log n)/insert). Evict de chave de flood não ajuda o atacante: sob flood de
+ *     chaves ÚNICAS ele não re-bate a mesma chave, então perder o bucket dele é inócuo.
+ */
+function evictIfNeeded(now: number) {
+  if (buckets.size < MAX_BUCKETS) return
+  for (const [key, b] of buckets) {
+    if (b.resetAt < now) buckets.delete(key)
+  }
+  if (buckets.size < MAX_BUCKETS) return
+  const sorted = [...buckets.entries()].sort((a, b) => a[1].resetAt - b[1].resetAt)
+  const target = Math.floor(MAX_BUCKETS * 0.9)
+  for (let i = 0; i < sorted.length && buckets.size > target; i++) {
+    buckets.delete(sorted[i][0])
+  }
 }
 
 /**
@@ -47,7 +73,8 @@ export function rateLimit(
   const existing = buckets.get(key)
 
   if (!existing || existing.resetAt < now) {
-    // Nova janela
+    // Nova janela — só aqui o Map PODE crescer, então é o ponto certo pra checar o teto.
+    if (!existing) evictIfNeeded(now)
     buckets.set(key, { tokens: max - 1, resetAt: now + windowMs })
     return { ok: true, remaining: max - 1, retryAfterSec: 0 }
   }

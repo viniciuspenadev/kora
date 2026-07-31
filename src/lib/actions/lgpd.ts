@@ -429,6 +429,18 @@ export async function deletePersonalData(contactId: string): Promise<
       if (typeof path === "string" && path.length > 0) storagePathSet.add(path)
     }
   }
+  // 🔴 AVATAR DO CONTATO — escapava daqui. A varredura acima é sobre `chat_messages`, e
+  //    a foto de perfil NÃO é mensagem: mora em `avatars/<tenant>/<contato>.<ext>`, gravada
+  //    pelo ingestor a partir do CDN do WhatsApp/Instagram. Resultado medido em prod
+  //    (QA 2026-07-31): **18 fotos de rosto de contatos já apagados**, em 3 tenants, com o
+  //    id do titular no próprio caminho. Imagem de rosto é PII e o pedido de eliminação
+  //    (Art. 18 VI) alcança ela.
+  //    Extensões varridas em leque: a extensão vem do mime da origem, então o mesmo contato
+  //    pode ter deixado `.jpeg` e depois `.png` — apagar só a do `metadata` deixaria a outra.
+  for (const ext of ["jpeg", "jpg", "png", "webp", "gif"]) {
+    storagePathSet.add(`avatars/${tenantId}/${contactId}.${ext}`)
+  }
+
   const storagePaths = [...storagePathSet]
 
   // 5. Mídia PRIMEIRO, banco depois.

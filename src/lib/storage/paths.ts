@@ -1,0 +1,79 @@
+import "server-only"
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * CONTRATO DE CAMINHOS DO STORAGE — leia antes de subir arquivo novo
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * 🔴 **O CAMINHO É A FONTE DA VERDADE.** No Kora, quanto o cliente usa de armazenamento,
+ *    de onde vem e de quem é NÃO saem de coluna nenhuma — saem do **caminho do arquivo**.
+ *    Duas funções no banco leem `storage.objects` e derivam tudo do path:
+ *      • `tenant_storage_usage(tenant)`   → o número que o cliente vê (e a cota)
+ *      • `reconcile_storage_objects()`    → preenche o ledger `tenant_storage_objects`
+ *
+ *    Isso foi decisão consciente (docs/tenant-storage-foundation-design.md §1): medir pelo
+ *    bucket dá **0% de deriva** e bate com o que a Supabase COBRA — enquanto contar por
+ *    ponteiro já nascia errado (medido: 59 objetos sem ponteiro, 118 ponteiros sem objeto).
+ *
+ * 🔴 **CONSEQUÊNCIA PRA QUEM VAI CRIAR UPLOAD NOVO:** você não precisa gravar nada em
+ *    tabela nenhuma. **Mas o caminho tem que seguir o formato abaixo** — senão o arquivo
+ *    do seu cliente não entra na cota dele, e ninguém percebe por meses.
+ *
+ *    FORMATO OBRIGATÓRIO:  <prefixo>/<tenantId>/<donoId>[-sufixo].<ext>
+ *
+ *    O `<tenantId>` no 2º segmento é o que atribui o gasto. O `<donoId>` (uuid no começo
+ *    do 3º segmento) é o que permite apagar o arquivo junto do dono e cumprir LGPD.
+ *    Exceção histórica: mídia de conversa usa `<tenantId>/<conversaId>/<arquivo>`.
+ *
+ * ⚠️ **PREFIXO NOVO = MEXER EM DOIS LUGARES**, sempre juntos:
+ *      1. `STORAGE_PREFIXES` aqui embaixo;
+ *      2. o `CASE` de `reconcile_storage_objects()` e de `tenant_storage_usage()`
+ *         (supabase/migrations/20260731_storage_reconcile.sql).
+ *    Esquecer o (2) faz o arquivo cair em `kind='other'` → aparece como **"Outros"** na
+ *    tela de uso do cliente. É de propósito: falha visível em vez de silenciosa.
+ *
+ * ⚠️ **NÃO existe hoje**: quem subiu (`uploaded_by`). O caminho não carrega isso e
+ *    ninguém pediu — se virar requisito, aí sim vale instrumentar os 13 pontos de upload.
+ */
+
+/** Prefixo → natureza + de que entidade o arquivo é. Espelho do CASE no SQL. */
+export const STORAGE_PREFIXES = {
+  "avatars":      { kind: "avatar",      ref: "contact"      },
+  "catalog":      { kind: "catalog",     ref: "catalog_item" },
+  "documents":    { kind: "document",    ref: "document"     },
+  "ig-thumbs":    { kind: "ig_thumb",    ref: null           },
+  "unit-logos":   { kind: "unit_logo",   ref: "unit"         },
+  "user-avatars": { kind: "user_avatar", ref: null           },  // ⚠️ sem tenant no path
+  "templates":    { kind: "template",    ref: null           },  // ⚠️ nunca é apagado hoje
+} as const
+
+export type StoragePrefix = keyof typeof STORAGE_PREFIXES
+
+/**
+ * Monta o caminho no formato que as funções de medição entendem.
+ *
+ * Use SEMPRE isto em vez de interpolar string na mão — é o que garante que o arquivo
+ * entre na cota do cliente certo.
+ */
+export function storagePath(
+  prefix: StoragePrefix, tenantId: string, ownerId: string, ext: string,
+): string {
+  const clean = ext.replace(/[^a-z0-9]/gi, "").toLowerCase() || "bin"
+  return `${prefix}/${tenantId}/${ownerId}.${clean}`
+}
+
+/** Mídia de conversa: formato histórico `<tenant>/<conversa>/<timestamp>_<nome>`. */
+export function conversationMediaPath(tenantId: string, conversationId: string, fileName: string): string {
+  return `${tenantId}/${conversationId}/${Date.now()}_${fileName.replace(/[^\w.-]/g, "_")}`
+}
+
+/**
+ * Todos os caminhos possíveis de um arquivo de dono único, pra REMOÇÃO.
+ *
+ * ⚠️ A extensão vem do mime da ORIGEM: o mesmo contato pode ter deixado `.jpeg` hoje e
+ *    `.png` amanhã. Apagar só a registrada no `metadata` deixa a outra pra trás — foi
+ *    assim que 18 fotos de rosto de contatos apagados sobreviveram (LGPD, 2026-07-31).
+ */
+export function storagePathVariants(prefix: StoragePrefix, tenantId: string, ownerId: string): string[] {
+  return ["jpeg", "jpg", "png", "webp", "gif", "pdf"].map((e) => `${prefix}/${tenantId}/${ownerId}.${e}`)
+}

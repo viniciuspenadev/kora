@@ -29,6 +29,31 @@ function isAllowedAvatarCdn(rawUrl: string): boolean {
  * Baixa `cdnUrl` e aponta `chat_contacts.profile_pic_url` → `/api/avatar/<contactId>`.
  * Grava `metadata.avatar_path` (o proxy lê daí) + `profile_pic_fetched_at`.
  */
+/**
+ * Apaga o arquivo de avatar de um contato. Usar SEMPRE que o contato deixar de existir.
+ *
+ * 🔴 Existe porque o avatar ESCAPAVA das duas portas que apagam contato (QA 2026-07-31):
+ *    • `deletePersonalData` (LGPD) só varre `chat_messages.metadata->>storage_path`, e
+ *      avatar NÃO é mensagem;
+ *    • `mergeContacts` deleta o contato absorvido pela RPC e nunca tocou em arquivo.
+ *    Resultado medido em prod: **18 fotos de rosto de contatos já apagados**, em 3 tenants,
+ *    com o id do titular no próprio caminho. Isso é PII sobrevivendo à exclusão
+ *    (LGPD Art. 18 VI), não sobra de contabilidade.
+ *
+ * Varre as extensões possíveis: o caminho é `avatars/<tenant>/<contato>.<ext>` e a extensão
+ * vem do mime da origem — o mesmo contato pode ter deixado `.jpeg` hoje e `.png` amanhã.
+ * Passar só a do `metadata` deixaria a outra pra trás.
+ *
+ * Best-effort de propósito: falhar aqui NÃO pode impedir a exclusão do contato (o titular
+ * pediu pra ser esquecido). Erro vira log, e a varredura de órfão limpa depois.
+ */
+export async function deleteContactAvatar(tenantId: string, contactId: string): Promise<void> {
+  const paths = ["jpeg", "jpg", "png", "webp", "gif"].map((e) => `avatars/${tenantId}/${contactId}.${e}`)
+  const { error } = await supabaseAdmin.storage.from(AVATAR_BUCKET).remove(paths)
+  // `remove` não reclama de caminho inexistente — só erro real chega aqui.
+  if (error) console.error("[avatar] remover:", JSON.stringify({ contactId, message: error.message }))
+}
+
 export async function saveContactAvatarFromUrl(
   tenantId: string,
   contactId: string,

@@ -2,18 +2,22 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { Gauge } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
-import { listAllLimits } from "@/lib/limits"
+import { listAllLimits, getStorageBreakdown } from "@/lib/limits"
 import { hasModule } from "@/lib/modules"
 import { supabaseAdmin } from "@/lib/supabase"
 import { UsageClient } from "./client"
+
+/** Início da janela de 30 dias (ISO). Fora do componente: `Date.now()` no corpo do render
+ *  cai na regra `react-hooks/purity`. */
+const since30d = () => new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
 export default async function UsagePage() {
   const session = await auth()
   if (!session) redirect("/auth/signin")
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
 
-  const day30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  const [allLimits, { data: tenant }, { data: aiRows }, igAutomation] = await Promise.all([
+  const day30 = since30d()
+  const [allLimits, { data: tenant }, { data: aiRows }, igAutomation, storage] = await Promise.all([
     listAllLimits(session.user.tenantId),
     supabaseAdmin
       .from("tenants")
@@ -28,6 +32,9 @@ export default async function UsagePage() {
       .eq("tenant_id", session.user.tenantId)
       .gte("created_at", day30),
     hasModule(session.user.tenantId, "instagram_automation"),
+    // Quebra do armazenamento por origem. Mesma fonte do `storage_mb` (RPC sobre o
+    // bucket), então o total e as partes nunca divergem — um é a soma do outro.
+    getStorageBreakdown(session.user.tenantId),
   ])
 
   // Cota de recurso que o tenant NÃO licencia é ruído ("0 / 50" de algo que ele não tem).
@@ -54,6 +61,7 @@ export default async function UsagePage() {
         tenantName={tenant?.name ?? ""}
         tenantPlan={tenant?.plan ?? "trial"}
         aiUsage={{ replies: aiReplies, transcriptions: aiTranscriptions, support: aiSupport }}
+        storage={storage}
       />
     </PageShell>
   )

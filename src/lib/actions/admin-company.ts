@@ -57,7 +57,8 @@ export async function upsertTenantBillingProfile(tenantId: string, input: Record
   await requirePlatformAdmin()
   const { error } = await supabaseAdmin
     .from("tenant_billing_profile")
-    .upsert({ tenant_id: tenantId, ...clean(input), updated_at: new Date().toISOString() }, { onConflict: "tenant_id" })
+    // tenant_id DEPOIS do spread (clean() é passthrough): o tenant escolhido pelo admin vence um tenant_id que vaze em `input`.
+    .upsert({ ...clean(input), tenant_id: tenantId, updated_at: new Date().toISOString() }, { onConflict: "tenant_id" })
   if (error) return { error: error.message }
   revalidatePath(`/admin/tenants/${tenantId}/empresa`)
   return {}

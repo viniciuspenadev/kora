@@ -169,8 +169,13 @@ export async function createDealStage(
   data: { name: string; color?: string; probability_pct?: number; is_won?: boolean; is_lost?: boolean; show_in_kanban?: boolean },
 ) {
   const session = await requireCrmAdmin()
+  // Anti orphan-write (auditoria 07-24): confirma que o funil é DESTE tenant ANTES de
+  // inserir a etapa (senão pipelineId de outro tenant criaria etapa órfã).
+  const { data: parent } = await supabaseAdmin.from("deal_pipelines")
+    .select("id").eq("id", pipelineId).eq("tenant_id", session.user.tenantId).maybeSingle()
+  if (!parent) throw new Error("Funil não encontrado")
   const { data: last } = await supabaseAdmin.from("deal_pipeline_stages")
-    .select("position").eq("pipeline_id", pipelineId).order("position", { ascending: false }).limit(1).maybeSingle()
+    .select("position").eq("pipeline_id", pipelineId).eq("tenant_id", session.user.tenantId).order("position", { ascending: false }).limit(1).maybeSingle()
   const { error } = await supabaseAdmin.from("deal_pipeline_stages").insert({
     pipeline_id: pipelineId, tenant_id: session.user.tenantId, name: data.name.trim(),
     color: data.color ?? "#94A3B8", position: ((last?.position as number | undefined) ?? -1) + 1,

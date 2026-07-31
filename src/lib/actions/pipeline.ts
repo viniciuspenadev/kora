@@ -315,10 +315,18 @@ export async function createStage(
 ) {
   const session = await requireAdmin()
 
+  // Anti orphan-write (auditoria 07-24): confirma que o funil é DESTE tenant ANTES de
+  // inserir a etapa. Sem isso, um pipelineId de outro tenant criaria etapa órfã (tenant_id
+  // daqui, pai de lá). Reads filtram tenant_id (não vaza), mas polui a integridade.
+  const { data: parent } = await supabaseAdmin
+    .from("pipelines").select("id").eq("id", pipelineId).eq("tenant_id", session.user.tenantId).maybeSingle()
+  if (!parent) throw new Error("Funil não encontrado")
+
   const { data: last } = await supabaseAdmin
     .from("pipeline_stages")
     .select("position")
     .eq("pipeline_id", pipelineId)
+    .eq("tenant_id", session.user.tenantId)
     .order("position", { ascending: false })
     .limit(1)
     .maybeSingle()

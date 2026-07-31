@@ -151,9 +151,18 @@ export function PostPicker({ open, onClose, username, selected = [], onPick, mul
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose() }}>
       {/* Largura: escolher post é tarefa VISUAL — quanto mais miniatura cabe de uma vez,
           menos rolagem e menos erro de escolher o post errado. `max-w-3xl` (768px) dava 4
-          colunas apertadas; `max-w-5xl` (1024px) com 5 colunas no desktop mostra ~2 semanas
+          colunas apertadas; agora `max-w-7xl` (1280px) com 4 colunas no desktop mostra ~2 semanas
           de posts sem rolar. `w-[92vw]` segura em tela menor sem estourar. */}
-      <DialogContent className="w-[92vw] max-w-5xl p-0 gap-0 overflow-hidden">
+      {/* 🔴 `sm:max-w-7xl` — o PREFIXO é obrigatório, não estilo. O `DialogContent` do
+          design system traz `sm:max-w-sm` (384px) na base: como é variante responsiva, ela
+          vence QUALQUER `max-w-*` sem prefixo em tela ≥640px. Duas tentativas de alargar
+          este modal não surtiram efeito por isso — as classes existiam e eram sobrepostas
+          pela media query. Modal largo aqui precisa sempre de `sm:`.
+          ⚠️ Alargar SEM aumentar coluna: a 1ª tentativa subiu os dois juntos e a miniatura
+          ficaria igual — mais coluna divide a largura nova. 1280px em 4 colunas leva a
+          miniatura de ~187px pra ~300px. Escolher post é tarefa visual: importa enxergar a
+          arte, não caber mais posts. */}
+      <DialogContent className="w-[95vw] sm:max-w-7xl p-0 gap-0 overflow-hidden">
         <DialogHeader className="px-5 py-4 border-b border-slate-100">
           <DialogTitle className="text-base font-bold text-slate-900">Escolher post do Instagram</DialogTitle>
           <p className="text-xs text-slate-500">
@@ -195,14 +204,16 @@ export function PostPicker({ open, onClose, username, selected = [], onPick, mul
         </div>
 
         {/* Grade */}
-        <div className="px-5 py-4 overflow-y-auto" style={{ maxHeight: "58vh" }}>
+        {/* 58vh deixava a grade curta: 1 fileira e meia visível, rolagem pra tudo. 70vh
+            mostra 2 fileiras inteiras sem o modal encostar na borda da tela. */}
+        <div className="px-5 py-4 overflow-y-auto" style={{ maxHeight: "70vh" }}>
           {error ? (
             <div className="rounded-lg border border-red-100 bg-red-50/60 p-3 flex items-start gap-2 text-xs text-red-700">
               <AlertCircle className="size-4 shrink-0 mt-px" /> <span>{error}</span>
             </div>
           ) : loading && !items.length ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {Array.from({ length: 10 }).map((_, i) => (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-4">
+              {Array.from({ length: 8 }).map((_, i) => (
                 <div key={i}>
                   <div className="aspect-square rounded-lg bg-slate-100 animate-pulse" />
                   <div className="h-2 w-10 mt-1.5 rounded bg-slate-100 animate-pulse" />
@@ -224,7 +235,7 @@ export function PostPicker({ open, onClose, username, selected = [], onPick, mul
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-4">
                 {visible.map((m) => {
                   const isMarked = marked.includes(m.id)
                   return (

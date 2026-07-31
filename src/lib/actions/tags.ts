@@ -12,10 +12,19 @@ async function requireSession() {
   return session
 }
 
+// CRUD da DEFINIÇÃO de tag (criar/renomear/deletar) = só owner/admin (auditoria 07-24:
+// tag é recurso compartilhado do tenant, deletar afeta todo mundo). Agente segue podendo
+// USAR (applyTag/removeTag em entidades) — decisão do owner 2026-07-31.
+async function requireTagAdmin() {
+  const session = await requireSession()
+  if (!["owner", "admin"].includes(session.user.role)) throw new Error("Sem permissão")
+  return session
+}
+
 // ── CRUD de Tags ───────────────────────────────────────────────
 
 export async function createTag(name: string, color: string, description?: string) {
-  const session = await requireSession()
+  const session = await requireTagAdmin()
 
   const { data, error } = await supabaseAdmin
     .from("tags")
@@ -35,7 +44,7 @@ export async function createTag(name: string, color: string, description?: strin
 }
 
 export async function updateTag(id: string, data: { name?: string; color?: string; description?: string | null }) {
-  const session = await requireSession()
+  const session = await requireTagAdmin()
   const payload: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (data.name        !== undefined) payload.name        = data.name.trim()
   if (data.color       !== undefined) payload.color       = data.color
@@ -53,7 +62,7 @@ export async function updateTag(id: string, data: { name?: string; color?: strin
 }
 
 export async function deleteTag(id: string) {
-  const session = await requireSession()
+  const session = await requireTagAdmin()
 
   const { error } = await supabaseAdmin
     .from("tags")
