@@ -4,6 +4,7 @@ import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { getOrCreateSiteContact, getOrCreateSiteConversation } from "@/lib/channels/site"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
+import { siteAiWithinBudget } from "@/lib/ai-v2/site-budget"
 
 /**
  * POST /api/site/message
@@ -96,6 +97,12 @@ export async function POST(req: NextRequest) {
     // widget pega via polling). Sem debounce: chat ao vivo quer resposta já.
     after(async () => {
       try {
+        // H-07/H-08: disjuntor de custo de IA anônima. Estourou o budget das últimas 24h →
+        // silêncio total (mensagem do visitante já persistida; sem resposta do bot; sem erro).
+        if (!(await siteAiWithinBudget(tenant.id))) {
+          console.warn(`[/api/site/message] budget de IA do site estourado (tenant ${tenant.id}) — turno ignorado`)
+          return
+        }
         // Tenant site-first (sem número nenhum) → `instance` é null. O motor exige a forma
         // do provider no contrato, mas o canal `site` não transmite por provider — a
         // resposta é persistida e o widget busca por polling. Objeto vazio satisfaz o

@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse, after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { dispatchEvolutionEvent } from "../route"
+import { readWebhookBody } from "@/lib/webhooks/read-capped"
+
+// Cap do body do webhook Evolution (H-01). Generoso: payload Baileys pode carregar mídia
+// (base64) — mídia legítima (img/vídeo/áudio ≤16MB) cabe folgado; doc de 100MB já estoura
+// o bodySizeLimit global antes de chegar aqui. Env-configurável se um tenant precisar.
+const EVOLUTION_WEBHOOK_MAX_BYTES = Number(process.env.EVOLUTION_WEBHOOK_MAX_BYTES ?? 50 * 1024 * 1024)
 
 /**
  * POST /api/webhooks/evolution/[secret]
@@ -35,7 +41,12 @@ export async function POST(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const body = await req.json()
+    // H-01: teto de bytes ANTES de materializar (secret-gated, mas evita heap-DoS
+    // de quem possui/vaza o secret). Só lê o corpo APÓS validar o secret + a instância.
+    const read = await readWebhookBody(req, EVOLUTION_WEBHOOK_MAX_BYTES)
+    if ("reject" in read) return read.reject
+    let body
+    try { body = JSON.parse(read.raw) } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }) }
     if (!body.event) {
       return NextResponse.json({ error: "Missing event" }, { status: 400 })
     }

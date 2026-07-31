@@ -22,6 +22,7 @@ async function assertAutomationQuota(tenantId: string): Promise<string | null> {
   return null
 }
 import type { FlowGraph, FlowTrigger } from "@/lib/ai-v2/flow/types"
+import { checkFlowGraphLimits } from "@/lib/ai-v2/flow/limits"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
 
 async function requireAdmin() {
@@ -228,6 +229,9 @@ export async function createFlowWithAI(description: string): Promise<{ id?: stri
   const { generateFlow } = await import("@/lib/ai-v2/copilot")
   const gen = await generateFlow(session.user.tenantId, description)
   if (gen.error || !gen.flow) return { error: gen.error ?? "Falha ao gerar o fluxo." }
+  // H-15: mesmo vindo da nossa IA, valida o teto antes de persistir (defesa em profundidade).
+  const gErr = checkFlowGraphLimits(gen.flow.graph)
+  if (gErr) return { error: gErr }
 
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
@@ -253,6 +257,9 @@ export async function saveFlow(
   patch: { name: string; trigger: FlowTrigger; graph: FlowGraph },
 ): Promise<{ error?: string }> {
   const session = await requireAdmin()
+  // H-15: teto do grafo antes de gravar (JSONB é lido/executado a cada disparo).
+  const gErr = checkFlowGraphLimits(patch.graph)
+  if (gErr) return { error: gErr }
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
     .update({
@@ -286,6 +293,10 @@ export async function publishFlow(
   patch: { name: string; trigger: FlowTrigger; graph: FlowGraph },
 ): Promise<{ error?: string }> {
   const session = await requireAdmin()
+
+  // H-15: teto do grafo antes de gravar o publicado (JSONB lido/executado a cada disparo).
+  const gErr = checkFlowGraphLimits(patch.graph)
+  if (gErr) return { error: gErr }
 
   // Gatilho do Instagram: recusa ANTES de publicar. Publicar um fluxo que não tem como
   // capturar (sem licença, sem conta, sem post ou sem direct) é a armadilha silenciosa —
@@ -376,6 +387,9 @@ export async function cloneFlow(id: string): Promise<{ id?: string; error?: stri
     .maybeSingle()
   if (readErr) return { error: readErr.message }
   if (!src) return { error: "Fluxo não encontrado." }
+  // H-15: re-valida o teto ao clonar (fecha o caso de um legado oversized ser duplicado).
+  const gErr = checkFlowGraphLimits(src.graph as FlowGraph)
+  if (gErr) return { error: gErr }
 
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
