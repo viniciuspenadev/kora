@@ -1,6 +1,7 @@
 import { NextResponse, after, type NextRequest } from "next/server"
 import crypto from "crypto"
 import { processMetaWebhook } from "@/lib/channels/meta-inbound"
+import { readWebhookBody } from "@/lib/webhooks/read-capped"
 
 /**
  * Webhook do WhatsApp Cloud API (oficial) — ISOLADO do webhook Evolution.
@@ -25,7 +26,10 @@ export function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const raw = await req.text()
+  // H-01: lê o body com teto de bytes ANTES de qualquer processamento (heap-DoS).
+  const read = await readWebhookBody(req)
+  if ("reject" in read) return read.reject
+  const raw = read.raw
 
   // Valida assinatura — FAIL-CLOSED: sem o app secret, recusa (não processa sem verificar).
   const secret = process.env.META_APP_SECRET

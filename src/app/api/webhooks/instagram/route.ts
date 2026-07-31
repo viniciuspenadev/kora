@@ -1,6 +1,7 @@
 import { NextResponse, after, type NextRequest } from "next/server"
 import crypto from "crypto"
 import { processInstagramWebhook } from "@/lib/channels/instagram-inbound"
+import { readWebhookBody } from "@/lib/webhooks/read-capped"
 
 /**
  * Webhook do Instagram Direct (app Kora-IG, ISOLADO do webhook do WhatsApp/Meta).
@@ -25,7 +26,10 @@ export function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const raw = await req.text()
+  // H-01: body com teto de bytes ANTES de processar (heap-DoS).
+  const read = await readWebhookBody(req)
+  if ("reject" in read) return read.reject
+  const raw = read.raw
 
   // Assinatura — FAIL-CLOSED: sem app secret, recusa (não processa sem verificar).
   const secret = process.env.INSTAGRAM_APP_SECRET

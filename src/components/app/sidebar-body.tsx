@@ -8,8 +8,8 @@ import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } fr
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
   Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
-  Tag as TagIcon, Users, CreditCard, Wand2, Gauge, BarChart3, Mail, Blocks, FileText, Headset, BookMarked, IdCard,
-  Plug, PanelLeftClose, PanelLeftOpen, Package, Boxes, SlidersHorizontal, ClipboardList, ListChecks, Megaphone, Send, Funnel, Plus, Building2,
+  Wand2, BarChart3, Blocks, FileText, Headset,
+  PanelLeftClose, PanelLeftOpen, Package, Boxes, ListChecks, Megaphone, Send, Funnel, Plus, Building2,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -128,36 +128,12 @@ const NAV: NavItem[] = [
       { href: "/automacao/funil",          label: "Fluxos de funil",       icon: <Layers       className={subIcon} strokeWidth={1.75} />, soon: true, module: "sequences" },
     ],
   },
-  {
-    key:       "config",
-    label:     "Configurações",
-    icon:      <Settings className={topIconSpin} strokeWidth={1.75} />,
-    adminOnly: true,
-    flyout:    true,
-    children: [
-      { href: "/configuracoes/atendimento",    label: "Atendimento",       icon: <Headset          className={subIcon} strokeWidth={1.75} /> },
-      { href: "/negocios/funis",               label: "Config. Funis",     icon: <SlidersHorizontal className={subIcon} strokeWidth={1.75} />, module: "crm" },
-      { href: "/configuracoes/cotacao",        label: "Cotação e Contrato", icon: <FileText        className={subIcon} strokeWidth={1.75} />, module: "crm" },
-      { href: "/configuracoes/motivos",        label: "Motivos de perda",  icon: <ClipboardList    className={subIcon} strokeWidth={1.75} />, module: "crm" },
-      { href: "/configuracoes/tags",           label: "Tags",              icon: <TagIcon          className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/cadastro",       label: "Campos do cadastro", icon: <IdCard       className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/equipe",         label: "Organização",       icon: <Users        className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/relatorios",     label: "Relatórios automáticos", icon: <Mail    className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/uso",            label: "Uso e limites",     icon: <Gauge        className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/cobranca",       label: "Cobrança",          icon: <CreditCard   className={subIcon} strokeWidth={1.75} />, soon: true, module: "billing_panel" },
-      { href: "/integracoes",                  label: "Integrações",       icon: <Plug         className={subIcon} strokeWidth={1.75} /> },
-      {
-        key:          "templates",
-        label:        "Templates",
-        icon:         <FileText className={subIcon} strokeWidth={1.75} />,
-        officialOnly: true,
-        children: [
-          { href: "/templates",            label: "Meus templates", icon: <FileText   className={subIcon} strokeWidth={1.75} /> },
-          { href: "/templates/biblioteca", label: "Biblioteca",     icon: <BookMarked className={subIcon} strokeWidth={1.75} /> },
-        ],
-      },
-    ],
-  },
+  // 🔴 ITEM ÚNICO, não mais acordeão (decisão do dono, 2026-07-30). Os ~15 itens de
+  //    configuração migraram pro índice fixo da própria área (components/app/settings-nav
+  //    + configuracoes/layout). Manter os dois seria o MESMO menu em dois lugares — e é
+  //    assim que um lado ganha item novo e o outro fica desatualizado em silêncio.
+  //    ⚠️ Ao adicionar tela de configuração, mexa no `SettingsNav`, não aqui.
+  { href: "/configuracoes", label: "Configurações", icon: <Settings className={topIconSpin} strokeWidth={1.75} />, adminOnly: true },
 ]
 
 interface Props {
@@ -407,7 +383,11 @@ export function SidebarBody({
   const setChipRef = useCallback((key: string, el: HTMLElement | null) => {
     if (el) chipRefs.current.set(key, el); else chipRefs.current.delete(key)
   }, [])
-  const [pill, setPill] = useState<{ x: number; y: number; show: boolean }>({ x: 0, y: 0, show: false })
+  // `w`/`h` porque o realce mudou de tamanho FIXO pra tamanho do alvo: recolhido ele é o
+  // quadrado do ícone; expandido, a linha inteira (ver measurePill).
+  const [pill, setPill] = useState<{ x: number; y: number; w: number; h: number; show: boolean }>(
+    { x: 0, y: 0, w: 36, h: 36, show: false },
+  )
   // Borda direita do rail (x) — âncora da aba fixa "expandir funis" (segue collapse/expand).
   const [railRight, setRailRight] = useState(0)
   // Y do item "Funil de Vendas" — a aba fixa fica na MESMA altura dele (não no topo).
@@ -431,9 +411,20 @@ export function SidebarBody({
     setDealItemY(de && de.height > 0 ? de.top + de.height / 2 : null)
     const chip  = activeKey ? chipRefs.current.get(activeKey) : null
     if (!navEl || !chip) { setPill((p) => ({ ...p, show: false })); return }
-    const n = navEl.getBoundingClientRect(), c = chip.getBoundingClientRect()
-    setPill({ x: c.left - n.left + navEl.scrollLeft, y: c.top - n.top + navEl.scrollTop, show: true })
-  }, [activeKey])
+    // 🔴 EXPANDIDO = realce na LINHA INTEIRA (pedido do dono). Antes o realce era sempre
+    //    o quadrado de 36px do ícone, então com a sidebar aberta parecia que só o ícone
+    //    estava selecionado e o rótulo ao lado ficava órfão. Recolhido continua no ícone
+    //    — ali a linha É o ícone, e alargar não teria o que cobrir.
+    //    `closest` em vez de um segundo mapa de refs: o chip já vive dentro do <a>/<button>
+    //    da linha nos dois casos (leaf e grupo), então a linha é o pai natural dele.
+    const row = expanded ? (chip.closest("a,button") as HTMLElement | null) ?? chip : chip
+    const n = navEl.getBoundingClientRect(), c = row.getBoundingClientRect()
+    setPill({
+      x: c.left - n.left + navEl.scrollLeft,
+      y: c.top  - n.top  + navEl.scrollTop,
+      w: c.width, h: c.height, show: true,
+    })
+  }, [activeKey, expanded])
 
   // rAF loop (~280ms): re-mede a cada frame durante uma transição (largura do
   // sidebar / max-height do submenu) pra a bola SEGUIR o item que desliza.
@@ -667,8 +658,14 @@ export function SidebarBody({
         {/* Realce deslizante — escorrega até o item ativo. Fica atrás dos ícones. */}
         <span
           aria-hidden
-          className="pointer-events-none absolute left-0 top-0 size-9 rounded-xl bg-nav-active transition-transform duration-300 ease-out"
-          style={{ transform: `translate(${pill.x}px, ${pill.y}px)`, opacity: pill.show ? 1 : 0 }}
+          // `transition-[transform,width,height]` e não `transition-all`: `all` faria a
+          // opacidade animar junto e o realce piscaria ao trocar de página.
+          className="pointer-events-none absolute left-0 top-0 rounded-xl bg-nav-active transition-[transform,width,height] duration-300 ease-out"
+          style={{
+            transform: `translate(${pill.x}px, ${pill.y}px)`,
+            width: pill.w, height: pill.h,
+            opacity: pill.show ? 1 : 0,
+          }}
         />
         {nav.map((item) => {
           if (!isGroup(item)) {

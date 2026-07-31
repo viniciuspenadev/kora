@@ -27,6 +27,52 @@ interface Instance {
   webhook_url:   string | null
 }
 
+/** `5511999998888@s.whatsapp.net` → `+55 11 99999-8888`. Devolve null se não parecer BR. */
+function jidToPhone(jid: string | null | undefined): string | null {
+  const d = (jid ?? "").split("@")[0].replace(/\D/g, "")
+  if (d.length < 12 || d.length > 13) return null          // 55 + DDD + 8/9 dígitos
+  const rest = d.slice(4)
+  if (rest.length < 8) return null
+  return `+${d.slice(0, 2)} ${d.slice(2, 4)} ${rest.slice(0, rest.length - 4)}-${rest.slice(-4)}`
+}
+
+/**
+ * Lê o número CONECTADO de cada instância na resposta de `/instance/fetchInstances` e
+ * grava em `whatsapp_instances.phone_number` quando ainda está vazio.
+ *
+ * ⚠️ Só preenche o que está NULO — nunca sobrescreve. Número gravado no provisionamento
+ *    (canal oficial) é fonte mais confiável que o JID reportado pelo servidor.
+ *
+ * A Evolution mudou o formato entre versões (v1 aninhava tudo em `instance`, v2 é plano),
+ * então os dois são aceitos: quebrar a captura num upgrade do servidor deixaria a tela
+ * mostrando apelido de novo, e ninguém ligaria uma coisa à outra.
+ */
+async function captureOwnerNumbers(resp: Response, serverUrl: string): Promise<void> {
+  try {
+    const raw = await resp.clone().json() as unknown
+    const arr = Array.isArray(raw) ? raw : []
+    for (const it of arr) {
+      const o     = (it ?? {}) as Record<string, unknown>
+      const nest  = (o.instance ?? {}) as Record<string, unknown>
+      const name  = (nest.instanceName ?? o.name ?? nest.name ?? o.instanceName) as string | undefined
+      const jid   = (nest.owner ?? o.ownerJid ?? nest.ownerJid ?? o.owner) as string | undefined
+      const phone = jidToPhone(jid)
+      if (!name || !phone) continue
+      // 🔴 Amarrado ao SERVIDOR que respondeu (`evolution_url`), não só ao nome. Nome de
+      //    instância é único DENTRO de um servidor Evolution — com dois servidores, um
+      //    nome repetido gravaria o número de um tenant na linha de outro. Escopo
+      //    estreito é barato aqui e fecha um caminho cross-tenant por acidente.
+      const { error } = await supabaseAdmin.from("whatsapp_instances")
+        .update({ phone_number: phone, updated_at: new Date().toISOString() })
+        .eq("instance_name", name).eq("evolution_url", serverUrl).is("phone_number", null)
+      if (error) console.error("[ping-evolution] phone:", error.code, error.message)
+    }
+  } catch (e) {
+    // Best-effort: o ping NÃO pode falhar porque o formato da resposta mudou.
+    console.error("[ping-evolution] captura de número:", (e as Error).message)
+  }
+}
+
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
   const ctrl  = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
@@ -68,6 +114,14 @@ export async function GET(req: NextRequest) {
       latencyMs = Date.now() - start
       pingStatus = resp.ok ? "ok" : "error"
       if (!resp.ok) errMsg = `HTTP ${resp.status}`
+      // 🔴 Aproveita a resposta pra CAPTURAR O NÚMERO conectado. Instância pareada por QR
+      //    nasce sem `phone_number` (quem sabe o número é o WhatsApp, no momento do
+      //    pareamento) — então a tela mostrava o APELIDO da instância no lugar do número,
+      //    que é o que o dono usa pra reconhecer a linha.
+      //    Aqui e não na página: chamar a Evolution no render deixaria Integrações lenta e
+      //    quebraria a tela quando o servidor dela oscilasse. O cron já faz esta chamada;
+      //    o número vem de carona e se auto-corrige a cada ciclo.
+      if (resp.ok) await captureOwnerNumbers(resp, s.url)
     } catch (e) {
       latencyMs = Date.now() - start
       const err = e as Error

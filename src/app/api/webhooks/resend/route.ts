@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { supabaseAdmin } from "@/lib/supabase"
+import { readWebhookBody } from "@/lib/webhooks/read-capped"
 
 /**
  * POST /api/webhooks/resend
@@ -73,7 +74,10 @@ function verifySignature(body: string, headers: Headers, secret: string): boolea
 
 export async function POST(req: NextRequest) {
   const secret = process.env.RESEND_WEBHOOK_SECRET
-  const body   = await req.text()
+  // H-01: body com teto de bytes ANTES de processar (heap-DoS).
+  const read = await readWebhookBody(req)
+  if ("reject" in read) return read.reject
+  const body = read.raw
 
   // FAIL-CLOSED: sem secret, recusa em vez de aceitar evento não-assinado.
   if (!secret) {

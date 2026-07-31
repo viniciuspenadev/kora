@@ -177,15 +177,11 @@ export async function dispatchEvolutionEvent(
  */
 export async function POST(req: NextRequest) {
   try {
-    // 🔒 SECURITY (S8): rota legacy DESATIVADA. Toda instância usa /api/webhooks/evolution/[secret].
-    // Resposta UNIFORME (410) SEM consultar o banco: não revela se um instance_name existe
-    // (sem oráculo de enumeração) e não gasta query/IO com tentativa de spoof.
-    let instanceName = "?"
-    try { instanceName = ((await req.json())?.instance as string) ?? "?" } catch { /* corpo inválido */ }
-    console.warn(
-      `[Webhook Evolution] LEGACY route hit (instance=${instanceName}). ` +
-      `Rejected — use /api/webhooks/evolution/[secret]. Possible spoof attempt.`
-    )
+    // 🔒 SECURITY (S8 + H-02): rota legacy DESATIVADA. Toda instância usa
+    // /api/webhooks/evolution/[secret]. 410 IMEDIATO — NÃO lê o corpo (antes lia
+    // req.json() só pra logar o nome, materializando o body do atacante à toa) e não
+    // consulta o banco (sem oráculo de enumeração, sem gasto de IO com spoof).
+    console.warn("[Webhook Evolution] LEGACY route hit — rejected 410. Use /api/webhooks/evolution/[secret].")
     return NextResponse.json({ error: "Gone — use the secret webhook URL" }, { status: 410 })
   } catch (err) {
     console.error("[Webhook Evolution] LEGACY", err)

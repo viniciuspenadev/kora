@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
@@ -51,6 +52,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
   if (!isOriginAllowed(req, cfg.allowed_domains as string[] | null)) {
     return cors(NextResponse.json({ enabled: false }))
   }
+
+  // 🔴 SINAL DE VIDA — DEPOIS da allowlist, nunca antes. Esta rota é PÚBLICA e sem
+  //    credencial: carimbar antes deixaria qualquer um que descobrisse o slug marcar o
+  //    widget de um cliente como "conectado" e escolher o domínio exibido na tela dele.
+  //    Aqui, só domínio autorizado carimba — o mesmo portão que já decide se o widget
+  //    embute decide se ele conta como vivo.
+  //    `after()` não atrasa a resposta; o corte de 15min evita uma escrita por pageview.
+  after(async () => {
+    const cutoff = new Date(Date.now() - 15 * 60_000).toISOString()
+    // Origem só do header, limitada — é dado de terceiro entrando no nosso banco.
+    const origin = (req.headers.get("origin") ?? "").slice(0, 255) || null
+    const { error } = await supabaseAdmin.from("site_widget_config")
+      .update({ last_seen_at: new Date().toISOString(), last_seen_origin: origin })
+      .eq("tenant_id", tenant.id)
+      .or(`last_seen_at.is.null,last_seen_at.lt.${cutoff}`)
+    // 42703 = migration do heartbeat ainda não aplicada; silencioso de propósito, senão
+    // vira ruído a cada pageview de todo cliente.
+    if (error && error.code !== "42703") console.error("[site-config] last_seen:", error.code, error.message)
+  })
 
   // Fallback do brand_name: nome do tenant
   let brandName = cfg.brand_name
