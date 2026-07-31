@@ -111,9 +111,15 @@ const COMPANY_COLS = "id, name, legal_name, doc_id, email, phone, site, address_
 /**
  * Find-or-create de empresa (helper interno — espelha resolveOrCreateContact). Dedup por
  * CNPJ (dígitos) dentro do tenant; sem CNPJ = cria nova (nome não é chave). Backfill só o
- * que falta, nunca apaga. NÃO gateia (chamado por actions já gateadas / orquestração do wizard).
+ * que falta, nunca apaga.
+ *
+ * ⚠️ NÃO é `export` DE PROPÓSITO (corrigido 2026-07-30, crítico C-02): num arquivo
+ * "use server", TODA função exportada vira Server Action PÚBLICA chamável — mesmo "helper
+ * interno". Como esta recebe `tenantId` por parâmetro, exportá-la = CRUD cross-tenant de
+ * empresa (CNPJ/fiscal). Fica privada; o único ponto de entrada é `createCompany` (gated),
+ * que deriva tenantId da sessão. (ver skill database-rules §2)
  */
-export async function resolveOrCreateCompany(
+async function resolveOrCreateCompany(
   tenantId: string, input: CompanyInput, createdBy: string | null = null,
 ): Promise<{ id: string; created: boolean } | { error: string }> {
   const cols = pickCompanyColumns(input)

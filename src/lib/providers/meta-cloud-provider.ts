@@ -119,6 +119,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     const res = await fetch(`${BASE}${path}`, {
       ...init,
       headers: { ...this.authHeader, ...(init?.headers ?? {}) },
+      signal: init?.signal ?? AbortSignal.timeout(30_000),   // H-11: timeout upstream
     })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) {
@@ -145,7 +146,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
    * devolve o media_id. Cloud API só aceita link público OU media_id.
    */
   private async uploadMedia(sourceUrl: string, type: ContentType, fileName?: string): Promise<string> {
-    const r = await fetch(sourceUrl)
+    const r = await fetch(sourceUrl, { signal: AbortSignal.timeout(60_000) })   // H-11: timeout no download de mídia
     if (!r.ok) throw new Error(`Falha ao baixar mídia (${r.status}) pra upload Meta`)
     // Materializa os bytes e monta um Blob limpo (evita problemas de streaming de Blob
     // re-encaminhado no undici, que podiam subir mídia truncada).
@@ -190,6 +191,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
       method: "POST",
       headers: { Authorization: `OAuth ${this.config.meta_access_token}`, file_offset: "0" },
       body: bytes,
+      signal: AbortSignal.timeout(60_000),   // H-11 (gap achado pelo QA): upload sem timeout prendia worker
     })
     const json = await res.json().catch(() => ({})) as { h?: string; error?: { message?: string } }
     if (!res.ok || !json.h) throw new Error(`Upload da mídia do template falhou: ${json.error?.message ?? JSON.stringify(json)}`)
@@ -681,7 +683,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
     if (!id) throw new Error("getMediaBase64: media id ausente no payload")
 
     const meta = await this.graph<{ url: string; mime_type?: string }>(`/${id}`)
-    const bin = await fetch(meta.url, { headers: this.authHeader })
+    const bin = await fetch(meta.url, { headers: this.authHeader, signal: AbortSignal.timeout(60_000) })   // H-11
     if (!bin.ok) throw new Error(`Falha ao baixar mídia da Meta (${bin.status})`)
     const buf = Buffer.from(await bin.arrayBuffer())
     return {

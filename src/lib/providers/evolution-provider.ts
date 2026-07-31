@@ -39,6 +39,8 @@ export class EvolutionProvider implements WhatsAppProvider {
         ...(options?.headers ?? {}),
       },
       cache: "no-store",
+      // H-11: timeout — upstream lento não pode prender o worker indefinidamente.
+      signal: options?.signal ?? AbortSignal.timeout(30_000),
     })
 
     if (!res.ok) {

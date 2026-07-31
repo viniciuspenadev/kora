@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { syncTemplatesCacheCore } from "@/lib/whatsapp/templates-cache-sync"
 import { supabaseAdmin } from "@/lib/supabase"
 import {
   MetaCloudProvider,
@@ -508,54 +509,10 @@ export async function syncTemplatesCache(): Promise<Result> {
   const session = await auth()
   if (!session) return { ok: false, error: "Não autenticado." }
   if (!["owner", "admin"].includes(session.user.role)) return { ok: false, error: "Acesso restrito a administradores." }
-  return syncTemplatesCacheFor(session.user.tenantId)
-}
-
-/**
- * Núcleo do sync (SEM auth) — seguro pra chamar de dentro de `after()` passando o
- * tenantId já resolvido. NUNCA chamar auth()/headers() dentro de after() (Next 16).
- */
-export async function syncTemplatesCacheFor(tenantId: string): Promise<Result> {
-  // Busca a instância oficial (precisamos do id da instância + WABA pro cache).
-  const { data: inst } = await supabaseAdmin
-    .from("whatsapp_instances")
-    .select("id, meta_phone_number_id, meta_business_account_id, meta_access_token, meta_app_secret")
-    .eq("tenant_id", tenantId)
-    .eq("provider", "meta_cloud")
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (!inst?.meta_phone_number_id || !inst.meta_access_token) {
-    return { ok: false, error: "Instância oficial não configurada." }
-  }
-
-  const provider = new MetaCloudProvider({
-    meta_phone_number_id:     inst.meta_phone_number_id,
-    meta_business_account_id: inst.meta_business_account_id ?? "",
-    meta_access_token:        decryptSecret(inst.meta_access_token),
-    meta_app_secret:          decryptSecret(inst.meta_app_secret) ?? "",
-  })
-
-  try {
-    const templates = await provider.listTemplates()
-    for (const t of templates) {
-      // Best-effort: upsertTemplateCache já engole erros por item.
-      await upsertTemplateCache(tenantId, inst.id, inst.meta_business_account_id ?? null, {
-        templateId:     t.id,
-        name:           t.name,
-        language:       t.language,
-        category:       t.category,
-        status:         t.status,
-        qualityScore:   t.quality_score?.score,
-        rejectedReason: t.rejected_reason,
-        components:     t.components,
-      })
-    }
-    return { ok: true }
-  } catch (e) {
-    return { ok: false, error: (e as Error).message }
-  }
+  // Núcleo em @/lib/whatsapp/templates-cache-sync (server-only, chamável de after() SEM
+  // auth). C-03/H-13: a autorização fica AQUI no wrapper (owner/admin); o núcleo não é
+  // action, então não há como forjar com tenant alheio.
+  return syncTemplatesCacheCore(session.user.tenantId)
 }
 
 /**

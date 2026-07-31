@@ -11,6 +11,7 @@ import { getViewerScope, canViewConversation, seesAllContacts, reachableContactI
 import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
+import { assertSafeUrl } from "@/lib/ai-v2/http-guard"
 import { rateLimit } from "@/lib/rate-limit"
 import { requireLimit } from "@/lib/limits"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
@@ -96,6 +97,12 @@ export async function saveWhatsAppConfig(formData: {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
   if (!["owner", "admin"].includes(session.user.role)) throw new Error("Sem permissão")
+
+  // H-12 (SSRF): a evolution_url é fornecida pelo TENANT-admin e o servidor faz fetch nela.
+  // assertSafeUrl exige https + bloqueia IP interno/loopback/metadata (resolve DNS) → impede
+  // apontar o servidor pra rede interna do Kora. (Auto-provision usa env, não passa por aqui.)
+  try { await assertSafeUrl(formData.evolution_url) }
+  catch (e) { throw new Error(`URL do Evolution rejeitada: ${(e as Error).message}`) }
 
   const tenantId = session.user.tenantId
 
@@ -193,6 +200,9 @@ export async function renameNumber(instanceId: string, displayName: string): Pro
 export async function connectWhatsApp(instanceId?: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
+  // Gate owner/admin (C-04, 2026-07-30): conectar/desconectar o canal do tenant é ação de
+  // dono, não de atendente. Antes só exigia sessão → qualquer agente derrubava o WhatsApp.
+  if (!["owner", "admin"].includes(session.user.role)) throw new Error("Apenas owner/admin podem gerenciar a conexão do WhatsApp.")
   const tenantId = session.user.tenantId
 
   // Multi-número: alvo = a instância passada (UI multi-número) OU a 1ª baileys
@@ -309,6 +319,8 @@ export async function checkConnectionStatus(instanceId?: string) {
 export async function disconnectWhatsApp(instanceId?: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
+  // Gate owner/admin (C-04) — mesmo motivo do connectWhatsApp.
+  if (!["owner", "admin"].includes(session.user.role)) throw new Error("Apenas owner/admin podem gerenciar a conexão do WhatsApp.")
 
   const instance = await resolveBaileysInstance(session.user.tenantId, instanceId)
   if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
@@ -340,22 +352,11 @@ export async function disconnectWhatsApp(instanceId?: string) {
   return { success: true }
 }
 
-export async function configureWebhook(webhookUrl: string, instanceId?: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
-
-  const instance = await resolveBaileysInstance(session.user.tenantId, instanceId)
-  if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
-  const provider = getProvider(instance)
-  await provider.setWebhook(webhookUrl)
-
-  await supabaseAdmin
-    .from("whatsapp_instances")
-    .update({ webhook_url: webhookUrl, updated_at: new Date().toISOString() })
-    .eq("id", instance.id)
-
-  return { success: true }
-}
+// configureWebhook() REMOVIDA 2026-07-30 (crítico C-04): era Server Action que aceitava
+// uma URL ARBITRÁRIA do cliente + sem gate de role → um atendente redirecionava os webhooks
+// do WhatsApp pra infra externa (perda de disponibilidade + possível exfiltração). Era código
+// morto (zero callers). O webhook é montado server-side no provisioning (WEBHOOK_BASE_URL +
+// secret da instância). NÃO reintroduzir uma action que aceite URL de webhook do cliente.
 
 // ── Mensagens ───────────────────────────────────────────────
 
@@ -1006,6 +1007,12 @@ export async function sendStickerMessage(
 ): Promise<{ id: string } | { error: string }> {
   const file = formData.get("file") as File | null
   if (!file) return { error: "Arquivo inválido." }
+  // H-05 (DoS): valida MIME + tamanho ANTES de materializar no heap (arrayBuffer).
+  // Sem isto, um atendente subia ~100MB (o bodySizeLimit global) direto pra memória.
+  const v = validateMediaFile(file)
+  if (!v.ok) return { error: v.error ?? "Figurinha inválida." }
+  // Sticker real é <1MB (webp). Cap dedicado além do limite de imagem (16MB) — QA 2026-07-30.
+  if (file.size > 1_000_000) return { error: "Figurinha muito grande (máx 1MB)." }
   const ctx = await resolveSendContext(conversationId, { autoAssign: true })
   if ("error" in ctx) return ctx
   try {

@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { assertSessionTenant } from "@/lib/auth/assert-tenant"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule, requireModule } from "@/lib/modules"
 import { getViewerScope, canViewInventory, canManageInventory } from "@/lib/visibility"
@@ -151,6 +152,7 @@ export async function setStockConfig(itemId: string, input: { stockMin?: number 
 // Idempotente via tenant_deals.stock_applied_at. Fire-and-forget (nunca bloqueia a venda).
 // ═══════════════════════════════════════════════════════════════
 export async function applyDealStock(tenantId: string, dealId: string, newStatus: string, byUserId: string | null): Promise<void> {
+  await assertSessionTenant(tenantId)   // ⚠️ exportada de "use server" — sem isto = cross-tenant (C-03, sweep 2026-07-30; ver database-rules §2)
   if (!(await hasModule(tenantId, "inventory"))) return
 
   const { data: deal } = await supabaseAdmin.from("tenant_deals").select("stock_applied_at, name").eq("id", dealId).eq("tenant_id", tenantId).maybeSingle()

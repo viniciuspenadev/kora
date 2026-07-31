@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { assertSessionTenant } from "@/lib/auth/assert-tenant"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, applyVisibilityFilter, canViewConversation } from "@/lib/visibility"
 import { resolveLifecycle } from "@/lib/lifecycle-stage"
@@ -92,6 +93,7 @@ const DEFAULT_PIPELINE_TEMPLATE = {
 }
 
 export async function ensurePipelineBootstrap(tenantId: string, createdBy?: string) {
+  await assertSessionTenant(tenantId)   // ⚠️ exportada de "use server" — guard anti cross-tenant (sweep 2026-07-30; ver database-rules §2)
   const { count } = await supabaseAdmin
     .from("pipelines")
     .select("id", { count: "exact", head: true })

@@ -17,16 +17,50 @@ import { join } from "node:path"
  * chamador trata (volta pra mensagem de "formato não aceito"). Nunca crasha.
  */
 
-function runFfmpeg(args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const ff = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] })
-    let stderr = ""
-    ff.stderr.on("data", (d) => { stderr += d.toString() })
-    ff.on("error", reject) // ex: ffmpeg não instalado
-    ff.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-400)}`)),
-    )
-  })
+// ── Defesas de DoS (H-06, auditoria 2026-07-30) ──────────────────
+// ffmpeg sem limites deixa um arquivo malformado/caro ocupar CPU/memória
+// indefinidamente. Aplicamos: timeout (mata o processo), teto de threads e
+// limite de CONCORRÊNCIA (N ffmpeg simultâneos no processo inteiro).
+const FFMPEG_TIMEOUT_MS   = Number(process.env.FFMPEG_TIMEOUT_MS ?? 120_000)   // 2 min
+const FFMPEG_MAX_CONCURRENT = Math.max(1, Number(process.env.FFMPEG_MAX_CONCURRENT ?? 2))
+
+let ffActive = 0
+const ffQueue: Array<() => void> = []
+async function acquireFfmpeg(): Promise<void> {
+  if (ffActive < FFMPEG_MAX_CONCURRENT) { ffActive++; return }
+  await new Promise<void>((res) => ffQueue.push(res))
+  // Slot TRANSFERIDO pelo release (não incrementa — o release não decrementou). Evita o
+  // overshoot transitório (rodar MAX+1) da corrida release--/acquire++ (QA 2026-07-30).
+}
+function releaseFfmpeg(): void {
+  const next = ffQueue.shift()
+  if (next) next()      // transfere o slot pro próximo da fila (sem mexer no contador)
+  else ffActive--       // fila vazia → devolve o slot
+}
+
+async function runFfmpeg(args: string[]): Promise<void> {
+  await acquireFfmpeg()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      // Threads capadas por-comando (no encoder, antes do output) — ver a montagem dos args.
+      const ff = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] })
+      let stderr = ""
+      let done = false
+      const finish = (fn: () => void) => { if (!done) { done = true; clearTimeout(timer); fn() } }
+      // Timeout: mata o processo (SIGKILL) se passar do teto — evita hang infinito.
+      const timer = setTimeout(() => {
+        ff.kill("SIGKILL")
+        finish(() => reject(new Error(`ffmpeg timeout (${FFMPEG_TIMEOUT_MS}ms)`)))
+      }, FFMPEG_TIMEOUT_MS)
+      ff.stderr.on("data", (d) => { stderr += d.toString() })
+      ff.on("error", (e) => finish(() => reject(e))) // ex: ffmpeg não instalado
+      ff.on("close", (code) =>
+        finish(() => (code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-400)}`)))),
+      )
+    })
+  } finally {
+    releaseFfmpeg()
+  }
 }
 
 export interface TranscodeResult { buffer: Buffer; mime: string; ext: string }
@@ -61,9 +95,11 @@ export async function transcodeForMeta(
       const out = join(dir, "out.mp4")
       await runFfmpeg([
         "-y", "-i", inPath,
+        "-t", "1800",   // cap de 30min (H-06): barra transcodificação de vídeo absurdamente longo
         "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
+        "-threads", "2",   // capa o ENCODER (libx264) — antes o -threads global só capava o decoder (H-06, QA)
         out,
       ])
       return { buffer: await readFile(out), mime: "video/mp4", ext: "mp4" }

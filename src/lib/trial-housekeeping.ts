@@ -1,6 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
-import { transitionLifecycle } from "@/lib/actions/lifecycle-admin"
+import { transitionLifecycleCore } from "@/lib/lifecycle-core"
 
 /**
  * Housekeeping diário do trial (chamado pelo cron /api/cron/trial-housekeeping):
@@ -15,8 +15,9 @@ import { transitionLifecycle } from "@/lib/actions/lifecycle-admin"
 export async function runTrialHousekeeping(): Promise<{ suspended: number; purged: number; outboxPurged: number }> {
   const nowIso = new Date().toISOString()
 
-  // 1. Suspende trials vencidos — via a transição ÚNICA (audita cada suspensão
-  //    no histórico do cliente; `system:true` pula o gate de platform-admin).
+  // 1. Suspende trials vencidos — via o CORE (server-only, não-action; `system:true`
+  //    relaxa a máquina de estados e audita como system:cron). Não passa pela action
+  //    pública `transitionLifecycle`, que sempre exige platform admin (crítico C-01).
   const { data: expired } = await supabaseAdmin
     .from("tenants")
     .select("id")
@@ -24,7 +25,7 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
     .lt("trial_ends_at", nowIso)
   let suspended = 0
   for (const t of expired ?? []) {
-    const r = await transitionLifecycle(t.id as string, "suspend", { system: true })
+    const r = await transitionLifecycleCore(t.id as string, "suspend", { system: true })
     if (!r.error) suspended++
   }
 
