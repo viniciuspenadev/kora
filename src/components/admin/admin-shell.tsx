@@ -4,7 +4,7 @@ import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
 import { LayoutDashboard, Building2, Mail, LogOut, Smartphone, MailOpen, Package, Wallet, MonitorSmartphone, ShieldAlert } from "lucide-react"
-import { signOut } from "next-auth/react"
+import { logoutWithCleanup } from "@/lib/auth/logout"
 
 const nav = [
   { href: "/admin",          label: "Visão geral", icon: LayoutDashboard },
@@ -70,7 +70,7 @@ export function AdminShell({
           </div>
           <button
             type="button"
-            onClick={() => signOut({ callbackUrl: "/auth/signin" })}
+            onClick={() => logoutWithCleanup({ callbackUrl: "/auth/signin" })}
             className="w-full flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors"
           >
             <LogOut className="size-4" />

@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useEffect, useRef, useState, useCallback } from "react"
-import { signOut } from "next-auth/react"
+import { logoutWithCleanup } from "@/lib/auth/logout"
 import { Copy, Check, Settings, RefreshCw, LogOut, UserRound } from "lucide-react"
 import { MyAvatar } from "@/components/app/my-avatar"
 import { UserAvatar } from "@/components/ui/user-avatar"
@@ -220,7 +220,7 @@ export function AccountMenu({
           <div className="px-1.5 pb-1.5">
             <button
               type="button"
-              onClick={() => { setOpen(false); void signOut({ redirectTo: "/auth/signin" }) }}
+              onClick={() => { setOpen(false); void logoutWithCleanup({ redirectTo: "/auth/signin" }) }}
               className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
             >
               <LogOut className="size-4 shrink-0" />

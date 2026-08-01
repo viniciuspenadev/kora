@@ -273,10 +273,10 @@ export async function inviteTeamMember(input: {
   if (!email || !email.includes("@")) return { error: "E-mail inválido" }
   if (!["owner", "admin", "agent"].includes(input.role)) return { error: "Papel inválido" }
 
-  // Só owner pode criar outro owner (e há regra de 1 owner — confirmação)
-  if (input.role === "owner") {
-    if (session.user.role !== "owner") return { error: "Apenas o owner atual pode criar outro owner" }
-    return { error: "Apenas 1 owner por tenant. Transfira a posse em vez de criar outro." }
+  // H-06 + multi-owner: convidar OWNER ou ADMIN é privilégio de owner (owners co-iguais →
+  // múltiplos owners permitidos; admin não cria admin/owner). Convidar agent segue admin.
+  if ((input.role === "owner" || input.role === "admin") && session.user.role !== "owner") {
+    return { error: "Apenas um owner pode convidar owner ou admin." }
   }
 
   // Já é membro ativo?
@@ -369,21 +369,34 @@ export async function updateMemberRole(userId: string, role: TenantRole): Promis
 
   if (!["owner", "admin", "agent"].includes(role)) return { error: "Papel inválido" }
 
-  // Apenas owner pode promover/rebaixar
-  if (role === "owner") {
-    if (session.user.role !== "owner") return { error: "Apenas o owner pode promover outro owner" }
-    return { error: "Apenas 1 owner por tenant. Use 'Transferir posse' em vez de promover." }
-  }
-
-  // Não permite rebaixar o owner (precisa transferir posse primeiro)
   const { data: target } = await supabaseAdmin
     .from("tenant_users")
     .select("role")
     .eq("tenant_id", tenantId)
     .eq("user_id", userId)
-    .single()
+    .maybeSingle()
+  if (!target) return { error: "Membro não encontrado" }
 
-  if (target?.role === "owner") return { error: "Não é possível rebaixar o owner. Transfira a posse antes." }
+  // H-06 (pentest 2026-08-01) + multi-owner (owners CO-IGUAIS, decisão do owner 2026-08-01):
+  // QUALQUER transição que envolva owner OU admin (papel atual OU novo) é privilégio de OWNER.
+  // Antes, um admin promovia agent→admin / rebaixava admin (escalada horizontal). Agora admin
+  // não gerencia papéis de admin/owner — só owner. Owners podem promover/rebaixar admins E
+  // outros owners entre si.
+  const involvesPrivileged =
+    role === "owner" || role === "admin" || target.role === "owner" || target.role === "admin"
+  if (involvesPrivileged && session.user.role !== "owner") {
+    return { error: "Apenas um owner pode gerenciar papéis de admin/owner." }
+  }
+
+  // 🔒 Guarda-corpo: o tenant NUNCA pode ficar com ZERO owner (rebaixar o último owner).
+  if (target.role === "owner" && role !== "owner") {
+    const { count } = await supabaseAdmin
+      .from("tenant_users").select("user_id", { count: "exact", head: true })
+      .eq("tenant_id", tenantId).eq("role", "owner").eq("active", true)
+    if ((count ?? 0) <= 1) {
+      return { error: "O tenant precisa ter ao menos um owner. Promova outro antes de rebaixar este." }
+    }
+  }
 
   const { error } = await supabaseAdmin
     .from("tenant_users")

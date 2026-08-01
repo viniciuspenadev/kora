@@ -1,9 +1,10 @@
 "use client"
 
 import { useEffect, useRef, useState, useTransition } from "react"
-import { Image as ImageIcon, Play, Plus, Trash2, ChevronDown, ExternalLink } from "lucide-react"
+import { Image as ImageIcon, Play, Plus, Trash2, ChevronDown, ExternalLink, Sparkles } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import { PostPicker } from "./post-picker"
+import { IgCommentModal } from "@/components/studio/ig-comment-modal"
 import { freezeInstagramThumbs } from "@/lib/actions/instagram-media"
 import type { IgMediaItem } from "@/lib/instagram/api"
 
@@ -51,8 +52,11 @@ export interface IgCommentTriggerConfig {
 
 const DM_MAX = 1000
 
-/** Verificador vivo: o texto pede resposta? É a defesa contra queimar a bala única. */
-function dmHint(text: string): { tone: "ok" | "warn" | "none"; msg: string } {
+/** Verificador vivo: o texto pede resposta? É a defesa contra queimar a bala única.
+ *  ⚠️ EXPORTADO de propósito: o editor novo (studio/ig-comment-modal) REUSA esta função
+ *  em vez de reimplementar. Enquanto os dois editores convivem, a regra tem que ser UMA —
+ *  duas cópias divergem e o cliente vê aviso diferente dependendo de onde abriu. */
+export function dmHint(text: string): { tone: "ok" | "warn" | "none"; msg: string } {
   const t = text.trim()
   if (!t) return { tone: "none", msg: "" }
   if (t.length < 25) {
@@ -71,6 +75,7 @@ export function IgCommentConfig({ value, onChange, username }: {
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [showRules, setShowRules]   = useState(false)
+  const [modalOpen, setModalOpen]   = useState(false)
   const [, startFreeze]             = useTransition()
 
   const set = (patch: Partial<IgCommentTriggerConfig>) => onChange({ ...value, ...patch })
@@ -126,6 +131,24 @@ export function IgCommentConfig({ value, onChange, username }: {
       <p className="text-xs text-slate-500 leading-relaxed">
         Quem comentar no seu post recebe um direct. Quem responder o direct entra neste fluxo.
       </p>
+
+      {/* 🔴 PORTA ÚNICA pro editor novo (decisão do dono, 2026-07-31): o painel segue sendo
+          o caminho normal e o modal é OPT-IN. Dois caminhos igualmente visíveis pra mesma
+          configuração viram o problema do menu duplicado — um lado ganha melhoria, o outro
+          fica pra trás, e ninguém sabe qual está desatualizado.
+          ⚠️ Validado o gatilho ponta a ponta pelo modal, ESTE PAINEL SAI e o botão vai
+          junto. Código paralelo sem data de morte vira dívida permanente (ROADMAP). */}
+      <button type="button" onClick={() => setModalOpen(true)}
+        className="w-full inline-flex items-center justify-center gap-1.5 h-9 rounded-lg border border-dashed border-primary-200 text-[11px] font-semibold text-primary-700 hover:bg-primary/5 transition-colors">
+        <Sparkles className="size-3.5" /> Experimentar o novo editor
+      </button>
+      {modalOpen && (
+        <IgCommentModal
+          open value={value} username={username}
+          onChange={onChange}
+          onClose={() => setModalOpen(false)}
+        />
+      )}
 
       {/* 1 · POST */}
       <section className="space-y-1.5">

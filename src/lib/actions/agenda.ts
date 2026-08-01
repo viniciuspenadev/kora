@@ -765,10 +765,12 @@ export async function addAppointmentParticipant(appointmentId: string, userId: s
 
   // Ponte opt-in: também dar acesso à conversa do cliente (participants do chat).
   if (alsoConversation && full?.conversation_id) {
-    const { data: conv } = await supabaseAdmin.from("chat_conversations").select("participants").eq("id", full.conversation_id).maybeSingle()
+    // Ressalva QA H-04: escopa por tenant (defesa-em-profundidade — a FK do compromisso já
+    // amarra ao tenant, mas o UPDATE explícito não deixava isso claro).
+    const { data: conv } = await supabaseAdmin.from("chat_conversations").select("participants").eq("id", full.conversation_id).eq("tenant_id", s.tenantId).maybeSingle()
     const cur = (conv?.participants ?? []) as string[]
     if (!cur.includes(userId)) {
-      await supabaseAdmin.from("chat_conversations").update({ participants: [...cur, userId] }).eq("id", full.conversation_id)
+      await supabaseAdmin.from("chat_conversations").update({ participants: [...cur, userId] }).eq("id", full.conversation_id).eq("tenant_id", s.tenantId)
     }
   }
 

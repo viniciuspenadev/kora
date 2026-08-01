@@ -52,13 +52,8 @@ export async function createTenantUser(
     .from("tenants").select("id, name").eq("id", input.tenantId).maybeSingle()
   if (!tenant) return { error: "Tenant não encontrado." }
 
-  // Owner único por tenant — regra do produto vale até pro god.
-  if (role === "owner") {
-    const { count: owners } = await supabaseAdmin
-      .from("tenant_users").select("user_id", { count: "exact", head: true })
-      .eq("tenant_id", input.tenantId).eq("role", "owner").eq("active", true)
-    if ((owners ?? 0) > 0) return { error: "Este tenant já tem um owner (owner é único). Crie como Admin." }
-  }
+  // Multi-owner permitido (owners co-iguais, decisão do owner 2026-08-01) — o god pode
+  // criar owner mesmo que o tenant já tenha um.
 
   // Limite de usuários — mesmo gate do convite; god resolve na aba Limites.
   const { count: activeCount } = await supabaseAdmin

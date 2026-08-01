@@ -7,7 +7,7 @@ import { getProvider, type WhatsAppProvider } from "@/lib/providers"
 import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
-import { getViewerScope, canViewConversation, seesAllContacts, reachableContactIds } from "@/lib/visibility"
+import { getViewerScope, canViewConversation, seesAllContacts, reachableContactIds, assertConversationAccess, assertContactAccess } from "@/lib/visibility"
 import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
@@ -269,6 +269,10 @@ export async function connectWhatsApp(instanceId?: string) {
 export async function checkConnectionStatus(instanceId?: string) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
+  // 🔒 H-09 (pentest 2026-08-01): dispara chamada ao provedor + write no banco. É ação de
+  // CONFIG (páginas de WhatsApp/QR são admin) — gate owner/admin evita agente spammar o
+  // provedor/DB. Status no inbox usa o cache de whatsapp_instances, não esta checagem ativa.
+  if (!["owner", "admin"].includes(session.user.role)) throw new Error("Sem permissão")
 
   const instance = await resolveBaileysInstance(session.user.tenantId, instanceId)
   if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
@@ -1376,41 +1380,38 @@ export async function updateConversationStatus(conversationId: string, status: s
 }
 
 export async function markConversationRead(conversationId: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const { scope } = await assertConversationAccess(conversationId)   // H-04: gate por-atendente
 
   await supabaseAdmin
     .from("chat_conversations")
     .update({ unread_count: 0, flagged_pending: false, updated_at: new Date().toISOString() })
     .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
 }
 
 // Flag manual de "pendente" — bolinha azul volta mesmo já tendo respondido.
 // Limpa sozinha quando o atendente responde (sendMessage/sendChatMedia) ou resolve.
 export async function setConversationFlagged(conversationId: string, value: boolean) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const { scope } = await assertConversationAccess(conversationId)   // H-04
 
   await supabaseAdmin
     .from("chat_conversations")
     .update({ flagged_pending: value, updated_at: new Date().toISOString() })
     .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
 
   revalidatePath("/inbox")
 }
 
 // Fixar conversa no topo da lista. pinned_at = timestamp (ordem entre fixadas) ou null.
 export async function setConversationPinned(conversationId: string, value: boolean) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const { scope } = await assertConversationAccess(conversationId)   // H-04
 
   await supabaseAdmin
     .from("chat_conversations")
     .update({ pinned_at: value ? new Date().toISOString() : null, updated_at: new Date().toISOString() })
     .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
 
   revalidatePath("/inbox")
 }
@@ -1502,6 +1503,15 @@ export async function createManualConversation(input: {
   if (!instance) throw new Error("WhatsApp não configurado.")
 
   let contactId = input.contactId ?? null
+
+  // 🔒 C-01 (pentest 2026-08-01): contactId vem do CLIENTE. Sem validar posse do tenant, a
+  // conversa nasceria com tenant_id=nosso + contact_id de OUTRO tenant → a projeção do inbox
+  // (embed de chat_contacts pelo FK) vazaria PII cross-tenant (telefone/email/doc/notas). IDOR.
+  if (contactId) {
+    const { data: owned } = await supabaseAdmin
+      .from("chat_contacts").select("id").eq("id", contactId).eq("tenant_id", tenantId).maybeSingle()
+    if (!owned) throw new Error("Contato não encontrado")
+  }
 
   if (!contactId) {
     const norm = normalizeWhatsAppPhone(input.phone)
@@ -1602,27 +1612,25 @@ export async function createManualConversation(input: {
 // ── Contato: bloquear / notas ───────────────────────────────
 
 export async function setContactBlocked(contactId: string, blocked: boolean) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const scope = await assertContactAccess(contactId)   // H-04: alcance por-atendente
 
   await supabaseAdmin
     .from("chat_contacts")
     .update({ is_blocked: blocked, updated_at: new Date().toISOString() })
     .eq("id", contactId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
 
   revalidatePath("/inbox")
 }
 
 export async function setContactNotes(contactId: string, notes: string | null) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const scope = await assertContactAccess(contactId)   // H-04
 
   await supabaseAdmin
     .from("chat_contacts")
     .update({ notes, updated_at: new Date().toISOString() })
     .eq("id", contactId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
 
   revalidatePath("/inbox")
 }
@@ -1660,8 +1668,11 @@ export async function updateContactInfo(
   contactId: string,
   input:     ContactInfoInput,
 ): Promise<{ error?: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
+  // H-04: alcance por-atendente (edita PII/consentimento — o mais sensível). Contrato
+  // { error } → captura o throw do guard em vez de estourar 500.
+  let scope
+  try { scope = await assertContactAccess(contactId) }
+  catch { return { error: "Contato não encontrado" } }
 
   // Normaliza: strings vazias viram null pra não poluir o banco com ""
   const payload: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -1693,7 +1704,7 @@ export async function updateContactInfo(
     const next = input.price_table_id || null
     if (next) {
       const { data: tb } = await supabaseAdmin.from("price_tables")
-        .select("id").eq("id", next).eq("tenant_id", session.user.tenantId).maybeSingle()
+        .select("id").eq("id", next).eq("tenant_id", scope.tenantId).maybeSingle()
       if (!tb) return { error: "Tabela de preço inválida" }
     }
     payload.price_table_id = next
@@ -1708,7 +1719,7 @@ export async function updateContactInfo(
     const next = input.company_id || null
     if (next) {
       const { data: co } = await supabaseAdmin.from("tenant_companies")
-        .select("id").eq("id", next).eq("tenant_id", session.user.tenantId).maybeSingle()
+        .select("id").eq("id", next).eq("tenant_id", scope.tenantId).maybeSingle()
       if (!co) return { error: "Empresa inválida" }
     }
     payload.company_id = next
@@ -1723,7 +1734,7 @@ export async function updateContactInfo(
     .from("chat_contacts")
     .update(payload)
     .eq("id", contactId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
 
   if (error) return { error: error.message }
 
@@ -1733,11 +1744,10 @@ export async function updateContactInfo(
 }
 
 export async function archiveConversation(conversationId: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const { scope } = await assertConversationAccess(conversationId)   // H-04 (visibilidade) + H-05 (rowcount)
 
   const now = new Date().toISOString()
-  await supabaseAdmin
+  const { data: arch } = await supabaseAdmin
     .from("chat_conversations")
     .update({
       archived_at: now,
@@ -1745,11 +1755,14 @@ export async function archiveConversation(conversationId: string) {
       updated_at:   now,
     })
     .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
+    .select("id")
+    .maybeSingle()
+  if (!arch) throw new Error("Conversa não encontrada")
 
   await supabaseAdmin.from("chat_messages").insert({
     conversation_id: conversationId,
-    tenant_id:       session.user.tenantId,
+    tenant_id:       scope.tenantId,
     sender_type:     "system",
     content_type:    "text",
     content:         "Conversa arquivada.",
@@ -1762,21 +1775,23 @@ export async function archiveConversation(conversationId: string) {
 }
 
 export async function unarchiveConversation(conversationId: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const { scope } = await assertConversationAccess(conversationId)   // H-04 + H-05
 
-  await supabaseAdmin
+  const { data: unarch } = await supabaseAdmin
     .from("chat_conversations")
     .update({
       archived_at: null,
       updated_at:  new Date().toISOString(),
     })
     .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+    .eq("tenant_id", scope.tenantId)
+    .select("id")
+    .maybeSingle()
+  if (!unarch) throw new Error("Conversa não encontrada")
 
   await supabaseAdmin.from("chat_messages").insert({
     conversation_id: conversationId,
-    tenant_id:       session.user.tenantId,
+    tenant_id:       scope.tenantId,
     sender_type:     "system",
     content_type:    "text",
     content:         "Conversa restaurada.",
@@ -1791,22 +1806,11 @@ export async function unarchiveConversation(conversationId: string) {
 // ── Participantes da conversa (array uuid[]) ────────────────
 
 export async function addConversationParticipant(conversationId: string, userId: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const { scope, conv } = await assertConversationAccess(conversationId)   // H-04 (reusa a conversa do guard)
+  const tenantId = scope.tenantId
 
-  const tenantId = session.user.tenantId
-
-  const { data: conv } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("assigned_to, participants")
-    .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
-    .single()
-
-  if (!conv) throw new Error("Conversa não encontrada")
-
-  const isAdmin    = ["owner", "admin"].includes(session.user.role)
-  const isAssigned = conv.assigned_to === session.user.id
+  const isAdmin    = scope.isAdmin
+  const isAssigned = conv.assigned_to === scope.userId
   if (!isAdmin && !isAssigned) throw new Error("Apenas o atendente atribuído ou administradores podem adicionar participantes.")
 
   // Valida que userId pertence ao tenant — bloqueia IDOR
@@ -1850,23 +1854,12 @@ export async function addConversationParticipant(conversationId: string, userId:
 }
 
 export async function removeConversationParticipant(conversationId: string, userId: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
+  const { scope, conv } = await assertConversationAccess(conversationId)   // H-04 (reusa a conversa do guard)
+  const tenantId = scope.tenantId
 
-  const tenantId = session.user.tenantId
-
-  const { data: conv } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("assigned_to, participants")
-    .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
-    .single()
-
-  if (!conv) throw new Error("Conversa não encontrada")
-
-  const isAdmin    = ["owner", "admin"].includes(session.user.role)
-  const isAssigned = conv.assigned_to === session.user.id
-  const isSelf     = userId === session.user.id
+  const isAdmin    = scope.isAdmin
+  const isAssigned = conv.assigned_to === scope.userId
+  const isSelf     = userId === scope.userId
   if (!isAdmin && !isAssigned && !isSelf) {
     throw new Error("Sem permissão para remover participantes.")
   }
@@ -1964,9 +1957,8 @@ export async function getTenantConfig() {
  * O atendente clica "Qualificar" quando avalia que há FIT comercial.
  */
 export async function qualifyLead(conversationId: string, pipelineId?: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
-  const tenantId = session.user.tenantId
+  const { scope } = await assertConversationAccess(conversationId)   // H-04
+  const tenantId = scope.tenantId
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
@@ -1985,7 +1977,7 @@ export async function qualifyLead(conversationId: string, pipelineId?: string) {
       lifecycle_stage:      "lead",
       lifecycle_changed_at: new Date().toISOString(),
       qualified_at:         new Date().toISOString(),
-      qualified_by:         session.user.id,
+      qualified_by:         scope.userId,
       unfit_reason:         null,
       updated_at:           new Date().toISOString(),
     })
@@ -2039,9 +2031,8 @@ export async function qualifyLead(conversationId: string, pipelineId?: string) {
  * mas remove do funil ativo.
  */
 export async function markUnfit(conversationId: string, reason?: string) {
-  const session = await auth()
-  if (!session) throw new Error("Não autenticado")
-  const tenantId = session.user.tenantId
+  const { scope } = await assertConversationAccess(conversationId)   // H-04
+  const tenantId = scope.tenantId
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")

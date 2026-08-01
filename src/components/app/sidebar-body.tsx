@@ -3,7 +3,7 @@
 import Link from "next/link"
 import Image from "next/image"
 import { usePathname, useSearchParams } from "next/navigation"
-import { signOut } from "next-auth/react"
+import { logoutWithCleanup } from "@/lib/auth/logout"
 import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
@@ -371,7 +371,7 @@ export function SidebarBody({
 
   async function handleSignOut() {
     setSigning(true)
-    await signOut({ redirectTo: "/auth/signin" })
+    await logoutWithCleanup({ redirectTo: "/auth/signin" })
   }
 
   // ── Indicador ativo deslizante ──────────────────────────────────────────

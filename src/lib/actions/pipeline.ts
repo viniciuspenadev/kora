@@ -3,7 +3,7 @@
 import { auth } from "@/auth"
 import { assertSessionTenant } from "@/lib/auth/assert-tenant"
 import { supabaseAdmin } from "@/lib/supabase"
-import { getViewerScope, applyVisibilityFilter, canViewConversation } from "@/lib/visibility"
+import { getViewerScope, applyVisibilityFilter, canViewConversation, assertConversationAccess } from "@/lib/visibility"
 import { resolveLifecycle } from "@/lib/lifecycle-stage"
 import { getBlueprint } from "@/lib/templates/funnels"
 import { revalidatePath } from "next/cache"
@@ -555,6 +555,7 @@ export async function updateConversationDealInfo(
   },
 ) {
   const session = await requireSession()
+  await assertConversationAccess(conversationId)   // H-04: gate por-atendente
 
   // Whitelist de campos (impede mass assignment se o schema crescer)
   const allowed: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -594,6 +595,7 @@ export async function markConversationWonLost(
   reason?:        string,
 ) {
   const session = await requireSession()
+  await assertConversationAccess(conversationId)   // H-04
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
@@ -639,6 +641,7 @@ export async function assignConversationToPipeline(
   pipelineId:     string,
 ) {
   const session = await requireSession()
+  await assertConversationAccess(conversationId)   // H-04
 
   const { data: firstStage } = await supabaseAdmin
     .from("pipeline_stages")

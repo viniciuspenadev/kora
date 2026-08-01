@@ -141,12 +141,15 @@ async function issueDeviceToken(input: {
           throw new ExtError(403, "O administrador desativou seu acesso à extensão.", "companion_access_off")
 
         const token = randomBytes(32).toString("base64url")
+        // H-16: expiração ABSOLUTA (default 90d, env EXT_TOKEN_MAX_DAYS). ≤0 = sem teto.
+        const maxDays = Number(process.env.EXT_TOKEN_MAX_DAYS ?? 90)
         const { error } = await supabaseAdmin.from("device_tokens").insert({
           tenant_id:  m.tenant_id,
           user_id:    input.userId,
           token_hash: sha256(token),
           label:      String(input.label ?? "Chrome").slice(0, 80),
           device_id:  input.deviceId,
+          expires_at: maxDays > 0 ? new Date(Date.now() + maxDays * 86_400_000).toISOString() : null,
         })
         if (error) throw new ExtError(500, "Falha ao criar o token. Tente de novo.")
 
@@ -285,11 +288,32 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
 
   const { data: row } = await supabaseAdmin
     .from("device_tokens")
-    .select("id, tenant_id, user_id, revoked_at")
+    .select("id, tenant_id, user_id, revoked_at, last_used_at, created_at, expires_at")
     .eq("token_hash", sha256(token))
     .maybeSingle()
   if (!row || row.revoked_at)
     throw new ExtError(401, "Sessão expirada. Entre de novo.", "revoked")
+
+  // H-16: expiração ABSOLUTA — token além do teto (expires_at) expira mesmo em uso contínuo
+  // (mata um token roubado que o atacante mantém "fresco" usando). Auto-revoga (self-cleaning).
+  if (row.expires_at && new Date(row.expires_at as string).getTime() < Date.now()) {
+    supabaseAdmin.from("device_tokens").update({ revoked_at: new Date().toISOString() }).eq("id", row.id).then(() => {}, () => {})
+    throw new ExtError(401, "Sessão da extensão expirou. Entre de novo.", "revoked")
+  }
+
+  // H-16 (pentest 2026-08-01): IDLE TIMEOUT. Token da extensão sem uso por > EXT_TOKEN_IDLE_DAYS
+  // (default 30d) expira — reduz a janela de um token esquecido/vazado que ninguém revogou
+  // manualmente. Extensão ativa atualiza last_used_at (abaixo), então só abandona expira.
+  // (Expiração ABSOLUTA vem na migration expires_at — pendente.)
+  const idleMaxMs = Number(process.env.EXT_TOKEN_IDLE_DAYS ?? 30) * 86_400_000
+  if (idleMaxMs > 0) {
+    const lastActive = new Date((row.last_used_at as string | null) ?? (row.created_at as string)).getTime()
+    if (Number.isFinite(lastActive) && Date.now() - lastActive > idleMaxMs) {
+      // Auto-revoga (best-effort) → self-cleaning + próxima request cai no revoked.
+      supabaseAdmin.from("device_tokens").update({ revoked_at: new Date().toISOString() }).eq("id", row.id).then(() => {}, () => {})
+      throw new ExtError(401, "Sessão da extensão expirou por inatividade. Entre de novo.", "revoked")
+    }
+  }
 
   // Rate limit por token — 120 req/min.
   if (!rateLimit(`ext:req:${row.id}`, 120, 60_000).ok)

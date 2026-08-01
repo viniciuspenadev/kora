@@ -257,6 +257,49 @@ export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFiel
 }
 
 /**
+ * Guard de MUTAÇÃO de conversa (H-04, pentest 2026-08-01). Busca a conversa (tenant-scoped),
+ * roda `canViewConversation` e NEGA se o atendente não a vê. TODA mutação de conversa/mensagem
+ * (marcar lida, flag, fixar, arquivar, reagir, enviar, participante, lifecycle, funil, valor,
+ * fechamento) deve chamar isto — `.eq(tenant_id)` sozinho deixa o agente atuar em conversa que
+ * não vê. Devolve a conversa pra reuso (evita re-fetch). Erro genérico (não vaza existência).
+ */
+export async function assertConversationAccess(
+  conversationId: string,
+): Promise<{ scope: ViewerScope; conv: ConvVisibilityFields }> {
+  const scope = await getViewerScope()
+  const { data } = await supabaseAdmin
+    .from("chat_conversations")
+    .select("assigned_to, participants, department_id, instance_id")
+    .eq("id", conversationId)
+    .eq("tenant_id", scope.tenantId)
+    .maybeSingle()
+  const conv = (data ?? null) as ConvVisibilityFields | null
+  if (!conv || !canViewConversation(scope, conv)) throw new Error("Conversa não encontrada")
+  return { scope, conv }
+}
+
+/**
+ * Guard de MUTAÇÃO de contato (H-04). O atendente ALCANÇA o contato? = vê a base inteira
+ * (seesAllContacts), OU é dono do contato (carteira/owner_id), OU tem conversa VISÍVEL com ele,
+ * OU é dono de negócio do contato. Usado em setContactBlocked/Notes/updateContactInfo (PII/consent).
+ */
+export async function assertContactAccess(contactId: string): Promise<ViewerScope> {
+  const scope = await getViewerScope()
+  if (seesAllContacts(scope)) return scope
+  const { data: owned } = await supabaseAdmin.from("chat_contacts")
+    .select("id").eq("id", contactId).eq("tenant_id", scope.tenantId).eq("owner_id", scope.userId).maybeSingle()
+  if (owned) return scope
+  const { data: convs } = await supabaseAdmin.from("chat_conversations")
+    .select("assigned_to, participants, department_id, instance_id")
+    .eq("tenant_id", scope.tenantId).eq("contact_id", contactId)
+  if (((convs ?? []) as ConvVisibilityFields[]).some((c) => canViewConversation(scope, c))) return scope
+  const { data: deals } = await supabaseAdmin.from("tenant_deals")
+    .select("assigned_to").eq("tenant_id", scope.tenantId).eq("contact_id", contactId)
+  if (((deals ?? []) as { assigned_to: string | null }[]).some((d) => d.assigned_to === scope.userId)) return scope
+  throw new Error("Contato não encontrado")
+}
+
+/**
  * Aplica o filtro de visibilidade num query builder do PostgREST (via `.or()`).
  * Usado nas LISTAS (inbox, kanban) onde filtramos no banco. Mantém a mesma
  * semântica de `canViewConversation`.

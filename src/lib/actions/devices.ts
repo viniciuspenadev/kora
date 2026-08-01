@@ -65,6 +65,14 @@ export async function listUserDevices(userId?: string): Promise<UserDevicesResul
   const target  = userId && userId !== session.user.id ? userId : session.user.id
   if (target !== session.user.id && !isAdmin) throw new Error("Sem permissão")
   const self = target === session.user.id
+  // 🔒 H-03 (pentest 2026-08-01): admin só opera em MEMBRO ATIVO do próprio tenant. Sem isso,
+  // um userId de outro tenant passava (sessões/tokens são tenant-scoped e no-op, mas
+  // auth_device_trust NÃO tem coluna tenant → vazava trust cross-tenant).
+  if (!self) {
+    const { data: member } = await supabaseAdmin.from("tenant_users")
+      .select("user_id").eq("tenant_id", session.user.tenantId).eq("user_id", target).eq("active", true).maybeSingle()
+    if (!member) throw new Error("Usuário não encontrado")
+  }
 
   const [sessRes, tokRes, trustRes] = await Promise.all([
     // Visão própria: todas as minhas sessões. Visão de admin: só as do MEU
@@ -165,6 +173,13 @@ export async function revokeUserDevice(
   if (target !== session.user.id && !isAdmin) return { error: "Sem permissão" }
   if (!deviceId) return { error: "Dispositivo inválido." }
   const self = target === session.user.id
+  // 🔒 H-03: admin só revoga dispositivo de MEMBRO ATIVO do próprio tenant (auth_device_trust
+  // não tem coluna tenant → sem isso, revogava trust de usuário de outro tenant).
+  if (!self) {
+    const { data: member } = await supabaseAdmin.from("tenant_users")
+      .select("user_id").eq("tenant_id", session.user.tenantId).eq("user_id", target).eq("active", true).maybeSingle()
+    if (!member) return { error: "Usuário não encontrado" }
+  }
 
   // 1. Confiança — próximo login deste aparelho volta pro código.
   await supabaseAdmin.from("auth_device_trust")
@@ -182,6 +197,11 @@ export async function revokeUserDevice(
     .update({ revoked_at: new Date().toISOString() })
     .eq("tenant_id", session.user.tenantId).eq("user_id", target)
     .eq("device_id", deviceId).is("revoked_at", null)
+
+  // 4. Push (pentest 2026-08-01): remove a inscrição de push desse device — senão o aparelho
+  // revogado (ex-funcionário/roubo) segue recebendo notificação com PII.
+  await supabaseAdmin.from("push_subscriptions").delete()
+    .eq("user_id", target).eq("device_id", deviceId)
 
   return {}
 }
@@ -219,6 +239,12 @@ export async function revokeOtherDevices(): Promise<{ error?: string }> {
   await supabaseAdmin.from("device_tokens")
     .update({ revoked_at: new Date().toISOString() })
     .eq("tenant_id", session.user.tenantId).eq("user_id", me).is("revoked_at", null)
+
+  // Push (pentest 2026-08-01): remove as inscrições dos OUTROS devices, preservando a do atual.
+  // (Sub legada sem device_id não casa o neq → sobrevive; é re-carimbada no próximo subscribe.)
+  let pq = supabaseAdmin.from("push_subscriptions").delete().eq("user_id", me)
+  if (currentDeviceId) pq = pq.neq("device_id", currentDeviceId)
+  await pq
 
   return {}
 }

@@ -40,7 +40,17 @@ export function encryptSecret<T extends string | null | undefined>(plain: T): T 
   if (plain == null || plain === "") return plain
   if ((plain as string).startsWith(PREFIX)) return plain     // já cifrado
   const key = getKey()
-  if (!key) return plain                                      // no-op sem chave
+  if (!key) {
+    // H-19 (pentest 2026-08-01): fail-CLOSED em PRODUÇÃO. Sem chave válida NÃO gravamos segredo
+    // em texto puro silenciosamente — falha alto. Prod já tem ENCRYPTION_KEY setada (100% dos
+    // segredos cifrados, 0 plaintext verificado 2026-08-01), então isto só dispara em
+    // MISCONFIGURAÇÃO (chave removida/quebrada) — que deve quebrar, não vazar credencial.
+    // Dev segue no-op (kill-switch local pra rodar sem a chave).
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("ENCRYPTION_KEY ausente/inválida — recusando gravar segredo em produção. Configure a chave (32 bytes base64).")
+    }
+    return plain                                              // dev: no-op sem chave
+  }
   const iv     = crypto.randomBytes(12)
   const cipher = crypto.createCipheriv(ALGO, key, iv)
   const ct     = Buffer.concat([cipher.update(plain as string, "utf8"), cipher.final()])

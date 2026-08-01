@@ -31,17 +31,33 @@ export async function POST(req: Request) {
   }
 
   const ua = (body as { userAgent?: string })?.userAgent
+
+  // device_id do device-trust (pentest 2026-08-01): resolve pela sessão atual (sid → device_id)
+  // pra que a revogação de device possa limpar o push seletivamente. Legado sem sid → null.
+  let deviceId: string | null = null
+  if (session.user.sid) {
+    const { data: s } = await supabaseAdmin
+      .from("user_sessions").select("device_id").eq("sid", session.user.sid).maybeSingle()
+    deviceId = (s?.device_id as string | null) ?? null
+  }
+
+  // DELETE-then-INSERT (não upsert): o `endpoint` é de UM browser. Se ele já existia sob outro
+  // user/tenant (device compartilhado, ou usuário multi-tenant re-inscrevendo), reatribui LIMPO
+  // pro dono atual. Também evita a parede tenant_id-imutável — um upsert que mudasse tenant_id no
+  // conflito de endpoint seria BLOQUEADO pela trigger. Insert fresco nunca muda tenant_id.
+  await supabaseAdmin.from("push_subscriptions").delete().eq("endpoint", endpoint)
   const { error } = await supabaseAdmin
     .from("push_subscriptions")
-    .upsert({
+    .insert({
       tenant_id:    session.user.tenantId,
       user_id:      session.user.id,
+      device_id:    deviceId,
       endpoint,
       p256dh,
       auth:         authKey,
       user_agent:   typeof ua === "string" ? ua.slice(0, 400) : null,
       last_seen_at: new Date().toISOString(),
-    }, { onConflict: "endpoint" })
+    })
 
   if (error) {
     console.error("[push subscribe]", error.message)

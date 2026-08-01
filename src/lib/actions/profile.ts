@@ -99,6 +99,16 @@ export async function changeMyPassword(
   if (session.user.sid) {
     await supabaseAdmin.from("user_sessions").delete()
       .eq("user_id", session.user.id).neq("sid", session.user.sid)
+
+    // Push (pentest 2026-08-01): a troca de senha é reação a comprometimento — limpa o push
+    // dos OUTROS devices (senão o aparelho do invasor seguia recebendo notificação com PII).
+    // Preserva o device ATUAL (re-subscreve sozinho se preciso).
+    const { data: cur } = await supabaseAdmin.from("user_sessions")
+      .select("device_id").eq("sid", session.user.sid).maybeSingle()
+    const curDevice = (cur?.device_id as string | null) ?? null
+    let pq = supabaseAdmin.from("push_subscriptions").delete().eq("user_id", session.user.id)
+    if (curDevice) pq = pq.neq("device_id", curDevice)
+    await pq
   }
 
   revalidatePath(PAGE)
@@ -142,9 +152,16 @@ export async function revokeMySession(id: string): Promise<{ ok: boolean; error?
   const session = await auth()
   if (!session?.user?.id) return { ok: false, error: "Não autenticado." }
   if (!id) return { ok: false, error: "Sessão inválida." }
+  // Resolve o device ANTES de apagar, pra limpar o push desse aparelho (pentest 2026-08-01).
+  const { data: s } = await supabaseAdmin
+    .from("user_sessions").select("device_id").eq("id", id).eq("user_id", session.user.id).maybeSingle()
   const { error } = await supabaseAdmin
     .from("user_sessions").delete().eq("id", id).eq("user_id", session.user.id)
   if (error) return { ok: false, error: error.message }
+  if (s?.device_id) {
+    await supabaseAdmin.from("push_subscriptions").delete()
+      .eq("user_id", session.user.id).eq("device_id", s.device_id as string)
+  }
   revalidatePath(PAGE)
   return { ok: true }
 }

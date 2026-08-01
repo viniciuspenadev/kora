@@ -33,5 +33,9 @@ export async function revokeFromEmailLink(token: string): Promise<{ ok: boolean;
     .update({ revoked_at: nowIso })
     .eq("user_id", parsed.userId).eq("device_id", parsed.deviceId).is("revoked_at", null)
 
+  // Push (pentest 2026-08-01): remove a inscrição de push do device revogado pelo link.
+  await supabaseAdmin.from("push_subscriptions").delete()
+    .eq("user_id", parsed.userId).eq("device_id", parsed.deviceId)
+
   return { ok: true }
 }

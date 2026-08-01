@@ -10,7 +10,10 @@ import { NextRequest, NextResponse } from "next/server"
  */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ slug: string }> }) {
   const { slug: rawSlug } = await params
-  const slug = rawSlug.replace(/\.js$/, "")
+  // H-01 (pentest 2026-08-01): sanitiza pra slug-safe. O slug entra num comentário `/* … */`
+  // da resposta application/javascript; um `*/` cru quebraria o comentário e injetaria código
+  // no site que embeda o widget. Slug de tenant é sempre [a-zA-Z0-9_-] — o resto não é slug.
+  const slug = rawSlug.replace(/\.js$/, "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64)
   const baseUrl = (process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? "").replace(/\/$/, "")
 
   return new NextResponse(buildWidgetJs({ slug, baseUrl }), {

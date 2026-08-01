@@ -94,8 +94,16 @@ export async function revokeSession(id: string): Promise<{ ok: boolean; error?: 
   if (!session) return { ok: false, error: "Acesso restrito." }
   if (!id) return { ok: false, error: "Sessão inválida." }
 
+  // Resolve o device ANTES de apagar a sessão, pra limpar o push desse aparelho (pentest 2026-08-01).
+  const { data: s } = await supabaseAdmin.from("user_sessions").select("user_id, device_id").eq("id", id).maybeSingle()
+
   const { error } = await supabaseAdmin.from("user_sessions").delete().eq("id", id)
   if (error) return { ok: false, error: error.message }
+
+  if (s?.user_id && s?.device_id) {
+    await supabaseAdmin.from("push_subscriptions").delete()
+      .eq("user_id", s.user_id as string).eq("device_id", s.device_id as string)
+  }
 
   revalidatePath("/admin/sessoes")
   return { ok: true }
@@ -109,6 +117,9 @@ export async function revokeAllForUser(userId: string): Promise<{ ok: boolean; e
 
   const { error } = await supabaseAdmin.from("user_sessions").delete().eq("user_id", userId)
   if (error) return { ok: false, error: error.message }
+
+  // Todas as sessões caíram → limpa TODAS as inscrições de push do usuário (pentest 2026-08-01).
+  await supabaseAdmin.from("push_subscriptions").delete().eq("user_id", userId)
 
   revalidatePath("/admin/sessoes")
   return { ok: true }

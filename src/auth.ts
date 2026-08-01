@@ -211,8 +211,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           token.isPlatformAdmin = acc.isPlatformAdmin
 
           // ── Gerenciador de sessões: confirma que esta sessão não foi revogada + presença ──
-          // Só pra tokens que têm sid (logaram já com a feature). Token legado (sem sid) é
-          // pulado → não expulsa; entra no gerenciador no próximo login. Tudo fail-open.
+          // Token comum: fail-OPEN (blip de DB não desloga; revogação recupera na próxima
+          // checagem). GOD-MODE (platform_admin): fail-CLOSED (H-15, decisão do owner 2026-08-01)
+          // — jóia da coroa; se não dá pra CONFIRMAR que a sessão é válida, derruba.
+          const isGod = acc.isPlatformAdmin === true
+          // God-mode EXIGE sessão rastreável (sid): sem ela não há como revogar → fail-closed.
+          if (isGod && !token.sid) return null
           if (token.sid) {
             try {
               const sid = token.sid as string
@@ -225,12 +229,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                   .update({ last_seen_at: new Date(now * 1000).toISOString() })
                   .eq("sid", sid)
               }
-            } catch { /* fail-open: mantém a sessão */ }
+              // H-15: erro na consulta → comum mantém (fail-open); god-mode DERRUBA.
+              if (error && isGod) return null
+            } catch {
+              // H-15: comum = fail-open (mantém); god-mode = fail-closed (não confirmou → derruba).
+              if (isGod) return null
+            }
           }
 
           token.checkedAt = now
         }
-        // status "error": mantém o token e NÃO atualiza checkedAt (re-tenta no próximo acesso)
+        // status "error": comum mantém o token e NÃO atualiza checkedAt (re-tenta). GOD-MODE =
+        // fail-CLOSED (H-15): não confirmou o acesso de maior privilégio → derruba a sessão.
+        if (acc.status === "error" && token.isPlatformAdmin === true) return null
       }
 
       if (!token.supabaseToken || (token.supabaseTokenExp as number) - now < 300) {
