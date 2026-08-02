@@ -13,6 +13,8 @@ import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import { IgCommentConfig, type IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
+import { IgStoryModal } from "@/components/studio/ig-story-modal"
+import type { IgStoryTrigger } from "@/lib/ai-v2/flow/types"
 
 /** Serviço/agenda com os campos extras da LEGENDA dinâmica do destino da agenda
  *  (quem entra no sorteio · quem abre fim de semana). agenda-node-redesign.md §3.5. */
@@ -1360,7 +1362,8 @@ export function FlowSettingsPanel({
   triggerType, keywords, mode, channels, instances,
   channelOptions, instanceOptions, keywordMatch, adIds, adOptions, inactivityValue, inactivityUnit,
   onType, onKeywords, onMode, onChannels, onInstances, onKeywordMatch, onAds, onInactivity,
-  igConfig, onIgConfig, igUsername, igLicensed = false,
+  igConfig, onIgConfig, igUsername, igLicensed = false, igFollowAvailable = false, igPro = false,
+  storyConfig, onStoryConfig,
 }: {
   triggerType: string
   keywords: string
@@ -1385,12 +1388,21 @@ export function FlowSettingsPanel({
   /** Gatilho `ig_comment` — opcionais: fluxo antigo/sem Instagram não passa nada. */
   igConfig?:   IgCommentTriggerConfig
   onIgConfig?: (v: IgCommentTriggerConfig) => void
+  /** Gatilho `ig_story_reply` — mesma licença do comentário (`instagram_automation`). */
+  storyConfig?:   IgStoryTrigger
+  onStoryConfig?: (v: IgStoryTrigger) => void
   igUsername?: string | null
   /** Licença do módulo `instagram_automation` (filho do Kora Studio). Sem ela o gatilho
    *  aparece CADEADO — vitrine, não armadilha (mesma doutrina do add-on `ai`). */
   igLicensed?: boolean
+  /** A Meta concedeu o webhook `follow` PRA ESTA CONTA? Ela libera seletivamente e pode
+   *  recolher sem aviso — por isso o estado é carimbado na conexão, não presumido. */
+  igFollowAvailable?: boolean
+  /** Nível PRO do módulo — libera o ❤️ automático no gatilho de story. */
+  igPro?: boolean
 }) {
   const [q, setQ] = useState("")
+  const [storyModal, setStoryModal] = useState(false)
   // Filtro só faz sentido com 2+ opções — quem tem 1 canal/1 número não escolhe nada.
   const showChannels  = channelOptions.length  > 1
   const showInstances = instanceOptions.length > 1
@@ -1430,6 +1442,19 @@ export function FlowSettingsPanel({
       // fica CADEADO — vitrine, não armadilha: o servidor recusa publicar mesmo forçado.
       { id: "ig_comment", label: "Comentário no Instagram", desc: "alguém comenta num post e você chama no direct",
         icon: IgTriggerIcon, ...(igLicensed ? {} : { locked: "no plano" }) },
+      // ⚠️ Diferente do comentário em DUAS coisas que mudam o desenho: a resposta ao story
+      //    JÁ é DM (existe conversa) e JÁ abre a janela de 24h — não há bala única aqui,
+      //    o fluxo conversa à vontade depois.
+      { id: "ig_story_reply", label: "Respondeu seu story", desc: "alguém responde um story e o fluxo assume a conversa",
+        icon: IgTriggerIcon, ...(igLicensed ? {} : { locked: "no plano" }) },
+      // 🔴 DOIS cadeados diferentes, e a distinção importa pro cliente: "no plano" ele
+      //    resolve com o comercial; "a Meta não liberou" não depende de ninguém aqui.
+      //    Verificado 2026-08-01: o campo `follow` existe no schema da Meta mas a
+      //    assinatura devolve `success:false` — concessão seletiva, fora do catálogo de
+      //    permissões (não é pedido na Análise do App).
+      { id: "ig_follow", label: "Começou a te seguir", desc: "alguém segue a conta e o fluxo manda o primeiro direct",
+        icon: IgTriggerIcon,
+        ...(!igLicensed ? { locked: "no plano" } : !igFollowAvailable ? { locked: "a Meta não liberou" } : {}) },
     ] },
     { key: "act", label: "Você dispara", tint: "text-violet-600 bg-violet-50", items: [
       { id: "manual", label: "No chat ou por campanha", desc: "um agente aciona, ou uma campanha dispara", icon: Zap },
@@ -1503,6 +1528,44 @@ export function FlowSettingsPanel({
         )}
       </div>
     )
+    // Resposta a story: NÃO tem compositor de primeira mensagem. A resposta já abre a
+    // janela de 24h, então quem fala é o fluxo — daí a config ser só "qual story" +
+    // "o que a resposta precisa ter".
+    // 🔴 MODAL DIRETO, sem período paralelo: este gatilho nunca foi ao ar, então não há
+    //    painel legado pra proteger. O comentário tem o "experimentar o novo editor"
+    //    porque está em produção — aqui manter dois editores seria desperdício puro.
+    if (id === "ig_story_reply") {
+      const cfg = storyConfig ?? { storyIds: [], keywords: [], keywordMatch: "contains" as const }
+      const resumo = [
+        cfg.storyIds.length ? `${cfg.storyIds.length} story(s)` : "todos os stories",
+        cfg.keywords.length ? `palavra: ${cfg.keywords.join(", ")}` : "qualquer resposta",
+        ...(cfg.autoReact ? ["curte a resposta"] : []),
+      ].join(" · ")
+      return (
+        <div className={box}>
+          {onStoryConfig ? (
+            <>
+              <p className="text-[11px] text-slate-500 leading-relaxed">{resumo}</p>
+              <button type="button" onClick={() => setStoryModal(true)}
+                className="mt-2 w-full inline-flex items-center justify-center gap-1.5 h-9 rounded-lg border border-dashed border-primary-200 text-[11px] font-semibold text-primary-700 hover:bg-primary/5 transition-colors">
+                Configurar o gatilho
+              </button>
+              {storyModal && (
+                <IgStoryModal
+                  open value={cfg} username={igUsername} pro={igPro}
+                  onChange={onStoryConfig}
+                  onClose={() => setStoryModal(false)}
+                />
+              )}
+            </>
+          ) : (
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Conecte uma conta do Instagram em Integrações para configurar este gatilho.
+            </p>
+          )}
+        </div>
+      )
+    }
     if (id === "keyword") return (
       <div className={box}>
         <div>

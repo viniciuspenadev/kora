@@ -7,6 +7,7 @@ import { PostPicker } from "./post-picker"
 import { IgCommentModal } from "@/components/studio/ig-comment-modal"
 import { freezeInstagramThumbs } from "@/lib/actions/instagram-media"
 import type { IgMediaItem } from "@/lib/instagram/api"
+import type { RichMessage } from "@/lib/ai-v2/flow/types"
 
 /**
  * Configuração do gatilho "Comentário no Instagram".
@@ -47,6 +48,11 @@ export interface IgCommentTriggerConfig {
   keywords:     string[]
   keywordMatch: "contains" | "exact"
   dm:           string
+  /** Direct rico (texto · imagem · botões). Quando existe, VENCE o `dm`.
+   *  ⚠️ O painel lateral antigo não edita este campo — ele só mexe no `dm`. Por isso o
+   *  compositor grava os DOIS (o `dm` recebe o texto), senão abrir no painel antigo
+   *  apagaria em silêncio o direct rico montado no modal. */
+  dmRich?:      RichMessage
   publicReplies: string[]
 }
 

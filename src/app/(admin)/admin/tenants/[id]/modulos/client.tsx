@@ -202,6 +202,13 @@ export function ModulesClient({ tenantId, tenantName, modules: initialModules }:
 
 // ── Linha de módulo ────────────────────────────────────────────
 
+/** Dias até expirar. Fora do componente de propósito: `Date.now()` no corpo do render é
+ *  função impura — o lint reprova, e com razão (resultado muda a cada re-render). */
+function daysUntil(iso: string | null): number {
+  if (!iso) return 0
+  return Math.max(0, Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000))
+}
+
 function ModuleRow({
   module, tenantId, parentName = null, onChange, onFlash, onEditDetails,
 }: {
@@ -229,15 +236,37 @@ function ModuleRow({
       if ("error" in result) {
         onFlash("error", result.error)
       } else {
-        onChange({ enabled: next, set_at: new Date().toISOString() })
+        // Desligar o módulo derruba o PRO junto (o servidor faz o mesmo) — senão religar
+        // devolveria os recursos avançados sem ninguém ter decidido isso.
+        onChange({ enabled: next, pro: next ? module.pro : false, set_at: new Date().toISOString() })
         onFlash("ok", `${module.name} ${next ? "habilitado" : "desabilitado"}`)
       }
     })
   }
 
+  /**
+   * 🔴 O PRO mora NO módulo (`tenant_modules.pro`), não num slug separado. Um checkbox
+   *    por módulo, e qualquer módulo futuro (Financeiro, CRM, Fiscal) já nasce podendo
+   *    ter nível avançado sem linha nova no catálogo.
+   */
+  function togglePro() {
+    if (!module.enabled) return          // sem módulo não há o que marcar
+    startTransition(async () => {
+      const next = !module.pro
+      const result = await setTenantModule({
+        tenantId, slug: module.slug, enabled: true, pro: next,
+        reason: module.reason, expiresAt: module.expires_at,
+      })
+      if ("error" in result) onFlash("error", result.error)
+      else {
+        onChange({ pro: next })
+        onFlash("ok", `${module.name} — PRO ${next ? "liberado" : "removido"}`)
+      }
+    })
+  }
+
   const hasExpiry = !!module.expires_at
-  const expiryMs  = hasExpiry ? new Date(module.expires_at!).getTime() : 0
-  const daysLeft  = hasExpiry ? Math.max(0, Math.ceil((expiryMs - Date.now()) / 86400000)) : 0
+  const daysLeft  = daysUntil(module.expires_at)
   // Ligado no próprio, mas o PAI está desligado → o cliente NÃO tem (gate recursivo).
   const blockedByParent = !!parentName && module.enabled && !module.effective
 
@@ -303,6 +332,16 @@ function ModuleRow({
 
       {/* Ações */}
       <div className="flex items-center gap-1 shrink-0">
+        {/* Checkbox do PRO — só existe com o módulo LIGADO, porque é onde ele mora.
+            "PRO ligado com módulo desligado" não é estado exprimível, por construção. */}
+        {!module.is_core && module.enabled && (
+          <label className="inline-flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-white"
+            title="Libera os recursos avançados deste módulo">
+            <input type="checkbox" checked={!!module.pro} onChange={togglePro} disabled={pending}
+              className="size-3.5 rounded border-slate-300 text-primary focus:ring-primary/30 cursor-pointer disabled:opacity-50" />
+            <span className="text-[10px] font-bold text-slate-600">PRO</span>
+          </label>
+        )}
         {!module.is_core && module.enabled && (
           <button
             type="button"
@@ -412,7 +451,7 @@ function ModuleDetailsModal({
               Motivo (opcional)
             </label>
             <p className="text-[11px] text-slate-400 mt-0.5 mb-1.5">
-              Por que você habilitou esse módulo pra esse tenant? Ex: "Trial estendido", "Cortesia upsell"
+              Por que você habilitou esse módulo pra esse tenant? Ex: &quot;Trial estendido&quot;, &quot;Cortesia upsell&quot;
             </p>
             <input
               type="text"

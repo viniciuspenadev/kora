@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { Heart, MessageCircle, Send, ChevronLeft, Info } from "lucide-react"
+import { useState } from "react"
+import { Heart, MessageCircle, Send, ChevronLeft, Info, User } from "lucide-react"
 import { SourceLogo } from "@/components/chat/source-logo"
 
 /**
@@ -29,20 +29,64 @@ import { SourceLogo } from "@/components/chat/source-logo"
 
 export type PreviewFocus = "post" | "comments" | "direct"
 
+/**
+ * Foto de perfil da conta CONECTADA — vem de `/api/ig-avatar` (URL fixa, sem parâmetro;
+ * o tenant sai da sessão). Sem conexão ou falha na Meta → 404 → cai na inicial do @.
+ *
+ * ⚠️ Círculo chapado escuro NÃO serve de avatar: a prévia inteira depende de parecer o
+ *    Instagram, e mancha preta parece defeito. Fallback é a inicial num degradê suave.
+ */
+function AccountAvatar({ handle, size = 28, ring }: { handle: string; size?: number; ring?: boolean }) {
+  const [failed, setFailed] = useState(false)
+  const letter = handle.replace("@", "").charAt(0).toUpperCase() || "K"
+  const box = { width: size, height: size }
+
+  if (failed) {
+    return (
+      <span style={box}
+        className={`shrink-0 grid place-items-center rounded-full bg-gradient-to-br from-fuchsia-500 to-orange-400 font-semibold text-white ${
+          ring ? "ring-2 ring-white/70" : ""}`}>
+        <span style={{ fontSize: Math.round(size * 0.42) }}>{letter}</span>
+      </span>
+    )
+  }
+  return (
+    /* eslint-disable-next-line @next/next/no-img-element */
+    <img src="/api/ig-avatar" alt="" onError={() => setFailed(true)} style={box}
+      className={`shrink-0 rounded-full object-cover bg-slate-200 ${ring ? "ring-2 ring-white/70" : ""}`} />
+  )
+}
+
+/** Quem comenta é desconhecido — silhueta neutra, nunca um disco preto. */
+function PersonAvatar({ size = 28, dark }: { size?: number; dark?: boolean }) {
+  return (
+    <span style={{ width: size, height: size }}
+      className={`shrink-0 grid place-items-center rounded-full ${
+        dark ? "bg-white/10 text-white/45" : "bg-slate-200 text-slate-400"}`}>
+      <User style={{ width: size * 0.5, height: size * 0.5 }} strokeWidth={2.2} />
+    </span>
+  )
+}
+
 export interface IgPreviewData {
   thumbUrl:    string | null
   keyword:     string | null
   dm:          string
+  /** Imagem do cartão (URL opaca `/api/card-image/...`). */
+  dmImage?:    string | null
+  /** Rótulos dos botões — a prévia mostra o que a pessoa vai TOCAR. */
+  dmButtons?:  string[]
   publicReply: string | null
   username?:   string | null
 }
 
 export function IgCommentPreview({ data, focus = "post" }: { data: IgPreviewData; focus?: PreviewFocus }) {
+  // O campo em FOCO manda — mas o clique manual na aba continua valendo até a pessoa
+  // focar outro campo. Ajuste-durante-render (não `useEffect`): trocar estado dentro de
+  // efeito causa render em cascata e o lint reprova, com razão.
   const [tab, setTab] = useState<PreviewFocus>(focus)
-  // A seção ativa MANDA — mas o clique manual continua valendo até a rolagem mudar de
-  // seção de novo. Sem este efeito a prévia ignoraria a rolagem; sem o estado local,
-  // clicar na aba não faria nada.
-  useEffect(() => { setTab(focus) }, [focus])
+  const [seen, setSeen] = useState<PreviewFocus>(focus)
+  if (seen !== focus) { setSeen(focus); setTab(focus) }
 
   const handle  = data.username ? `@${data.username}` : "sua conta"
   const comment = data.keyword?.trim() || "…"
@@ -86,8 +130,9 @@ function PostScreen({ data, comment, handle, sheet, onCloseSheet }: {
   return (
     <>
       <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
-        <SourceLogo source="instagram" size={18} />
+        <AccountAvatar handle={handle} size={26} />
         <span className="text-[11px] font-semibold text-slate-700 truncate">{handle}</span>
+        <SourceLogo source="instagram" size={14} className="ml-auto shrink-0 opacity-60" />
       </div>
 
       <div className="aspect-square bg-slate-100 shrink-0">
@@ -103,36 +148,52 @@ function PostScreen({ data, comment, handle, sheet, onCloseSheet }: {
         <Heart className="size-4" /><MessageCircle className="size-4" /><Send className="size-4" />
       </div>
 
-      {/* 🔴 FOLHA DE COMENTÁRIOS — sobe por cima do post, como no Instagram de verdade.
-          Entra quando a seção da resposta pública fica ativa. É o gesto que o app real faz,
-          e é ele que faz a prévia parecer o Instagram em vez de um cartão de exemplo. */}
-      <div className={`absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-slate-200 bg-white shadow-[0_-8px_24px_-12px_rgba(15,23,42,0.25)] transition-transform duration-300 ease-out ${
-        sheet ? "translate-y-0" : "translate-y-full"}`} style={{ maxHeight: "62%" }}>
-        <button type="button" onClick={onCloseSheet} aria-label="Fechar comentários"
-          className="w-full pt-2 pb-1 grid place-items-center">
-          <span className="h-1 w-9 rounded-full bg-slate-300" />
-        </button>
-        <p className="px-3 pb-2 text-[11px] font-semibold text-slate-700 border-b border-slate-100">Comentários</p>
+      {/* Escurecimento do post quando a folha sobe — é o que o Instagram faz e é o que
+          separa as duas camadas. Sem ele a folha "flutua" sem contexto. */}
+      <div className={`absolute inset-0 bg-black transition-opacity duration-300 pointer-events-none ${
+        sheet ? "opacity-40" : "opacity-0"}`} />
 
-        <div className="px-3 py-2.5 space-y-2.5 overflow-y-auto" style={{ maxHeight: "calc(62vh - 60px)" }}>
-          <div className="flex gap-2">
-            <span className="size-6 shrink-0 rounded-full bg-slate-200" />
-            <p className="text-[11px] leading-snug">
-              <span className="font-semibold text-slate-700">cliente</span>{" "}
-              <span className="text-slate-600">{comment}</span>
-            </p>
-          </div>
-          {data.publicReply?.trim() ? (
-            <div className="flex gap-2 pl-7">
-              <span className="size-6 shrink-0 rounded-full bg-slate-800" />
-              <p className="text-[11px] leading-snug">
-                <span className="font-semibold text-slate-700">{handle}</span>{" "}
-                <span className="text-slate-600">{data.publicReply}</span>
+      {/* 🔴 FOLHA DE COMENTÁRIOS — ESCURA, como o app real (referência do dono). Ela sobe
+          por cima do post; é o gesto do Instagram que faz a prévia parecer o Instagram e
+          não um cartão de exemplo. */}
+      <div className={`absolute inset-x-0 bottom-0 rounded-t-2xl bg-[#181818] text-white shadow-[0_-10px_30px_-8px_rgba(0,0,0,0.6)] transition-transform duration-300 ease-out ${
+        sheet ? "translate-y-0" : "translate-y-full"}`} style={{ height: "60%" }}>
+        <button type="button" onClick={onCloseSheet} aria-label="Fechar comentários"
+          className="w-full pt-2.5 pb-2 grid place-items-center">
+          <span className="h-1 w-9 rounded-full bg-white/25" />
+        </button>
+        <p className="pb-2.5 text-center text-[13px] font-semibold">Comentários</p>
+
+        <div className="px-3.5 pb-3 space-y-3.5 overflow-y-auto" style={{ maxHeight: "calc(100% - 62px)" }}>
+          {/* Comentário do cliente: avatar · @ + tempo · texto abaixo · "Responder" —
+              a mesma anatomia do app. */}
+          <div className="flex gap-2.5">
+            <PersonAvatar size={28} dark />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px]">
+                <span className="font-semibold">cliente</span>
+                <span className="ml-1.5 text-white/40">agora</span>
               </p>
+              <p className="mt-0.5 text-[12px] leading-snug break-words">{comment}</p>
+              <p className="mt-1 text-[10px] font-medium text-white/40">Responder</p>
+
+              {/* A resposta da conta entra recuada dentro do fio, como uma resposta real. */}
+              {data.publicReply?.trim() ? (
+                <div className="mt-2.5 flex gap-2">
+                  <AccountAvatar handle={handle} size={24} />
+                  <div className="min-w-0">
+                    <p className="text-[11px]">
+                      <span className="font-semibold">{handle.replace("@", "")}</span>
+                      <span className="ml-1.5 text-white/40">agora</span>
+                    </p>
+                    <p className="mt-0.5 text-[12px] leading-snug break-words">{data.publicReply}</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-2.5 pl-8 text-[11px] italic text-white/30">escreva a resposta pública…</p>
+              )}
             </div>
-          ) : (
-            <p className="pl-7 text-[11px] italic text-slate-300">escreva a resposta pública…</p>
-          )}
+          </div>
         </div>
       </div>
 
@@ -149,29 +210,68 @@ function PostScreen({ data, comment, handle, sheet, onCloseSheet }: {
   )
 }
 
+/**
+ * A bolha do direct. Vira CARTÃO quando há imagem ou botão — que é o formato real que a
+ * Meta entrega (`generic`/`button template`), não uma licença poética da prévia.
+ *
+ * 🔴 Mostrar o botão aqui é o ponto pedagógico da tela inteira: é olhando pra ele que a
+ *    pessoa entende que o direct não é um recado, é uma PORTA.
+ */
+function DirectBubble({ data }: { data: IgPreviewData }) {
+  const btns = (data.dmButtons ?? []).filter((b) => b.trim())
+  const rich = !!data.dmImage || btns.length > 0
+
+  if (!rich) {
+    return (
+      <div key={data.dm} className="max-w-[80%] rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-3 py-2 animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
+        {data.dm.trim()
+          ? <p className="text-[11px] leading-snug text-slate-700 whitespace-pre-wrap break-words">{data.dm}</p>
+          : <p className="text-[11px] italic text-slate-300">escreva o direct…</p>}
+      </div>
+    )
+  }
+
+  return (
+    <div key={`${data.dm}|${data.dmImage}|${btns.join("|")}`}
+      className="max-w-[85%] overflow-hidden rounded-2xl rounded-tl-sm border border-slate-200 bg-white animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
+      {data.dmImage && (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img src={data.dmImage} alt="" className="w-full aspect-[1.91/1] object-cover bg-slate-100" />
+      )}
+      <div className="px-3 py-2">
+        {data.dm.trim()
+          ? <p className="text-[11px] leading-snug text-slate-700 whitespace-pre-wrap break-words">{data.dm}</p>
+          : <p className="text-[11px] italic text-slate-300">escreva o direct…</p>}
+      </div>
+      {btns.map((b, i) => (
+        <div key={i} className="border-t border-slate-100 py-2 text-center text-[11px] font-semibold text-[#0095f6]">
+          {b}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function DirectScreen({ data, handle }: { data: IgPreviewData; handle: string }) {
   return (
     <>
       <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 shrink-0">
-        <ChevronLeft className="size-4 text-slate-400" />
-        <SourceLogo source="instagram" size={18} />
+        <ChevronLeft className="size-4 shrink-0 text-slate-400" />
+        <AccountAvatar handle={handle} size={26} />
         <div className="min-w-0">
           <p className="text-[11px] font-semibold text-slate-700 truncate">{handle}</p>
           <p className="text-[9px] text-slate-400">Instagram</p>
         </div>
+        <SourceLogo source="instagram" size={14} className="ml-auto shrink-0 opacity-60" />
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 bg-slate-50/60">
         <p className="text-center text-[9px] text-slate-400">agora</p>
         <div className="flex gap-2">
-          <span className="size-6 shrink-0 rounded-full bg-slate-800" />
+          <AccountAvatar handle={handle} size={24} />
           {/* `animate-in` da entrada: a bolha CHEGA, não aparece pronta — é o que dá a
               sensação de mensagem recebida ao vivo. */}
-          <div key={data.dm} className="max-w-[80%] rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-3 py-2 animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
-            {data.dm.trim()
-              ? <p className="text-[11px] leading-snug text-slate-700 whitespace-pre-wrap break-words">{data.dm}</p>
-              : <p className="text-[11px] italic text-slate-300">escreva o direct…</p>}
-          </div>
+          <DirectBubble data={data} />
         </div>
       </div>
 

@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react"
 import { Check, AlertTriangle, Image as ImageIcon, X, Plus } from "lucide-react"
 import { ConfigModal, type ConfigSection } from "./config-modal"
 import { IgCommentPreview, type PreviewFocus } from "./ig-comment-preview"
+import { RichComposer } from "./rich-composer"
 import { PostPicker } from "@/components/integrations/instagram/post-picker"
 import { dmHint, type IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
 import { freezeInstagramThumbs } from "@/lib/actions/instagram-media"
@@ -43,9 +44,35 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [kw, setKw] = useState("")
   const [, startFreeze] = useTransition()
+  /** 🔴 A prévia segue o CAMPO EM FOCO, não a rolagem. Rolagem trocava a prévia sem a
+   *  pessoa pedir; foco troca no momento em que ela clica no campo — que é exatamente
+   *  quando ela quer ver aquele resultado. (Ajuste pedido pelo dono, 2026-07-31.) */
+  const [focus, setFocus] = useState<PreviewFocus>("post")
   const triedRef = useRef<Set<string>>(new Set())
 
   const set  = (patch: Partial<IgCommentTriggerConfig>) => setDraft((d) => ({ ...d, ...patch }))
+
+  /** Fluxo antigo tem só `dm` (string). Abrir aqui promove pro formato rico SEM perder o
+   *  texto — e sem gravar nada até a pessoa salvar. */
+  const rich = draft.dmRich ?? { text: draft.dm }
+
+  /**
+   * Modo de captura — estado de TELA, não coluna nova.
+   *
+   * No dado, "qualquer comentário" é `keywords: []`. Só que isso não distingue "escolhi
+   * qualquer" de "escolhi Contém e ainda não digitei" — e sem essa distinção o campo de
+   * palavra sumiria no meio da digitação. Daí o estado local, semeado pelo que está salvo.
+   */
+  const [kwMode, setKwMode] = useState<"any" | "contains" | "exact">(
+    value.keywords.length ? (value.keywordMatch === "exact" ? "exact" : "contains") : "any",
+  )
+  function pickMatch(m: "any" | "contains" | "exact") {
+    setKwMode(m)
+    // "Qualquer" limpa as palavras (é o que o runtime entende). Os outros dois só trocam a
+    // régua de comparação — trocar de Contém pra Exata não pode apagar o que foi digitado.
+    if (m === "any") set({ keywords: [] })
+    else set({ keywordMatch: m })
+  }
   const hint = dmHint(draft.dm)
 
   /**
@@ -74,12 +101,10 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
 
   const sections: ConfigSection[] = [
     {
-      id: "post", label: "Publicação",
-      valid: draft.posts.length > 0,
+      id: "post", title: "Em qual publicação?",
       body: (
         <div>
-          <h3 className="text-lg font-bold text-slate-900">Em qual publicação?</h3>
-          <p className="mt-1 text-[13px] text-slate-500">
+          <p className="text-[13px] text-slate-500">
             Só comentários nesses posts entram no fluxo. Até 3.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -97,7 +122,7 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
               </div>
             ))}
             {draft.posts.length < 3 && (
-              <button type="button" onClick={() => setPickerOpen(true)}
+              <button type="button" onClick={() => { setFocus("post"); setPickerOpen(true) }}
                 className="size-24 rounded-xl border-2 border-dashed border-slate-200 text-slate-400 hover:border-primary-200 hover:text-primary-600 transition-colors grid place-items-center">
                 <Plus className="size-5" />
               </button>
@@ -107,85 +132,102 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
       ),
     },
     {
-      id: "keyword", label: "Palavra-chave",
-      valid: true,   // "qualquer comentário" é escolha válida — não é seção pendente
+      id: "keyword", title: "O que aciona o direct?",
       body: (
         <div>
-          <h3 className="text-lg font-bold text-slate-900">O que aciona o direct?</h3>
-          <div className="mt-4 space-y-2.5">
-            <button type="button" onClick={() => { if (!draft.keywords.length) setKw("") }}
-              className={`w-full text-left rounded-xl border-2 p-4 transition-colors ${
-                draft.keywords.length ? "border-primary bg-white" : "border-slate-200 bg-white hover:border-slate-300"}`}>
-              <p className="text-[15px] font-semibold text-slate-900">Palavra específica</p>
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          {/* 🔴 TRÊS CARTÕES, UMA DECISÃO (pedido do dono, 2026-08-01). O painel lateral
+              antigo separava isto em dois blocos grandes + um seletor "Contém/Exata" à
+              parte — mas as três são a MESMA escolha, mutuamente exclusivas. Junto, dá pra
+              ver as três de uma vez em vez de descobrir a terceira depois de escolher.
+              Mesmo desenho do seletor de formato do passo 3. */}
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              ["any",      "Qualquer comentário", "todo mundo que comentar"],
+              ["contains", "Contém",              "em qualquer parte"],
+              ["exact",    "Palavra exata",       "a palavra inteira"],
+            ] as const).map(([key, title, desc]) => (
+              <button key={key} type="button" onClick={() => pickMatch(key)}
+                className={`text-left p-2.5 rounded-lg border transition-colors ${
+                  kwMode === key ? "border-primary/30 bg-primary-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
+                <p className="text-xs font-semibold text-slate-800">{title}</p>
+                <p className="text-[10.5px] text-slate-500">{desc}</p>
+              </button>
+            ))}
+          </div>
+
+          {/* A escolha decide o que aparece — mesma regra do compositor: sem "qualquer
+              comentário" selecionado, o campo de palavra nem existe. */}
+          {kwMode !== "any" && (
+            <div className="mt-3">
+              <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 p-2.5">
                 {draft.keywords.map((k) => (
                   <span key={k} className="inline-flex items-center gap-1 h-7 pl-2.5 pr-1.5 rounded-lg bg-primary/10 text-primary-700 text-xs font-semibold">
                     {k}
                     <span role="button" tabIndex={0} aria-label={`Remover ${k}`}
-                      onClick={(e) => { e.stopPropagation(); set({ keywords: draft.keywords.filter((x) => x !== k) }) }}
+                      onClick={() => set({ keywords: draft.keywords.filter((x) => x !== k) })}
                       onKeyDown={(e) => { if (e.key === "Enter") set({ keywords: draft.keywords.filter((x) => x !== k) }) }}
                       className="grid place-items-center size-4 rounded hover:bg-primary/20 cursor-pointer">
                       <X className="size-3" />
                     </span>
                   </span>
                 ))}
-                <input value={kw} onChange={(e) => setKw(e.target.value)}
+                <input value={kw} onFocus={() => setFocus("post")} onChange={(e) => setKw(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addKeyword() } }}
                   onBlur={addKeyword} placeholder="+ palavra"
                   className="h-7 min-w-24 flex-1 px-2 text-xs border border-dashed border-slate-300 rounded-lg focus:outline-none focus:border-primary-300" />
               </div>
-              <p className="mt-2 text-[11px] text-slate-400">Ignora acento e maiúscula (olá = ola).</p>
-            </button>
+              <p className="mt-1.5 text-[11px] text-slate-400">Ignora acento e maiúscula (olá = ola).</p>
 
-            <button type="button" onClick={() => set({ keywords: [] })}
-              className={`w-full text-left rounded-xl border-2 p-4 transition-colors ${
-                draft.keywords.length ? "border-slate-200 bg-white hover:border-slate-300" : "border-primary bg-white"}`}>
-              <p className="text-[15px] font-semibold text-slate-900">Qualquer comentário</p>
-              <p className="mt-0.5 text-[12px] text-slate-500">Todo mundo que comentar recebe o direct.</p>
-            </button>
-          </div>
+              {/* ⚠️ Sem palavra, a escolha vira "qualquer comentário" na prática — e aí a
+                  bala única é gasta em "lindo 😍". Avisar aqui, não no publicar. */}
+              {!draft.keywords.length && (
+                <p className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800">
+                  Escreva ao menos uma palavra. Sem nenhuma, <strong>todo</strong> comentário recebe
+                  direct — inclusive “lindo 😍”, e a chance daquele comentário se perde.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       ),
     },
     {
       // Separado da resposta pública de propósito: cada seção comanda a SUA prévia
       // (esta acende o direct; a de baixo sobe a folha de comentários).
-      id: "dm", label: "Mensagem no direct",
-      valid: !!draft.dm.trim(),
+      id: "dm", title: "O que a pessoa recebe no direct?",
       body: (
         <div>
-          <h3 className="text-lg font-bold text-slate-900">O que a pessoa recebe no direct?</h3>
-          <p className="mt-1 text-[13px] text-slate-500">Uma mensagem por comentário. É a única chance.</p>
-          <textarea value={draft.dm} onChange={(e) => set({ dm: e.target.value.slice(0, DM_MAX) })} rows={4}
-            placeholder="Oi! Vi que você comentou no nosso post…"
-            className="mt-4 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y" />
-          <div className="mt-1 flex items-start justify-between gap-3">
-            {/* Verificador VIVO — mesma função do painel atual (dmHint), não uma cópia. */}
-            {hint.tone !== "none" ? (
-              <p className={`flex items-start gap-1.5 text-[11px] ${hint.tone === "ok" ? "text-emerald-600" : "text-amber-600"}`}>
-                {hint.tone === "ok" ? <Check className="size-3.5 shrink-0 mt-px" /> : <AlertTriangle className="size-3.5 shrink-0 mt-px" />}
-                {hint.msg}
-              </p>
-            ) : <span />}
-            <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{draft.dm.length}/{DM_MAX}</span>
-          </div>
+          {/* 🔴 O compositor é COMPARTILHADO (rich-composer.tsx) — o mesmo componente vai
+              servir o nó `message` do fluxo. Um editor rico só aqui deixaria o direct de
+              abertura mais capaz que o fluxo inteiro depois dele. */}
+          <RichComposer
+            value={rich}
+            channel="instagram"
+            onFocusPart={() => setFocus("direct")}
+            onChange={(v) => set({ dmRich: v, dm: (v.text ?? "").slice(0, DM_MAX) })}
+          />
+          {/* Verificador VIVO — mesma função do painel atual (dmHint), não uma cópia. */}
+          {hint.tone !== "none" && (
+            <p className={`mt-2 flex items-start gap-1.5 text-[11px] ${hint.tone === "ok" ? "text-emerald-600" : "text-amber-600"}`}>
+              {hint.tone === "ok" ? <Check className="size-3.5 shrink-0 mt-px" /> : <AlertTriangle className="size-3.5 shrink-0 mt-px" />}
+              {hint.msg}
+            </p>
+          )}
         </div>
       ),
     },
     {
-      id: "public", label: "Resposta no comentário",
-      valid: draft.publicReplies.some((r) => r.trim()),
+      id: "public", title: "E no comentário?",
       body: (
         <div>
-          <h3 className="text-lg font-bold text-slate-900">E no comentário?</h3>
-          <p className="mt-1 text-[13px] text-slate-500">
+          <p className="text-[13px] text-slate-500">
             Avisa quem não segue a conta — pra essa pessoa o direct cai em Solicitações.
             Com várias variações, a Kora alterna entre elas.
           </p>
           <div className="mt-4 space-y-1.5">
             {draft.publicReplies.map((r, i) => (
               <div key={i} className="flex items-center gap-1.5">
-                <input value={r}
+                <input value={r} onFocus={() => setFocus("comments")}
                   onChange={(e) => set({ publicReplies: draft.publicReplies.map((x, j) => j === i ? e.target.value : x) })}
                   placeholder="Te chamei no direct!"
                   className="flex-1 h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30" />
@@ -196,7 +238,7 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
                 </button>
               </div>
             ))}
-            <button type="button" onClick={() => set({ publicReplies: [...draft.publicReplies, ""] })}
+            <button type="button" onClick={() => { setFocus("comments"); set({ publicReplies: [...draft.publicReplies, ""] }) }}
               className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium text-primary-600 hover:bg-primary/5 rounded-lg transition-colors">
               <Plus className="size-3.5" /> nova variação
             </button>
@@ -206,25 +248,22 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
     },
   ]
 
-  /** Seção ativa → o que a prévia mostra. É o que faz ela SEGUIR a rolagem. */
-  const focusOf: Record<string, PreviewFocus> = {
-    post: "post", keyword: "post", dm: "direct", public: "comments",
-  }
 
   return (
     <>
       <ConfigModal
         open={open}
-        title="Configurar gatilho"
         sections={sections}
-        preview={(activeId) => (
+        preview={(
           <IgCommentPreview
-            focus={focusOf[activeId] ?? "post"}
+            focus={focus}
             data={{
               thumbUrl:    draft.posts[0]?.thumbUrl ?? null,
               keyword:     draft.keywords[0] ?? null,
               dm:          draft.dm,
               publicReply: draft.publicReplies.find((r) => r.trim()) ?? null,
+              dmImage:  rich.media?.name ?? null,
+              dmButtons: (rich.buttons ?? []).map((b) => b.label),
               username,
             }} />
         )}

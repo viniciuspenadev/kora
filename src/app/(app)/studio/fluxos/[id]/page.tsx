@@ -1,7 +1,7 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
-import { hasModule } from "@/lib/modules"
+import { hasModule, hasModulePro } from "@/lib/modules"
 import { loadTenantChannels, loadTenantInstances, loadTenantAds } from "@/lib/studio/trigger-meta"
 import { FlowEditorCanvas } from "./editor-canvas"
 import type { StudioFlowFull } from "@/types/studio"
@@ -58,13 +58,14 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   // + estado do Instagram pro gatilho de comentário: conexão ATIVA (senão não há o que
   //   configurar) e licença do módulo `instagram_automation` (filho do Kora Studio —
   //   `hasModule` já exige o pai recursivamente, fail-closed no banco).
-  const [ownerRouting, channels, instances, ads, igLicensed, { data: igConn }] = await Promise.all([
+  const [ownerRouting, channels, instances, ads, igLicensed, igPro, { data: igConn }] = await Promise.all([
     hasModule(tenantId, "agenda_owner_routing"),
     loadTenantChannels(tenantId),
     loadTenantInstances(tenantId),
     loadTenantAds(tenantId),
     hasModule(tenantId, "instagram_automation"),
-    supabaseAdmin.from("channel_connections").select("username")
+    hasModulePro(tenantId, "instagram_automation"),
+    supabaseAdmin.from("channel_connections").select("username, meta")
       .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active").maybeSingle(),
   ])
 
@@ -87,6 +88,12 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
         connected: !!igConn,
         username:  (igConn?.username as string | null) ?? null,
         licensed:  igLicensed,
+        // Nível PRO do módulo — decide o ❤️ automático. O gate REAL é no envio.
+        pro:       igPro,
+        // 🔴 Disponibilidade do gatilho de NOVO SEGUIDOR, carimbada na conexão pela sonda
+        //    (`probeIgFollowField`). A Meta concede `follow` seletivamente e pode recolher
+        //    sem aviso — sem este flag o gatilho apareceria normal e nunca dispararia.
+        followAvailable: !!(igConn?.meta as { webhook_follow?: boolean } | null)?.webhook_follow,
       }}
     />
   )

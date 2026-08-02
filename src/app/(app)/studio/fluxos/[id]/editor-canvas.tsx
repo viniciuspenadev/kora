@@ -29,7 +29,7 @@ import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, t
 import { outcomeLabel } from "@/lib/ai-v2/flow/describe"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
 import { getFlowJourney, getFlowRevenue, getFlowCampaigns, type FlowJourney, type FlowRevenue } from "@/lib/actions/studio/flow-analytics"
-import type { FlowTrigger, FlowNodeType, IgCommentTrigger } from "@/lib/ai-v2/flow/types"
+import type { FlowTrigger, FlowNodeType, IgCommentTrigger, IgStoryTrigger } from "@/lib/ai-v2/flow/types"
 import type { TriggerChannel, TriggerInstance, TriggerAd } from "@/lib/studio/trigger-meta"
 import type { StudioFlowFull } from "@/types/studio"
 
@@ -49,7 +49,7 @@ interface Props {
   ads:         TriggerAd[]
   /** Estado do Instagram pro gatilho de comentário: conexão ativa + licença do módulo
    *  `instagram_automation`. Sem conexão não há o que configurar; sem licença, cadeado. */
-  ig:          { connected: boolean; username: string | null; licensed: boolean }
+  ig:          { connected: boolean; username: string | null; licensed: boolean; followAvailable?: boolean; pro?: boolean }
 }
 
 /** Config vazia do gatilho `ig_comment` — fluxo que nunca configurou o Instagram. */
@@ -132,6 +132,11 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
   const [inactUnit, setInactUnit]   = useState<"minutes" | "hours">(flow.trigger?.inactivityUnit ?? "hours")
   // Gatilho `ig_comment`: post congelado + palavra + direct + resposta pública.
   const [igCfg, setIgCfg]           = useState<IgCommentTrigger>(flow.trigger?.ig ?? EMPTY_IG)
+  // Gatilho "respondeu seu story". Default `storyIds: []` = TODOS — o modo que não
+  // apodrece (story específico morre em 24h junto com o story).
+  const [storyCfg, setStoryCfg]     = useState<IgStoryTrigger>(
+    flow.trigger?.story ?? { storyIds: [], keywords: [], keywordMatch: "contains" },
+  )
   const [orientation, setOrientation] = useState<Orientation>(flow.graph.orientation ?? "vertical")
   const [addCount, setAddCount]     = useState(0)
   const [pending, startTransition]  = useTransition()
@@ -201,8 +206,14 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
       ...(triggerType === "ig_comment"
         ? { keywords: igCfg.keywords.join(", "), igPosts: igCfg.posts, igDm: igCfg.dm }
         : {}),
+      // `ig_story_reply`: o card mostra a palavra configurada (a config do story tem a
+      // sua, separada do campo de keyword do gatilho de mensagem) — e nada de post,
+      // porque aqui não existe post nem direct de abertura.
+      ...(triggerType === "ig_story_reply"
+        ? { keywords: storyCfg.keywords.join(", ") }
+        : {}),
     }),
-    [triggerType, mode, trigChannels, keywords, inactValue, inactUnit, igCfg],
+    [triggerType, mode, trigChannels, keywords, inactValue, inactUnit, igCfg, storyCfg],
   )
   // Variáveis que o cliente CRIOU no fluxo (Coletar/Definir/HTTP/Agendar/IA) → viram
   // chips no editor, junto dos campos de contato. Atualiza ao vivo conforme monta.
@@ -434,6 +445,7 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
       // variações da resposta pública). O servidor deriva daqui a regra em
       // `instagram_comment_rules` — o fluxo continua sendo a fonte de edição.
       ...(triggerType === "ig_comment" ? { ig: igCfg } : {}),
+      ...(triggerType === "ig_story_reply" ? { story: storyCfg } : {}),
       ...(mode !== "receptive" ? { mode } : {}),       // receptivo é o default → não polui o JSON
       ...(mode === "auto" ? { inactivityValue: inactValue, inactivityUnit: inactUnit } : {}),
       ...(trigChannels.length  ? { channels: trigChannels }   : {}),
@@ -593,9 +605,12 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
                 onKeywordMatch={setKwMatch} onAds={setAds}
                 onInactivity={(v, u) => { setInactValue(v); setInactUnit(u) }}
                 igConfig={igCfg} igUsername={ig.username} igLicensed={ig.licensed}
+                igFollowAvailable={!!ig.followAvailable} igPro={!!ig.pro}
                 // Sem conexão ativa não há o que configurar (o painel orienta a conectar) —
                 // é o contrato do FlowSettingsPanel: sem `onIgConfig`, gatilho não editável.
-                onIgConfig={ig.connected ? setIgCfg : undefined} />}
+                onIgConfig={ig.connected ? setIgCfg : undefined}
+                storyConfig={storyCfg}
+                onStoryConfig={ig.connected ? setStoryCfg : undefined} />}
         </div>
       </div>
     </div>
