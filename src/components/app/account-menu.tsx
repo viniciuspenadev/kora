@@ -48,10 +48,6 @@ export function AccountMenu({
     }
   }, [])
 
-  // Fetch lazy: só no primeiro open (data ainda null).
-  useEffect(() => {
-    if (open && data === null && !loading) void load()
-  }, [open, data, loading, load])
 
   // Fecha em click-fora + Esc.
   useEffect(() => {
@@ -90,7 +86,15 @@ export function AccountMenu({
     <div ref={ref} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        // Buscar os dados é consequência do CLIQUE, não de um efeito observando `open`.
+        // Como efeito, a busca acontecia "porque o estado ficou assim" — e o `setLoading`
+        // logo na entrada era um render extra a cada abertura. Aqui é o que de fato é:
+        // abriu pela primeira vez, busca.
+        onClick={() => {
+          const abrindo = !open
+          setOpen(abrindo)
+          if (abrindo && data === null && !loading) void load()
+        }}
         aria-haspopup="menu"
         aria-expanded={open}
         title="Minha conta"

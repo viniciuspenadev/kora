@@ -149,7 +149,7 @@ export const transferCapability = defineCapability<TransferArgs>({
     let label = ""
     // Legado (sem target salvo): NÃO mexe em assigned_to nem em reopen_owner —
     // fluxo publicado antes do F1 (e o tool da IA) se comporta EXATAMENTE como hoje.
-    let touchAssigned = !args.legacyTarget
+    const touchAssigned = !args.legacyTarget
 
     if (args.target === "department") {
       const norm = (s: string) => s.trim().toLowerCase()

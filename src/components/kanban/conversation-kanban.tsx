@@ -220,19 +220,42 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
   const [mgmtCards, setMgmtCards] = useState<Conversation[] | null>(null)
   const [showNew, setShowNew] = useState(false)   // "+ Adicionar conversa"
 
-  // Sincroniza o funil com o SSR (router.refresh / fallback)
-  useEffect(() => { setConvs(initial) }, [initial])
+  /**
+   * Sincroniza o funil com o SSR (router.refresh / fallback).
+   *
+   * ⚠️ AJUSTE-DURANTE-RENDER, não `useEffect`. Em efeito, o reset acontece DEPOIS do paint:
+   *    existia um frame pintado com a lista velha. O caso que dói: o atendente arrasta um
+   *    card, o otimista pinta na coluna nova, e um `router.refresh()` chega com dado
+   *    anterior ao commit → o card VOLTA pra coluna antiga por um frame e pula de novo.
+   *    Aqui o React re-renderiza antes de comitar e esse frame deixa de existir.
+   *
+   * 🔴 NÃO trocar por `key` no componente: remontar a cada `router.refresh()` (que roda de
+   *    60 em 60s) zeraria o scroll das colunas e o estado do DnD.
+   */
+  const [seenInitial, setSeenInitial] = useState(initial)
+  if (seenInitial !== initial) { setSeenInitial(initial); setConvs(initial) }
 
-  const loadMgmt = useCallback(async () => {
-    try { setMgmtCards(await getManagementCards() as unknown as Conversation[]) }
-    catch (e) { console.error("getManagementCards:", e) }
+  const loadMgmt = useCallback(() => {
+    getManagementCards()
+      .then((r) => setMgmtCards(r as unknown as Conversation[]))
+      .catch((e) => console.error("getManagementCards:", e))
   }, [])
 
-  // Carrega/recarrega o panorama de gestão ao entrar numa lente (fica fresco;
-  // o Realtime mantém atualizado a partir daí).
+  /**
+   * Carrega o panorama de gestão ao entrar numa lente (o Realtime mantém a partir daí).
+   *
+   * 🔴 O `alive` conserta um bug que existia de verdade: sem guard, alternar rápido entre
+   *    as lentes "Atendente" e "Departamento" podia fazer a resposta ANTIGA chegar por
+   *    último e pintar o panorama da lente errada.
+   */
   useEffect(() => {
-    if (groupBy !== "stage") loadMgmt()
-  }, [groupBy, loadMgmt])
+    if (groupBy === "stage") return
+    let alive = true
+    getManagementCards()
+      .then((r) => { if (alive) setMgmtCards(r as unknown as Conversation[]) })
+      .catch((e) => console.error("getManagementCards:", e))
+    return () => { alive = false }
+  }, [groupBy])
 
   // ── Realtime: substitui o poll de 10s/15s ───────────────────
   // Merge incremental in-place dos cards já carregados (move de coluna, atualiza
@@ -241,11 +264,33 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
   // ⚠️ Só ouvimos `chat_conversations`. Edição de NOME/VALOR do negócio (escreve só em
   // tenant_deals) não emite evento aqui → reflete no fallback 60s / navegação. OK p/ F1.1
   // (mover negócio já espelha a conversa, então etapa/posição são instantâneos).
-  const groupByRef = useRef(groupBy); groupByRef.current = groupBy
-  const stageIdsRef = useRef<string[]>([]); stageIdsRef.current = stages.map((s) => s.id)
-  const convsRef = useRef(convs); convsRef.current = convs
-  const mgmtRef = useRef(mgmtCards); mgmtRef.current = mgmtCards
-  const loadMgmtRef = useRef(loadMgmt); loadMgmtRef.current = loadMgmt
+  /**
+   * "Latest ref" — ponte do render pros callbacks assíncronos do Realtime.
+   *
+   * Existem porque o efeito do WebSocket tem deps `[supabaseToken, tenantId, router]` DE
+   * PROPÓSITO: se `convs`/`groupBy` entrassem ali, o canal seria destruído e re-subscrito a
+   * cada mensagem que chega.
+   *
+   * ⚠️ A ESCRITA MORA NUM EFEITO SEM DEPS (roda após todo commit), não no corpo do render.
+   *    Escrever durante o render faz o ref refletir o que está sendo TENTADO em vez do que
+   *    foi pintado — e este componente usa `useTransition` nos drags, então renders
+   *    descartáveis existem aqui de verdade. Efeito de Realtime chegando nessa janela lia
+   *    estado que talvez nunca fosse comitado, e o sintoma era card novo demorando até 60s
+   *    pra aparecer no board.
+   *    É também bail-out duro do React Compiler, se um dia for ligado.
+   */
+  const groupByRef = useRef(groupBy)
+  const stageIdsRef = useRef<string[]>(stages.map((s) => s.id))
+  const convsRef = useRef(convs)
+  const mgmtRef = useRef(mgmtCards)
+  const loadMgmtRef = useRef(loadMgmt)
+  useEffect(() => {
+    groupByRef.current   = groupBy
+    stageIdsRef.current  = stages.map((s) => s.id)
+    convsRef.current     = convs
+    mgmtRef.current      = mgmtCards
+    loadMgmtRef.current  = loadMgmt
+  })
   const refreshT = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {

@@ -57,10 +57,21 @@ export function PeriodPicker() {
   // último dia INCLUSIVO (−1) — o que o usuário de fato escolheu.
   const [to,   setTo]   = useState(currentTo ? addDays(currentTo, -1) : "")
 
-  useEffect(() => {
+  /**
+   * A URL mudou (preset clicado, voltar do navegador, link colado) ⇒ o rascunho dos campos
+   * volta a espelhá-la.
+   *
+   * ⚠️ AJUSTE DURANTE O RENDER com rastreador em ESTADO — mesmo idioma do composer
+   *    ([message-input.tsx](src/components/chat/message-input.tsx) `seenConv`). Como efeito,
+   *    a correção acontecia DEPOIS de pintar: dava pra ver o intervalo antigo por um quadro.
+   */
+  const chaveUrl = `${currentFrom ?? ""}|${currentTo ?? ""}`
+  const [urlVista, setUrlVista] = useState(chaveUrl)
+  if (urlVista !== chaveUrl) {
+    setUrlVista(chaveUrl)
     setFrom(currentFrom ?? "")
     setTo(currentTo ? addDays(currentTo, -1) : "")
-  }, [currentFrom, currentTo])
+  }
 
   // Detecta qual preset bate com o range atual
   const activePreset: string | null = (() => {

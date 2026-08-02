@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useEffect, useTransition } from "react"
 import { Pause, Play, Loader2 } from "lucide-react"
 import { setSelfPause } from "@/lib/actions/auto-assign"
 
@@ -40,14 +40,29 @@ export function SidebarSelfPause({ initialPaused, initialPausedUntil, expanded =
   const [pending, startTransition]    = useTransition()
   const [showMenu, setShowMenu]       = useState(false)
 
-  // Lazy unpause local (estado já passou)
-  const expired = pausedUntil && new Date(pausedUntil).getTime() < Date.now()
+  /**
+   * A pausa venceu? Precisa do relógio — e o relógio agora TICA.
+   *
+   * 🔴 Antes lia `Date.now()` no corpo do componente. Dois problemas juntos: o resultado
+   *    mudava sozinho entre dois renders com o mesmo estado (o React conta com o
+   *    contrário), e, pior na prática, **o "voltei" só aparecia quando outra coisa
+   *    qualquer fizesse a barra repintar** — quem pausou por 1h e ficou na tela continuava
+   *    marcado como pausado depois da hora. Um tique de 60s resolve os dois: o horário
+   *    vira estado de verdade e a volta acontece na hora certa, sozinha.
+   */
+  const [agora, setAgora] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setAgora(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
+  const expired = pausedUntil && new Date(pausedUntil).getTime() < agora
   const effectivelyPaused = paused && !expired
 
   function pauseFor(hours: number | null) {
     setShowMenu(false)
-    const until = hours === null ? null : new Date(Date.now() + hours * 60 * 60 * 1000).toISOString()
     startTransition(async () => {
+      // O prazo é contado na hora do pedido, não na hora do render.
+      const until = hours === null ? null : new Date(Date.now() + hours * 60 * 60 * 1000).toISOString()
       const result = await setSelfPause(true, until)
       if (!("error" in result)) {
         setPaused(true)

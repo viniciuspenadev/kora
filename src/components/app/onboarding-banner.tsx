@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
+import { useBrowserPref } from "@/lib/browser-pref"
 import Link from "next/link"
 import {
   CheckCircle2, Circle, ChevronRight, X, Sparkles, AlertCircle, Clock,
@@ -13,24 +14,39 @@ interface Props {
 
 const DISMISS_KEY = "kora_onboarding_dismissed_at"
 const REMIND_HOURS = 24
+/** Valor do SERVIDOR: lá não existe `localStorage`, então a resposta honesta é "não sei". */
+const NAO_SEI = -1
+function parseDismissedAt(cru: string): number {
+  const n = Number(cru)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
 
 export function OnboardingBanner({ setup }: Props) {
-  // Modal aberto = quando NÃO foi dismissed nas últimas 24h
-  const [modalOpen, setModalOpen] = useState(false)
-  const [mounted, setMounted]     = useState(false)
+  /**
+   * "Fechei isso agora há pouco?" — a resposta mora no navegador (ver src/lib/browser-pref.ts).
+   *
+   * 🔴 SUMIU O `mounted`. Aquele estado não era estado de nada: existia só pra segurar o
+   *    primeiro render, porque o servidor não tem `localStorage` e a leitura vinha de um
+   *    efeito. Aqui o SENTINELA faz esse papel de forma explícita — `NAO_SEI` é o valor
+   *    do servidor e significa "não dá pra saber daqui", então nada é pintado até o
+   *    navegador responder. Mesmíssimo comportamento, um estado a menos e sem o efeito.
+   */
+  const [dismissedAt, setDismissedAt] = useBrowserPref(DISMISS_KEY, parseDismissedAt, NAO_SEI)
+  // "Agora" congelado na montagem: o banner não precisa de relógio vivo, e ler o relógio
+  // no corpo do componente faria o resultado mudar sozinho entre dois renders iguais.
+  const [agora] = useState(() => Date.now())
+  // Decisão TOMADA AGORA (clicou pra abrir / clicou pra fechar) vence a preferência
+  // guardada. `null` = ninguém mexeu nesta visita ⇒ vale o que está salvo.
+  const [decisaoAgora, setDecisaoAgora] = useState<boolean | null>(null)
 
-  useEffect(() => {
-    setMounted(true)
-    const at = localStorage.getItem(DISMISS_KEY)
-    const recentlyDismissed = at && (Date.now() - Number(at)) / (1000 * 60 * 60) < REMIND_HOURS
-    if (!recentlyDismissed) setModalOpen(true)
-  }, [])
+  const recemFechado = dismissedAt >= 0 && (agora - dismissedAt) / (1000 * 60 * 60) < REMIND_HOURS
+  const modalOpen = dismissedAt !== NAO_SEI && (decisaoAgora ?? !recemFechado)
 
-  if (!mounted || setup.allDone) return null
+  if (dismissedAt === NAO_SEI || setup.allDone) return null
 
   function dismissTemp() {
-    localStorage.setItem(DISMISS_KEY, String(Date.now()))
-    setModalOpen(false)
+    setDismissedAt(Date.now())
+    setDecisaoAgora(false)
   }
 
   return (
@@ -39,7 +55,7 @@ export function OnboardingBanner({ setup }: Props) {
       {!modalOpen && (
         <button
           type="button"
-          onClick={() => setModalOpen(true)}
+          onClick={() => setDecisaoAgora(true)}
           className="fixed bottom-5 right-5 z-40 inline-flex items-center gap-2 h-10 pl-3 pr-4 bg-white border border-primary-200 hover:border-primary-300 hover:shadow-card shadow-sm rounded-full transition-all group"
           aria-label="Continuar configuração"
         >

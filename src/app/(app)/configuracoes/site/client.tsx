@@ -1017,6 +1017,27 @@ function InstallSnippet({ slug, appUrl }: { slug: string; appUrl: string }) {
 
 // ── Preview live ───────────────────────────────────────────
 
+/**
+ * ⚠️ NO MÓDULO, com o que usava do escopo externo virando PROP (lint
+ *    `react-hooks/static-components`). Era o fechamento implícito sobre `cfg`/`initial`
+ *    que "obrigava" a definição a morar dentro do componente — explicitar as duas
+ *    dependências é o que permite tirar, e de quebra deixa claro do que ele depende.
+ */
+const MiniAvatar: React.FC<{ logoUrl?: string | null; initial: string }> = ({ logoUrl, initial }) => (
+  <div className="relative size-5 shrink-0">
+    <div
+      className="absolute inset-0 rounded-full"
+      style={{ background: "conic-gradient(from 0deg, #60a5fa, #c084fc, #f472b6, #60a5fa)", animation: "kwspin 5s linear infinite" }}
+    />
+    <div className="absolute inset-[1.5px] rounded-full bg-white flex items-center justify-center overflow-hidden text-[7px] font-bold text-slate-500">
+      {logoUrl ? (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img src={logoUrl} alt="" className="size-full object-cover" />
+      ) : initial}
+    </div>
+  </div>
+)
+
 function WidgetPreview({ cfg }: { cfg: WidgetConfig }) {
   const [open, setOpen] = useState(true)
 
@@ -1034,22 +1055,7 @@ function WidgetPreview({ cfg }: { cfg: WidgetConfig }) {
   const fullGreet = greetPrefix + (cfg.greeting || "Oi! Como posso te ajudar?")
 
   // Avatar mini (AI orb wrapper)
-  function MiniAvatar() {
-    return (
-      <div className="relative size-5 shrink-0">
-        <div
-          className="absolute inset-0 rounded-full"
-          style={{ background: "conic-gradient(from 0deg, #60a5fa, #c084fc, #f472b6, #60a5fa)", animation: "kwspin 5s linear infinite" }}
-        />
-        <div className="absolute inset-[1.5px] rounded-full bg-white flex items-center justify-center overflow-hidden text-[7px] font-bold text-slate-500">
-          {cfg.logo_url ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img src={cfg.logo_url} alt="" className="size-full object-cover" />
-          ) : initial}
-        </div>
-      </div>
-    )
-  }
+
 
   return (
     <SectionCard icon={Globe} title="Pré-visualização" description="Réplica fiel do widget no site">
@@ -1131,7 +1137,7 @@ function WidgetPreview({ cfg }: { cfg: WidgetConfig }) {
             <div className="flex-1 px-2.5 py-3 bg-slate-50 overflow-hidden flex flex-col gap-1.5">
               {/* Greeting (com prefix de horário) */}
               <div className="flex items-end gap-1.5">
-                <MiniAvatar />
+                <MiniAvatar logoUrl={cfg.logo_url} initial={initial} />
                 <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-md px-2.5 py-1.5 text-[10px] leading-snug text-slate-800 max-w-[80%]">
                   {fullGreet}
                 </div>
@@ -1140,7 +1146,7 @@ function WidgetPreview({ cfg }: { cfg: WidgetConfig }) {
               {/* First question */}
               {firstQ && (
                 <div className="flex items-end gap-1.5">
-                  <MiniAvatar />
+                  <MiniAvatar logoUrl={cfg.logo_url} initial={initial} />
                   <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-md px-2.5 py-1.5 text-[10px] leading-snug text-slate-800 max-w-[80%]">
                     {firstQ.label}
                   </div>
@@ -1149,7 +1155,7 @@ function WidgetPreview({ cfg }: { cfg: WidgetConfig }) {
 
               {/* AI typing pill */}
               <div className="flex items-end gap-1.5">
-                <MiniAvatar />
+                <MiniAvatar logoUrl={cfg.logo_url} initial={initial} />
                 <div
                   className="h-4 w-12 rounded-full"
                   style={{

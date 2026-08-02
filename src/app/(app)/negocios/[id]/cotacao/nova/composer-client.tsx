@@ -99,18 +99,26 @@ export function QuoteComposer({
     finally { setPreviewing(false) }
   }, [dealId, validUntil, terms, notes, contract, payMethod, installmentsN])
 
-  useEffect(() => { if (hasItems) void refreshPreview() /* eslint-disable-next-line */ }, [])
   useEffect(() => () => { if (lastUrl.current) URL.revokeObjectURL(lastUrl.current) }, [])
 
-  // Atualização AUTOMÁTICA da prévia — debounce 900ms após parar de digitar
-  // (não renderiza a cada tecla; pula a montagem, que já disparou acima).
-  const mounted = useRef(false)
+  /**
+   * Prévia automática: imediata ao abrir, e 900ms depois que a pessoa para de digitar
+   * (não regerar PDF a cada tecla).
+   *
+   * 🔴 ERAM DOIS EFEITOS — um pra montagem, outro pro debounce, com uma ref pra o segundo
+   *    "pular a montagem" e um `eslint-disable` de dependências no primeiro. Duas cópias da
+   *    mesma chamada, mantidas em sincronia na mão: mexer nos argumentos da prévia em um e
+   *    esquecer o outro dava PDF diferente do que está na tela ao abrir. Agora é um efeito
+   *    só, e o que muda entre os dois casos é apenas a ESPERA.
+   */
+  const jaGerou = useRef(false)
   useEffect(() => {
     if (!hasItems) return
-    if (!mounted.current) { mounted.current = true; return }
-    const t = setTimeout(() => { void refreshPreview() }, 900)
+    const espera = jaGerou.current ? 900 : 0
+    jaGerou.current = true
+    const t = setTimeout(() => { void refreshPreview() }, espera)
     return () => clearTimeout(t)
-  }, [terms, notes, contract, validUntil, payMethod, installmentsN, hasItems, refreshPreview])
+  }, [hasItems, refreshPreview])
 
   function openConfirm() {
     if (!hasItems) { toast.error("Adicione itens ao negócio antes de gerar a cotação."); return }

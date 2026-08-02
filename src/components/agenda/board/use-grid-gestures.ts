@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useRef, type RefObject, type PointerEvent as ReactPointerEvent } from "react"
+import { useCallback, useEffect, useRef, type RefObject, type PointerEvent as ReactPointerEvent } from "react"
 import { toast } from "sonner"
 import {
   SNAP_MIN, snap15, minutesToLabel, isoFromDayMinute, rangesOverlap,
@@ -71,7 +71,16 @@ function suppressNextClick() {
 }
 
 export function useGridGestures(opts: GestureOpts) {
-  const ref = useRef(opts); ref.current = opts
+  /**
+   * Últimas opções (densidade, callbacks, mapa de ocupação) pros manipuladores de ponteiro,
+   * que são registrados uma vez e viveriam com um fecho velho.
+   *
+   * ⚠️ A atualização virou EFEITO. Todo leitor daqui é manipulador de PONTEIRO — dedo ou
+   *    mouse da pessoa — que não tem como acontecer na fresta de microssegundos entre
+   *    pintar e o efeito rodar.
+   */
+  const ref = useRef(opts)
+  useEffect(() => { ref.current = opts })
 
   const nearestCol = (cols: HTMLElement[], x: number): HTMLElement | undefined =>
     cols.reduce<{ el: HTMLElement; d: number } | null>((best, c) => {

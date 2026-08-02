@@ -92,7 +92,17 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
 
   // Rota A: o modo "Chat interno" reseta ao trocar de conversa — você nunca carrega
   // o modo interno pra o próximo cliente sem querer (segurança contra ghosting).
-  useEffect(() => { setIsPrivate(false) }, [conversationId])
+  /**
+   * "Chat interno" volta pro normal ao trocar de conversa — trava contra mandar nota
+   * interna pro cliente por engano.
+   *
+   * ⚠️ AJUSTE-DURANTE-RENDER, não efeito (o reset acontecia depois do paint).
+   * 🔴 E NUNCA `key={conversationId}` no composer: verifiquei que nem `ChatPanel` nem
+   *    `MessageInput` são montados com key — remontar apagaria o TEXTO DIGITADO, o anexo e
+   *    a gravação de áudio em andamento do atendente ao trocar de conversa.
+   */
+  const [seenConv, setSeenConv] = useState(conversationId)
+  if (seenConv !== conversationId) { setSeenConv(conversationId); setIsPrivate(false) }
 
   async function handleStickerSelected(e: React.ChangeEvent<HTMLInputElement>) {
     setSendError(null)

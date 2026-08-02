@@ -12,7 +12,8 @@ import { SimpleSelect } from "@/components/ui/select"
 import { genId, type RFNode } from "./graph-sync"
 import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
-import { IgCommentConfig, type IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
+import type { IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
+import { IgCommentModal } from "@/components/studio/ig-comment-modal"
 import { IgStoryModal } from "@/components/studio/ig-story-modal"
 import type { IgStoryTrigger } from "@/lib/ai-v2/flow/types"
 
@@ -29,6 +30,15 @@ import { varsForContext } from "@/lib/variables/registry"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
+/**
+ * ⚠️ NO MÓDULO, não dentro do componente (lint `react-hooks/static-components`). Definido
+ *    lá dentro virava função nova a cada render → o React desmonta e remonta em vez de
+ *    atualizar. Sem estado hoje é invisível; com estado amanhã é bug difícil de achar.
+ */
+const Section: React.FC<{ title: string }> = ({ title }) => (
+  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{title}</p>
+)
+
 const LABEL = "block text-[11px] font-semibold text-slate-600 mb-1"
 
 interface Opt { id: string; label: string }
@@ -1252,8 +1262,6 @@ function AgentSummary({ cfg, tags, stages, services, resources }: {
     : "sorteando entre as agendas disponíveis"
   const names = (arr: { name: string }[], n = 6) =>
     arr.slice(0, n).map((x) => x.name).join(", ") + (arr.length > n ? "…" : "")
-  const Section = ({ title }: { title: string }) =>
-    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{title}</p>
 
   return (
     <div className="rounded-lg border border-violet-100 bg-gradient-to-br from-violet-50/70 to-blue-50/40 p-3 space-y-2.5">
@@ -1466,6 +1474,7 @@ export function FlowSettingsPanel({
 }) {
   const [q, setQ] = useState("")
   const [storyModal, setStoryModal] = useState(false)
+  const [commentModal, setCommentModal] = useState(false)
   // Filtro só faz sentido com 2+ opções — quem tem 1 canal/1 número não escolhe nada.
   const showChannels  = channelOptions.length  > 1
   const showInstances = instanceOptions.length > 1
@@ -1496,7 +1505,10 @@ export function FlowSettingsPanel({
       { id: "any_message", label: "Qualquer mensagem", desc: "toda mensagem que o cliente enviar", icon: MessagesSquare },
       { id: "new_contact", label: "Contato novo",      desc: "a primeira vez que a pessoa fala", icon: UserPlus },
       { id: "reopened",    label: "Retornou",          desc: "conversa reaberta depois de concluída", icon: RotateCcw },
-      { id: "from_ad",     label: "Veio de anúncio",   desc: "lead do Click-to-WhatsApp (Meta)", icon: Megaphone },
+      // Cobre WhatsApp (CTWA) E Instagram (Click-to-Direct) desde 2026-08-02 — os dois
+      // gravam a origem no MESMO campo (`from_ad_meta`), então o filtro por anúncio vale
+      // pros dois canais sem o autor precisar saber de onde veio.
+      { id: "from_ad",     label: "Veio de anúncio",   desc: "lead que clicou num anúncio Meta (WhatsApp ou Instagram)", icon: Megaphone },
     ] },
     // Instagram tem grupo próprio: o comentário NÃO é mensagem — não existe conversa
     // ainda quando ele chega. Ver docs/instagram-studio-node-design.md §8.3.
@@ -1581,27 +1593,39 @@ export function FlowSettingsPanel({
     // Instagram: a configuração inteira (post, palavra, direct, resposta pública, prévia)
     // vive num componente próprio — é ela que carrega as regras da Meta pra o usuário.
     // Sem `onIgConfig` (fluxo antigo ou tenant sem IG) o gatilho não é configurável.
-    if (id === "ig_comment") return (
-      <div className={box}>
-        {onIgConfig ? (
-          <IgCommentConfig
-            value={igConfig ?? { posts: [], keywords: [], keywordMatch: "contains", dm: "", publicReplies: [] }}
-            onChange={onIgConfig}
-            username={igUsername}
-          />
-        ) : (
-          <p className="text-[11px] text-slate-400 leading-relaxed">
-            Conecte uma conta do Instagram em Integrações para configurar este gatilho.
-          </p>
-        )}
-      </div>
-    )
-    // Resposta a story: NÃO tem compositor de primeira mensagem. A resposta já abre a
-    // janela de 24h, então quem fala é o fluxo — daí a config ser só "qual story" +
-    // "o que a resposta precisa ter".
-    // 🔴 MODAL DIRETO, sem período paralelo: este gatilho nunca foi ao ar, então não há
-    //    painel legado pra proteger. O comentário tem o "experimentar o novo editor"
-    //    porque está em produção — aqui manter dois editores seria desperdício puro.
+    // Modal direto — o painel lateral saiu em 2026-08-02, cumprido o prazo do paralelo.
+    if (id === "ig_comment") {
+      const cfg = igConfig ?? { posts: [], keywords: [], keywordMatch: "contains" as const, dm: "", publicReplies: [] }
+      const resumo = [
+        cfg.posts.length ? `${cfg.posts.length} post(s)` : "nenhum post",
+        cfg.keywords.length ? `palavra: ${cfg.keywords.join(", ")}` : "qualquer comentário",
+        (cfg.dmRich?.text ?? cfg.dm).trim() ? "direct escrito" : "sem direct",
+      ].join(" · ")
+      return (
+        <div className={box}>
+          {onIgConfig ? (
+            <>
+              <p className="text-[11px] text-slate-500 leading-relaxed">{resumo}</p>
+              <button type="button" onClick={() => setCommentModal(true)}
+                className="mt-2 w-full inline-flex items-center justify-center gap-1.5 h-9 rounded-lg border border-dashed border-primary-200 text-[11px] font-semibold text-primary-700 hover:bg-primary/5 transition-colors">
+                Configurar o gatilho
+              </button>
+              {commentModal && (
+                <IgCommentModal
+                  open value={cfg} username={igUsername}
+                  onChange={onIgConfig}
+                  onClose={() => setCommentModal(false)}
+                />
+              )}
+            </>
+          ) : (
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Conecte uma conta do Instagram em Integrações para configurar este gatilho.
+            </p>
+          )}
+        </div>
+      )
+    }
     if (id === "ig_story_reply") {
       const cfg = storyConfig ?? { storyIds: [], keywords: [], keywordMatch: "contains" as const }
       const resumo = [

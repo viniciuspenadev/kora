@@ -121,11 +121,20 @@ export function AppointmentModal({
   const canceled = appt.status === "canceled"
   const resName = useCallback((id: string) => resources.find((r) => r.id === id)?.name ?? "agenda", [resources])
 
-  const loadFeeds = useCallback(async () => {
-    const [n, e] = await Promise.all([listAppointmentNotes(appt.id), listAppointmentEvents(appt.id)])
-    setNotes(n); setEvents(e); setLoading(false)
+
+/* ⚠️ IDIOMA REPETIDO NOS MODAIS DA AGENDA: buscar e PUBLICAR são funções separadas, e
+ *    quem publica devolve o cancelador. Ganhos reais, não cosméticos:
+ *      • erro na busca não deixa mais o "carregando" girando pra sempre (o `setLoading(false)`
+ *        ficava depois do `await` e era pulado pela exceção);
+ *      • fechar o modal no meio da busca deixa de escrever em componente já desmontado. */
+  const loadFeeds = useCallback(() => {
+    let vivo = true
+    Promise.all([listAppointmentNotes(appt.id), listAppointmentEvents(appt.id)])
+      .then(([n, e]) => { if (!vivo) return; setNotes(n); setEvents(e); setLoading(false) })
+      .catch(() => { if (vivo) setLoading(false) })
+    return () => { vivo = false }
   }, [appt.id])
-  useEffect(() => { void loadFeeds() }, [loadFeeds])
+  useEffect(() => loadFeeds(), [loadFeeds])
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") { if (editing) setEditing(null); else onClose() } }
@@ -391,11 +400,14 @@ function ParticipantsSection({ appointmentId, conversationId, canEdit }: {
   const [bridge, setBridge]   = useState(false)
   const [busy, setBusy]       = useState(false)
 
-  const load = useCallback(async () => {
-    const [p, ag] = await Promise.all([listAppointmentParticipants(appointmentId), listAppointmentAgents()])
-    setParts(p); setAgents(ag); setLoading(false)
+  const load = useCallback(() => {
+    let vivo = true
+    Promise.all([listAppointmentParticipants(appointmentId), listAppointmentAgents()])
+      .then(([p, ag]) => { if (!vivo) return; setParts(p); setAgents(ag); setLoading(false) })
+      .catch(() => { if (vivo) setLoading(false) })
+    return () => { vivo = false }
   }, [appointmentId])
-  useEffect(() => { void load() }, [load])
+  useEffect(() => load(), [load])
 
   const partIds = new Set(parts.map((p) => p.user_id))
   const available = agents.filter((a) => !partIds.has(a.user_id))

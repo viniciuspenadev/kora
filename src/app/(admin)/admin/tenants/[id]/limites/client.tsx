@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { daysUntil, isExpired } from "@/lib/dates"
 import {
   Gauge, Users, Server, QrCode, MessageCircle, MessagesSquare, Brain, Megaphone, Database, Contact, AtSign,
   Loader2, CheckCircle2, AlertCircle, X, Infinity as InfinityIcon, Edit3,
@@ -159,8 +160,9 @@ function LimitRow({
   const labelColor = !limit.ok ? tone.danger : pct >= 80 ? tone.warning : tone.ok
 
   const hasExpiry = !!override?.expires_at
-  const expiryMs  = hasExpiry ? new Date(override!.expires_at!).getTime() : 0
-  const daysLeft  = hasExpiry ? Math.max(0, Math.ceil((expiryMs - Date.now()) / 86400000)) : 0
+  const daysLeft  = daysUntil(override?.expires_at)
+  // Override VENCIDO mostrava "expira em 0d" pra sempre. Vencido é vencido.
+  const expirado  = isExpired(override?.expires_at)
 
   const [pending, startTransition] = useTransition()
   const { confirm, confirmDialog } = useConfirm()
@@ -198,7 +200,7 @@ function LimitRow({
               daysLeft > 7 ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
             }`}>
               <Clock className="size-2.5" />
-              expira em {daysLeft}d
+              {expirado ? "expirado" : `expira em ${daysLeft}d`}
             </span>
           )}
           {override?.reason && (

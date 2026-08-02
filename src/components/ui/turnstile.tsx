@@ -11,7 +11,25 @@ export const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? 
  */
 export function Turnstile({ onToken }: { onToken: (t: string) => void }) {
   const ref = useRef<HTMLDivElement>(null)
-  const cb = useCallback(onToken, [onToken])
+
+  /**
+   * 🔴 CALLBACK ESTÁVEL DE VERDADE — via "latest ref".
+   *
+   *    Era `useCallback(onToken, [onToken])`: tautologia que devolve a própria função e
+   *    **não estabiliza nada**. Hoje passa despercebido porque os dois consumidores
+   *    (/signup e o captcha escalonado do login) passam setter de `useState`, que o React
+   *    garante estável.
+   *
+   *    A armadilha aparece no dia em que alguém passar uma arrow inline: o efeito volta a
+   *    rodar a cada render do pai, mas o guard `dataset.rendered` impede re-renderizar o
+   *    widget — então o Turnstile fica chamando PARA SEMPRE o primeiro callback capturado.
+   *    Token engolido por closure obsoleta, em caminho de autenticação, sem nenhum sinal.
+   *
+   *    Com o ref, `cb` é criado uma vez (deps `[]`) e sempre despacha pro `onToken` atual.
+   */
+  const onTokenRef = useRef(onToken)
+  useEffect(() => { onTokenRef.current = onToken })
+  const cb = useCallback((t: string) => onTokenRef.current(t), [])
   useEffect(() => {
     const SCRIPT_ID = "cf-turnstile"
     function render() {

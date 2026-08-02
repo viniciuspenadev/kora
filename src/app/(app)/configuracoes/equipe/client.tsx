@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { daysUntil, isExpired } from "@/lib/dates"
 import { useRouter } from "next/navigation"
 import {
   UserPlus, Users, Pencil, AlertCircle, CheckCircle2,
@@ -356,7 +357,12 @@ function InviteRow({
     })
   }
 
-  const expiresIn = Math.floor((new Date(invite.expires_at).getTime() - Date.now()) / 86400000)
+  // ⚠️ Era `Math.floor` aqui: convite com MENOS DE 24H mostrava "expirado" — o convite
+  //    funcionava e a tela dizia que não, então o admin cancelava e reenviava um convite
+  //    bom. `daysUntil` arredonda pra cima, e "expirado" passou a ser decidido pela DATA
+  //    (`isExpired`), não por o contador ter chegado a zero.
+  const expiresIn = daysUntil(invite.expires_at)
+  const expirado  = isExpired(invite.expires_at)
 
   return (
     <>
@@ -369,7 +375,7 @@ function InviteRow({
         <p className="text-[11px] text-slate-500">
           {ROLE_LABEL[invite.role]}
           <span className="text-slate-300"> · </span>
-          {expiresIn > 0 ? `expira em ${expiresIn}d` : "expirado"}
+          {expirado ? "expirado" : `expira em ${expiresIn}d`}
           {invite.inviter_name && (
             <>
               <span className="text-slate-300"> · </span>

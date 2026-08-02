@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useMemo, useState, useEffect, useTransition } from "react"
 import {
   Smartphone, Plus, RefreshCw, Power, Trash2, Loader2, AlertCircle, CheckCircle2,
   RotateCcw, Eye, EyeOff, Copy, Check, Webhook, ShieldCheck, ShieldAlert,
@@ -127,6 +127,12 @@ function formatDateTime(iso: string | null): string {
 // ── Page ─────────────────────────────────────────────────────
 
 export function WhatsAppAdminClient({ rows, tenantsWithoutInstance, servers }: Props) {
+  // Relógio da tela: mantém a idade do ping viva sem um timer por linha.
+  const [agora, setAgora] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setAgora(Date.now()), 10_000)
+    return () => clearInterval(id)
+  }, [])
   const [search, setSearch]       = useState("")
   const [filter, setFilter]       = useState<"all" | "healthy" | "issue" | "disconnected">("all")
   const [editing, setEditing]     = useState<Row | null>(null)
@@ -262,7 +268,7 @@ export function WhatsAppAdminClient({ rows, tenantsWithoutInstance, servers }: P
             flush
           >
             <div className="divide-y divide-slate-100">
-              {servers.map((s) => <ServerRowItem key={s.url} server={s} />)}
+              {servers.map((s) => <ServerRowItem key={s.url} server={s} agora={agora} />)}
             </div>
           </SectionCard>
         )}
@@ -387,9 +393,18 @@ function ActivityDot({
 
 // ── Server row (Evolution health) ────────────────────────────
 
-function ServerRowItem({ server }: { server: ServerRow }) {
+/**
+ * ⚠️ O "agora" vem por PROP, de um relógio só lá no topo da tela.
+ *
+ * 🔴 Lia `Date.now()` no próprio corpo, e o efeito era pior do que impureza teórica: a
+ *    idade do último ping **congelava**. Um servidor que caísse com a tela aberta seguia
+ *    exibindo "há 4s" indefinidamente, porque nada mandava a linha repintar — justo a
+ *    tela de saúde, feita pra ser deixada aberta. Um relógio no pai, e todas as linhas
+ *    envelhecem juntas (um timer, não um por servidor).
+ */
+function ServerRowItem({ server, agora }: { server: ServerRow; agora: number }) {
   const ageSec = server.last_ping_at
-    ? Math.floor((Date.now() - new Date(server.last_ping_at).getTime()) / 1000)
+    ? Math.floor((agora - new Date(server.last_ping_at).getTime()) / 1000)
     : null
   const isOk    = server.last_ping_status === "ok"
   const isStale = ageSec !== null && ageSec > 5 * 60

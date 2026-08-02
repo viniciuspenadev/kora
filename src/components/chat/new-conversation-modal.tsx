@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, useEffect, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { X, Search, Phone, User, Loader2, MessageCircle, RotateCcw, FileText } from "lucide-react"
 import { searchContacts, createManualConversation } from "@/lib/actions/chat"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
+import { useKeyedSearch } from "@/lib/use-keyed-search"
 
 interface ContactResult {
   id:           string
@@ -16,6 +17,9 @@ interface ContactResult {
   conversation_state?: "active" | "resolved" | null
 }
 
+/** Identidade estável — exigência do `useKeyedSearch` (ver a doc do hook). */
+const SEM_CONTATO: ContactResult[] = []
+
 interface Props {
   open:    boolean
   onClose: () => void
@@ -23,46 +27,38 @@ interface Props {
   officialChannel?: boolean
 }
 
+/**
+ * 🔴 O FORMULÁRIO SÓ EXISTE ENQUANTO O MODAL ESTÁ ABERTO — e é isso que o zera.
+ *
+ *    Antes o componente ficava montado o tempo todo (devolvendo `null` quando fechado) e um
+ *    efeito limpava os seis campos toda vez que `open` virava `true`. Lista de limpeza feita
+ *    à mão é dívida garantida: **campo novo entra no formulário e ninguém lembra de
+ *    acrescentá-lo lá**, então ele vaza de uma abertura pra outra. Montar de novo zera tudo
+ *    por construção, inclusive o que ainda nem foi escrito.
+ *
+ * ⚠️ Os dois lugares que usam isto passam `open` (não montam condicionalmente), então a
+ *    casca continua recebendo a prop — quem monta é ela.
+ */
 export function NewConversationModal({ open, onClose, officialChannel }: Props) {
+  if (!open) return null
+  return <NovaConversa onClose={onClose} officialChannel={officialChannel} />
+}
+
+function NovaConversa({ onClose, officialChannel }: Omit<Props, "open">) {
   const router = useRouter()
   const [tab, setTab]                = useState<"search" | "phone">("search")
   const [search, setSearch]          = useState("")
-  const [contacts, setContacts]      = useState<ContactResult[]>([])
   const [phone, setPhone]            = useState("")
   const [name, setName]              = useState("")
-  const [searching, setSearching]    = useState(false)
   const [isPending, startTransition] = useTransition()
   const [error, setError]            = useState<string | null>(null)
 
-  useEffect(() => {
-    if (open) {
-      setSearch("")
-      setPhone("")
-      setName("")
-      setContacts([])
-      setError(null)
-      setTab("search")
-    }
-  }, [open])
-
-  useEffect(() => {
-    if (tab !== "search" || search.trim().length < 2) {
-      setContacts([])
-      return
-    }
-    const t = setTimeout(async () => {
-      setSearching(true)
-      try {
-        const r = await searchContacts(search)
-        setContacts(r as ContactResult[])
-      } catch (e) {
-        console.error(e)
-      } finally {
-        setSearching(false)
-      }
-    }, 300)
-    return () => clearTimeout(t)
-  }, [search, tab])
+  // Busca de contato (ver src/lib/use-keyed-search.ts). Sair da aba "buscar" ou apagar o
+  // texto zera a pergunta — a lista some sozinha.
+  const termo = tab === "search" && search.trim().length >= 2 ? search.trim() : ""
+  const { data: contacts, busy: searching } = useKeyedSearch<ContactResult[]>({
+    key: termo, empty: SEM_CONTATO, fetcher: async (t) => (await searchContacts(t)) as ContactResult[],
+  })
 
   function handleCreate(input: { phone?: string; contactId?: string; pushName?: string }) {
     setError(null)
@@ -81,8 +77,6 @@ export function NewConversationModal({ open, onClose, officialChannel }: Props) 
       }
     })
   }
-
-  if (!open) return null
 
   return (
     <div

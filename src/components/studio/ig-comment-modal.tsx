@@ -10,23 +10,20 @@ import { dmHint, type IgCommentTriggerConfig } from "@/components/integrations/i
 import { freezeInstagramThumbs } from "@/lib/actions/instagram-media"
 
 /**
- * Editor NOVO do gatilho de comentário — roda EM PARALELO ao painel lateral atual.
+ * Editor do gatilho de comentário — ÚNICO desde 2026-08-02.
  * Desenho: docs/studio-config-modal-design.md
  *
- * 🔴 PARALELO, NÃO SUBSTITUIÇÃO (decisão do dono, 2026-07-31). O comment-to-DM está em
- *    produção e foi validado ponta a ponta; trocar o editor às cegas arriscaria um
- *    recurso que funciona. Aqui o painel atual segue sendo o caminho normal e este modal
- *    é **opt-in** por um botão discreto.
- *    Por que é seguro: os dois gravam o MESMO objeto (`IgCommentTriggerConfig`) e quem
- *    decide se o gatilho vai ao ar é `validateIgPublish` no SERVIDOR — nenhuma tela
- *    consegue publicar config inválida.
+ * ✅ O PARALELO ACABOU. Ele nasceu opt-in em 2026-07-31 porque o comment-to-DM já estava em
+ *    produção e validado: trocar o editor às cegas arriscaria um funil que funcionava. O
+ *    prazo de morte ficou registrado no ROADMAP desde o primeiro dia — validado ponta a
+ *    ponta, o painel lateral saiu. Código paralelo sem data vira dívida permanente.
  *
- * 🔴 REUSA, NÃO REIMPLEMENTA: `PostPicker` e `dmHint` vêm do editor atual. Se a lógica
- *    fosse duplicada, os dois divergiriam e o paralelo deixaria de ser seguro — o cliente
- *    veria aviso diferente dependendo de onde abriu.
+ * 🔴 REUSA, NÃO REIMPLEMENTA: `PostPicker` e `dmHint` continuam vindo de fora. `dmHint` é a
+ *    régua ÚNICA do aviso do direct — duplicada, o cliente veria conselho diferente
+ *    conforme a tela.
  *
- * ⚠️ PRAZO DE REMOÇÃO (ROADMAP): validado o gatilho ponta a ponta por aqui, o painel
- *    lateral sai. Código paralelo sem data de morte vira dívida permanente.
+ * ⚠️ Quem decide se o gatilho vai ao ar continua sendo `validateIgPublish` no SERVIDOR:
+ *    nenhuma tela consegue publicar config que a Meta recusaria.
  */
 
 const DM_MAX = 1000

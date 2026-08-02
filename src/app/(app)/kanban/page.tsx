@@ -1,3 +1,4 @@
+import { cookies } from "next/headers"
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
@@ -6,6 +7,7 @@ import { ensurePipelineBootstrap } from "@/lib/actions/pipeline"
 import { hasModule } from "@/lib/modules"
 import { KanbanView } from "@/components/kanban/kanban-view"
 import type { DealPipeline } from "@/lib/actions/deals"
+import { ZOOM_COOKIE_KANBAN, parseZoom } from "@/lib/board-zoom"
 
 export default async function KanbanPage({
   searchParams,
@@ -133,6 +135,9 @@ export default async function KanbanPage({
     }))
   }
 
+  // Zoom salvo do atendente — lido aqui pra o board já sair no tamanho certo (sem pulo).
+  const zoom = parseZoom((await cookies()).get(ZOOM_COOKIE_KANBAN)?.value)
+
   return (
     <KanbanView
       pipelines={pipelines.map((p) => ({ id: p.id, name: p.name, color: p.color }))}
@@ -150,6 +155,7 @@ export default async function KanbanPage({
       supabaseToken={session.user.supabaseToken}
       crmEnabled={crmEnabled}
       dealPipelines={dealPipelines}
+      initialZoom={zoom}
     />
   )
 }

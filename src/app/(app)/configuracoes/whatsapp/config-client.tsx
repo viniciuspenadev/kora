@@ -44,10 +44,18 @@ function formatRelative(iso: string | null): string {
 function HealthCard({ instance }: { instance: WhatsAppInstance }) {
   const router = useRouter()
   const [isChecking, setIsChecking] = useState(false)
-  const [, forceTick] = useState(0)
-
+  /**
+   * O tique AGORA É O RELÓGIO.
+   *
+   * 🔴 Era um contador que ninguém lia, incrementado de 30 em 30s só pra forçar repintura
+   *    — e a informação que de fato mudava (a hora) era lida solta no corpo do componente.
+   *    Quem olha o código via um estado sem sentido; quem lê `Date.now()` no meio do render
+   *    não tinha como saber que dependia daquele contador pra atualizar. Agora a coisa que
+   *    muda é o próprio estado, e a ligação entre as duas fica óbvia.
+   */
+  const [agora, setAgora] = useState(() => Date.now())
   useEffect(() => {
-    const id = setInterval(() => forceTick((v) => v + 1), 30000)
+    const id = setInterval(() => setAgora(Date.now()), 30_000)
     return () => clearInterval(id)
   }, [])
 
@@ -62,7 +70,7 @@ function HealthCard({ instance }: { instance: WhatsAppInstance }) {
   }
 
   const hb           = instance.last_heartbeat_at
-  const hbAgeMin     = hb ? Math.floor((Date.now() - new Date(hb).getTime()) / 60000) : Infinity
+  const hbAgeMin     = hb ? Math.floor((agora - new Date(hb).getTime()) / 60000) : Infinity
   const hasError     = !!instance.last_error
   const isConnected  = instance.status === "connected"
   const reconnecting = instance.status === "connecting" || (instance.reconnect_attempts > 0 && instance.status === "disconnected")

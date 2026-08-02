@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
@@ -37,6 +37,8 @@ const hhmm   = (iso: string) => new Date(iso).toLocaleTimeString("pt-BR", { time
 const ymd    = (d: Date)     => d.toLocaleDateString("en-CA", { timeZone: TZ })
 const ymdISO = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ })
 const cap    = (s: string)   => s.charAt(0).toUpperCase() + s.slice(1)
+/** Chave do dia (fuso do negócio) — é ela que diz se o que está na tela é o dia pedido. */
+const dayKeyOf = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: TZ })
 
 function durationLabel(a: Appt): string {
   const mins = Math.max(0, Math.round((new Date(a.ends_at).getTime() - new Date(a.starts_at).getTime()) / 60_000))
@@ -80,10 +82,18 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
   const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d }, [])
   const [selected, setSelected] = useState<Date>(today)
   const [month, setMonth]       = useState<Date>(() => new Date(today.getFullYear(), today.getMonth(), 1))
-  const [dayItems, setDayItems] = useState<Appt[]>([])
+  /**
+   * Dia carregado e seus itens VIAJAM JUNTOS, e `loading` é DERIVADO da comparação.
+   *
+   * ⚠️ Antes eram dois estados independentes (`dayItems` + `loading`), e o `setLoading(true)`
+   *    síncrono dentro do efeito é o que o lint acusava. Mais importante que o lint: dois
+   *    estados separados podem discordar — mostrar "carregando" com os itens de outro dia,
+   *    ou o contrário. Um só não pode.
+   */
+  const [day, setDay] = useState<{ key: string; items: Appt[] }>({ key: "", items: [] })
   const [markers, setMarkers]   = useState<Set<string>>(new Set())
   const [windowItems, setWindowItems] = useState<Appt[]>([])   // -48h .. +7d (atenção + próximos)
-  const [loading, setLoading]   = useState(true)
+
   const [now, setNow]           = useState(() => new Date())
 
   // Relógio da "linha do agora" — atualiza a cada minuto.
@@ -92,19 +102,33 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
     return () => clearInterval(t)
   }, [])
 
+  /** Contadores de requisição — "só o último voo pinta". Um por loader porque eles
+   *  disparam por gatilhos diferentes (dia, mês, e o sinal de recarga). */
+  const dayReq     = useRef(0)
+  const markersReq = useRef(0)
+  const windowReq  = useRef(0)
+
+  const dayItems = day.items
+  const loading  = day.key !== dayKeyOf(selected)
+
   const loadDay = useCallback(async () => {
-    setLoading(true)
+    const id = ++dayReq.current
     const { start, end } = dayBounds(selected)
     const data = await listAppointments({ rangeStart: start.toISOString(), rangeEnd: end.toISOString() })
-    setDayItems(data as unknown as Appt[])
-    setLoading(false)
+    // 🔴 GUARDA DE CORRIDA. Sem ela, clicar rápido em dois dias podia fazer a resposta do
+    //    PRIMEIRO chegar por último — e a "Agenda do dia" mostrava os compromissos de um dia
+    //    com o cabeçalho de outro. Operação de agenda dando informação errada.
+    if (id !== dayReq.current) return
+    setDay({ key: dayKeyOf(selected), items: data as unknown as Appt[] })
   }, [selected])
 
   const loadMarkers = useCallback(async () => {
     const grid = buildMonthGrid(month)
     const rangeStart = new Date(grid[0]);  rangeStart.setHours(0, 0, 0, 0)
     const rangeEnd   = new Date(grid[41]); rangeEnd.setHours(0, 0, 0, 0); rangeEnd.setDate(rangeEnd.getDate() + 1)
+    const id = ++markersReq.current
     const data = await listAppointments({ rangeStart: rangeStart.toISOString(), rangeEnd: rangeEnd.toISOString() })
+    if (id !== markersReq.current) return          // mês trocado no meio do voo
     const s = new Set<string>()
     for (const a of data as unknown as Appt[]) if (a.status !== "canceled") s.add(ymdISO(a.starts_at))
     setMarkers(s)
@@ -114,7 +138,9 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
   const loadWindow = useCallback(async () => {
     const start = new Date(); start.setHours(start.getHours() - 48)
     const end   = new Date(); end.setDate(end.getDate() + 7)
+    const id = ++windowReq.current
     const data = await listAppointments({ rangeStart: start.toISOString(), rangeEnd: end.toISOString() })
+    if (id !== windowReq.current) return
     setWindowItems(data as unknown as Appt[])
   }, [])
 

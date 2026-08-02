@@ -51,7 +51,10 @@ export function DealsBoard({ pipelines, deals: initial, allTags, pipeId }: {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   const draggedRef = useRef(false)
 
-  useEffect(() => { setDeals(initial) }, [initial])
+  // Ajuste-durante-render: sem isto havia um frame pintado com a lista velha depois de um
+  // `router.refresh()`. Mesmo padrão do kanban de conversas.
+  const [seenInitial, setSeenInitial] = useState(initial)
+  if (seenInitial !== initial) { setSeenInitial(initial); setDeals(initial) }
 
   const pipeline = useMemo(() => pipelines.find((p) => p.id === pipeId) ?? pipelines[0], [pipelines, pipeId])
   const columns  = useMemo(() => (pipeline?.stages ?? []).filter((s) => s.show_in_kanban), [pipeline])

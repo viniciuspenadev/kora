@@ -11,6 +11,10 @@ import {
 } from "@/lib/actions/agenda"
 import { TZ, cap, minutesToLabel, initial, isoFromDayMinute, ymdInTz, minutesInTz } from "./lanes"
 import { fmtBRL } from "./types"
+import { useKeyedSearch } from "@/lib/use-keyed-search"
+
+/** Lista vazia com identidade fixa — exigência do `useKeyedSearch` (ver doc do hook). */
+const SEM_CONTATOS: { id: string; name: string; phone: string | null }[] = []
 
 // ═══════════════════════════════════════════════════════════════
 // Modal de NOVO agendamento (F3) — mesmo DNA do appointment-modal
@@ -49,12 +53,8 @@ export function BookingModal({
   const [noteText, setNoteText] = useState("")
 
   const [term, setTerm] = useState("")
-  const [results, setResults] = useState<{ id: string; name: string; phone: string | null }[]>([])
-  const [searching, setSearching] = useState(false)
-  const [searched, setSearched] = useState(false)
   const [contact, setContact] = useState<{ id: string; name: string; phone: string | null } | null>(null)
   const [saving, setSaving] = useState(false)
-  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const resName = (id: string) => resources.find((r) => r.id === id)?.name ?? "agenda"
 
@@ -70,18 +70,12 @@ export function BookingModal({
     return () => window.removeEventListener("keydown", onKey)
   }, [onClose])
 
-  // Busca de contato — debounce 300ms + AbortController implícito via flag.
-  useEffect(() => {
-    if (debounce.current) clearTimeout(debounce.current)
-    const t = term.trim()
-    if (t.length < 2) { setResults([]); setSearched(false); setSearching(false); return }
-    setSearching(true)
-    debounce.current = setTimeout(async () => {
-      const r = await searchAgendaContacts(t)
-      setResults(r); setSearching(false); setSearched(true)
-    }, 300)
-    return () => { if (debounce.current) clearTimeout(debounce.current) }
-  }, [term])
+  // Busca de contato (ver src/lib/use-keyed-search.ts). Menos de 2 letras = pergunta vazia,
+  // e o resultado sai da tela sozinho — não havia o que limpar.
+  const termo = term.trim().length >= 2 ? term.trim() : ""
+  const { data: results, busy: searching } = useKeyedSearch({
+    key: termo, empty: SEM_CONTATOS, fetcher: searchAgendaContacts,
+  })
 
   function pickService(id: string) {
     setServiceId(id)
@@ -166,13 +160,13 @@ export function BookingModal({
                 placeholder="Buscar contato por nome ou telefone…"
                 className="w-full h-10 pl-9 pr-3 rounded-xl border border-slate-200 text-sm text-slate-800 focus:outline-none focus:border-primary-300 focus:ring-2 focus:ring-primary/20"
               />
-              {(searching || results.length > 0 || (searched && term.trim().length >= 2)) && (
+              {termo !== "" && (
                 <div className="mt-1.5 rounded-xl border border-slate-200 overflow-hidden max-h-44 overflow-y-auto">
                   {searching ? (
                     <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-slate-400"><Loader2 className="size-3.5 animate-spin" /> buscando…</div>
                   ) : results.length > 0 ? (
                     results.map((c) => (
-                      <button key={c.id} type="button" onClick={() => { setContact(c); setResults([]) }}
+                      <button key={c.id} type="button" onClick={() => setContact(c)}
                         className="flex items-center gap-2.5 w-full text-left px-3 py-2 hover:bg-slate-50 transition-colors">
                         <Avatar name={c.name} sm />
                         <span className="text-sm font-medium text-slate-800 truncate flex-1">{c.name}</span>

@@ -73,15 +73,22 @@ export function BlockModal({
     return () => window.removeEventListener("keydown", onKey)
   }, [onClose])
 
-  const loadList = useCallback(async () => {
-    const all = (await listBlackouts()) as Row[]
-    const nowMs = Date.now()
-    const manageable = all
-      .filter((b) => new Date(b.ends_at).getTime() > nowMs && (isAdmin || (!!b.resource_id && myResourceIds.has(b.resource_id))))
-      .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
-    setList(manageable); setLoadingList(false)
+  // Mesmo idioma dos outros modais da agenda: busca → publica → devolve o cancelador.
+  const loadList = useCallback(() => {
+    let vivo = true
+    listBlackouts()
+      .then((all) => {
+        if (!vivo) return
+        const nowMs = Date.now()
+        setList((all as Row[])
+          .filter((b) => new Date(b.ends_at).getTime() > nowMs && (isAdmin || (!!b.resource_id && myResourceIds.has(b.resource_id))))
+          .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime()))
+        setLoadingList(false)
+      })
+      .catch(() => { if (vivo) setLoadingList(false) })
+    return () => { vivo = false }
   }, [isAdmin, myResourceIds])
-  useEffect(() => { void loadList() }, [loadList])
+  useEffect(() => loadList(), [loadList])
 
   function changeStart(v: string) {
     setStartStr(v)

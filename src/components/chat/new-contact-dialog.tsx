@@ -4,6 +4,11 @@ import { useState, useEffect, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { X, Loader2, UserPlus, AlertTriangle } from "lucide-react"
 import { createContact, lookupContact } from "@/lib/actions/contacts"
+import { useKeyedSearch } from "@/lib/use-keyed-search"
+
+type Dup = { id: string; name: string } | null
+/** Identidade estável do "nenhum duplicado" — exigência do hook (ver a doc dele). */
+const SEM_DUP: Dup = null
 
 const inputCls =
   "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
@@ -30,19 +35,21 @@ function NewContactDialog({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
   const [pending, start]  = useTransition()
 
-  // ── Verificação AO VIVO de duplicado (debounce 400ms) ──
-  const [dup, setDup] = useState<{ id: string; name: string } | null>(null)
-  const seq = useRef(0)
-  useEffect(() => {
-    const p = phone.trim(), b = bsuid.trim()
-    if (!p && !b) { setDup(null); return }
-    const mine = ++seq.current
-    const t = setTimeout(async () => {
-      const r = await lookupContact({ phone: p || undefined, bsuid: b || undefined })
-      if (mine === seq.current) setDup(r)   // ignora respostas fora de ordem
-    }, 400)
-    return () => clearTimeout(t)
-  }, [phone, bsuid])
+  /**
+   * Verificação AO VIVO de duplicado (ver src/lib/use-keyed-search.ts).
+   *
+   * A pergunta é o par telefone+usuário; a resposta fica amarrada a ele. Fora de ordem
+   * deixa de ser problema — não é "esta resposta é mais nova?" e sim "esta resposta é
+   * DESTA pergunta?", que é o que de fato importa quando a pessoa corrige um dígito.
+   */
+  const chaveDup = phone.trim() || bsuid.trim() ? JSON.stringify([phone.trim(), bsuid.trim()]) : ""
+  const { data: dup } = useKeyedSearch<Dup>({
+    key: chaveDup, empty: SEM_DUP, delay: 400,
+    fetcher: (k) => {
+      const [p, b] = JSON.parse(k) as [string, string]
+      return lookupContact({ phone: p || undefined, bsuid: b || undefined })
+    },
+  })
 
   function submit() {
     setError(null)

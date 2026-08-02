@@ -13,6 +13,10 @@ import { formatPhoneDisplay, normalizePhone } from "@/lib/phone-utils"
 import { lookupCep } from "@/lib/cep"
 import { lookupCnpj } from "@/lib/cnpj"
 import { listCities } from "@/lib/ibge"
+import { useKeyedSearch } from "@/lib/use-keyed-search"
+
+/** Identidade estável — exigência do `useKeyedSearch` (ver a doc do hook). */
+const SEM_CIDADE: string[] = []
 import { CnpjConsultaModal } from "@/components/crm/cnpj-consulta-modal"
 
 const UFS = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"]
@@ -68,18 +72,16 @@ export function UnitDialog({ unit, onClose, onFeedback }: Props) {
   const [cnpjLoading, setCnpjLoading]   = useState(false)
   const [cepLoading, setCepLoading]     = useState(false)
   const [consultaOpen, setConsultaOpen] = useState(false)
-  const [cities, setCities]             = useState<string[]>([])
 
   const taxDigits   = taxId.replace(/\D/g, "")
   const cnpjComplete = taxDigits.length === 14
   const cnpjInvalid = cnpjComplete && !isValidCnpj(taxDigits)
 
-  useEffect(() => {
-    if (uf.length !== 2) { setCities([]); return }
-    let alive = true
-    listCities(uf).then((cs) => { if (alive) setCities(cs) })
-    return () => { alive = false }
-  }, [uf])
+  // Municípios da UF (ver src/lib/use-keyed-search.ts). Sem espera: é troca de select.
+  // UF incompleta = pergunta vazia — a lista some sozinha, sem ninguém limpá-la.
+  const { data: cities } = useKeyedSearch({
+    key: uf.length === 2 ? uf : "", empty: SEM_CIDADE, fetcher: listCities, delay: 0,
+  })
 
   async function onCnpjBlur() {
     if (!isValidCnpj(taxDigits)) return   // só CNPJ válido (dígito verificador)

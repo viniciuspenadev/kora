@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
@@ -20,6 +20,13 @@ import { CnpjDossier } from "@/components/crm/cnpj-dossier"
 import { AnimatedLogoKoraVetor } from "@/components/app/logo-kora-vetor"
 import { SimpleSelect } from "@/components/ui/select"
 import { PersonClientCard, CompanyClientCard } from "@/components/crm/client-cards"
+import { useKeyedSearch } from "@/lib/use-keyed-search"
+
+/** Listas vazias com identidade FIXA — `useKeyedSearch` devolve isto enquanto não há
+ *  resposta, e um `[]` novo a cada render viraria prop nova pra quem consome. */
+const SEM_RESULTADO: { contatos: SearchContact[]; empresas: CompanyLite[] } = { contatos: [], empresas: [] }
+const SEM_CONTATO:   SearchContact[] = []
+const SEM_CIDADE:    string[] = []
 
 // "Nova proposta" = RESOLVEDOR DE IDENTIDADE (2026-07-28). Sem toggle "cadastrado/novo": você
 // busca (nome/telefone/CPF/CNPJ/e-mail); se existe, escolhe (cartão compacto); se não, cria pelo
@@ -50,9 +57,6 @@ export function NovaPropostaWizard({ onClose, target }: { onClose: () => void; t
 
   // ── Resolvedor ──
   const [query, setQuery]   = useState("")
-  const [results, setResults] = useState<SearchContact[]>([])
-  const [companyResults, setCompanyResults] = useState<CompanyLite[]>([])
-  const [searching, setSearching] = useState(false)
   const [step, setStep] = useState<Step>("search")
 
   // ── Âncora PESSOA ── (personNew=false → escolhida/cartão; true → criando)
@@ -83,26 +87,25 @@ export function NovaPropostaWizard({ onClose, target }: { onClose: () => void; t
   const [street, setStreet] = useState(""); const [num, setNum] = useState("")
   const [district, setDistrict] = useState(""); const [city, setCity] = useState("")
   const [complement, setComplement] = useState(""); const [uf, setUf] = useState("")
-  const [cities, setCities] = useState<string[]>([])
   const [moreOpen, setMoreOpen] = useState(false)
 
-  useEffect(() => {
-    const q = query.trim()
-    if (step !== "search" || q.length < 2) { setResults([]); setCompanyResults([]); setSearching(false); return }
-    setSearching(true)
-    const t = setTimeout(async () => {
+  // Busca do passo 1 — pessoas e empresas na mesma pergunta (ver src/lib/use-keyed-search.ts).
+  // Sair do passo "search" zera a pergunta, então o resultado some sozinho.
+  const { data: achados, busy: searching } = useKeyedSearch({
+    key:   step === "search" && query.trim().length >= 2 ? query.trim() : "",
+    empty: SEM_RESULTADO,
+    fetcher: async (q) => {
       const [rc, rco] = await Promise.all([searchContacts(q), searchCompanies(q)])
-      setResults(rc as SearchContact[]); setCompanyResults(rco); setSearching(false)
-    }, 300)
-    return () => clearTimeout(t)
-  }, [query, step])
+      return { contatos: rc as SearchContact[], empresas: rco }
+    },
+  })
+  const results = achados.contatos
+  const companyResults = achados.empresas
 
-  useEffect(() => {
-    if (uf.length !== 2) { setCities([]); return }
-    let alive = true
-    listCities(uf).then((cs) => { if (alive) setCities(cs) })
-    return () => { alive = false }
-  }, [uf])
+  // Municípios da UF: sem espera (é troca de select, não digitação).
+  const { data: cities } = useKeyedSearch({
+    key: uf.length === 2 ? uf : "", empty: SEM_CIDADE, fetcher: listCities, delay: 0,
+  })
 
   function resetForms() {
     setName(""); setCpf(""); setEmail(""); setPhone("")
@@ -522,15 +525,12 @@ function SwapBar({ label, onSwap }: { label: string; onSwap: () => void }) {
 function CompanyContactSlot({ value, onPick, onClear }: { value: PickedPerson | null; onPick: (p: PickedPerson) => void; onClear: () => void }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState("")
-  const [rows, setRows] = useState<SearchContact[]>([])
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    if (!open || q.trim().length < 2) { setRows([]); return }
-    let alive = true
-    setBusy(true)
-    const t = setTimeout(async () => { const r = await searchContacts(q.trim()); if (!alive) return; setRows(r as SearchContact[]); setBusy(false) }, 300)
-    return () => { alive = false; clearTimeout(t) }
-  }, [q, open])
+  // Fechar o slot zera a pergunta — a lista some sem ninguém precisar limpá-la.
+  const { data: rows, busy } = useKeyedSearch({
+    key:   open && q.trim().length >= 2 ? q.trim() : "",
+    empty: SEM_CONTATO,
+    fetcher: async (k) => (await searchContacts(k)) as SearchContact[],
+  })
 
   if (value) {
     return (

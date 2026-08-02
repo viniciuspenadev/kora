@@ -23,6 +23,11 @@ interface Row { kind: string; model: string | null; input_tokens: number | null;
 
 export default async function TenantIaPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+  /* eslint-disable-next-line react-hooks/purity -- SERVER COMPONENT: não é render idempotente.
+   * A regra existe pra componente de CLIENTE, que o React repinta quando quer e por isso
+   * precisa dar o mesmo resultado pras mesmas entradas. Isto aqui é `async`, roda UMA vez
+   * por requisição no servidor e nunca é repintado — ler o relógio é o certo, e não há
+   * outro jeito de dizer "últimos 30 dias". Falso positivo do lint, não código a consertar. */
   const day30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
   const [{ data: v2 }, { data: v1 }] = await Promise.all([
@@ -40,7 +45,7 @@ export default async function TenantIaPage({ params }: { params: Promise<{ id: s
 
   // Agrega por kind
   const byKind = new Map<string, { events: number; tokens: number; cost: number; unpriced: number }>()
-  let total = { events: 0, tokens: 0, cost: 0, unpriced: 0 }
+  const total = { events: 0, tokens: 0, cost: 0, unpriced: 0 }
   const add = (kind: string, r: { input_tokens: number | null; output_tokens: number | null; cost_usd: number | null }) => {
     const g = byKind.get(kind) ?? { events: 0, tokens: 0, cost: 0, unpriced: 0 }
     const tokens = (r.input_tokens ?? 0) + (r.output_tokens ?? 0)

@@ -1031,6 +1031,26 @@ function dealAging(d: PanelDeal): { days: number; tone: "amber" | "red" } | null
   return { days, tone: days >= 7 ? "red" : "amber" }
 }
 
+/**
+ * Corta a lista em "próximos" × "histórico".
+ *
+ * ⚠️ FORA do componente por dois motivos, e o segundo é o que importa mais:
+ *   1. `Date.now()` no corpo do render é função impura — recalcula a cada render e o lint
+ *      reprova (`react-hooks/purity`). Aqui é inofensivo na prática (o componente só
+ *      renderiza depois do fetch, então nunca hidrata do servidor), mas é dívida.
+ *   2. A regra do "é próximo?" estava **DUPLICADA** — uma cópia no filtro de `upcoming` e
+ *      outra, negada à mão, no de `past`. Duas cópias da mesma condição divergem na
+ *      primeira edição, e aí um agendamento some das duas listas ou aparece nas duas.
+ */
+function splitAppointments<T extends { starts_at: string; status: string }>(items: T[]) {
+  const now = Date.now()
+  const isUpcoming = (a: T) => new Date(a.starts_at).getTime() >= now && a.status !== "canceled"
+  return {
+    upcoming: items.filter(isUpcoming).sort((a, b) => +new Date(a.starts_at) - +new Date(b.starts_at)),
+    past:     items.filter((a) => !isUpcoming(a)),
+  }
+}
+
 function DealsCard({ conversationId, contactName, panel, onReload }: {
   conversationId: string; contactName: string; panel: DealsPanel | null; onReload: () => void
 }) {
@@ -1354,11 +1374,7 @@ function ContactAgendaCard({ contactId, contactName, conversationId }: {
 
   if (!data || !data.enabled) return null
 
-  const now = Date.now()
-  const upcoming = data.items
-    .filter((a) => new Date(a.starts_at).getTime() >= now && a.status !== "canceled")
-    .sort((a, b) => +new Date(a.starts_at) - +new Date(b.starts_at))
-  const past = data.items.filter((a) => !(new Date(a.starts_at).getTime() >= now && a.status !== "canceled"))
+  const { upcoming, past } = splitAppointments(data.items)
 
   return (
     <Section icon={CalendarClock} title="Agendamentos" action={data.resources.length > 0 && (

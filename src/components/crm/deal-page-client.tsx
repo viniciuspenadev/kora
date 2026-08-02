@@ -3,7 +3,7 @@
 import { ContactPic } from "@/components/chat/contact-pic"
 import { SimpleSelect } from "@/components/ui/select"
 
-import { useState, useEffect, useMemo, useTransition, useRef } from "react"
+import { useState, useEffect, useMemo, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
@@ -1073,12 +1073,18 @@ function FeedItem({ node, isLast, pending, onOpenProtocol, onToggleTask }: {
   node: FeedNode; isLast: boolean; pending: boolean
   onOpenProtocol?: () => void; onToggleTask?: () => void
 }) {
+  // ⚠️ FALSO POSITIVO conhecido do lint — `nodeIcon` não CRIA componente, escolhe um de uma
+  //    tabela fixa de ícones importados; a referência é estável entre renders. O silêncio
+  //    fica na linha de USO (a regra reporta lá, não aqui) e é pontual, nunca no projeto.
   const Icon = nodeIcon(node)
   const hasProtocol = node.kind === "event" && node.protocol != null
   return (
     <li className="flex gap-3.5">
       <div className="flex flex-col items-center">
-        <span className={`relative z-10 size-10 rounded-full grid place-items-center shrink-0 ring-4 ring-white ${nodeStyle(node)}`}><Icon className="size-4" /></span>
+        <span className={`relative z-10 size-10 rounded-full grid place-items-center shrink-0 ring-4 ring-white ${nodeStyle(node)}`}>
+          {/* eslint-disable-next-line react-hooks/static-components -- ícone vem de tabela fixa (ver acima) */}
+          <Icon className="size-4" />
+        </span>
         {!isLast && <span className="w-px flex-1 bg-slate-200 -mt-1" />}
       </div>
       <div className="flex-1 min-w-0 pb-4">
@@ -1658,16 +1664,32 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, dealItem
   const defaultSel = defaultTableId && visibleTables.find((p) => p.id === defaultTableId && !p.is_default) ? defaultTableId : ""
   const [tableId, setTableId]   = useState<string>(defaultSel)
   // Lista server-side (escala): páginas acumuladas via searchCatalogForPicker.
-  const [items, setItems]       = useState<CatalogPickerItem[] | null>(edit ? [] : null)   // null = carregando 1ª pág
-  const [cursor, setCursor]     = useState<CatalogPickerCursor | null>(null)
-  const [hasMore, setHasMore]   = useState(false)
+  //
+  // 🔴 O RESULTADO É CARIMBADO COM A BUSCA QUE O PRODUZIU (`key`). Antes eram 4 estados
+  //    soltos, zerados na mão no corpo do efeito a cada tecla — e o "é a resposta certa?"
+  //    dependia de um contador (`reqIdRef`) que só sabia dizer "mais nova/mais velha".
+  //    Carimbo resolve os dois: página de fora do carimbo atual **não tem como** aparecer,
+  //    e nada precisa ser zerado (o que não bate com o carimbo já É "carregando").
+  //    Bônus: busca "A → B → A" reaproveita a resposta de A; com contador, ela era jogada
+  //    fora por ser "velha" e a pessoa esperava de novo pelo mesmo resultado.
+  const [list, setList] = useState<{
+    key: string; items: CatalogPickerItem[]; cursor: CatalogPickerCursor | null; hasMore: boolean; error: string | null
+  }>({ key: "", items: [], cursor: null, hasMore: false, error: null })
   const [loadingMore, setLoadingMore] = useState(false)
-  const [listError, setListError] = useState<string | null>(null)
+
   const [category, setCategory] = useState<string | null>(null)
   const [categories, setCategories] = useState<string[]>([])
   const [basket, setBasket] = useState<Map<string, number>>(new Map())   // qtd que ENTROU nesta sessão, por item (realce/×N)
-  const reqIdRef = useRef(0)   // "latest wins": server action não aborta → ignora resposta antiga
   const [search, setSearch]     = useState("")
+
+  /** Identidade da busca atual: os 3 filtros. JSON porque nenhum separador de um caractere
+   *  é seguro — a pessoa pode digitar qualquer coisa na busca. */
+  const reqKey    = JSON.stringify([tableId, search, category])
+  const fresh     = list.key === reqKey
+  const items     = edit ? [] : fresh ? list.items : null   // null = carregando 1ª pág
+  const cursor    = fresh ? list.cursor  : null
+  const hasMore   = fresh ? list.hasMore : false
+  const listError = fresh ? list.error   : null
   const [picked, setPicked]     = useState<CatalogPickerItem | null>(null)
   const [qty, setQty]           = useState(edit ? fmtQty(edit.quantity) : "1")
   // Preço da LINHA (negociado) — o do catálogo entra como sugestão editável.
@@ -1689,22 +1711,27 @@ function DealItemModal({ dealId, edit, tables, defaultTableId, pending, dealItem
   // Trocar a tabela re-preça (resolveDealPricing no server). Fail-closed: tabela sem grade → erro.
   useEffect(() => {
     if (edit) return
-    const reqId = ++reqIdRef.current
-    setItems(null); setListError(null); setCursor(null); setHasMore(false)
     const t = setTimeout(async () => {
       const r = await searchCatalogForPicker({ dealId, tableId, query: search, category, limit: 30 })
-      if (reqId !== reqIdRef.current) return   // resposta antiga — ignora
-      if ("error" in r) { setItems([]); setListError(r.error); return }
-      setItems(r.items); setCursor(r.nextCursor); setHasMore(r.hasMore)
+      // Carimba com a busca que originou. Se a pessoa já mudou o filtro, `fresh` fica
+      // falso e isto nunca chega à tela — sem precisar comparar contador nenhum.
+      setList("error" in r
+        ? { key: reqKey, items: [], cursor: null, hasMore: false, error: r.error }
+        : { key: reqKey, items: r.items, cursor: r.nextCursor, hasMore: r.hasMore, error: null })
     }, 300)
     return () => clearTimeout(t)
-  }, [edit, dealId, tableId, search, category])
+  }, [edit, dealId, tableId, search, category, reqKey])
 
   async function loadMore() {
     if (loadingMore || !hasMore || !cursor) return
     setLoadingMore(true)
     const r = await searchCatalogForPicker({ dealId, tableId, query: search, category, cursor, limit: 30 })
-    if (!("error" in r)) { setItems((prev) => [...(prev ?? []), ...r.items]); setCursor(r.nextCursor); setHasMore(r.hasMore) }
+    // Só concatena se a lista ainda for a MESMA busca — senão a página 2 de "cadeira"
+    // entrava no meio do resultado de "mesa".
+    if (!("error" in r)) {
+      setList((prev) => prev.key !== reqKey ? prev
+        : { ...prev, items: [...prev.items, ...r.items], cursor: r.nextCursor, hasMore: r.hasMore })
+    }
     setLoadingMore(false)
   }
 

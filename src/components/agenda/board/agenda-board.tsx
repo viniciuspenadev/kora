@@ -16,6 +16,7 @@ import { MonthView, buildMonthGrid } from "./month-view"
 import { AppointmentModal } from "./appointment-modal"
 import type { GestureApi } from "./use-grid-gestures"
 import type { BookingInitial } from "./booking-modal"
+import { useBrowserPref } from "@/lib/browser-pref"
 
 // ═══════════════════════════════════════════════════════════════
 // Board da Agenda 2.0 — casca full-bleed + BARRA ÚNICA + Dia/Semana/Mês
@@ -44,6 +45,33 @@ function startOfWeek(base: Date): Date {
 // a janela dinâmica escondia horários. O auto-scroll do TimeGrid pousa ~1h antes do agora.
 const GRID_HOURS = { startHour: 0, endHour: 24 }
 
+/* ── Preferências do navegador ──────────────────────────────────────────────
+ * ⚠️ Padrões são constantes de MÓDULO (identidade estável) — `useBrowserPref` devolve
+ *    esta referência enquanto não há nada salvo, e um objeto novo a cada render faria o
+ *    React entrar em laço. Os `parse` toleram lixo: quem editou o storage à mão, ou uma
+ *    versão antiga que gravou outro formato, cai no padrão em vez de derrubar a tela. */
+/** Listas vazias com identidade fixa — evitam prop nova a cada render pros memos abaixo. */
+const SEM_ITENS: BoardAppt[] = []
+const SEM_BLOQUEIOS: RawBlackout[] = []
+
+const DENSIDADE_PADRAO = 72
+const DENSIDADES = [48, 72, 96]
+function parseDensidade(cru: string): number {
+  const n = Number(cru)
+  return DENSIDADES.includes(n) ? n : DENSIDADE_PADRAO
+}
+
+type Filtros = { hiddenStatuses: string[]; hiddenResources: string[]; hideBlackouts: boolean }
+const FILTROS_PADRAO: Filtros = { hiddenStatuses: [], hiddenResources: [], hideBlackouts: false }
+function parseFiltros(cru: string): Filtros {
+  const p = JSON.parse(cru) as Partial<Filtros>
+  return {
+    hiddenStatuses:  Array.isArray(p.hiddenStatuses)  ? p.hiddenStatuses  : [],
+    hiddenResources: Array.isArray(p.hiddenResources) ? p.hiddenResources : [],
+    hideBlackouts:   typeof p.hideBlackouts === "boolean" ? p.hideBlackouts : false,
+  }
+}
+
 export function AgendaBoard({
   resources, services, userId, reloadSignal, onRequestBooking, leading,
 }: {
@@ -65,58 +93,48 @@ export function AgendaBoard({
   const [view, setView] = useState<View>("day")
   const [anchor, setAnchor] = useState(() => new Date())
   const [weekRes, setWeekRes] = useState<string>(() => myResources[0]?.id ?? resources[0]?.id ?? "all")
-  const [items, setItems] = useState<BoardAppt[]>([])
-  const [blackouts, setBlackouts] = useState<RawBlackout[]>([])
-  const [loading, setLoading] = useState(true)
+  /**
+   * O que está na tela vem CARIMBADO com a janela que o produziu.
+   *
+   * 🔴 `loading` deixou de ser um estado que alguém liga e desliga: é a constatação
+   *    "o que tenho não é desta janela". Some a classe inteira de bug em que a busca falha
+   *    ou é abandonada no meio e a tela fica girando pra sempre — não há o que esquecer de
+   *    desligar. E a atualização de 30s **não pisca mais**: mesma janela ⇒ o carimbo
+   *    continua batendo ⇒ os cartões ficam na tela até os novos chegarem.
+   */
+  const [dados, setDados] = useState<{ janela: string; items: BoardAppt[]; blackouts: RawBlackout[] } | null>(null)
   const [now, setNow] = useState(() => new Date())
   const [detailId, setDetailId] = useState<string | null>(null)
   const [agentNames, setAgentNames] = useState<Map<string, string>>(new Map())
-  const [hourPx, setHourPx] = useState(72)   // densidade vertical (48/72/96) — persiste por atendente
+  // Densidade vertical (48/72/96) e a lente de filtros — preferências do NAVEGADOR
+  // (ver src/lib/browser-pref.ts). O formato gravado é o mesmo de antes, então quem já
+  // tinha preferência salva não perde nada.
+  const [hourPx, setHourPx] = useBrowserPref("agenda:densidade", parseDensidade, DENSIDADE_PADRAO)
+  const [filtros, setFiltros] = useBrowserPref("agenda:filtros", parseFiltros, FILTROS_PADRAO)
+  const hiddenStatuses  = useMemo(() => new Set(filtros.hiddenStatuses), [filtros])
+  const hiddenResources = useMemo(() => new Set(filtros.hiddenResources), [filtros])
+  const hideBlackouts   = filtros.hideBlackouts
 
-  // Filtro (lente): status + agendas ocultos + bloqueios. Persistido em localStorage.
-  const [hiddenStatuses, setHiddenStatuses] = useState<Set<string>>(new Set())
-  const [hiddenResources, setHiddenResources] = useState<Set<string>>(new Set())
-  const [hideBlackouts, setHideBlackouts] = useState(false)
   // Popover aberto (date | filter) + rect do trigger (fixed, imune ao overflow da barra).
   const [pop, setPop] = useState<{ kind: "date" | "filter"; rect: DOMRect } | null>(null)
 
   const todayKey = ymdInTz(now)
 
-  // Densidade persistida (precedente do zoom do kanban). Lê no mount.
-  useEffect(() => {
-    const stored = Number(localStorage.getItem("agenda:densidade"))
-    if (stored === 48 || stored === 72 || stored === 96) setHourPx(stored)
-  }, [])
-  const setDensity = (px: number) => { setHourPx(px); try { localStorage.setItem("agenda:densidade", String(px)) } catch { /* modo privado */ } }
+  // Guardar e ler viraram O MESMO caminho: mexeu no filtro, gravou. Antes cada função
+  // chamava `persistFilters` com os outros dois valores na mão — bastava esquecer um
+  // argumento pra tela e disco discordarem em silêncio.
+  const setDensity = (px: number) => setHourPx(px)
+  const alterna = (lista: string[], v: string) => lista.includes(v) ? lista.filter((x) => x !== v) : [...lista, v]
 
-  // Filtros persistidos — lê no mount; escrita nas mutações (evita clobber de ordem de efeito).
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("agenda:filtros")
-      if (!raw) return
-      const p = JSON.parse(raw) as { hiddenStatuses?: string[]; hiddenResources?: string[]; hideBlackouts?: boolean }
-      if (Array.isArray(p.hiddenStatuses)) setHiddenStatuses(new Set(p.hiddenStatuses))
-      if (Array.isArray(p.hiddenResources)) setHiddenResources(new Set(p.hiddenResources))
-      if (typeof p.hideBlackouts === "boolean") setHideBlackouts(p.hideBlackouts)
-    } catch { /* ignore */ }
-  }, [])
-  const persistFilters = (hs: Set<string>, hr: Set<string>, hb: boolean) => {
-    try { localStorage.setItem("agenda:filtros", JSON.stringify({ hiddenStatuses: [...hs], hiddenResources: [...hr], hideBlackouts: hb })) } catch { /* ignore */ }
-  }
-  function toggleStatus(key: string) {
-    setHiddenStatuses((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); persistFilters(n, hiddenResources, hideBlackouts); return n })
-  }
-  function toggleResource(id: string) {
-    setHiddenResources((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); persistFilters(hiddenStatuses, n, hideBlackouts); return n })
-  }
+  function toggleStatus(key: string)  { setFiltros({ ...filtros, hiddenStatuses:  alterna(filtros.hiddenStatuses, key) }) }
+  function toggleResource(id: string) { setFiltros({ ...filtros, hiddenResources: alterna(filtros.hiddenResources, id) }) }
   function onlyMine() {
-    const n = new Set(resources.filter((r) => !myResourceIds.has(r.id)).map((r) => r.id))
-    setHiddenResources(n); persistFilters(hiddenStatuses, n, hideBlackouts)
+    setFiltros({ ...filtros, hiddenResources: resources.filter((r) => !myResourceIds.has(r.id)).map((r) => r.id) })
   }
-  function allResources() { setHiddenResources(new Set()); persistFilters(hiddenStatuses, new Set(), hideBlackouts) }
-  function allStatuses() { setHiddenStatuses(new Set()); persistFilters(new Set(), hiddenResources, hideBlackouts) }
-  function toggleBlackouts() { setHideBlackouts((v) => { persistFilters(hiddenStatuses, hiddenResources, !v); return !v }) }
-  function clearFilters() { setHiddenStatuses(new Set()); setHiddenResources(new Set()); setHideBlackouts(false); persistFilters(new Set(), new Set(), false) }
+  function allResources()   { setFiltros({ ...filtros, hiddenResources: [] }) }
+  function allStatuses()    { setFiltros({ ...filtros, hiddenStatuses: [] }) }
+  function toggleBlackouts(){ setFiltros({ ...filtros, hideBlackouts: !filtros.hideBlackouts }) }
+  function clearFilters()   { setFiltros(FILTROS_PADRAO) }
 
   // Relógio (linha do agora + tinta de hoje) — 1min.
   useEffect(() => {
@@ -150,21 +168,37 @@ export function AgendaBoard({
     return { start, end }
   }, [])
 
-  const doFetch = useCallback(async (showLoading: boolean) => {
-    if (showLoading) setLoading(true)
+  /** Identidade do que deve estar na tela: a janela + o pedido de recarga de fora. */
+  const janela = `${view}|${anchor.toDateString()}|${reloadSignal ?? 0}`
+  const fresco    = dados?.janela === janela
+  const items     = fresco ? dados.items     : SEM_ITENS
+  const blackouts = fresco ? dados.blackouts : SEM_BLOQUEIOS
+  const loading   = !fresco
+
+  /** SÓ busca e devolve — não encosta em estado do React. Assim cada chamador decide o
+   *  que fazer com o resultado, e a função dá pra testar sem montar o componente. */
+  const buscarJanela = useCallback(async () => {
     const { start, end } = rangeFor(view, anchor)
     const [raw, bl] = await Promise.all([
       listAppointments({ rangeStart: start.toISOString(), rangeEnd: end.toISOString() }) as unknown as Promise<RawAppt[]>,
       listBlackouts(),
     ])
     const noted = new Set(await getAppointmentNoteFlags(raw.map((r) => r.id)))
-    setItems(raw.map((r) => normalizeAppt(r, resMap, svcMap, noted)))
-    setBlackouts(bl as RawBlackout[])
-    if (showLoading) setLoading(false)
+    return { items: raw.map((r) => normalizeAppt(r, resMap, svcMap, noted)), blackouts: bl as RawBlackout[] }
   }, [rangeFor, view, anchor, resMap, svcMap])
 
-  useEffect(() => { void doFetch(true) }, [doFetch, reloadSignal])
-  useEffect(() => { const t = setInterval(() => void doFetch(false), 30_000); return () => clearInterval(t) }, [doFetch])
+  /** Busca e publica na tela, carimbando com a janela de origem. Devolve o CANCELADOR —
+   *  o efeito usa como limpeza, e quem chama de um botão/timer simplesmente ignora. */
+  const recarregar = useCallback(() => {
+    let vivo = true
+    void buscarJanela()
+      .then((d) => { if (vivo) setDados({ janela, ...d }) })
+      .catch(() => { /* mantém o que está na tela; o tique de 30s tenta de novo */ })
+    return () => { vivo = false }
+  }, [buscarJanela, janela])
+
+  useEffect(() => recarregar(), [recarregar])
+  useEffect(() => { const t = setInterval(recarregar, 30_000); return () => clearInterval(t) }, [recarregar])
 
   const { startHour, endHour } = GRID_HOURS
 
@@ -172,9 +206,9 @@ export function AgendaBoard({
   const gestures = useMemo<GestureApi>(() => ({
     reschedule: (id, startISO, resourceId) => rescheduleAppointment(id, startISO, resourceId),
     resize: (id, durMin) => resizeAppointment(id, durMin),
-    reload: () => { void doFetch(false) },
+    reload: () => { recarregar() },
     resourceName: (id) => resMap.get(id)?.name ?? "agenda",
-  }), [doFetch, resMap])
+  }), [recarregar, resMap])
   const resourceName = useCallback((id: string) => resMap.get(id)?.name ?? "", [resMap])
 
   // Slot vazio → resolve a agenda (Dia usa a coluna; Semana usa a selecionada, ou 1º recurso no modo equipe) e pede o modal.
@@ -295,7 +329,7 @@ export function AgendaBoard({
       )}
 
       {detail && (
-        <AppointmentModal appt={detail} agentNames={agentNames} services={services} resources={resources} onClose={() => setDetailId(null)} onChanged={() => void doFetch(false)} />
+        <AppointmentModal appt={detail} agentNames={agentNames} services={services} resources={resources} onClose={() => setDetailId(null)} onChanged={() => recarregar()} />
       )}
 
       {/* Popovers (fixed, ancorados no trigger — imunes ao overflow da barra) */}

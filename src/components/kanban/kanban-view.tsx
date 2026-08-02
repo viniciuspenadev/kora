@@ -1,15 +1,13 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useMemo } from "react"
 import Link from "next/link"
 import { ChevronDown, Plus, Settings, ZoomIn, ZoomOut } from "lucide-react"
 import { ConversationKanban, cardMatchesFilters, effectiveValue, type GroupBy, type SortKey, type KanbanFilters } from "@/components/kanban/conversation-kanban"
 import { KanbanToolbar } from "@/components/kanban/kanban-toolbar"
 import type { DealPipeline } from "@/lib/actions/deals"
+import { ZOOM_MIN, ZOOM_MAX, persistZoom, ZOOM_COOKIE_KANBAN } from "@/lib/board-zoom"
 
-const ZOOM_MIN = 0.5
-const ZOOM_MAX = 1.1
-const ZOOM_KEY = "kora.kanban.zoom"
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
 
 interface PipelineMini { id: string; name: string; color: string }
@@ -33,6 +31,8 @@ interface Props {
   supabaseToken:   string
   crmEnabled:      boolean
   dealPipelines:   DealPipeline[]
+  /** Zoom salvo, lido do cookie NO SERVIDOR — o board já nasce no tamanho certo. */
+  initialZoom:     number
 }
 
 /**
@@ -43,11 +43,11 @@ interface Props {
 export function KanbanView({
   pipelines, currentPipeline, convCount, isAdminOrOwner, isManager,
   stages, conversations, agents, departments, tintColumns, showChannel,
-  tenantId, supabaseToken, crmEnabled, dealPipelines,
+  tenantId, supabaseToken, crmEnabled, dealPipelines, initialZoom,
 }: Props) {
   const [groupBy, setGroupBy] = useState<GroupBy>("stage")
   const [pipeOpen, setPipeOpen] = useState(false)
-  const [zoom, setZoom] = useState(1)
+  const [zoom, setZoom] = useState(initialZoom)
   const [search, setSearch]             = useState("")
   const [filterAgent, setFilterAgent]   = useState<string | null>(null)
   const [filterInstance, setFilterInst] = useState<string | null>(null)
@@ -79,15 +79,15 @@ export function KanbanView({
   }, [conversations])
 
   // Zoom do board (encolhe colunas+cards proporcionalmente → cabe mais funil).
-  // Persiste por atendente. Carrega no mount pra evitar mismatch de hidratação.
-  useEffect(() => {
-    const saved = parseFloat(localStorage.getItem(ZOOM_KEY) ?? "")
-    if (saved >= ZOOM_MIN && saved <= ZOOM_MAX) setZoom(saved)
-  }, [])
+  //
+  // 🔴 O VALOR SALVO CHEGA PRONTO, POR PROP. Era `localStorage` lido depois da montagem:
+  //    o board pintava em 100% e encolhia em seguida, dando um pulo visível a cada
+  //    navegação pra quem trabalha com zoom reduzido. Cookie viaja no pedido e o servidor
+  //    já entrega o tamanho certo (ver src/lib/board-zoom.ts). O efeito sumiu junto.
   function changeZoom(delta: number) {
     setZoom((z) => {
       const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((z + delta) * 10) / 10))
-      try { localStorage.setItem(ZOOM_KEY, String(next)) } catch {}
+      persistZoom(ZOOM_COOKIE_KANBAN, next)
       return next
     })
   }

@@ -12,6 +12,8 @@ import { hasModulePro } from "@/lib/modules"
 import type { RichMessage } from "@/lib/ai-v2/flow/types"
 import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
 import { claimIgAutomation } from "@/lib/instagram/automation-quota"
+import { slimAdMeta } from "@/lib/ad-reply"
+import type { ExternalAdReply } from "@/types/chat"
 
 /**
  * Ingestão do Instagram Direct (caminho "API do Instagram com login do Instagram")
@@ -40,7 +42,14 @@ type IgMessaging = {
   postback?: { mid?: string; title?: string; payload?: string }
   reaction?: IgReaction
   read?:     { mid?: string }
-  referral?: { ref?: string; source?: string; type?: string }
+  /** Referral de anúncio Click-to-Direct (CTD) — o equivalente Instagram do CTWA.
+   *  ⚠️ Até 2026-08-02 este tipo declarava só 3 campos e o `ad_id` era DESCARTADO na
+   *     leitura — por isso o gatilho "veio de anúncio" nunca disparava no Instagram.
+   *     Formato em docs/instagram-api/webhooks-and-user-profile.md §"Referral de anúncio". */
+  referral?: {
+    ref?: string; source?: string; type?: string; ad_id?: string | number
+    ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string }
+  }
 }
 type IgChange  = { field?: string; value?: Record<string, unknown> }
 type IgEntry   = { id?: string; time?: number; messaging?: IgMessaging[]; changes?: IgChange[] }
@@ -127,7 +136,11 @@ async function getOrCreateIgConversation(tenantId: string, contactId: string, in
 }
 
 /** Resolve tenant + contato (identidade IG) + conversa de uma vez (fonte única). */
-async function resolveIgContext(igAccountId: string, fromIgsid: string): Promise<{ tenantId: string; convId: string; token: string | null } | null> {
+async function resolveIgContext(
+  igAccountId: string, fromIgsid: string,
+  /** Referral do evento — só existe quando a pessoa veio de um anúncio CTD. */
+  referral?: IgMessaging["referral"],
+): Promise<{ tenantId: string; convId: string; token: string | null } | null> {
   const conn = await connectionFor(igAccountId)
   if (!conn) { log("skip", { reason: "no-connection", igAccountId }); return null }
   // instance_id é "emprestado" do WhatsApp por compatibilidade; tenant IG-first (sem
@@ -142,7 +155,57 @@ async function resolveIgContext(igAccountId: string, fromIgsid: string): Promise
   const contact = await resolveOrCreateContact(conn.tenantId, { instagram: fromIgsid }, { primaryChannel: "instagram", source: "instagram" })
   await maybeEnrich(conn.token, conn.tenantId, fromIgsid, contact.id, contact.created)
   const conv = await getOrCreateIgConversation(conn.tenantId, contact.id, instanceId)
+
+  // 🔴 ORIGEM DE ANÚNCIO — o que faltava pro gatilho "veio de anúncio" existir no Instagram.
+  //    `first-touch wins` (`.is(null)`): o anúncio que TROUXE a pessoa é o que conta; uma
+  //    segunda conversa vinda de outro criativo não reescreve a atribuição da primeira.
+  //    Best-effort: falhar aqui não pode derrubar a ingestão da mensagem.
+  const ad = igAdReply(referral)
+  if (ad) {
+    try {
+      await supabaseAdmin.from("chat_conversations")
+        .update({ from_ad_meta: slimAdMeta(ad) }).eq("id", conv.id).is("from_ad_meta", null)
+      const { data: c } = await supabaseAdmin.from("chat_contacts").select("metadata").eq("id", contact.id).single()
+      const cm = (c?.metadata ?? {}) as Record<string, unknown>
+      if (!cm.first_ad_reply) {
+        await supabaseAdmin.from("chat_contacts")
+          .update({ metadata: { ...cm, first_ad_reply: slimAdMeta(ad), first_ad_at: new Date().toISOString() },
+                    updated_at: new Date().toISOString() })
+          .eq("id", contact.id)
+      }
+      log("ad-origin", { convId: conv.id, adId: ad.sourceId })
+    } catch (e) { log("ad-origin-err", { err: (e as Error).message }) }
+  }
+
   return { tenantId: conn.tenantId, convId: conv.id, token: conn.token }
+}
+
+/**
+ * Referral do Instagram → `ExternalAdReply`, o MESMO formato que o WhatsApp já grava.
+ *
+ * 🔴 O ELO QUEBRADO (achado 2026-08-01, construído 2026-08-02). O gatilho `from_ad` existe
+ *    no motor desde sempre e casa por `sig.fromAd` / `sig.adId`, que saem de
+ *    `chat_conversations.from_ad_meta`. O WhatsApp grava essa coluna; o **Instagram nunca
+ *    gravou** — então "veio de anúncio" simplesmente não disparava no Instagram, e ninguém
+ *    percebia porque o gatilho existia na tela e parecia funcionar.
+ *
+ * ⚠️ MESMO formato de propósito: assim o filtro por anúncio específico (`adIds`), o relatório
+ *    de origem e o selo no inbox funcionam sem saber de que canal veio. Formato paralelo
+ *    exigiria duplicar tudo isso.
+ */
+function igAdReply(ref: IgMessaging["referral"] | null): ExternalAdReply | null {
+  if (!ref?.ad_id) return null            // sem id do anúncio não há o que atribuir
+  const ctx = ref.ads_context_data ?? {}
+  return {
+    sourceApp:  "instagram",
+    sourceType: "ad",
+    sourceId:   String(ref.ad_id),
+    ref:        ref.ref ?? undefined,
+    title:      ctx.ad_title,
+    mediaUrl:   ctx.video_url ?? ctx.photo_url,
+    showAdAttribution: true,
+    attributionFormat: "referral",
+  }
 }
 
 /** Bump da conversa pós-inbound (abre janela 24h + sobe no inbox). */
@@ -178,7 +241,12 @@ interface IgDecoded {
 
 function extractIgContent(m: IgMessaging): IgDecoded {
   const meta: Record<string, unknown> = { channel: "instagram" }
-  if (m.referral) meta.ig_referral = { ref: m.referral.ref ?? null, source: m.referral.source ?? null, type: m.referral.type ?? null }
+  if (m.referral) {
+    meta.ig_referral = {
+      ref: m.referral.ref ?? null, source: m.referral.source ?? null, type: m.referral.type ?? null,
+      ad_id: m.referral.ad_id != null ? String(m.referral.ad_id) : null,
+    }
+  }
 
   // Postback (tap em ice-breaker / menu persistente / botão) — não tem `message`.
   if (m.postback) {
@@ -265,7 +333,7 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   // Nada renderável (ex: like vazio) → ignora (senão vira bubble vazio).
   if (dec.contentType === "text" && !dec.content?.trim() && !dec.metadata.quoted && !dec.metadata.ig_story_reply && !dec.metadata.ig_share) { log("dm-skip", { reason: "empty-message", mid }); return }
 
-  const ctx = await resolveIgContext(igAccountId, fromIgsid)
+  const ctx = await resolveIgContext(igAccountId, fromIgsid, m.referral)
   if (!ctx) return
 
   // Mídia → baixa pro bucket.

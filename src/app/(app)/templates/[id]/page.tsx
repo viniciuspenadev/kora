@@ -52,6 +52,11 @@ export default async function TemplateDetailPage({ params }: { params: Promise<{
   }
 
   // Analytics inicial (30 dias) é best-effort — pode falhar/estar indisponível.
+  /* eslint-disable-next-line react-hooks/purity -- SERVER COMPONENT: não é render idempotente.
+   * A regra existe pra componente de CLIENTE, que o React repinta quando quer e por isso
+   * precisa dar o mesmo resultado pras mesmas entradas. Isto aqui é `async`, roda UMA vez
+   * por requisição no servidor e nunca é repintado — ler o relógio é o certo, e não há
+   * outro jeito de dizer "últimos 30 dias". Falso positivo do lint, não código a consertar. */
   const now = Math.floor(Date.now() / 1000)
   let analytics: TemplateAnalytics | null = null
   try {

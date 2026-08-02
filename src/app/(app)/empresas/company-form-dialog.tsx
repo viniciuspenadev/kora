@@ -7,6 +7,10 @@ import { maskCpfCnpj, maskCep, maskPhone, isValidCnpj, docKind } from "@/lib/mas
 import { lookupCnpj, type CnpjData } from "@/lib/cnpj"
 import { lookupCep } from "@/lib/cep"
 import { listCities } from "@/lib/ibge"
+import { useKeyedSearch } from "@/lib/use-keyed-search"
+
+/** Identidade estável — exigência do `useKeyedSearch` (ver a doc do hook). */
+const SEM_CIDADE: string[] = []
 import { SimpleSelect } from "@/components/ui/select"
 import { createCompany, updateCompany, type Company, type CompanyInput } from "@/lib/actions/companies"
 import { SegmentPicker } from "@/components/crm/segment-picker"
@@ -94,7 +98,6 @@ export function CompanyFormDialog({
   const [district, setDistrict]     = useState(initial?.address_district ?? "")
   const [city, setCity]             = useState(initial?.address_city ?? "")
   const [uf, setUf]                 = useState(initial?.address_state ?? "")
-  const [cities, setCities]         = useState<string[]>([])
   const [municipioIbge, setMunicipioIbge] = useState<string | null>(initial?.municipio_ibge ?? null)
   // ── Fiscal ──
   const [ie, setIe]                 = useState(initial?.ie ?? "")
@@ -112,12 +115,11 @@ export function CompanyFormDialog({
 
   const docInvalid = docKind(doc) === "cnpj" && !isValidCnpj(doc)
 
-  useEffect(() => {
-    if (uf.length !== 2) { setCities([]); return }
-    let alive = true
-    listCities(uf).then((cs) => { if (alive) setCities(cs) })
-    return () => { alive = false }
-  }, [uf])
+  // Municípios da UF (ver src/lib/use-keyed-search.ts). Sem espera: é troca de select.
+  // UF incompleta = pergunta vazia — a lista some sozinha, sem ninguém limpá-la.
+  const { data: cities } = useKeyedSearch({
+    key: uf.length === 2 ? uf : "", empty: SEM_CIDADE, fetcher: listCities, delay: 0,
+  })
 
   // Aplica o perfil da Receita ao form — autofill da identidade/contato/endereço (só o que
   // está vazio) + guarda o perfil COMPLETO em `receita` (dossiê + persistência). Fonte única,

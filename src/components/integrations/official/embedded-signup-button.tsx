@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, useRef } from "react"
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore } from "react"
 import { useRouter } from "next/navigation"
 import { BadgeCheck, Loader2 } from "lucide-react"
 import { connectWhatsAppOfficial } from "@/lib/actions/whatsapp-official"
@@ -25,30 +25,50 @@ declare global {
  * popup da Meta (config_id), captura o `code` (FB.login) + WABA/phone (message
  * event) e chama a action que cria a instância oficial do tenant.
  */
+/**
+ * O SDK da Meta é uma LOJA EXTERNA: ou `window.FB` existe, ou não existe. Perguntar isso
+ * ao `useSyncExternalStore` é diferente de copiar a resposta pra um estado com um efeito —
+ * ali havia dois lugares dizendo a mesma coisa, e o `setReady(true)` do caso "o SDK já
+ * estava carregado" (voltar pra esta tela) era um render extra em cascata.
+ *
+ * O carregamento é global e acontece UMA vez, mesmo com dois botões na tela.
+ */
+let sdkCarregando = false
+function assinarSdk(avisar: () => void): () => void {
+  if (window.FB) return () => {}                       // já está aqui, nada a esperar
+  const anterior = window.fbAsyncInit
+  window.fbAsyncInit = () => {
+    anterior?.()
+    window.FB!.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: true, version: VERSION })
+    avisar()
+  }
+  if (!sdkCarregando && !document.getElementById("facebook-jssdk")) {
+    sdkCarregando = true
+    const s = document.createElement("script")
+    s.id = "facebook-jssdk"
+    s.src = "https://connect.facebook.net/en_US/sdk.js"
+    s.async = true; s.defer = true; s.crossOrigin = "anonymous"
+    document.body.appendChild(s)
+  }
+  return () => {}
+}
+const temSdk    = () => !!window.FB
+const semSdkSSR = () => false
+
 export function EmbeddedSignupButton() {
   const router = useRouter()
-  const [ready, setReady] = useState(false)
   const [busy, setBusy]   = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // Erro de EXECUÇÃO (a pessoa cancelou, a Meta recusou). O erro de CONFIGURAÇÃO não mora
+  // aqui: ele é constante de build, então é conclusão do render — não notícia que chega.
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const signup = useRef<{ wabaId?: string; phoneNumberId?: string }>({})
 
-  // Carrega o SDK do Facebook uma vez.
-  useEffect(() => {
-    if (!APP_ID || !CONFIG_ID) { setError("Integração Meta não configurada (App ID / Config ID ausentes no build)."); return }
-    if (window.FB) { setReady(true); return }
-
-    window.fbAsyncInit = () => {
-      window.FB!.init({ appId: APP_ID, autoLogAppEvents: true, xfbml: true, version: VERSION })
-      setReady(true)
-    }
-    if (!document.getElementById("facebook-jssdk")) {
-      const s = document.createElement("script")
-      s.id = "facebook-jssdk"
-      s.src = "https://connect.facebook.net/en_US/sdk.js"
-      s.async = true; s.defer = true; s.crossOrigin = "anonymous"
-      document.body.appendChild(s)
-    }
-  }, [])
+  const semConfig = !APP_ID || !CONFIG_ID
+  const error = semConfig
+    ? "Integração Meta não configurada (App ID / Config ID ausentes no build)."
+    : runtimeError
+  const sdkPronto = useSyncExternalStore(assinarSdk, temSdk, semSdkSSR)
+  const ready = sdkPronto && !semConfig
 
   // Captura waba_id + phone_number_id do evento do popup do Embedded Signup.
   useEffect(() => {
@@ -68,17 +88,17 @@ export function EmbeddedSignupButton() {
   }, [])
 
   const connect = useCallback(() => {
-    setError(null)
+    setRuntimeError(null)
     if (!window.FB) return
     window.FB.login((resp) => {
       const code = resp?.authResponse?.code
-      if (!code) { setError("Conexão cancelada — sem código de autorização da Meta."); return }
+      if (!code) { setRuntimeError("Conexão cancelada — sem código de autorização da Meta."); return }
       const { wabaId, phoneNumberId } = signup.current
-      if (!wabaId || !phoneNumberId) { setError("Não recebi a conta/número do WhatsApp do popup. Tente de novo."); return }
+      if (!wabaId || !phoneNumberId) { setRuntimeError("Não recebi a conta/número do WhatsApp do popup. Tente de novo."); return }
       setBusy(true)
       connectWhatsAppOfficial({ code, wabaId, phoneNumberId }).then((res) => {
         setBusy(false)
-        if (res.error) { setError(res.error); return }
+        if (res.error) { setRuntimeError(res.error); return }
         router.refresh()
       })
     }, {

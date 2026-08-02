@@ -85,6 +85,8 @@ const SEARCH_DEBOUNCE_MS = 300
 const POLL_INTERVAL_MS   = 30_000
 const POLL_DEGRADED_MS   = 5_000
 const STALE_MS           = 24 * 3600_000
+/** Quanto o aviso "reusei/reabri a conversa" fica na tela — e na URL, que é a fonte dele. */
+const DEDUP_NOTICE_MS    = 4_000
 
 // Ordena por última mensagem (fallback created_at), desc. O server já entrega
 // ordenado; isto mantém o topo após merges/inserts vindos do Realtime.
@@ -193,28 +195,51 @@ export function InboxClient({
   const router          = useRouter()
   const pathname        = usePathname()
 
-  activeIdRef.current = activeId
-  replyTargetRef.current = replyTarget
-
-  // Trocar de conversa cancela qualquer citação pendente (padrão derived-state
-  // do React: ajusta o estado durante o render quando a conversa ativa muda —
-  // evita o setState-em-effect e o frame com a barra de citação da conversa errada).
-  const replyConvRef = useRef(activeId)
-  if (replyConvRef.current !== activeId) {
-    replyConvRef.current = activeId
-    if (replyTarget) setReplyTarget(null)
-  }
-
   // Snapshot dos filtros pro handler do Realtime (canal não re-subscreve a cada
-  // mudança de filtro — lê daqui). Atualizado a cada render.
+  // mudança de filtro — lê daqui).
   const filtersRef = useRef<ActiveFilters>({
     statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced,
   })
-  filtersRef.current = { statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
-
   // Latest-ref da lista pro handler do Realtime checar membership sem closure stale.
   const conversationsRef = useRef(conversations)
-  conversationsRef.current = conversations
+
+  /**
+   * Sincroniza as refs de "último valor" — e este efeito é o PRIMEIRO do componente
+   * DE PROPÓSITO.
+   *
+   * 🔴 POR QUE A ORDEM IMPORTA. Efeitos rodam na ordem em que são declarados. Estando
+   *    aqui em cima, todo o resto do arquivo (deep-link, poll, os dois canais de Realtime)
+   *    já lê o valor novo dentro do mesmo commit — que era exatamente a garantia que a
+   *    escrita durante o render dava. Mover isto pra baixo quebra essa garantia em
+   *    silêncio: o efeito de deep-link leria o `activeId` do render anterior.
+   *
+   * ⚠️ O QUE MUDA DE VERDADE: um callback ASSÍNCRONO (evento do WebSocket, timer) que
+   *    caia na fresta entre pintar e este efeito rodar lê o valor do render anterior por
+   *    alguns microssegundos. Todos os leitores aqui já são tolerantes — comparam e
+   *    descartam quando não bate ("ainda estou nesta conversa?", "casa com os filtros?").
+   *    O pior caso é um evento a mais buscado do servidor, nunca dado errado na tela.
+   */
+  useEffect(() => {
+    activeIdRef.current = activeId
+    replyTargetRef.current = replyTarget
+    conversationsRef.current = conversations
+    filtersRef.current = { statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
+  })
+
+  /**
+   * Trocar de conversa cancela a citação pendente.
+   *
+   * ⚠️ Rastreador de "conversa anterior" em ESTADO, não em ref — mesmo idioma do composer
+   *    ([message-input.tsx](src/components/chat/message-input.tsx) `seenConv`). Ajuste
+   *    durante o render é o padrão que o próprio React prescreve pra isto; com ref, o
+   *    valor lido no render vem de fora do fluxo do React e o resultado deixa de ser
+   *    função do que está na tela.
+   */
+  const [replyConv, setReplyConv] = useState(activeId)
+  if (replyConv !== activeId) {
+    setReplyConv(activeId)
+    if (replyTarget) setReplyTarget(null)
+  }
 
   // ── Debounce search ─────────────────────────────────────────
   useEffect(() => {
@@ -322,7 +347,7 @@ export function InboxClient({
     }
   }, [buildFilters])
 
-  pollFnRef.current = poll
+  useEffect(() => { pollFnRef.current = poll })
 
   // ── Refetch quando filtros mudam ────────────────────────────
   // Primeira renderização usa dados do SSR — pula. A partir do 2º render
@@ -397,28 +422,60 @@ export function InboxClient({
     })
   }, [loadMessages])
 
-  // Banner temporário pra avisar que "Nova conversa" do modal reusou/reabriu
-  // uma conv existente em vez de criar do zero. Some sozinho em 4s.
-  const [dedupNotice, setDedupNotice] = useState<"reused" | "reopened" | null>(null)
+  /**
+   * Banner "o modal reusou/reabriu uma conversa que já existia em vez de criar do zero".
+   *
+   * 🔴 LIDO DA URL, não copiado pra estado. Era: efeito lê a flag → grava no estado →
+   *    limpa a URL → outro efeito zera o estado 4s depois. Duas cópias da mesma verdade e
+   *    dois relógios pra mantê-las de acordo. Agora a URL é a única fonte, e **limpar a
+   *    URL é o que faz o aviso sumir** — um relógio só, sem estado pra dessincronizar.
+   *
+   * ⚠️ CONSEQUÊNCIA VISÍVEL: a query fica na barra de endereço pelos 4 segundos do aviso
+   *    (antes sumia na hora). Recarregar a página nesse intervalo reexibe o aviso — se
+   *    corrige sozinho no próximo tique.
+   */
+  const dedupNotice: "reused" | "reopened" | null =
+    searchParams.get("reopened") === "1" ? "reopened"
+    : searchParams.get("reused") === "1" ? "reused"
+    : null
 
-  // Auto-seleciona conversa via querystring ?conversation=X.
-  // Vem do kanban, relatórios, deep-links, modal "Nova conversa".
-  // A conv pode NÃO estar na primeira página (filtro/status diferente) —
-  // nesse caso fetcha por ID e prepend na lista pra seleção funcionar.
+  /**
+   * Auto-seleciona a conversa que veio na querystring `?conversation=X` — do kanban, de
+   * relatórios, de link colado, do modal "Nova conversa". Se ela não está na primeira
+   * página (filtro/status diferente), busca por id e insere na lista.
+   *
+   * ⚠️ EXCEÇÃO CONSCIENTE a `set-state-in-effect` — a ÚNICA do arquivo, e não é preguiça.
+   *
+   *    O que o efeito faz é reagir a um sistema EXTERNO (o roteador): "chegou alguém
+   *    pedindo a conversa X". É um evento de chegada, dispara uma vez, não é um laço de
+   *    render. A regra não distingue isso de sincronização em cascata porque a leitura é
+   *    síncrona em vez de vir num callback de assinatura.
+   *
+   *    🔴 TIRAR DE VERDADE exige uma DECISÃO DE PRODUTO, não uma reescrita: a conversa
+   *       aberta teria que MORAR na URL (`activeId` derivado de `?conversation`, e clicar
+   *       na lista viraria navegação). Ganha-se refresh que mantém a conversa e link
+   *       compartilhável de verdade; **muda o botão Voltar**, que passaria a andar de
+   *       conversa em conversa em vez de sair do inbox. Isso é escolha do dono.
+   *
+   *    Alternativas que PARECEM resolver e não resolvem: (a) resolver no server component
+   *    e passar por prop — não cobre a navegação com a tela já aberta (o modal "Nova
+   *    conversa" empurra a URL de dentro do próprio inbox, e reagir à prop nova pede
+   *    exatamente este efeito de volta); (b) `key` pra remontar — jogaria fora a lista, as
+   *    mensagens e o rascunho do atendente a cada deep-link.
+   */
   useEffect(() => {
     const convParam = searchParams.get("conversation")
     if (!convParam || activeIdRef.current === convParam) return
 
-    // Captura flags do modal de "Nova conversa" antes de limpar a URL
-    const reopenedFlag = searchParams.get("reopened") === "1"
-    const reusedFlag   = searchParams.get("reused") === "1"
-    if (reopenedFlag) setDedupNotice("reopened")
-    else if (reusedFlag) setDedupNotice("reused")
+    // Com aviso na tela, a limpeza da URL é do relógio do aviso (logo abaixo) — limpar
+    // aqui apagaria o banner no mesmo instante em que ele aparece.
+    const clearUrl = () => { if (!dedupNotice) router.replace(pathname, { scroll: false }) }
 
     const exists = conversations.find((c) => c.id === convParam)
     if (exists) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- exceção documentada no bloco acima
       handleSelect(convParam)
-      router.replace(pathname, { scroll: false })
+      clearUrl()
       return
     }
 
@@ -436,7 +493,7 @@ export function InboxClient({
       } catch (err) {
         console.error("Erro ao abrir conversa via ?conversation:", err)
       } finally {
-        if (!cancelled) router.replace(pathname, { scroll: false })
+        if (!cancelled) clearUrl()
       }
     })()
 
@@ -444,12 +501,14 @@ export function InboxClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, conversations.length])
 
-  // Limpa o banner após 4s
+  // Relógio do banner: passados 4s a URL é limpa — e é isso que apaga o aviso.
+  // Independente do efeito de deep-link acima de propósito: lá o efeito re-roda quando a
+  // lista cresce, e um relógio amarrado a ele seria cancelado no meio (aviso eterno).
   useEffect(() => {
     if (!dedupNotice) return
-    const t = setTimeout(() => setDedupNotice(null), 4000)
+    const t = setTimeout(() => router.replace(pathname, { scroll: false }), DEDUP_NOTICE_MS)
     return () => clearTimeout(t)
-  }, [dedupNotice])
+  }, [dedupNotice, router, pathname])
 
   // Polling — fallback. Realtime cobre 95% dos updates; poll pega o que escapou
   // (token expirado, WebSocket caiu, eventos perdidos durante reconnect).

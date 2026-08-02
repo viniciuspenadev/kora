@@ -50,8 +50,16 @@ function AgendaShareBlock({ resource, agents, multi }: { resource: ResourceRow; 
   const [pickLevel, setPickLvl] = useState<ShareLevel>("free_busy")
   const [busy, setBusy]         = useState(false)
 
-  const load = useCallback(async () => { setShares(await listResourceShares(resource.id)); setLoading(false) }, [resource.id])
-  useEffect(() => { void load() }, [load])
+  // Mesmo idioma dos modais da agenda: publica no `.then`, devolve o cancelador, e erro
+  // não deixa o "carregando" eterno.
+  const load = useCallback(() => {
+    let vivo = true
+    listResourceShares(resource.id)
+      .then((r) => { if (!vivo) return; setShares(r); setLoading(false) })
+      .catch(() => { if (vivo) setLoading(false) })
+    return () => { vivo = false }
+  }, [resource.id])
+  useEffect(() => load(), [load])
 
   const sharedIds = new Set(shares.map((s) => s.grantee_user_id))
   const available = agents.filter((a) => a.user_id !== resource.assigned_agent_id && !sharedIds.has(a.user_id))

@@ -229,7 +229,7 @@ function SendMarketingTestModal({ slug, defaultEmail, onClose }: { slug: string;
               placeholder="seuemail@exemplo.com"
               className="w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white"
             />
-            <p className="text-[11px] text-slate-500 mt-1">Renderiza com dados de exemplo (nome "Bernardo").</p>
+            <p className="text-[11px] text-slate-500 mt-1">Renderiza com dados de exemplo (nome &ldquo;Bernardo&rdquo;).</p>
           </div>
 
           {feedback && (

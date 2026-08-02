@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { CalendarDays } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
@@ -53,16 +53,22 @@ export const rangeOfDays = (daysBack: number): DateRange => ({
  * (aplicam na hora) + De/Até livres (Aplicar). Input date nativo, sem dependência.
  */
 export function DateRangePill({ range, onApply }: { range: DateRange; onApply: (r: DateRange) => void }) {
-  const [open, setOpen]   = useState(false)
-  const [draft, setDraft] = useState<DateRange>(range)
-  useEffect(() => { if (open) setDraft(range) }, [open, range])
+  const [open, setOpen] = useState(false)
 
+  /**
+   * 🔴 O RASCUNHO VIVE NO SUBCOMPONENTE, semeado por `key` — não num efeito aqui.
+   *
+   *    Era `useEffect(() => { if (open) setDraft(range) }, [open, range])`, com `range` nas
+   *    dependências. Hoje é inofensivo porque o único consumidor passa um `useState`
+   *    (identidade estável). Mas isto é componente de biblioteca da casa: **o primeiro
+   *    consumidor que passar objeto literal** (`range={{ from, to }}` ou
+   *    `range={rangeOfDays(30)}` inline) faz o efeito rodar a cada render do pai e
+   *    **apagar as datas que a pessoa está digitando**, no meio da digitação.
+   *
+   *    Com `key`, o rascunho nasce do valor certo por construção e a mina deixa de existir.
+   */
   function preset(daysBack: number) {
     setOpen(false); onApply(rangeOfDays(daysBack))
-  }
-  function apply() {
-    if (!draft.from || !draft.to || draft.from > draft.to) return
-    setOpen(false); onApply(draft)
   }
 
   return (
@@ -84,27 +90,40 @@ export function DateRangePill({ range, onApply }: { range: DateRange; onApply: (
                 </button>
               ))}
             </div>
-            <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
-              <label className="block">
-                <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">De</span>
-                <input type="date" value={draft.from} max={draft.to || undefined}
-                  onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))}
-                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" />
-              </label>
-              <label className="block">
-                <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">Até</span>
-                <input type="date" value={draft.to} min={draft.from || undefined} max={isoDay(new Date())}
-                  onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))}
-                  className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" />
-              </label>
-            </div>
-            <button type="button" onClick={apply} disabled={!draft.from || !draft.to || draft.from > draft.to}
-              className="w-full h-8 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-40">
-              Aplicar período
-            </button>
+            {/* `key` semeia o rascunho a partir do intervalo atual, sem efeito nenhum. */}
+            <RangeDraft key={`${range.from}|${range.to}`} initial={range}
+              onApply={(r) => { setOpen(false); onApply(r) }} />
           </div>
         </>
       )}
     </div>
+  )
+}
+
+/** Campos De/Até com rascunho próprio. Montado por `key` — nasce do valor certo. */
+function RangeDraft({ initial, onApply }: { initial: DateRange; onApply: (r: DateRange) => void }) {
+  const [draft, setDraft] = useState<DateRange>(initial)
+  const invalido = !draft.from || !draft.to || draft.from > draft.to
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+        <label className="block">
+          <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">De</span>
+          <input type="date" value={draft.from} max={draft.to || undefined}
+            onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))}
+            className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" />
+        </label>
+        <label className="block">
+          <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">Até</span>
+          <input type="date" value={draft.to} min={draft.from || undefined} max={isoDay(new Date())}
+            onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))}
+            className="w-full h-8 px-2 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20" />
+        </label>
+      </div>
+      <button type="button" onClick={() => { if (!invalido) onApply(draft) }} disabled={invalido}
+        className="w-full h-8 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-40">
+        Aplicar período
+      </button>
+    </>
   )
 }

@@ -4,13 +4,12 @@
 // kanban) + a lente "Departamento" do ConversationKanban (groupBy fixo). Estado
 // só de zoom/sort; o board carrega os dados sozinho (getManagementCards).
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { ZoomIn, ZoomOut, ArrowDownWideNarrow } from "lucide-react"
 import { ConversationKanban, type SortKey } from "@/components/kanban/conversation-kanban"
+import { ZOOM_MIN, ZOOM_MAX, persistZoom, ZOOM_COOKIE_ATENDIMENTO } from "@/lib/board-zoom"
 
-const ZOOM_MIN = 0.5
-const ZOOM_MAX = 1.1
-const ZOOM_KEY = "kora.atendimento.zoom"
+
 
 const SORTS: { value: SortKey; label: string }[] = [
   { value: "recent", label: "Atividade recente" },
@@ -20,19 +19,22 @@ const SORTS: { value: SortKey; label: string }[] = [
 
 type CKProps = Parameters<typeof ConversationKanban>[0]
 
-export function AtendimentoBoardShell(props: Omit<CKProps, "groupBy" | "filters" | "sort">) {
-  const [zoom, setZoom] = useState(1)
+export function AtendimentoBoardShell({ initialZoom, ...props }:
+  Omit<CKProps, "groupBy" | "filters" | "sort"> & {
+    /** Zoom salvo, lido do cookie NO SERVIDOR — o board já nasce no tamanho certo. */
+    initialZoom: number
+  }) {
+  const [zoom, setZoom] = useState(initialZoom)
   const [sort, setSort] = useState<SortKey>("recent")
   const [sortOpen, setSortOpen] = useState(false)
 
-  useEffect(() => {
-    const saved = parseFloat(localStorage.getItem(ZOOM_KEY) ?? "")
-    if (saved >= ZOOM_MIN && saved <= ZOOM_MAX) setZoom(saved)
-  }, [])
+  // Zoom salvo chega PRONTO por prop (cookie lido no server component — ver
+  // src/lib/board-zoom.ts). Era `localStorage` lido depois de montar: o board pintava em
+  // 100% e encolhia em seguida, dando um pulo a cada navegação pra quem trabalha reduzido.
   function changeZoom(delta: number) {
     setZoom((z) => {
       const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((z + delta) * 10) / 10))
-      try { localStorage.setItem(ZOOM_KEY, String(next)) } catch {}
+      persistZoom(ZOOM_COOKIE_ATENDIMENTO, next)
       return next
     })
   }

@@ -115,6 +115,26 @@ function writeClip(p: ClipPayload): void {
   try { localStorage.setItem(CLIP_KEY, JSON.stringify(p)) } catch { /* quota/priv — sem drama */ }
 }
 
+/**
+ * ⚠️ MORA NO MÓDULO, não dentro do componente de menu (lint `react-hooks/static-components`).
+ *    Definido lá dentro, ele era uma FUNÇÃO NOVA a cada render — o React trata como tipo
+ *    diferente e DESMONTA/REMONTA o item em vez de atualizar. Hoje é inofensivo porque não
+ *    tem estado; no dia em que alguém puser um `useState` ou uma animação aqui, vira bug
+ *    com cara de problema do React.
+ */
+const MenuItem: React.FC<{
+  icon: React.ReactNode; label: string; kbd?: string; danger?: boolean; disabled?: boolean; onClick: () => void
+}> = ({ icon, label, kbd, danger, disabled, onClick }) => (
+    <button type="button" disabled={disabled} onClick={onClick}
+      className={`w-full flex items-center gap-2 px-2.5 h-8 text-xs rounded-md text-left ${
+        disabled ? "text-slate-300 cursor-default"
+        : danger ? "text-red-600 hover:bg-red-50"
+        : "text-slate-700 hover:bg-slate-50"}`}>
+      {icon}<span className="flex-1">{label}</span>
+      {kbd && <span className="text-[10px] text-slate-300 font-mono">{kbd}</span>}
+    </button>
+  )
+
 type CtxMenu = { x: number; y: number; kind: "node" | "pane" | "edge"; id?: string } | null
 
 function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads, ig }: Props) {
@@ -645,18 +665,7 @@ function ContextMenu({ menu, hasClip, onClose, onCopy, onDuplicate, onDelete, on
     return () => window.removeEventListener("keydown", onEsc)
   }, [onClose])
 
-  const Item = ({ icon, label, kbd, danger, disabled, onClick }: {
-    icon: React.ReactNode; label: string; kbd?: string; danger?: boolean; disabled?: boolean; onClick: () => void
-  }) => (
-    <button type="button" disabled={disabled} onClick={onClick}
-      className={`w-full flex items-center gap-2 px-2.5 h-8 text-xs rounded-md text-left ${
-        disabled ? "text-slate-300 cursor-default"
-        : danger ? "text-red-600 hover:bg-red-50"
-        : "text-slate-700 hover:bg-slate-50"}`}>
-      {icon}<span className="flex-1">{label}</span>
-      {kbd && <span className="text-[10px] text-slate-300 font-mono">{kbd}</span>}
-    </button>
-  )
+
 
   // Ajuste pra não estourar a janela (menu ~180×160).
   const left = Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 9999) - 200)
@@ -668,19 +677,19 @@ function ContextMenu({ menu, hasClip, onClose, onCopy, onDuplicate, onDelete, on
       <div className="fixed z-50 w-48 rounded-xl border border-slate-200 bg-white shadow-card p-1" style={{ left, top }}>
         {menu.kind === "node" && (
           <>
-            <Item icon={<Copy className="size-3.5" />}     label="Copiar"   kbd="Ctrl+C" onClick={onCopy} />
-            <Item icon={<CopyPlus className="size-3.5" />} label="Duplicar" kbd="Ctrl+D" onClick={onDuplicate} />
+            <MenuItem icon={<Copy className="size-3.5" />}     label="Copiar"   kbd="Ctrl+C" onClick={onCopy} />
+            <MenuItem icon={<CopyPlus className="size-3.5" />} label="Duplicar" kbd="Ctrl+D" onClick={onDuplicate} />
             <div className="my-1 border-t border-slate-100" />
-            <Item icon={<Trash2 className="size-3.5" />}   label="Excluir"  kbd="Del" danger onClick={onDelete} />
+            <MenuItem icon={<Trash2 className="size-3.5" />}   label="Excluir"  kbd="Del" danger onClick={onDelete} />
           </>
         )}
         {menu.kind === "edge" && (
-          <Item icon={<Trash2 className="size-3.5" />} label="Excluir conexão" danger onClick={onDeleteEdge} />
+          <MenuItem icon={<Trash2 className="size-3.5" />} label="Excluir conexão" danger onClick={onDeleteEdge} />
         )}
         {menu.kind === "pane" && (
           <>
-            <Item icon={<ClipboardPaste className="size-3.5" />} label="Colar aqui" kbd="Ctrl+V" disabled={!hasClip} onClick={onPasteHere} />
-            <Item icon={<Plus className="size-3.5" />}           label="Adicionar nó aqui" onClick={onAddHere} />
+            <MenuItem icon={<ClipboardPaste className="size-3.5" />} label="Colar aqui" kbd="Ctrl+V" disabled={!hasClip} onClick={onPasteHere} />
+            <MenuItem icon={<Plus className="size-3.5" />}           label="Adicionar nó aqui" onClick={onAddHere} />
           </>
         )}
       </div>

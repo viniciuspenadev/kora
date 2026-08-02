@@ -7,6 +7,14 @@ import { readDeviceKey } from "@/lib/auth/device"
 import { redeemLoginTicket, BLOCKED_LIFECYCLE } from "@/lib/auth/login-core"
 import { randomUUID } from "crypto"
 
+/** Os papéis que a sessão promete. "" = sem papel (não passa em gate nenhum). */
+const APP_ROLES = ["owner", "admin", "agent"] as const
+type AppRole = (typeof APP_ROLES)[number] | ""
+/** Aceita `unknown` de propósito: o `token` do callback de sessão vem sem tipo, e um
+ *  `as string` aqui seria justamente a checagem que se quer ter. Confere e devolve. */
+const toAppRole = (r: unknown): AppRole =>
+  typeof r === "string" && (APP_ROLES as readonly string[]).includes(r) ? (r as AppRole) : ""
+
 const IS_PROD = process.env.NODE_ENV === "production"
 
 // Revogação de privilégio: a sessão JWT dura 30d, mas role/active (e o token RLS
@@ -185,12 +193,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async jwt({ token, user }) {
       if (user) {
         token.userId          = user.id!
-        token.tenantId        = (user as any).tenantId
-        token.role            = (user as any).role
-        token.isPlatformAdmin = (user as any).isPlatformAdmin ?? false
+        token.tenantId        = user.tenantId
+        token.role            = user.role
+        token.isPlatformAdmin = user.isPlatformAdmin
         token.supabaseTokenExp = 0
         token.checkedAt        = Math.floor(Date.now() / 1000) // acabou de validar no authorize
-        token.sid              = (user as any).sid ?? undefined // sessão no gerenciador (pode ser null se a gravação falhou)
+        token.sid              = user.sid ?? undefined // sessão no gerenciador (pode ser null se a gravação falhou)
       }
 
       const now = Math.floor(Date.now() / 1000)
@@ -259,7 +267,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async session({ session, token }) {
       session.user.id              = token.userId as string
       session.user.tenantId        = token.tenantId as string
-      session.user.role            = token.role as any
+      // Estreitamento no ÚNICO ponto de passagem: o banco devolve `string`, a sessão promete
+      // um dos três papéis. Com `as any` a promessa era falsa — qualquer valor inesperado
+      // entrava vestido de papel válido. Aqui, o que não for conhecido vira "" (sem papel),
+      // que é o lado seguro: "" não passa em nenhum gate.
+      session.user.role            = toAppRole(token.role)
       session.user.supabaseToken   = token.supabaseToken as string
       session.user.isPlatformAdmin = token.isPlatformAdmin as boolean
       session.user.sid             = token.sid as string | undefined

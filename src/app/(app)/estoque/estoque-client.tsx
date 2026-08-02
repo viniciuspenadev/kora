@@ -211,9 +211,14 @@ function StockSheet({ item, canEdit, canManage, onClose, onMove }: { item: Inven
     })
   }
 
+  // Zera a lista ANTES do refetch (mostra o esqueleto) — em ajuste-durante-render, não no
+  // efeito. `stock_qty` entra na chave porque o mesmo item recarrega após uma movimentação.
+  const loadKey = `${item.id}|${item.stock_qty}`
+  const [seenKey, setSeenKey] = useState(loadKey)
+  if (seenKey !== loadKey) { setSeenKey(loadKey); setMovs(null) }
+
   useEffect(() => {
     let alive = true
-    setMovs(null)
     getStockMovements(item.id).then((r) => { if (alive) setMovs(r) }).catch(() => { if (alive) setMovs([]) })
     return () => { alive = false }
   }, [item.id, item.stock_qty])

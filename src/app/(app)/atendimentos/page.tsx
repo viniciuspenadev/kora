@@ -2,7 +2,9 @@ import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
+import { cookies } from "next/headers"
 import { AtendimentoBoardShell } from "@/components/atendimento/board-shell"
+import { ZOOM_COOKIE_ATENDIMENTO, parseZoom } from "@/lib/board-zoom"
 import type { DealPipeline } from "@/lib/actions/deals"
 
 // Quadro de Atendimento — REUSA a lente "Departamento" do kanban (groupBy=department).
@@ -46,8 +48,12 @@ export default async function AtendimentosPage() {
     }))
   }
 
+  // Zoom salvo do atendente — lido aqui pra o board já sair no tamanho certo (sem pulo).
+  const zoomSalvo = parseZoom((await cookies()).get(ZOOM_COOKIE_ATENDIMENTO)?.value)
+
   return (
     <AtendimentoBoardShell
+      initialZoom={zoomSalvo}
       stages={[]}
       conversations={[]}
       tintColumns={tintColumns}
