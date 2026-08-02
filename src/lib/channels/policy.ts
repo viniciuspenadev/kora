@@ -11,6 +11,25 @@
 
 export type OutsideWindow = "template" | "tag" | "none" | "blocked"
 
+/**
+ * Tetos de COMPOSIÇÃO do canal — quanto cabe numa mensagem rica.
+ *
+ * 🔴 Moram aqui, não na UI. Espalhar "máx 3 botões" por tela é como o `isOfficial` que
+ *    este arquivo existe pra ter matado: canal novo vira caça ao `if` em 10 arquivos.
+ *    O compositor lê daqui pra saber quando parar de aceitar; o renderizador lê daqui
+ *    pra saber quando degradar.
+ */
+export interface ChannelCompose {
+  /** Botões numa mensagem. 0 = o canal não tem botão. */
+  maxButtons: number
+  /** Caracteres do rótulo do botão. */
+  buttonLabelMax: number
+  /** Caracteres do texto da mensagem. */
+  textMax: number
+  /** Aceita imagem junto com botões na MESMA mensagem (card)? */
+  mediaWithButtons: boolean
+}
+
 export interface ChannelPolicy {
   /** Tem janela de sessão (precisa inbound recente pra mandar texto livre)? */
   hasWindow: boolean
@@ -20,20 +39,41 @@ export interface ChannelPolicy {
   outsideWindow: OutsideWindow
   /** Rótulo curto do canal (UI). */
   label: string
+  /** Tetos de composição. */
+  compose: ChannelCompose
 }
 
-const DEFAULT_POLICY: ChannelPolicy = { hasWindow: false, windowHours: 0, outsideWindow: "none", label: "Canal" }
+/** Conservador de propósito: canal desconhecido não ganha botão nem card. */
+const DEFAULT_COMPOSE: ChannelCompose = { maxButtons: 0, buttonLabelMax: 20, textMax: 1000, mediaWithButtons: false }
+
+const DEFAULT_POLICY: ChannelPolicy = {
+  hasWindow: false, windowHours: 0, outsideWindow: "none", label: "Canal", compose: DEFAULT_COMPOSE,
+}
 
 export const CHANNEL_POLICIES: Record<string, ChannelPolicy> = {
   // ── Ativos hoje ──
-  meta_cloud: { hasWindow: true,  windowHours: 24, outsideWindow: "template", label: "WhatsApp Oficial" }, // 24h + template aprovado
-  whatsapp:   { hasWindow: false, windowHours: 0,  outsideWindow: "none",     label: "WhatsApp" },          // Baileys — sem janela
-  site:       { hasWindow: false, windowHours: 0,  outsideWindow: "none",     label: "Site" },              // webchat — sem janela
+  meta_cloud: { hasWindow: true,  windowHours: 24, outsideWindow: "template", label: "WhatsApp Oficial", // 24h + template aprovado
+                compose: { maxButtons: 3, buttonLabelMax: 20, textMax: 4096, mediaWithButtons: true } },
+  whatsapp:   { hasWindow: false, windowHours: 0,  outsideWindow: "none",     label: "WhatsApp",          // Baileys — sem janela
+                compose: { maxButtons: 3, buttonLabelMax: 20, textMax: 4096, mediaWithButtons: true } },
+  site:       { hasWindow: false, windowHours: 0,  outsideWindow: "none",     label: "Site",              // webchat — sem janela
+                compose: { maxButtons: 3, buttonLabelMax: 40, textMax: 4096, mediaWithButtons: true } },
 
   // ── Slots reservados — regras a CONFIRMAR na integração de cada canal ──
-  instagram:  { hasWindow: true,  windowHours: 24, outsideWindow: "tag",      label: "Instagram" },         // 24h + message tag / human-agent
-  messenger:  { hasWindow: true,  windowHours: 24, outsideWindow: "tag",      label: "Messenger" },         // 24h + message tags
-  tiktok:     { hasWindow: true,  windowHours: 24, outsideWindow: "blocked",  label: "TikTok" },            // a definir
+  // Instagram: números VERIFICADOS ao vivo em 2026-08-01 (generic template aceito na
+  // private reply, 3 botões por card, título 80, texto <1000).
+  // Ver docs/instagram-api/private-replies-and-entry-points.md
+  instagram:  { hasWindow: true,  windowHours: 24, outsideWindow: "tag",      label: "Instagram",         // 24h + message tag / human-agent
+                compose: { maxButtons: 3, buttonLabelMax: 20, textMax: 1000, mediaWithButtons: true } },
+  messenger:  { hasWindow: true,  windowHours: 24, outsideWindow: "tag",      label: "Messenger",         // 24h + message tags
+                compose: { maxButtons: 3, buttonLabelMax: 20, textMax: 2000, mediaWithButtons: true } },
+  tiktok:     { hasWindow: true,  windowHours: 24, outsideWindow: "blocked",  label: "TikTok",            // a definir
+                compose: DEFAULT_COMPOSE },
+}
+
+/** Tetos de composição do canal. Usar SEMPRE isto em vez de constante na tela. */
+export function getChannelCompose(channel: string | null | undefined, provider?: string | null): ChannelCompose {
+  return getChannelPolicy(channel, provider).compose
 }
 
 /**

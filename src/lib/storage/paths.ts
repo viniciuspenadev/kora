@@ -25,6 +25,12 @@ import "server-only"
  *    do 3º segmento) é o que permite apagar o arquivo junto do dono e cumprir LGPD.
  *    Exceção histórica: mídia de conversa usa `<tenantId>/<conversaId>/<arquivo>`.
  *
+ * ⚠️ **BUCKET NOVO = TRÊS LUGARES, e o terceiro é traiçoeiro.** Além dos dois abaixo, as duas
+ *    funções SQL filtram `bucket_id IN ('chat-attachments','widget-assets')` **fixo**. Bucket
+ *    que não estiver nessa lista não cai em "Outros" — fica **INVISÍVEL**: o cliente sobe
+ *    centenas de MB e o número na tela dele não muda. Prefira **prefixo novo em bucket que já
+ *    existe** (foi o que se fez com `card-images/`, 2026-08-01) — aí valem os dois lugares.
+ *
  * ⚠️ **PREFIXO NOVO = MEXER EM DOIS LUGARES**, sempre juntos:
  *      1. `STORAGE_PREFIXES` aqui embaixo;
  *      2. o `CASE` de `reconcile_storage_objects()` e de `tenant_storage_usage()`
@@ -39,6 +45,10 @@ import "server-only"
 /** Prefixo → natureza + de que entidade o arquivo é. Espelho do CASE no SQL. */
 export const STORAGE_PREFIXES = {
   "avatars":      { kind: "avatar",      ref: "contact"      },
+  // ⚠️ ATIVO, não histórico: imagem que o cliente subiu e que automação EM PRODUÇÃO usa.
+  //    **Nunca** entra em política de retenção por tempo (§7 do desenho) — a Meta re-busca
+  //    a imagem do card e, sem ela, o card degrada em SILÊNCIO.
+  "card-images":  { kind: "card_image",  ref: null           },
   "catalog":      { kind: "catalog",     ref: "catalog_item" },
   "documents":    { kind: "document",    ref: "document"     },
   "ig-thumbs":    { kind: "ig_thumb",    ref: null           },

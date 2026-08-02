@@ -281,6 +281,48 @@ export interface IgCommentPostRef {
   thumbUrl:  string | null
 }
 
+// ── Mensagem rica (compositor compartilhado) ──
+// Desenho: docs/message-composer-design.md
+//
+// 🔴 UM formato pras três superfícies que escrevem mensagem (DM do gatilho, nó `message`,
+//    nó de Cartões). Independente de canal: quem traduz pro veículo de cada canal é o
+//    renderizador. Se cada superfície tivesse o seu, divergiriam em semanas — foi a lição
+//    do motor de proposta e das 18 larguras do dropdown.
+
+export interface RichMedia {
+  kind:  "image" | "video" | "document"
+  /** Caminho no Storage PRIVADO (`card-images/<tenant>/<id>.<ext>`), não URL.
+   *  Quem transforma em URL é quem envia — e só no formato que o canal exige. */
+  path:  string
+  name?: string
+}
+
+export interface RichButton {
+  /** 🔴 Payload ESTÁVEL, e é ele que conserta um buraco real: hoje o toque no Instagram
+   *  volta e acorda o fluxo pelo RÓTULO do botão (`instagram-inbound.ts` manda só
+   *  `incomingText` pro motor, sem `interactiveId` — o WhatsApp manda). Dois botões com o
+   *  mesmo texto casam errado. Este `id` também vira o nome do RAMO que sai do nó (F3). */
+  id:    string
+  label: string
+  kind:  "reply" | "url"
+  url?:  string
+}
+
+/** Uma mensagem — nunca uma sequência. Sequência é o canvas (nós `wait`, `collect`). */
+export interface RichMessage {
+  /**
+   * Formato ESCOLHIDO pela pessoa (decisão do dono, 2026-08-01 — a 1ª versão derivava do
+   * conteúdo e foi recusada). É ele que manda no envio e no que a tela mostra.
+   *
+   * ⚠️ Opcional porque dado antigo não tem: aí `richFormat()` deriva do conteúdo.
+   * Valores: "text" | "buttons" | "card" | "media" (ver lib/messaging/rich-format.ts).
+   */
+  format?:  "text" | "buttons" | "card" | "media"
+  text?:    string
+  media?:   RichMedia
+  buttons?: RichButton[]
+}
+
 /**
  * Configuração do gatilho `ig_comment` (comentário no Instagram → Direct).
  *
@@ -298,10 +340,55 @@ export interface IgCommentTrigger {
   /** Palavras no comentário. Vazio = qualquer comentário. */
   keywords:      string[]
   keywordMatch:  "contains" | "exact"
-  /** O Direct (private reply). Limite da Meta: 1000 caracteres. */
+  /** O Direct (private reply). Limite da Meta: 1000 caracteres.
+   *  ⚠️ LEGADO desde 2026-08-01 — continua sendo a fonte quando `dmRich` não existe.
+   *  Aditivo de propósito: há fluxo em produção com só este campo preenchido. */
   dm:            string
+  /**
+   * O Direct em formato rico (texto + imagem + botões). Quando presente, VENCE o `dm`.
+   *
+   * 🔴 Por que botão importa aqui mais que em qualquer outro lugar do produto: a Meta dá
+   *    **uma** mensagem por comentário e a conversa só continua se a pessoa responder.
+   *    Toque em botão CONTA como resposta dela → abre a janela de 24h sem ela digitar.
+   *    Verificado ao vivo em 2026-08-01 (o card com botão foi entregue, tocado, e o
+   *    postback chegou com o payload intacto).
+   *
+   * ⚠️ Card com botão é o PADRÃO, chip não: chip vive colado no campo de digitar e a
+   *    mensagem seguinte o apaga — medido. Quem não segue a conta recebe o direct em
+   *    Solicitações e pode abrir dias depois, quando o chip já sumiu.
+   */
+  dmRich?:       RichMessage
   /** Variações da resposta pública ao comentário (a Kora alterna entre elas). */
   publicReplies: string[]
+}
+
+/**
+ * Configuração do gatilho `ig_story_reply` (a pessoa RESPONDEU um story nosso).
+ *
+ * 🔴 Diferente do `ig_comment` em duas coisas que mudam o desenho:
+ *   1. **Não é bala única.** A resposta ao story JÁ abre a janela de 24h — o fluxo pode
+ *      conversar à vontade depois. Nada de "uma mensagem e acabou".
+ *   2. **Já existe conversa** quando o evento chega (é DM), então não há private reply
+ *      nem descoberta de identidade: entra pelo inbound normal.
+ *
+ * ⚠️ **STORY EXPIRA EM 24H.** `storyIds` preenchido = o fluxo para de casar quando aquele
+ *    story morre. É por isso que o default é vazio (= todos) e a tela avisa em vez de
+ *    deixar a pessoa descobrir sozinha semanas depois.
+ */
+export interface IgStoryTrigger {
+  /** Stories alvo. **Vazio = TODOS** (o modo que não apodrece). */
+  storyIds:      string[]
+  /** Palavras na resposta. Vazio = qualquer resposta (inclusive só uma reação/emoji). */
+  keywords:      string[]
+  keywordMatch:  "contains" | "exact"
+  /**
+   * ❤️ Curtir a resposta automaticamente. **Recurso PRO** — gate `hasModulePro`.
+   *
+   * ⚠️ A licença é checada NO ENVIO, não aqui: downgrade de plano precisa parar de curtir
+   *    mesmo com a config gravada no fluxo publicado. Guardar `true` no jsonb não é
+   *    permissão — é intenção.
+   */
+  autoReact?:    boolean
 }
 
 export interface FlowTrigger {
@@ -310,6 +397,18 @@ export interface FlowTrigger {
               // Nunca casa no inbound (`matchesTrigger` → default:false); quem dispara é o
               // webhook de `comments`, e o fluxo é retomado no 1º reply (carimba-e-espera).
               | "ig_comment"
+              // Instagram: a pessoa RESPONDEU um story nosso. Diferente de `ig_comment`
+              // (aquele não tem conversa ainda); aqui já é DM — entra pelo inbound normal
+              // e é o `signals.isStoryReply` que distingue.
+              | "ig_story_reply"
+              // Instagram: alguém COMEÇOU A SEGUIR a conta.
+              // 🔴 DEPENDE DE LIBERAÇÃO DA META. O campo `follow` existe no schema, mas a
+              //    assinatura devolve `success:false` enquanto a permissão não é concedida
+              //    — e ela é dada seletivamente, fora do catálogo da Análise do App
+              //    (verificado 2026-08-01). O estado real é carimbado em
+              //    `channel_connections.meta.webhook_follow`; a tela mostra "a Meta não
+              //    liberou" em vez de deixar o gatilho parecendo ligado.
+              | "ig_follow"
   keywords?:  string[]
   /** Match da palavra-chave: "contains" (default, substring) | "exact" (palavra inteira). Ambos ignoram acento. */
   keywordMatch?: "contains" | "exact"
@@ -329,6 +428,8 @@ export interface FlowTrigger {
    *  A REGRA derivada daqui vive em `instagram_comment_rules` (o runtime lê a tabela,
    *  indexada por conexão+post; o fluxo continua sendo a fonte de edição). */
   ig?:        IgCommentTrigger
+  /** Só p/ type "ig_story_reply": quais stories + palavra na resposta. */
+  story?:     IgStoryTrigger
 }
 
 // ── Linhas do banco ──

@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { getEnabledModuleSlugs } from "@/lib/modules"
-import { listIgMedia, type IgMediaItem } from "@/lib/instagram/api"
+import { listIgMedia, listIgStories, type IgMediaItem, type IgStoryItem } from "@/lib/instagram/api"
 import { freezeIgThumb, isSafeIgMediaId } from "@/lib/instagram/thumb"
 
 /**
@@ -91,6 +91,24 @@ export async function getInstagramMedia(
     // Token revogado/expirado costuma cair aqui — mensagem acionável, não erro cru da Meta.
     console.error("[ig-media] list:", res.error)
     return { error: "Não consegui falar com o Instagram. A conexão pode ter expirado — tente reconectar." }
+  }
+  return res
+}
+
+/**
+ * Stories ATIVOS da conta (pro modo "story específico" do gatilho de resposta a story).
+ *
+ * ⚠️ Lista efêmera por natureza: story morre em 24h. A tela precisa dizer isso — um fluxo
+ *    apontado pra story específico deixa de casar quando aquele story expira.
+ */
+export async function getInstagramStories(): Promise<{ items: IgStoryItem[] } | { error: string }> {
+  const gate = await igContentGate()
+  if ("error" in gate) return gate
+
+  const res = await listIgStories(gate.token)
+  if ("error" in res) {
+    console.error("[ig-stories] list:", res.error)
+    return { error: "Não consegui ler os stories. A conexão pode ter expirado — tente reconectar." }
   }
   return res
 }

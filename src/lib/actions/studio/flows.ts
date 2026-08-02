@@ -10,7 +10,8 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
-import { isWindowOpen } from "@/lib/channels/policy"
+import { isWindowOpen, getChannelCompose } from "@/lib/channels/policy"
+import { richFormat, richFormatMissing } from "@/lib/messaging/rich-format"
 import { checkLimit } from "@/lib/limits"
 import { hasModule } from "@/lib/modules"
 import { runStudioTurn } from "@/lib/ai-v2/run"
@@ -54,10 +55,24 @@ async function activeIgConnectionId(tenantId: string): Promise<string | null> {
   return (data?.[0]?.id as string | undefined) ?? null
 }
 
+/**
+ * O direct tem conteúdo? Vale pras duas formas — a rica vence quando existe.
+ *
+ * ⚠️ Rico com IMAGEM e sem texto é válido: a Meta manda a imagem sozinha (attachment).
+ *    Só botão sem texto que NÃO é — o formato com botões exige o texto.
+ */
+function igDmFilled(ig: NonNullable<FlowTrigger["ig"]>): boolean {
+  const r = ig.dmRich
+  // Com formato escolhido, "cheio" é o que AQUELE formato exige — "Só imagem" sem texto
+  // está completo; "Cartão" sem imagem, não. Quem decide é a mesma função da tela.
+  if (r) return richFormat(r) !== "empty" && !richFormatMissing(r)
+  return ig.dm.trim().length > 0
+}
+
 /** A regra está pronta pra capturar? (post escolhido + direct escrito) */
 function igRuleReady(t: FlowTrigger | null | undefined): boolean {
   const ig = t?.ig
-  return !!ig && ig.posts.length > 0 && ig.dm.trim().length > 0
+  return !!ig && ig.posts.length > 0 && igDmFilled(ig)
 }
 
 /**
@@ -109,7 +124,11 @@ async function syncIgCommentRule(
       media_ids:     ig.posts.map((p) => p.id).filter(Boolean),
       keywords:      ig.keywords.map((k) => k.trim()).filter(Boolean),
       keyword_match: ig.keywordMatch === "exact" ? "exact" : "contains",
-      reply_text:    ig.dm.trim(),
+      // `reply_text` continua sendo gravado SEMPRE, mesmo com direct rico: é o fallback
+      // se a montagem do formato rico falhar no runtime, e é o que a versão anterior do
+      // app (durante o deploy) ainda lê. Deploy não é atômico — os dois convivem.
+      reply_text:    (ig.dmRich?.text ?? ig.dm).trim(),
+      reply_rich:    ig.dmRich ?? null,
       public_reply:  ig.publicReplies.map((r) => r.trim()).filter(Boolean),
       enabled:       live && igRuleReady(trigger),
       updated_at:    new Date().toISOString(),
@@ -132,7 +151,27 @@ async function validateIgPublish(tenantId: string, trigger: FlowTrigger): Promis
     return "Conecte uma conta do Instagram em Integrações antes de publicar este fluxo."
   }
   if (!trigger.ig?.posts.length) return "Escolha ao menos um post do Instagram no gatilho."
-  if (!trigger.ig.dm.trim())     return "Escreva o direct que a pessoa recebe ao comentar."
+  if (!igDmFilled(trigger.ig))   return "Escreva o direct que a pessoa recebe ao comentar."
+
+  // 🔴 Regras de FORMATO da Meta, recusadas AQUI e não lá na frente: a bala é única e
+  //    irrecuperável — direct rejeitado por formato queima a chance daquele comentário
+  //    sem entregar nada. Melhor não deixar publicar.
+  const rich = trigger.ig.dmRich
+  if (rich) {
+    // 🔴 MESMA função do compositor (`richFormatMissing`) — não uma cópia da regra. Duas
+    //    checagens divergem, e a divergência aqui significa publicar um direct que a Meta
+    //    recusa na hora do envio, com a bala já gasta.
+    const falta = richFormatMissing(rich)
+    if (falta) return falta
+
+    const { maxButtons, buttonLabelMax, textMax } = getChannelCompose("instagram")
+    const btns = rich.buttons ?? []
+    if (btns.length > maxButtons) return `O Instagram aceita no máximo ${maxButtons} botões no direct.`
+    if (btns.some((b) => b.label.length > buttonLabelMax)) {
+      return `Rótulo de botão tem no máximo ${buttonLabelMax} caracteres.`
+    }
+    if ((rich.text ?? "").length > textMax) return `O direct tem no máximo ${textMax} caracteres.`
+  }
   return null
 }
 

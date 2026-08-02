@@ -65,6 +65,49 @@ async function runFfmpeg(args: string[]): Promise<void> {
 
 export interface TranscodeResult { buffer: Buffer; mime: string; ext: string }
 
+/**
+ * **Higieniza** imagem que o CLIENTE subiu, antes de guardar. Devolve um JPEG NOVO,
+ * gerado por nós a partir dos pixels decodificados.
+ *
+ * 🔴 É a defesa principal do upload de imagem (docs/message-composer-design.md §7), e ela
+ *    resolve dois problemas de uma vez:
+ *
+ *    1. **EXIF/GPS.** Foto de celular carrega **coordenada**. O cliente sobe a foto do
+ *       produto tirada na loja e publica o endereço junto, sem saber. `-map_metadata -1`
+ *       apaga tudo.
+ *    2. **Arquivo poliglota.** Existe arquivo que é JPEG válido *e* HTML/ZIP válido ao
+ *       mesmo tempo. Re-encodar destrói: o que sai são pixels, e mais nada. (A resposta da
+ *       rota também manda `nosniff`, mas defesa em profundidade — o arquivo ainda vai pra
+ *       Meta e pra quem mais consumir.)
+ *
+ * ✅ Usa **ffmpeg, que já está na imagem Docker** e já é usado pelo canal oficial. `sharp`
+ *    seria o óbvio, mas não é dependência declarada aqui (vem transitivo do Next) —
+ *    depender dele exigiria mexer no build por uma coisa que o ffmpeg já faz.
+ *
+ * `-frames:v 1` garante UM quadro (GIF animado vira a 1ª imagem). A redução pra 1440px de
+ * largura limita o tamanho e é folgada pro card, que renderiza bem menor.
+ */
+export async function sanitizeImageUpload(input: Buffer): Promise<TranscodeResult> {
+  const dir    = await mkdtemp(join(tmpdir(), "kora-img-"))
+  const inPath = join(dir, "input")
+  const out    = join(dir, "out.jpg")
+  try {
+    await writeFile(inPath, input)
+    await runFfmpeg([
+      "-y", "-i", inPath,
+      "-map_metadata", "-1",                       // 🔴 mata EXIF/GPS
+      "-frames:v", "1",                            // 1 quadro só (GIF animado → 1ª imagem)
+      "-vf", "scale='min(1440,iw)':-2",            // teto de largura; -2 mantém proporção par
+      "-q:v", "3",                                 // qualidade alta, arquivo ainda pequeno
+      "-threads", "1",                             // imagem é barata; não roubar CPU do vídeo
+      "-f", "image2", "-vcodec", "mjpeg", out,
+    ])
+    return { buffer: await readFile(out), mime: "image/jpeg", ext: "jpg" }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 /** Converte o buffer pro formato aceito pela Meta. `null` = tipo que não dá/precisa converter. */
 export async function transcodeForMeta(
   input: Buffer,

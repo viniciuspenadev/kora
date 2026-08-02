@@ -58,7 +58,8 @@ export function isFrozenIgThumbUrl(url: string | null | undefined): boolean {
   return typeof url === "string" && url.startsWith(IG_THUMB_PROXY_PREFIX)
 }
 
-function isAllowedCdn(rawUrl: string): boolean {
+/** Exportado: o proxy do avatar da conta (`/api/ig-avatar`) usa a MESMA allow-list. */
+export function isAllowedCdn(rawUrl: string): boolean {
   try {
     const u = new URL(rawUrl)
     if (u.protocol !== "https:") return false

@@ -20,6 +20,10 @@ export interface SetModuleInput {
   tenantId:   string
   slug:       string
   enabled:    boolean
+  /** Nível PRO deste módulo (recursos avançados). Ausente = preserva o que está lá.
+   *  ⚠️ Mora NO módulo, não num slug `x_pro` separado (decisão do dono, 2026-08-01):
+   *  assim qualquer módulo ganha PRO sem linha nova no catálogo. */
+  pro?:       boolean
   reason?:    string | null
   expiresAt?: string | null    // ISO date string, opcional
 }
@@ -52,7 +56,7 @@ export async function setTenantModule(
   // Estado anterior (pra audit)
   const { data: before } = await supabaseAdmin
     .from("tenant_modules")
-    .select("enabled, reason, expires_at")
+    .select("enabled, pro, reason, expires_at")
     .eq("tenant_id", input.tenantId)
     .eq("module_slug", input.slug)
     .maybeSingle()
@@ -64,6 +68,10 @@ export async function setTenantModule(
       tenant_id:   input.tenantId,
       module_slug: input.slug,
       enabled:     input.enabled,
+      // 🔴 Desligar o módulo derruba o PRO junto. Deixar `pro=true` numa linha desligada
+      //    guarda uma bomba: religar o módulo devolveria os recursos avançados sem
+      //    ninguém ter decidido isso.
+      pro:         input.enabled ? (input.pro ?? before?.pro ?? false) : false,
       reason:      input.reason?.trim() || null,
       expires_at:  input.expiresAt || null,
       set_by:      session.user.id,
@@ -83,8 +91,9 @@ export async function setTenantModule(
     action:     input.enabled ? "module.enable" : "module.disable",
     targetType: "module",
     targetId:   input.slug,
-    before:     before ?? { enabled: false, reason: null, expires_at: null },
-    after:      { enabled: input.enabled, reason: input.reason ?? null, expires_at: input.expiresAt ?? null },
+    before:     before ?? { enabled: false, pro: false, reason: null, expires_at: null },
+    after:      { enabled: input.enabled, pro: input.enabled ? (input.pro ?? before?.pro ?? false) : false,
+                  reason: input.reason ?? null, expires_at: input.expiresAt ?? null },
     metadata:   {
       module_name: catalog.name,
       tenant_name: tenant.name,

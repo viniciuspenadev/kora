@@ -74,6 +74,143 @@ export async function getInstagramSender(tenantId: string): Promise<{ igAccountI
   return { igAccountId: acc, token }
 }
 
+/**
+ * URL de CDN **fresca** da foto de perfil da conta conectada.
+ *
+ * ⚠️ Essa URL é assinada e **expira em poucos dias** (medido 2026-08-01: `oe=` ~6 dias) —
+ *    exatamente a armadilha da thumb de post. Por isso ela NUNCA é guardada em lugar
+ *    nenhum: quem chama é o proxy `/api/ig-avatar`, que busca e transmite os bytes na
+ *    hora. Guardar a string seria repetir o bug que `freezeIgThumb` existe pra evitar.
+ *
+ * Coberto por `instagram_business_basic` — é o perfil da própria conta que autorizou.
+ */
+export async function fetchIgProfilePicture(token: string): Promise<string | null> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/me?fields=profile_picture_url&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) },
+    )
+    const j = await r.json() as { profile_picture_url?: string; error?: { message?: string } }
+    if (!r.ok || j.error) {
+      console.error("[ig-avatar] graph:", j.error?.message ?? `HTTP ${r.status}`)
+      return null
+    }
+    return j.profile_picture_url ?? null
+  } catch (e) {
+    console.error("[ig-avatar] graph:", (e as Error).message)
+    return null
+  }
+}
+
+export interface IgStoryItem {
+  id:        string
+  mediaType: string | null
+  thumbUrl:  string | null
+  timestamp: string | null
+  permalink: string | null
+}
+
+/**
+ * Stories **ATIVOS** da conta conectada.
+ *
+ * ⚠️ Story vive 24h. Esta lista é sempre "o que está no ar AGORA" — nunca histórico.
+ *    Quem apontar um gatilho pra um story específico tem um fluxo com prazo de validade:
+ *    amanhã aquele id não existe mais e o gatilho para de casar (fail-closed, não dispara
+ *    no story errado). É por isso que o default do gatilho é **todos**.
+ */
+export async function listIgStories(token: string): Promise<{ items: IgStoryItem[] } | { error: string }> {
+  try {
+    const fields = "id,media_type,media_url,thumbnail_url,timestamp,permalink"
+    const r = await fetch(`${IG_BASE}/me/stories?fields=${fields}&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) })
+    const j = await r.json() as {
+      data?: Array<{ id?: string; media_type?: string; media_url?: string; thumbnail_url?: string; timestamp?: string; permalink?: string }>
+      error?: { message?: string }
+    }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return {
+      items: (j.data ?? []).filter((m) => m.id).map((m) => ({
+        id:        String(m.id),
+        mediaType: m.media_type ?? null,
+        // Vídeo não tem imagem servível em `media_url` → cai na thumbnail.
+        thumbUrl:  m.thumbnail_url ?? m.media_url ?? null,
+        timestamp: m.timestamp ?? null,
+        permalink: m.permalink ?? null,
+      })),
+    }
+  } catch (e) {
+    return { error: netErr(e, T_READ, "lista de stories") }
+  }
+}
+
+/**
+ * Sobe mídia PRA META e devolve o `attachment_id` — **sem URL nenhuma no caminho**.
+ *
+ * 🔴 É o que permite o bucket de imagens do cliente continuar PRIVADO (o dono vetou URL
+ *    exposta em 2026-08-01). Os bytes vão do nosso storage → nosso servidor → Meta.
+ *
+ * ✅ Verificado ao vivo (2026-08-01): a Attachment Upload API funciona no caminho do
+ *    **Instagram Login** (`graph.instagram.com/<ig-user-id>/message_attachments`), tanto
+ *    por URL quanto por `multipart`. A doc arquivada só descrevia o caminho da Página do
+ *    Facebook — ver docs/instagram-api/media-upload.md.
+ *
+ * `is_reusable`: a mesma imagem disparada pra muita gente sobe UMA vez. É o que evita
+ * timeout com imagem pesada em campanha.
+ */
+export async function uploadIgAttachment(
+  token: string, igAccountId: string, bytes: Buffer, mime: string,
+  kind: "image" | "video" | "audio" | "file" = "image",
+): Promise<{ attachmentId: string } | { error: string }> {
+  try {
+    const fd = new FormData()
+    fd.append("message", JSON.stringify({ attachment: { type: kind, payload: { is_reusable: true } } }))
+    fd.append("filedata", new Blob([new Uint8Array(bytes)], { type: mime }), `upload.${mime.split("/")[1] ?? "bin"}`)
+
+    const r = await fetch(`${IG_BASE}/${igAccountId}/message_attachments`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}` }, body: fd,
+      signal: AbortSignal.timeout(T_MEDIA),
+    })
+    const j = await r.json() as { attachment_id?: string; error?: { message?: string } }
+    if (!r.ok || j.error || !j.attachment_id) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { attachmentId: String(j.attachment_id) }
+  } catch (e) {
+    return { error: netErr(e, T_MEDIA, "upload de mídia") }
+  }
+}
+
+/**
+ * ❤️ Reage a uma mensagem recebida (o "curtir automático" das respostas de story).
+ *
+ * ⚠️ Usa `sender_action`, NÃO `message` — é outro formato de corpo
+ *    (docs/instagram-api/send-message.md §"Reagir / desreagir").
+ *
+ * Best-effort por natureza: falhar em curtir não pode derrubar a ingestão da mensagem nem
+ * o fluxo. Quem chama ignora o erro (mas ele é logado — degradação silenciosa é o que se
+ * evita neste código).
+ */
+export async function sendIgReaction(
+  token: string, igAccountId: string, recipientIgsid: string, messageId: string,
+  reaction: string = "love",
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    const r = await fetch(`${IG_BASE}/${igAccountId}/messages`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body:    JSON.stringify({
+        recipient:     { id: recipientIgsid },
+        sender_action: "react",
+        payload:       { message_id: messageId, reaction },
+      }),
+      signal: AbortSignal.timeout(T_TEXT),
+    })
+    const j = await r.json() as { error?: { message?: string } }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { ok: true }
+  } catch (e) {
+    return { error: netErr(e, T_TEXT, "reação à mensagem") }
+  }
+}
+
 /** Envia um texto via Instagram Send API (Graph). Só vale dentro da janela 24h. */
 export async function sendInstagramText(
   igAccountId: string, recipientIgsid: string, token: string, text: string,
@@ -100,6 +237,27 @@ export async function sendInstagramText(
 export const IG_WEBHOOK_FIELDS = "messages,message_reactions,messaging_postbacks,messaging_seen,messaging_referral"
 /** Base + `comments` (comment-to-DM). Exige `instagram_business_manage_comments` NA CONTA. */
 export const IG_WEBHOOK_FIELDS_COMMENTS = `${IG_WEBHOOK_FIELDS},comments`
+/**
+ * Base + comentário + os dois campos que a Meta ACEITOU na sondagem de 2026-08-01:
+ *   • `story_reactions` — reação (só emoji) a story. 🔴 Fecha um furo real: o gatilho
+ *     "respondeu seu story" promete "qualquer palavra OU REAÇÃO", e reação pura pode não
+ *     chegar pelo `messages`. Sem este campo a promessa seria mentira pra metade dos casos.
+ *   • `live_comments` — comentário em transmissão ao vivo.
+ * Ver docs/instagram-api/webhooks-and-user-profile.md (os 23 campos válidos).
+ */
+export const IG_WEBHOOK_FIELDS_FULL = `${IG_WEBHOOK_FIELDS_COMMENTS},story_reactions,live_comments`
+/**
+ * ⚠️ `follow` (novo seguidor) fica FORA do degrau normal de propósito.
+ *
+ * O nome é válido no schema da Meta, mas assinar devolve `{"success": false}` com HTTP 200
+ * quando a permissão não foi concedida — e ela é concedida **seletivamente** (tipo/idade da
+ * conta, região, verificação do negócio) e **pode ser recolhida sem aviso**.
+ *
+ * Por isso ele é tentado à parte, por `probeIgFollowField`, e o resultado é GUARDADO: o
+ * gatilho de novo seguidor precisa poder dizer "aguardando liberação da Meta" em vez de
+ * ficar ligado e nunca disparar. Falha silenciosa é o pior desfecho — foi a lição do dia.
+ */
+export const IG_FIELD_FOLLOW = "follow"
 
 /**
  * Auto-assina a conta autorizada nos campos de webhook (self-provision — o controle
@@ -133,15 +291,54 @@ export async function subscribeIgWebhooks(
     return { ok: true as const }
   }
   try {
+    // ESCADA, do mais rico ao mínimo. Cada POST define a lista INTEIRA — por isso cada
+    // degrau manda tudo que quer manter, nunca só o campo novo.
+    const full = await attempt(IG_WEBHOOK_FIELDS_FULL)
+    if (!("error" in full)) return { ok: true, fields: IG_WEBHOOK_FIELDS_FULL, comments: true }
+    console.warn("[ig-subscribe] sem story_reactions/live_comments:", full.error)
+
     const withComments = await attempt(IG_WEBHOOK_FIELDS_COMMENTS)
     if (!("error" in withComments)) return { ok: true, fields: IG_WEBHOOK_FIELDS_COMMENTS, comments: true }
-
     console.warn("[ig-subscribe] sem `comments` (conta provavelmente ainda não tem a permissão):", withComments.error)
+
     const base = await attempt(IG_WEBHOOK_FIELDS)
     if ("error" in base) return { error: base.error }
     return { ok: true, fields: IG_WEBHOOK_FIELDS, comments: false }
   } catch (e) {
     return { error: netErr(e, T_READ, "assinatura do webhook") }
+  }
+}
+
+/**
+ * A conta tem a permissão de **novo seguidor**? Descobre TENTANDO — não há endpoint que
+ * pergunte.
+ *
+ * 🔴 A Meta responde `HTTP 200` com `{"success": false}` quando o campo é válido mas a
+ *    permissão não foi concedida. Ou seja: `r.ok` NÃO basta — sem ler o `success`, o
+ *    recurso ficaria "ligado" e nunca dispararia. Medido em 2026-08-01 na `@omni.kora`.
+ *
+ * ⚠️ Em caso de sucesso a assinatura FICA com o `follow` (é o que se quer). Em caso de
+ *    falha, a lista anterior é reposta — a chamada que falha não altera nada, mas repor é
+ *    explícito pra não depender desse detalhe do lado da Meta.
+ */
+export async function probeIgFollowField(
+  token: string, currentFields: string,
+): Promise<{ available: boolean }> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(`${currentFields},${IG_FIELD_FOLLOW}`)}&access_token=${encodeURIComponent(token)}`,
+      { method: "POST", signal: AbortSignal.timeout(T_READ) },
+    )
+    const j = await r.json() as { success?: boolean; error?: { message?: string } }
+    const available = r.ok && j.success !== false && !j.error
+    if (!available) {
+      // Repõe o estado bom — barato e remove qualquer dúvida sobre o que ficou valendo.
+      await fetch(`${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(currentFields)}&access_token=${encodeURIComponent(token)}`,
+        { method: "POST", signal: AbortSignal.timeout(T_READ) }).catch(() => {})
+    }
+    return { available }
+  } catch {
+    return { available: false }        // fail-closed: na dúvida, "não liberado"
   }
 }
 
@@ -305,11 +502,27 @@ export async function listIgMedia(
 export async function sendIgPrivateReply(
   token: string, igAccountId: string, commentId: string, text: string,
 ): Promise<{ recipientId: string; messageId: string } | { error: string }> {
+  return sendIgPrivateReplyRaw(token, igAccountId, commentId, { text })
+}
+
+/**
+ * Mesma bala única, com o `message` já montado (texto · card · botões · anexo).
+ *
+ * Quem monta é `buildIgMessage` (lib/instagram/rich-render.ts) — aqui só entra o objeto
+ * pronto, pra este arquivo não ter que conhecer template nenhum.
+ *
+ * ⚠️ Vale TODA a advertência de `sendIgPrivateReply`: uma por comentário, irrecuperável.
+ *    Formato inválido não devolve a bala — por isso o compositor valida antes de salvar e
+ *    `validateIgPublish` recusa publicar o que a Meta rejeitaria.
+ */
+export async function sendIgPrivateReplyRaw(
+  token: string, igAccountId: string, commentId: string, message: Record<string, unknown>,
+): Promise<{ recipientId: string; messageId: string } | { error: string }> {
   try {
     const r = await fetch(`${IG_BASE}/${igAccountId}/messages`, {
       method:  "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body:    JSON.stringify({ recipient: { comment_id: commentId }, message: { text } }),
+      body:    JSON.stringify({ recipient: { comment_id: commentId }, message }),
       signal:  AbortSignal.timeout(T_TEXT),
     })
     const j = await r.json() as { recipient_id?: string; message_id?: string; error?: { message?: string } }

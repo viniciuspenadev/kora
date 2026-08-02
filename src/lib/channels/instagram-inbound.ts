@@ -5,7 +5,11 @@ import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { decryptSecret } from "@/lib/crypto/secrets"
-import { fetchIgProfile, sendIgPrivateReply, replyToIgComment } from "@/lib/instagram/api"
+import { fetchIgProfile, sendIgPrivateReplyRaw, replyToIgComment } from "@/lib/instagram/api"
+import { buildIgMessage } from "@/lib/instagram/rich-render"
+import { sendIgReaction } from "@/lib/instagram/api"
+import { hasModulePro } from "@/lib/modules"
+import type { RichMessage } from "@/lib/ai-v2/flow/types"
 import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
 import { claimIgAutomation } from "@/lib/instagram/automation-quota"
 
@@ -197,7 +201,15 @@ function extractIgContent(m: IgMessaging): IgDecoded {
   }
 
   // Contexto: resposta a uma mensagem (quoted) ou a um STORY nosso.
-  if (msg.reply_to?.story)    meta.ig_story_reply = { id: msg.reply_to.story.id ?? null, url: msg.reply_to.story.url ?? null }
+  // 🔴 `ig_story = "reply"` MARCA a resposta a um story NOSSO — e é o que distingue de
+  //    `ig_story = "mention"` (a pessoa te marcou no story DELA). Os dois gravam
+  //    `ig_story_reply` (o card do inbox usa a url dos dois), então sem esta marca o
+  //    gatilho "respondeu ao seu story" dispararia também em menção — evento diferente,
+  //    intenção diferente.
+  if (msg.reply_to?.story) {
+    meta.ig_story = "reply"
+    meta.ig_story_reply = { id: msg.reply_to.story.id ?? null, url: msg.reply_to.story.url ?? null }
+  }
   else if (msg.reply_to?.mid) meta.quoted = { msg_id: msg.reply_to.mid, participant: null, kind: null, preview: null }
 
   const att = msg.attachments?.[0]
@@ -295,6 +307,11 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   // ⚠️ `routableText: null` é sinal EXPLÍCITO de "não acorda a automação" (menção em
   // story, mídia sem legenda). Cair pro `content` anularia esse sinal — e pior: quando o
   // download da mídia falha, `content` vira o rótulo "📷 Imagem" e a IA responderia a ele.
+  // ❤️ Curtir a resposta de story automaticamente (recurso PRO).
+  if (dec.metadata.ig_story === "reply" && mid) {
+    void maybeAutoReactStoryReply(ctx.tenantId, igAccountId, m.sender?.id ?? null, mid)
+  }
+
   const routable = dec.routableText
   if (routable?.trim()) {
     try {
@@ -310,6 +327,12 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
         tenantId:       ctx.tenantId,
         conversationId: ctx.convId,
         incomingText:   routable,
+        // Sinal do INBOUND: a mesma conversa mistura resposta de story com mensagem
+        // normal, então isto não pode sair de coluna da conversa.
+        signals: {
+          isStoryReply: dec.metadata.ig_story === "reply",
+          storyId:      (dec.metadata.ig_story_reply as { id?: string | null } | undefined)?.id ?? null,
+        },
         instance:       inst as Parameters<typeof routeAutomationTurn>[0]["instance"],
       })
     } catch (e) {
@@ -403,7 +426,48 @@ interface IgCommentRule {
   keywords:      string[] | null
   keyword_match: string | null
   reply_text:    string
+  /** Direct RICO (texto · imagem · botões). `null` = usa `reply_text` (fluxo antigo). */
+  reply_rich:    RichMessage | null
   public_reply:  string[] | null
+}
+
+/**
+ * ❤️ Curte a resposta de story, quando algum fluxo pediu E o tenant tem PRO.
+ *
+ * 🔴 **A LICENÇA É CHECADA AQUI, NO ENVIO** — não na hora de salvar o fluxo. Downgrade de
+ *    plano precisa parar de curtir mesmo com `autoReact: true` gravado num fluxo publicado
+ *    meses atrás. Config no jsonb é intenção; permissão é `hasModulePro`, sempre ao vivo.
+ *
+ * ⚠️ Best-effort e fora do caminho crítico (`void`): falhar em curtir não pode atrasar nem
+ *    derrubar a ingestão da mensagem. Mas o erro é LOGADO — silêncio é o que se evita.
+ *
+ * Consulta enxuta de propósito: se QUALQUER fluxo publicado+ativo de resposta a story pede
+ * o curtir, curte. Reexecutar o matcher inteiro aqui duplicaria a regra de casamento — e
+ * regra duplicada diverge (a lição do dia).
+ */
+async function maybeAutoReactStoryReply(
+  tenantId: string, igAccountId: string | null, senderIgsid: string | null, messageId: string,
+): Promise<void> {
+  try {
+    if (!igAccountId || !senderIgsid) return
+    if (!(await hasModulePro(tenantId, "instagram_automation"))) return
+
+    const { data } = await supabaseAdmin.from("studio_flows")
+      .select("trigger")
+      .eq("tenant_id", tenantId).eq("status", "published").eq("active", true)
+    const quer = (data ?? []).some((f) => {
+      const t = f.trigger as { type?: string; story?: { autoReact?: boolean } } | null
+      return t?.type === "ig_story_reply" && t.story?.autoReact === true
+    })
+    if (!quer) return
+
+    const conn = await connectionFor(igAccountId)
+    if (!conn?.token) return
+    const r = await sendIgReaction(conn.token, igAccountId, senderIgsid, messageId)
+    log("story-react", "error" in r ? { ok: false, err: r.error } : { ok: true })
+  } catch (e) {
+    log("story-react-err", { err: (e as Error).message })
+  }
 }
 
 /** Normaliza p/ comparação PT-BR: minúsculas + sem acento (olá → ola). Mesma régua do
@@ -452,7 +516,7 @@ const IG_RULES_CAP = 500
 async function loadCommentRules(connectionId: string): Promise<IgCommentRule[]> {
   const { data, error } = await supabaseAdmin
     .from("instagram_comment_rules")
-    .select("id, flow_id, media_ids, keywords, keyword_match, reply_text, public_reply")
+    .select("id, flow_id, media_ids, keywords, keyword_match, reply_text, reply_rich, public_reply")
     .eq("connection_id", connectionId)
     .eq("enabled", true)
     .order("created_at", { ascending: true })     // desempate ESTÁVEL (ver pickCommentRule)
@@ -621,7 +685,10 @@ async function handleComment(igAccountId: string | null, value: Record<string, u
   //    nem pro log (I6).
   const rule  = pickCommentRule(rules, mediaId, typeof c.text === "string" ? c.text : "")
   if (!rule) { log("comment-skip", { reason: "no-rule", commentId, hasRules: rules.length > 0 }); return }
-  if (!rule.reply_text?.trim()) { log("comment-skip", { reason: "empty-dm", ruleId: rule.id }); return }
+  // Vazio = nada a enviar. Rico com imagem e sem texto É válido (vai a imagem sozinha).
+  const richDm = rule.reply_rich ?? null
+  const hasDm  = richDm ? !!(richDm.text?.trim() || richDm.media?.path) : !!rule.reply_text?.trim()
+  if (!hasDm) { log("comment-skip", { reason: "empty-dm", ruleId: rule.id }); return }
 
   // ── LICENÇA + COTA + CLAIM, ATÔMICO (fail-closed) ───────────────────────────
   // Aqui, e não antes: só consulta (e só notifica em 80%/estouro) quando a captura de
@@ -644,7 +711,27 @@ async function handleComment(igAccountId: string | null, value: Record<string, u
 
   // 1) O DIRECT — a bala única. Sai ANTES da resposta pública: se a pública falhar, o
   //    Direct já está entregue; o inverso desperdiçaria a única chance.
-  const pr = await sendIgPrivateReply(conn.token, igAccountId, commentId, rule.reply_text)
+  // 🔴 Montagem do formato rico ANTES do envio, e com QUEDA PRA TEXTO se falhar. Motivo:
+  //    a bala é única. Se a imagem sumiu do bucket ou a Meta recusou o upload do anexo,
+  //    mandar o texto puro entrega ALGO — abortar entregaria nada e queimaria o comentário
+  //    do mesmo jeito (o dedup por comment_id não deixa tentar de novo).
+  let payload: Record<string, unknown> = { text: rule.reply_text }
+  if (richDm) {
+    const built = await buildIgMessage(richDm, {
+      token: conn.token, igAccountId, origin: process.env.AUTH_URL ?? process.env.NEXTAUTH_URL,
+    })
+    if ("error" in built) {
+      log("comment-rich-fallback", { ruleId: rule.id, err: built.error })
+      if (!rule.reply_text?.trim()) {
+        await updateAutomationRun(runId, { status: "failed", error: `direct rico inválido: ${built.error}`.slice(0, 300) })
+        return
+      }
+    } else {
+      payload = built.message
+    }
+  }
+
+  const pr = await sendIgPrivateReplyRaw(conn.token, igAccountId, commentId, payload)
   if ("error" in pr) {
     // `failed` NÃO consome cota (o contador filtra por status) — token expirado ou 429 da
     // Meta não podem zerar o mês do cliente sem ter entregue uma direct sequer.
@@ -673,7 +760,8 @@ async function handleComment(igAccountId: string | null, value: Record<string, u
     const conv = await createInboundConversation({ tenantId: conn.tenantId, contactId: contact.id, instanceId: null, channel: "instagram" })
     const stamped = await recordCommentOpener({
       tenantId: conn.tenantId, convId: conv.id, igAccountId,
-      text: rule.reply_text, messageId: pr.messageId || null, flowId: rule.flow_id, runId,
+      // Carimbo do inbox mostra o TEXTO do direct — o do rico quando houver.
+      text: (richDm?.text ?? rule.reply_text) || "", messageId: pr.messageId || null, flowId: rule.flow_id, runId,
     })
 
     // A DM saiu: a automação FOI executada e é cobrável, mesmo que o carimbo tenha falhado.

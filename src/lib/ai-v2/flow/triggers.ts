@@ -7,6 +7,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { isWhatsAppChannel } from "@/lib/channels/policy"
+import { hasModule } from "@/lib/modules"
 import type { FlowRow, FlowRunRow, FlowTrigger } from "./types"
 
 const FLOW_SELECT = "id, tenant_id, name, version, trigger, graph"
@@ -20,6 +21,12 @@ export interface MatchSignals {
   fromAd?:     boolean
   /** Id do anúncio de origem (from_ad_meta.sourceId), p/ filtro por anúncio específico. */
   adId?:       string | null
+  /** Instagram: a mensagem é resposta a um STORY nosso. Sinal do INBOUND (a mesma
+   *  conversa mistura resposta de story com mensagem normal).
+   *  ⚠️ FALSO quando é MENÇÃO no story da pessoa — evento diferente. */
+  isStoryReply?: boolean
+  /** Id do story respondido, quando a Meta manda. Pro modo "story específico". */
+  storyId?:      string | null
 }
 
 /** Normaliza p/ comparação PT-BR: minúsculas + remove acento (olá → ola). */
@@ -62,6 +69,21 @@ function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boole
     case "new_contact": return isNewContact
     case "reopened":    return !!sig.isReopened
     case "keyword":     return matchesKeyword(t, text)
+    // Resposta a story: entra pela porta de mensagem normal, mas a intenção é outra —
+    // a pessoa reagiu a UM conteúdo específico e vale responder sobre ele.
+    case "ig_story_reply": {
+      if (!sig.isStoryReply) return false
+      const cfg = t.story
+      // Lista vazia/ausente = TODOS os stories (é o default e o modo que não apodrece).
+      if (cfg?.storyIds?.length) {
+        // ⚠️ Sem id na resposta da Meta, o modo "específico" NÃO casa — em vez de casar
+        //    por engano. Fail-closed: melhor não disparar que disparar no story errado.
+        if (!sig.storyId || !cfg.storyIds.includes(sig.storyId)) return false
+      }
+      // Palavra é opcional: "qualquer palavra ou reação" = sem palavra configurada.
+      if (cfg?.keywords?.length) return matchesKeyword({ ...t, keywords: cfg.keywords, keywordMatch: cfg.keywordMatch }, text)
+      return true
+    }
     case "from_ad":
       if (!sig.fromAd) return false
       // Filtro de anúncio específico (ausente/vazio = qualquer anúncio).
@@ -74,7 +96,9 @@ function matchesTrigger(t: FlowTrigger | null, text: string, isNewContact: boole
 // Especificidade do gatilho — o MAIS específico vence quando vários casam. O
 // `any_message` (catch-all) é o ÚLTIMO recurso, não compete de igual com keyword.
 // `from_ad` é o mais específico (origem declarada do contato).
-const TRIGGER_RANK: Record<string, number> = { from_ad: 5, reopened: 4, keyword: 3, new_contact: 2, any_message: 1 }
+// `ig_story_reply` acima de `keyword`: responder um story é origem declarada, como o
+// anúncio — mais específico que uma palavra que por acaso apareceu no texto.
+const TRIGGER_RANK: Record<string, number> = { from_ad: 5, ig_story_reply: 5, reopened: 4, keyword: 3, new_contact: 2, any_message: 1 }
 
 /**
  * Fluxo publicado+ativo que inicia pra esta mensagem. Entre vários que casam,
@@ -95,10 +119,35 @@ export async function findFlowToStart(
     .eq("active", true)
     .order("updated_at", { ascending: true })
 
+  const flows = (data ?? []) as FlowRow[]
+
+  /**
+   * 🔴 LICENÇA CHECADA NO RUNTIME, NÃO NA PUBLICAÇÃO. O fluxo fica publicado com o
+   *    gatilho gravado no jsonb; se a licença caísse só na hora de publicar, um
+   *    **downgrade de plano** deixaria a automação rodando pra sempre — o cliente
+   *    continuaria recebendo um recurso que parou de pagar, e ninguém perceberia.
+   *
+   *    É a mesma doutrina do comment-to-DM (`claimIgAutomation` pergunta "pode?" a CADA
+   *    comentário) — aqui a pergunta é feita a cada mensagem que casaria um gatilho de
+   *    Instagram. Fail-closed: erro de leitura → `hasModule` devolve false → não dispara.
+   *
+   * ⚠️ A checagem só acontece se houver candidato de Instagram — quem não usa o recurso
+   *    não paga uma ida ao banco por mensagem.
+   */
+  const IG_TRIGGERS = new Set(["ig_story_reply"])
+  const matched: FlowRow[] = []
+  for (const f of flows) {
+    if (!matchesTrigger(f.trigger, incomingText, isNewContact, signals)) continue
+    matched.push(f)
+  }
+  const igLicensed = matched.some((f) => IG_TRIGGERS.has(f.trigger?.type ?? ""))
+    ? await hasModule(tenantId, "instagram_automation")
+    : true
+
   let best: FlowRow | null = null
   let bestRank = 0
-  for (const f of (data ?? []) as FlowRow[]) {
-    if (!matchesTrigger(f.trigger, incomingText, isNewContact, signals)) continue
+  for (const f of matched) {
+    if (IG_TRIGGERS.has(f.trigger?.type ?? "") && !igLicensed) continue
     const rank = TRIGGER_RANK[f.trigger?.type ?? ""] ?? 0
     if (rank > bestRank) { best = f; bestRank = rank }   // empate mantém o 1º (mais antigo)
   }

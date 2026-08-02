@@ -39,6 +39,10 @@ export type ModuleSlug =
   // ⚠️ É a AUTOMAÇÃO, não o canal: `instagram_direct` (inbox) segue sem pai, senão
   // desligar o Studio derrubaria o Direct do cliente junto.
   | "instagram_automation"
+  // ⚠️ NÃO existe slug `*_pro`. O nível PRO mora em `tenant_modules.pro`, no próprio
+  //    módulo (decisão do dono, 2026-08-01) — ver `hasModulePro`. Cheguei a criar
+  //    `ai_studio_pro` e ele foi REMOVIDO na mesma tarde: um slug de PRO por área faria
+  //    o catálogo virar metade sufixo quando chegarem Financeiro/CRM/Fiscal.
   // Engagement
   | "broadcasts" | "sequences" | "chatbot_builder"
   // Multi-channel
@@ -67,6 +71,8 @@ export interface TenantModuleStatus {
   is_core:     boolean
   /** Chave PRÓPRIA (a linha em tenant_modules) — é o que o toggle do god mode escreve. */
   enabled:     boolean
+  /** Nível PRO deste módulo. Mora NO módulo, não num slug `x_pro` — ver `hasModulePro`. */
+  pro:         boolean
   reason:      string | null
   expires_at:  string | null
   set_at:      string | null
@@ -93,6 +99,35 @@ export const hasModule = cache(async (tenantId: string, slug: ModuleSlug): Promi
     return false
   }
   return !!data
+})
+
+/**
+ * O tenant tem o módulo **no nível PRO**?
+ *
+ * 🔴 O PRO mora NO módulo (`tenant_modules.pro`), não num slug `x_pro` separado —
+ *    decisão do dono, 2026-08-01. Assim qualquer módulo (Studio hoje; Financeiro, CRM e
+ *    Fiscal amanhã) ganha um nível avançado sem nascer linha nova no catálogo, e o estado
+ *    sem sentido "PRO ligado com módulo desligado" deixa de ser exprimível.
+ *
+ * 🔴 **Fail-closed em tudo:** sem linha, módulo desligado, override vencido ou erro de
+ *    banco → `false`. Recurso pago não pode vazar por falha de leitura.
+ *
+ * ⚠️ Checa o módulo ANTES (via `hasModule`, que já respeita a hierarquia pai/filho e o
+ *    `expires_at`): PRO de um módulo que o cliente não tem é sempre `false`.
+ */
+export const hasModulePro = cache(async (tenantId: string, slug: ModuleSlug): Promise<boolean> => {
+  if (!(await hasModule(tenantId, slug))) return false
+
+  const { data, error } = await supabaseAdmin
+    .from("tenant_modules")
+    .select("pro")
+    .eq("tenant_id", tenantId)
+    .eq("module_slug", slug)
+    .eq("enabled", true)
+    .maybeSingle()
+
+  if (error) { console.error("[modules] hasModulePro failed:", error.message); return false }
+  return !!data?.pro
 })
 
 /**
@@ -171,13 +206,14 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
       .order("position", { ascending: true }),
     supabaseAdmin
       .from("tenant_modules")
-      .select("module_slug, enabled, reason, expires_at, set_at")
+      .select("module_slug, enabled, pro, reason, expires_at, set_at")
       .eq("tenant_id", tenantId),
   ])
 
-  const tmMap = new Map<string, { enabled: boolean; reason: string | null; expires_at: string | null; set_at: string | null }>()
+  const tmMap = new Map<string, { enabled: boolean; pro: boolean; reason: string | null; expires_at: string | null; set_at: string | null }>()
   ;(tm ?? []).forEach((r) => tmMap.set(r.module_slug, {
     enabled:    r.enabled,
+    pro:        !!r.pro,
     reason:     r.reason,
     expires_at: r.expires_at,
     set_at:     r.set_at,
@@ -199,6 +235,9 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
       description: c.description,
       is_core:     c.is_core,
       enabled,
+      // PRO só existe com o módulo ligado — espelha o que `hasModulePro` responde e o que
+      // a action grava. Mostrar "PRO" numa linha desligada mentiria pro god.
+      pro:         enabled && !!override?.pro,
       reason:      override?.reason ?? null,
       expires_at:  override?.expires_at ?? null,
       set_at:      override?.set_at ?? null,

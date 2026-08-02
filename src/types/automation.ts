@@ -38,8 +38,11 @@ export interface RunAITurnInput {
   /** Chamado SÓ depois que todos os gates de elegibilidade passaram (a IA vai mesmo
    *  processar) — pra enviar o "digitando…" de forma honesta, não-fantasma. */
   onWillRespond?: () => void | Promise<void>
-  /** Sinais do inbound pro matcher de gatilho do Studio v2 (ex: conversa reaberta). */
-  signals?: { isReopened?: boolean }
+  /** Sinais do inbound pro matcher de gatilho do Studio v2 (ex: conversa reaberta).
+   *  `isStoryReply`: a mensagem é RESPOSTA A UM STORY nosso (só Instagram). Vem do
+   *  inbound, não da conversa — a MESMA conversa tem mensagens de story e mensagens
+   *  normais, então isto não pode ser lido de coluna nenhuma. */
+  signals?: { isReopened?: boolean; isStoryReply?: boolean; storyId?: string | null }
 }
 
 export type RunAITurnResult =

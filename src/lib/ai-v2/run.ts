@@ -142,6 +142,8 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
     channel:    convData.channel,
     instanceId: convData.instance_id,
     isReopened: input.signals?.isReopened,
+    isStoryReply: input.signals?.isStoryReply,
+    storyId:      input.signals?.storyId,
     fromAd:     !!adMeta,
     adId:       adMeta?.sourceId ?? null,
   }
