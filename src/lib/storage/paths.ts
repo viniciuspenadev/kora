@@ -59,6 +59,52 @@ export const STORAGE_PREFIXES = {
 
 export type StoragePrefix = keyof typeof STORAGE_PREFIXES
 
+/** Entidades que podem ser DONAS de um arquivo (o `ref` acima). */
+export type StorageOwnerRef = NonNullable<(typeof STORAGE_PREFIXES)[StoragePrefix]["ref"]>
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 🔴 EXCLUSÃO DIRIGIDA PELO REGISTRY — declare o dono, a exclusão vem de graça
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * TODOS os caminhos de arquivo cujo dono é `ref`, prontos pra `storage.remove()`.
+ *
+ * **Por que isto existe.** Até 2026-08-01 este registry era só documentação: descrevia a
+ * medição e ninguém o consumia. A exclusão de LGPD tinha o caminho do avatar **escrito à
+ * mão** — e foi exatamente assim que 18 fotos de rosto de contatos apagados sobreviveram
+ * meses no bucket (medido em prod no QA de 2026-07-31). O prefixo existia, a exclusão não
+ * sabia dele, e nada denunciava.
+ *
+ * **A inversão:** em vez de "lembrar de apagar", basta **declarar o dono** em
+ * `STORAGE_PREFIXES`. Quem exclui percorre o registry — prefixo novo com
+ * `ref: "contact"` entra na exclusão de contato **sem ninguém tocar no código de LGPD**.
+ *
+ * ⚠️ `ref: null` é declaração CONSCIENTE de "não tem dono individual" (ativo do tenant,
+ *    derivado, cache). Se o arquivo carrega PII de uma pessoa, ele **precisa** de `ref` —
+ *    senão o pedido de eliminação (LGPD Art. 18 VI) não o alcança.
+ *
+ * ⚠️ Extensões em leque de propósito: a extensão vem do mime da ORIGEM, então o mesmo
+ *    dono pode ter deixado `.jpeg` hoje e `.png` amanhã.
+ */
+export function storagePathsForOwner(
+  ref: StorageOwnerRef, tenantId: string, ownerId: string,
+): string[] {
+  const out: string[] = []
+  for (const [prefix, meta] of Object.entries(STORAGE_PREFIXES)) {
+    if (meta.ref !== ref) continue
+    out.push(...storagePathVariants(prefix as StoragePrefix, tenantId, ownerId))
+  }
+  return out
+}
+
+/** Prefixos que guardam arquivo de um tenant — usado na saída/limpeza do tenant inteiro. */
+export function storagePrefixesForTenant(): StoragePrefix[] {
+  // `user-avatars` fora: é o ÚNICO caminho sem tenant no path (dívida conhecida) — varrer
+  // por `<prefixo>/<tenant>/` não o alcança, e incluí-lo aqui daria falsa sensação de
+  // cobertura. Ver o aviso no topo deste arquivo.
+  return (Object.keys(STORAGE_PREFIXES) as StoragePrefix[]).filter((p) => p !== "user-avatars")
+}
+
 /**
  * Monta o caminho no formato que as funções de medição entendem.
  *

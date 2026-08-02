@@ -17,7 +17,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import type { AgentTurnResult } from "./agent"
 import { runFlow, type FlowExecInput, type FlowResult } from "./flow/runtime"
-import { findFlowToStart, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, startFlowRunAt, type MatchSignals } from "./flow/triggers"
+import { findFlowToStart, isIgTrigger, loadFlow, loadStartableFlow, activeFlowRun, startFlowRun, startFlowRunAt, type MatchSignals } from "./flow/triggers"
 import { markRecipientReplied, isOptOut } from "@/lib/campaigns/engine"
 import { markIgAutomationReplied } from "@/lib/instagram/api"
 import { openerTemplateNode, templateNodeByName, nodeAfter } from "@/lib/campaigns/flow-opener"
@@ -312,7 +312,14 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   } else if (existingRun) {
     // Resume SÓ se o fluxo ainda está PUBLICADO + ATIVO (loadStartableFlow filtra).
     // Pausado/arquivado/sumido → o run NÃO pode sequestrar a conversa.
-    const flow = await loadStartableFlow(tenantId, existingRun.flow_id)
+    const resumed = await loadStartableFlow(tenantId, existingRun.flow_id)
+    // 🔴 LICENÇA TAMBÉM NA RETOMADA (QA 2026-08-01). Checar só no START fechava o buraco
+    //    pela metade: um run já iniciado sobrevive a downgrade indefinidamente (nós
+    //    `wait`/`collect` mantêm o run vivo), e o cliente seguia usando o recurso que
+    //    parou de pagar. Aqui o fluxo é ABANDONADO, não travado — a conversa cai no
+    //    caminho normal em vez de ficar presa num fluxo que não pode mais rodar.
+    const flow = resumed && isIgTrigger(resumed.trigger)
+      && !(await hasModule(tenantId, "instagram_automation")) ? null : resumed
     if (flow) {
       activeFlowId = flow.id
       flowResult   = await runFlow(flowInput, flow, existingRun)

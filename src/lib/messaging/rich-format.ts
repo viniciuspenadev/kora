@@ -99,7 +99,20 @@ export function richFormatMissing(msg: RichMessage): string | null {
   if (need.text  && !msg.text?.trim())            return "Escreva o texto da mensagem."
   if (need.media && !msg.media?.path)             return "Adicione a imagem do cartão."
   if (need.buttons && !(msg.buttons ?? []).length) return "Adicione ao menos um botão."
-  if ((msg.buttons ?? []).some((b) => !b.label.trim()))                 return "Um dos botões está sem rótulo."
-  if ((msg.buttons ?? []).some((b) => b.kind === "url" && !b.url?.trim())) return "Um dos botões de link está sem endereço."
+
+  // ⚠️ DENTRO do `need.buttons` (correção do QA, 2026-08-01). Fora dele, um botão
+  //    sobrando de um formato anterior — "Cartão" → adicionou botão → mudou pra "Só
+  //    texto" — bloqueava a publicação com "Um dos botões está sem rótulo", falando de um
+  //    campo que a tela nem mostra mais. A pessoa não tinha como sair sem adivinhar.
+  if (need.buttons) {
+    const btns = msg.buttons ?? []
+    if (btns.some((b) => !b.label.trim()))                    return "Um dos botões está sem rótulo."
+    if (btns.some((b) => b.kind === "url" && !b.url?.trim())) return "Um dos botões de link está sem endereço."
+    // 🔴 URL sem esquema queima a BALA ÚNICA: a Meta recusa a mensagem inteira, o
+    //    comment_id já foi reservado pelo dedup e o lead se perde sem retentativa.
+    if (btns.some((b) => b.kind === "url" && b.url && !/^https?:\/\//i.test(b.url.trim()))) {
+      return "O endereço do botão precisa começar com https://"
+    }
+  }
   return null
 }

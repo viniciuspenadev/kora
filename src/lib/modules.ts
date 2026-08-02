@@ -235,8 +235,7 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
       description: c.description,
       is_core:     c.is_core,
       enabled,
-      // PRO só existe com o módulo ligado — espelha o que `hasModulePro` responde e o que
-      // a action grava. Mostrar "PRO" numa linha desligada mentiria pro god.
+      // PRO cru; o EFETIVO é resolvido junto com `effective` logo abaixo (o pai manda).
       pro:         enabled && !!override?.pro,
       reason:      override?.reason ?? null,
       expires_at:  override?.expires_at ?? null,
@@ -246,6 +245,9 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
     }
   })
 
+  // ⚠️ `pro` também depende do PAI (QA 2026-08-01): `hasModulePro` chama `hasModule`, que
+  //    é recursivo. Sem alinhar aqui, o painel mostrava o selo PRO marcado numa linha com
+  //    "sem efeito · ligue Kora Studio" — e o servidor negava. Duas verdades na mesma tela.
   // Efetivo = próprio ligado E pai (recursivo) ligado — espelha `tenant_has_module`.
   const byslug = new Map(rows.map((r) => [r.slug, r] as const))
   const memo   = new Map<string, boolean>()
@@ -259,7 +261,13 @@ export async function listAllModulesForTenant(tenantId: string): Promise<TenantM
     memo.set(slug, ok)
     return ok
   }
-  for (const r of rows) r.effective = eff(r.slug)
+  for (const r of rows) {
+    r.effective = eff(r.slug)
+    // ⚠️ PRO acompanha o EFETIVO (QA 2026-08-01). Sem isto o painel mostrava o selo PRO
+    //    marcado numa linha que já exibia "sem efeito · ligue o pai" — e `hasModulePro`,
+    //    que é recursivo, negava. Uma tela não pode afirmar duas coisas contrárias.
+    r.pro = r.pro && r.effective
+  }
   return rows
 }
 

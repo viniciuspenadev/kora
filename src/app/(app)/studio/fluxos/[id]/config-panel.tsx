@@ -4,7 +4,7 @@
 import { useRef, useState, useEffect } from "react"
 import {
   Trash2, Plus, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2,
-  Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info, Lock,
+  Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info, Lock, X,
 } from "lucide-react"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { SourceLogo } from "@/components/chat/source-logo"
@@ -208,41 +208,104 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "collect" && (
-        <div className="space-y-3">
-          <div>
-            <label className={LABEL}>Pergunta ao cliente</label>
-            <VarField multiline rows={2} value={String(cfg.question ?? "")} onChange={(v) => set({ question: v })} placeholder="Qual o seu nome?" flowVars={flowVars} />
+      {type === "collect" && (() => {
+        /* 🔴 UM NÓ, VÁRIOS DADOS (ideia do dono, 2026-08-01). O `ai_agent` já coletava
+           vários campos, mas custa token e exige licença de IA — aqui é a versão
+           determinística e de custo zero.
+           ⚠️ Junta a CONFIGURAÇÃO, não as perguntas: o cliente final continua respondendo
+           uma de cada vez (uma mensagem pedindo 4 dados volta texto embolado).
+           ⚠️ Nó antigo (campo solto) é MIGRADO na 1ª edição — nada se perde. */
+        const fields = (Array.isArray(cfg.fields) && cfg.fields.length
+          ? cfg.fields
+          : [{ question: String(cfg.question ?? ""), saveAs: String(cfg.saveAs ?? "resposta"),
+               validate: String(cfg.validate ?? "text"), retry: cfg.retry, mapTo: cfg.mapTo }]
+        ) as Record<string, unknown>[]
+
+        const patch = (i: number, p: Record<string, unknown>) =>
+          set({ fields: fields.map((f, j) => (j === i ? { ...f, ...p } : f)) })
+
+        return (
+          <div className="space-y-3">
+            {fields.map((f, i) => (
+              <div key={i} className="rounded-xl border border-slate-200 p-3 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+                    <span className="grid size-5 place-items-center rounded-full bg-primary/10 text-[10px] text-primary-700">{i + 1}</span>
+                    {i === 0 ? "primeiro dado" : `dado ${i + 1}`}
+                  </span>
+                  {fields.length > 1 && (
+                    <button type="button" aria-label="Remover dado"
+                      onClick={() => set({ fields: fields.filter((_, j) => j !== i) })}
+                      className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+                      <X className="size-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <VarField multiline rows={2} value={String(f.question ?? "")}
+                  onChange={(v) => patch(i, { question: v })} placeholder="Qual o seu nome?" flowVars={flowVars} />
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={LABEL}>Guardar como</label>
+                    <input className={INPUT} value={String(f.saveAs ?? "")} onChange={(e) => patch(i, { saveAs: e.target.value })} placeholder="nome" />
+                  </div>
+                  <div>
+                    <label className={LABEL}>Validação</label>
+                    <SimpleSelect value={String(f.validate ?? "text")} onChange={(v) => patch(i, { validate: v })} options={[
+                      { value: "text",   label: "Texto livre" },
+                      { value: "email",  label: "E-mail" },
+                      { value: "phone",  label: "Telefone" },
+                      { value: "number", label: "Número" },
+                      /* CPF/CNPJ conferem o DÍGITO VERIFICADOR — recusam número inventado
+                         na hora, em vez de sujar o cadastro e aparecer no financeiro. */
+                      { value: "cpf",    label: "CPF" },
+                      { value: "cnpj",   label: "CNPJ" },
+                    ]} />
+                  </div>
+                </div>
+
+                <div>
+                  <label className={LABEL}>Salvar no cadastro <span className="text-slate-400 font-normal">(opcional)</span></label>
+                  <SimpleSelect value={String(f.mapTo ?? "")} onChange={(v) => patch(i, { mapTo: v || undefined, skipIfKnown: v ? f.skipIfKnown : undefined })} options={[
+                    { value: "",          label: "Não salvar (só variável)" },
+                    { value: "name",      label: "Nome" },
+                    { value: "phone",     label: "Telefone / WhatsApp" },
+                    { value: "email",     label: "E-mail" },
+                    { value: "document",  label: "CPF / CNPJ" },
+                    { value: "company",   label: "Empresa" },
+                    { value: "birthdate", label: "Nascimento" },
+                  ]} />
+                </div>
+
+                {/* Só faz sentido com destino no cadastro — é a ficha do contato que
+                    responde "já tenho?". Sem mapTo, a opção nem aparece. */}
+                {!!f.mapTo && (
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input type="checkbox" checked={!!f.skipIfKnown} onChange={(e) => patch(i, { skipIfKnown: e.target.checked })}
+                      className="mt-0.5 size-3.5 rounded border-slate-300 text-primary focus:ring-primary/30" />
+                    <span className="text-[11px] leading-snug text-slate-600">
+                      Não perguntar se o contato já tem esse dado
+                      <span className="block text-slate-400">ninguém pede de novo o e-mail de quem já mandou</span>
+                    </span>
+                  </label>
+                )}
+              </div>
+            ))}
+
+            <button type="button"
+              onClick={() => set({ fields: [...fields, { question: "", saveAs: "", validate: "text" }] })}
+              className="w-full inline-flex items-center justify-center gap-1.5 h-9 rounded-lg border-2 border-dashed border-slate-200 text-[12px] font-medium text-slate-500 hover:border-primary-200 hover:text-primary-600 transition-colors">
+              <Plus className="size-3.5" /> Pedir mais um dado
+            </button>
+
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              O cliente responde <b>uma pergunta por vez</b>, na ordem acima. Cada resposta é
+              guardada na hora — quem parar no meio deixa o que já respondeu salvo.
+            </p>
           </div>
-          <div>
-            <label className={LABEL}>Guardar resposta como</label>
-            <input className={INPUT} value={String(cfg.saveAs ?? "resposta")} onChange={(e) => set({ saveAs: e.target.value })} placeholder="nome" />
-          </div>
-          <div>
-            <label className={LABEL}>Validação</label>
-            <SimpleSelect value={String(cfg.validate ?? "text")} onChange={(v) => set({ validate: v })} options={[
-              { value: "text",   label: "Texto livre" },
-              { value: "email",  label: "E-mail" },
-              { value: "phone",  label: "Telefone" },
-              { value: "number", label: "Número" },
-            ]} />
-          </div>
-          <div>
-            <label className={LABEL}>Salvar no cadastro <span className="text-slate-400 font-normal">(opcional)</span></label>
-            <SimpleSelect value={String(cfg.mapTo ?? "")} onChange={(v) => set({ mapTo: v || undefined })} options={[
-              { value: "",          label: "Não salvar (só variável)" },
-              { value: "name",      label: "Nome" },
-              { value: "phone",     label: "Telefone / WhatsApp" },
-              { value: "email",     label: "E-mail" },
-              { value: "document",  label: "CPF / CNPJ" },
-              { value: "company",   label: "Empresa" },
-              { value: "birthdate", label: "Nascimento" },
-            ]} />
-            <p className="text-[11px] text-slate-400 mt-1">Grava a resposta na ficha do contato (telefone e CPF só se ainda vazios). Necessário pro disparo no WhatsApp.</p>
-          </div>
-          <p className="text-[11px] text-slate-400">O fluxo espera a resposta e guarda na variável. Use depois com <code className="bg-slate-100 px-1 rounded">{"{{nome}}"}</code> ou pelo Agente IA.</p>
-        </div>
-      )}
+        )
+      })()}
 
       {type === "outreach" && (
         <div className="space-y-3">
@@ -1452,8 +1515,13 @@ export function FlowSettingsPanel({
       //    Verificado 2026-08-01: o campo `follow` existe no schema da Meta mas a
       //    assinatura devolve `success:false` — concessão seletiva, fora do catálogo de
       //    permissões (não é pedido na Análise do App).
+      // 🔴 `soon` MESMO com a Meta liberando (QA 2026-08-01): a ingestão do evento `follow`
+      //    ainda NÃO existe — o webhook descarta tudo que não é `comments`, e o matcher não
+      //    tem o caso. Deixar publicável seria o pior desfecho: o cliente escolhe, publica,
+      //    e nada acontece pra sempre, sem sinal nenhum. Sai o `soon` quando a ingestão for
+      //    construída (e aí o cadeado da Meta volta a ser o único).
       { id: "ig_follow", label: "Começou a te seguir", desc: "alguém segue a conta e o fluxo manda o primeiro direct",
-        icon: IgTriggerIcon,
+        icon: IgTriggerIcon, soon: true,
         ...(!igLicensed ? { locked: "no plano" } : !igFollowAvailable ? { locked: "a Meta não liberou" } : {}) },
     ] },
     { key: "act", label: "Você dispara", tint: "text-violet-600 bg-violet-50", items: [

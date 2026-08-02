@@ -5,6 +5,9 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { fetchIgAccount, getInstagramSender, subscribeIgWebhooks, probeIgFollowField,
          IG_WEBHOOK_FIELDS_COMMENTS } from "@/lib/instagram/api"
+// ⚠️ Vive FORA deste arquivo de propósito: exportada daqui seria endpoint público
+//    (QA 2026-08-01). Ver o cabeçalho de subscription-record.ts.
+import { recordIgSubscription } from "@/lib/instagram/subscription-record"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -73,33 +76,7 @@ export async function resubscribeInstagramWebhooks(): Promise<{ ok: true; commen
   return { ok: true, comments: r.comments }
 }
 
-/**
- * Carimba na conexão QUAIS campos de webhook ficaram valendo.
- *
- * 🔴 Existe porque a ausência dele custou caro: no dia da ativação dos comentários, o
- * resultado da assinatura só existia no log do container — não dava pra responder "essa
- * conta recebe comentário?" nem pelo banco nem pela tela, e log de container tem retenção
- * curta. Com o carimbo, "criei o fluxo e não acontece nada" vira uma consulta.
- * Best-effort: falhar aqui não invalida a assinatura, que já aconteceu.
- */
-export async function recordIgSubscription(
-  externalAccountId: string, sub: { fields: string; comments: boolean; follow?: boolean },
-): Promise<void> {
-  const { error } = await supabaseAdmin.from("channel_connections")
-    .update({ meta: {
-      webhook_fields:   sub.fields,
-      webhook_comments: sub.comments,
-      // 🔴 Disponibilidade do gatilho de NOVO SEGUIDOR. Guardada porque a Meta concede
-      //    `follow` **seletivamente** e pode recolher sem aviso — sem este carimbo, o
-      //    gatilho ficaria na tela parecendo ligado e nunca dispararia (falha silenciosa,
-      //    o pior desfecho). Com ele, a tela diz "aguardando liberação da Meta".
-      //    Verificado 2026-08-01: a conta da Blue recebe `success:false` → indisponível.
-      webhook_follow:   sub.follow ?? false,
-      subscribed_at:    new Date().toISOString(),
-    } })
-    .eq("channel", "instagram").eq("external_account_id", externalAccountId)
-  if (error) console.error("[ig-subscribe] carimbo na conexão:", error.code, error.message)
-}
+
 
 /**
  * Re-testa a disponibilidade do gatilho de novo seguidor e re-carimba a conexão.

@@ -45,6 +45,7 @@
 //     - storage chat-attachments (cleanup manual no delete)
 
 import { auth } from "@/auth"
+import { storagePathsForOwner } from "@/lib/storage/paths"
 import { supabaseAdmin } from "@/lib/supabase"
 import { logAudit, sanitizeForAudit } from "@/lib/audit"
 import { revalidatePath } from "next/cache"
@@ -435,10 +436,13 @@ export async function deletePersonalData(contactId: string): Promise<
   //    (QA 2026-07-31): **18 fotos de rosto de contatos já apagados**, em 3 tenants, com o
   //    id do titular no próprio caminho. Imagem de rosto é PII e o pedido de eliminação
   //    (Art. 18 VI) alcança ela.
-  //    Extensões varridas em leque: a extensão vem do mime da origem, então o mesmo contato
-  //    pode ter deixado `.jpeg` e depois `.png` — apagar só a do `metadata` deixaria a outra.
-  for (const ext of ["jpeg", "jpg", "png", "webp", "gif"]) {
-    storagePathSet.add(`avatars/${tenantId}/${contactId}.${ext}`)
+  //    ✅ DIRIGIDO PELO REGISTRY desde 2026-08-01 (pedido do dono): em vez de listar
+  //    `avatars/` à mão aqui, percorre `STORAGE_PREFIXES` e pega TUDO que declara
+  //    `ref: "contact"`. Prefixo novo com dono contato entra nesta exclusão sozinho —
+  //    ninguém precisa lembrar de vir aqui. Era justamente o "lembrar" que falhou e
+  //    deixou 18 fotos de rosto sobreviverem.
+  for (const path of storagePathsForOwner("contact", tenantId, contactId)) {
+    storagePathSet.add(path)
   }
 
   const storagePaths = [...storagePathSet]

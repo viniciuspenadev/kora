@@ -3,7 +3,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { exchangeIgCode, fetchIgAccount, subscribeIgWebhooks, wakeIgConversations } from "@/lib/instagram/api"
-import { recordIgSubscription } from "@/lib/actions/instagram"
+import { recordIgSubscription } from "@/lib/instagram/subscription-record"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { publicOrigin } from "@/lib/http"
 

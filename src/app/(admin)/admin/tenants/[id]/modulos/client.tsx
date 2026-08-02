@@ -52,7 +52,9 @@ function withEffective(list: TenantModuleStatus[]): TenantModuleStatus[] {
     memo.set(slug, ok)
     return ok
   }
-  return list.map((m) => ({ ...m, effective: eff(m.slug) }))
+  // ⚠️ `pro` acompanha o efetivo TAMBÉM no otimista — senão desligar o pai deixava o selo
+  //    PRO aceso no filho até o refresh, discordando do servidor.
+  return list.map((m) => { const e = eff(m.slug); return { ...m, effective: e, pro: m.pro && e } })
 }
 
 // ── Componente principal ────────────────────────────────────────
@@ -250,7 +252,10 @@ function ModuleRow({
    *    ter nível avançado sem linha nova no catálogo.
    */
   function togglePro() {
-    if (!module.enabled) return          // sem módulo não há o que marcar
+    // ⚠️ `effective`, não `enabled` (QA 2026-08-01): com o PAI desligado o módulo não vale,
+    //    e marcar PRO ali gravava um "PRO liberado" que `hasModulePro` nega — flash verde
+    //    mentindo pro god.
+    if (!module.effective) return
     startTransition(async () => {
       const next = !module.pro
       const result = await setTenantModule({
@@ -334,7 +339,7 @@ function ModuleRow({
       <div className="flex items-center gap-1 shrink-0">
         {/* Checkbox do PRO — só existe com o módulo LIGADO, porque é onde ele mora.
             "PRO ligado com módulo desligado" não é estado exprimível, por construção. */}
-        {!module.is_core && module.enabled && (
+        {!module.is_core && module.effective && (
           <label className="inline-flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-white"
             title="Libera os recursos avançados deste módulo">
             <input type="checkbox" checked={!!module.pro} onChange={togglePro} disabled={pending}

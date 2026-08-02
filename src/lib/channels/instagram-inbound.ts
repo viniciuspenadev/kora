@@ -309,7 +309,9 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   // download da mídia falha, `content` vira o rótulo "📷 Imagem" e a IA responderia a ele.
   // ❤️ Curtir a resposta de story automaticamente (recurso PRO).
   if (dec.metadata.ig_story === "reply" && mid) {
-    void maybeAutoReactStoryReply(ctx.tenantId, igAccountId, m.sender?.id ?? null, mid)
+    void maybeAutoReactStoryReply(ctx.tenantId, igAccountId, m.sender?.id ?? null, mid,
+      (dec.metadata.ig_story_reply as { id?: string | null } | undefined)?.id ?? null,
+      dec.routableText ?? "")
   }
 
   const routable = dec.routableText
@@ -447,6 +449,7 @@ interface IgCommentRule {
  */
 async function maybeAutoReactStoryReply(
   tenantId: string, igAccountId: string | null, senderIgsid: string | null, messageId: string,
+  storyId: string | null, text: string,
 ): Promise<void> {
   try {
     if (!igAccountId || !senderIgsid) return
@@ -455,9 +458,26 @@ async function maybeAutoReactStoryReply(
     const { data } = await supabaseAdmin.from("studio_flows")
       .select("trigger")
       .eq("tenant_id", tenantId).eq("status", "published").eq("active", true)
+    // ⚠️ RESPEITA O RECORTE da tela (QA 2026-08-01). Antes bastava "algum fluxo pede
+    //    curtir" — então um fluxo mirado no story X curtia resposta ao story Y, e curtia
+    //    resposta que reprovaria no filtro de palavra. O ❤️ mora DENTRO da configuração de
+    //    story/palavra no modal; a tela prometia um recorte mais estreito que o código.
     const quer = (data ?? []).some((f) => {
-      const t = f.trigger as { type?: string; story?: { autoReact?: boolean } } | null
-      return t?.type === "ig_story_reply" && t.story?.autoReact === true
+      const t = f.trigger as { type?: string; story?: { autoReact?: boolean; storyIds?: string[]; keywords?: string[]; keywordMatch?: string } } | null
+      if (t?.type !== "ig_story_reply" || t.story?.autoReact !== true) return false
+      const cfg = t.story
+      if (cfg.storyIds?.length && (!storyId || !cfg.storyIds.includes(storyId))) return false
+      if (cfg.keywords?.length) {
+        const alvo = normComment(text)
+        const bate = cfg.keywords.some((k) => {
+          const n = normComment(k)
+          return cfg.keywordMatch === "exact"
+            ? new RegExp(`(^|\W)${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\W|$)`).test(alvo)
+            : alvo.includes(n)
+        })
+        if (!bate) return false
+      }
+      return true
     })
     if (!quer) return
 

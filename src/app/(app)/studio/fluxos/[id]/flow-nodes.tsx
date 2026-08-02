@@ -516,14 +516,25 @@ function HttpNode(p: NodeProps) {
 }
 
 function CollectNode(p: NodeProps) {
-  const q = String(cfgOf(p).question ?? "")
-  const saveAs = String(cfgOf(p).saveAs ?? "resposta")
+  const cfg = cfgOf(p)
+  // Nó multi-campo × campo solto legado: o cartão fala das duas formas sem o autor
+  // precisar saber que existem duas.
+  const fields = Array.isArray(cfg.fields) ? (cfg.fields as { question?: string; saveAs?: string }[]) : []
+  const many   = fields.length > 1
+  // ⚠️ `fields[0] ??` e NÃO `many ? …`: com exatamente 1 campo o cartão caía no legado —
+  //    que nunca é limpo — e mostrava a pergunta velha pra sempre (QA 2026-08-01).
+  const first  = fields[0] ?? { question: String(cfg.question ?? ""), saveAs: String(cfg.saveAs ?? "resposta") }
+  const q      = String(first?.question ?? "")
+  const saveAs = String(first?.saveAs ?? "resposta")
   return (
     <>
       <TargetHandle />
-      <Card icon={ClipboardList} accent="bg-indigo-100 text-indigo-700" title="Coletar dado" selected={p.selected}>
+      <Card icon={ClipboardList} accent="bg-indigo-100 text-indigo-700"
+        title={many ? `Coletar ${fields.length} dados` : "Coletar dado"} selected={p.selected}>
         {q ? q.slice(0, 50) : "pergunta"}
-        <span className="block text-[10px] text-slate-400 mt-0.5">→ {saveAs}</span>
+        <span className="block text-[10px] text-slate-400 mt-0.5">
+          → {saveAs}{many ? ` +${fields.length - 1}` : ""}
+        </span>
       </Card>
       <SourceHandle />
     </>

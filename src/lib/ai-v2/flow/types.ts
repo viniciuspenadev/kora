@@ -143,10 +143,47 @@ export interface HttpNodeConfig {
   /** Nome da variável onde a resposta é guardada (default: http_response). */
   saveAs?:  string
 }
+/** Um dado pedido pelo nó Coletar. Vários deles = um cadastro numa conversa só. */
+export interface CollectField {
+  /** A pergunta que o cliente final vê. Uma por vez, sempre. */
+  question:  string
+  /** Nome da variável do fluxo. */
+  saveAs:    string
+  validate?: "text" | "email" | "phone" | "number" | "cpf" | "cnpj"
+  /** O que dizer quando a resposta não passa na validação. */
+  retry?:    string
+  /** Além da variável, grava na COLUNA REAL do contato. */
+  mapTo?:    "name" | "phone" | "email" | "document" | "company" | "birthdate"
+  /**
+   * 🔴 Não perguntar se o contato JÁ TEM esse dado. É o que separa conversa de
+   *    formulário — ninguém pede de novo o e-mail de quem já mandou. Só faz sentido
+   *    com `mapTo` (é a coluna do contato que responde "já tenho?").
+   */
+  skipIfKnown?: boolean
+}
+
 export interface CollectNodeConfig {
+  /**
+   * Vários dados no MESMO nó (2026-08-01, ideia do dono).
+   *
+   * 🔴 Por que importa mais que arrumar o canvas: o nó `ai_agent` já coleta vários campos,
+   *    mas custa token e exige a licença de IA. Isto é a versão **determinística e de custo
+   *    zero** — pra quem não tem IA, é a diferença entre ter e não ter cadastro
+   *    automatizado.
+   *
+   * ⚠️ Junta a CONFIGURAÇÃO, não as perguntas: o cliente final continua respondendo uma
+   *    de cada vez. Pedir 4 dados numa mensagem só volta um texto embolado e tem taxa de
+   *    resposta ruim.
+   *
+   * ⚠️ ADITIVO: nó antigo não tem `fields` e segue valendo pelos campos soltos abaixo.
+   *    `normalizeCollect()` (runtime) é quem unifica as duas formas.
+   */
+  fields?:   CollectField[]
+
+  // ── Forma LEGADA (um dado por nó). Mantida: há fluxo em produção com ela. ──
   question:  string
   saveAs:    string
-  validate?: "text" | "email" | "phone" | "number"
+  validate?: "text" | "email" | "phone" | "number" | "cpf" | "cnpj"
   retry?:    string
   /** Além de guardar na variável, grava a resposta na COLUNA REAL do contato
    *  (mesma normalização/guardas da tool update_contact — telefone/CPF só se

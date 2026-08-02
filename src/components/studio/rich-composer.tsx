@@ -72,12 +72,19 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
     })
   }
 
+  /**
+   * 🔴 NÃO APAGA O ARQUIVO AQUI (correção do QA, 2026-08-01). A versão anterior chamava
+   *    `removeCardImage` no clique — antes de salvar. Quem abrisse um fluxo PUBLICADO,
+   *    clicasse no X pra ver outra imagem e fechasse sem salvar destruía a foto de todos
+   *    os cards já enviados (a Meta re-busca a imagem na renderização) e do fluxo no ar.
+   *    Irreversível, sem confirmação.
+   *
+   *    Agora só some da composição. O arquivo fica no bucket — vira órfão se ninguém
+   *    salvar, e órfão é problema da faxina; imagem de cliente destruída é problema do
+   *    cliente.
+   */
   function dropImage() {
-    const path = value.media?.path
     set({ media: undefined })
-    // Best-effort: se a remoção no storage falhar, o arquivo vira órfão e a faxina pega.
-    // Travar a edição por causa disso seria pior que o arquivo sobrando.
-    if (path) void removeCardImage(path)
   }
 
   function patchButton(i: number, patch: Partial<RichButton>) {

@@ -105,6 +105,19 @@ const TRIGGER_RANK: Record<string, number> = { from_ad: 5, ig_story_reply: 5, re
  * vence o de gatilho MAIS ESPECÍFICO (keyword > new_contact > any_message);
  * empate de rank → o mais antigo (updated_at asc). Null = nenhum (→ agente).
  */
+/**
+ * Gatilhos de Instagram — a licença tem que ser perguntada TODA VEZ.
+ * Exportado porque a RETOMADA de run também precisa (`run.ts`): sem isso um fluxo já
+ * iniciado seguiria rodando pra sempre depois do downgrade, que é o buraco que a
+ * checagem no start só fecha pela metade.
+ */
+export const IG_TRIGGER_TYPES = new Set(["ig_story_reply", "ig_follow"])
+
+/** O fluxo depende da licença de automação do Instagram? */
+export function isIgTrigger(t: FlowTrigger | null | undefined): boolean {
+  return IG_TRIGGER_TYPES.has(t?.type ?? "")
+}
+
 export async function findFlowToStart(
   tenantId: string,
   incomingText: string,
@@ -118,6 +131,10 @@ export async function findFlowToStart(
     .eq("status", "published")
     .eq("active", true)
     .order("updated_at", { ascending: true })
+    // ⚠️ Desempate ESTÁVEL: sem ele, dois fluxos salvos no mesmo milissegundo resolvem
+    //    pela ordem física do Postgres — e o fluxo que roda muda sem nada ter mudado.
+    //    Mesma disciplina de `loadCommentRules` (instagram-inbound.ts).
+    .order("id", { ascending: true })
 
   const flows = (data ?? []) as FlowRow[]
 
@@ -134,20 +151,19 @@ export async function findFlowToStart(
    * ⚠️ A checagem só acontece se houver candidato de Instagram — quem não usa o recurso
    *    não paga uma ida ao banco por mensagem.
    */
-  const IG_TRIGGERS = new Set(["ig_story_reply"])
   const matched: FlowRow[] = []
   for (const f of flows) {
     if (!matchesTrigger(f.trigger, incomingText, isNewContact, signals)) continue
     matched.push(f)
   }
-  const igLicensed = matched.some((f) => IG_TRIGGERS.has(f.trigger?.type ?? ""))
+  const igLicensed = matched.some((f) => isIgTrigger(f.trigger))
     ? await hasModule(tenantId, "instagram_automation")
     : true
 
   let best: FlowRow | null = null
   let bestRank = 0
   for (const f of matched) {
-    if (IG_TRIGGERS.has(f.trigger?.type ?? "") && !igLicensed) continue
+    if (isIgTrigger(f.trigger) && !igLicensed) continue
     const rank = TRIGGER_RANK[f.trigger?.type ?? ""] ?? 0
     if (rank > bestRank) { best = f; bestRank = rank }   // empate mantém o 1º (mais antigo)
   }

@@ -32,7 +32,7 @@ import { outcomeLabel } from "./describe"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
-  HttpNodeConfig, CollectNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
+  HttpNodeConfig, CollectNodeConfig, CollectField, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
   SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
   WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig, OutreachNodeConfig,
 } from "./types"
@@ -57,14 +57,102 @@ function logFlowStep(ctx: ExecCtx, run: FlowRunRow, flow: FlowRow, node: FlowNod
   }).then(() => {}, (e: unknown) => console.error("[flow-step]", (e as Error)?.message ?? e))
 }
 
+/**
+ * CPF com DÍGITO VERIFICADOR — não só "tem 11 números".
+ * 🔴 Vale a conta: recusar 111.111.111-11 na conversa é barato; descobrir que o cadastro
+ *    está sujo na hora de emitir nota é caro. E a pessoa ainda está ali pra corrigir.
+ */
+function isCpf(raw: string): boolean {
+  const d = raw.replace(/\D/g, "")
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false
+  const dv = (len: number) => {
+    let soma = 0
+    for (let i = 0; i < len; i++) soma += Number(d[i]) * (len + 1 - i)
+    const r = (soma * 10) % 11
+    return r === 10 ? 0 : r
+  }
+  return dv(9) === Number(d[9]) && dv(10) === Number(d[10])
+}
+
+/** CNPJ com dígito verificador (mesma régua do CPF, pesos próprios). */
+function isCnpj(raw: string): boolean {
+  const d = raw.replace(/\D/g, "")
+  if (d.length !== 14 || /^(\d)\1{13}$/.test(d)) return false
+  const calc = (len: number) => {
+    const pesos = len === 12 ? [5,4,3,2,9,8,7,6,5,4,3,2] : [6,5,4,3,2,9,8,7,6,5,4,3,2]
+    const soma = pesos.reduce((a, p, i) => a + Number(d[i]) * p, 0)
+    const r = soma % 11
+    return r < 2 ? 0 : 11 - r
+  }
+  return calc(12) === Number(d[12]) && calc(13) === Number(d[13])
+}
+
 function validateInput(v: string, type: string): boolean {
   const s = v.trim()
   switch (type) {
     case "email":  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
     case "phone":  return s.replace(/\D/g, "").length >= 10
     case "number": return /^\d+([.,]\d+)?$/.test(s)
+    case "cpf":    return isCpf(s)
+    case "cnpj":   return isCnpj(s)
     default:       return s.length > 0
   }
+}
+
+/**
+ * Unifica as DUAS formas do nó Coletar (multi-campo novo × campo solto legado) numa lista.
+ * Chamar SEMPRE isto — nunca ler `cfg.question` direto, senão o nó novo é ignorado.
+ */
+function collectFields(cfg: CollectNodeConfig): CollectField[] {
+  const list = (cfg.fields ?? []).filter((f) => f?.question?.trim() && f?.saveAs?.trim())
+  if (list.length) return list
+  return [{ question: cfg.question, saveAs: cfg.saveAs, validate: cfg.validate, retry: cfg.retry, mapTo: cfg.mapTo }]
+}
+
+/** O contato JÁ tem esse dado? Base do "não perguntar o que já se sabe". */
+function contactHas(contact: Record<string, unknown>, mapTo?: string): boolean {
+  switch (mapTo) {
+    case "name":      return !!String(contact.custom_name ?? "").trim()
+    case "phone":     return !!String(contact.phone_number ?? "").trim()
+    case "email":     return !!String(contact.email ?? "").trim()
+    case "document":  return !!String(contact.doc_id ?? "").trim()
+    case "company":   return !!String(contact.company ?? "").trim()
+    case "birthdate": return !!String(contact.birth_date ?? "").trim()
+    default:          return false
+  }
+}
+
+/**
+ * Próximo campo a perguntar. `-1` = acabou → o nó avança.
+ *
+ * 🔴 **NÃO É POSIÇÃO, é "o que ainda falta"** (correção de 2026-08-01, achada testando o
+ *    comportamento). Avançar pelo índice seguinte parece óbvio e quebra em dois casos
+ *    reais, porque o fluxo publicado é lido AO VIVO a cada retomada:
+ *      • lista REORDENADA → o campo que foi pra trás nunca era perguntado;
+ *      • config mudada no meio → reiniciava do zero e repetia o que a pessoa já respondeu.
+ *
+ * Pula: o que o contato já tem (`skipIfKnown`) e o que já foi respondido NESTE nó.
+ *
+ * ⚠️ O "já respondido" vem de uma lista PRÓPRIA do nó (`collect:<id>:done`), nunca de
+ *    `variables[saveAs]` — senão um `set_variable` com o mesmo nome lá atrás faria a
+ *    pergunta sumir sem ninguém entender por quê.
+ */
+function nextCollectIndex(
+  fields: CollectField[], contact: Record<string, unknown>, done: string[] = [],
+): number {
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]
+    if (done.includes(f.saveAs)) continue
+    if (f.skipIfKnown && f.mapTo && contactHas(contact, f.mapTo)) continue
+    return i
+  }
+  return -1
+}
+
+/** Campos já respondidos neste nó (lista própria, à prova de colisão de nome). */
+function collectDone(variables: Record<string, unknown>, nodeId: string): string[] {
+  const v = variables[`collect:${nodeId}:done`]
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []
 }
 
 // Interpola {{variavel}} (e {{a.b.c}}) com as variáveis do fluxo.
@@ -347,21 +435,65 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       variables[`menu:${node.id}`] = picked.id
       currentId = edgeTarget(graph, node.id, picked.id)
     } else if (node?.type === "collect") {
-      const cfg = node.config as unknown as CollectNodeConfig
-      const reply = input.incomingText.trim()
-      if (cfg.validate && !validateInput(reply, cfg.validate)) {
-        await sendBotText(ctx, cfg.retry?.trim() || "Hmm, não parece válido. Pode mandar de novo?")
+      const cfg    = node.config as unknown as CollectNodeConfig
+      const fields = collectFields(cfg)
+      const contato = ctx.contact as unknown as Record<string, unknown>
+      const key    = variables[`collect:${node.id}:key`]
+      const idx    = typeof key === "string" ? fields.findIndex((f) => f.saveAs === key) : -1
+
+      /**
+       * 🔴 A CONFIG MUDOU DEBAIXO DA CONVERSA. O fluxo publicado é lido AO VIVO a cada
+       *    retomada, então editar o nó com alguém parado no meio do cadastro é rotina —
+       *    não caso raro. Se o campo que estava sendo perguntado sumiu, não dá pra saber
+       *    o que a resposta responde: DESCARTA a resposta e re-pergunta.
+       *
+       *    A versão anterior "resolvia" com `Math.min(idx, fields.length-1)` — o que
+       *    silenciava a divergência e gravava a resposta NO CAMPO ERRADO, inclusive na
+       *    coluna do contato. (Também cobre o run em voo no momento deste deploy, que
+       *    tem `:idx` antigo e nenhum `:key`.)
+       */
+      if (idx < 0) {
+        const volta = nextCollectIndex(fields, contato, collectDone(variables, node.id))
+        if (volta < 0) {
+          delete variables[`collect:${node.id}:key`]; delete variables[`collect:${node.id}:done`]
+          currentId = edgeTarget(graph, node.id)
+        }
+        else {
+          const q = interpolate(fields[volta].question ?? "", variables).trim()
+          if (!q) {
+            delete variables[`collect:${node.id}:key`]; delete variables[`collect:${node.id}:done`]
+            currentId = edgeTarget(graph, node.id)
+          }
+          else {
+            variables[`collect:${node.id}:key`] = fields[volta].saveAs
+            delete variables[`collect:${node.id}:idx`]     // resíduo do formato antigo
+            await sendBotText(ctx, q, { studio_flow: true })
+            await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+            return { status: "responded", departmentId: null, error: null, agent: null }
+          }
+        }
+      }
+      const field  = fields[idx] ?? fields[0]
+      const reply  = input.incomingText.trim()
+
+      // 🔴 Repete SÓ o campo que falhou, nunca o nó inteiro. Reiniciar um cadastro de 4
+      //    dados porque o e-mail veio torto é o jeito mais rápido de perder a pessoa.
+      // ⚠️ `!reply` ANTES da validação (QA 2026-08-01): campo sem `validate` aceitava
+      //    resposta vazia — figurinha/áudio sem legenda chega com texto "" e "respondia"
+      //    a pergunta, avançando o cadastro com o dado em branco.
+      if (!reply || (field.validate && !validateInput(reply, field.validate))) {
+        await sendBotText(ctx, field.retry?.trim() || "Hmm, não parece válido. Pode mandar de novo?")
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
-      variables[cfg.saveAs?.trim() || "resposta"] = reply
+      variables[field.saveAs?.trim() || "resposta"] = reply
       // F1: write-back opcional pro cadastro (mapTo) — reusa a MESMA lógica da
       // tool update_contact (normaliza + só-preenche-vazio p/ telefone/doc).
       // Best-effort: nunca derruba o fluxo. Reflete no ctx.contact em memória pra
       // um Condição logo à frente (has_phone/lifecycle) enxergar o que salvou.
-      if (cfg.mapTo) {
+      if (field.mapTo) {
         try {
-          const applied = await captureContactField(ctx, cfg.mapTo, reply)
+          const applied = await captureContactField(ctx, field.mapTo, reply)
           if (applied.custom_name)  ctx.contact.custom_name  = applied.custom_name
           if (applied.phone_number) ctx.contact.phone_number = applied.phone_number
           if (applied.email)        ctx.contact.email        = applied.email
@@ -372,6 +504,24 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           console.error("[collect mapTo]", (e as Error)?.message ?? e)
         }
       }
+
+      // 🔴 SALVA CAMPO A CAMPO (o `mapTo` acima já gravou). Quem responde 2 de 4 e some
+      //    deixa os 2 gravados — guardar tudo pra escrever no fim perderia justamente o
+      //    caso mais comum, que é o abandono no meio.
+      // Marca ANTES de escolher o próximo — é o que faz "próximo" significar "o que falta".
+      variables[`collect:${node.id}:done`] = [...collectDone(variables, node.id), field.saveAs]
+      const prox = nextCollectIndex(fields, contato, collectDone(variables, node.id))
+      if (prox >= 0) {
+        const q = interpolate(fields[prox].question ?? "", variables).trim()
+        if (q) {
+          variables[`collect:${node.id}:key`] = fields[prox].saveAs
+          await sendBotText(ctx, q, { studio_flow: true })
+          await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+          return { status: "responded", departmentId: null, error: null, agent: null }
+        }
+      }
+      delete variables[`collect:${node.id}:key`]      // acabou: não deixa lixo no estado
+      delete variables[`collect:${node.id}:done`]
       currentId = edgeTarget(graph, node.id)
     } else if (node?.type === "schedule") {
       const cfg   = { ...(node.config as unknown as ScheduleNodeConfig) }
@@ -511,8 +661,24 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         break
       }
       case "collect": {
-        const cfg = node.config as unknown as CollectNodeConfig
-        await sendBotText(ctx, interpolate(cfg.question ?? "", variables), { studio_flow: true })
+        const cfg    = node.config as unknown as CollectNodeConfig
+        const fields = collectFields(cfg)
+        // Pula de cara o que o contato já tem — perguntar de novo o e-mail de quem já
+        // mandou é o que faz a conversa parecer formulário.
+        const idx = nextCollectIndex(fields, ctx.contact as unknown as Record<string, unknown>,
+                                     collectDone(variables, node.id))
+        if (idx < 0) { currentId = edgeTarget(graph, node.id); break }   // nada a perguntar
+        const pergunta = interpolate(fields[idx].question ?? "", variables).trim()
+        // ⚠️ Pergunta vazia travaria o run PRA SEMPRE: manda "" pro canal (a Cloud API
+        //    recusa), grava bolha em branco, e ninguém responde o que nunca foi perguntado.
+        //    O nó `message` já se protege assim. Sem pergunta, o nó só avança.
+        if (!pergunta) { currentId = edgeTarget(graph, node.id); break }
+        // 🔴 Guarda a CHAVE do campo, não o índice (QA 2026-08-01). Índice é posição, e
+        //    posição muda: editar o nó com uma conversa parada no meio fazia a resposta
+        //    seguinte cair no campo errado — inclusive escrevendo na ficha do contato.
+        //    A chave identifica o campo mesmo se a lista for reordenada.
+        variables[`collect:${node.id}:key`] = fields[idx].saveAs
+        await sendBotText(ctx, pergunta, { studio_flow: true })
         await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }

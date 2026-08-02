@@ -282,23 +282,40 @@ export async function subscribeIgWebhooks(
 ): Promise<{ ok: true; fields: string; comments: boolean } | { error: string }> {
   // Tipo de retorno EXPLÍCITO: sem ele o TS infere um union com props opcionais
   // (`{error: string; ok?: undefined} | ...`) e `"error" in base` não estreita direito.
-  const attempt = async (fields: string): Promise<{ ok: true } | { error: string }> => {
+  const attempt = async (fields: string): Promise<{ ok: true } | { error: string; status?: number }> => {
     const r = await fetch(`${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`, {
       method: "POST", signal: AbortSignal.timeout(T_READ),
     })
     const j = await r.json() as { success?: boolean; error?: { message?: string } }
-    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    if (!r.ok || j.error) {
+      return { error: j.error?.message ?? `HTTP ${r.status}`, status: r.status }
+    }
     return { ok: true as const }
   }
+
+  /**
+   * 🔴 O ERRO É DE PERMISSÃO ou é PASSAGEIRO? (QA 2026-08-01)
+   *
+   * A escada só pode descer quando a Meta diz "essa conta não tem esse campo". Descer por
+   * 429/5xx/timeout REBAIXA uma conta que estava completa: ela perde `comments` e o
+   * comment-to-DM morre — e o carimbo ainda registra `webhook_comments: false`, fazendo a
+   * degradação parecer decisão da Meta. Não há retry nem reconciliação pra desfazer.
+   *
+   * Fail-CLOSED em relação à degradação: na dúvida, ABORTA em vez de descer.
+   */
+  const passageiro = (e: { status?: number }) => !e.status || e.status === 429 || e.status >= 500
+
   try {
     // ESCADA, do mais rico ao mínimo. Cada POST define a lista INTEIRA — por isso cada
     // degrau manda tudo que quer manter, nunca só o campo novo.
     const full = await attempt(IG_WEBHOOK_FIELDS_FULL)
     if (!("error" in full)) return { ok: true, fields: IG_WEBHOOK_FIELDS_FULL, comments: true }
+    if (passageiro(full)) return { error: full.error }        // não rebaixa por instabilidade
     console.warn("[ig-subscribe] sem story_reactions/live_comments:", full.error)
 
     const withComments = await attempt(IG_WEBHOOK_FIELDS_COMMENTS)
     if (!("error" in withComments)) return { ok: true, fields: IG_WEBHOOK_FIELDS_COMMENTS, comments: true }
+    if (passageiro(withComments)) return { error: withComments.error }
     console.warn("[ig-subscribe] sem `comments` (conta provavelmente ainda não tem a permissão):", withComments.error)
 
     const base = await attempt(IG_WEBHOOK_FIELDS)

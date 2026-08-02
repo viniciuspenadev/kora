@@ -62,7 +62,14 @@ function collectFlowVars(nodes: RFNode[]): string[] {
   for (const n of nodes) {
     const c = (n.data?.config ?? {}) as Record<string, unknown>
     switch (n.type) {
-      case "collect":  if (typeof c.saveAs === "string" && c.saveAs.trim()) out.add(c.saveAs.trim()); break
+      case "collect": {
+        // ⚠️ Multi-campo: sem isto os `{{cpf}}`/`{{email}}` criados no nó NÃO apareciam no
+        //    autocomplete, e ainda sobrava um `{{resposta}}` fantasma do legado.
+        const fs = Array.isArray(c.fields) ? (c.fields as { saveAs?: string }[]) : []
+        if (fs.length) { for (const f of fs) if (f.saveAs?.trim()) out.add(f.saveAs.trim()) }
+        else if (typeof c.saveAs === "string" && c.saveAs.trim()) out.add(c.saveAs.trim())
+        break
+      }
       case "http":     out.add(typeof c.saveAs === "string" && c.saveAs.trim() ? c.saveAs.trim() : "http_response"); break
       case "schedule": out.add("agendamento"); break
       case "set_variable":

@@ -65,8 +65,12 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     loadTenantAds(tenantId),
     hasModule(tenantId, "instagram_automation"),
     hasModulePro(tenantId, "instagram_automation"),
+    // ⚠️ `.limit(1)` e NUNCA `.maybeSingle()`: com DUAS contas de Instagram ativas o
+    //    PostgREST devolve PGRST116, `igConn` vira null e o editor diz "não conectado"
+    //    com as duas contas na tela de Integrações. Mesma armadilha de `getInstagramSender`.
     supabaseAdmin.from("channel_connections").select("username, meta")
-      .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active").maybeSingle(),
+      .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active")
+      .order("created_at", { ascending: true }).limit(1),
   ])
 
   return (
@@ -85,15 +89,15 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
       instances={instances}
       ads={ads}
       ig={{
-        connected: !!igConn,
-        username:  (igConn?.username as string | null) ?? null,
+        connected: !!igConn?.[0],
+        username:  (igConn?.[0]?.username as string | null) ?? null,
         licensed:  igLicensed,
         // Nível PRO do módulo — decide o ❤️ automático. O gate REAL é no envio.
         pro:       igPro,
         // 🔴 Disponibilidade do gatilho de NOVO SEGUIDOR, carimbada na conexão pela sonda
         //    (`probeIgFollowField`). A Meta concede `follow` seletivamente e pode recolher
         //    sem aviso — sem este flag o gatilho apareceria normal e nunca dispararia.
-        followAvailable: !!(igConn?.meta as { webhook_follow?: boolean } | null)?.webhook_follow,
+        followAvailable: !!(igConn?.[0]?.meta as { webhook_follow?: boolean } | null)?.webhook_follow,
       }}
     />
   )
