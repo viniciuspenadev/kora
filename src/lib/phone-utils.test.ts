@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { normalizePhone, canonicalWhatsAppJid } from "./phone-utils"
+import { normalizePhone, canonicalWhatsAppJid, isPlausiblePhone } from "./phone-utils"
 
 describe("normalizePhone", () => {
   it("número local usa o país default (BR) → E.164 com DDI", () => {
@@ -61,5 +61,51 @@ describe("canonicalWhatsAppJid — identidade só quando vem da REDE", () => {
     expect(canonicalWhatsAppJid("   ")).toBeNull()
     expect(canonicalWhatsAppJid("123@s.whatsapp.net")).toBeNull()
     expect(canonicalWhatsAppJid("abc@s.whatsapp.net")).toBeNull()
+  })
+})
+
+describe("isPlausiblePhone — barra o erro de digitação, não o cliente", () => {
+  it("aceita as formas que a pessoa realmente usa", () => {
+    for (const t of ["11940175730", "(11) 94017-5730", "11 94017-5730",
+                     "+55 11 94017-5730", "5511940175730", "011940175730",
+                     "  11940175730  ", "meu numero é 11940175730"]) {
+      expect(isPlausiblePhone(t)).toBe(true)
+    }
+  })
+
+  it("aceita fixo (empresa com WhatsApp em linha fixa existe)", () => {
+    expect(isPlausiblePhone("1140175730")).toBe(true)
+  })
+
+  it("aceita estrangeiro COM o +", () => {
+    expect(isPlausiblePhone("+14155552671")).toBe(true)
+  })
+
+  it("🔴 barra dígito a MENOS — virava outro número e a mensagem ia pra um estranho", () => {
+    expect(isPlausiblePhone("1194017573")).toBe(false)
+  })
+
+  it("🔴 barra dígito a MAIS", () => {
+    expect(isPlausiblePhone("119401757300")).toBe(false)
+  })
+
+  it("🔴 barra estrangeiro SEM o + — virava celular brasileiro inexistente", () => {
+    expect(isPlausiblePhone("14155552671")).toBe(false)
+  })
+
+  it("barra sem DDD e lixo", () => {
+    expect(isPlausiblePhone("940175730")).toBe(false)
+    expect(isPlausiblePhone("")).toBe(false)
+    expect(isPlausiblePhone("   ")).toBe(false)
+    expect(isPlausiblePhone("meu whats")).toBe(false)
+  })
+
+  it("⚠️ recusa o celular BR sem o 9 — de propósito, e é o único falso-negativo", () => {
+    // `554384994692` é identidade REAL de 58 contatos (a rede deu). Mas na DIGITAÇÃO a
+    // pessoa é convidada a repetir com o 9, e esse formato entrega igual.
+    expect(isPlausiblePhone("4384994692")).toBe(false)
+    expect(isPlausiblePhone("43984994692")).toBe(true)
+    // E a NORMALIZAÇÃO continua aceitando o formato curto — as duas réguas são separadas.
+    expect(normalizePhone("554384994692", "BR")).toBe("554384994692")
   })
 })

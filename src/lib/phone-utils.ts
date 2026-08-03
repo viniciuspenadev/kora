@@ -3,6 +3,8 @@
  */
 
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js"
+// ⚠️ Metadata RÍGIDA, importada só pra VALIDAR digitação. Ver `isPlausiblePhone`.
+import { parsePhoneNumberFromString as parseMax } from "libphonenumber-js/max"
 
 /** Extrai número limpo de um WhatsApp JID (ex: "5511999@s.whatsapp.net" → "5511999"). */
 export function jidToPhone(jid: string): string {
@@ -13,6 +15,35 @@ export function jidToPhone(jid: string): string {
 export function phoneToJid(phone: string): string {
   const clean = phone.replace(/\D/g, "")
   return `${clean}@s.whatsapp.net`
+}
+
+/**
+ * O que a pessoa digitou é um telefone PLAUSÍVEL? (só validação — não normaliza nada)
+ *
+ * 🔴 USA A METADATA `/max`, E SÓ AQUI. A régua antiga era "tem 10 dígitos ou mais", que
+ *    deixava passar os três erros que realmente acontecem — medidos:
+ *      • `1194017573`  — um dígito a MENOS  ⇒ virava outro número, e a mensagem ia pra
+ *        um estranho ou pra ninguém;
+ *      • `14155552671` — número dos EUA digitado sem `+` ⇒ virava `5514155552671`, um
+ *        celular brasileiro que não existe (há 50 contatos não-BR na base, não é hipótese);
+ *      • dígito a MAIS.
+ *    A `/max` recusa os três e continua aceitando celular, fixo e estrangeiro com `+`.
+ *
+ * ⚠️ NUNCA use `/max` para NORMALIZAR. Ela considera INVÁLIDO o celular brasileiro sem o
+ *    9 (`554384994692`) — que é a identidade REAL de 58 contatos em produção, dada pela
+ *    própria rede. Trocar a metadata em `normalizePhone` faria essas pessoas sumirem de
+ *    campanha, da busca da extensão e da importação. Validar entrada digitada e normalizar
+ *    identidade são coisas diferentes, e é por isso que moram em funções diferentes.
+ *
+ * ⚠️ Recusa o formato sem o 9 na DIGITAÇÃO, e tudo bem: quem digitar assim é convidado a
+ *    repetir com o 9, e esse formato entrega igual (o WhatsApp resolve, e a identidade
+ *    canônica volta na resposta do envio).
+ */
+export function isPlausiblePhone(raw: string, defaultCountry: string = "BR"): boolean {
+  const s = (raw ?? "").trim()
+  if (!s) return false
+  const parsed = parseMax(s, defaultCountry.toUpperCase() as CountryCode)
+  return !!parsed?.isValid()
 }
 
 /**

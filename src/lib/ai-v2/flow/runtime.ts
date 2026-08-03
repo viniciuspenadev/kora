@@ -13,6 +13,7 @@
 
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isPlausiblePhone } from "@/lib/phone-utils"
 import { normalizeLifecycle } from "@/lib/lifecycle-stage"
 import { sendBotText, sendBotMedia, sendBotTemplate } from "../outbound"
 import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
@@ -91,7 +92,9 @@ function validateInput(v: string, type: string): boolean {
   const s = v.trim()
   switch (type) {
     case "email":  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
-    case "phone":  return s.replace(/\D/g, "").length >= 10
+    // Antes era só contar dígitos (>= 10). Ver `isPlausiblePhone` — o contador deixava
+    // passar dígito a menos e número estrangeiro sem `+`, que viravam outra pessoa.
+    case "phone":  return isPlausiblePhone(s)
     case "number": return /^\d+([.,]\d+)?$/.test(s)
     case "cpf":    return isCpf(s)
     case "cnpj":   return isCnpj(s)
