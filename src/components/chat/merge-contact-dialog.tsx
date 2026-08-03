@@ -62,7 +62,22 @@ export function MergeContactButton({ survivorId }: { survivorId: string; survivo
   // Resultado do merge: canais reunidos + o que o sobrevivente ganha do absorvido.
   const mergedChannels = survivor && absorbed ? CH_ORDER.filter((c) => survivor.channels.includes(c) || absorbed.channels.includes(c)) : []
   const gainChannels   = survivor && absorbed ? absorbed.channels.filter((c) => !survivor.channels.includes(c)) : []
-  const gainsPhoto     = !!(survivor && absorbed && !survivor.pic && absorbed.pic)
+  /**
+   * ⚠️ Nada de "ganha foto" aqui. A fusão NÃO herda mais a foto do absorvido: o arquivo
+   *    dele é apagado logo em seguida (LGPD), então a v1 deixava o sobrevivente com uma
+   *    imagem quebrada pra sempre. Agora ele fica com a inicial e a foto volta sozinha na
+   *    próxima mensagem que a pessoa mandar.
+   *
+   * ⚠️ A ETAPA pode mudar: contato "cru" que absorve alguém já qualificado herda o avanço
+   *    (só `lead`/`won` — recuo nunca). Antes o texto afirmava que mantinha, e afirmava
+   *    errado justamente no caso em que a regra existe.
+   */
+  const etapaFinal = survivor && absorbed && survivor.lifecycle === "contact"
+    && (absorbed.lifecycle === "lead" || absorbed.lifecycle === "won")
+      ? absorbed.lifecycle : survivor?.lifecycle ?? null
+  const etapaMuda  = !!(survivor && etapaFinal !== survivor.lifecycle)
+  const preservaNao = !!(survivor && absorbed && (survivor.optOut  || absorbed.optOut))
+  const preservaBloqueio = !!(survivor && absorbed && (survivor.blocked || absorbed.blocked))
   const moved          = absorbed ? [
     [absorbed.conversations, "conversa", "conversas"],
     [absorbed.deals, "negócio", "negócios"],
@@ -153,15 +168,21 @@ export function MergeContactButton({ survivorId }: { survivorId: string; survivo
                     <p className="text-[11px] text-slate-700 leading-relaxed">
                       <span className="font-bold text-primary-700">{survivor.name}</span> reúne{" "}
                       <span className="inline-flex items-center gap-0.5 align-middle">{mergedChannels.map((c) => <SourceLogo key={c} source={channelToSource(c)!} size={13} />)}</span>{" "}
-                      e mantém a etapa <span className="font-semibold">{lifecycleMeta(survivor.lifecycle).label}</span>.
+                      e {etapaMuda ? "passa para" : "mantém"} a etapa{" "}
+                      <span className="font-semibold">{lifecycleMeta(etapaFinal).label}</span>.
                     </p>
-                    {(gainChannels.length > 0 || gainsPhoto || moved) && (
+                    {(gainChannels.length > 0 || moved) && (
                       <p className="text-[10px] text-slate-500 leading-relaxed">
                         Ganha: {[
                           ...gainChannels.map((c) => c === "instagram" ? "Instagram" : c === "site" ? "site" : "WhatsApp"),
-                          ...(gainsPhoto ? ["foto"] : []),
                           ...(absorbed.handle ? [absorbed.handle] : []),
                         ].join(" · ")}{moved && ` · ${moved}`}
+                      </p>
+                    )}
+                    {(preservaNao || preservaBloqueio) && (
+                      <p className="text-[10px] font-semibold text-amber-700 leading-relaxed">
+                        {preservaNao && "O descadastro de mensagens é mantido — o contato fundido fica fora das campanhas. "}
+                        {preservaBloqueio && "O bloqueio é mantido."}
                       </p>
                     )}
                   </div>
@@ -169,7 +190,9 @@ export function MergeContactButton({ survivorId }: { survivorId: string; survivo
                   <div className="rounded-lg bg-amber-50 border border-amber-200 p-2.5 flex items-start gap-2">
                     <AlertTriangle className="size-3.5 text-amber-600 shrink-0 mt-px" />
                     <p className="text-[11px] text-amber-800 leading-relaxed">
-                      <span className="font-semibold">{absorbed.name}</span> deixa de existir — tudo passa pro sobrevivente. Não dá pra desfazer.
+                      <span className="font-semibold">{absorbed.name}</span> deixa de existir. Conversas, negócios, tags,
+                      cotações, listas e arquivos passam pro sobrevivente; descadastro e bloqueio de qualquer um dos dois
+                      são mantidos. Não dá pra desfazer.
                     </p>
                   </div>
 

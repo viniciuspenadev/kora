@@ -45,9 +45,16 @@ export async function POST(req: NextRequest) {
   // Segurança: a conversa tem que ser do contato-site DESTE visitante.
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, status, chat_contacts!inner ( primary_channel, primary_external_id )")
+    .select("id, status, channel, chat_contacts!inner ( primary_channel, primary_external_id )")
     .eq("id", convId)
     .eq("tenant_id", tenant.id)
+    // 🔴 O FIO TEM QUE SER DO SITE, não só o contato. Sem esta linha, bastava o contato
+    //    ser site-primário pra o dono do `visitor_id` ler as mensagens de bot/atendente de
+    //    QUALQUER fio dele — inclusive o de WhatsApp. E isso não é hipótese: os contatos
+    //    duplicados do widget nascem exatamente assim (4 fios não-site em contato
+    //    site-primário em produção hoje). O endpoint irmão `/api/site/history` já filtrava;
+    //    este esqueceu. Mesma regra, dois lugares — um ficou pra trás.
+    .eq("channel", "site")
     .maybeSingle()
 
   const contact = conv?.chat_contacts as unknown as { primary_channel: string | null; primary_external_id: string | null } | null
