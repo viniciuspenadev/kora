@@ -161,6 +161,61 @@ function resolvePath(obj: Record<string, unknown>, path: string): unknown {
     (acc, k) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[k] : undefined), obj,
   )
 }
+/**
+ * O turno passa a correr em OUTRA ficha — a que já era dona daquele telefone.
+ *
+ * 🔴 POR QUE A LINHA INTEIRA, e não só o id. Trocar apenas `variables.id_contato` deixaria
+ *    um Frankenstein: id de uma pessoa com os campos de outra. E não é cosmético — o
+ *    `applyContactCapture` decide "só preencho se estiver vazio" olhando pra ESTA linha em
+ *    memória. Com a linha do rascunho (que está vazia), ele concluiria que o cliente de
+ *    verdade não tem nome nem e-mail e **sobrescreveria os dados reais**. Corrupção de
+ *    cadastro, não detalhe. O mesmo vale pra `has_phone`/`has_name`, a condição de
+ *    lifecycle, `channel_is` e o "pula o que já está preenchido" do Coletar.
+ *
+ * 🔴 E AS VARIÁVEIS PRECISAM SEGUIR. Elas são semeadas UMA vez no início do turno e ficam
+ *    PERSISTIDAS no run: sem isto o fluxo continuaria dizendo "Olá Visitante do site" pro
+ *    cliente antigo, e `{{id_contato}}` apontaria pra uma ficha que ninguém mais usa.
+ *    Sobrescreve só o que foi semeado por nós (valor igual ao derivado da ficha ANTIGA) —
+ *    o que o autor do fluxo definiu à mão continua valendo.
+ *
+ * ⚠️ NÃO FUNDE NADA. A ficha antiga continua existindo, vazia; juntar as duas é decisão
+ *    humana no botão de mesclar. Fusão automática é `delete` irreversível, e "número
+ *    reciclado" emite exatamente o mesmo sinal que "é a mesma pessoa".
+ */
+async function assumirContato(ctx: ExecCtx, variables: Record<string, unknown>, novoId: string): Promise<void> {
+  const anterior = ctx.contact
+  const { data } = await supabaseAdmin.from("chat_contacts")
+    .select("id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel, bsuid, primary_external_id, created_at")
+    .eq("id", novoId).eq("tenant_id", ctx.tenantId).maybeSingle()
+  if (!data) return                                    // sumiu no meio: segue como está
+
+  const novo = data as unknown as typeof ctx.contact
+  const derivar = (c: typeof ctx.contact) => {
+    const nome = c.custom_name?.trim() || c.push_name?.trim() || ""
+    return { nome, contato: nome, cliente: nome, empresa: c.company ?? "", email: c.email ?? "",
+             telefone: c.phone_number ?? "", bsuid: c.bsuid ?? "", id_contato: c.id ?? "" }
+  }
+  const antes = derivar(anterior), depois = derivar(novo)
+  for (const [k, v] of Object.entries(depois)) {
+    if (variables[k] === undefined || variables[k] === "" || variables[k] === antes[k as keyof typeof antes]) {
+      if (v) variables[k] = v
+    }
+  }
+  variables.id_contato = novo.id                       // ponteiro morto é sempre pior
+
+  // A conversa em curso vai junto — senão o histórico do chat fica órfão numa ficha vazia.
+  // Best-effort: se a outra ficha já tiver fio ativo neste canal, o índice único recusa e
+  // a gente segue sem mover (nada se perde, só fica separado).
+  const { error } = await supabaseAdmin.from("chat_conversations")
+    .update({ contact_id: novo.id, updated_at: new Date().toISOString() })
+    .eq("id", ctx.conversationId).eq("tenant_id", ctx.tenantId)
+  if (error) console.error("[assumirContato] fio não movido:", error.code, error.message)
+
+  ctx.contact = novo
+  console.log(JSON.stringify({ event: "flow_contact_assumido", tenantId: ctx.tenantId,
+    de: anterior.id, para: novo.id, conversa: ctx.conversationId }))
+}
+
 function interpolate(text: string, vars: Record<string, unknown>): string {
   if (!text.includes("{{")) return text
   return text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, path: string) => {
@@ -493,13 +548,15 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       // um Condição logo à frente (has_phone/lifecycle) enxergar o que salvou.
       if (field.mapTo) {
         try {
-          const applied = await captureContactField(ctx, field.mapTo, reply)
-          if (applied.custom_name)  ctx.contact.custom_name  = applied.custom_name
-          if (applied.phone_number) ctx.contact.phone_number = applied.phone_number
-          if (applied.email)        ctx.contact.email        = applied.email
-          if (applied.doc_id)       ctx.contact.doc_id        = applied.doc_id
-          if (applied.company)      ctx.contact.company       = applied.company
-          if (applied.birth_date)   ctx.contact.birth_date    = applied.birth_date
+          const { campos, outroContato } = await captureContactField(ctx, field.mapTo, reply)
+          if (campos.custom_name)  ctx.contact.custom_name  = campos.custom_name
+          if (campos.phone_number) ctx.contact.phone_number = campos.phone_number
+          if (campos.email)        ctx.contact.email        = campos.email
+          if (campos.doc_id)       ctx.contact.doc_id        = campos.doc_id
+          if (campos.company)      ctx.contact.company       = campos.company
+          if (campos.birth_date)   ctx.contact.birth_date    = campos.birth_date
+          // O telefone informado já é de outra ficha ⇒ o turno segue NELA.
+          if (outroContato) await assumirContato(ctx, variables, outroContato)
         } catch (e) {
           console.error("[collect mapTo]", (e as Error)?.message ?? e)
         }

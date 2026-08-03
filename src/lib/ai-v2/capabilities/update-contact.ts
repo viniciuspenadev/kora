@@ -9,7 +9,7 @@
 // reusado pela tool da IA (aqui) E pelo nó Coletar determinístico (via mapTo).
 import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
-import { normalizePhone } from "@/lib/phone-utils"
+import { normalizePhone, phoneToJid } from "@/lib/phone-utils"
 import type { ExecCtx } from "./types"
 
 export const UPDATE_CONTACT = "update_contact"
@@ -44,9 +44,23 @@ export type ContactMapField = "name" | "phone" | "email" | "document" | "company
  * novo). NÃO insere nota nem toca identidade/merge — só as colunas. Lança em
  * erro de banco (o chamador decide se é fatal ou best-effort).
  */
+export interface CapturaResultado {
+  /** Colunas efetivamente escritas no cadastro. `{}` = nada novo. */
+  campos: Record<string, string>
+  /**
+   * Outra ficha do tenant que JÁ é dona do telefone informado — ou `null`.
+   *
+   * ⚠️ Vive fora de `campos` de propósito. Na primeira versão eu devolvi isto junto das
+   *    colunas capturadas, e ele ia parar na nota "📇 Dados capturados pela IA" que o
+   *    ATENDENTE lê, como se fosse um campo do cadastro. Sinal de controle não viaja no
+   *    mesmo saco que dado do cliente.
+   */
+  outroContato: string | null
+}
+
 export async function applyContactCapture(
   ctx: ExecCtx, parsed: UpdateArgs, opts: { trusted?: boolean } = {},
-): Promise<Record<string, string>> {
+): Promise<CapturaResultado> {
   const { tenantId, contact } = ctx
   // `trusted` = o AUTOR do fluxo mapeou o campo (nó Coletar) → pode setar/sobrescrever.
   // SEM trusted (tool `update_contact`, o LLM INFERIU) → só ENRIQUECE campo vazio, nunca
@@ -54,6 +68,8 @@ export async function applyContactCapture(
   // pode corromper o cadastro. Phone/doc são sempre só-se-vazio (identidade sensível).
   const guard = !opts.trusted
   const updates: Record<string, string> = {}
+  /** Id de OUTRA ficha que já é dona deste telefone (ver `donoDoNumero`). */
+  let outroContato: string | null = null
   // Nome: com guarda, só preenche se o contato NÃO tem nome NENHUM (nem custom_name nem
   // o push_name do WhatsApp) — senão a IA trocaria "Vinicius" (que vinha do push_name).
   if (parsed.name && (!guard || (!contact.custom_name?.trim() && !contact.push_name?.trim())))
@@ -62,7 +78,15 @@ export async function applyContactCapture(
     const { data: tc } = await supabaseAdmin
       .from("tenant_config").select("default_country").eq("tenant_id", tenantId).maybeSingle()
     const normalized = normalizePhone(parsed.phone, tc?.default_country ?? "BR")
-    if (normalized) updates.phone_number = normalized
+    if (normalized) {
+      updates.phone_number = normalized
+      // 🔴 O NÚMERO JÁ É DE ALGUÉM AQUI? Esta pergunta nunca era feita, e é o furo-raiz.
+      //    Em 30/07 um cliente que já estava na base voltou pelo widget: o telefone foi
+      //    gravado no visitante anônimo, o nó Disparar mirou nele, e a pessoa terminou com
+      //    DUAS fichas e DOIS fios de WhatsApp abertos. O 9º dígito é um caso particular
+      //    disto — lá nem a grafia batia; aqui batia exatamente e mesmo assim duplicou.
+      outroContato = await donoDoNumero(tenantId, contact.id, normalized)
+    }
   }
   if (parsed.email && (!guard || !contact.email?.trim()) && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parsed.email))
     updates.email = parsed.email.slice(0, 254)
@@ -76,7 +100,7 @@ export async function applyContactCapture(
     const iso = normalizeBirthdate(parsed.birthdate)
     if (iso) updates.birth_date = iso
   }
-  if (Object.keys(updates).length === 0) return {}
+  if (Object.keys(updates).length === 0) return { campos: {}, outroContato }
 
   const { error } = await supabaseAdmin
     .from("chat_contacts")
@@ -84,12 +108,41 @@ export async function applyContactCapture(
     .eq("id", contact.id)
     .eq("tenant_id", tenantId)
   if (error) throw new Error(`applyContactCapture: ${error.message}`)
-  return updates
+  return { campos: updates, outroContato }
+}
+
+/**
+ * De quem é este número? Devolve o id de OUTRA ficha do tenant que já tem esta linha —
+ * ou `null`.
+ *
+ * 🔴 BUSCA PELO JID, NÃO PELO TELEFONE, e a diferença é tudo. `whatsapp_id` tem chave
+ *    ÚNICA: o JID construído a partir do que a pessoa digitou pode **não achar ninguém**
+ *    (é palpite incompleto — o caso do 9º dígito), mas ele nunca aponta pra pessoa
+ *    ERRADA. Por isso LER com o palpite é legítimo, enquanto GRAVAR o palpite não é.
+ *    `phone_number` não serve: não tem unique, dois contatos podem repetir, e casar por
+ *    ele seria heurística.
+ *
+ * ⚠️ Só CONSULTA. Não funde, não apaga, não escreve — quem decide o que fazer com a
+ *    resposta é o fluxo. Fusão automática dentro de turno em execução foi descartada:
+ *    é `delete` irreversível, e número reciclado, telefone de recepção e "manda pro
+ *    WhatsApp do meu marido" emitem exatamente o mesmo sinal do caso legítimo.
+ */
+async function donoDoNumero(tenantId: string, contatoAtual: string, telefone: string): Promise<string | null> {
+  try {
+    const jid = phoneToJid(telefone)
+    const { data } = await supabaseAdmin.from("chat_contacts")
+      .select("id").eq("tenant_id", tenantId).eq("whatsapp_id", jid).maybeSingle()
+    const achado = (data as { id: string } | null)?.id ?? null
+    return achado && achado !== contatoAtual ? achado : null
+  } catch (e) {
+    console.error("[donoDoNumero]", (e as Error)?.message ?? e)
+    return null            // consulta é enriquecimento: falhar aqui nunca derruba a captura
+  }
 }
 
 /** Captura UM campo do nó Coletar (mapTo) no cadastro — wrapper de 1 campo do
  *  applyContactCapture. O runtime chama e trata como best-effort. */
-export function captureContactField(ctx: ExecCtx, field: ContactMapField, value: string): Promise<Record<string, string>> {
+export function captureContactField(ctx: ExecCtx, field: ContactMapField, value: string): Promise<CapturaResultado> {
   const args: UpdateArgs = { name: null, phone: null, email: null, document: null, company: null, birthdate: null }
   args[field] = value
   // trusted: o autor do fluxo mapeou explicitamente ESTE campo no nó Coletar → seta.
@@ -136,11 +189,19 @@ export const updateContactCapability = defineCapability<UpdateArgs>({
     }
   },
   execute: async (ctx, parsed) => {
-    let updates: Record<string, string>
+    let res: CapturaResultado
     try {
-      updates = await applyContactCapture(ctx, parsed)
+      res = await applyContactCapture(ctx, parsed)
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : "update_contact falhou" }
+    }
+    const updates = res.campos
+    // ⚠️ A IA também pode capturar um telefone que já é de outra ficha — mesmo furo do nó
+    //    Coletar. Aqui só REGISTRA: trocar o contato no meio de um turno de IA exige as
+    //    variáveis do fluxo, que esta camada não enxerga. Follow-up honesto, não silêncio.
+    if (res.outroContato) {
+      console.log(JSON.stringify({ event: "telefone_de_outra_ficha", origem: "tool_ia",
+        tenantId: ctx.tenantId, contatoAtual: ctx.contact.id, outroContato: res.outroContato }))
     }
     if (Object.keys(updates).length === 0) return { ok: true, toolMessage: "Nada novo a salvar." }
 

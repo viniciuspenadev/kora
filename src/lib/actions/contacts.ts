@@ -146,6 +146,12 @@ export interface MergeSide {
   id: string; name: string; pic: string | null; lifecycle: string | null
   channels: string[]; phone: string | null; handle: string | null
   conversations: number; deals: number; tags: number
+  /** Disse "não me mande mensagem" (marketing OU utilidade). A fusão PRESERVA o não —
+   *  quem confirma precisa ver isso antes, senão a campanha para de incluir a pessoa
+   *  depois e o único rastro é um `skipped/no_consent` na lista de destinatários. */
+  optOut: boolean
+  /** Está bloqueado. Também é preservado pela fusão (o mais restritivo vence). */
+  blocked: boolean
 }
 export async function getMergeComparison(
   aId: string, bId: string,
@@ -155,7 +161,7 @@ export async function getMergeComparison(
   const t = session.user.tenantId
 
   const { data: rows } = await supabaseAdmin.from("chat_contacts")
-    .select("id, custom_name, push_name, phone_number, profile_pic_url, lifecycle_stage, ig_username, wp_username")
+    .select("id, custom_name, push_name, phone_number, profile_pic_url, lifecycle_stage, ig_username, wp_username, marketing_opt_in, consent_opt_in, is_blocked")
     .eq("tenant_id", t).in("id", [aId, bId])
   if (!rows || rows.length !== 2) return null
 
@@ -184,6 +190,8 @@ export async function getMergeComparison(
       phone: (r.phone_number as string | null) ?? null,
       handle: ig ? `@${ig}` : wp ? `@${wp}` : null,
       conversations: conv.count ?? 0, deals: deals.count ?? 0, tags: tags.count ?? 0,
+      optOut:  r.marketing_opt_in === false || r.consent_opt_in === false,
+      blocked: r.is_blocked === true,
     }
   }
 

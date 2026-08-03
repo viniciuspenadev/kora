@@ -3,6 +3,7 @@ import type {
   GroupMetadata, MediaDownload, ContentType,
   InteractivePayload, LocationPayload, ContactCard, ReplyContext,
 } from "./types"
+import { canonicalWhatsAppJid } from "@/lib/phone-utils"
 import { parseVars } from "@/lib/whatsapp/template-vars"
 
 interface MetaCloudConfig {
@@ -129,8 +130,23 @@ export class MetaCloudProvider implements WhatsAppProvider {
     return json as T
   }
 
+  /**
+   * Porta única de envio do canal oficial.
+   *
+   * 🔴 A Cloud API responde `{ contacts: [{ input, wa_id }], messages: [{ id }] }`. O
+   *    `wa_id` é a identidade CANÔNICA de quem recebeu — de graça, sem chamada extra, em
+   *    todo envio. O tipo aqui declarava só `messages` e o resto ia pro lixo.
+   *
+   * ⚠️ O oficial tem o MESMO problema do 9º dígito do Baileys. Confirmado com dado real:
+   *    há contato em produção gravado como `556292455628` (DDD 62, sem o 9) que veio por
+   *    mensagem recebida — ou seja, a Meta também entrega a forma curta. Só não duplicou
+   *    ainda porque ninguém disparou o nó de abordagem pra um número ambíguo por aqui.
+   *
+   * ⚠️ Quando o envio é por BSUID (`recipientFields` usa `recipient`, não `to`), o
+   *    `contacts[]` pode não vir — por isso `recipientJid` é opcional e nunca inferido.
+   */
   private async sendMessage(payload: Record<string, unknown>): Promise<SendResult> {
-    const json = await this.graph<{ messages?: Array<{ id: string }> }>(
+    const json = await this.graph<{ messages?: Array<{ id: string }>; contacts?: Array<{ input?: string; wa_id?: string }> }>(
       `/${this.config.meta_phone_number_id}/messages`,
       {
         method: "POST",
@@ -138,7 +154,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
         body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", ...payload }),
       },
     )
-    return { messageId: json.messages?.[0]?.id ?? "" }
+    return { messageId: json.messages?.[0]?.id ?? "", recipientJid: canonicalWhatsAppJid(json.contacts?.[0]?.wa_id) }
   }
 
   /**

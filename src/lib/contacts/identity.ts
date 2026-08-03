@@ -207,3 +207,55 @@ export async function resolveOrCreateContact(
   await syncContactIdentities(tenantId, data.id as string, { whatsapp: jid, bsuid, email, instagram }, primaryExternalId, channel)
   return { id: data.id as string, created: true }
 }
+
+/**
+ * Adota a identidade CANÔNICA que o provedor devolveu no envio.
+ *
+ * 🔴 A REGRA: telefone é DESTINO, identidade é o que a REDE responde. Um número digitado
+ *    entrega mensagem (o WhatsApp resolve sozinho), mas não diz quem a pessoa É —
+ *    `5543984994692` e `554384994692` são a mesma conta, e só a rede sabe qual grafia
+ *    aquela linha usa. Guardar o palpite partiu um lead em dois contatos e duas conversas
+ *    em produção (02/08). A resposta certa vinha junto do envio e era descartada.
+ *
+ * 🔴 POR QUE VALE PRA TODO ENVIO, não só pro nó de abordagem: contato criado à mão, por
+ *    importação de planilha ou pelo formulário do site também nasce com identidade
+ *    palpitada — lá não existe resposta de rede pra consultar no momento da criação. A
+ *    primeira mensagem que sai para ele é a primeira chance de trocar o palpite pela
+ *    verdade. Sem isto, o palpite fica e a duplicata acontece quando a pessoa responder.
+ *
+ * ⚠️ NUNCA derruba o envio. A mensagem já saiu quando isto roda; colisão de chave única
+ *    (23505) significa que o duplicado JÁ existe e é assunto da reconciliação, não motivo
+ *    pra falhar uma entrega que deu certo.
+ *
+ * @returns `true` se a identidade mudou no banco.
+ */
+export async function adoptRecipientJid(
+  tenantId: string, contactId: string, recipientJid: string | null | undefined,
+): Promise<boolean> {
+  if (!recipientJid) return false                       // rede não informou → não inventa
+  try {
+    // ⚠️ Lê antes de escrever, DE PROPÓSITO. A versão "esperta" era um UPDATE com
+    //    `whatsapp_id != <novo>` pra deixar o banco decidir — e ela silenciava justamente
+    //    o caso que mais importa: em SQL, `coluna <> 'X'` é NULO quando a coluna é nula,
+    //    então contato SEM identidade (o que mais precisa ganhar uma) nunca seria tocado.
+    //    A leitura extra é por chave primária e custa quase nada.
+    const { data } = await supabaseAdmin.from("chat_contacts")
+      .select("whatsapp_id").eq("id", contactId).eq("tenant_id", tenantId).maybeSingle()
+    const atual = (data as { whatsapp_id: string | null } | null)?.whatsapp_id ?? null
+    if (atual === recipientJid) return false            // já está certa — nada a fazer
+
+    const { error } = await supabaseAdmin.from("chat_contacts")
+      .update({ whatsapp_id: recipientJid, updated_at: new Date().toISOString() })
+      .eq("id", contactId).eq("tenant_id", tenantId)
+    if (error) {
+      console.error("[adoptRecipientJid] não adotada:", error.code, error.message)
+      return false
+    }
+    await syncContactIdentities(tenantId, contactId, { whatsapp: recipientJid }, recipientJid, "whatsapp")
+    console.log(JSON.stringify({ event: "identity_adopted", tenantId, contactId, de: atual, para: recipientJid }))
+    return true
+  } catch (e) {
+    console.error("[adoptRecipientJid]", (e as Error)?.message ?? e)
+    return false
+  }
+}

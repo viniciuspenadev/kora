@@ -1,3 +1,4 @@
+import { canonicalWhatsAppJid } from "@/lib/phone-utils"
 import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
   GroupMetadata, MediaDownload, ContentType,
@@ -109,14 +110,14 @@ export class EvolutionProvider implements WhatsAppProvider {
 
   async sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
-    const r = await this.req<{ key?: { id?: string } }>(
+    const r = await this.req<EvoSendResponse>(
       `/message/sendText/${this.instanceName}`,
       {
         method: "POST",
         body: JSON.stringify({ number, text, ...evoQuoted(replyTo) }),
       },
     )
-    return { messageId: r.key?.id ?? "" }
+    return evoResult(r)
   }
 
   async sendMedia(
@@ -128,7 +129,7 @@ export class EvolutionProvider implements WhatsAppProvider {
     replyTo?: ReplyContext,
   ): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
-    const r = await this.req<{ key?: { id?: string } }>(
+    const r = await this.req<EvoSendResponse>(
       `/message/sendMedia/${this.instanceName}`,
       {
         method: "POST",
@@ -142,13 +143,13 @@ export class EvolutionProvider implements WhatsAppProvider {
         }),
       },
     )
-    return { messageId: r.key?.id ?? "" }
+    return evoResult(r)
   }
 
   /** Reage a uma mensagem. Baileys exige a key completa (remoteJid+fromMe+id). */
   async sendReaction(phone: string, targetMessageId: string, emoji: string, fromMe?: boolean): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
-    const r = await this.req<{ key?: { id?: string } }>(
+    const r = await this.req<EvoSendResponse>(
       `/message/sendReaction/${this.instanceName}`,
       {
         method: "POST",
@@ -158,12 +159,12 @@ export class EvolutionProvider implements WhatsAppProvider {
         }),
       },
     )
-    return { messageId: r.key?.id ?? "" }
+    return evoResult(r)
   }
 
   async sendLocation(phone: string, loc: LocationPayload): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
-    const r = await this.req<{ key?: { id?: string } }>(
+    const r = await this.req<EvoSendResponse>(
       `/message/sendLocation/${this.instanceName}`,
       {
         method: "POST",
@@ -176,24 +177,24 @@ export class EvolutionProvider implements WhatsAppProvider {
         }),
       },
     )
-    return { messageId: r.key?.id ?? "" }
+    return evoResult(r)
   }
 
   async sendSticker(phone: string, stickerUrl: string): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
-    const r = await this.req<{ key?: { id?: string } }>(
+    const r = await this.req<EvoSendResponse>(
       `/message/sendSticker/${this.instanceName}`,
       {
         method: "POST",
         body: JSON.stringify({ number, sticker: stickerUrl }),
       },
     )
-    return { messageId: r.key?.id ?? "" }
+    return evoResult(r)
   }
 
   async sendContacts(phone: string, contacts: ContactCard[]): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
-    const r = await this.req<{ key?: { id?: string } }>(
+    const r = await this.req<EvoSendResponse>(
       `/message/sendContact/${this.instanceName}`,
       {
         method: "POST",
@@ -208,7 +209,7 @@ export class EvolutionProvider implements WhatsAppProvider {
         }),
       },
     )
-    return { messageId: r.key?.id ?? "" }
+    return evoResult(r)
   }
 
   /**
@@ -217,14 +218,14 @@ export class EvolutionProvider implements WhatsAppProvider {
    */
   async sendVoiceNote(phone: string, audioUrl: string): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
-    const r = await this.req<{ key?: { id?: string } }>(
+    const r = await this.req<EvoSendResponse>(
       `/message/sendWhatsAppAudio/${this.instanceName}`,
       {
         method: "POST",
         body: JSON.stringify({ number, audio: audioUrl }),
       },
     )
-    return { messageId: r.key?.id ?? "" }
+    return evoResult(r)
   }
 
   async sendPresence(phone: string, state: "typing" | "paused"): Promise<void> {
@@ -285,4 +286,22 @@ export class EvolutionProvider implements WhatsAppProvider {
       return null
     }
   }
+}
+
+/** Resposta de envio do Evolution: o `key` traz o id da mensagem E o destinatário. */
+type EvoSendResponse = { key?: { id?: string; remoteJid?: string } }
+
+/**
+ * Converte a resposta do Evolution no nosso `SendResult`.
+ *
+ * 🔴 O `key.remoteJid` é o DESTINATÁRIO QUE O WHATSAPP RESOLVEU, e é a peça que estava
+ *    sendo jogada fora: o tipo da resposta declarava só `{ key: { id } }`. Verificado no
+ *    servidor do cliente em 02/08 — mandamos para `5543984994692`, o Baileys gravou a
+ *    mensagem sob `554384994692@s.whatsapp.net`. A verdade chegava junto do envio.
+ *
+ * ⚠️ Passa por `canonicalWhatsAppJid`: versões novas do Baileys podem devolver `@lid`, e
+ *    gravar isso como identidade de WhatsApp criaria uma classe NOVA de duplicado.
+ */
+function evoResult(r: EvoSendResponse): SendResult {
+  return { messageId: r.key?.id ?? "", recipientJid: canonicalWhatsAppJid(r.key?.remoteJid) }
 }

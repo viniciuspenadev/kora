@@ -16,6 +16,39 @@ export function phoneToJid(phone: string): string {
 }
 
 /**
+ * Identidade de WhatsApp 1:1 devolvida pelo PROVEDOR — ou `null`.
+ *
+ * 🔴 POR QUE ISTO EXISTE. Telefone é DESTINO; identidade é o que a rede responde. Mandar
+ *    mensagem pra um número digitado funciona (o WhatsApp resolve sozinho), mas guardar o
+ *    número digitado COMO identidade é palpite: `5543984994692` e `554384994692` são a
+ *    mesma conta pro WhatsApp, e a linha só sabe qual das duas ela é quando a rede diz.
+ *    Foi assim que um lead virou dois contatos e duas conversas em produção (02/08).
+ *
+ * ⚠️ RECUSA `@lid` E `@g.us` de propósito:
+ *    • `@lid` é o identificador NOVO da Meta e é opaco — não tem relação aritmética com
+ *      telefone nenhum. Gravá-lo em `whatsapp_id` (que o inbound 1:1 compara contra
+ *      `@s.whatsapp.net`) trocaria um tipo de duplicado por outro. Ele é identidade
+ *      legítima, só não é DESTE eixo — quando for hora, ganha canal próprio.
+ *    • `@g.us` é grupo, e o JID de grupo antigo **contém um telefone real dentro**
+ *      (o de quem criou), então tratá-lo como pessoa casa com o contato errado.
+ *
+ * Aceita tanto o JID completo do Baileys (`key.remoteJid`) quanto os dígitos crus que a
+ * Cloud API devolve (`contacts[0].wa_id`).
+ */
+export function canonicalWhatsAppJid(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const v = raw.trim()
+  if (!v) return null
+  if (v.includes("@")) {
+    if (!v.endsWith("@s.whatsapp.net")) return null      // @lid, @g.us, @broadcast…
+    const digits = v.split("@")[0].replace(/\D/g, "")
+    return digits.length >= 8 ? `${digits}@s.whatsapp.net` : null
+  }
+  const digits = v.replace(/\D/g, "")                    // wa_id da Cloud API vem cru
+  return digits.length >= 8 ? `${digits}@s.whatsapp.net` : null
+}
+
+/**
  * Normaliza um telefone digitado livremente pro formato canônico E.164 (dígitos
  * com DDI, sem '+') — o formato do JID do WhatsApp. World-ready via libphonenumber:
  *

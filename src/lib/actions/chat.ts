@@ -15,7 +15,7 @@ import { assertSafeUrl } from "@/lib/ai-v2/http-guard"
 import { rateLimit } from "@/lib/rate-limit"
 import { requireLimit } from "@/lib/limits"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
-import { resolveOrCreateContact } from "@/lib/contacts/identity"
+import { resolveOrCreateContact, adoptRecipientJid } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 import { createNotification } from "@/lib/notifications"
 import { logConversationEvent } from "@/lib/atendimento/events"
@@ -455,6 +455,11 @@ export async function sendMessage(
           .from("chat_messages")
           .update({ whatsapp_msg_id: result.messageId || null, status: "sent" })
           .eq("id", msg.id)
+
+        // A resposta do provedor diz QUEM recebeu. Se o contato tinha identidade
+        // palpitada (criado à mão, por importação ou pelo formulário do site), esta é a
+        // hora de trocar pelo que a rede confirmou — antes que ele responda e duplique.
+        await adoptRecipientJid(tenantId, (conv as { contact_id: string }).contact_id, result.recipientJid)
 
         // Sinal de "envio ativo" — atualiza health da instance
         await supabaseAdmin

@@ -13,6 +13,19 @@ export type ProviderName = "baileys" | "meta_cloud"
 export interface SendResult {
   /** ID da mensagem retornado pelo provider (whatsapp_msg_id). String vazia se não disponível. */
   messageId: string
+  /**
+   * Identidade CANÔNICA de quem recebeu — o que a REDE respondeu, não o que mandamos.
+   * Baileys devolve em `key.remoteJid`; a Cloud API em `contacts[0].wa_id`.
+   *
+   * 🔴 Este campo é o conserto do bug que criou contato e conversa duplicados em produção
+   *    (02/08): `5543984994692` foi digitado, o WhatsApp entregou para `554384994692` e
+   *    nós guardamos o que digitamos. A resposta certa chegava junto e era descartada,
+   *    porque o tipo aqui só declarava `messageId`.
+   *
+   * `null` = o provedor não informou. **Nunca inferir** — sem resposta da rede, o contato
+   * fica só com telefone (atributo) e ganha identidade quando a pessoa responder.
+   */
+  recipientJid?: string | null
 }
 
 export interface QrCodeResult {
