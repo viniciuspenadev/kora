@@ -7,9 +7,78 @@ import { randomBytes } from "crypto"
 import { getProvider } from "@/lib/providers"
 import { sendEmail, buildInviteEmail } from "@/lib/email/send"
 import { checkLimit } from "@/lib/limits"
+import { logAudit } from "@/lib/audit"
 import { normInventoryLevel, normAccessLevel, type InventoryAccessLevel, type AccessLevel } from "@/lib/visibility"
 
 export type TenantRole = "owner" | "admin" | "agent"
+
+/**
+ * 📋 Trilha das ações de equipe (2026-08-03).
+ *
+ * 🔴 POR QUE ISTO EXISTE: até hoje este arquivo tinha **zero** `logAudit`. Desativar um
+ *    colega, trocar papel, mudar nível de acesso a Contatos/Negócios, alterar quais números
+ *    a pessoa enxerga — nada entrava na trilha. Num tenant com dois ou três admins, "quem
+ *    me tirou o acesso?" não tinha resposta. E é o nível onde as coisas acontecem no dia a
+ *    dia: a cascata de tenant (god mode) já era auditada; esta, que é mais usada, não.
+ *
+ * Best-effort por construção — `logAudit` engole o próprio erro e nunca lança, então
+ * registrar não pode derrubar a ação que já aconteceu.
+ */
+/**
+ * 🔒 REGRA ÚNICA de "quem pode mexer em QUEM" — `admin` só gerencia `agent`.
+ *
+ * 🔴 POR QUE VIROU HELPER (QA 2026-08-03). O H-06 fechou `updateMemberRole`, e depois eu
+ *    fechei `setMemberActive` — duas portas, duas cópias. O QA percorreu as 30 exports e
+ *    achou **onze** outras que um admin usa contra outro admin/owner. A mais grave:
+ *    `setMemberCompanionAccess`, porque `companion_access` é o ÚNICO campo de
+ *    `tenant_users` que o servidor checa **sem isenção de papel** (`ext-auth.ts:346`) —
+ *    um admin derrubava a extensão do OWNER, a cada request, com um POST de server action.
+ *    As outras dez eram pílula envenenada: `visibility.ts` anula tudo pra quem é admin,
+ *    então zerar `contacts_access` de um admin não faz nada HOJE — mas o dano aparece no
+ *    dia em que essa pessoa for rebaixada a agent, semanas depois, sem ninguém ligar os
+ *    fatos. Regra única em vez de treze cópias, que é como isso vazou em primeiro lugar.
+ *
+ * ⚠️ Fail-CLOSED em erro de consulta: sem confirmar o papel do alvo, recusa. O padrão
+ *    anterior (`data` sem checar `error`) deixava `target = null` e todas as guardas viravam
+ *    no-op — o mesmo defeito de fundo que a §3 do access-revocation-design descreve.
+ */
+async function assertCanManageTarget(
+  session: Awaited<ReturnType<typeof requireTenantAdmin>>,
+  targetUserId: string,
+): Promise<{ error?: string; role?: TenantRole; active?: boolean }> {
+  const { data, error } = await supabaseAdmin
+    .from("tenant_users")
+    .select("role, active")
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", targetUserId)
+    .maybeSingle()
+
+  if (error) return { error: "Não foi possível validar o membro. Tente de novo." }
+  if (!data) return { error: "Membro não encontrado" }
+
+  const target = data as { role: TenantRole; active: boolean }
+  if (session.user.role !== "owner" && target.role !== "agent") {
+    return { error: "Apenas um owner pode gerenciar admins e owners." }
+  }
+  return { role: target.role, active: target.active }
+}
+
+async function auditTeam(
+  session: Awaited<ReturnType<typeof requireTenantAdmin>>,
+  action: string,
+  targetUserId: string,
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  await logAudit({
+    tenantId:   session.user.tenantId,
+    actorId:    session.user.id,
+    actorEmail: session.user.email ?? null,
+    action:     `team.${action}`,
+    targetType: "tenant_user",
+    targetId:   targetUserId,
+    metadata,
+  })
+}
 
 export interface TeamMember {
   user_id:       string
@@ -406,12 +475,15 @@ export async function updateMemberRole(userId: string, role: TenantRole): Promis
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "role.change", userId, { from: target.role, to: role })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
 
 export async function updateMemberDepartment(userId: string, departmentId: string | null): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   const tenantId = session.user.tenantId
 
   if (departmentId) {
@@ -432,6 +504,7 @@ export async function updateMemberDepartment(userId: string, departmentId: strin
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "department.set", userId, { department_id: departmentId })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -439,6 +512,8 @@ export async function updateMemberDepartment(userId: string, departmentId: strin
 /** Unidade de negócio do vendedor (etiqueta de venda). null = sem unidade. Anti-IDOR. */
 export async function setMemberUnit(userId: string, unitId: string | null): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   const tenantId = session.user.tenantId
 
   if (unitId) {
@@ -459,12 +534,15 @@ export async function setMemberUnit(userId: string, unitId: string | null): Prom
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "unit.set", userId, { unit_id: unitId })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
 
 export async function toggleMemberViewAll(userId: string, viewAll: boolean): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
 
   const { error } = await supabaseAdmin
     .from("tenant_users")
@@ -474,6 +552,7 @@ export async function toggleMemberViewAll(userId: string, viewAll: boolean): Pro
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "view_all.set", userId, { view_all: viewAll })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -485,6 +564,8 @@ export async function toggleMemberViewAll(userId: string, viewAll: boolean): Pro
  */
 export async function toggleMemberSeePool(userId: string, seePool: boolean): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
 
   const { error } = await supabaseAdmin
     .from("tenant_users")
@@ -494,6 +575,7 @@ export async function toggleMemberSeePool(userId: string, seePool: boolean): Pro
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "see_pool.set", userId, { see_pool: seePool })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -504,10 +586,10 @@ export async function toggleMemberSeePool(userId: string, seePool: boolean): Pro
  */
 export async function updateMemberProfile(userId: string, input: { fullName?: string }): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
-  const { data: member } = await supabaseAdmin
-    .from("tenant_users").select("user_id")
-    .eq("tenant_id", session.user.tenantId).eq("user_id", userId).maybeSingle()
-  if (!member) return { error: "Membro não encontrado neste tenant" }
+  // Escreve em `profiles` (nome exibido), não em `tenant_users` — mas ainda é o registro de
+  // OUTRA pessoa. Mesma regra: admin só edita agent. Baixa severidade, guarda idêntica.
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
 
   const patch: Record<string, unknown> = {}
   if (input.fullName !== undefined) {
@@ -529,6 +611,8 @@ export async function updateMemberProfile(userId: string, input: { fullName?: st
  */
 export async function setMemberInventoryAccess(userId: string, level: InventoryAccessLevel): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
 
   const { error } = await supabaseAdmin
@@ -539,6 +623,7 @@ export async function setMemberInventoryAccess(userId: string, level: InventoryA
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "access.inventory", userId, { level })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -550,12 +635,15 @@ export async function setMemberInventoryAccess(userId: string, level: InventoryA
  */
 export async function setMemberCompanionAccess(userId: string, enabled: boolean): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   const { error } = await supabaseAdmin
     .from("tenant_users")
     .update({ companion_access: enabled === true })
     .eq("tenant_id", session.user.tenantId)
     .eq("user_id", userId)
   if (error) return { error: error.message }
+  await auditTeam(session, "access.companion", userId, { enabled })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -563,6 +651,8 @@ export async function setMemberCompanionAccess(userId: string, enabled: boolean)
 /** Nível de acesso ao módulo Catálogo (Ver/Gerenciar). Owner/admin = manage via role. */
 export async function setMemberCatalogAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
   const { error } = await supabaseAdmin
     .from("tenant_users")
@@ -570,6 +660,7 @@ export async function setMemberCatalogAccess(userId: string, level: AccessLevel)
     .eq("tenant_id", session.user.tenantId)
     .eq("user_id", userId)
   if (error) return { error: error.message }
+  await auditTeam(session, "access.catalog", userId, { level })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -580,6 +671,8 @@ export async function setMemberCatalogAccess(userId: string, level: AccessLevel)
  */
 export async function setMemberDealsAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
 
   const { error } = await supabaseAdmin
@@ -590,6 +683,7 @@ export async function setMemberDealsAccess(userId: string, level: AccessLevel): 
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "access.deals", userId, { level })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -600,6 +694,8 @@ export async function setMemberDealsAccess(userId: string, level: AccessLevel): 
  */
 export async function setMemberContactsAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
 
   const { error } = await supabaseAdmin
@@ -610,6 +706,7 @@ export async function setMemberContactsAccess(userId: string, level: AccessLevel
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "access.contacts", userId, { level })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -620,6 +717,8 @@ export async function setMemberContactsAccess(userId: string, level: AccessLevel
  */
 export async function setMemberMarketingAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
 
   const { error } = await supabaseAdmin
@@ -630,6 +729,7 @@ export async function setMemberMarketingAccess(userId: string, level: AccessLeve
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "access.marketing", userId, { level })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -641,6 +741,8 @@ export async function setMemberMarketingAccess(userId: string, level: AccessLeve
  */
 export async function updateMemberInstances(userId: string, instanceIds: string[]): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   const tenantId = session.user.tenantId
 
   let valid: string[] = []
@@ -663,6 +765,7 @@ export async function updateMemberInstances(userId: string, instanceIds: string[
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "instances.set", userId, { count: instanceIds.length })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -674,6 +777,8 @@ export async function updateMemberInstances(userId: string, instanceIds: string[
  */
 export async function setMemberSupervises(userId: string, departmentIds: string[]): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
   const tenantId = session.user.tenantId
 
   let valid: string[] = []
@@ -696,6 +801,7 @@ export async function setMemberSupervises(userId: string, departmentIds: string[
 
   if (error) return { error: error.message }
 
+  await auditTeam(session, "supervises.set", userId, { count: departmentIds.length })
   revalidatePath("/configuracoes/equipe")
   return {}
 }
@@ -726,8 +832,27 @@ export async function setMemberActive(userId: string, active: boolean): Promise<
     .eq("user_id", userId)
     .single()
 
-  if (target?.role === "owner") return { error: "Não é possível desativar o owner" }
-  if (target?.user_id === session.user.id) return { error: "Você não pode desativar a si mesmo" }
+  // ⚠️ FAIL-CLOSED (QA 2026-08-03): sem confirmar o alvo, recusa. Antes o `error` do select
+  //    era descartado e, num blip, `target` virava `null` — o que fazia **todas** as guardas
+  //    abaixo virarem no-op de uma vez. É o mesmo defeito de fundo da §3 do design doc.
+  if (!target) return { error: "Membro não encontrado" }
+
+  // 🔒 H-06 POR OUTRA PORTA (achado 2026-08-03). O `updateMemberRole` exige OWNER pra
+  //    qualquer mexida em papel de admin/owner — mas ESTA ação só exigia `requireTenantAdmin`.
+  //    O admin A não conseguia REBAIXAR o admin B, mas conseguia DESATIVÁ-LO, que é pior.
+  //    A mesma escalada horizontal, por uma porta que ninguém olhou.
+  // ⚠️ Só na DESATIVAÇÃO — reativar devolve o que já era da pessoa, não é escalada.
+  if (!active && target.role === "admin" && session.user.role !== "owner") {
+    return { error: "Apenas um owner pode desativar um admin." }
+  }
+
+  // ⚠️ `!active &&` AQUI TAMBÉM (QA 2026-08-03): a guarda de owner era incondicional, e isso
+  //    criava um beco sem saída. Um owner INATIVO (chega-se lá promovendo alguém já
+  //    desativado — `updateMemberRole` não olha `active`) não podia ser reativado por esta
+  //    linha, nem rebaixado, porque o guarda anti-zero-owner do `updateMemberRole` conta só
+  //    owners ATIVOS e dispara com `count <= 1`. Ficava preso, resgatável só por SQL.
+  if (!active && target.role === "owner") return { error: "Não é possível desativar o owner" }
+  if (target.user_id === session.user.id) return { error: "Você não pode desativar a si mesmo" }
 
   const { error } = await supabaseAdmin
     .from("tenant_users")
@@ -745,10 +870,12 @@ export async function setMemberActive(userId: string, active: boolean): Promise<
     .eq("tenant_id", tenantId)
     .eq("assigned_agent_id", userId)
 
+  let revoked: Record<string, unknown> | null = null
+
   // Desativado não recebe mais push: limpa as subscriptions DELE NESTE tenant
   // (escopado — não afeta o mesmo usuário em outros tenants).
   if (!active) {
-    await supabaseAdmin.from("push_subscriptions").delete().eq("tenant_id", tenantId).eq("user_id", userId)
+    const push = await supabaseAdmin.from("push_subscriptions").delete().eq("tenant_id", tenantId).eq("user_id", userId).select("id")
 
     // Cascata do device trust (§7): desativar membro revoga confiança + sessões
     // + tokens de extensão. A sessão do navegador já cairia em ~5min pelo
@@ -756,16 +883,91 @@ export async function setMemberActive(userId: string, active: boolean): Promise<
     // deixaria o dispositivo pular o desafio. Escopado ao tenant (sessões e
     // tokens têm tenant_id; a confiança é por par device+user, revogamos toda —
     // aceitável: a pessoa perdeu acesso a este tenant e re-prova no próximo login).
+    // 📊 CONTAGEM NA TRILHA (QA 2026-08-03): antes estes três passos descartavam o retorno,
+    //    então "a cascata rodou?" não tinha resposta seis meses depois. É exatamente o que a
+    //    §8 do access-revocation-design provou valer no nível de TENANT — e faltava aqui,
+    //    que é o nível usado no dia a dia. Mesmo formato, de propósito.
     const nowIso = new Date().toISOString()
-    await Promise.all([
-      supabaseAdmin.from("auth_device_trust").update({ revoked_at: nowIso }).eq("user_id", userId).is("revoked_at", null),
-      supabaseAdmin.from("user_sessions").delete().eq("tenant_id", tenantId).eq("user_id", userId),
-      supabaseAdmin.from("device_tokens").update({ revoked_at: nowIso }).eq("tenant_id", tenantId).eq("user_id", userId).is("revoked_at", null),
+    const [trust, sess, toks] = await Promise.all([
+      supabaseAdmin.from("auth_device_trust").update({ revoked_at: nowIso }).eq("user_id", userId).is("revoked_at", null).select("id"),
+      supabaseAdmin.from("user_sessions").delete().eq("tenant_id", tenantId).eq("user_id", userId).select("id"),
+      supabaseAdmin.from("device_tokens").update({ revoked_at: nowIso }).eq("tenant_id", tenantId).eq("user_id", userId).is("revoked_at", null).select("id"),
     ])
+    revoked = {
+      sessions:           sess.data?.length ?? 0,
+      extension_tokens:   toks.data?.length ?? 0,
+      push_subscriptions: push.data?.length ?? 0,
+      device_trust:       trust.data?.length ?? 0,
+      errors: [push.error, trust.error, sess.error, toks.error].filter(Boolean).map((e) => e!.message).join(" · ") || null,
+    }
+    if (revoked.errors) console.error("[team] cascata de desativação incompleta:", userId, revoked.errors)
+
+    // 📧 E O E-MAIL — o único canal que continua chegando SEM login (achado 2026-08-03).
+    //    `daily_report_emails` é lista de texto solto: se o endereço da pessoa foi digitado
+    //    lá, desativá-la NÃO a tirava, e ela seguia recebendo o relatório do negócio
+    //    (métricas, volume de atendimento) sem acesso ao sistema e sem ninguém perceber.
+    //    Os outros destinatários (fallback de owners+admins e alerta de saúde) já filtravam
+    //    `active=true`; a lista manual fazia curto-circuito antes de qualquer checagem.
+    // ⚠️ Remove SÓ o endereço desta pessoa. A lista existe justamente pra aceitar quem NÃO
+    //    é membro (contador, sócio que não usa o sistema) — esvaziá-la seria outro bug.
+    await removeFromDailyReportRecipients(tenantId, userId)
   }
+
+  await logAudit({
+    tenantId,
+    actorId:    session.user.id,
+    actorEmail: session.user.email ?? null,
+    action:     active ? "team.member.activate" : "team.member.deactivate",
+    targetType: "tenant_user",
+    targetId:   userId,
+    metadata:   { role: target.role, revoked },
+  })
 
   revalidatePath("/configuracoes/equipe")
   return {}
+}
+
+/**
+ * Tira o e-mail de UM usuário da lista manual de destinatários do relatório diário.
+ * Best-effort: falhar aqui não pode derrubar a desativação, que é a parte que importa —
+ * mas grita no log, porque o resultado silencioso seria um ex-membro recebendo relatório.
+ */
+async function removeFromDailyReportRecipients(tenantId: string, userId: string): Promise<void> {
+  try {
+    const { data: prof } = await supabaseAdmin
+      .from("profiles").select("email").eq("id", userId).maybeSingle()
+    const email = (prof as { email?: string } | null)?.email?.trim().toLowerCase()
+    if (!email) return
+
+    const { data: cfg } = await supabaseAdmin
+      .from("tenant_config").select("daily_report_emails").eq("tenant_id", tenantId).maybeSingle()
+    const list = ((cfg as { daily_report_emails?: string[] } | null)?.daily_report_emails ?? []) as string[]
+    if (list.length === 0) return
+
+    const kept = list.filter((e) => (e ?? "").trim().toLowerCase() !== email)
+    if (kept.length === list.length) return   // não estava na lista — nada a fazer
+
+    // 🔴 LISTA VAZIA NÃO É "NINGUÉM" — É O SINAL DE FALLBACK (achado do QA, 2026-08-03).
+    //    `resolveRecipients` (reports/daily.ts) faz `if (customEmails.length > 0) return
+    //    customEmails` e, com lista vazia, cai nos owners+admins ativos. Ou seja: remover a
+    //    ÚNICA entrada não silenciava o relatório — **abria** ele pra todo mundo que o
+    //    tenant tinha excluído ao configurar a lista. A correção anterior piorava o caso
+    //    que ela existia pra resolver.
+    //    Quando a pessoa removida era a única destinatária, a intenção do tenant ("só ela
+    //    recebe") deixa de ser realizável: desligamos o relatório e deixamos a
+    //    reconfiguração explícita pra quem administra. Silenciar é reversível; difundir não.
+    const patch: Record<string, unknown> = { daily_report_emails: kept }
+    if (kept.length === 0) {
+      patch.daily_report_enabled = false
+      console.warn(`[team] único destinatário do relatório diário removido — relatório DESLIGADO (tenant ${tenantId})`)
+    }
+
+    const { error } = await supabaseAdmin
+      .from("tenant_config").update(patch).eq("tenant_id", tenantId)
+    if (error) console.error("[team] falha ao remover e-mail do relatório diário:", tenantId, error.message)
+  } catch (e) {
+    console.error("[team] falha ao remover e-mail do relatório diário:", tenantId, (e as Error).message)
+  }
 }
 
 // ── Envio do convite (WhatsApp / Email) ────────────────────────

@@ -14,11 +14,80 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { revalidatePath } from "next/cache"
+import { logAudit } from "@/lib/audit"
+import { revokeTenantAccess, type RevokeTenantAccessResult } from "@/lib/auth/revoke-tenant-access"
 
 async function requirePlatformAdmin() {
   const session = await auth()
   if (!session?.user?.isPlatformAdmin) return null
   return session
+}
+
+/** Motivo curto demais não é motivo — seis meses depois ninguém entende "teste" no audit. */
+const MIN_REASON = 10
+
+/**
+ * 🚨 BOTÃO DE EMERGÊNCIA — "encerrar todos os acessos deste cliente AGORA".
+ *
+ * 🔴 POR QUE É SEPARADO DE SUSPENDER. Suspender é ato COMERCIAL: muda `lifecycle_state`,
+ *    o cliente aparece como suspenso, sai do cálculo de receita e depois precisa ser
+ *    "reativado" — o que na trilha parece inadimplência. Usar isso para responder a uma
+ *    conta INVADIDA marca um cliente em dia como problemático.
+ *    Aqui a relação comercial **não muda**: o tenant continua ativo, continua pagando.
+ *    Só as credenciais morrem. O efeito é *"todo mundo se re-autentica agora, do zero"*.
+ *
+ * 🔑 A diferença técnica em uma linha: `includeDeviceTrust: true`. A cascata da desativação
+ *    deixa a confiança de dispositivo de fora de propósito (ela é por USUÁRIO, e derrubá-la
+ *    atinge outros clientes da mesma pessoa — ver §5.1 do access-revocation-design). Num
+ *    incidente é exatamente o contrário: o segundo fator é a defesa que se quer de volta.
+ *
+ * ⚠️ LIMITE DECLARADO: isto **não troca senha**. Se o vazamento foi de senha *e* de caixa
+ *    de e-mail, o atacante volta a entrar — ele passa no segundo fator. Forçar redefinição
+ *    exige coluna nova (`must_change_password`) e portanto migration; está registrado como
+ *    a extensão natural deste botão, não como esquecimento.
+ */
+export async function emergencyRevokeTenantAccess(
+  tenantId: string,
+  reason: string,
+): Promise<{ ok: true; revoked: RevokeTenantAccessResult } | { error: string }> {
+  const session = await requirePlatformAdmin()
+  if (!session) return { error: "Acesso restrito a platform admin" }
+
+  const motivo = (reason ?? "").trim()
+  if (!tenantId) return { error: "Cliente não informado." }
+  if (motivo.length < MIN_REASON) {
+    return { error: `Descreva o motivo (mínimo ${MIN_REASON} caracteres) — ele fica na trilha.` }
+  }
+
+  const { data: tenant } = await supabaseAdmin
+    .from("tenants").select("id, name").eq("id", tenantId).maybeSingle()
+  if (!tenant) return { error: "Cliente não encontrado." }
+
+  const revoked = await revokeTenantAccess(tenantId, { includeDeviceTrust: true })
+
+  await logAudit({
+    tenantId,
+    actorId:    session.user.id,
+    actorEmail: session.user.email ?? null,
+    action:     "tenant.access.emergency_revoke",
+    targetType: "tenant",
+    targetId:   tenantId,
+    metadata:   {
+      reason: motivo.slice(0, 500),
+      name:   (tenant as { name?: string }).name ?? null,
+      revoked: {
+        sessions:           revoked.sessions,
+        extension_tokens:   revoked.extensionTokens,
+        push_subscriptions: revoked.pushSubscriptions,
+        device_trust:       revoked.deviceTrust,
+        errors:             revoked.errors.length ? revoked.errors : null,
+      },
+    },
+  })
+
+  revalidatePath(`/admin/tenants/${tenantId}`)
+  return { ok: true, revoked }
 }
 
 const DAY_MS = 24 * 60 * 60_000
