@@ -59,7 +59,11 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
   const isSelf       = member.user_id === currentUserId
   const isOwner      = member.role === "owner"
   const canEditRole  = currentUserRole === "owner" && !isOwner
-  const canEditOther = !isOwner || currentUserRole === "owner"
+  // 🔒 ESPELHA `assertCanManageTarget` DO SERVIDOR (team.ts): admin só gerencia agent.
+  //    Antes era `!isOwner || currentUserRole === "owner"` — que liberava a UI pra
+  //    admin→admin, e o servidor recusava só DEPOIS do clique de confirmação. O gate real
+  //    é o do servidor (nunca a UI); isto existe pra não oferecer um botão condenado.
+  const canEditOther = currentUserRole === "owner" || member.role === "agent"
   const name = fullName.trim() || member.email
 
   const dirty =

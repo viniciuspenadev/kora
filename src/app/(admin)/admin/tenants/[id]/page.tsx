@@ -3,6 +3,7 @@ import Link from "next/link"
 import { Users, Contact, MessagesSquare, Inbox, Crown, Smartphone, CalendarClock, Clock, History } from "lucide-react"
 import { supabaseAdmin } from "@/lib/supabase"
 import { LifecycleActions } from "@/components/admin/lifecycle-actions"
+import { EmergencyRevoke } from "@/components/admin/emergency-revoke"
 import { STATE_META, normalizeState, trialCountdownLabel } from "@/lib/lifecycle-shared"
 
 function fmtNum(n: number): string {
@@ -119,6 +120,10 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
           <LifecycleActions tenantId={id} state={lcState} size="md" />
         </div>
       </div>
+
+      {/* 🚨 Emergência — DE PROPÓSITO fora do card de ciclo de vida acima. Responde a outra
+          pergunta (conta invadida ≠ fim de contrato) e não mexe no status comercial. */}
+      <EmergencyRevoke tenantId={id} tenantName={tenant.name} />
 
       {/* Info do tenant */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden">
