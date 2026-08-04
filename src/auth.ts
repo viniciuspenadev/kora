@@ -4,7 +4,8 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { generateSupabaseToken } from "@/lib/supabase-token"
 import { getClientIp } from "@/lib/rate-limit"
 import { readDeviceKey } from "@/lib/auth/device"
-import { redeemLoginTicket, BLOCKED_LIFECYCLE } from "@/lib/auth/login-core"
+import { redeemLoginTicket } from "@/lib/auth/login-core"
+import { isTenantBlockedForAccess } from "@/lib/lifecycle-shared"
 import { randomUUID } from "crypto"
 
 /** Os papéis que a sessão promete. "" = sem papel (não passa em gate nenhum). */
@@ -68,8 +69,10 @@ async function revalidateAccess(
     // Gate de tenant: tenant inativo/pendente/suspenso = sem acesso (trial não-ativado,
     // suspensão por fim do trial, etc). Fail-OPEN em erro de query (não trava login).
     const tenant = ten.data as { active: boolean; lifecycle_state: string | null } | null
+    // 🚪 Pergunta de ACESSO — deliberadamente sem assinatura: cliente em atraso continua
+    //    entrando (degrau 3). Quem corta o gasto dele é o guarda dos webhooks/crons.
     const tenantBlocked = !ten.error && !!tenant &&
-      (tenant.active === false || BLOCKED_LIFECYCLE.has(tenant.lifecycle_state ?? ""))
+      (tenant.active === false || isTenantBlockedForAccess(tenant.lifecycle_state))
 
     if (!isPlatformAdmin && (!membershipActive || tenantBlocked)) return { status: "revoked" }
     return { status: "ok", role: membershipActive ? membership!.role : "", isPlatformAdmin }
@@ -252,13 +255,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (acc.status === "error" && token.isPlatformAdmin === true) return null
       }
 
+      // ⏱️ OS TRÊS RELÓGIOS TÊM QUE FECHAR ENTRE SI — a conta está aqui:
+      //   vida do token = 600s (supabase-token.ts) · regenera faltando <300s (aqui) ·
+      //   renovação do socket a cada 240s (REFRESH_MS em lib/realtime.ts).
+      // Logo, o token SERVIDO sempre tem entre 300s e 600s de vida, e o socket o renova aos
+      // 240s — antes de qualquer cenário de expiração. Invariante: REFRESH_MS < limiar.
+      // 🔴 A tentação é baixar o limiar pra "economizar" regeneração (ela é barata: assinar
+      //    um JWT). Com limiar de 120s, uma página recém-renderizada podia receber um token
+      //    com 2min de vida e só renovar aos 4 — tempo real morto no meio, em silêncio.
       if (!token.supabaseToken || (token.supabaseTokenExp as number) - now < 300) {
         token.supabaseToken = await generateSupabaseToken({
           userId: token.userId as string,
           tenantId: token.tenantId as string,
           role: token.role as string,
         })
-        token.supabaseTokenExp = now + 3600
+        token.supabaseTokenExp = now + 600
       }
 
       return token

@@ -42,6 +42,9 @@ export interface Plan {
   user_quota:             number
   extra_user_price_cents: number
   included_modules:       string[]
+  /** Quais dos `included_modules` vêm em nível PRO. INVARIANTE: subconjunto de
+   *  `included_modules` — garantida por CHECK no banco, não só pela tela. */
+  pro_modules:            string[]
   limits:                 Record<string, number | null>
   trial_days:             number   // 0 = sem validade (permanente); >0 = expira em N dias
   trial_activation_mode:  string   // "auto" | "manual"
@@ -58,6 +61,7 @@ export interface PlanInput {
   user_quota:             number
   extra_user_price_cents: number
   included_modules:       string[]
+  pro_modules:            string[]
   limits:                 Record<string, number | null>
   trial_days:             number   // 0 = sem validade (permanente); >0 = expira em N dias
   trial_activation_mode:  string   // "auto" | "manual"
@@ -75,13 +79,19 @@ function validate(input: PlanInput): string | null {
 }
 
 function clean(input: PlanInput) {
+  const incluidos = Array.from(new Set((input.included_modules ?? []).map((s) => s.trim()).filter(Boolean)))
   return {
     name:                   input.name.trim(),
     description:            input.description?.trim() || null,
     price_cents:            Math.round(input.price_cents),
     user_quota:             Math.round(input.user_quota),
     extra_user_price_cents: Math.round(input.extra_user_price_cents),
-    included_modules:       Array.from(new Set((input.included_modules ?? []).map((s) => s.trim()).filter(Boolean))),
+    included_modules:       incluidos,
+    // 🔴 PODA O PRO PELO INCLUÍDO, não confia na tela. "PRO sem o módulo" é estado sem
+    //    sentido: religar o módulo devolveria o nível avançado sem ninguém decidir. O
+    //    banco tem CHECK (`plans_pro_subset_included`), mas a action é quem transforma
+    //    um payload torto em salvamento válido — em vez de erro 23514 na cara do admin.
+    pro_modules:            Array.from(new Set((input.pro_modules ?? []).map((s) => s.trim()).filter((s) => s && incluidos.includes(s)))),
     limits:                 cleanLimits(input.limits),
     trial_days:             Math.max(0, Math.round(input.trial_days ?? 0)),
     trial_activation_mode:  input.trial_activation_mode === "auto" ? "auto" : "manual",

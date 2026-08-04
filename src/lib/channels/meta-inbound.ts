@@ -1,6 +1,7 @@
 import "server-only"
 import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { getProvider } from "@/lib/providers"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { allowedFrom, statusPatch, type MessageStatus } from "@/lib/channels/message-status"
@@ -385,9 +386,38 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
       const instance = await findInstance(pnid)
       if (!instance) { console.warn("[meta-webhook] instância não achada p/ phone_number_id", pnid); continue }
 
-      // Status (delivered/read/failed + erro/cobrança)
+      // ── Recibos de status: ANTES do gate, de propósito ──────────────────────────
+      // 🔴 `processStatus` é RECONCILIAÇÃO, não consumo: escreve `wa_billing_events` (o
+      //    ledger do que a Meta vai NOS cobrar) e move o funil de `campaign_recipients`.
+      //    Custo zero — é o mesmo critério pelo qual template e saúde ficam fora do gate.
+      //    Descartá-lo abria buraco no NOSSO ledger, sem retroativo (a Meta não reenvia
+      //    status). Cenário medido no papel: campanha dispara 09:59, o cliente vira
+      //    inadimplente às 10:00, e os `delivered/read` das mensagens JÁ enviadas somem —
+      //    destinatário fica "enviado" pra sempre e a fatura não fecha.
       for (const st of (value.statuses as MetaStatus[] | undefined) ?? []) {
         await processStatus(instance.tenant_id, instance.id, st).catch((e) => console.error("[meta-webhook] status:", e))
+      }
+
+      // 🔒 STATUS DO CLIENTE (docs/access-revocation-design.md §2) — o primeiro ponto do
+      // fluxo em que o tenant é conhecido. Medido: *Bernardo Concept*, suspenso, ingeriu
+      // 7 mensagens em 7 dias porque `active` só era olhado no login.
+      //
+      // ⚠️ Só o ramo `messages`. Template e saúde do número já deram `continue` acima
+      //    (metadado). ⚠️ Saúde do número **manda e-mail e push** ao tenant — está fora do
+      //    gate hoje e é dívida conhecida, não descuido.
+      // ⚠️ Isto roda DENTRO do `after()` da rota — o 200 já foi respondido. Não mover.
+      // 🔴 Só descarta com "não" DEFINITIVO: o ACK 200 já saiu, a Meta considera entregue e
+      //    não re-envia — descartar por falha de CONSULTA perderia a mensagem em silêncio.
+      // 🔴 E o descarte olha `canAccess` (ciclo de vida), NUNCA `canSpend`: inadimplência
+      //    corta gasto, não a chegada da mensagem (degrau 3 — atendimento manual continua).
+      const status = await checkTenantStatus(instance.tenant_id)
+      if (status.degraded) {
+        console.error("[meta-webhook] status indisponível — PROCESSANDO mesmo assim", instance.tenant_id)
+      } else if (!status.canAccess) {
+        console.warn("[meta-webhook] tenant não é mais cliente — evento descartado", instance.tenant_id)
+        continue
+      } else if (!status.canSpend) {
+        console.warn("[meta-webhook] tenant inadimplente — ingere mas NÃO deveria gastar", instance.tenant_id)
       }
 
       // Nome + username do contato (vêm em contacts[]) — indexados por telefone (wa_id)

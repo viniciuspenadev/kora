@@ -2,6 +2,7 @@ import "server-only"
 import { createHash, randomBytes } from "crypto"
 import bcrypt from "bcryptjs"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isTenantBlockedForAccess } from "@/lib/lifecycle-shared"
 
 // ═══════════════════════════════════════════════════════════════
 // Cérebro único do login (device trust — F2)
@@ -21,9 +22,16 @@ import { supabaseAdmin } from "@/lib/supabase"
 // ext-auth; sai de lá na F6.
 const DUMMY_HASH = "$2b$10$xr7Cmkh6uOtBxebNKDHUBO/XnyR/m9z.2mO6moQukhXusLjLm2XVm"
 
-// Estados de lifecycle que negam acesso ao app. Exportado: auth.ts usa no
-// revalidateAccess (a cada 5min) — uma definição só.
-export const BLOCKED_LIFECYCLE = new Set(["pending_approval", "suspended", "deactivated"])
+// 🔒 A lista de estados que negam acesso NÃO mora mais aqui (2026-08-03). Ela vive em
+// `lifecycle-shared.ts` e se pergunta por `isTenantBlockedForAccess(lifecycle)`.
+//
+// A cópia daqui era a 2ª definição e usava a string CRUA: estado desconhecido não estava
+// na lista ⇒ deixava ENTRAR, enquanto o caminho de consumo (que normaliza) bloqueava. Uma
+// definição só, e desconhecido nega dos dois lados. Ver docs/access-revocation-design.md §3.
+//
+// ⚠️ NÃO reintroduza uma checagem de `subscription_status` neste arquivo: inadimplência
+//    corta GASTO, não ACESSO (degrau 3, política do dono). `isTenantBlockedForSpend` é
+//    de outro caminho — o guarda dos webhooks/crons/widget.
 
 const TICKET_TTL_MS = 2 * 60_000
 
@@ -52,7 +60,7 @@ export async function firstAccessibleTenantId(userId: string): Promise<string | 
       .in("id", accessible)
     if (!error && tens) {
       const okIds = new Set(
-        tens.filter((t) => t.active === true && !BLOCKED_LIFECYCLE.has(t.lifecycle_state ?? "")).map((t) => t.id),
+        tens.filter((t) => t.active === true && !isTenantBlockedForAccess(t.lifecycle_state)).map((t) => t.id),
       )
       const filtered = accessible.filter((id) => okIds.has(id))
       if (filtered.length) accessible = filtered
@@ -117,7 +125,7 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
       states = tens.map((t) => (t.lifecycle_state as string | null) ?? "")
       const okIds = new Set(
         tens
-          .filter((t) => t.active === true && !BLOCKED_LIFECYCLE.has(t.lifecycle_state ?? ""))
+          .filter((t) => t.active === true && !isTenantBlockedForAccess(t.lifecycle_state))
           .map((t) => t.id),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
@@ -239,7 +247,7 @@ export async function redeemLoginTicket(
     if (!prof) return null
 
     const tenantBlocked = !!ten.data &&
-      (ten.data.active === false || BLOCKED_LIFECYCLE.has(ten.data.lifecycle_state ?? ""))
+      (ten.data.active === false || isTenantBlockedForAccess(ten.data.lifecycle_state))
     const role = tu.data?.active === true && !tenantBlocked ? (tu.data.role as string) : ""
     const isPlatformAdmin = !!pa
     if (!role && !isPlatformAdmin) return null   // revogado na janela do ticket

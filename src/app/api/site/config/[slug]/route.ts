@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isTenantServiceable } from "@/lib/auth/tenant-serviceable"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { tenantAiActive } from "@/lib/llm/active"
@@ -26,8 +27,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
     .eq("slug", slug)
     .maybeSingle()
 
+  // 🔴 `enabled:false` em vez de 404, pela MESMA razão do gate abaixo: o 404 distinguia
+  //    "slug não existe" de "slug existe mas está desligado", e os slugs são públicos
+  //    (estão no `<script src>` de cada site cliente). Uma varredura mapearia a base.
   if (!tenant?.active) {
-    return cors(NextResponse.json({ error: "tenant not found" }, { status: 404 }))
+    return cors(NextResponse.json({ enabled: false }))
+  }
+
+  // 🔒 STATUS DO CLIENTE (docs/access-revocation-design.md §2) — **o gate mais importante
+  //    das rotas do widget, e o que faltava**: este é o BOOTSTRAP. O script servido em
+  //    `/w/[slug]` faz `if (!cfg || !cfg.enabled) return` (route.ts:248), então devolver
+  //    `enabled:false` faz o widget simplesmente **não renderizar** no site do cliente —
+  //    e `/visit`, `/message` e `/lead` nem chegam a ser chamados.
+  //    Gatear só as três de baixo deixava o widget aparecer e falhar a cada interação,
+  //    que é a pior das duas experiências pro visitante do cliente dele.
+  // ⚠️ `enabled:false` é o contrato que o widget JÁ entende (é o mesmo do widget desligado).
+  //    Não inventar código novo aqui: o script roda no site DO CLIENTE, fora do nosso deploy,
+  //    e versões antigas dele continuam no ar por tempo indeterminado.
+  if (!(await isTenantServiceable(tenant.id))) {
+    return cors(NextResponse.json({ enabled: false }))
   }
 
   const { data: cfg } = await supabaseAdmin

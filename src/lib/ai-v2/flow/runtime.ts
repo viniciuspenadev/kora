@@ -181,9 +181,10 @@ function resolvePath(obj: Record<string, unknown>, path: string): unknown {
  *    Sobrescreve só o que foi semeado por nós (valor igual ao derivado da ficha ANTIGA) —
  *    o que o autor do fluxo definiu à mão continua valendo.
  *
- * ⚠️ NÃO FUNDE NADA. A ficha antiga continua existindo, vazia; juntar as duas é decisão
- *    humana no botão de mesclar. Fusão automática é `delete` irreversível, e "número
- *    reciclado" emite exatamente o mesmo sinal que "é a mesma pessoa".
+ * ⚠️ NÃO FUNDE NADA. Fundir ficha com ficha é decisão humana (botão de mesclar): "número
+ *    reciclado" emite exatamente o mesmo sinal que "é a mesma pessoa". O que ESTE módulo
+ *    faz no fim é outra coisa — descarta o RASCUNHO recém-nascido do widget, que não tem
+ *    nada pra fundir. Ver `descartarRascunhoDoSite`.
  */
 async function assumirContato(ctx: ExecCtx, variables: Record<string, unknown>, novoId: string): Promise<void> {
   const anterior = ctx.contact
@@ -217,6 +218,86 @@ async function assumirContato(ctx: ExecCtx, variables: Record<string, unknown>, 
   ctx.contact = novo
   console.log(JSON.stringify({ event: "flow_contact_assumido", tenantId: ctx.tenantId,
     de: anterior.id, para: novo.id, conversa: ctx.conversationId }))
+
+  // O rascunho ficou sem nada — e sem nada é literal, a conversa acabou de sair dele.
+  await descartarRascunhoDoSite(ctx.tenantId, anterior, novo.id)
+}
+
+/**
+ * Descarta o RASCUNHO do widget depois que a pessoa se revelou e o turno migrou.
+ *
+ * 🔴 POR QUE EXISTE (medido ao vivo em 2026-08-03, tenant Funchal). O rascunho não fica
+ *    vazio como se imagina: a captura grava nome e telefone nele ANTES de descobrir que
+ *    aquele número já tem dono. Quando o turno migra, sobra uma ficha "Vinicius /
+ *    5511940175730" sem conversa nenhuma — que na lista de Contatos **não parece um resto
+ *    de sessão, parece uma duplicata legítima**. É pior que sujeira: é uma ficha que um
+ *    atendente pode abrir, achar que é o cliente, e mandar mensagem de dentro dela.
+ *
+ * 🔴 ISTO NÃO É A "FUSÃO AUTOMÁTICA" QUE FOI DESCARTADA. Aquela junta duas fichas com
+ *    história e escolhe quem sobrevive — irreversível e ambígua (número reciclado, telefone
+ *    da recepção). Aqui não há o que fundir: o registro nasceu segundos atrás, tudo que ele
+ *    sabia já foi copiado pra ficha certa, e a conversa dele já mudou de dono. O que se
+ *    perde é o `visitor_id` — o mesmo navegador, na próxima visita, abre um rascunho novo
+ *    (comportamento idêntico ao de hoje, sem acumular lixo).
+ *
+ * ⚠️ FAIL-CLOSED, E A LISTA NÃO É DECORATIVA. `chat_contacts` derruba 8 tabelas em CASCADE
+ *    (agenda, negócios, tarefas, listas…). Qualquer sinal de vida — ou qualquer erro ao
+ *    perguntar — e o rascunho FICA. Preferir lixo a perda de dado não é timidez: um contato
+ *    a mais alguém apaga na mão, um agendamento a menos ninguém recupera.
+ */
+async function descartarRascunhoDoSite(
+  tenantId: string,
+  rascunho: { id?: string | null; primary_channel?: string | null; primary_external_id?: string | null; notes?: string | null },
+  sobreviventeId: string,
+): Promise<void> {
+  const id = rascunho.id
+  if (!id || id === sobreviventeId) return
+  // Só rascunho de widget. Ficha de WhatsApp/Instagram nunca entra aqui.
+  if (rascunho.primary_channel !== "site" || !rascunho.primary_external_id) return
+  // Anotação escrita por gente = alguém já cuidou desta ficha.
+  if (rascunho.notes?.trim()) return
+
+  // Tudo que, se existir, torna a ficha valiosa demais pra sumir. As 6 primeiras somem
+  // junto (CASCADE); as 4 últimas ficariam órfãs (SET NULL) — as duas coisas são perda.
+  const vinculos = [
+    "chat_conversations", "appointments", "tenant_deals", "tenant_tasks",
+    "contact_list_members", "contact_import_items",
+    "campaign_recipients", "commercial_documents", "instagram_automation_runs",
+    "tenant_storage_objects",
+  ] as const
+
+  try {
+    const achados = await Promise.all(
+      vinculos.map(async (t) => {
+        // ⚠️ Projeta `contact_id`, não `id`: `contact_import_items` NÃO TEM coluna `id`, e
+        //    o erro do PostgREST cairia no catch — deixando o rascunho pra sempre. Bug de
+        //    no-op silencioso, pego conferindo o schema (2026-08-03).
+        const { data, error } = await supabaseAdmin.from(t)
+          .select("contact_id").eq("tenant_id", tenantId).eq("contact_id", id).limit(1)
+        if (error) throw new Error(`${t}: ${error.message}`)   // não sei ⇒ não apago
+        return (data?.length ?? 0) > 0 ? t : null
+      }),
+    )
+    // `taggings` é polimórfica (sem FK): uma etiqueta sumiria caladinha.
+    const { data: tags, error: tagErr } = await supabaseAdmin.from("taggings")
+      .select("id").eq("tenant_id", tenantId)
+      .eq("taggable_type", "contact").eq("taggable_id", id).limit(1)
+    if (tagErr) throw new Error(`taggings: ${tagErr.message}`)
+
+    const prendem = [...achados.filter(Boolean), ...((tags?.length ?? 0) > 0 ? ["taggings"] : [])]
+    if (prendem.length > 0) {
+      console.log(JSON.stringify({ event: "flow_rascunho_mantido", tenantId, rascunho: id, prendem }))
+      return
+    }
+
+    const { error } = await supabaseAdmin.from("chat_contacts")
+      .delete().eq("id", id).eq("tenant_id", tenantId)
+    if (error) throw new Error(error.message)
+    console.log(JSON.stringify({ event: "flow_rascunho_descartado", tenantId, rascunho: id, sobrevivente: sobreviventeId }))
+  } catch (e) {
+    // O turno não pode quebrar por causa de faxina — o cliente está esperando resposta.
+    console.error("[descartarRascunhoDoSite] mantido por erro:", (e as Error).message)
+  }
 }
 
 function interpolate(text: string, vars: Record<string, unknown>): string {

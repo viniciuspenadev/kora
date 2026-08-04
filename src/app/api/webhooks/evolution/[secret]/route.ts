@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { dispatchEvolutionEvent } from "../route"
 import { readWebhookBody } from "@/lib/webhooks/read-capped"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 
 // Cap do body do webhook Evolution (H-01). Generoso: payload Baileys pode carregar mídia
 // (base64) — mídia legítima (img/vídeo/áudio ≤16MB) cabe folgado; doc de 100MB já estoura
@@ -55,6 +56,33 @@ export async function POST(
     // O processamento (insert, mídia, AI, automações) roda em background.
     after(async () => {
       try {
+        // 🔒 STATUS DO CLIENTE (docs/entitlements-design.md §3) — DENTRO do after(), depois
+        // do ACK. O código HTTP acima não muda: quem responde "tente de novo?" é o webhook,
+        // e a resposta é sempre "não". Aqui só decidimos se GASTAMOS (insert, download de
+        // mídia pro Storage, LLM, automação que responde) por um cliente suspenso/inadimplente.
+        //
+        // ⚠️ FALSO-POSITIVO = a mensagem recebida deste cliente é DESCARTADA em silêncio, e
+        //    a Evolution não re-entrega — perda DEFINITIVA, não atraso.
+        // 🔴 Por isso aqui NÃO se usa a versão booleana (fail-closed): só descartamos com um
+        //    "não" DEFINITIVO. Se a consulta falhou (`degraded`), processa e grita no log —
+        //    servir um suspenso por alguns segundos custa centavos; perder a mensagem de
+        //    quem paga quebra a promessa central do produto, e em silêncio.
+        // 🔴 O DESCARTE OLHA `canAccess` (ciclo de vida), NUNCA `canSpend`. Inadimplência
+        //    corta GASTO, não a chegada da mensagem: guardar o inbound é o PRODUTO, e o
+        //    degrau 3 promete que o atendimento manual continua. Descartar por atraso
+        //    destruiria dado que nem o encerramento destrói.
+        const status = await checkTenantStatus(instance.tenant_id)
+        if (status.degraded) {
+          console.error(`[Webhook Evolution] status indisponível — PROCESSANDO mesmo assim (tenant ${instance.tenant_id}, event ${body.event})`)
+        } else if (!status.canAccess) {
+          console.warn(`[Webhook Evolution] tenant não é mais cliente — evento ignorado (tenant ${instance.tenant_id}, event ${body.event})`)
+          return
+        } else if (!status.canSpend) {
+          // ⏳ PENDENTE: o corte de gasto ainda não está dentro do dispatch (mídia/LLM/
+          //    automação). Até lá, inadimplente ingere E gasta — que é o estado anterior
+          //    ao gate, e é preferível a destruir a mensagem dele.
+          console.warn(`[Webhook Evolution] tenant inadimplente — ingere mas NÃO deveria gastar (tenant ${instance.tenant_id})`)
+        }
         await dispatchEvolutionEvent(instance, body)
       } catch (err) {
         console.error("[Webhook Evolution] dispatch failed in after():", err)

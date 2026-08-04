@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { filterServiceableTenants } from "@/lib/auth/tenant-serviceable"
 import { getProvider } from "@/lib/providers"
 import { parseVars } from "@/lib/whatsapp/template-vars"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
@@ -306,10 +307,31 @@ export async function runCampaignTick(): Promise<{ processed: number; sent: numb
     .eq("status", "running").not("next_batch_at", "is", null).lte("next_batch_at", now)
     .order("next_batch_at", { ascending: true }).limit(20)
   const camps = (due ?? []) as CampaignTickRow[]
+
+  // 🔒 STATUS DO CLIENTE (docs/entitlements-design.md §3 · security.md §0.1). Cada lote
+  // daqui dispara template pago da Meta — é o cron que mais gasta do produto. Um lote só
+  // por tick, então o custo do gate é UMA consulta em lote pra todos os tenants da fila.
+  const { serviceable, degraded } = await filterServiceableTenants(camps.map((c) => c.tenant_id))
+
+  // 🔴 `degraded` = a CONSULTA falhou, não "todos bloqueados". Aborta o tick inteiro em vez
+  //    de filtrar: `tickCampaign` avança `next_batch_at` e pode CONCLUIR a campanha —
+  //    estado persistente. Tratar um blip de banco como "ninguém pode" queimaria o lote de
+  //    quem está em dia. Não fazer nada é reversível: o próximo tick pega tudo de novo.
+  if (degraded) {
+    console.error("[campaign tick] status dos tenants indisponível — tick abortado, nada foi enviado")
+    return { processed: 0, sent: 0 }
+  }
+
   let sent = 0
+  let processed = 0
   for (const c of camps) {
+    if (!serviceable.has(c.tenant_id)) {
+      console.warn("[campaign tick] tenant não servível — campanha pulada", c.id, c.tenant_id)
+      continue
+    }
+    processed++
     try { sent += await tickCampaign(c) }
     catch (e) { console.error("[campaign tick]", c.id, (e as Error).message) }
   }
-  return { processed: camps.length, sent }
+  return { processed, sent }
 }

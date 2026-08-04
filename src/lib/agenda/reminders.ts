@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { filterServiceableTenants } from "@/lib/auth/tenant-serviceable"
 import { getProvider } from "@/lib/providers"
 import { sendChannelText } from "@/lib/channels/reply"
 import { isWhatsAppChannel, isWindowOpen, getChannelPolicy } from "@/lib/channels/policy"
@@ -356,10 +357,25 @@ const SWEEP_MAX_PER_TENANT = 300
 export async function runAgendaReminderSweep(): Promise<{ tenants: number; processed: number }> {
   const { data: tenants } = await supabaseAdmin.from("tenant_config")
     .select("tenant_id").eq("agenda_reminders_enabled", true)
+
+  // 🔒 STATUS DO CLIENTE (docs/entitlements-design.md §3 · security.md §0.1). O gate de
+  // MÓDULO abaixo já existia, mas respondia só "contratou?" — nunca "ainda é cliente?".
+  // Suspenso com o add-on ligado continuava mandando lembrete no WhatsApp, no nosso custo.
+  const ids = (tenants ?? []).map((t) => (t as { tenant_id: string }).tenant_id)
+  const { serviceable, degraded } = await filterServiceableTenants(ids)
+  // 🔴 `degraded` = consulta falhou. Aborta: a varredura marca o lembrete como enviado
+  //    (persistente) e o cliente não recebe de novo. Pular é reversível.
+  if (degraded) {
+    console.error("[agenda reminders] status dos tenants indisponível — varredura abortada")
+    return { tenants: 0, processed: 0 }
+  }
+
   let processed = 0
   let active = 0
   for (const t of tenants ?? []) {
     const tenantId = (t as { tenant_id: string }).tenant_id
+    // 🔒 Status ANTES de módulo: não adianta ter contratado se deixou de ser cliente.
+    if (!serviceable.has(tenantId)) continue
     // 🔒 Entitlement: tenant precisa do módulo add-on (god mode), senão pula.
     if (!(await hasModule(tenantId, "agenda_reminders"))) continue
     active++

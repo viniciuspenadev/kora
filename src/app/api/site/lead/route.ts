@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
@@ -68,6 +69,19 @@ export async function POST(req: NextRequest) {
 
     if (!tenant?.active) {
       return cors(NextResponse.json({ error: "tenant not found" }, { status: 404 }))
+    }
+
+    // 🔒 STATUS DO CLIENTE (docs/access-revocation-design.md §2).
+    // 🔴 AQUI O PREDICADO É DE ACESSO, NÃO DE GASTO. Captar um lead do site é registro
+    //    (contato + conversa + auto-assign): zero LLM, zero envio, zero mídia. Gatear por
+    //    inadimplência faria a fatura atrasada **matar a captação de lead do cliente** —
+    //    e sem ninguém do lado dele perceber, porque o widget continua renderizando pelo
+    //    cache do /config. É a mesma família do erro do webhook: cobrança cortando o
+    //    negócio DELE em vez do nosso custo. Só quem deixou de ser cliente para aqui.
+    // 🔴 E a resposta é a mesma do widget desligado — não vaza status comercial (§7).
+    const leadStatus = await checkTenantStatus(tenant.id)
+    if (!leadStatus.degraded && !leadStatus.canAccess) {
+      return cors(NextResponse.json({ error: "widget desabilitado" }, { status: 403 }))
     }
 
     // Config

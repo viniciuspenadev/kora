@@ -2,7 +2,8 @@ import "server-only"
 import { createHash, randomBytes } from "crypto"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit } from "@/lib/rate-limit"
-import { verifyPassword, BLOCKED_LIFECYCLE } from "@/lib/auth/login-core"
+import { verifyPassword } from "@/lib/auth/login-core"
+import { isTenantBlockedForAccess } from "@/lib/lifecycle-shared"
 import { countLoginFailures, recordLoginFailure, clearLoginFailures } from "@/lib/auth/failures"
 import { resolveDevice } from "@/lib/auth/device"
 import { hasValidTrust, grantTrust } from "@/lib/auth/trust"
@@ -127,7 +128,7 @@ async function issueDeviceToken(input: {
     if (!tenErr && tens) {
       const okIds = new Map(
         tens
-          .filter((t) => t.active === true && !BLOCKED_LIFECYCLE.has(t.lifecycle_state ?? ""))
+          .filter((t) => t.active === true && !isTenantBlockedForAccess(t.lifecycle_state as string | null))
           .map((t) => [t.id as string, t]),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
@@ -335,7 +336,7 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
   ])
 
   // Gates fail-closed — a ORDEM importa pra mensagem certa chegar na sidebar.
-  if (!tenant || tenant.active === false || BLOCKED_LIFECYCLE.has(tenant.lifecycle_state ?? ""))
+  if (!tenant || tenant.active === false || isTenantBlockedForAccess(tenant.lifecycle_state as string | null))
     throw new ExtError(403, "Conta indisponível.", "tenant_blocked")
   if (tenant.companion_enabled === false)
     throw new ExtError(403, "A extensão está desativada nesta conta.", "companion_disabled")

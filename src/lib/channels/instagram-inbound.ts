@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
@@ -880,6 +881,36 @@ export async function processInstagramWebhook(body: unknown): Promise<void> {
 
   for (const entry of wh.entry ?? []) {
     const igAccountId = entry.id ?? null
+
+    // 🔒 STATUS DO CLIENTE (docs/entitlements-design.md §3 · security.md §0.1) — uma vez
+    // por entry, ANTES de qualquer handler. Todo caminho abaixo gasta: DM dispara IA e
+    // resposta automática, comentário consome cota de automação, mídia vai pro Storage.
+    //
+    // Aqui é o topo do laço e não o interior dos 4 handlers porque cada um deles resolve a
+    // conexão de novo — gatear em quatro lugares seria quatro cópias da mesma regra, que é
+    // exatamente a classe de defeito que a junção de hoje acabou de apagar.
+    //
+    // ⚠️ Roda DENTRO do `after()` da rota: o 200 já foi respondido à Meta. Não mover pra
+    //    antes do ACK (não-2xx persistente = inscrição do app desabilitada pra todos).
+    // 🔴 Só descarta com "não" DEFINITIVO — o ACK 200 já saiu e a Meta não re-envia.
+    //    Falha de CONSULTA (`degraded`) processa e grita: perder DM de cliente pagante em
+    //    silêncio é pior que servir um suspenso por segundos. Ver checkTenantStatus.
+    if (igAccountId) {
+      const conn = await connectionFor(igAccountId)
+      if (conn) {
+        // 🔴 Descarte olha `canAccess`, nunca `canSpend` (degrau 3: inadimplência corta
+        //    gasto, não a chegada da DM).
+        const status = await checkTenantStatus(conn.tenantId)
+        if (status.degraded) {
+          log("tenant-status-degraded", { igAccountId, tenantId: conn.tenantId })
+        } else if (!status.canAccess) {
+          log("tenant-no-access", { igAccountId, tenantId: conn.tenantId })
+          continue
+        } else if (!status.canSpend) {
+          log("tenant-past-due-still-spending", { igAccountId, tenantId: conn.tenantId })
+        }
+      }
+    }
 
     for (const m of entry.messaging ?? []) {
       // Diagnóstico SEM PII: só a FORMA do evento (nunca texto/mídia do cliente).

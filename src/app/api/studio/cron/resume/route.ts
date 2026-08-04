@@ -7,6 +7,7 @@
 
 import { NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { filterServiceableTenants } from "@/lib/auth/tenant-serviceable"
 import { resumeStudioRun } from "@/lib/ai-v2/run"
 
 export const runtime = "nodejs"
@@ -33,8 +34,20 @@ export async function POST(req: Request): Promise<Response> {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   const runs = due ?? []
+
+  // 🔒 STATUS DO CLIENTE (docs/entitlements-design.md §3 · security.md §0.1). Retomar um
+  // run parado continua o fluxo de onde ele estava: LLM + envio, tudo no nosso custo.
+  const { serviceable, degraded } = await filterServiceableTenants(runs.map((r) => r.tenant_id))
+  // 🔴 `degraded` = consulta falhou. Aborta em vez de filtrar: `resumeStudioRun` avança o
+  //    estado do run (persistente). Deixar `waiting` é reversível — o próximo tick retoma.
+  if (degraded) {
+    console.error("[studio/cron] status dos tenants indisponível — retomada abortada")
+    return NextResponse.json({ checked: 0, resumed: 0, degraded: true })
+  }
+
   let resumed = 0
   for (const r of runs) {
+    if (!serviceable.has(r.tenant_id)) continue
     try {
       const res = await resumeStudioRun(r.tenant_id, r.conversation_id)
       if (res.status !== "skipped") resumed++

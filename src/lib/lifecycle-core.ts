@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { logAudit } from "@/lib/audit"
+import { revokeTenantAccess, type RevokeTenantAccessResult } from "@/lib/auth/revoke-tenant-access"
 import { TRANSITIONS, normalizeState, type LifecycleAction, type LifecycleState } from "@/lib/lifecycle-shared"
 
 const DAY = 86_400_000
@@ -96,6 +97,25 @@ export async function transitionLifecycleCore(
   const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenantId)
   if (error) return { error: error.message }
 
+  // ── Cascata de revogação (2026-08-03) ──────────────────────────────────────
+  // 🔴 DEPOIS da escrita do estado, nunca antes. O estado é a verdade — é ele que barra o
+  //    login novo e que a revalidação de 5min consulta. A cascata só encurta a janela.
+  //    Invertido, uma falha no meio deixaria "todos desconectados + conta ATIVA": todo
+  //    mundo loga de volta no minuto seguinte e a trilha registra uma revogação que não
+  //    aconteceu.
+  // ⚠️ `revokeTenantAccess` não lança de propósito: se a limpeza falhar, o cliente segue
+  //    desativado e o relógio termina o serviço. Falha vai pro audit, não pro retorno —
+  //    devolver erro aqui faria a UI dizer "não consegui desativar" sobre algo já feito.
+  // ⚠️ Confiança de dispositivo NÃO entra aqui (`includeDeviceTrust` fica falso): ela é por
+  //    USUÁRIO, e quem atende dois clientes nossos perderia o "dispositivo confiável" no
+  //    outro, que está em dia. Ela só dispensa o 2º fator — não é acesso. O botão de
+  //    emergência (conta comprometida) é que liga essa parte.
+  const REVOKING: ReadonlySet<LifecycleAction> = new Set(["suspend", "deactivate", "reject"])
+  let revoked: RevokeTenantAccessResult | null = null
+  if (REVOKING.has(action)) {
+    revoked = await revokeTenantAccess(tenantId)
+  }
+
   await logAudit({
     tenantId,
     actorId:    opts?.actorId ?? null,
@@ -103,7 +123,20 @@ export async function transitionLifecycleCore(
     action:     `tenant.lifecycle.${action}`,
     targetType: "tenant",
     targetId:   tenantId,
-    metadata:   { from, to, name: t.name, days: opts?.days ?? null, trial_ends_at: patch.trial_ends_at ?? null },
+    metadata:   {
+      from, to, name: t.name, days: opts?.days ?? null, trial_ends_at: patch.trial_ends_at ?? null,
+      // A contagem entra na trilha: numa disputa, "desativei" e "os acessos caíram" são
+      // afirmações diferentes, e antes disto só a primeira era demonstrável.
+      revoked: revoked
+        ? {
+            sessions:            revoked.sessions,
+            extension_tokens:    revoked.extensionTokens,
+            push_subscriptions:  revoked.pushSubscriptions,
+            device_trust:        revoked.deviceTrust,
+            errors:              revoked.errors.length ? revoked.errors : null,
+          }
+        : null,
+    },
   })
 
   return { to }

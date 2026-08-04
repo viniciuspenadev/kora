@@ -43,6 +43,13 @@ export async function POST(req: NextRequest) {
   try { body = JSON.parse(raw) } catch { return new NextResponse("Bad JSON", { status: 400 }) }
 
   // Ack rápido (Meta exige 200 em poucos segundos) + processa fora do request.
+  //
+  // 🔴 O gate de status do cliente NÃO mora aqui — mora dentro de `processMetaWebhook`,
+  //    no ponto em que o `phone_number_id` vira instância e o tenant fica conhecido.
+  //    Duas razões: (1) resolver o tenant na rota duplicaria a busca por phone_number_id,
+  //    e a cópia divergiria; (2) o ACK 200 tem que sair ANTES de qualquer decisão — a Meta
+  //    re-tenta em não-2xx e, insistindo, DESABILITA a inscrição do app inteiro, o que
+  //    derrubaria o canal oficial de todos os clientes por causa de um inadimplente.
   after(() => processMetaWebhook(body).catch((e) => console.error("[meta-webhook] process:", e)))
   return NextResponse.json({ received: true })
 }

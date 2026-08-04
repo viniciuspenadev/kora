@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isTenantServiceable } from "@/lib/auth/tenant-serviceable"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 
 /**
@@ -44,6 +45,18 @@ export async function POST(req: NextRequest) {
 
     if (!tenant || !tenant.active) {
       return cors(NextResponse.json({ error: "tenant not found" }, { status: 404 }))
+    }
+
+    // 🔒 STATUS DO CLIENTE (docs/entitlements-design.md §3 · security.md §0.1).
+    // ⚠️ Este é o mais fraco dos três de propósito: /visit não gasta nada (uma linha de
+    //    analytics). Está aqui por COERÊNCIA — conta suspensa não coleta — e devolve o
+    //    mesmo formato gracioso do widget desligado, não erro: o JS do cliente já sabe
+    //    lidar com `ok: false` e a página dele não pode quebrar por causa da fatura dele.
+    // 🔴 `reason` IDÊNTICO ao do widget desligado: um valor distinto ("inactive") tornava
+    //    esta rota pública um oráculo de quais clientes estão suspensos/inadimplentes —
+    //    os slugs são públicos (estão no `<script src>` de cada site cliente).
+    if (!(await isTenantServiceable(tenant.id))) {
+      return cors(NextResponse.json({ ok: false, reason: "disabled" }))
     }
 
     // Widget está ligado?

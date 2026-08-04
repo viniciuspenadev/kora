@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { filterServiceableTenants } from "@/lib/auth/tenant-serviceable"
 import { isWindowOpen, isWhatsAppChannel } from "@/lib/channels/policy"
 import { runStudioTurn } from "../run"
 import type { FlowTrigger, FlowGraph, FlowNodeType } from "./types"
@@ -55,11 +56,24 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
     .eq("status", "published").eq("active", true).eq("trigger->>type", "inactivity")
   const flows = (flowRows ?? []) as { id: string; tenant_id: string; trigger: FlowTrigger; graph: FlowGraph }[]
 
+  // 🔒 STATUS DO CLIENTE (docs/entitlements-design.md §3 · security.md §0.1). Este cron roda
+  // a cada 5 min e cada disparo re-engaja um contato: chama LLM na chave da plataforma e
+  // manda mensagem. Era o caminho mais caro sem gate nenhum.
+  const { serviceable, degraded } = await filterServiceableTenants(flows.map((f) => f.tenant_id))
+  // 🔴 `degraded` = consulta falhou. Aborta em vez de filtrar: o tick marca a conversa como
+  //    re-engajada (estado persistente) e o contato não recebe duas vezes. Pular o tick é
+  //    reversível — o próximo, 5 min depois, pega a mesma fila.
+  if (degraded) {
+    console.error("[inactivity tick] status dos tenants indisponível — tick abortado")
+    return { flows: 0, fired: 0 }
+  }
+
   let fired = 0
   const now = Date.now()
 
   for (const f of flows) {
     if (fired >= MAX_FIRES) break
+    if (!serviceable.has(f.tenant_id)) continue
     const cutoff = new Date(now - thresholdMinutes(f.trigger) * 60_000).toISOString()
     const chans = f.trigger.channels ?? []
     const insts = f.trigger.instances ?? []
@@ -161,7 +175,11 @@ export async function runInactivityTick(): Promise<{ flows: number; fired: numbe
 
       // GATE FAIL-CLOSED da janela: fora das 24h, texto livre é rejeitado pela Meta.
       // Só dispara fechado se o fluxo abrir com template (reabre a janela). Senão, pula.
-      const provider = (inst as { provider?: string | null }).provider ?? null
+      // ⚠️ `inst` é NULL em conversa sem número (IG/site) — o `if (c.instance_id)` acima
+      //    deixa assim de propósito. O cast NÃO protege: sem o `?.` isto é TypeError, e
+      //    como está fora do try do `runStudioTurn`, derrubaria o tick INTEIRO, de todos
+      //    os tenants, a cada 5 min. Latente até alguém publicar fluxo por inatividade.
+      const provider = (inst as { provider?: string | null } | null)?.provider ?? null
       if (!coldSafe && !isWindowOpen(c.channel, provider, c.last_inbound_at, now)) continue
 
       // Carimba ANTES de rodar (evita clobber do metadata que o fluxo possa mexer +

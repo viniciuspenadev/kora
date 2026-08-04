@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isTenantServiceable } from "@/lib/auth/tenant-serviceable"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { getOrCreateSiteContact, getOrCreateSiteConversation } from "@/lib/channels/site"
@@ -41,6 +42,20 @@ export async function POST(req: NextRequest) {
   const { data: tenant } = await supabaseAdmin
     .from("tenants").select("id, active").eq("slug", slug).maybeSingle()
   if (!tenant?.active) return cors(NextResponse.json({ error: "tenant not found" }, { status: 404 }))
+
+  // 🔒 STATUS DO CLIENTE (docs/access-revocation-design.md §2). O `active` acima é o
+  // booleano legado e não vê lifecycle nem assinatura. Esta rota é PÚBLICA e chama a Kora
+  // IA — é o widget queimando NOSSA chave de LLM pra quem parou de pagar, então aqui o
+  // predicado de GASTO está certo.
+  // 🔴 MAS A RESPOSTA É IDÊNTICA À DO WIDGET DESLIGADO, de propósito. Uma mensagem
+  //    distinta ("chat indisponível" × "chat não habilitado") transformava esta rota num
+  //    ORÁCULO PÚBLICO: os slugs estão no `<script src>` de cada site cliente, então
+  //    qualquer um varreria a lista e mapearia quais clientes do Kora estão suspensos ou
+  //    inadimplentes. O gate roda antes da allow-list de domínio, então responde a
+  //    qualquer origem. Status comercial de cliente não vaza por mensagem de erro.
+  if (!(await isTenantServiceable(tenant.id))) {
+    return cors(NextResponse.json({ error: "chat não habilitado" }, { status: 403 }))
+  }
 
   const { data: cfg } = await supabaseAdmin
     .from("site_widget_config").select("enabled, mode, allowed_domains").eq("tenant_id", tenant.id).maybeSingle()

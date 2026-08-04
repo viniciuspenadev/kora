@@ -39,7 +39,7 @@ import {
   type MessagesCursor,
 } from "@/lib/actions/messages"
 import { applyTag, removeTag } from "@/lib/actions/tags"
-import { getRealtimeClient, refreshRealtimeAuth } from "@/lib/realtime"
+import { getRealtimeClient } from "@/lib/realtime"
 import type {
   ChatConversation,
   ChatMessage,
@@ -659,23 +659,10 @@ export function InboxClient({
     }
   }, [supabaseToken, activeId])
 
-  // ── Refresh do JWT Supabase (expira em 1h) ──────────────────
-  // NextAuth já renova no callback jwt quando faltam <5min. Aqui apenas
-  // peço o token atual e re-aplico no Realtime client.
-  useEffect(() => {
-    const REFRESH_MS = 50 * 60_000  // 50min
-    const t = setInterval(async () => {
-      try {
-        const res = await fetch("/api/auth/supabase-token")
-        if (!res.ok) return
-        const data = await res.json() as { token: string }
-        refreshRealtimeAuth(data.token)
-      } catch {
-        // próximo tick tenta de novo
-      }
-    }, REFRESH_MS)
-    return () => clearInterval(t)
-  }, [])
+  // ── Refresh do JWT Supabase ─────────────────────────────────
+  // Não mora mais aqui: o relógio desceu pro singleton (`lib/realtime.ts`), porque o sino
+  // de notificações usa o MESMO client em toda página e não renovava nada — com o token
+  // curto (10min) ele morreria calado fora do inbox. Um timer por aba, não por componente.
 
   const activeConv = activeId ? conversations.find((c) => c.id === activeId) : null
 
