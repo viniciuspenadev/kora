@@ -12,7 +12,19 @@ interface Props {
   setup: SetupState
 }
 
-const DISMISS_KEY = "kora_onboarding_dismissed_at"
+/**
+ * Chave da dispensa — **por tenant**.
+ *
+ * 🔴 ERA GLOBAL (`kora_onboarding_dismissed_at`, sem sufixo), e isso é um bug de verdade,
+ *    medido ao vivo em 2026-08-04: uma conta **recém-criada** não viu o modal de
+ *    configuração porque o mesmo navegador havia dispensado o modal de OUTRA empresa
+ *    menos de 24h antes. O primeiro acesso de um cliente novo virou uma pílula discreta
+ *    no canto da tela — o oposto de "vamos configurar seu Kora".
+ * ⚠️ Não é caso raro de laboratório: pega quem administra mais de uma conta (agência,
+ *    consultor, a nossa própria operação testando) e qualquer pessoa com duas contas.
+ *    "Já vi isso" é uma afirmação sobre a EMPRESA, não sobre o navegador.
+ */
+const dismissKey = (tenantId: string) => `kora_onboarding_dismissed_at:${tenantId}`
 const REMIND_HOURS = 24
 /** Valor do SERVIDOR: lá não existe `localStorage`, então a resposta honesta é "não sei". */
 const NAO_SEI = -1
@@ -31,7 +43,7 @@ export function OnboardingBanner({ setup }: Props) {
    *    do servidor e significa "não dá pra saber daqui", então nada é pintado até o
    *    navegador responder. Mesmíssimo comportamento, um estado a menos e sem o efeito.
    */
-  const [dismissedAt, setDismissedAt] = useBrowserPref(DISMISS_KEY, parseDismissedAt, NAO_SEI)
+  const [dismissedAt, setDismissedAt] = useBrowserPref(dismissKey(setup.tenantId), parseDismissedAt, NAO_SEI)
   // "Agora" congelado na montagem: o banner não precisa de relógio vivo, e ler o relógio
   // no corpo do componente faria o resultado mudar sozinho entre dois renders iguais.
   const [agora] = useState(() => Date.now())

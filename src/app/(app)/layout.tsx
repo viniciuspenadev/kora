@@ -15,6 +15,18 @@ import { getEnabledModuleSlugs } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
 import { getSelfPause } from "@/lib/actions/auto-assign"
 
+/**
+ * Quando o wizard de boas-vindas entrou no ar.
+ *
+ * 🔑 Conta criada ANTES disto nunca é empurrada pro wizard — ela já estava usando o
+ *    produto quando a tela passou a existir. O checklist de setup continua cobrando o
+ *    cadastro de quem está incompleto, mas pela porta certa (Configurações → Dados da
+ *    empresa), sem "seja bem-vindo" pra cliente de meses atrás.
+ * ⚠️ Constante e não backfill: o banco fica com a verdade (`null` = nunca respondeu) e a
+ *    decisão de quem vê a tela mora no código, onde dá pra ler o porquê.
+ */
+const WIZARD_NO_AR_DESDE = new Date("2026-08-04T00:00:00Z")
+
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await auth()
   if (!session) redirect("/auth/signin")
@@ -28,7 +40,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes, scope] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("name, plan, active, onboarding_profile_at, onboarding_skipped_at")
+      .select("name, plan, active, created_at, onboarding_profile_at, onboarding_skipped_at")
       .eq("id", session.user.tenantId)
       .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
@@ -68,10 +80,24 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   //    depois de a pessoa dizer "depois" é justamente o contrário de pulável.
   // ⚠️ Só owner/admin. Atendente não tem o que responder num cadastro fiscal, e ser
   //    empurrado pra um formulário que ele não pode salvar seria um beco sem saída.
-  // ⚠️ Quem pulou não some do radar: o passo "Completar cadastro" fica no checklist de
-  //    setup (banner), e o gate de assinatura cobra o que faltar na hora de pagar.
-  const t = tenant as { onboarding_profile_at?: string | null; onboarding_skipped_at?: string | null }
-  if (isManager && !t.onboarding_profile_at && !t.onboarding_skipped_at) {
+  //
+  // 🔴 E SÓ PRA CONTA NOVA. A 1ª versão olhava apenas os carimbos — e carimbo nenhum
+  //    tenant antigo tem, porque a coluna nasceu hoje. Efeito medido ao vivo: entramos na
+  //    **Blue Digital Hub, cliente desde maio**, e ela foi recebida com um wizard de
+  //    boas-vindas dizendo "Prazer!". A Funchal, ativa e pagante, levaria o mesmo no
+  //    próximo login. Dar boas-vindas a quem já é cliente há meses não é só estranho: diz
+  //    pra ele que o sistema não sabe quem ele é.
+  // ⚠️ A guarda é a DATA DE CRIAÇÃO, não um backfill dos carimbos. Carimbar as contas
+  //    antigas como "pulou" ou "concluiu" seria gravar mentira no banco — o god mode
+  //    passaria a exibir "Deixou pra depois" pra quem nunca viu a tela. Aqui o dado
+  //    continua honesto (`null` = nunca respondeu) e quem decide é o código.
+  const t = tenant as {
+    created_at?: string | null
+    onboarding_profile_at?: string | null
+    onboarding_skipped_at?: string | null
+  }
+  const contaNova = !!t.created_at && new Date(t.created_at) >= WIZARD_NO_AR_DESDE
+  if (isManager && contaNova && !t.onboarding_profile_at && !t.onboarding_skipped_at) {
     redirect("/bem-vindo")
   }
   const hasOfficial = !!officialRes.data

@@ -6,6 +6,7 @@ import { PeriodPicker } from "@/components/relatorios/period-picker"
 import { KpiCard } from "@/components/relatorios/kpi-card"
 import { SectionCard } from "@/components/ui/section-card"
 import { EmptyState } from "@/components/ui/empty-state"
+import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { ReportsTabs } from "../tabs"
 import { parseFilters, formatNumber } from "../_helpers"
@@ -36,13 +37,22 @@ export default async function RelatorioSitePage({
   const session  = await auth()
   const tenantId = session?.user?.tenantId
 
-  const [data, hasKanban, hasAi] = await Promise.all([
+  const [data, hasKanban, hasAi, { data: widget }] = await Promise.all([
     getSiteMetrics(filters),
     tenantId ? hasModule(tenantId, "kanban")       : Promise.resolve(false),
     tenantId ? hasModule(tenantId, "ai_atendente") : Promise.resolve(false),
+    tenantId
+      ? supabaseAdmin.from("site_widget_config").select("enabled").eq("tenant_id", tenantId).maybeSingle()
+      : Promise.resolve({ data: null }),
   ])
 
   const hasData = data.pageviews.current > 0 || data.leads.current > 0
+  // 🔴 SEM WIDGET LIGADO, "sem dados" é uma resposta que não ajuda ninguém. A tela dizia
+  //    "Sem dados no período" e sugeria, de passagem, "confira se o widget está ligado" —
+  //    sem botão e **sem saber se estava**. As duas situações são diferentes e pedem
+  //    coisas diferentes: uma é esperar, a outra é agir. Tratá-las igual faz a pessoa
+  //    achar que o produto não funciona quando ela simplesmente não ligou o widget.
+  const widgetLigado = (widget as { enabled?: boolean } | null)?.enabled === true
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -59,11 +69,24 @@ export default async function RelatorioSitePage({
 
         <ReportsTabs hasKanban={hasKanban} hasAi={hasAi} />
 
-        {!hasData ? (
+        {!widgetLigado ? (
+          <EmptyState
+            icon={Globe}
+            title="Ative o widget do site para ver este relatório"
+            description="Este relatório mede o chat do seu site: visitas, leads capturados e conversão. Enquanto o widget estiver desligado não há o que medir — ligue, cole o código no seu site e os números começam a aparecer aqui."
+            action={
+              <Link href="/configuracoes/site" className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
+                Configurar o widget
+              </Link>
+            }
+          />
+        ) : !hasData ? (
           <EmptyState
             icon={Globe}
             title="Sem dados no período"
-            description="Quando o widget começar a receber visitas e leads, as métricas aparecem aqui. Confira se o widget está ligado e instalado no seu site."
+            // ⚠️ Aqui o widget JÁ ESTÁ ligado — então some o "confira se está ligado", que
+            //    mandaria a pessoa conferir algo que a gente acabou de confirmar.
+            description="O widget está ativo. Assim que ele receber visitas e leads no período escolhido, as métricas aparecem aqui — confirme que o código está instalado no site."
           />
         ) : (
           <>

@@ -7,8 +7,8 @@ import { logoutWithCleanup } from "@/lib/auth/logout"
 import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
-  Bot, Bell, MessageSquare, Layers, CalendarDays, Columns3,
-  Wand2, BarChart3, Blocks, FileText, Headset,
+  Bot, Bell, MessageSquare, Layers, CalendarDays,
+  Wand2, BarChart3, Blocks, FileText,
   PanelLeftClose, PanelLeftOpen, Package, Boxes, ListChecks, Megaphone, Send, Funnel, Plus, Building2,
 } from "lucide-react"
 import { SidebarSelfPause } from "@/components/app/sidebar-self-pause"
@@ -68,15 +68,18 @@ const topIconSpin = "w-5 h-5 shrink-0 origin-center group-hover/item:animate-[na
 
 const NAV: NavItem[] = [
   { href: "/inbox",      label: "Inbox",      icon: <Inbox     className={topIcon} strokeWidth={1.75} />, module: "inbox"    },
-  {
-    key:   "atendimento",
-    label: "Atendimento",
-    icon:  <Headset className={topIcon} strokeWidth={1.75} />,
-    children: [
-      { href: "/kanban",       label: "Pipelines",     icon: <Workflow className={subIcon} strokeWidth={1.75} />, module: "kanban"   },
-      { href: "/atendimentos", label: "Departamentos", icon: <Columns3 className={subIcon} strokeWidth={1.75} />, module: "inbox"    },
-    ],
-  },
+  // ⚠️ O GRUPO "Atendimento" FOI DISSOLVIDO (2026-08-04, decisão do dono). Ele existia pra
+  //    segurar dois filhos, e nenhum dos dois precisava dele:
+  //      • "Pipelines" virou **Kanban** — é o nome que a pessoa usa pra essa tela, e
+  //        "Pipelines" colidia com o funil de VENDAS lá em Negócios (duas coisas
+  //        diferentes com o mesmo nome em menus vizinhos).
+  //      • "Departamentos" saiu do menu e virou a 3ª lente DENTRO do próprio Kanban, ao
+  //        lado de "Funil" e "Atendente" — que é onde ela sempre esteve tecnicamente
+  //        (`groupBy=department`; a rota /atendimentos só reusava a mesma lente). Item de
+  //        menu separado pra uma lente do mesmo quadro é a mesma tela contada duas vezes.
+  //    Resultado: um acordeão a menos e uma tela de trabalho a um clique, não dois.
+  //    A rota /atendimentos continua viva (links antigos seguem funcionando).
+  { href: "/kanban", label: "Kanban", icon: <Workflow className={topIcon} strokeWidth={1.75} />, module: "kanban" },
   { href: "/contatos", label: "Contatos", icon: <Contact className={topIcon} strokeWidth={1.75} />, module: "contacts", capability: "contacts_access" },
   // Empresas (PJ, CRM F2) — tenant-wide por design. Gate = módulo "crm" só (sem
   // capability): paridade EXATA com a página (reads = módulo+tenant). Se um dia

@@ -3,7 +3,8 @@ import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { checkLimit, monthlyQuotaResetsAt } from "@/lib/limits"
-import { Network } from "lucide-react"
+import Link from "next/link"
+import { Network, Plug } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { FlowsClient } from "./flows-client"
 import { FlowsActions } from "./flows-actions"
@@ -70,6 +71,30 @@ export default async function FluxosPage() {
   // (a página de destino já recusa — aqui é o espelho na UI, não a trava).
   const hasAi = await hasModule(tenantId, "ai")
 
+  // 🔴 FLUXO SEM CANAL NÃO DISPARA — e a tela não dizia isso. A pessoa montava a
+  //    automação inteira, publicava, e ficava esperando um acionamento que nunca vinha:
+  //    todo gatilho do Studio nasce de uma mensagem, e sem canal conectado não existe
+  //    mensagem pra nascer. O sintoma ("publiquei e não aconteceu nada") aponta pro
+  //    fluxo, que não tem defeito nenhum — mesma armadilha que o aviso de cota do
+  //    Instagram logo acima existe pra evitar.
+  // ⚠️ Conta QUALQUER canal, não só WhatsApp: Instagram e o widget do site também
+  //    disparam fluxo. Exigir WhatsApp aqui esconderia a tela de quem opera só no Direct.
+  const [{ data: waLive }, { data: igLive }, { data: siteLive }] = await Promise.all([
+    supabaseAdmin.from("whatsapp_instances").select("id")
+      .eq("tenant_id", tenantId).in("status", ["connected", "open"]).limit(1).maybeSingle(),
+    // ⚠️ `channel_connections` + `channel='instagram'` — a MESMA leitura de /integracoes.
+    //    A 1ª versão disto consultou `instagram_accounts`, tabela que **não existe**: o
+    //    `tsc` não valida nome de tabela, o PostgREST devolveria erro e o `data` viria
+    //    nulo — ou seja, quem opera SÓ no Direct veria "conecte um canal" pra sempre, sem
+    //    nenhum erro na tela. Conferido ao vivo antes de fechar.
+    supabaseAdmin.from("channel_connections").select("id")
+      .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active")
+      .limit(1).maybeSingle(),
+    supabaseAdmin.from("site_widget_config").select("enabled")
+      .eq("tenant_id", tenantId).eq("enabled", true).limit(1).maybeSingle(),
+  ])
+  const temCanal = !!waLive || !!igLive || !!siteLive
+
   const activations: Record<string, number> = {}
   const seen = new Map<string, Set<string>>()
   for (const s of (steps ?? []) as { flow_id: string; run_id: string }[]) {
@@ -93,6 +118,22 @@ export default async function FluxosPage() {
       icon={Network}
       actions={<FlowsActions hasAi={hasAi} />}
     >
+      {!temCanal && (
+        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 flex items-start gap-3">
+          <Plug className="size-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-amber-900">Conecte um canal para as automações rodarem</p>
+            <p className="mt-1 text-xs text-amber-800 leading-relaxed">
+              Todo fluxo começa com uma mensagem recebida. Sem WhatsApp, Instagram ou o widget
+              do site conectado, você consegue montar e publicar — mas nada vai acionar.
+            </p>
+          </div>
+          <Link href="/integracoes" className="shrink-0 inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-lg transition-colors">
+            Conectar canal
+          </Link>
+        </div>
+      )}
+
       <FlowsClient
         flows={(data ?? []) as StudioFlowSummary[]}
         activations={activations}

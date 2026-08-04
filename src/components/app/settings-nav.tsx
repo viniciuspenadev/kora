@@ -5,7 +5,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
   Search, User, Users, Gauge, CreditCard, Headset, Tag as TagIcon, IdCard, Building2,
-  ListChecks, MessageSquare, SlidersHorizontal, FileText, ClipboardList, Mail, Plug,
+  SlidersHorizontal, FileText, ClipboardList, Mail, Plug,
   ExternalLink,
 } from "lucide-react"
 
@@ -30,6 +30,18 @@ interface Item {
   module?: string
   /** Vive FORA de /configuracoes — a coluna some ao navegar (ver grupo "Ver também"). */
   away?:  boolean
+  /**
+   * Só aparece com um número da API Oficial **CONECTADO** (não basta ter o módulo).
+   *
+   * 🔴 Existe porque "Templates" era uma porta que batia na cara: a página
+   *    `/templates` **redireciona pra /integracoes** quando falta
+   *    `meta_business_account_id`/`meta_access_token`. Quem clicava era cuspido pra outra
+   *    tela sem entender por quê — e template do WhatsApp só existe DENTRO da conta Meta,
+   *    então sem número conectado a tela não tem do que falar.
+   * ⚠️ Módulo não resolve isto: dá pra ter `whatsapp_official` licenciado e nenhum número
+   *    ligado ainda — que é exatamente o estado de todo cliente novo.
+   */
+  needsOfficial?: boolean
 }
 
 const GROUPS: { key: string; label: string; items: Item[] }[] = [
@@ -52,24 +64,29 @@ const GROUPS: { key: string; label: string; items: Item[] }[] = [
     // ⚠️ O recorte que falta aqui é de PAPEL, não de módulo: valor de fatura é assunto de
     //    owner/admin, não do atendente (mesma regra do C6 em components/billing). O nav
     //    ainda não tem gate por papel — a página faz o seu próprio.
-    // ⏳ OCULTO ATÉ O DADO SER REAL. As telas existem e sobem no deploy, mas ainda
-    //    renderizam `buildMock()` — cliente abrindo isto leria valor de fatura inventado.
-    //    Estão travadas por platform admin em `assinatura/layout.tsx` (mesmo TODO lá).
-    //    Reativar esta linha e apagar aquele layout NO MESMO COMMIT em que o
-    //    `getBillingStanding()` + as queries reais entrarem.
-    // { href: "/configuracoes/assinatura", label: "Assinatura",    icon: CreditCard },
+    // ✅ REABERTO em 2026-08-04. Ficou oculto enquanto as telas renderizavam `buildMock()`
+    //    — cliente lendo valor de fatura inventado é dano, não rascunho. Hoje as quatro
+    //    rotas leem dado real (`loadAssinatura`/`loadFatura`) e o modo prévia (`?degrau=`)
+    //    está restrito a platform admin DENTRO de cada página — ou seja, a trava de layout
+    //    que existia virou redundante e saiu junto.
+    { href: "/configuracoes/assinatura", label: "Assinatura",    icon: CreditCard },
   ] },
   // ⚠️ Canais (WhatsApp) e Chat do site NÃO entram aqui: CANAL se conecta e se gerencia
   //    em /integracoes, que é onde estão os cards com status, número e sinal de vida.
   //    As rotas continuam existindo (os cards de Integrações apontam pra elas) — o que
   //    saiu foi a SEGUNDA porta, porque duas portas pro mesmo lugar é como um lado
   //    envelhece sem ninguém notar.
+  // ⚠️ **Listas** e **Respostas rápidas** SAÍRAM daqui (2026-08-04, decisão do dono).
+  //    Não foram removidas do produto: elas vivem em **Marketing → Listas** e
+  //    **Automação → Respostas rápidas**, e os itens do menu principal já apontavam pra
+  //    ESTAS MESMAS rotas (`/configuracoes/listas`, `/configuracoes/respostas`).
+  //    Ou seja: eram duas portas pro mesmo cômodo, e a segunda ficava num andar onde o
+  //    assunto nem mora — quem procura lista de disparo procura em Marketing, não em
+  //    Configurações. Mesmo raciocínio que já tinha tirado Canais daqui (comentário acima).
   { key: "atendimento", label: "Atendimento", items: [
     { href: "/configuracoes/atendimento", label: "Regras de atendimento", icon: Headset },
     { href: "/configuracoes/tags",        label: "Tags",                icon: TagIcon },
     { href: "/configuracoes/cadastro",    label: "Campos do cadastro",  icon: IdCard },
-    { href: "/configuracoes/listas",      label: "Listas",              icon: ListChecks },
-    { href: "/configuracoes/respostas",   label: "Respostas rápidas",   icon: MessageSquare, module: "quick_replies" },
   ] },
   { key: "vendas", label: "Vendas", items: [
     { href: "/configuracoes/cotacao", label: "Cotação e Contrato", icon: FileText,      module: "crm" },
@@ -84,11 +101,11 @@ const GROUPS: { key: string; label: string; items: Item[] }[] = [
   { key: "away", label: "Ver também", items: [
     { href: "/integracoes",    label: "Integrações",  icon: Plug,              away: true },
     { href: "/negocios/funis", label: "Funis de venda", icon: SlidersHorizontal, away: true, module: "crm" },
-    { href: "/templates",      label: "Templates",    icon: FileText,          away: true },
+    { href: "/templates",      label: "Templates",    icon: FileText,          away: true, needsOfficial: true },
   ] },
 ]
 
-export function SettingsNav({ modules }: { modules: string[] }) {
+export function SettingsNav({ modules, hasOfficial }: { modules: string[]; hasOfficial: boolean }) {
   const pathname = usePathname()
   const [q, setQ] = useState("")
   const modSet = useMemo(() => new Set(modules), [modules])
@@ -100,10 +117,11 @@ export function SettingsNav({ modules }: { modules: string[] }) {
         ...g,
         items: g.items.filter((i) =>
           (!i.module || modSet.has(i.module)) &&
+          (!i.needsOfficial || hasOfficial) &&
           (!term || i.label.toLowerCase().includes(term))),
       }))
       .filter((g) => g.items.length > 0)
-  }, [q, modSet])
+  }, [q, modSet, hasOfficial])
 
   return (
     <aside className="w-full lg:w-64 shrink-0 border-b lg:border-b-0 lg:border-r border-slate-200 bg-white">

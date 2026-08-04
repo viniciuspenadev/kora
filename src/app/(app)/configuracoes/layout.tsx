@@ -1,5 +1,6 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
+import { supabaseAdmin } from "@/lib/supabase"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { SettingsNav } from "@/components/app/settings-nav"
 
@@ -19,11 +20,27 @@ export default async function ConfiguracoesLayout({ children }: { children: Reac
   if (!session) redirect("/auth/signin")
 
   // Só pra ESCONDER porta de módulo não contratado — a página negaria de todo jeito.
-  const modules = await getEnabledModuleSlugs(session.user.tenantId)
+  // ⚠️ `hasOfficial` é uma pergunta DIFERENTE de módulo: é "existe número oficial
+  //    CONECTADO?". Serve pro item "Templates", cuja página redireciona pra /integracoes
+  //    sem `meta_business_account_id`/`meta_access_token` — os MESMOS dois campos
+  //    conferidos aqui, de propósito: se a checagem daqui fosse mais frouxa, o menu
+  //    voltaria a oferecer a porta que a página recusa.
+  const [modules, { data: oficial }] = await Promise.all([
+    getEnabledModuleSlugs(session.user.tenantId),
+    supabaseAdmin
+      .from("whatsapp_instances")
+      .select("id")
+      .eq("tenant_id", session.user.tenantId)
+      .eq("provider", "meta_cloud")
+      .not("meta_business_account_id", "is", null)
+      .not("meta_access_token", "is", null)
+      .limit(1)
+      .maybeSingle(),
+  ])
 
   return (
     <div className="min-h-full bg-canvas flex flex-col lg:flex-row">
-      <SettingsNav modules={[...modules]} />
+      <SettingsNav modules={[...modules]} hasOfficial={!!oficial} />
       <div className="min-w-0 flex-1">{children}</div>
     </div>
   )

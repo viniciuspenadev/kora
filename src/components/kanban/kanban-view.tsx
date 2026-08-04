@@ -143,14 +143,22 @@ export function KanbanView({
 
           {isManager && (
             <div className="inline-flex items-center gap-1 bg-slate-100 rounded-lg p-1 ml-1 shrink-0">
-              {(["stage", "agent"] as const).map((k) => (
+              {/* ⚠️ "Departamento" entrou aqui em 2026-08-04 e SUBSTITUIU o item de menu
+                  "Departamentos" (rota /atendimentos). Não é tela nova: o board já
+                  aceitava `groupBy="department"` e a página /atendimentos só reusava esta
+                  mesma lente com o valor fixo. Ter as três lentes no mesmo lugar é o que
+                  deixa comparar "por etapa" × "por atendente" × "por setor" sem sair da
+                  tela — que é a pergunta que um gestor faz em sequência, não isolada.
+                  ⚠️ Só aparece se o tenant tiver departamento cadastrado: um botão que
+                  abre um quadro vazio ensina que a função não serve. */}
+              {(["stage", "agent", ...(departments.length > 0 ? ["department"] as const : [])] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
                   onClick={() => setGroupBy(k)}
                   className={`text-xs font-semibold px-3 py-1.5 rounded-md transition-colors ${groupBy === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"}`}
                 >
-                  {k === "stage" ? "Funil" : "Atendente"}
+                  {k === "stage" ? "Funil" : k === "agent" ? "Atendente" : "Departamento"}
                 </button>
               ))}
             </div>
