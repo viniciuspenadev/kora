@@ -307,6 +307,20 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
     lifecycle_state: autoActivate ? (hasExpiry ? "trialing" : "active") : "pending_approval",
     trial_ends_at:   autoActivate && hasExpiry ? new Date(Date.now() + trialDays * 86_400_000).toISOString() : null,
     activated_at:    autoActivate ? nowIso : null,
+    // 💳 Quem entra pelo cadastro nasce na esteira de cobrança (docs/asaas-billing-design.md §2).
+    //
+    // 🔴 EXPLÍCITO, e não o DEFAULT da coluna, de propósito. O default é `'manual'` porque
+    //    ele existe pra proteger os tenants que JÁ existiam quando a coluna nasceu — a
+    //    automação não pode alcançar quem foi ativado à mão (cortesia, sócio, contrato
+    //    especial). São duas necessidades opostas, e uma só não serve às duas: se o default
+    //    fosse `gateway`, a régua desligaria os de cortesia; se o cadastro herdasse
+    //    `manual`, o dono giraria a chave na mão a cada cliente novo.
+    //
+    // ⚠️ `gateway` + `asaas_subscription_id` NULO é um estado com significado: *"deveria
+    //    pagar, ainda não configurou cartão"* — é exatamente o trial rodando. Quando o
+    //    cartão entrar, a assinatura é criada com `nextDueDate = trial_ends_at`, e aí o fim
+    //    do teste e a primeira cobrança viram o mesmo dia (o cron de trial já respeita isso).
+    billing_mode:    "gateway",
   }).select("id, slug").single()
   if (tErr || !tenant) return { ok: false, error: "Erro ao criar o ambiente." }
 

@@ -20,11 +20,21 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
   //    pública `transitionLifecycle`, que sempre exige platform admin (crítico C-01).
   const { data: expired } = await supabaseAdmin
     .from("tenants")
-    .select("id")
+    .select("id, asaas_subscription_id")
     .eq("lifecycle_state", "trialing")
     .lt("trial_ends_at", nowIso)
   let suspended = 0
   for (const t of expired ?? []) {
+    // 🔴 QUEM JÁ TEM ASSINATURA NO GATEWAY NÃO É SUSPENSO AQUI (2026-08-04).
+    //    A assinatura é criada durante o trial com `nextDueDate = trial_ends_at`, então o
+    //    fim do teste e a primeira cobrança são o MESMO dia. Sem esta guarda, este cron
+    //    (8h05) suspenderia o cliente ANTES de o Asaas cobrar — e o resultado seria um
+    //    cliente que colocou o cartão, pagou, e amanheceu bloqueado.
+    // ⚠️ Quem manda no estado dele daqui pra frente é o webhook: pagamento confirmado
+    //    move `trialing → active`; vencido move pra `past_due` (degrau 3). Este cron
+    //    continua dono APENAS de quem terminou o teste sem configurar pagamento.
+    if ((t as { asaas_subscription_id?: string | null }).asaas_subscription_id) continue
+
     const r = await transitionLifecycleCore(t.id as string, "suspend", { system: true })
     if (!r.error) suspended++
   }
