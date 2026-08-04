@@ -37,7 +37,22 @@ const GROUPS: { key: string; label: string; items: Item[] }[] = [
     { href: "/configuracoes/perfil",    label: "Perfil",         icon: User },
     { href: "/configuracoes/equipe",    label: "Organização",    icon: Users },
     { href: "/configuracoes/uso",       label: "Uso e limites",  icon: Gauge },
-    { href: "/configuracoes/cobranca",  label: "Cobrança",       icon: CreditCard, module: "billing_panel" },
+    // ✅ SUBSTITUÍDO em 2026-08-03. Este item apontava pra `/configuracoes/cobranca`, uma
+    //    rota que **nunca existiu** — 404 esperando acontecer. Passou despercebido porque
+    //    era gateado por `billing_panel`, módulo que não está ligado em nenhum cliente.
+    // 🔴 E o gate de módulo saiu de propósito: a própria assinatura não é add-on vendável.
+    //    Gatear por `billing_panel` esconderia de TODO MUNDO a tela onde o cliente vê o
+    //    que deve e como paga — que é justamente a tela que não pode faltar (a escada
+    //    manda o inadimplente pra cá).
+    // ⚠️ O recorte que falta aqui é de PAPEL, não de módulo: valor de fatura é assunto de
+    //    owner/admin, não do atendente (mesma regra do C6 em components/billing). O nav
+    //    ainda não tem gate por papel — a página faz o seu próprio.
+    // ⏳ OCULTO ATÉ O DADO SER REAL. As telas existem e sobem no deploy, mas ainda
+    //    renderizam `buildMock()` — cliente abrindo isto leria valor de fatura inventado.
+    //    Estão travadas por platform admin em `assinatura/layout.tsx` (mesmo TODO lá).
+    //    Reativar esta linha e apagar aquele layout NO MESMO COMMIT em que o
+    //    `getBillingStanding()` + as queries reais entrarem.
+    // { href: "/configuracoes/assinatura", label: "Assinatura",    icon: CreditCard },
   ] },
   // ⚠️ Canais (WhatsApp) e Chat do site NÃO entram aqui: CANAL se conecta e se gerencia
   //    em /integracoes, que é onde estão os cards com status, número e sinal de vida.

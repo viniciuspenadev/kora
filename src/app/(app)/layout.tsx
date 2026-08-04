@@ -9,6 +9,7 @@ import { PushPrompt } from "@/components/app/push-prompt"
 import { Topbar } from "@/components/app/topbar"
 import { OnboardingBanner } from "@/components/app/onboarding-banner"
 import { UpdateBanner } from "@/components/app/update-banner"
+import { Toaster } from "@/components/ui/sonner"
 import { getSetupState } from "@/lib/onboarding"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
@@ -111,6 +112,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </div>
         </div>
       </div>
+      {/* 🔴 O <Toaster/> NUNCA foi montado (achado 2026-08-03, por um designer que foi
+          conferir uma dependência). `src/components/ui/sonner.tsx` existe desde julho e
+          **33 arquivos** importam do sonner — catálogo, empresas, negócios, propostas,
+          studio, agenda, cotação. Todo "Salvo!", "Erro ao salvar" e "Copiado" desses
+          fluxos era chamado e **não aparecia pra ninguém**: a chamada não falha, ela
+          simplesmente não tem onde renderizar. Falha silenciosa clássica — o código
+          parecia certo em revisão e o produto ficava mudo. Montado uma vez, aqui. */}
+      <Toaster position="top-right" richColors closeButton />
     </AppShellProvider>
   )
 }
