@@ -39,6 +39,34 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
     if (!r.error) suspended++
   }
 
+  // 1.b Cancelamentos cujo ciclo pago ACABOU → agora sim vira `canceled`.
+  //
+  // 🔑 Esta é a segunda metade da regra "o acesso continua até o fim do ciclo": o webhook
+  //    só CARIMBA `subscription_ends_at` no cancelamento; quem vira o estado é aqui, quando
+  //    a data passa. Separar as duas metades é o que impede o cancelamento de retomar
+  //    produto já pago — e é o que permite ao cliente voltar atrás antes da data sem que
+  //    nada tenha sido cortado.
+  // ⚠️ Só mexe em `subscription_status` (dinheiro), nunca no `lifecycle_state` (a relação).
+  //    Encerrar cliente continua sendo decisão do god mode — gateway não desliga ninguém.
+  const { data: vencidos, error: vErr } = await supabaseAdmin
+    .from("tenants")
+    .select("id")
+    .not("subscription_ends_at", "is", null)
+    .lt("subscription_ends_at", nowIso)
+    .neq("subscription_status", "canceled")
+  if (vErr) console.error("[housekeeping] leitura de cancelamentos vencidos falhou:", vErr.message)
+
+  let encerrados = 0
+  for (const t of vencidos ?? []) {
+    const { error } = await supabaseAdmin
+      .from("tenants")
+      .update({ subscription_status: "canceled", subscription_ends_at: null })
+      .eq("id", (t as { id: string }).id)
+    if (error) console.error("[housekeeping] falha ao encerrar assinatura:", (t as { id: string }).id, error.message)
+    else encerrados++
+  }
+  if (encerrados > 0) console.log(JSON.stringify({ src: "housekeeping", kind: "assinaturas-encerradas", n: encerrados }))
+
   // 2. Purga PII: consumidas + expiradas (sequencial pra não dupla-contar a corrida).
   const { data: consumed } = await supabaseAdmin
     .from("signup_verifications").delete().not("consumed_at", "is", null).select("id")

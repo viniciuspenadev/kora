@@ -20,7 +20,16 @@ export default async function FaturasPage({
 
   // TODO(dev): `select * from invoices where tenant_id = … order by due_date desc`.
   const { degrau } = await searchParams
-  const { faturas } = buildMock(parseDegrau(degrau))
+  // ⚠️ Esta página ficou pra trás quando as irmãs foram ligadas ao dado real (achado do
+  //    revisor, 2026-08-04): o script que fez a troca casou `const mock = buildMock(...)`
+  //    e esta usa `const { faturas } = ...`. O import de `loadAssinatura` entrou, a troca
+  //    não — e como import não usado não quebra nada, ninguém reclamou. Sem isto, o
+  //    cliente veria TRÊS faturas pagas do "Plano Pro" que nunca existiram, e clicar em
+  //    qualquer uma daria 404 (o id do mock não é uuid).
+  const preview = degrau && session.user.isPlatformAdmin
+  const { faturas } = preview
+    ? buildMock(parseDegrau(degrau))
+    : await loadAssinatura(session.user.tenantId)
 
   return (
     <AssinaturaShell>
