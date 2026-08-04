@@ -97,11 +97,26 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
   const plano = t?.plans ?? null
 
   // ── A única linha que pode virar dinheiro hoje ────────────────
+  //
+  // 🔴 DUAS COTAS DIFERENTES, E A TELA TEM QUE USAR A DO DINHEIRO (achado do revisor,
+  //    2026-08-04). Elas parecem a mesma coisa e não são:
+  //      • `tenant_limits.users`  = quanto ele PODE usar (a cortesia concedida no god mode)
+  //      • `plans.user_quota`     = quanto está INCLUSO NO PREÇO
+  //    Medido na Blue: limite 10, cota de preço 3, 5 usuários ativos. Usando o limite, a
+  //    tela mostrava "5 de 10, sem excedente → R$ 449,90"; o motor de fatura
+  //    (`billing.ts`, `max(0, users - plan.user_quota)`) geraria **R$ 529,70**.
+  //    O cliente veria 449,90 no dia 5 e receberia 529,70 no dia 6 — que é exatamente o
+  //    "número que aparece pela primeira vez na fatura", a falha que esta tela existe
+  //    pra evitar.
+  // ⚠️ A cortesia continua valendo pro LIMITE (ele pode ter 10). Ela só não muda o preço —
+  //    e é isso que a tela precisa dizer, porque é isso que vai ser cobrado.
   const usersLimit = limits.find((l) => l.resource === "users")
   const precoExtra = plano?.extra_user_price_cents ?? 0
-  const cotaUsers  = usersLimit?.max ?? null
   const usados     = usersLimit?.used ?? 0
-  // ⚠️ Excedente = o que JÁ rodou além da cota. Cota nula (ilimitado) nunca gera excedente.
+  /** Teto de uso (cortesia/override). Só exibição — não entra na conta. */
+  const limiteUso  = usersLimit?.max ?? null
+  /** Cota que o PREÇO inclui. É a que o motor de fatura usa, então é a que conta. */
+  const cotaUsers  = plano?.user_quota ?? null
   const excedente  = cotaUsers === null ? 0 : Math.max(0, usados - cotaUsers)
 
   const medidas: LinhaMedidaData[] = [{
@@ -117,7 +132,9 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     //    longo do mês como mensagem cresce — projetar "no ritmo atual" aqui inventaria uma
     //    conta futura a partir de um número que só muda quando alguém convida alguém.
     projecaoCents: excedente * precoExtra,
-    parou: usersLimit ? !usersLimit.ok && excedente === 0 : false,
+    // ⛔ "parou" = bateu no TETO DE USO (não dá pra convidar mais ninguém). É outra coisa
+    //    que excedente: excedente é serviço prestado e cobrado; parou é porta fechada.
+    parou: limiteUso !== null && usados >= limiteUso,
   }]
 
   // ── Tudo o mais: cota sem preço ───────────────────────────────
