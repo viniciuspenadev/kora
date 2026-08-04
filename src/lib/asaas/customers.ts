@@ -110,3 +110,67 @@ export async function ensureAsaasCustomer(tenantId: string): Promise<{ id: strin
     return { error: msg }
   }
 }
+
+/**
+ * Reenvia ao Asaas o cadastro atual do tenant.
+ *
+ * 🔑 POR QUE EXISTE. `ensureAsaasCustomer` copia o cadastro **uma vez**, na criação. Se o
+ *    cliente corrigir o endereço ou o e-mail depois (em /configuracoes/empresa), o gateway
+ *    continuaria com o dado velho — e é o dado do gateway que vai no recibo, na régua de
+ *    cobrança e na análise antifraude do cartão. Endereço divergente do titular é uma das
+ *    causas clássicas de recusa: o cliente corrige no Kora, acha que resolveu, e o cartão
+ *    segue sendo negado por um dado que só nós enxergamos.
+ *
+ * ⚠️ Silencioso quando não há o que sincronizar: cliente sem `asaas_customer_id` (cobrança
+ *    manual, ou que nunca chegou a pagar) devolve `ok` sem chamar o gateway. Não é erro —
+ *    é o caso normal da maioria.
+ *
+ * ⚠️ NUNCA muda `externalReference`. É o carimbo de tenancy que o webhook usa pra saber
+ *    de quem é o pagamento; reescrevê-lo por engano faria a Kora dar baixa em fatura alheia.
+ */
+export async function syncAsaasCustomer(tenantId: string): Promise<{ ok: true } | { error: string }> {
+  const { data: tenant, error: tErr } = await supabaseAdmin
+    .from("tenants")
+    .select("asaas_customer_id")
+    .eq("id", tenantId)
+    .maybeSingle()
+
+  if (tErr) return { error: "Não foi possível ler o cliente." }
+
+  const customerId = (tenant as { asaas_customer_id?: string | null } | null)?.asaas_customer_id
+  if (!customerId) return { ok: true }   // nada no gateway ainda — nada a espelhar
+
+  const { data: perfil } = await supabaseAdmin
+    .from("tenant_billing_profile")
+    .select("legal_name, trade_name, tax_id, billing_email, phone, zip, street, number, complement, district")
+    .eq("tenant_id", tenantId)
+    .maybeSingle()
+
+  const p = (perfil ?? {}) as BillingProfileRow
+  const cpfCnpj = digits(p.tax_id)
+  const nome    = p.legal_name?.trim() || p.trade_name?.trim() || ""
+
+  // Fail-closed: sem os dois obrigatórios, não manda nada. Um PUT com `name` vazio
+  // apagaria o nome que já está correto lá.
+  if (!cpfCnpj || !nome) return { error: "Cadastro incompleto para sincronizar." }
+
+  try {
+    await asaas.put(`/customers/${customerId}`, {
+      name:          nome,
+      cpfCnpj,
+      email:         p.billing_email || undefined,
+      mobilePhone:   digits(p.phone) || undefined,
+      postalCode:    digits(p.zip) || undefined,
+      address:       p.street || undefined,
+      addressNumber: p.number || undefined,
+      complement:    p.complement || undefined,
+      province:      p.district || undefined,
+    })
+    return { ok: true }
+  } catch (e) {
+    // ⚠️ Só a mensagem — o payload tem CPF/CNPJ e endereço (PII).
+    const msg = e instanceof AsaasError ? e.message : "Falha ao sincronizar o cliente no gateway."
+    console.error(JSON.stringify({ src: "asaas", kind: "sync-customer-falhou", tenant: tenantId, msg }))
+    return { error: msg }
+  }
+}

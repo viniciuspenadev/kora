@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
-  Search, User, Users, Gauge, CreditCard, Headset, Tag as TagIcon, IdCard,
+  Search, User, Users, Gauge, CreditCard, Headset, Tag as TagIcon, IdCard, Building2,
   ListChecks, MessageSquare, SlidersHorizontal, FileText, ClipboardList, Mail, Plug,
   ExternalLink,
 } from "lucide-react"
@@ -36,6 +36,11 @@ const GROUPS: { key: string; label: string; items: Item[] }[] = [
   { key: "conta", label: "Conta", items: [
     { href: "/configuracoes/perfil",    label: "Perfil",         icon: User },
     { href: "/configuracoes/equipe",    label: "Organização",    icon: Users },
+    // ⚠️ Sem gate de módulo, e é de propósito: é o cadastro fiscal do próprio cliente —
+    //    de onde saem CNPJ, endereço e e-mail de faturamento. Esconder atrás de add-on
+    //    seria esconder a tela que destrava a assinatura. O recorte é de PAPEL
+    //    (owner/admin) e mora na página, que devolve `null` e redireciona pra quem não pode.
+    { href: "/configuracoes/empresa",   label: "Dados da empresa", icon: Building2 },
     { href: "/configuracoes/uso",       label: "Uso e limites",  icon: Gauge },
     // ✅ SUBSTITUÍDO em 2026-08-03. Este item apontava pra `/configuracoes/cobranca`, uma
     //    rota que **nunca existiu** — 404 esperando acontecer. Passou despercebido porque

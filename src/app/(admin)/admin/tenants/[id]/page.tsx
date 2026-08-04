@@ -1,10 +1,22 @@
 import { notFound } from "next/navigation"
 import Link from "next/link"
-import { Users, Contact, MessagesSquare, Inbox, Crown, Smartphone, CalendarClock, Clock, History } from "lucide-react"
+import { Users, Contact, MessagesSquare, Inbox, Crown, Smartphone, CalendarClock, Clock, History, Compass, Briefcase, UsersRound, Wrench } from "lucide-react"
 import { supabaseAdmin } from "@/lib/supabase"
 import { LifecycleActions } from "@/components/admin/lifecycle-actions"
 import { EmergencyRevoke } from "@/components/admin/emergency-revoke"
 import { STATE_META, normalizeState, trialCountdownLabel } from "@/lib/lifecycle-shared"
+import { ORIGENS, SEGMENTOS, TAMANHOS, FERRAMENTAS, type Opcao } from "@/lib/onboarding-options"
+
+/**
+ * Traduz o valor gravado no rótulo que o cliente viu.
+ * ⚠️ Devolve o valor cru quando não acha — valor antigo de uma opção renomeada aparece
+ *    como está, e não some da tela. Sumir seria a operação achar que o campo está vazio.
+ */
+function rotulo(lista: Opcao[], valor: string | null | undefined): string | null {
+  const v = (valor ?? "").trim()
+  if (!v) return null
+  return lista.find((o) => o.value === v)?.label ?? v
+}
 
 function fmtNum(n: number): string {
   return n.toLocaleString("pt-BR")
@@ -38,7 +50,7 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
 
   const { data: tenant } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, plan, active, lifecycle_state, trial_ends_at, created_at")
+    .select("id, name, plan, active, lifecycle_state, trial_ends_at, created_at, acquisition_source, acquisition_detail, business_segment, team_size, current_tool, onboarding_profile_at, onboarding_skipped_at")
     .eq("id", id)
     .maybeSingle()
 
@@ -75,6 +87,26 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
   const wa = instanceRes.data
   const waMeta = wa ? (WA_STATUS[wa.status] ?? { label: wa.status, tone: "text-slate-600 bg-slate-50 border-slate-200" }) : null
   const lastActivity = lastConvRes.data?.last_message_at ?? null
+
+  // ── Cadastro do cliente (wizard de boas-vindas) ───────────────────────────
+  const tw = tenant as unknown as Record<string, string | null>
+  const origem = rotulo(ORIGENS, tw.acquisition_source)
+  const perfilNegocio: { label: string; valor: string; icon: typeof Users }[] = [
+    // O complemento anda colado na origem: "Indicação · Maria da Silva" diz muito mais
+    // que as duas coisas em linhas separadas.
+    origem   && { label: "Como conheceu", valor: tw.acquisition_detail ? `${origem} · ${tw.acquisition_detail}` : origem, icon: Compass },
+    { label: "Segmento",   valor: rotulo(SEGMENTOS, tw.business_segment), icon: Briefcase },
+    { label: "Time",       valor: rotulo(TAMANHOS, tw.team_size),         icon: UsersRound },
+    { label: "Usa hoje",   valor: rotulo(FERRAMENTAS, tw.current_tool),   icon: Wrench },
+  ].filter((l): l is { label: string; valor: string; icon: typeof Users } => Boolean(l && l.valor))
+
+  const estadoCadastro = tw.onboarding_profile_at
+    ? { label: "Concluído", tone: "bg-green-50 text-green-700 border-green-200" }
+    : tw.onboarding_skipped_at
+      // "Pulou" é informação comercial, não falha: diz que a pessoa quis usar antes de
+      // se cadastrar. Quem fala com ela precisa saber disso antes de cobrar o cadastro.
+      ? { label: "Deixou pra depois", tone: "bg-amber-50 text-amber-700 border-amber-200" }
+      : null
 
   const stats = [
     { label: "Usuários",  value: usersCount ?? 0,    icon: Users,          href: `/admin/tenants/${id}/usuarios` },
@@ -152,6 +184,33 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
           </InfoRow>
         </div>
       </div>
+
+      {/* Como chegou + perfil declarado — vem do wizard de boas-vindas.
+          ⚠️ Some inteiro quando não há NADA respondido. Um card com cinco "—" ocupa a
+             mesma altura que um card cheio e não informa nada; a ausência já é a resposta. */}
+      {(perfilNegocio.length > 0 || estadoCadastro) && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-bold text-slate-900">Como chegou e o que faz</h2>
+            {estadoCadastro && (
+              <span className={`inline-flex items-center h-6 text-[11px] font-semibold px-2.5 rounded-md border ${estadoCadastro.tone}`}>
+                {estadoCadastro.label}
+              </span>
+            )}
+          </div>
+          {perfilNegocio.length > 0 ? (
+            <div className="divide-y divide-slate-100">
+              {perfilNegocio.map((linha) => (
+                <InfoRow key={linha.label} icon={linha.icon} label={linha.label}>
+                  <span className="text-slate-700">{linha.valor}</span>
+                </InfoRow>
+              ))}
+            </div>
+          ) : (
+            <p className="px-5 py-4 text-xs text-slate-400">O cliente ainda não respondeu o cadastro.</p>
+          )}
+        </div>
+      )}
 
       {/* Histórico do ciclo de vida (audit_log) */}
       {lifecycleEvents.length > 0 && (

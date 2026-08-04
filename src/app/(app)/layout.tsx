@@ -28,7 +28,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes, scope] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("name, plan, active")
+      .select("name, plan, active, onboarding_profile_at, onboarding_skipped_at")
       .eq("id", session.user.tenantId)
       .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
@@ -61,6 +61,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   ])
   if (!tenant) redirect("/auth/signin")
   if (!tenant.active) redirect("/auth/signin")
+
+  // ── Primeiro acesso: leva pro wizard de cadastro ──────────────────────────
+  // 🔑 UMA VEZ SÓ. Dispara apenas quando nunca concluiu **e** nunca clicou em "depois" —
+  //    o dono decidiu que o cadastro é pulável, e um wizard que reaparece a cada login
+  //    depois de a pessoa dizer "depois" é justamente o contrário de pulável.
+  // ⚠️ Só owner/admin. Atendente não tem o que responder num cadastro fiscal, e ser
+  //    empurrado pra um formulário que ele não pode salvar seria um beco sem saída.
+  // ⚠️ Quem pulou não some do radar: o passo "Completar cadastro" fica no checklist de
+  //    setup (banner), e o gate de assinatura cobra o que faltar na hora de pagar.
+  const t = tenant as { onboarding_profile_at?: string | null; onboarding_skipped_at?: string | null }
+  if (isManager && !t.onboarding_profile_at && !t.onboarding_skipped_at) {
+    redirect("/bem-vindo")
+  }
   const hasOfficial = !!officialRes.data
   const pipelines = (pipelinesRes.data ?? []) as { id: string; name: string; color: string; is_default: boolean }[]
   const dealPipelines = (dealPipelinesRes.data ?? []) as { id: string; name: string; color: string; is_default: boolean }[]

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { auth } from "@/auth"
+import { rateLimit } from "@/lib/rate-limit"
 import { BRASILAPI_HEADERS } from "@/lib/brasilapi"
 
 /**
@@ -56,6 +57,13 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ cep
   const session = await auth()
   if (!session?.user?.tenantId) {
     return NextResponse.json({ error: "Não autenticado" }, { status: 401 })
+  }
+
+  // Mesmo motivo do /api/cnpj: sem teto, a rota é um proxy de consulta com login, e o
+  // bloqueio da origem cai no nosso IP. Teto mais folgado porque o CEP é digitado em
+  // muitos formulários (contato, empresa, proposta, wizard) numa mesma sessão de trabalho.
+  if (!rateLimit(`cep:${session.user.tenantId}`, 200, 60 * 60_000).ok) {
+    return NextResponse.json({ error: "Muitas consultas. Tente de novo em alguns minutos." }, { status: 429 })
   }
 
   const cep = (await params).cep.replace(/\D/g, "")

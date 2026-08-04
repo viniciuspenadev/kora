@@ -58,6 +58,46 @@ const REDACT_PATHS = [
   "req.headers.cookie",
   "headers.authorization",
   "headers.cookie",
+
+  // ── 💳 DADO DE CARTÃO (PCI-DSS) ──────────────────────────────────────────
+  // 🔴 ADICIONADO ANTES DE EXISTIR ROTA DE CARTÃO, de propósito (2026-08-04).
+  //    O dono decidiu processar o pagamento no Kora (não em checkout hospedado), então a
+  //    API do Asaas recebe número e CVV no corpo da requisição — o dado transita pelo
+  //    nosso backend. Cartão em log é o achado que encerra uma auditoria de PCI, e o
+  //    momento de fechar isso é ANTES da primeira linha que toca no cartão, não depois:
+  //    depois, o vazamento já aconteceu e vive nos logs retidos.
+  //
+  // ⚠️ Os wildcards do pino são de UM nível só. Por isso a lista tem as três formas de
+  //    cada campo — raiz, `*.campo` e `creditCard.campo`. Confiar só em `*.number` deixaria
+  //    passar `body.creditCard.number`, que é exatamente a forma que o Asaas usa.
+  //
+  // ⚠️ Isto é a SEGUNDA parede. A primeira é não logar o corpo: `lib/asaas/client.ts` loga
+  //    só a FORMA (método, caminho, status). Este redactor existe pro dia em que alguém
+  //    escrever `logger.error({ ...contexto })` num catch e o contexto carregar o payload.
+  "creditCard",
+  "*.creditCard",
+  "creditCard.number",
+  "creditCard.ccv",
+  "creditCard.holderName",
+  "creditCard.expiryMonth",
+  "creditCard.expiryYear",
+  "creditCardToken",
+  "*.creditCardToken",
+  "creditCardHolderInfo",
+  "*.creditCardHolderInfo",
+  "ccv",
+  "*.ccv",
+  "holderName",
+  "*.holderName",
+  "expiryMonth",
+  "*.expiryMonth",
+  "expiryYear",
+  "*.expiryYear",
+  // ⚠️ `number` é genérico e vai redatar campos inocentes chamados "number" em log de
+  //    debug. É o preço certo a pagar: um log menos legível vale menos que um número de
+  //    cartão em texto puro.
+  "number",
+  "*.number",
 ]
 
 export const logger = pino({

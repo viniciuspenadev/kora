@@ -8,12 +8,19 @@ import { validatePassword } from "@/lib/password"
 import { verifyTurnstile } from "@/lib/turnstile"
 import { rateLimit } from "@/lib/rate-limit"
 import { applyDefaultModules } from "@/lib/modules"
-import { applyPlan } from "@/lib/plans"
+import { applyPlan, getSignupTrialPlan } from "@/lib/plans"
 import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { sendEmail, buildVerificationEmail } from "@/lib/email/send"
 import { seedTrustForCurrentDevice } from "@/lib/auth/trust"
 
 type Result = { ok: boolean; error?: string }
+
+/**
+ * Política aceita no cadastro. ⚠️ Precisa bater com o link que o formulário mostra
+ * (`components/signup/signup-client.tsx`) — guardar uma URL que a pessoa não viu seria
+ * pior que não guardar nada.
+ */
+const PRIVACY_POLICY_URL = "https://www.omnikora.com.br/privacidade"
 
 const CODE_TTL_MIN = 15
 const MAX_ATTEMPTS = 6
@@ -45,30 +52,14 @@ const isEmail = (s: string)  => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) && s.length
 const OTP_PEPPER = process.env.OTP_PEPPER || process.env.AUTH_SECRET || "kora-otp-dev-pepper"
 const hashCode = (code: string) => crypto.createHmac("sha256", OTP_PEPPER).update(code).digest("hex")
 
-function isValidCPF(v: string): boolean {
-  const d = digits(v)
-  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false
-  const dv = (len: number) => {
-    let sum = 0
-    for (let i = 0; i < len; i++) sum += +d[i] * (len + 1 - i)
-    const r = (sum * 10) % 11
-    return r === 10 ? 0 : r
-  }
-  return dv(9) === +d[9] && dv(10) === +d[10]
-}
-
-function isValidCNPJ(v: string): boolean {
-  const d = digits(v)
-  if (d.length !== 14 || /^(\d)\1{13}$/.test(d)) return false
-  const dv = (len: number) => {
-    const w = len === 12 ? [5,4,3,2,9,8,7,6,5,4,3,2] : [6,5,4,3,2,9,8,7,6,5,4,3,2]
-    let sum = 0
-    for (let i = 0; i < len; i++) sum += +d[i] * w[i]
-    const r = sum % 11
-    return r < 2 ? 0 : 11 - r
-  }
-  return dv(12) === +d[12] && dv(13) === +d[13]
-}
+// ⚠️ Os validadores de CPF/CNPJ VIVIAM AQUI, duplicados de `lib/masks.ts` (2026-08-04).
+//    Fórmulas diferentes, resultado igual — conferido caso a caso: `(soma*10) % 11` e
+//    `11 - (soma % 11)` colapsam no mesmo dígito nos 11 restos possíveis, e os pesos
+//    explícitos do CNPJ reproduzem exatamente o `pos--` com reset em 9.
+//    Foram removidos porque duas cópias do mesmo julgamento é como o cadastro e a tela
+//    de cobrança passam a discordar sobre o que é um documento válido — e a discordância
+//    não aparece como erro, aparece como cliente barrado sem explicação.
+//    Hoje a validação toda mora em `lib/billing/fiscal-profile.ts`, que importa de `masks`.
 
 function slugify(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -90,13 +81,11 @@ async function clientIp(): Promise<string | undefined> {
 }
 
 /** True se email/CPF-CNPJ/telefone já pertencem a alguém (anti-abuse). */
-async function alreadyExists(email: string, tax: string, phone: string): Promise<boolean> {
+async function alreadyExists(email: string, phone: string): Promise<boolean> {
   const { data: prof } = await supabaseAdmin.from("profiles").select("id").eq("email", email).maybeSingle()
   if (prof) return true
-  if (tax) {
-    const { data } = await supabaseAdmin.from("tenant_billing_profile").select("tenant_id").eq("tax_id", tax).maybeSingle()
-    if (data) return true
-  }
+  // ⚠️ O DOCUMENTO SAIU DAQUI (2026-08-04) porque saiu do formulário — não porque deixou
+  //    de importar. Quem guarda essa porta agora é `saveMyCompanyProfile`, no wizard.
   if (phone) {
     const { data } = await supabaseAdmin.from("tenant_billing_profile").select("tenant_id").eq("phone", phone).maybeSingle()
     if (data) return true
@@ -121,12 +110,26 @@ export interface SignupInput {
   name:         string
   email:        string
   phone:        string
-  personType:   "pf" | "pj"
-  taxId:        string
   password:     string
   consent:      boolean
   captchaToken: string
 }
+
+// ⚠️ O FORMULÁRIO PÚBLICO NÃO PEDE NADA FISCAL — nem documento, nem endereço.
+//    Decisão do dono (2026-08-04), em dois passos. Primeiro saiu o endereço: CEP e número
+//    soltos aqui eram campos órfãos — não puxavam nada (as consultas exigem sessão) e ainda
+//    assim não completavam o cadastro. Depois saiu o próprio CPF/CNPJ, pelo mesmo raciocínio
+//    levado até o fim: **o lugar de perguntar é onde dá pra ajudar a responder.**
+//    O documento agora é a 1ª pergunta do wizard de boas-vindas, onde digitar o CNPJ
+//    preenche razão social, endereço, telefone e e-mail **na frente da pessoa**, e ela
+//    confirma. Aqui ela só cria a conta: nome, e-mail, WhatsApp e senha.
+//
+// 🔴 TROCA CONSCIENTE NO ANTI-ABUSO. `alreadyExists` barrava cadastro repetido por TRÊS
+//    chaves (e-mail · telefone · documento); sem o documento na porta, sobram duas. A
+//    checagem NÃO sumiu — mora em `saveMyCompanyProfile`, fail-closed, e recusa documento
+//    que já seja de outra conta. O que mudou é QUANDO: quem pula o wizard fica com um teste
+//    sem nunca ter apresentado documento. Como o cadastro é pulável por decisão do dono,
+//    isso já valia pra quem pulava; e-mail e telefone continuam sendo o atrito real.
 
 export async function startSignup(input: SignupInput): Promise<Result> {
   const ip    = await clientIp()
@@ -138,16 +141,12 @@ export async function startSignup(input: SignupInput): Promise<Result> {
   const name  = input.name?.trim()
   const email = input.email?.trim().toLowerCase()
   const phone = digits(input.phone)
-  const tax   = digits(input.taxId)
-  const type  = input.personType === "pf" ? "pf" : "pj"
 
   if (!input.consent)                       return { ok: false, error: "É preciso aceitar a Política de Privacidade." }
   if (!name || name.length < 2)             return { ok: false, error: "Informe seu nome." }
   if (name.length > 120)                    return { ok: false, error: "Nome muito longo." }
   if (!email || !isEmail(email))            return { ok: false, error: "Email inválido." }
   if (phone.length < 10 || phone.length > 13) return { ok: false, error: "WhatsApp inválido (informe com DDD)." }
-  if (type === "pf" && !isValidCPF(tax))    return { ok: false, error: "CPF inválido." }
-  if (type === "pj" && !isValidCNPJ(tax))   return { ok: false, error: "CNPJ inválido." }
   const pwErr = validatePassword(input.password)
   if (pwErr) return { ok: false, error: pwErr }
 
@@ -173,13 +172,13 @@ export async function startSignup(input: SignupInput): Promise<Result> {
   }
 
   // Anti-abuse: email/telefone/CPF/CNPJ já cadastrados
-  if (await alreadyExists(email, tax, phone)) {
+  if (await alreadyExists(email, phone)) {
     return { ok: false, error: "Já existe um cadastro com esse email, telefone ou documento. Faça login ou fale com a gente." }
   }
 
-  const { data: plan } = await supabaseAdmin
-    .from("plans").select("id").gt("trial_days", 0).eq("active", true)
-    .order("position", { ascending: true }).limit(1).maybeSingle()
+  // 🔑 O plano vem do GOD MODE, pelo mesmo helper que a tela de cadastro usa pra
+  //    anunciar o prazo — assim o que a pessoa lê e o que ela recebe são o mesmo plano.
+  const plan = await getSignupTrialPlan()
 
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0")
   const passwordHash = await bcrypt.hash(input.password, 10)
@@ -187,7 +186,9 @@ export async function startSignup(input: SignupInput): Promise<Result> {
   await supabaseAdmin.from("signup_verifications").delete().eq("email", email).is("consumed_at", null)
   const { error: insErr } = await supabaseAdmin.from("signup_verifications").insert({
     email, code_hash: hashCode(code), password_hash: passwordHash,
-    name, phone, person_type: type, tax_id: tax, plan_id: plan?.id ?? null,
+    // person_type fica com o default 'pj' da coluna e `tax_id` nulo: quem responde isso
+    // agora é o wizard, e escrever palpite aqui seria dado falso no perfil fiscal.
+    name, phone, plan_id: plan?.id ?? null,
     ip: ip ?? null, expires_at: new Date(Date.now() + CODE_TTL_MIN * 60_000).toISOString(),
   })
   if (insErr) return { ok: false, error: "Erro ao iniciar o cadastro. Tente de novo." }
@@ -273,7 +274,7 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
   if (!claimed) return { ok: false, error: "Cadastro já processado." }
 
   // Re-checa unicidade (corrida entre start e confirm) — a linha já está consumida.
-  if (await alreadyExists(e, row.tax_id ?? "", row.phone ?? "")) {
+  if (await alreadyExists(e, row.phone ?? "")) {
     return { ok: false, error: "Já existe um cadastro com esses dados." }
   }
 
@@ -307,6 +308,19 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
     lifecycle_state: autoActivate ? (hasExpiry ? "trialing" : "active") : "pending_approval",
     trial_ends_at:   autoActivate && hasExpiry ? new Date(Date.now() + trialDays * 86_400_000).toISOString() : null,
     activated_at:    autoActivate ? nowIso : null,
+    // ⚖️ Prova do consentimento (LGPD Art. 8 §1 — o ônus é do controlador).
+    //
+    // 🔴 Até 2026-08-04 o aceite era VALIDADO no passo 1 e DESCARTADO: não havia coluna,
+    //    tabela nem log. Não existia como provar que qualquer cliente aceitou a política.
+    // 🔑 A data vem de `row.created_at` e o IP de `row.ip` porque é ali que o aceite
+    //    aconteceu de fato — no formulário, não neste insert (que roda minutos depois,
+    //    possivelmente de outro IP, se a pessoa confirmou o código no celular).
+    // 🔑 Chegar até aqui JÁ É a prova do aceite: `startSignup` recusa sem `consent`, então
+    //    não existe linha de verificação sem consentimento dado. Guardar as três colunas é
+    //    tornar isso auditável sem depender de ler o código.
+    privacy_accepted_at: row.created_at ?? nowIso,
+    privacy_accepted_ip: row.ip ?? null,
+    privacy_policy_url:  PRIVACY_POLICY_URL,
     // 💳 Quem entra pelo cadastro nasce na esteira de cobrança (docs/asaas-billing-design.md §2).
     //
     // 🔴 EXPLÍCITO, e não o DEFAULT da coluna, de propósito. O default é `'manual'` porque
@@ -325,9 +339,21 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
   if (tErr || !tenant) return { ok: false, error: "Erro ao criar o ambiente." }
 
   await supabaseAdmin.from("tenant_users").insert({ tenant_id: tenant.id, user_id: profile.id, role: "owner", active: true })
+  // ── Perfil fiscal: nasce com o que a porta sabe ──────────────────────────
+  //
+  // ⚠️ SÓ nome, e-mail e telefone. Documento e endereço são a 1ª pergunta do wizard de
+  //    boas-vindas — lá a consulta de CNPJ funciona (tem sessão) e preenche razão social
+  //    e endereço NA FRENTE da pessoa, que confirma. Aqui não há o que consultar.
+  //
+  // 🔴 O perfil nasce INCOMPLETO de propósito, e isso é diferente do bug que existia até
+  //    2026-08-04: antes ele nascia incompleto **sem que houvesse onde completar**, e
+  //    `getTitularParaCobranca` barrava 100% dos cadastros novos na hora de assinar, com
+  //    um aviso mandando falar com o suporte. Hoje há três lugares (wizard, Configurações
+  //    → Dados da empresa, e o link da própria tela de pagamento) e o checklist de setup
+  //    cobra o que falta.
   await supabaseAdmin.from("tenant_billing_profile").insert({
-    tenant_id: tenant.id, person_type: row.person_type, legal_name: row.name,
-    tax_id: row.tax_id, billing_email: e, phone: row.phone, responsible_name: row.name,
+    tenant_id: tenant.id, legal_name: row.name,
+    billing_email: e, phone: row.phone, responsible_name: row.name,
   })
 
   // Funil padrão + config (igual ao createTenant do god mode)

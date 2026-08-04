@@ -1,11 +1,11 @@
 "use client"
 
-import { useState, useRef, useEffect, useCallback } from "react"
+import { useState, useRef } from "react"
 import Link from "next/link"
 import Image from "next/image"
 import {
   Loader2, AlertCircle, ArrowRight, ArrowLeft, Mail, Lock, User,
-  Building2, IdCard, CheckCircle2, Eye, EyeOff,
+  CheckCircle2, Eye, EyeOff,
 } from "lucide-react"
 import { startSignup, confirmSignup, resendSignupCode } from "@/lib/actions/signup"
 import { Turnstile, TURNSTILE_SITE_KEY as SITE_KEY } from "@/components/ui/turnstile"
@@ -24,10 +24,6 @@ function applyMask(digits: string, pattern: string): string {
   }
   return out
 }
-const maskTax = (v: string, type: "pf" | "pj") => {
-  const d = v.replace(/\D/g, "").slice(0, type === "pf" ? 11 : 14)
-  return applyMask(d, type === "pf" ? "###.###.###-##" : "##.###.###/####-##")
-}
 const maskPhone = (v: string) => {
   const d = v.replace(/\D/g, "").slice(0, 11)
   return applyMask(d, d.length > 10 ? "(##) #####-####" : "(##) ####-####")
@@ -35,7 +31,12 @@ const maskPhone = (v: string) => {
 
 type Step = "form" | "verify" | "done"
 
-export function SignupClient() {
+/**
+ * @param trialDays duração real do teste, lida do plano pelo server component.
+ *        `null` = não deu pra ler ⇒ a frase sai SEM número, nunca com um chute. Prometer
+ *        um prazo errado é pior que não prometer prazo nenhum.
+ */
+export function SignupClient({ trialDays }: { trialDays: number | null }) {
   const [step, setStep]   = useState<Step>("form")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
@@ -43,8 +44,6 @@ export function SignupClient() {
   const [name, setName]         = useState("")
   const [email, setEmail]       = useState("")
   const [phone, setPhone]       = useState("")
-  const [type, setType]         = useState<"pj" | "pf">("pj")
-  const [taxId, setTaxId]       = useState("")
   const [password, setPassword] = useState("")
   const [showPw, setShowPw]     = useState(false)
   const [captcha, setCaptcha]   = useState("")
@@ -59,7 +58,7 @@ export function SignupClient() {
   async function submitForm(e: React.FormEvent) {
     e.preventDefault()
     setError(""); setLoading(true)
-    const r = await startSignup({ name, email, phone, personType: type, taxId, password, consent, captchaToken: captcha })
+    const r = await startSignup({ name, email, phone, password, consent, captchaToken: captcha })
     setLoading(false)
     if (r.ok) { setStep("verify"); setCode("") }
     else setError(r.error ?? "Não foi possível continuar.")
@@ -94,11 +93,11 @@ export function SignupClient() {
 
             {step === "form" && (
               <form onSubmit={submitForm} className="space-y-4 mt-6">
-                <Header title="Crie sua conta grátis" subtitle="3 dias de teste, sem cartão de crédito." />
+                <Header title="Crie sua conta grátis" subtitle={trialDays ? `${trialDays} dias de teste, sem cartão de crédito.` : "Teste sem cartão de crédito."} />
 
                 <Field icon={User}>
                   <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus disabled={loading}
-                    placeholder={type === "pj" ? "Nome da empresa" : "Seu nome completo"} className={INPUT} />
+                    placeholder="Seu nome ou o da sua empresa" className={INPUT} />
                 </Field>
                 <Field icon={Mail}>
                   <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" required disabled={loading}
@@ -111,23 +110,6 @@ export function SignupClient() {
                   <input value={phone} onChange={(e) => setPhone(maskPhone(e.target.value))} type="tel" inputMode="tel" required disabled={loading}
                     placeholder="(11) 99999-9999"
                     className="flex-1 h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-shadow disabled:opacity-50" />
-                </div>
-
-                {/* PF/PJ + documento */}
-                <div className="flex items-center gap-2">
-                  <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 shrink-0">
-                    {(["pj", "pf"] as const).map((t) => (
-                      <button key={t} type="button" disabled={loading}
-                        onClick={() => { setType(t); setTaxId(maskTax(taxId, t)) }}
-                        className={`h-9 px-3.5 text-xs font-semibold rounded-md transition-colors ${type === t ? "bg-primary text-white" : "text-slate-500 hover:text-slate-700"}`}>
-                        {t === "pj" ? "Empresa" : "Pessoa"}
-                      </button>
-                    ))}
-                  </div>
-                  <Field icon={type === "pj" ? Building2 : IdCard} className="flex-1">
-                    <input value={taxId} onChange={(e) => setTaxId(maskTax(e.target.value, type))} required disabled={loading} inputMode="numeric"
-                      placeholder={type === "pj" ? "00.000.000/0000-00" : "000.000.000-00"} className={INPUT} />
-                  </Field>
                 </div>
 
                 {/* Senha com mostrar/ocultar */}

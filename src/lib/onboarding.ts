@@ -36,6 +36,8 @@ export async function getSetupState(tenantId: string): Promise<SetupState> {
     { data: pipeline },
     { data: widget },
     { count: openInvitesCount },
+    { data: cadastro },
+    { data: tenantRow },
   ] = await Promise.all([
     supabaseAdmin
       .from("whatsapp_instances")
@@ -65,6 +67,17 @@ export async function getSetupState(tenantId: string): Promise<SetupState> {
       .select("id", { count: "exact", head: true })
       .eq("tenant_id", tenantId)
       .is("accepted_at", null),
+    // Cadastro fiscal — mesma régua de `getTitularParaCobranca` e do wizard.
+    supabaseAdmin
+      .from("tenant_billing_profile")
+      .select("legal_name, tax_id, billing_email, zip, number")
+      .eq("tenant_id", tenantId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from("tenants")
+      .select("onboarding_profile_at")
+      .eq("id", tenantId)
+      .maybeSingle(),
   ])
 
   // Status "connected" é suficiente — phone_number pode estar vazio mas instância funciona
@@ -75,7 +88,34 @@ export async function getSetupState(tenantId: string): Promise<SetupState> {
     ? !!widget.privacy_policy_url && !!widget.dpo_email
     : null  // null = não usa widget, opcional
 
+  // ── Cadastro do cliente ───────────────────────────────────────────────────
+  // 🔑 PASSO DAQUI, não banner novo. Este checklist já é a superfície de "o que falta
+  //    fazer" — um segundo banner disputando o mesmo topo de tela ensinaria a ignorar os
+  //    dois. Entra em PRIMEIRO porque é o único passo que, faltando, impede o cliente de
+  //    virar cliente pagante: sem ele o gate de assinatura barra a contratação.
+  // 🔴 "FEITO" OLHA O DADO, NUNCA O CARIMBO. A primeira versão disto era
+  //    `cadastroCompleto || wizardConcluido` — e isso mente em um caso real, não
+  //    hipotético: a pessoa conclui o wizard (carimbo gravado), depois apaga o CEP em
+  //    Configurações. O checklist continuaria dizendo "pronto pra faturamento" enquanto o
+  //    gate de assinatura barra a contratação. Duas telas discordando sobre o mesmo fato,
+  //    e a que o cliente lê primeiro é a que está errada.
+  //    O carimbo serve só pra decidir PRA ONDE mandar (wizard ou tela de edição).
+  const c = (cadastro ?? {}) as Record<string, string | null>
+  const cadastroCompleto = Boolean(c.legal_name && c.tax_id && c.billing_email && c.zip && c.number)
+  const wizardConcluido  = Boolean((tenantRow as { onboarding_profile_at?: string | null } | null)?.onboarding_profile_at)
+
   const steps: SetupStep[] = [
+    {
+      id:          "cadastro",
+      label:       "Completar cadastro",
+      description: cadastroCompleto
+        ? "Dados da empresa e endereço prontos pra faturamento"
+        : "Faltam dados que a gente precisa pra emitir sua cobrança",
+      done:        cadastroCompleto,
+      // `?editar=1` porque o wizard se recusa a reabrir sozinho depois de concluído —
+      // aqui a volta é intencional, então ela é explícita.
+      href:        wizardConcluido ? "/configuracoes/empresa" : "/bem-vindo?editar=1",
+    },
     {
       id:          "whatsapp",
       label:       "Conectar WhatsApp",
