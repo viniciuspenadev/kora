@@ -7,6 +7,7 @@
  */
 
 import { supabaseAdmin }    from "@/lib/supabase"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { renderTemplate }   from "./variables"
 import { isOutsideBusinessHours, type BusinessHoursSchedule } from "./business-hours"
 import { getProvider }      from "@/lib/providers"
@@ -45,6 +46,19 @@ const WELCOME_COOLDOWN_DEFAULT_MS = 24 * 60 * 60 * 1000 // 24h
 
 export async function dispatchAutomations(input: DispatchInput): Promise<void> {
   const { tenantId, conversationId, instance } = input
+
+  // 💸 DEGRAU 3 (docs/access-revocation-design.md §2): auto-resposta (boas-vindas, fora de
+  //    horário) é mensagem enviada — custo nosso. Inadimplente para de gastar; o atendente
+  //    dele continua respondendo na mão, que é a promessa do degrau.
+  // 🔒 Também fecha a defesa em profundidade que o pentest apontou: este motor não tinha
+  //    gate PRÓPRIO e só não vazava porque o webhook barrava antes. Chamador novo o
+  //    alcançaria pela porta dos fundos.
+  // ⚠️ `degraded` não corta — blip de banco não pode calar a auto-resposta de quem paga.
+  const spend = await checkTenantStatus(tenantId)
+  if (!spend.degraded && !spend.canSpend) {
+    console.warn("[automations] tenant sem direito a gasto — auto-resposta suprimida", tenantId)
+    return
+  }
 
   // 1. Carrega conversa + contato + tenant em uma volta
   const { data: convRow } = await supabaseAdmin

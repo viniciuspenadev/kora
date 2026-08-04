@@ -11,6 +11,7 @@
 
 import "server-only"
 import { hasModule } from "@/lib/modules"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { supabaseAdmin } from "@/lib/supabase"
 import { activeFlowRun } from "./flow/triggers"
 import type { RunAITurnInput, RunAITurnResult } from "@/types/automation"
@@ -33,6 +34,21 @@ export function channelDispatchesAI(channel: string | null | undefined): boolean
 }
 
 export async function routeAutomationTurn(input: RunAITurnInput): Promise<RunAITurnResult> {
+  // 💸 DEGRAU 3 DA ESCADA (docs/access-revocation-design.md §2) — inadimplente PARA de
+  //    gastar, mas continua atendendo na mão. Este é o gasto mais caro do produto: LLM na
+  //    NOSSA chave. O gate da porta (webhook) decide se a mensagem ENTRA; este decide se
+  //    ela custa. São perguntas diferentes e é por isso que existem os dois.
+  // 🔴 SEM ISTO A ESCADA É DECORATIVA: a tela vai dizer "IA pausada" e a IA responderia.
+  //    O cliente aprende em uma semana que aviso da Kora não vale, e aí nenhum aviso vale.
+  // ⚠️ `degraded` (falha de consulta) NÃO corta: preferimos gastar alguns centavos a
+  //    silenciar a IA de quem está em dia por causa de um blip de banco. Mesma assimetria
+  //    do webhook — só que lá o custo do erro é perder mensagem, aqui é gastar à toa.
+  const status = await checkTenantStatus(input.tenantId)
+  if (!status.degraded && !status.canSpend) {
+    console.warn("[ai-dispatch] tenant sem direito a gasto — IA não roda", input.tenantId)
+    return { status: "skipped", reason: "tenant_not_serviceable" }
+  }
+
   if (await hasModule(input.tenantId, "ai_studio")) {
     const result = await runStudioTurn(input)
     await maybeHandBackDecoupled(input, result)

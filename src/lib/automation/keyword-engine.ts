@@ -11,6 +11,7 @@
  */
 
 import { supabaseAdmin } from "@/lib/supabase"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { renderTemplate } from "./variables"
 import { getProvider } from "@/lib/providers"
 
@@ -83,6 +84,17 @@ export function matchTrigger(text: string, trigger: KeywordTrigger): boolean {
 export async function evaluateKeywordTriggers(input: EvaluateInput): Promise<boolean> {
   const { tenantId, conversationId, text, instance } = input
   if (!text?.trim()) return false
+
+  // 💸 DEGRAU 3 (docs/access-revocation-design.md §2): gatilho de palavra-chave dispara
+  //    resposta automática — mensagem enviada, custo nosso. Mesmo raciocínio do
+  //    `dispatchAutomations`; e fecha o mesmo buraco de defesa em profundidade (este motor
+  //    também não tinha gate próprio).
+  // ⚠️ `degraded` não corta — blip de banco não silencia quem está em dia.
+  const spend = await checkTenantStatus(tenantId)
+  if (!spend.degraded && !spend.canSpend) {
+    console.warn("[keyword-engine] tenant sem direito a gasto — gatilho suprimido", tenantId)
+    return false
+  }
 
   // 1. Carrega conversa + contato + agente atribuído
   const { data: conv } = await supabaseAdmin
