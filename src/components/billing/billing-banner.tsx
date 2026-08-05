@@ -37,7 +37,7 @@ import type { BillingStanding } from "./standing-contract"
 //    `terminated` o acesso já caiu e a pessoa não está numa tela com faixa — ali a
 //    conversa é uma PÁGINA inteira (escopo do outro designer), não uma tarja.
 
-type DegrauVisivel = "trial" | "grace" | "restricted" | "readonly"
+type DegrauVisivel = "trial" | "trial_ended" | "grace" | "restricted" | "readonly"
 
 const SUPERFICIE: Record<
   DegrauVisivel,
@@ -51,6 +51,16 @@ const SUPERFICIE: Record<
     tone: "quiet" | "primary" | "inverse"
   }
 > = {
+  // Teste ENCERRADO — vermelho: o produto parou. É fato consumado, não aviso.
+  trial_ended: {
+    faixa: "bg-red-50 border-red-200",
+    chip: "border-red-200 bg-red-100 text-red-800",
+    titulo: "text-red-900",
+    apoio: "text-red-800",
+    rotulo: "text-red-900",
+    item: "text-red-800",
+    tone: "primary",
+  },
   // Teste — âmbar como a restrição, porque a consequência é real (o acesso cai), mas
   // com o texto no futuro e não no passado: ninguém fez nada errado.
   trial: {
@@ -159,7 +169,9 @@ export function BillingBanner({
   const podeAssinar = standing.trial?.podeAssinar === true
 
   const titulo =
-    degrau === "trial"
+    degrau === "trial_ended"
+      ? "Seu teste terminou."
+      : degrau === "trial"
       ? (diasTrial <= 1 ? "Seu teste termina hoje." : `Seu teste termina em ${diasTrial} dias.`)
       : degrau === "grace"
       ? `${assunto} está em aberto.`
@@ -168,7 +180,9 @@ export function BillingBanner({
         : `${assunto} segue em aberto.`
 
   const apoio =
-    degrau === "trial"
+    degrau === "trial_ended"
+      ? (podeAssinar ? "ative sua assinatura para voltar a usar" : "complete o cadastro da empresa para poder ativar")
+      : degrau === "trial"
       ? (podeAssinar
           ? "depois disso o acesso é interrompido até você ativar a assinatura"
           : "complete o cadastro da empresa — sem ele não conseguimos emitir a cobrança")
@@ -232,7 +246,7 @@ export function BillingBanner({
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {degrau === "trial" ? (
+        {degrau === "trial" || degrau === "trial_ended" ? (
           // ⚠️ Sem cadastro completo o botão NÃO leva ao cartão: a tokenização falharia e
           //    a pessoa teria digitado o cartão inteiro pra receber um erro previsível.
           <PayNowButton

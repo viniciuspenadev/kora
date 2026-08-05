@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { applyPlan } from "@/lib/plans"
 import { asaas } from "./client"
 
 // ═══════════════════════════════════════════════════════════════
@@ -425,6 +426,29 @@ async function liberar(
 
   const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenant.id)
   if (error) { await fechar(ev.id, `falha ao liberar: ${error.message}`); return }
+
+  // 🔴 APLICA O PLANO — elo que faltava (2026-08-05). `applyPlan` só era chamado pelo god
+  //    mode e pelo signup: o cliente pagava, o `subscription_status` virava `active`, e os
+  //    módulos do plano contratado **nunca eram ligados**. Quem saía do Trial pagando
+  //    ficava com os módulos do Trial pra sempre, e quem escolhia um plano maior pagava
+  //    por ele sem receber. O dinheiro entrava e o produto não mudava.
+  // ⚠️ Aqui é o lugar certo, e não na escolha do plano: `escolherPlano` grava a INTENÇÃO
+  //    (`plan_id`), este ramo LIBERA — e ele só roda com pagamento confirmado. Liberar na
+  //    escolha deixaria qualquer um marcar o plano mais caro e nunca pagar.
+  // ⚠️ Best-effort com log ALTO: falhar aqui deixa um cliente que PAGOU sem os módulos.
+  //    Não desfaz a liberação (ele pagou, o acesso é dele) — grita pra ser reparado à mão.
+  const { data: comPlano } = await supabaseAdmin
+    .from("tenants").select("plan_id").eq("id", tenant.id).maybeSingle()
+  const planId = (comPlano as { plan_id?: string | null } | null)?.plan_id
+  if (planId) {
+    const ap = await applyPlan(tenant.id, planId)
+    if (!ap.ok) {
+      console.error(JSON.stringify({
+        src: "asaas-handler", kind: "plano-nao-aplicado-apos-pagamento",
+        tenant: tenant.id, plan: planId, msg: ap.error ?? null,
+      }))
+    }
+  }
 
   await darBaixaNaFatura(tenant.id, ev)
 

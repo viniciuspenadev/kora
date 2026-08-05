@@ -12,6 +12,23 @@
 export type LifecycleState =
   | "pending_approval"
   | "trialing"
+  /**
+   * Teste terminou e ninguém pagou — **a porta de pagar fica ABERTA** (2026-08-05).
+   *
+   * 🔴 O QUE ISTO CONSERTA. Antes, o fim do teste ia direto pra `suspended`, e
+   *    `suspended` nega login. Efeito medido no código: `login-core` devolvia `null`, que
+   *    a tela mostra como **erro genérico de credencial** — a pessoa que queria pagar
+   *    recebia exatamente a mesma resposta de quem digitou a senha errada. Sem aviso, sem
+   *    plano, sem botão. O momento de maior intenção de compra do funil terminava numa
+   *    porta sem maçaneta, e o único caminho de volta era ligar pro suporte.
+   *    Isso contrariava a própria política ratificada (*"a tela onde ele paga fica DENTRO
+   *    do sistema"*), que tinha sido aplicada só ao `subscription_status` — o fim do trial
+   *    escapava por `lifecycle_state`, a alavanca que corta acesso.
+   *
+   * ⚠️ **NÃO entra em `BLOCKED_LIFECYCLE`**: quem decide quem entra aqui é o PAPEL, e
+   *    `BLOCKED_LIFECYCLE` é sobre o tenant, não sobre a pessoa. Ver `isTenantBlockedForAccessAs`.
+   */
+  | "trial_ended"
   | "active"
   | "suspended"
   | "deactivated"
@@ -20,15 +37,26 @@ export type LifecycleAction =
   | "approve"      // pendente → trialing|active (inicia o relógio do trial)
   | "reject"       // pendente → deactivated
   | "extend"       // trialing → trialing (+N dias)
+  | "end_trial"    // trialing → trial_ended (teste venceu; porta de pagar segue aberta)
   | "start_trial"  // active|suspended|deactivated → trialing (N dias de acesso)
   | "activate"     // trialing|suspended|deactivated → active (pago, sem prazo)
   | "suspend"      // trialing|active → suspended
   | "reactivate"   // suspended|deactivated → active
   | "deactivate"   // active|suspended → deactivated
 
-/** Os 5 estados conhecidos — fonte do parse (não repetir a lista em switch). */
+/**
+ * Os 6 estados conhecidos — fonte do parse (não repetir a lista em switch).
+ *
+ * 🔴 ESTA LISTA É RUNTIME, o `type LifecycleState` é compile-time — e a diferença
+ *    morde. Ao adicionar `trial_ended` eu mexi só no tipo; o `tsc` ficou verde e o
+ *    comportamento ficou **invertido**: `normalizeState("trial_ended")` caía no
+ *    fail-closed e devolvia `suspended`, ou seja, o estado criado pra MANTER o dono
+ *    dentro trancava todo mundo pra fora. Peguei rodando a matriz de acesso de verdade
+ *    (owner/admin/agent × cada estado) — nenhum typecheck acusaria isso.
+ * ⚠️ Estado novo entra AQUI e no `type`, sempre nos dois.
+ */
 const KNOWN_STATES: ReadonlySet<string> = new Set<LifecycleState>([
-  "pending_approval", "trialing", "active", "suspended", "deactivated",
+  "pending_approval", "trialing", "trial_ended", "active", "suspended", "deactivated",
 ])
 
 /**
@@ -47,7 +75,7 @@ const KNOWN_STATES: ReadonlySet<string> = new Set<LifecycleState>([
  */
 export const UNKNOWN_LIFECYCLE_FALLBACK: LifecycleState = "suspended"
 
-/** `true` se o valor cru do banco é um dos 5 estados que este código entende. */
+/** `true` se o valor cru do banco é um dos 6 estados que este código entende. */
 export function isKnownLifecycleState(s: string | null | undefined): s is LifecycleState {
   return typeof s === "string" && KNOWN_STATES.has(s)
 }
@@ -87,6 +115,48 @@ export function normalizeState(s: string | null | undefined): LifecycleState {
 export const BLOCKED_LIFECYCLE: ReadonlySet<string> = new Set<LifecycleState>([
   "pending_approval", "suspended", "deactivated",
 ])
+
+/**
+ * Papéis que ainda entram com o teste encerrado — **os que podem PAGAR** (decisão do dono,
+ * 2026-08-05). Atendente não entra: ele não resolve a assinatura e ficaria olhando um
+ * produto travado sem nada a fazer.
+ */
+const PAPEIS_QUE_PAGAM: ReadonlySet<string> = new Set(["owner", "admin"])
+
+/**
+ * Acesso levando o PAPEL em conta. É a pergunta certa para `trial_ended`, onde o tenant
+ * não está bloqueado — **a pessoa é que pode estar**.
+ *
+ * ⚠️ Função separada em vez de um parâmetro novo em `isTenantBlockedForAccess`: aquela é
+ *    chamada em 8 lugares, vários deles sem papel à mão (webhook, cron, gate de gasto).
+ *    Parâmetro opcional ali significaria "sem papel = libera", e um chamador que
+ *    esquecesse de passar abriria o acesso em silêncio. Aqui o papel é obrigatório.
+ */
+export function isTenantBlockedForAccessAs(
+  lifecycleState: string | null | undefined,
+  role: string | null | undefined,
+): boolean {
+  if (isTenantBlockedForAccess(lifecycleState ?? null)) return true
+  if (normalizeState(lifecycleState) === "trial_ended") {
+    return !PAPEIS_QUE_PAGAM.has(role ?? "")
+  }
+  return false
+}
+
+/**
+ * Lifecycle que corta GASTO sem cortar acesso. `trial_ended` é o único hoje: o dono entra
+ * pra pagar, mas campanha, IA e automação param — senão o teste vira produto de graça por
+ * tempo indeterminado, que é exatamente o que o prazo existe pra impedir.
+ */
+export const SPEND_BLOCKED_LIFECYCLE: ReadonlySet<string> = new Set<LifecycleState>([
+  "trial_ended",
+])
+
+/**
+ * Dias que o cliente tem, depois do teste vencer, antes de a conta ser suspensa de vez.
+ * Decisão do dono (2026-08-05): **2 dias**, o mesmo número do próprio teste.
+ */
+export const TRIAL_ENDED_GRACE_DAYS = 2
 
 /** Vocabulário de `tenants.subscription_status` (20260531_billing.sql:7). */
 export type SubscriptionStatus = "active" | "past_due" | "canceled"
@@ -225,6 +295,7 @@ export function isTenantBlockedForSpendAt(
 export const STATE_META: Record<LifecycleState, { label: string; badge: string; dot: string; hint: string }> = {
   pending_approval: { label: "Aguardando", badge: "bg-amber-50 text-amber-700 border-amber-200",       dot: "bg-amber-500",   hint: "Precisa da sua aprovação" },
   trialing:         { label: "Trial",      badge: "bg-sky-50 text-sky-700 border-sky-200",             dot: "bg-sky-500",     hint: "Em período de teste" },
+  trial_ended:      { label: "Teste encerrado", badge: "bg-amber-50 text-amber-700 border-amber-200",  dot: "bg-amber-500",   hint: "Aguardando pagamento — só owner/admin entra" },
   active:           { label: "Ativo",      badge: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500", hint: "Cliente ativo" },
   suspended:        { label: "Suspenso",   badge: "bg-red-50 text-red-700 border-red-200",             dot: "bg-red-500",     hint: "Acesso bloqueado" },
   deactivated:      { label: "Desativado", badge: "bg-slate-100 text-slate-600 border-slate-200",      dot: "bg-slate-400",   hint: "Conta encerrada" },
@@ -248,6 +319,14 @@ export const TRANSITIONS: Record<LifecycleState, TransitionDef[]> = {
   pending_approval: [
     { action: "approve", label: "Habilitar", intent: "primary" },
     { action: "reject",  label: "Recusar",   intent: "danger", confirm: "Recusar este cadastro? A conta será encerrada.", modalTitle: "Recusar cadastro", confirmLabel: "Recusar" },
+  ],
+  // Teste encerrado: as mesmas saídas do trial. Estender devolve o cliente ao teste
+  // (é a ação de "dá mais um prazo pra ele"), ativar confirma o pagamento por fora,
+  // e suspender é o que o cron faz sozinho depois da carência.
+  trial_ended: [
+    { action: "extend",   label: "Estender teste", intent: "default", needsDays: true, modalTitle: "Estender teste", confirmLabel: "Estender" },
+    { action: "activate", label: "Ativar (pago)",  intent: "primary" },
+    { action: "suspend",  label: "Suspender",      intent: "danger", confirm: SUSPEND, modalTitle: "Suspender cliente", confirmLabel: "Suspender" },
   ],
   trialing: [
     { action: "extend",   label: "Estender",      intent: "default", needsDays: true, modalTitle: "Estender trial", confirmLabel: "Estender" },

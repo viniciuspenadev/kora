@@ -78,8 +78,29 @@ function validate(input: PlanInput): string | null {
   return null
 }
 
-function clean(input: PlanInput) {
-  const incluidos = Array.from(new Set((input.included_modules ?? []).map((s) => s.trim()).filter(Boolean)))
+/**
+ * Slugs que existem MESMO no catálogo.
+ *
+ * 🔴 POR QUE ISTO EXISTE (2026-08-05). O formulário do god mode reescreve
+ *    `included_modules` inteiro a partir do estado do NAVEGADOR. Se um módulo for
+ *    removido do catálogo enquanto a aba está aberta, o próximo "Salvar" **ressuscita o
+ *    slug** — e ele volta como referência pendurada, sem nome, sem categoria e sem gate.
+ *    Aconteceu ao vivo: `usage_limits` foi removido do catálogo e voltou 20 minutos depois,
+ *    ao renomear o plano numa aba que estava aberta desde antes.
+ * ⚠️ Poda em SILÊNCIO em vez de recusar o salvamento: o admin não errou nada — a aba
+ *    dele é que envelheceu. Recusar faria ele perder a edição inteira por causa de um item
+ *    que ele nem sabe que existia.
+ */
+async function slugsValidos(): Promise<Set<string>> {
+  const { data } = await supabaseAdmin.from("module_catalog").select("slug")
+  return new Set(((data ?? []) as { slug: string }[]).map((m) => m.slug))
+}
+
+async function clean(input: PlanInput) {
+  const catalogo = await slugsValidos()
+  const incluidos = Array.from(new Set(
+    (input.included_modules ?? []).map((s) => s.trim()).filter((s) => s && catalogo.has(s)),
+  ))
   return {
     name:                   input.name.trim(),
     description:            input.description?.trim() || null,
@@ -116,7 +137,56 @@ export async function createPlan(input: PlanInput): Promise<{ error?: string; id
 
   const { data, error } = await supabaseAdmin
     .from("plans")
-    .insert({ ...clean(input), updated_at: new Date().toISOString() })
+    .insert({ ...(await clean(input)), updated_at: new Date().toISOString() })
+    .select("id")
+    .single()
+
+  if (error) return { error: error.message }
+  revalidatePath("/admin/planos")
+  return { id: data.id }
+}
+
+/**
+ * Duplica um plano existente.
+ *
+ * 🔑 Copia do BANCO, não da tela. A cópia sai do estado gravado — se ela viesse do
+ *    formulário aberto, herdaria edições não salvas e o admin teria dois planos diferentes
+ *    achando que tem dois iguais.
+ *
+ * 🔴 A cópia nasce **INATIVA**, sempre. Plano ativo aparece na vitrine do cliente no
+ *    mesmo instante (`listPlansForClient` filtra por `active`) — duplicar pra ajustar o
+ *    preço depois publicaria, por alguns minutos, uma oferta pela metade. Fail-closed:
+ *    quem duplica revisa e liga.
+ *
+ * ⚠️ Entra logo DEPOIS do original (`position + 1`), não no fim: quem duplica quer
+ *    comparar lado a lado. Empate de `position` é tolerado — a ordenação da vitrine tem
+ *    desempate por preço e id (ver `getSignupTrialPlan`), então não vira ordem instável.
+ */
+export async function duplicatePlan(id: string): Promise<{ error?: string; id?: string }> {
+  await requirePlatformAdmin()
+
+  const { data: origem, error: readErr } = await supabaseAdmin
+    .from("plans")
+    .select("name, description, price_cents, user_quota, extra_user_price_cents, included_modules, pro_modules, limits, trial_days, trial_activation_mode, position")
+    .eq("id", id)
+    .maybeSingle()
+
+  if (readErr) return { error: "Não foi possível ler o plano de origem." }
+  if (!origem)  return { error: "Plano não encontrado." }
+
+  const o = origem as Record<string, unknown>
+
+  const { data, error } = await supabaseAdmin
+    .from("plans")
+    .insert({
+      ...o,
+      // ⚠️ Nome com sufixo pra não existirem dois "PLANO I" na lista — e o teto de 120
+      //    evita estourar a coluna quando alguém duplica a cópia da cópia.
+      name:      `${String(o.name ?? "Plano")} (cópia)`.slice(0, 120),
+      active:    false,
+      position:  (Number(o.position) || 0) + 1,
+      updated_at: new Date().toISOString(),
+    })
     .select("id")
     .single()
 
@@ -132,7 +202,7 @@ export async function updatePlan(id: string, input: PlanInput): Promise<{ error?
 
   const { error } = await supabaseAdmin
     .from("plans")
-    .update({ ...clean(input), updated_at: new Date().toISOString() })
+    .update({ ...(await clean(input)), updated_at: new Date().toISOString() })
     .eq("id", id)
 
   if (error) return { error: error.message }

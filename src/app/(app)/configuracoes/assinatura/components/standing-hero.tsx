@@ -58,6 +58,18 @@ export function fraseDoDegrau(standing: BillingStanding, conta: ContaDoMes): {
       }
     }
 
+    case "trial_ended":
+      return {
+        // Vermelho: alguma coisa PAROU de verdade. Âmbar seria suavizar um fato duro.
+        tom: "parado",
+        lead: "Seu teste terminou.",
+        tail: standing.trial?.podeAssinar
+          ? <>Ative sua assinatura para voltar a usar o Kora — seus dados e conversas estão intactos.</>
+          // 🔴 Sem cadastro fiscal ele não CONSEGUE pagar. Dizer "ative" aqui mandaria a
+          //    pessoa bater numa porta que a gente já sabe que não abre.
+          : <>Complete o cadastro da sua empresa para poder ativar — seus dados e conversas estão intactos.</>,
+      }
+
     case "ok":
       return {
         tom: "ok", lead: "Tudo certo.",

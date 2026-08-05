@@ -27,6 +27,17 @@ interface Props {
   valorCents: number
   primeiraCobranca: string | null
   emTrial:    boolean
+  /**
+   * O que fazer quando o pagamento passa. Ausente ⇒ mostra a tela de sucesso própria
+   * (uso na página `/pagamento`).
+   *
+   * ⚠️ Existe pro modal de planos hospedar ESTE formulário em vez de ganhar um segundo.
+   *    Duas telas de cartão seriam duas superfícies PCI pra auditar, duas validações de
+   *    Luhn e duas chances de uma delas esquecer de limpar o campo na saída.
+   */
+  onSucesso?: () => void
+  /** Empilha o resumo em cima do formulário (coluna única) — pra caber dentro do modal. */
+  compacto?: boolean
 }
 
 const brl = (c: number) => (c / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -57,7 +68,7 @@ function bandeira(num: string): string | null {
 
 const grupos = (d: string) => d.replace(/\D/g, "").slice(0, 19).replace(/(.{4})/g, "$1 ").trim()
 
-export function CardForm({ titular, planoNome, valorCents, primeiraCobranca, emTrial }: Props) {
+export function CardForm({ titular, planoNome, valorCents, primeiraCobranca, emTrial, onSucesso, compacto = false }: Props) {
   const router = useRouter()
   const [numero, setNumero]   = useState("")
   const [nome, setNome]       = useState(titular.nome.toUpperCase())
@@ -104,6 +115,9 @@ export function CardForm({ titular, planoNome, valorCents, primeiraCobranca, emT
       //    aba aberta.
       setNumero(""); setCvv(""); setValidade("")
       if ("error" in r) { setErro(r.error); return }
+      // Host decide o que vem depois (modal segue pro passo final; página mostra a
+      // tela de sucesso daqui). Em ambos o cartão já foi limpo antes.
+      if (onSucesso) { onSucesso(); return }
       setPronto(true)
       router.refresh()
     })
@@ -128,7 +142,7 @@ export function CardForm({ titular, planoNome, valorCents, primeiraCobranca, emT
   }
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[1fr_320px] items-start">
+    <div className={compacto ? "space-y-4" : "grid gap-5 lg:grid-cols-[1fr_320px] items-start"}>
       {/* ── Formulário ─────────────────────────────────────────── */}
       <div className="rounded-xl border border-slate-200 bg-white shadow-card overflow-hidden">
         <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">

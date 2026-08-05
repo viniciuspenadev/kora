@@ -2,7 +2,7 @@ import "server-only"
 import { createHash, randomBytes } from "crypto"
 import bcrypt from "bcryptjs"
 import { supabaseAdmin } from "@/lib/supabase"
-import { isTenantBlockedForAccess } from "@/lib/lifecycle-shared"
+import { isTenantBlockedForAccessAs } from "@/lib/lifecycle-shared"
 
 // ═══════════════════════════════════════════════════════════════
 // Cérebro único do login (device trust — F2)
@@ -49,9 +49,13 @@ const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 export async function firstAccessibleTenantId(userId: string): Promise<string | null> {
   const { data: memberships } = await supabaseAdmin
     .from("tenant_users")
-    .select("tenant_id")
+    // ⚠️ `role` entrou aqui porque `trial_ended` bloqueia por PAPEL, não por tenant: o
+    //    owner entra pra pagar, o atendente não. Sem o papel, este filtro não consegue
+    //    responder a pergunta certa.
+    .select("tenant_id, role")
     .eq("user_id", userId)
     .eq("active", true)
+  const papelDe = new Map((memberships ?? []).map((m) => [m.tenant_id as string, m.role as string]))
   let accessible = (memberships ?? []).map((m) => m.tenant_id as string)
   if (accessible.length > 1) {
     const { data: tens, error } = await supabaseAdmin
@@ -60,7 +64,9 @@ export async function firstAccessibleTenantId(userId: string): Promise<string | 
       .in("id", accessible)
     if (!error && tens) {
       const okIds = new Set(
-        tens.filter((t) => t.active === true && !isTenantBlockedForAccess(t.lifecycle_state)).map((t) => t.id),
+        tens
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t.lifecycle_state, papelDe.get(t.id as string)))
+          .map((t) => t.id),
       )
       const filtered = accessible.filter((id) => okIds.has(id))
       if (filtered.length) accessible = filtered
@@ -123,9 +129,10 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
       .in("id", accessible.map((m) => m.tenant_id))
     if (!tenErr && tens) {
       states = tens.map((t) => (t.lifecycle_state as string | null) ?? "")
+      const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
       const okIds = new Set(
         tens
-          .filter((t) => t.active === true && !isTenantBlockedForAccess(t.lifecycle_state))
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t.lifecycle_state, papeis.get(t.id as string)))
           .map((t) => t.id),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
@@ -247,7 +254,8 @@ export async function redeemLoginTicket(
     if (!prof) return null
 
     const tenantBlocked = !!ten.data &&
-      (ten.data.active === false || isTenantBlockedForAccess(ten.data.lifecycle_state))
+      (ten.data.active === false ||
+        isTenantBlockedForAccessAs(ten.data.lifecycle_state, tu.data?.role as string | undefined))
     const role = tu.data?.active === true && !tenantBlocked ? (tu.data.role as string) : ""
     const isPlatformAdmin = !!pa
     if (!role && !isPlatformAdmin) return null   // revogado na janela do ticket

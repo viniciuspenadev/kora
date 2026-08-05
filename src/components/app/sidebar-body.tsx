@@ -7,7 +7,7 @@ import { logoutWithCleanup } from "@/lib/auth/logout"
 import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from "react"
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
-  Bot, Bell, MessageSquare, Layers, CalendarDays,
+  Bot, Bell, MessageSquare, CalendarDays,
   Wand2, BarChart3, Blocks, FileText,
   PanelLeftClose, PanelLeftOpen, Package, Boxes, ListChecks, Megaphone, Send, Funnel, Plus, Building2,
 } from "lucide-react"
@@ -128,7 +128,11 @@ const NAV: NavItem[] = [
       { href: "/automacao/mensagens",      label: "Mensagens automáticas", icon: <Bell         className={subIcon} strokeWidth={1.75} />, module: "welcome_message"  },
       { href: "/automacao/palavras-chave", label: "Palavras-chave",        icon: <Wand2        className={subIcon} strokeWidth={1.75} />, module: "keyword_triggers" },
       { href: "/configuracoes/respostas",  label: "Respostas rápidas",     icon: <MessageSquare className={subIcon} strokeWidth={1.75} />, module: "quick_replies"   },
-      { href: "/automacao/funil",          label: "Fluxos de funil",       icon: <Layers       className={subIcon} strokeWidth={1.75} />, soon: true, module: "sequences" },
+      // ⚠️ "Fluxos de funil" (módulo `sequences`) REMOVIDO em 2026-08-05. Estava marcado
+      //    `soon: true` e apontava pra `/automacao/funil` — **rota que nunca existiu**.
+      //    Item de menu pra tela inexistente é promessa no cardápio sem prato na cozinha:
+      //    ocupava espaço no menu, no catálogo do god mode e na vitrine do cliente.
+      //    Quando sequências de follow-up existirem, nascem dentro de `broadcasts`.
     ],
   },
   // 🔴 ITEM ÚNICO, não mais acordeão (decisão do dono, 2026-07-30). Os ~15 itens de

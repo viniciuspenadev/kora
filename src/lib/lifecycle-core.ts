@@ -79,6 +79,14 @@ export async function transitionLifecycleCore(
       patch.trial_ends_at = new Date(now + days * DAY).toISOString()
       break
     }
+    case "end_trial":
+      // ⚠️ `active` continua TRUE: o tenant existe e o dono precisa entrar pra pagar.
+      //    Quem barra o atendente é `isTenantBlockedForAccessAs`, pelo PAPEL — e quem
+      //    corta campanha/IA/automação é `SPEND_BLOCKED_LIFECYCLE`.
+      // ⚠️ `trial_ends_at` **NÃO é limpo**: ele vira o carimbo de quando o teste venceu,
+      //    e é o relógio que o housekeeping usa pra suspender depois da carência.
+      to = "trial_ended"; patch.active = true; patch.lifecycle_state = "trial_ended"
+      break
     case "suspend":
       to = "suspended"; patch.active = false; patch.lifecycle_state = "suspended"
       break

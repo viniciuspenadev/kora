@@ -39,3 +39,42 @@ export const MODULOS_COM_PRO: Record<string, { recurso: string; descricao: strin
 export function temNivelPro(slug: string): boolean {
   return Object.hasOwn(MODULOS_COM_PRO, slug)
 }
+
+/**
+ * Rótulos das categorias do catálogo — **fonte ÚNICA**.
+ *
+ * ⚠️ Vivia só em `admin/planos/client.tsx`. Quando a tela do CLIENTE passou a agrupar por
+ *    categoria (2026-08-05), copiar o mapa criaria duas verdades sobre o nome de cada
+ *    grupo — e um dia o god mode diria "Automação e IA" enquanto o cliente lia outra coisa.
+ */
+export const CATEGORIA_LABEL: Record<string, string> = {
+  core:         "Essencial",
+  atendimento:  "Atendimento",
+  crm:          "Comercial",
+  agenda:       "Agenda",
+  campanhas:    "Campanhas",
+  studio:       "Automação e IA",
+  multichannel: "Canais",
+  operational:  "Operacional",
+  billing:      "Faturamento",
+  deprecated:   "Descontinuado",
+}
+
+/**
+ * Canal de comunicação que o módulo implica — pro card do plano mostrar, de relance, com
+ * quais canais ele fala. `null` = o módulo não é de canal.
+ *
+ * ⚠️ Deriva do slug, não do nome: rótulo muda (acabou de mudar duas vezes), slug não.
+ */
+export const CANAL_DO_MODULO: Record<string, "whatsapp" | "instagram"> = {
+  multi_instance:       "whatsapp",   // WhatsApp QR Code
+  // ⚠️ Disparo em massa é WhatsApp por dependência REAL, não por afinidade: campanha em
+  //    massa exige template aprovado da Meta, ou seja, **número oficial conectado**. O
+  //    `/campanhas/nova` redireciona pra /integracoes/whatsapp-oficial quando não há um.
+  //    O logo ao lado do nome diz isso ANTES de a pessoa contratar e descobrir depois.
+  broadcasts:           "whatsapp",
+  whatsapp_official:    "whatsapp",
+  meta_cloud:           "whatsapp",
+  instagram_direct:     "instagram",
+  instagram_automation: "instagram",
+}

@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { transitionLifecycleCore } from "@/lib/lifecycle-core"
+import { TRIAL_ENDED_GRACE_DAYS } from "@/lib/lifecycle-shared"
 
 /**
  * Housekeeping diário do trial (chamado pelo cron /api/cron/trial-housekeeping):
@@ -35,7 +36,32 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
     //    continua dono APENAS de quem terminou o teste sem configurar pagamento.
     if ((t as { asaas_subscription_id?: string | null }).asaas_subscription_id) continue
 
-    const r = await transitionLifecycleCore(t.id as string, "suspend", { system: true })
+    // 🔴 ENCERRA O TESTE, NÃO SUSPENDE (decisão do dono, 2026-08-05).
+    //    Suspender negava o login — e a tela de login não distingue "seu teste acabou" de
+    //    "senha errada". A pessoa que queria pagar era tratada igual a quem errou a senha,
+    //    sem aviso, sem plano e sem botão. `trial_ended` mantém a porta de pagar aberta
+    //    pra owner/admin, corta o gasto, e barra o atendente (que não resolve assinatura).
+    //    Quem suspende de verdade é o bloco abaixo, depois da carência.
+    const r = await transitionLifecycleCore(t.id as string, "end_trial", { system: true })
+    if (!r.error) suspended++
+  }
+
+  // 1.a Teste encerrado há mais de TRIAL_ENDED_GRACE_DAYS → aí sim, suspende.
+  //
+  // 🔑 O relógio é o próprio `trial_ends_at` — sem coluna nova. Ele já guarda o instante
+  //    em que o teste venceu, e `end_trial` **não o limpa** justamente pra servir de
+  //    carimbo aqui. (Quem paga tem o campo zerado pelo webhook, então some deste filtro.)
+  // ⚠️ Sem esta varredura, `trial_ended` seria acesso vitalício a um produto travado.
+  const limite = new Date(Date.now() - TRIAL_ENDED_GRACE_DAYS * 86_400_000).toISOString()
+  const { data: semPagar, error: spErr } = await supabaseAdmin
+    .from("tenants")
+    .select("id")
+    .eq("lifecycle_state", "trial_ended")
+    .lt("trial_ends_at", limite)
+  if (spErr) console.error("[housekeeping] leitura de testes encerrados falhou:", spErr.message)
+
+  for (const t of semPagar ?? []) {
+    const r = await transitionLifecycleCore((t as { id: string }).id, "suspend", { system: true })
     if (!r.error) suspended++
   }
 

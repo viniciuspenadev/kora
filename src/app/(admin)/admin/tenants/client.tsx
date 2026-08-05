@@ -44,7 +44,7 @@ const PLAN_BADGE: Record<string, string> = {
 
 // Rótulos curtos (plural) pros KPIs/tabs por estado.
 const STATE_LABEL_SHORT: Record<LifecycleState, string> = {
-  pending_approval: "Aguardando", trialing: "Trial", active: "Ativos", suspended: "Suspensos", deactivated: "Desativados",
+  pending_approval: "Aguardando", trialing: "Trial", trial_ended: "Teste encerrado", active: "Ativos", suspended: "Suspensos", deactivated: "Desativados",
 }
 
 const DATE = (d: string) =>
@@ -77,7 +77,7 @@ export function TenantsListClient({ rows }: { rows: TenantRow[] }) {
 
   const counts = useMemo(() => {
     const by: Record<LifecycleState, number> = {
-      pending_approval: 0, trialing: 0, active: 0, suspended: 0, deactivated: 0,
+      pending_approval: 0, trialing: 0, trial_ended: 0, active: 0, suspended: 0, deactivated: 0,
     }
     for (const r of rows) by[normalizeState(r.lifecycle_state)]++
     return by

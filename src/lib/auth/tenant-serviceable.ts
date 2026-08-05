@@ -1,7 +1,10 @@
 import "server-only"
 import { cache } from "react"
 import { supabaseAdmin } from "@/lib/supabase"
-import { isTenantBlockedForAccess, isTenantBlockedForSpend } from "@/lib/lifecycle-shared"
+import {
+  isTenantBlockedForAccess, isTenantBlockedForSpend,
+  SPEND_BLOCKED_LIFECYCLE, normalizeState,
+} from "@/lib/lifecycle-shared"
 
 // ═══════════════════════════════════════════════════════════════
 // GUARDA DE STATUS DO CLIENTE — "este tenant ainda pode CONSUMIR?"
@@ -131,10 +134,14 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
   if (!row || row.active !== true) return { degraded: false, canAccess: false, canSpend: false }
 
   const canAccess = !isTenantBlockedForAccess(row.lifecycle_state)
+  // ⚠️ `trial_ended` NÃO tira o acesso (o dono entra pra pagar) mas TIRA o gasto: campanha,
+  //    IA e automação param. Sem isto o teste vencido viraria produto de graça enquanto
+  //    durasse a carência — e é justamente esse custo que o prazo existe pra limitar.
+  const trialAcabou = SPEND_BLOCKED_LIFECYCLE.has(normalizeState(row.lifecycle_state))
   return {
     degraded: false,
     canAccess,
-    canSpend: canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
+    canSpend: canAccess && !trialAcabou && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
   }
 })
 

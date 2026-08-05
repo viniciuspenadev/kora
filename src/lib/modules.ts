@@ -27,7 +27,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 // Lista canônica de slugs — atualizar quando seed mudar
 export type ModuleSlug =
   // Core
-  | "inbox" | "contacts" | "tags" | "team"
+  | "inbox" | "contacts" | "tags"
   // Commercial
   | "kanban" | "pipelines" | "quick_replies" | "auto_assign" | "agenda" | "agenda_reminders" | "agenda_owner_routing"
   | "crm"
@@ -44,13 +44,27 @@ export type ModuleSlug =
   //    `ai_studio_pro` e ele foi REMOVIDO na mesma tarde: um slug de PRO por área faria
   //    o catálogo virar metade sufixo quando chegarem Financeiro/CRM/Fiscal.
   // Engagement
-  | "broadcasts" | "sequences" | "chatbot_builder"
+  // ⚠️ `sequences` removido em 2026-08-05: não gateava nada e apontava pra rota
+  //    inexistente. Sequência de follow-up, quando existir, mora dentro de `broadcasts`.
+  | "broadcasts" | "chatbot_builder"
   // Multi-channel
   | "multi_instance" | "meta_cloud" | "instagram_direct"
   // Operational
   | "audit_log_ui" | "webhook_outbound" | "api_access" | "white_label" | "sso" | "inventory"
   // Billing
-  | "billing_panel" | "usage_limits"
+  // ⚠️ `usage_limits` FOI REMOVIDO do catálogo em 2026-08-05 (decisão do dono: *"isso é
+  //    default do funcionamento do sistema"*). Era módulo MORTO — nenhuma página, action ou
+  //    gate o consultava — e mesmo assim aparecia no plano Starter, sendo **vendido como
+  //    recurso**. Saíram: a entrada do catálogo, a linha do array do plano e (via
+  //    `ON DELETE CASCADE`) a única linha em `tenant_modules`, que já estava desabilitada.
+  // ⚠️ `billing_panel` é o MESMO caso e continua aqui: também não gateia nada e não está
+  //    ligado em ninguém. Fica à espera da mesma decisão — a tela de assinatura que ele
+  //    "protegeria" é justamente a que não pode faltar pra ninguém.
+  // ⚠️ `billing_panel` e `usage_limits` REMOVIDOS do catálogo em 2026-08-05, junto com
+  //    `team` (decisão do dono: *"é default do funcionamento do sistema"*). Os três eram
+  //    módulos MORTOS — nenhuma página, action ou gate os consultava — e ocupavam espaço
+  //    no god mode e na vitrine do cliente fingindo ser recurso vendável.
+  //    Equipe, inbox de cobrança e limites de uso são o produto funcionando, não add-on.
 
 export interface ModuleCatalogEntry {
   slug:        string

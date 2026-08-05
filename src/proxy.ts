@@ -100,6 +100,18 @@ export function proxy(req: NextRequest) {
   const res  = NextResponse.next()
   const path = req.nextUrl.pathname
 
+  // 🔑 Caminho da requisição, legível pelos Server Components (2026-08-05).
+  //
+  //    Um layout do App Router **não sabe qual rota está sendo renderizada** — `headers()`
+  //    não traz o pathname, e os `x-invoke-path`/`x-pathname` que circulam por aí são
+  //    internos do Next, sem contrato: medi na produção e **nenhum dos dois existe**.
+  //    Depender deles seria escrever um gate que falha aberto — ou, pior, um redirect que
+  //    nunca encontra sua própria exceção e entra em laço infinito.
+  // ⚠️ `x-kora-path` é NOSSO: setado aqui, em toda requisição, com o valor canônico do
+  //    `nextUrl`. Quem consome (hoje: o desvio de `trial_ended` no layout do app) tem
+  //    garantia de presença, e a rota de exceção é sempre reconhecível.
+  res.headers.set("x-kora-path", path)
+
   // ── Sempre aplicar ──────────────────────────────────────
   res.headers.set("X-Content-Type-Options",   "nosniff")
   res.headers.set("Referrer-Policy",          "strict-origin-when-cross-origin")

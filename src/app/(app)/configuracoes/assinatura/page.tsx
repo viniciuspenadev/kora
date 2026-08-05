@@ -4,6 +4,11 @@ import { AssinaturaShell } from "./components/assinatura-shell"
 import { AssinaturaClient } from "./assinatura-client"
 import { buildMock, parseDegrau } from "./mock"
 import { loadAssinatura } from "./loader"
+import { listPlansForClient } from "@/lib/billing/plans-view"
+import { dataLonga } from "./format"
+import { getMyCompanyProfile } from "@/lib/actions/company-profile"
+import { getTitularParaCobranca } from "@/lib/actions/subscription"
+import { PlanosModal } from "./components/planos-modal"
 
 // B1 · Minha assinatura
 // ⚠️ Gate igual ao de /configuracoes/uso (owner + admin). TODO(orquestrador):
@@ -28,9 +33,35 @@ export default async function AssinaturaPage({
   const preview = degrau && session.user.isPlatformAdmin
   const mock = preview ? buildMock(parseDegrau(degrau)) : await loadAssinatura(session.user.tenantId)
 
+  // 🔴 Teste encerrado ⇒ modal PERSISTENTE de planos por cima da tela (dono, 2026-08-05).
+  //    A tela por trás continua renderizando de propósito: ele vê o próprio consumo e o que
+  //    parou, e isso é argumento de venda — não uma tela vazia com um formulário em cima.
+  // ⚠️ O catálogo vem do god mode. Plano novo ligado lá aparece aqui sozinho.
+  // ⚠️ Tudo em UM round-trip, e só quando o modal vai existir. Carregar perfil e titular
+  //    em toda visita seria pagar duas consultas por uma tela que 99% das vezes não abre.
+  const trilha = mock.standing.degrau === "trial_ended"
+    ? await Promise.all([
+        listPlansForClient(session.user.tenantId),
+        getMyCompanyProfile(),
+        getTitularParaCobranca(),
+      ])
+    : null
+
   return (
     <AssinaturaShell>
       <AssinaturaClient mock={mock} />
+      {trilha && trilha[1] && (
+        <PlanosModal
+          planos={trilha[0]}
+          podeAssinar={mock.standing.trial?.podeAssinar === true}
+          perfil={trilha[1]}
+          titular={trilha[2]}
+          // ⚠️ Mesma data que o `createSubscriptionForTenant` vai usar como `nextDueDate`
+          //    — prometer na tela um dia diferente do que o gateway cobra é o tipo de
+          //    divergência que vira ticket no primeiro ciclo.
+          primeiraCobranca={mock.standing.trial?.endsAt ? dataLonga(mock.standing.trial.endsAt) : null}
+        />
+      )}
     </AssinaturaShell>
   )
 }

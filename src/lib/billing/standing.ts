@@ -46,7 +46,18 @@ import {
  *    despacham por `degrau`. Um campo separado obrigaria a ensinar as três de novo, e
  *    quem esquecesse uma criaria justamente o silêncio que este trabalho veio fechar.
  */
-export type BillingDegrau = "trial" | "ok" | "grace" | "restricted" | "readonly" | "terminated"
+/**
+ * ⚠️ `trial_ended` É UM DEGRAU PRÓPRIO, e não um apelido de `restricted` (correção do
+ *    dono, 2026-08-05). A 1ª versão reusou `restricted` achando que o enforcement era o
+ *    mesmo — não é, e a tela denunciou: o cliente em teste vencido lia *"Campanhas,
+ *    automações e IA estão pausadas. Seu atendimento e seus dados seguem no ar"*, que é a
+ *    linguagem de quem **já é cliente e atrasou uma fatura**.
+ *    A diferença é de natureza: quem paga e atrasou tem **carência** (o produto segue de
+ *    pé enquanto a régua roda); quem testou e não assinou **nunca comprou nada** — o teste
+ *    acabou e o produto para até ativar. Tratar os dois igual dá carência a quem nunca
+ *    pagou e soa como cobrança pra quem nem virou cliente.
+ */
+export type BillingDegrau = "trial" | "trial_ended" | "ok" | "grace" | "restricted" | "readonly" | "terminated"
 
 export interface BillingStanding {
   degrau: BillingDegrau
@@ -98,12 +109,25 @@ export interface BillingStanding {
 //                                (tenant-serviceable.ts:22 — cliente que não vê o histórico
 //                                pra decidir se paga é churn garantido).
 //   • Exportação dos seus dados  LGPD Art. 18 II — sempre liberada, em todo degrau.
-const PAUSED_RESTRICTED = [
-  "Campanhas",
-  "Inteligência artificial",
-  "Automações e respostas automáticas",
-  "Lembretes da agenda",
-  "Chat do site",
+/**
+ * O que para, **por módulo**. A lista mostrada ao cliente é filtrada pelo que ele
+ * realmente tem ligado.
+ *
+ * 🔴 ANTES ERA UM ARRAY FIXO (correção do dono, 2026-08-05). Todo cliente lia a mesma
+ *    lista, tivesse ou não o módulo: a Calla via *"Inteligência artificial — PAUSADO"*
+ *    sem nunca ter tido IA no plano. Anunciar a perda de algo que a pessoa não tem é
+ *    duplamente ruim: mente sobre o produto dela e transforma o aviso em ruído, porque
+ *    ela aprende que a lista não fala com ela.
+ * ⚠️ Um rótulo pode depender de VÁRIOS módulos (basta UM pra ele existir): "Automações"
+ *    cobre boas-vindas, palavra-chave e fluxos do Studio — quem tem qualquer um deles
+ *    perde automação de verdade.
+ */
+const PAUSADO_POR_MODULO: { label: string; modulos: string[] }[] = [
+  { label: "Campanhas",                          modulos: ["broadcasts"] },
+  { label: "Inteligência artificial",            modulos: ["ai"] },
+  { label: "Automações e respostas automáticas", modulos: ["welcome_message", "keyword_triggers", "ai_studio"] },
+  { label: "Lembretes da agenda",                modulos: ["agenda_reminders"] },
+  { label: "Chat do site",                       modulos: ["widget_site"] },
 ]
 const CONTINUES_RESTRICTED = [
   "Acesso ao sistema",
@@ -123,11 +147,7 @@ const CONTINUES_RESTRICTED = [
 //    consegue nem entrar é exatamente o aviso decorativo que a §7.5 manda evitar.
 //    ⚠️ Isso é dívida de PRODUTO registrada, não bug deste arquivo: ou a política muda,
 //    ou o enforcement de `suspended` passa a deixar entrar em modo leitura.
-const PAUSED_BLOCKED = [
-  "Entrada no sistema",
-  "Recebimento de novas mensagens",
-  ...PAUSED_RESTRICTED,
-]
+const PAUSADO_AO_BLOQUEAR = ["Entrada no sistema", "Recebimento de novas mensagens"]
 
 const DAY_MS = 86_400_000
 
@@ -239,7 +259,7 @@ interface InvoiceRow {
 export const getBillingStanding = cache(async (tenantId: string): Promise<BillingStanding> => {
   if (!tenantId) return silentStanding()
 
-  const [tenantRes, perfilRes, invRes] = await Promise.all([
+  const [tenantRes, perfilRes, modRes, invRes] = await Promise.all([
     supabaseAdmin
       .from("tenants")
       .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id")
@@ -252,6 +272,11 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
       .select("legal_name, tax_id, billing_email, zip, number")
       .eq("tenant_id", tenantId)
       .maybeSingle(),
+    supabaseAdmin
+      .from("tenant_modules")
+      .select("module_slug")
+      .eq("tenant_id", tenantId)
+      .eq("enabled", true),
     supabaseAdmin
       .from("invoices")
       .select("id, status, due_date, total_cents")
@@ -305,6 +330,15 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
 
   // ── O degrau ────────────────────────────────────────────────────────────────
   // Mesmos predicados de `checkTenantStatus` — importados, não recopiados.
+  // Módulos LIGADOS — alimentam a lista do que realmente para pra este cliente.
+  // ⚠️ Falha de consulta ⇒ conjunto vazio ⇒ a lista sai VAZIA em vez de genérica. Preferir
+  //    não listar a listar errado: uma lista genérica volta a prometer perdas que a pessoa
+  //    não tem, que é exatamente o defeito que este trecho veio consertar.
+  const modulos = new Set<string>(
+    modRes.error ? [] : ((modRes.data ?? []) as { module_slug: string }[]).map((m) => m.module_slug),
+  )
+  if (modRes.error) console.error("[billing-standing] consulta de módulos falhou:", tenantId, modRes.error.message)
+
   const perfil = (perfilRes.error ? null : perfilRes.data) as Record<string, string | null> | null
   if (perfilRes.error) {
     // Degrada só o `podeAssinar` (vira false ⇒ manda completar cadastro). Fail-closed é o
@@ -361,6 +395,8 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
         tenantId, `${invoice.daysOverdue}d > ${PAST_DUE_GRACE_DAYS}d`,
       )
     }
+  } else if (normalizeState(row.lifecycle_state) === "trial_ended") {
+    degrau = "trial_ended"
   } else if (emTrial) {
     // ── Degrau 0 — o teste ────────────────────────────────────────────────────
     // Vem DEPOIS de toda a escada de inadimplência de propósito: se por algum caminho
@@ -377,14 +413,25 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
   // parou. `paused.length === 0` é o sinal de "nada foi cortado ainda".
   let paused: string[] = []
   let continues: string[] = []
-  if (degrau === "restricted") {
-    paused = [...PAUSED_RESTRICTED]
+  // Só o que o tenant REALMENTE tem — ver `PAUSADO_POR_MODULO`.
+  const paraDeVerdade = PAUSADO_POR_MODULO
+    .filter((p) => p.modulos.some((m) => modulos.has(m)))
+    .map((p) => p.label)
+
+  if (degrau === "trial_ended") {
+    // 🔴 TESTE ACABOU: para TUDO que o produto faz, e não há carência — carência é pra
+    //    quem já pagou e atrasou. O que "continua" aqui é só o mínimo pra ele decidir:
+    //    entrar pra ativar, e levar os dados embora se não quiser (LGPD Art. 18, sempre).
+    paused = [...paraDeVerdade, "Atendimento pelo WhatsApp"]
+    continues = ["Ativar sua assinatura", "Exportação dos seus dados"]
+  } else if (degrau === "restricted") {
+    paused = paraDeVerdade
     continues = [...CONTINUES_RESTRICTED]
   } else if (degrau === "readonly") {
-    paused = [...PAUSED_BLOCKED]
+    paused = [...PAUSADO_AO_BLOQUEAR, ...paraDeVerdade]
     continues = ["Seus dados continuam guardados"]
   } else if (degrau === "terminated") {
-    paused = [...PAUSED_BLOCKED]
+    paused = [...PAUSADO_AO_BLOQUEAR, ...paraDeVerdade]
     continues = ["Seus dados continuam guardados pelo prazo de retenção"]
   }
 
@@ -393,7 +440,12 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     invoice,
     paused,
     continues,
-    trial: degrau === "trial" && row.trial_ends_at
+    // 🔴 OS DOIS degraus (correção 2026-08-05). Vinha só no `trial`, e o efeito bateu na
+    //    tela: com o teste JÁ ENCERRADO o campo era `null`, `podeAssinar` virava
+    //    `undefined`, e o modal mandava TODO MUNDO completar cadastro — inclusive quem
+    //    já tinha o cadastro completo. Justo no degrau em que a pessoa mais precisa do
+    //    caminho curto pro pagamento, ela levava um desvio inútil.
+    trial: (degrau === "trial" || degrau === "trial_ended") && row.trial_ends_at
       ? {
           endsAt: row.trial_ends_at,
           diasRestantes: diasAte(row.trial_ends_at),

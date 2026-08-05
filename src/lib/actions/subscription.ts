@@ -1,11 +1,11 @@
 "use server"
 
 import { auth } from "@/auth"
-import { rateLimit } from "@/lib/rate-limit"
-import { headers } from "next/headers"
-import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
-import { getClientIpFromHeaders } from "@/lib/rate-limit"
+import { rateLimit, getClientIpFromHeaders } from "@/lib/rate-limit"
+import { logAudit } from "@/lib/audit"
+import { revalidatePath } from "next/cache"
+import { headers } from "next/headers"
 import { createSubscriptionForTenant } from "@/lib/asaas/subscriptions"
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
 
@@ -52,6 +52,90 @@ export async function getMyBillingStanding(): Promise<BillingStanding | null> {
   }
 
   return standing
+}
+
+/**
+ * Registra o plano ESCOLHIDO pelo cliente e devolve pra tela seguir pro pagamento.
+ *
+ * 🔑 Grava `tenants.plan_id` e **NÃO chama `applyPlan`** — a distinção é o coração disto.
+ *    `plan_id` diz *"é este que ele vai pagar"* (o preço da assinatura, a cota da fatura);
+ *    `applyPlan` é que LIBERA módulo. Se liberasse aqui, bastaria escolher o plano mais
+ *    caro e nunca pagar pra ficar com tudo. Quem libera é o webhook, quando o dinheiro
+ *    entra (`liberar()`).
+ *
+ * ⚠️ Só planos que o GOD MODE deixou compráveis: ativo e com preço. Confiar no id que veio
+ *    da tela deixaria o cliente escolher, via RSC, um plano desativado ou o próprio Trial
+ *    de R$ 0 — e aí ele "assina" de graça.
+ */
+export async function escolherPlano(planoId: string): Promise<{ error?: string; ok?: boolean }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Sessão expirada. Entre de novo." }
+  if (!["owner", "admin"].includes(session.user.role)) {
+    return { error: "Apenas o responsável pela conta pode escolher o plano." }
+  }
+
+  const { data: plano } = await supabaseAdmin
+    .from("plans")
+    .select("id, price_cents, active")
+    .eq("id", planoId)
+    .eq("active", true)
+    .gt("price_cents", 0)
+    .maybeSingle()
+
+  if (!plano) return { error: "Este plano não está disponível. Recarregue a página." }
+
+  // 🔴 SÓ A PRIMEIRA ESCOLHA — furo que eu mesmo abri e fechei no mesmo dia (2026-08-05).
+  //
+  //    Sem esta guarda, um cliente PAGANTE podia se rebaixar sozinho e ficar com tudo:
+  //      1. está no PLANO III (R$ 249,90) com os módulos dele;
+  //      2. chama `escolherPlano(PLANO_I)` — passava em todos os gates (owner ✓, plano
+  //         ativo ✓, preço > 0 ✓);
+  //      3. `applyPlan` é **aditivo e nunca revoga** (só `upsert` com `enabled: true`),
+  //         então os módulos do plano caro **ficam**;
+  //      4. `generateInvoiceForTenant` lê `plans` AO VIVO ⇒ a próxima fatura sai R$ 99,90.
+  //    Resultado: produto de R$ 249,90 por R$ 99,90, self-service, sem tocar no god mode.
+  //    E o gateway continuaria cobrando o valor velho (não existe `PUT` de assinatura),
+  //    ou seja o livro e o cartão passariam a discordar.
+  //
+  // ⚠️ Trocar de plano com assinatura ativa **não é escolher plano** — é upgrade/downgrade,
+  //    e isso exige proporção, `PUT` no gateway e revogação do que sai. Nada disso existe
+  //    ainda. Enquanto não existir, a porta fica fechada em vez de meio aberta.
+  const { data: t } = await supabaseAdmin
+    .from("tenants")
+    .select("asaas_subscription_id, billing_mode")
+    .eq("id", session.user.tenantId)
+    .maybeSingle()
+  const tenant = t as { asaas_subscription_id?: string | null; billing_mode?: string | null } | null
+
+  if (tenant?.asaas_subscription_id) {
+    return { error: "Sua assinatura já está ativa. Para mudar de plano, fale com a gente." }
+  }
+  // ⚠️ `manual` é governado SÓ pelo god mode (docs/asaas-billing-design.md §2). Deixar o
+  //    cliente mexer no próprio `plan_id` mudaria o valor da fatura que a nossa operação
+  //    emite à mão — ele escolheria o preço dele.
+  if (tenant?.billing_mode !== "gateway") {
+    return { error: "A cobrança desta conta é combinada com a nossa equipe." }
+  }
+
+  const { error } = await supabaseAdmin
+    .from("tenants")
+    .update({ plan_id: planoId, updated_at: new Date().toISOString() })
+    .eq("id", session.user.tenantId)
+
+  if (error) return { error: "Não foi possível registrar o plano. Tente de novo." }
+
+  await logAudit({
+    tenantId:   session.user.tenantId,
+    actorId:    session.user.id,
+    actorEmail: session.user.email ?? null,
+    action:     "billing.plan_selected",
+    targetType: "tenant",
+    targetId:   session.user.tenantId,
+    metadata:   { plan_id: planoId },
+  })
+
+  revalidatePath("/configuracoes/assinatura")
+  return { ok: true }
 }
 
 // ═══════════════════════════════════════════════════════════════

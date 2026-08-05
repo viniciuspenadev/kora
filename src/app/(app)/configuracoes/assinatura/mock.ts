@@ -25,12 +25,12 @@ function proximoFechamento(base = new Date()): string {
 
 export function parseDegrau(v: string | string[] | undefined): BillingDegrau {
   const s = Array.isArray(v) ? v[0] : v
-  return s === "trial" || s === "grace" || s === "restricted" || s === "readonly" || s === "terminated" ? s : "ok"
+  return s === "trial" || s === "trial_ended" || s === "grace" || s === "restricted" || s === "readonly" || s === "terminated" ? s : "ok"
 }
 
 /** Atraso típico de cada degrau — a escada do docs/access-revocation-design.md §2. */
 // `trial` não tem atraso: não existe fatura em teste. Zero é o valor honesto.
-const ATRASO: Record<BillingDegrau, number> = { trial: 0, ok: 0, grace: 3, restricted: 9, readonly: 21, terminated: 47 }
+const ATRASO: Record<BillingDegrau, number> = { trial: 0, trial_ended: 0, ok: 0, grace: 3, restricted: 9, readonly: 21, terminated: 47 }
 
 // ── O que continua × o que parou (LINGUAGEM DE RESULTADO) ──────
 // A metade que CONTINUA é tão importante quanto a que parou: é ela que

@@ -43,6 +43,15 @@ function texto(standing: BillingStanding): { title: string; body: string } | nul
 
   // ⚠️ Teste vem ANTES de qualquer coisa de fatura — não existe fatura em teste, então
   //    `assuntoDaFatura` e `linhaDoDocumento` não têm do que falar aqui.
+  if (degrau === "trial_ended") {
+    return {
+      title: "Seu teste terminou",
+      body: standing.trial?.podeAssinar
+        ? "Ative sua assinatura para voltar a usar o Kora."
+        : "Complete o cadastro da empresa para poder ativar.",
+    }
+  }
+
   if (degrau === "trial") {
     const dias = standing.trial?.diasRestantes ?? 0
     return {

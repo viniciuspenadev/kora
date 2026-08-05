@@ -1,9 +1,11 @@
 "use client"
 
 import { useState, useMemo, useTransition } from "react"
-import { Package, Plus, Pencil, Trash2, Users, Boxes, Loader2, CheckCircle2, AlertCircle, Check, ArrowLeft } from "lucide-react"
-import { createPlan, updatePlan, deletePlan, type Plan, type PlanInput } from "@/lib/actions/admin-plans"
+import { useRouter } from "next/navigation"
+import { Package, Plus, Pencil, Copy, Trash2, Users, Boxes, Loader2, CheckCircle2, AlertCircle, Check, ArrowLeft } from "lucide-react"
+import { createPlan, updatePlan, deletePlan, duplicatePlan, type Plan, type PlanInput } from "@/lib/actions/admin-plans"
 import { LIMIT_META, type LimitResource } from "@/lib/limits-shared"
+import { CATEGORIA_LABEL } from "@/lib/modules-shared"
 
 const LIMIT_KEYS = Object.keys(LIMIT_META) as LimitResource[]
 
@@ -25,18 +27,9 @@ interface Props {
  *    Passava despercebido no modal antigo; na tela cheia o cabeçalho de categoria é o
  *    principal ponto de leitura do bloco. Conferido contra a prod em 2026-08-03.
  */
-const CATEGORY_LABEL: Record<string, string> = {
-  core:         "Essencial",
-  atendimento:  "Atendimento",
-  crm:          "Comercial",
-  agenda:       "Agenda",
-  campanhas:    "Campanhas",
-  studio:       "Automação e IA",
-  multichannel: "Canais",
-  operational:  "Operacional",
-  billing:      "Faturamento",
-  deprecated:   "Descontinuado",
-}
+// ⚠️ O mapa mora em `lib/modules-shared.ts` desde 2026-08-05 — a tela do cliente
+//    agrupa pelas MESMAS categorias, e duas cópias divergiriam.
+const CATEGORY_LABEL = CATEGORIA_LABEL
 
 const BRL = (cents: number) => (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 const centsToInput = (cents: number) => (cents / 100).toFixed(2)
@@ -46,6 +39,26 @@ const INP = "w-full h-9 px-3 text-sm rounded-lg border border-slate-200 bg-white
 
 export function PlansClient({ plans, modules, tenantCount }: Props) {
   const [editing, setEditing] = useState<Plan | "new" | null>(null)
+
+  // ── Duplicar plano ────────────────────────────────────────────────────────
+  // ⚠️ `router.refresh()` em vez de mexer numa lista local: a cópia nasce no servidor
+  //    (nome com sufixo, `active=false`, `position+1`) e só ele sabe o resultado final.
+  //    Inventar a linha aqui faria a tela mostrar um plano ligeiramente diferente do que
+  //    foi gravado — e a pessoa clicaria em "Editar" num objeto que não existe assim.
+  const [duplicandoId, setDuplicandoId] = useState<string | null>(null)
+  const [erroDuplicar, setErroDuplicar] = useState("")
+  const router = useRouter()
+
+  // ⚠️ Sem `useTransition` aqui de propósito: `duplicandoId` JÁ é o estado de "em
+  //    andamento", e por id — ele desabilita só o botão clicado, não os outros. Um
+  //    `pending` global marcaria a lista inteira como ocupada.
+  async function duplicar(id: string) {
+    setErroDuplicar(""); setDuplicandoId(id)
+    const r = await duplicatePlan(id)
+    setDuplicandoId(null)
+    if (r.error) { setErroDuplicar(r.error); return }
+    router.refresh()
+  }
 
   // 🔴 PÁGINA CHEIA, NÃO MODAL (2026-08-03). O editor era um overlay de 512px com DOIS
   //    blocos de rolagem de 224px empilhados (módulos e limites). Com 19 módulos em 8
@@ -91,6 +104,12 @@ export function PlansClient({ plans, modules, tenantCount }: Props) {
       </div>
 
       <div className="px-6 py-6">
+        {erroDuplicar && (
+          <div className="mb-4 flex items-start gap-2.5 rounded-lg bg-red-50 border border-red-200 px-4 py-3">
+            <AlertCircle className="size-4 text-red-600 shrink-0 mt-0.5" />
+            <p className="text-sm text-red-800">{erroDuplicar}</p>
+          </div>
+        )}
         {plans.length === 0 ? (
           <div className="text-center py-16 bg-white rounded-xl border border-slate-200">
             <Package className="size-10 text-slate-300 mx-auto mb-3" />
@@ -106,6 +125,8 @@ export function PlansClient({ plans, modules, tenantCount }: Props) {
                 modules={modules}
                 tenants={tenantCount[p.id] ?? 0}
                 onEdit={() => setEditing(p)}
+                onDuplicate={() => duplicar(p.id)}
+                duplicando={duplicandoId === p.id}
               />
             ))}
           </div>
@@ -115,8 +136,9 @@ export function PlansClient({ plans, modules, tenantCount }: Props) {
   )
 }
 
-function PlanCard({ plan, modules, tenants, onEdit }: {
+function PlanCard({ plan, modules, tenants, onEdit, onDuplicate, duplicando }: {
   plan: Plan; modules: ModuleOption[]; tenants: number; onEdit: () => void
+  onDuplicate: () => void; duplicando: boolean
 }) {
   const modCount = plan.included_modules.length
   const proCount = plan.pro_modules?.length ?? 0
@@ -136,9 +158,18 @@ function PlanCard({ plan, modules, tenants, onEdit }: {
           </div>
           {plan.description && <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{plan.description}</p>}
         </div>
-        <button type="button" onClick={onEdit} title="Editar" className="size-7 rounded-lg hover:bg-slate-100 flex items-center justify-center shrink-0">
-          <Pencil className="size-3.5 text-slate-500" />
-        </button>
+        <div className="flex items-center gap-0.5 shrink-0">
+          {/* Duplicar antes de Editar: quem duplica quase sempre vai editar em seguida,
+              e o botão de destino fica à direita, no caminho do gesto. */}
+          <button type="button" onClick={onDuplicate} disabled={duplicando}
+            title="Duplicar este plano (a cópia nasce arquivada)"
+            className="size-7 rounded-lg hover:bg-slate-100 flex items-center justify-center disabled:opacity-40">
+            {duplicando ? <Loader2 className="size-3.5 animate-spin text-slate-500" /> : <Copy className="size-3.5 text-slate-500" />}
+          </button>
+          <button type="button" onClick={onEdit} title="Editar" className="size-7 rounded-lg hover:bg-slate-100 flex items-center justify-center">
+            <Pencil className="size-3.5 text-slate-500" />
+          </button>
+        </div>
       </div>
 
       <p className="text-2xl font-bold text-slate-900 tabular-nums leading-none">

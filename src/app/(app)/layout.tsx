@@ -1,7 +1,8 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
-import { cookies } from "next/headers"
+import { cookies, headers } from "next/headers"
 import { supabaseAdmin } from "@/lib/supabase"
+import { normalizeState } from "@/lib/lifecycle-shared"
 import { Sidebar } from "@/components/app/sidebar"
 import { MobileSidebar } from "@/components/app/mobile-sidebar"
 import { AppShellProvider } from "@/components/app/app-shell-context"
@@ -40,7 +41,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes, scope] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("name, plan, active, created_at, onboarding_profile_at, onboarding_skipped_at")
+      .select("name, plan, active, lifecycle_state, created_at, onboarding_profile_at, onboarding_skipped_at")
       .eq("id", session.user.tenantId)
       .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
@@ -73,6 +74,29 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   ])
   if (!tenant) redirect("/auth/signin")
   if (!tenant.active) redirect("/auth/signin")
+
+  // ── Teste encerrado: a assinatura vira a única tela ────────────────────────
+  //
+  // 🔴 Decisão do dono (2026-08-05): *"tela de assinatura persistente"*. Quem chega aqui
+  //    com o teste vencido e sem pagar NÃO navega no produto — ele vê o que precisa fazer
+  //    pra voltar a ter produto. Banner no topo de um app funcionando seria dizer duas
+  //    coisas contraditórias ao mesmo tempo.
+  // ⚠️ A própria área de assinatura fica DE FORA do desvio, senão é laço infinito — e o
+  //    destino é exatamente onde ele resolve. `/configuracoes/empresa` também escapa:
+  //    sem cadastro fiscal completo ele **não consegue** pagar, então barrar essa tela
+  //    seria trancar a pessoa do lado de fora da solução.
+  // ⚠️ Atendente não chega aqui: `auth()` já o barrou pelo papel (isTenantBlockedForAccessAs).
+  if (normalizeState(tenant.lifecycle_state as string | null) === "trial_ended") {
+    const hdrs = await headers()
+    // ⚠️ `x-kora-path` é carimbado pelo NOSSO proxy (src/proxy.ts) em toda requisição.
+    //    A 1ª versão disto lia `x-invoke-path`/`x-pathname` — headers INTERNOS do Next, sem
+    //    contrato. Medi em produção: **nenhum dos dois existe**. O efeito seria `rota` vazia
+    //    ⇒ nada liberado ⇒ redirect também em `/configuracoes/assinatura` ⇒ **laço
+    //    infinito**, e a pessoa que veio pagar não conseguiria nem abrir a tela de pagar.
+    const rota = hdrs.get("x-kora-path") ?? ""
+    const liberado = rota.startsWith("/configuracoes/assinatura") || rota.startsWith("/configuracoes/empresa")
+    if (!liberado) redirect("/configuracoes/assinatura")
+  }
 
   // ── Primeiro acesso: leva pro wizard de cadastro ──────────────────────────
   // 🔑 UMA VEZ SÓ. Dispara apenas quando nunca concluiu **e** nunca clicou em "depois" —

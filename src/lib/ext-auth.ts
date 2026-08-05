@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "crypto"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit } from "@/lib/rate-limit"
 import { verifyPassword } from "@/lib/auth/login-core"
-import { isTenantBlockedForAccess } from "@/lib/lifecycle-shared"
+import { isTenantBlockedForAccessAs } from "@/lib/lifecycle-shared"
 import { countLoginFailures, recordLoginFailure, clearLoginFailures } from "@/lib/auth/failures"
 import { resolveDevice } from "@/lib/auth/device"
 import { hasValidTrust, grantTrust } from "@/lib/auth/trust"
@@ -126,9 +126,14 @@ async function issueDeviceToken(input: {
       .select("id, name, active, lifecycle_state, companion_enabled")
       .in("id", accessible.map((m) => m.tenant_id))
     if (!tenErr && tens) {
+      // ⚠️ Ciente do PAPEL: com o teste encerrado o atendente perde a extensão junto com
+      //    o app. Deixá-lo entrar pelo Companion seria uma porta lateral pro mesmo produto
+      //    que o navegador já recusa.
+      const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
       const okIds = new Map(
         tens
-          .filter((t) => t.active === true && !isTenantBlockedForAccess(t.lifecycle_state as string | null))
+          .filter((t) => t.active === true &&
+            !isTenantBlockedForAccessAs(t.lifecycle_state as string | null, papeis.get(t.id as string)))
           .map((t) => [t.id as string, t]),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
@@ -336,7 +341,8 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
   ])
 
   // Gates fail-closed — a ORDEM importa pra mensagem certa chegar na sidebar.
-  if (!tenant || tenant.active === false || isTenantBlockedForAccess(tenant.lifecycle_state as string | null))
+  if (!tenant || tenant.active === false ||
+      isTenantBlockedForAccessAs(tenant.lifecycle_state as string | null, tu?.role as string | undefined))
     throw new ExtError(403, "Conta indisponível.", "tenant_blocked")
   if (tenant.companion_enabled === false)
     throw new ExtError(403, "A extensão está desativada nesta conta.", "companion_disabled")
