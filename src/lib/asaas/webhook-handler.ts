@@ -418,7 +418,17 @@ async function liberar(
   // ⚠️ Fim do trial: quem pagou sai de `trialing` e vira cliente. Sem isto, ele ficaria
   //    `trialing` com `trial_ends_at` vencido pra sempre — e qualquer varredura futura de
   //    trial vencido suspenderia um cliente pagante.
-  if (tenant.lifecycle_state === "trialing") {
+  //
+  // 🔴 `trial_ended` PRECISOU ENTRAR AQUI (05/08) — e a falta era a pior possível: **o
+  //    cliente pagava e continuava travado**. Este ramo só conhecia `trialing`; o estado
+  //    `trial_ended` nasceu ontem, pra travar o produto quando o teste vence, e ninguém
+  //    voltou aqui pra ensinar a destravar. O desenho inteiro do fim de teste é
+  //    "trava → paga → libera", e a última seta não existia: entrava dinheiro,
+  //    `subscription_status` virava `active`, e o `lifecycle_state` seguia `trial_ended`
+  //    ⇒ modal persistente na cara de quem acabou de pagar, para sempre.
+  // ⚠️ Mesma classe do `KNOWN_STATES` de ontem: estado novo no tipo, consumidor antigo
+  //    intacto, `tsc` verde. Estado novo obriga a varrer QUEM DECIDE em cima dele.
+  if (tenant.lifecycle_state === "trialing" || tenant.lifecycle_state === "trial_ended") {
     patch.lifecycle_state = "active"
     patch.trial_ends_at   = null
     patch.active          = true

@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isMobilePhoneBR } from "@/lib/masks"
 import { asaas, AsaasError } from "./client"
 import { ensureAsaasCustomer } from "./customers"
 
@@ -133,7 +134,17 @@ export async function createSubscriptionForTenant(
         cpfCnpj:       digits(holder.cpfCnpj),
         postalCode:    digits(holder.postalCode),
         addressNumber: holder.addressNumber,
-        phone:         digits(holder.phone),
+        // 🔴 CELULAR VAI EM `mobilePhone`, NÃO EM `phone` (05/08). Na doc do Asaas
+        //    `phone` é *"Telefone com DDD do titular"* — FIXO — e `mobilePhone` é o
+        //    celular. Mandando um número de 11 dígitos no campo do fixo, o gateway o
+        //    reconhece como celular e o valida como tal: a cobrança voltou com
+        //    *"Celular informado é inválido"*, um erro que não dizia qual campo consertar.
+        // ⚠️ O mesmo número vai nos dois quando só há celular — `phone` é obrigatório e o
+        //    dono de PME brasileiro em geral não tem fixo. Repetir é honesto: é o telefone
+        //    dele; inventar um fixo pra preencher, não seria.
+        ...(isMobilePhoneBR(holder.phone)
+          ? { phone: digits(holder.phone), mobilePhone: digits(holder.phone) }
+          : { phone: digits(holder.phone) }),
       },
       remoteIp,
     })
@@ -215,9 +226,21 @@ function primeiraCobranca(trialEndsAt: string | null, billingDay: number | null)
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" })
       .format(d)
 
+  // 🔴 NUNCA UMA DATA NO PASSADO (05/08). O ramo abaixo devolvia o fim do trial cru — e
+  //    quem assina DEPOIS que o teste venceu (`trial_ended`, o caso mais comum de todos:
+  //    a pessoa travou, viu o modal e resolveu pagar) tem `trial_ends_at` no passado. O
+  //    gateway recusa `nextDueDate` retroativo, então a assinatura simplesmente não era
+  //    criada — o cliente digitava o cartão e levava um erro do Asaas no fim da trilha.
+  // 🔑 Piso em HOJE: o teste já acabou, então cobrar hoje é exatamente o combinado
+  //    ("o fim do teste e a primeira cobrança são o mesmo dia"). Para quem ainda está no
+  //    teste nada muda — a data futura passa intacta.
+  const hojeStr = fmt(new Date())
   if (trialEndsAt) {
     const fim = new Date(trialEndsAt)
-    if (!Number.isNaN(fim.getTime())) return fmt(fim)
+    if (!Number.isNaN(fim.getTime())) {
+      const d = fmt(fim)
+      return d < hojeStr ? hojeStr : d
+    }
   }
 
   const hoje = new Date()

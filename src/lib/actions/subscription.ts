@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { isValidPhoneBR } from "@/lib/masks"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIpFromHeaders } from "@/lib/rate-limit"
 import { logAudit } from "@/lib/audit"
@@ -181,10 +182,18 @@ export async function getTitularParaCobranca(): Promise<TitularPreenchido | null
     telefone: (p.phone || "").trim(),
     completo: false,
   }
-  // ⚠️ O Asaas EXIGE cpfCnpj, cep e número no `creditCardHolderInfo`. Sem eles a
+  // ⚠️ O Asaas EXIGE cpfCnpj, cep, número E TELEFONE no `creditCardHolderInfo`. Sem eles a
   //    tokenização falha com erro do gateway — melhor a tela saber ANTES e mandar o
   //    cliente completar o cadastro do que ele digitar o cartão e levar erro genérico.
-  t.completo = Boolean(t.nome && t.email && t.cpfCnpj && t.cep && t.numero)
+  //
+  // 🔴 O TELEFONE FALTAVA NESTA LISTA — e a falta era invisível de propósito ruim: ele é
+  //    obrigatório lá, ninguém checava aqui, e o campo não aparecia no cadastro rápido.
+  //    Resultado medido (05/08): cartão digitado, cobrança recusada com *"Celular informado
+  //    é inválido"* — sobre um dado que a pessoa não via, não tinha preenchido e não tinha
+  //    onde corrigir. `completo` é a promessa "dá pra cobrar"; ela estava mentindo.
+  // ⚠️ Valida a FORMA, não só a presença: um telefone guardado mas inválido reproduz
+  //    exatamente o mesmo erro, com o mesmo cartão já digitado.
+  t.completo = Boolean(t.nome && t.email && t.cpfCnpj && t.cep && t.numero && isValidPhoneBR(t.telefone))
   return t
 }
 

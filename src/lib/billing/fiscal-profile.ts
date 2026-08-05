@@ -1,5 +1,5 @@
 import "server-only"
-import { isValidCpf, isValidCnpj } from "@/lib/masks"
+import { isValidCpf, isValidCnpj, isValidPhoneBR } from "@/lib/masks"
 
 // ═══════════════════════════════════════════════════════════════
 // Cadastro fiscal do cliente — A REGRA, num lugar só
@@ -130,8 +130,14 @@ export function normalizarPerfilFiscal(
   if (email && !EMAIL_RE.test(email)) return { error: "E-mail de faturamento inválido." }
   v.billing_email = email || null
 
-  const tel = digits(v.phone)
-  if (tel && (tel.length < 10 || tel.length > 13)) return { error: "Telefone inválido (informe com DDD)." }
+  // 🔴 Telefone: a régua era só de COMPRIMENTO (10 a 13 dígitos) e por isso deixava passar
+  //    `11999999999` — que o gateway recusa com *"Celular informado é inválido"*, já com o
+  //    cartão digitado (medido 05/08). Agora vale a mesma função do resto do sistema.
+  // ⚠️ Tira o `55` do país antes de validar: quem cola o número do WhatsApp manda 13
+  //    dígitos, e recusar isso seria recusar o formato mais comum de colar um telefone.
+  let tel = digits(v.phone)
+  if ((tel.length === 12 || tel.length === 13) && tel.startsWith("55")) tel = tel.slice(2)
+  if (tel && !isValidPhoneBR(tel)) return { error: "Telefone inválido — informe com DDD (ex: 11 98888-7777)." }
   v.phone = tel || null
 
   // 6 · Endereço. O CEP é guardado em dígitos pelo mesmo motivo do documento.
@@ -153,15 +159,22 @@ export function normalizarPerfilFiscal(
   }
 
   // 7 · O que a COBRANÇA exige, além do acima. Mesma régua de `getTitularParaCobranca`
-  //     (`nome && email && cpfCnpj && cep && numero`) — as duas precisam concordar, senão
-  //     a tela deixa salvar e o gate barra depois, que é a pior combinação possível.
+  //     (`nome && email && cpfCnpj && cep && numero && telefone`) — as duas precisam
+  //     concordar, senão a tela deixa salvar e o gate barra depois, que é a pior
+  //     combinação possível.
+  //
+  // 🔴 E foi EXATAMENTE isso que aconteceu com o telefone (05/08): ele era obrigatório no
+  //    gateway, não estava em nenhuma das duas listas, e a divergência só aparecia na
+  //    recusa da cobrança. O aviso acima estava escrito aqui desde o começo — e o campo
+  //    novo entrou sem ser confrontado com ele.
   const numero = limpa(v.number)
-  const completo = Boolean(nome && email && doc && cep && numero)
+  const completo = Boolean(nome && email && doc && cep && numero && isValidPhoneBR(tel))
 
   if (opts.exigirCobranca) {
     if (!email)  return { error: "Informe o e-mail de faturamento." }
     if (!cep)    return { error: "Informe o CEP." }
     if (!numero) return { error: "Informe o número do endereço (use 'S/N' se não houver)." }
+    if (!tel)    return { error: "Informe um telefone com DDD — o banco emissor exige para confirmar a compra." }
   }
 
   return { valores: v, completo }

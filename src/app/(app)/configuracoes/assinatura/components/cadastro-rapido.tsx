@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { Loader2, AlertCircle, ArrowRight, Sparkles } from "lucide-react"
-import { maskCpfCnpj, maskCep, maskPhone, isValidCpf, isValidCnpj } from "@/lib/masks"
+import { maskCpfCnpj, maskCep, maskPhone, isValidCpf, isValidCnpj, isValidPhoneBR } from "@/lib/masks"
 import { lookupCnpj } from "@/lib/cnpj"
 import { lookupCep } from "@/lib/cep"
 import { saveMyCompanyProfile, type PerfilEmpresa } from "@/lib/actions/company-profile"
@@ -10,10 +10,18 @@ import { saveMyCompanyProfile, type PerfilEmpresa } from "@/lib/actions/company-
 // ═══════════════════════════════════════════════════════════════
 // Cadastro rápido — o mínimo pra conseguir cobrar, dentro do modal
 // ═══════════════════════════════════════════════════════════════
-// 🔑 Só os CINCO campos que a cobrança exige (`getTitularParaCobranca`): nome, documento,
-//    e-mail, CEP e número. O cadastro completo continua em /configuracoes/empresa — aqui
-//    é o caminho curto de quem está no meio de uma compra e não pode ser desviado pra
-//    uma tela de 16 campos.
+// 🔑 Só os SEIS campos que a cobrança exige (`getTitularParaCobranca`): nome, documento,
+//    e-mail, CEP, número e TELEFONE. O cadastro completo continua em /configuracoes/empresa
+//    — aqui é o caminho curto de quem está no meio de uma compra e não pode ser desviado
+//    pra uma tela de 16 campos.
+//
+// 🔴 O TELEFONE ERA O SEXTO E ESTAVA INVISÍVEL (corrigido 05/08). Ele já era enviado —
+//    carregado do perfil pro state e mandado no `save` —, só não tinha campo. Quem tinha
+//    telefone ruim gravado descobria no PIOR lugar possível: depois de digitar o cartão,
+//    como *"Celular informado é inválido"*, um erro do gateway sobre um dado que não
+//    aparecia em tela nenhuma do fluxo e que ele não tinha onde consertar.
+//    Regra que fica: campo que a cobrança EXIGE ou aparece pra ser corrigido, ou não é
+//    exigido. Enviar em silêncio é o pior dos dois mundos.
 //
 // ⚠️ Mesma ACTION da tela completa (`saveMyCompanyProfile`) e mesmos MOTORES de consulta
 //    (`/api/cnpj`, `/api/cep`). A regra de validação, a allow-list de colunas e a checagem
@@ -96,6 +104,9 @@ export function CadastroRapido({
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) { setErro("Informe um e-mail válido."); return }
     if (cep.replace(/\D/g, "").length !== 8) { setErro("Informe um CEP válido."); return }
     if (!numero.trim()) { setErro("Informe o número (use S/N se não houver)."); return }
+    // ⚠️ Mesma régua do servidor (`isValidPhoneBR`), e ela existe porque o gateway recusa
+    //    número de dígito repetido: sem esta linha o erro só apareceria depois do cartão.
+    if (!isValidPhoneBR(tel)) { setErro("Informe um telefone válido com DDD."); return }
 
     startT(async () => {
       const r = await saveMyCompanyProfile({
@@ -150,6 +161,12 @@ export function CadastroRapido({
       <Campo rotulo="E-mail de faturamento">
         <input className={INP} type="email" value={email} onChange={(e) => setEmail(e.target.value)}
           placeholder="financeiro@empresa.com" />
+      </Campo>
+
+      <Campo rotulo="Telefone com DDD">
+        <input className={INP} value={tel} inputMode="numeric" placeholder="(11) 98888-7777"
+          onChange={(e) => setTel(maskPhone(e.target.value))} />
+        <p className="mt-1 text-[11px] text-slate-400">O banco emissor usa para confirmar a compra.</p>
       </Campo>
 
       <div className="grid grid-cols-2 gap-3">

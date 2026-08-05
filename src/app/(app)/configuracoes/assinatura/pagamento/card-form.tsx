@@ -130,11 +130,16 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
     return (
       <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-6 text-center">
         <CheckCircle2 className="size-8 text-emerald-600 mx-auto" />
-        <h2 className="mt-3 text-base font-bold text-slate-900">Assinatura ativada</h2>
+        {/* ⚠️ "Recebemos", não "ativada": cartão aceito ≠ pagamento confirmado. Quem libera
+            o produto é o webhook do gateway, que chega segundos depois. Afirmar ativação
+            aqui é a tela prometer um estado que o servidor ainda não tem — e no caminho do
+            teste encerrado isso mandava a pessoa de volta pro paywall logo após pagar. */}
+        <h2 className="mt-3 text-base font-bold text-slate-900">Recebemos seu pagamento</h2>
         <p className="mt-1 text-sm text-slate-600 leading-relaxed">
           {primeiraCobranca
             ? <>A primeira cobrança de <strong>{brl(valorCents)}</strong> acontece em <strong>{primeiraCobranca}</strong>.</>
             : <>A cobrança de <strong>{brl(valorCents)}</strong> passa a ser mensal.</>}
+          {" "}A confirmação do banco leva alguns segundos.
         </p>
         <button onClick={() => router.push("/configuracoes/assinatura")}
           className="mt-4 h-9 px-4 text-xs font-semibold rounded-lg bg-primary text-white hover:bg-primary/90">

@@ -31,6 +31,31 @@ export function maskPhone(v: string): string {
   return d.replace(/^(\d{2})(\d)/, "($1) $2").replace(/(\d{5})(\d)/, "$1-$2")
 }
 
+/**
+ * Telefone BR utilizável de verdade: 10 dígitos (fixo) ou 11 (celular, com o 9).
+ *
+ * 🔑 Existe por causa de uma cobrança que não passou (05/08). O gateway EXIGE telefone do
+ *    titular e valida o número; um `11999999999` gravado no cadastro voltou como
+ *    *"Celular informado é inválido"* — depois do cartão digitado, e sobre um campo que
+ *    não aparecia em tela nenhuma do fluxo.
+ * ⚠️ Rejeita DDD inexistente (< 11) e dígito repetido (`11999999999`, `1133333333`):
+ *    passam em qualquer checagem de formato e são exatamente os que o gateway recusa.
+ *    Melhor a nossa tela dizer isso, no campo certo, antes do cartão.
+ */
+export function isValidPhoneBR(v: string | null | undefined): boolean {
+  const d = (v ?? "").replace(/\D/g, "")
+  if (d.length !== 10 && d.length !== 11) return false
+  if (Number(d.slice(0, 2)) < 11) return false
+  if (d.length === 11 && d[2] !== "9") return false          // celular sempre tem o 9
+  return !/^(\d)\1+$/.test(d.slice(2))                       // 999999999, 33333333…
+}
+
+/** `true` quando é celular (11 dígitos com o 9) — decide `mobilePhone` × `phone`. */
+export function isMobilePhoneBR(v: string | null | undefined): boolean {
+  const d = (v ?? "").replace(/\D/g, "")
+  return d.length === 11 && d[2] === "9"
+}
+
 /** PF/PJ pelo nº de dígitos do documento (11=cpf, 14=cnpj, senão null). */
 export function docKind(doc: string | null | undefined): "cpf" | "cnpj" | null {
   const d = (doc ?? "").replace(/\D/g, "")

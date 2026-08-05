@@ -290,9 +290,15 @@ export function EmpresaClient({ inicial }: { inicial: PerfilEmpresa }) {
             <input className={INP} type="email" value={f.billing_email}
               onChange={(e) => set("billing_email", e.target.value)} placeholder="financeiro@empresa.com" />
           </Campo>
-          <Campo rotulo="Telefone" opcional>
+          {/* ⚠️ Deixou de ser "opcional": o gateway EXIGE telefone do titular pra tokenizar
+              o cartão. Marcar como opcional aqui e barrar no checkout era a divergência que
+              derrubou uma cobrança em 05/08.
+              ⚠️ Placeholder com dígito NÃO repetido de propósito: o exemplo era
+              `(11) 99999-9999` — exatamente o formato que o gateway recusa. A tela estava
+              ensinando o número que a cobrança ia rejeitar. */}
+          <Campo rotulo="Telefone">
             <input className={INP} value={f.phone} inputMode="tel"
-              onChange={(e) => set("phone", maskPhone(e.target.value))} placeholder="(11) 99999-9999" />
+              onChange={(e) => set("phone", maskPhone(e.target.value))} placeholder="(11) 98888-7777" />
           </Campo>
         </div>
         <Campo rotulo="Responsável" opcional>

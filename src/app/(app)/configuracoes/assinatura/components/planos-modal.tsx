@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useState, useTransition, useRef, useEffect } from "react"
 import { Check, X, Loader2, AlertCircle, ArrowRight, ChevronLeft, ChevronRight } from "lucide-react"
-import { escolherPlano } from "@/lib/actions/subscription"
+import { escolherPlano, getMyBillingStanding } from "@/lib/actions/subscription"
 import type { PlanoVitrine } from "@/lib/billing/plans-view"
 import { CATEGORIA_LABEL } from "@/lib/modules-shared"
 import { CadastroRapido } from "./cadastro-rapido"
@@ -60,6 +60,8 @@ export function PlanosModal({
   // ⚠️ O passo de cadastro só existe quando falta cadastro. Quem já tem vai direto ao
   //    cartão — um passo a mais numa compra é uma chance a mais de desistir.
   const [passo, setPasso] = useState<Passo>("planos")
+  // `null` = ainda confirmando com o gateway. Ver o efeito logo abaixo.
+  const [liberado, setLiberado] = useState<boolean | null>(null)
   const [planoEscolhido, setPlanoEscolhido] = useState<PlanoVitrine | null>(null)
   const [cadastroOk, setCadastroOk] = useState(podeAssinar)
 
@@ -118,6 +120,33 @@ export function PlanosModal({
     if (!card) return
     el.scrollTo({ left: i * (card.offsetWidth + 16), behavior: "smooth" })
   }
+
+  // ── Esperar a CONFIRMAÇÃO do pagamento, não só o envio do cartão ────────────────
+  //
+  // 🔴 Antes, esta tela dizia "Assinatura ativada" no instante em que o cartão era
+  //    aceito — e mandava a pessoa pro /inbox. Mas criar assinatura ≠ pagamento
+  //    confirmado: quem libera o produto é o webhook do gateway (`liberar()`), que chega
+  //    segundos depois. No intervalo, o gate do servidor ainda vê `trial_ended` e
+  //    devolve a pessoa pro paywall — ou seja, ela pagava, era parabenizada, clicava em
+  //    "voltar a usar" e caía de novo na tela de pagar. Com o dinheiro já debitado.
+  // 🔑 Agora a tela PERGUNTA até o servidor confirmar, e o botão só aparece quando o
+  //    acesso é real. É a mesma fonte que o layout usa pra decidir — se ela diz liberado,
+  //    o /inbox abre.
+  // ⚠️ Teto de ~60s. Se o webhook atrasar mais que isso a tela para de girar e explica —
+  //    girar pra sempre faria a pessoa achar que o pagamento falhou e pagar de novo.
+  useEffect(() => {
+    if (passo !== "pronto" || liberado) return
+    let vivo = true
+    let tentativas = 0
+    const t = setInterval(async () => {
+      tentativas++
+      const st = await getMyBillingStanding()
+      if (!vivo) return
+      if (st && st.degrau !== "trial_ended") { setLiberado(true); clearInterval(t); return }
+      if (tentativas >= 20) { setLiberado(false); clearInterval(t) }
+    }, 3000)
+    return () => { vivo = false; clearInterval(t) }
+  }, [passo, liberado])
 
   function escolher(planoId: string) {
     setErro(""); setEscolhido(planoId)
@@ -230,20 +259,40 @@ export function PlanosModal({
                       <div className="mx-auto size-14 rounded-full bg-emerald-50 ring-1 ring-emerald-200 flex items-center justify-center">
                         <Check className="size-7 text-emerald-600" />
                       </div>
-                      <h2 className="mt-4 text-lg font-bold text-slate-900">Assinatura ativada</h2>
+                      <h2 className="mt-4 text-lg font-bold text-slate-900">
+                        {liberado === true ? "Assinatura ativada" : "Recebemos seu pagamento"}
+                      </h2>
                       <p className="mt-1.5 text-sm text-slate-500 leading-relaxed max-w-sm mx-auto">
-                        {primeiraCobranca
-                          ? <>A primeira cobrança acontece em <strong className="text-slate-700">{primeiraCobranca}</strong>.</>
-                          : <>A cobrança passa a ser mensal e automática.</>}
+                        {liberado === true
+                          ? (primeiraCobranca
+                              ? <>A primeira cobrança acontece em <strong className="text-slate-700">{primeiraCobranca}</strong>.</>
+                              : <>A cobrança passa a ser mensal e automática.</>)
+                          : liberado === false
+                          ? <>A confirmação do banco está demorando mais que o normal. Seu pagamento foi enviado e nada será cobrado duas vezes — recarregue em alguns minutos ou fale com a gente.</>
+                          : <>Estamos confirmando com o banco. Leva alguns segundos.</>}
                       </p>
+
                       {/* 🔑 Recarrega DE VERDADE em vez de fechar o modal: o desvio de
                           `trial_ended` mora no layout do servidor, e só um recarregamento
                           faz o app voltar a abrir. Fechar deixaria a pessoa numa tela
-                          travada com a assinatura já paga. */}
-                      <button type="button" onClick={() => window.location.assign("/inbox")}
-                        className="mt-5 h-10 px-5 rounded-lg bg-primary hover:bg-primary-700 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors">
-                        Voltar a usar o Kora <ArrowRight className="size-4" />
-                      </button>
+                          travada com a assinatura já paga.
+                          ⚠️ E só aparece com o acesso JÁ liberado — oferecer "voltar a usar"
+                          antes disso manda a pessoa direto de volta pro paywall. */}
+                      {liberado === true ? (
+                        <button type="button" onClick={() => window.location.assign("/inbox")}
+                          className="mt-5 h-10 px-5 rounded-lg bg-primary hover:bg-primary-700 text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors">
+                          Voltar a usar o Kora <ArrowRight className="size-4" />
+                        </button>
+                      ) : liberado === false ? (
+                        <button type="button" onClick={() => window.location.reload()}
+                          className="mt-5 h-10 px-5 rounded-lg border border-slate-300 bg-white text-slate-700 text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors">
+                          Verificar de novo
+                        </button>
+                      ) : (
+                        <p className="mt-5 inline-flex items-center gap-2 text-sm text-slate-400">
+                          <Loader2 className="size-4 animate-spin" /> Confirmando…
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
