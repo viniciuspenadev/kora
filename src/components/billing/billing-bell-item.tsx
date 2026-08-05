@@ -41,6 +41,18 @@ function texto(standing: BillingStanding): { title: string; body: string } | nul
   const { degrau, invoice, paused, continues, nextClosingAt } = standing
   if (degrau === "ok" || degrau === "terminated") return null
 
+  // ⚠️ Teste vem ANTES de qualquer coisa de fatura — não existe fatura em teste, então
+  //    `assuntoDaFatura` e `linhaDoDocumento` não têm do que falar aqui.
+  if (degrau === "trial") {
+    const dias = standing.trial?.diasRestantes ?? 0
+    return {
+      title: dias <= 1 ? "Seu teste termina hoje" : `Seu teste termina em ${dias} dias`,
+      body: standing.trial?.podeAssinar
+        ? "Depois disso o acesso é interrompido até você ativar a assinatura."
+        : "Complete o cadastro da empresa — sem ele não conseguimos emitir a cobrança.",
+    }
+  }
+
   const assunto = assuntoDaFatura(invoice)
   const emAberto = tempoEmAberto(invoice)
 

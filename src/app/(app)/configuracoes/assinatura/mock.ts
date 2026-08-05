@@ -25,11 +25,12 @@ function proximoFechamento(base = new Date()): string {
 
 export function parseDegrau(v: string | string[] | undefined): BillingDegrau {
   const s = Array.isArray(v) ? v[0] : v
-  return s === "grace" || s === "restricted" || s === "readonly" || s === "terminated" ? s : "ok"
+  return s === "trial" || s === "grace" || s === "restricted" || s === "readonly" || s === "terminated" ? s : "ok"
 }
 
 /** Atraso típico de cada degrau — a escada do docs/access-revocation-design.md §2. */
-const ATRASO: Record<BillingDegrau, number> = { ok: 0, grace: 3, restricted: 9, readonly: 21, terminated: 47 }
+// `trial` não tem atraso: não existe fatura em teste. Zero é o valor honesto.
+const ATRASO: Record<BillingDegrau, number> = { trial: 0, ok: 0, grace: 3, restricted: 9, readonly: 21, terminated: 47 }
 
 // ── O que continua × o que parou (LINGUAGEM DE RESULTADO) ──────
 // A metade que CONTINUA é tão importante quanto a que parou: é ela que
@@ -113,6 +114,11 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
       ? { id: faturaAberta.id, totalCents: faturaAberta.totalCents, dueDate: vencimento, daysOverdue: atraso }
       : null,
     nextClosingAt: fechaEm,
+    // Prévia do degrau 0: 2 dias e cadastro INCOMPLETO — é o pior caso e o que mais
+    // precisa ser revisado, porque é nele que o cliente descobre que não consegue pagar.
+    trial: degrau === "trial"
+      ? { endsAt: emDias(2, hoje), diasRestantes: 2, podeAssinar: false }
+      : null,
     ...escada(degrau),
   }
 

@@ -5,7 +5,7 @@ import { getProvider } from "@/lib/providers"
 import { sendChannelText } from "@/lib/channels/reply"
 import { isWhatsAppChannel, isWindowOpen, getChannelPolicy } from "@/lib/channels/policy"
 import { createNotification } from "@/lib/notifications"
-import { hasModule } from "@/lib/modules"
+import { hasModule, hasModulePro } from "@/lib/modules"
 import { sendAgendaConfirm } from "./official-template"
 import { recordAppointmentEvent } from "./events"
 import { withAliases } from "@/lib/variables/registry"
@@ -130,6 +130,12 @@ export async function runAppointmentEvent(appointmentId: string, event: AgendaEv
 
     // 🔒 Entitlement (god mode) — sem o módulo add-on, não dispara nem paralelo.
     if (!(await hasModule(appt.tenant_id, "agenda_reminders"))) return
+    // 🔒 PRO — SEGUNDA parede, e ela não é redundante (2026-08-04). A action de ligar já
+    //    exige PRO, mas o switch fica GRAVADO em `tenant_config`: quem ligou com PRO e
+    //    depois perdeu o PRO continuaria disparando pra sempre, porque ninguém volta pra
+    //    desligar. Aqui a permissão é conferida AO VIVO, a cada envio — mesma lição do
+    //    `instagram-inbound`: config no banco é intenção; permissão é `hasModulePro`, sempre.
+    if (!(await hasModulePro(appt.tenant_id, "agenda_reminders"))) return
     // 🔒 Master switch do tenant (backend) — sem ligar, nada sai.
     const { data: cfg } = await supabaseAdmin.from("tenant_config")
       .select("agenda_reminders_enabled").eq("tenant_id", appt.tenant_id).maybeSingle()

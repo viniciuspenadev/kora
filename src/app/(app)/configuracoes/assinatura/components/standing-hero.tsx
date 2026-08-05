@@ -40,6 +40,24 @@ export function fraseDoDegrau(standing: BillingStanding, conta: ContaDoMes): {
   const inv   = standing.invoice
 
   switch (standing.degrau) {
+    case "trial": {
+      const t = standing.trial
+      const dias = t?.diasRestantes ?? 0
+      return {
+        // ⚠️ Âmbar, nunca verde. Verde diria "não precisa fazer nada" — e precisa: no
+        //    vencimento o acesso é cortado. Também não é vermelho: nada parou ainda, e
+        //    assustar quem está experimentando o produto é o jeito mais rápido de perdê-lo.
+        tom: "atencao",
+        lead: dias <= 1 ? "Seu teste termina hoje." : `Seu teste termina em ${plural(dias, "dia")}.`,
+        tail: t?.podeAssinar
+          ? <>Depois de {forte(dataLonga(t.endsAt))} o acesso é interrompido até você ativar a assinatura.</>
+          // 🔴 A pessoa PRECISA saber que não é só clicar em pagar — sem documento, CEP e
+          //    número a tokenização do cartão falha. Descobrir isso com o cartão na mão,
+          //    no último dia, é perder o cliente por burocracia nossa.
+          : <>Antes de assinar, complete o cadastro da sua empresa — sem ele não conseguimos emitir a cobrança.</>,
+      }
+    }
+
     case "ok":
       return {
         tom: "ok", lead: "Tudo certo.",
@@ -121,6 +139,22 @@ export function StandingHero({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {/* ⚠️ O botão do teste leva pra onde a pessoa CONSEGUE agir. Com cadastro
+              completo, pro cartão; sem ele, pro cadastro — porque mandar pro checkout
+              quem não consegue pagar é fazer a pessoa digitar o cartão inteiro pra
+              receber um erro que a gente já sabia. */}
+          {standing.degrau === "trial" && (
+            standing.trial?.podeAssinar ? (
+              <Link href="/configuracoes/assinatura/pagamento" className={BTN_PRIMARY_LG}>
+                <CreditCard className="size-4" /> Ativar assinatura
+              </Link>
+            ) : (
+              <Link href="/configuracoes/empresa" className={BTN_PRIMARY_LG}>
+                Completar cadastro
+              </Link>
+            )
+          )}
+
           {inv && !fim && (
             <button type="button" onClick={onPagar} className={BTN_PRIMARY_LG}>
               Pagar {brl(inv.totalCents)}

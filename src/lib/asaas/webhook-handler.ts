@@ -284,6 +284,121 @@ async function calcularFimDoCiclo(tenantId: string, ev: EventRow): Promise<strin
 }
 
 /**
+ * Baixa na fatura da Kora quando o gateway confirma o pagamento.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 O FURO QUE ISTO FECHA (achado 2026-08-05, confirmado linha a linha)
+ * ══════════════════════════════════════════════════════════════════════════════
+ * A versão anterior casava a fatura por `.eq("gateway_ref", ev.payment_id)`. Só que
+ * **`invoices.gateway_ref` NÃO TINHA NENHUM ESCRITOR** — a coluna existia na migration,
+ * era LIDA aqui, e nunca era gravada em lugar nenhum do repositório. Logo o filtro casava
+ * **zero linhas, sempre**: nenhuma fatura jamais virava `paid` pelo webhook.
+ *
+ * O laço estava aberto nas duas pontas, e por um motivo estrutural: a Kora gera a fatura
+ * no `billing_day` (cron), e o Asaas cobra o cartão no `nextDueDate` da assinatura. São
+ * dois relógios diferentes — **as duas pontas nunca foram apresentadas uma à outra.**
+ *
+ * O dano NÃO era só contábil:
+ *   • `standing.ts` mantinha quem acabou de pagar no degrau `grace` ("sua fatura está em
+ *     aberto") — a tela acusando de caloteiro quem estava em dia;
+ *   • `calcularFimDoCiclo` procura uma fatura `paid` pra saber até quando o cliente tem
+ *     acesso; sem nenhuma, caía no fallback `"sem evidência de ciclo pago, corte
+ *     imediato"` — cortando na hora quem pagou 12 meses. Isso contradizia frontalmente a
+ *     decisão do dono ("o acesso continua até o fim do ciclo").
+ *
+ * ── COMO CASA AGORA ──────────────────────────────────────────────────────────
+ * Pela **fatura em aberto mais ANTIGA do tenant** — exatamente a definição que
+ * `standing.ts` já usa pra dizer "é esta que ele tem que pagar". Reusar a definição em vez
+ * de inventar uma segunda é o que impede as duas telas de discordarem sobre qual fatura é
+ * a da vez.
+ *
+ * ⚠️ NÃO caso por VALOR. O valor da assinatura no gateway é o preço do plano; o da fatura
+ *    inclui excedente. Exigir igualdade faria a baixa falhar justamente em quem consome
+ *    mais — o cliente que a gente menos pode irritar. A divergência é REGISTRADA (é sinal
+ *    de que o `PUT` de atualização de valor não rodou), mas não impede a baixa: quem diz
+ *    quanto entrou é o gateway.
+ *
+ * ⚠️ Pagamento SEM fatura correspondente é NORMAL e não é erro: durante o trial a
+ *    assinatura cobra em `trial_ends_at`, antes de o cron ter gerado qualquer fatura. Fica
+ *    logado como fato, não como falha — mas fica logado, porque dinheiro que entra sem
+ *    contrapartida no livro é a coisa que a gente mais precisa enxergar.
+ */
+async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<void> {
+  if (!ev.payment_id) return
+
+  // Idempotência: `gateway_ref` já carimbado com ESTE pagamento ⇒ evento repetido.
+  // ("at least once" é contrato do Asaas — repetição é caminho normal, não erro.)
+  const { data: jaBaixada } = await supabaseAdmin
+    .from("invoices").select("id")
+    .eq("tenant_id", tenantId).eq("gateway_ref", ev.payment_id)
+    .limit(1).maybeSingle()
+  if (jaBaixada) return
+
+  const { data: alvo, error: buscaErr } = await supabaseAdmin
+    .from("invoices")
+    .select("id, total_cents")
+    .eq("tenant_id", tenantId)
+    .in("status", ["open", "overdue"])
+    // A mais ANTIGA primeiro — mesma ordenação de `standing.ts`.
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (buscaErr) {
+    // 🔴 Grita. Dinheiro entrou e o livro não soube — é exatamente o estado que este
+    //    helper existe pra tornar impossível, então ele não pode falhar em silêncio.
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "baixa-falhou-na-busca",
+      tenant: tenantId, payment: ev.payment_id, msg: buscaErr.message,
+    }))
+    return
+  }
+
+  if (!alvo) {
+    console.log(JSON.stringify({
+      src: "asaas-handler", kind: "pagamento-sem-fatura",
+      tenant: tenantId, payment: ev.payment_id,
+    }))
+    return
+  }
+
+  const pago = typeof ev.payload?.payment?.value === "number" ? Math.round(ev.payload.payment.value * 100) : null
+  const devido = (alvo as { total_cents: number }).total_cents
+  if (pago !== null && pago !== devido) {
+    console.warn(JSON.stringify({
+      src: "asaas-handler", kind: "baixa-com-valor-divergente",
+      tenant: tenantId, payment: ev.payment_id, pagoCents: pago, faturaCents: devido,
+    }))
+  }
+
+  const { error } = await supabaseAdmin
+    .from("invoices")
+    .update({
+      status:      "paid",
+      paid_at:     new Date().toISOString(),
+      paid_method: "credit_card",
+      // 🔑 O ELO QUE FALTAVA. Daqui pra frente a fatura sabe qual pagamento a quitou —
+      //    e a idempotência lá em cima passa a ter em que se apoiar.
+      gateway_ref: ev.payment_id,
+    })
+    .eq("id", (alvo as { id: string }).id)
+    .neq("status", "paid")
+
+  if (error) {
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "baixa-falhou",
+      tenant: tenantId, payment: ev.payment_id, invoice: (alvo as { id: string }).id, msg: error.message,
+    }))
+    return
+  }
+
+  console.log(JSON.stringify({
+    src: "asaas-handler", kind: "fatura-baixada",
+    tenant: tenantId, payment: ev.payment_id, invoice: (alvo as { id: string }).id,
+  }))
+}
+
+/**
  * Pagamento entrou → libera.
  *
  * 🔑 `PAYMENT_CONFIRMED` JÁ BASTA — não esperamos o `RECEIVED`. A diferença, na doc do
@@ -311,14 +426,7 @@ async function liberar(
   const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenant.id)
   if (error) { await fechar(ev.id, `falha ao liberar: ${error.message}`); return }
 
-  // Baixa na fatura, quando ela existe do nosso lado (`gateway_ref` = id do pagamento).
-  if (ev.payment_id) {
-    await supabaseAdmin.from("invoices")
-      .update({ status: "paid", paid_at: new Date().toISOString(), paid_method: "credit_card" })
-      .eq("tenant_id", tenant.id)
-      .eq("gateway_ref", ev.payment_id)
-      .neq("status", "paid")
-  }
+  await darBaixaNaFatura(tenant.id, ev)
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "liberado", tenant: tenant.id, event: ev.event_type }))
   await fechar(ev.id)

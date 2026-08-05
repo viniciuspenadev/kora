@@ -9,6 +9,7 @@ import {
 import { SectionCard } from "@/components/ui/section-card"
 import { setTenantModule, clearTenantModule } from "@/lib/actions/modules-admin"
 import type { TenantModuleStatus } from "@/lib/modules"
+import { temNivelPro, MODULOS_COM_PRO } from "@/lib/modules-shared"
 
 interface Props {
   tenantId:   string
@@ -338,10 +339,16 @@ function ModuleRow({
       {/* Ações */}
       <div className="flex items-center gap-1 shrink-0">
         {/* Checkbox do PRO — só existe com o módulo LIGADO, porque é onde ele mora.
-            "PRO ligado com módulo desligado" não é estado exprimível, por construção. */}
-        {!module.is_core && module.effective && (
+            "PRO ligado com módulo desligado" não é estado exprimível, por construção.
+            🔴 E só nos módulos que TÊM nível PRO (`temNivelPro`, 2026-08-04). Antes ele
+               aparecia em todo módulo não-core ligado — ~30 — enquanto `hasModulePro` era
+               consultado em UM. Marcar PRO em `kanban` ou `contatos` gravava `pro=true` e
+               não mudava nada, para sempre: a tela prometia um controle que 29 dos 30 não
+               honravam. Medido no mesmo dia: 2 das 3 concessões de PRO em produção eram
+               inertes. Oferecer só o que existe é o que impede a próxima. */}
+        {!module.is_core && module.effective && temNivelPro(module.slug) && (
           <label className="inline-flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-white"
-            title="Libera os recursos avançados deste módulo">
+            title={`Libera: ${MODULOS_COM_PRO[module.slug]?.recurso ?? "recursos avançados"}`}>
             <input type="checkbox" checked={!!module.pro} onChange={togglePro} disabled={pending}
               className="size-3.5 rounded border-slate-300 text-primary focus:ring-primary/30 cursor-pointer disabled:opacity-50" />
             <span className="text-[10px] font-bold text-slate-600">PRO</span>

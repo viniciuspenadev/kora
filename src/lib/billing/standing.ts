@@ -38,7 +38,15 @@ import {
 //    usam. Este arquivo mapeia predicado → degrau → rótulo; ele não reimplementa
 //    "está bloqueado?" em lugar nenhum. Mudou a política? Muda lá, e aqui só o rótulo.
 
-export type BillingDegrau = "ok" | "grace" | "restricted" | "readonly" | "terminated"
+/**
+ * ⚠️ `"trial"` NÃO é um degrau da escada de inadimplência — é o estado ANTERIOR a ela:
+ *    o cliente não deve nada, e mesmo assim tem um prazo que, vencido, corta o acesso.
+ *    Entrou aqui (e não num campo à parte) porque as TRÊS superfícies de aviso que já
+ *    existem — a frase da tela de assinatura, o banner do topo e o item do sino — todas
+ *    despacham por `degrau`. Um campo separado obrigaria a ensinar as três de novo, e
+ *    quem esquecesse uma criaria justamente o silêncio que este trabalho veio fechar.
+ */
+export type BillingDegrau = "trial" | "ok" | "grace" | "restricted" | "readonly" | "terminated"
 
 export interface BillingStanding {
   degrau: BillingDegrau
@@ -54,6 +62,18 @@ export interface BillingStanding {
   continues: string[]
   /** `YYYY-MM-DD` do próximo fechamento, ou `null` quando indeterminável (ver §nextClosing). */
   nextClosingAt: string | null
+  /**
+   * Preenchido SÓ no degrau `trial`.
+   *
+   * 🔴 POR QUE ISTO EXISTE (2026-08-04). A tela dizia **"Tudo certo. Sua assinatura está
+   *    em dia"** pra uma conta em teste de 2 dias que seria SUSPENSA no vencimento, sem
+   *    nenhum aviso antes. A tela que existe pra evitar surpresa era a que produzia a
+   *    surpresa — e, como todo cliente novo entra por trial, isso valia pra 100% deles.
+   * ⚠️ `podeAssinar` é o que separa "clique aqui e pague" de "você ainda NÃO CONSEGUE
+   *    pagar": sem documento, CEP e número, a tokenização do cartão falha. Mandar a pessoa
+   *    pro checkout num estado que a gente já sabe que quebra é queimar a única chance.
+   */
+  trial: { endsAt: string; diasRestantes: number; podeAssinar: boolean } | null
 }
 
 // ── Rótulos: derivados dos GATES que existem, não de opinião ────────────────────
@@ -156,6 +176,12 @@ function dateOnlyUtcMs(raw: string): number | null {
  *    um dia antes do que o calendário local mostra. Aceito pra não criar uma 2ª noção
  *    de "hoje" divergente da que gera a fatura (o erro seria de 1 dia, mas em 2 lugares).
  */
+/** Dias inteiros até `iso`, chão em 0. Base UTC, como o resto do motor de cobrança. */
+function diasAte(iso: string): number {
+  const ms = new Date(iso).getTime() - Date.now()
+  return ms <= 0 ? 0 : Math.ceil(ms / 86_400_000)
+}
+
 function nextClosing(billingDay: number | null, billable: boolean): string | null {
   if (!billable || billingDay == null) return null
   const day = Math.min(Math.max(billingDay, 1), 28)
@@ -173,7 +199,7 @@ function nextClosing(billingDay: number | null, billable: boolean): string | nul
  * global se alguém desse `push` nela.
  */
 function silentStanding(): BillingStanding {
-  return { degrau: "ok", invoice: null, paused: [], continues: [], nextClosingAt: null }
+  return { degrau: "ok", invoice: null, paused: [], continues: [], nextClosingAt: null, trial: null }
 }
 
 interface TenantBillingRow {
@@ -181,6 +207,8 @@ interface TenantBillingRow {
   lifecycle_state:     string | null
   subscription_status: string | null
   billing_day:         number | null
+  trial_ends_at:       string | null
+  asaas_subscription_id: string | null
   plan_id:             string | null
 }
 interface InvoiceRow {
@@ -211,11 +239,18 @@ interface InvoiceRow {
 export const getBillingStanding = cache(async (tenantId: string): Promise<BillingStanding> => {
   if (!tenantId) return silentStanding()
 
-  const [tenantRes, invRes] = await Promise.all([
+  const [tenantRes, perfilRes, invRes] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("active, lifecycle_state, subscription_status, billing_day, plan_id")
+      .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id")
       .eq("id", tenantId)
+      .maybeSingle(),
+    // Mesmos 5 campos que `getTitularParaCobranca` exige — se divergirem, a tela promete
+    // um botão de pagar que o gate recusa depois.
+    supabaseAdmin
+      .from("tenant_billing_profile")
+      .select("legal_name, tax_id, billing_email, zip, number")
+      .eq("tenant_id", tenantId)
       .maybeSingle(),
     supabaseAdmin
       .from("invoices")
@@ -270,6 +305,24 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
 
   // ── O degrau ────────────────────────────────────────────────────────────────
   // Mesmos predicados de `checkTenantStatus` — importados, não recopiados.
+  const perfil = (perfilRes.error ? null : perfilRes.data) as Record<string, string | null> | null
+  if (perfilRes.error) {
+    // Degrada só o `podeAssinar` (vira false ⇒ manda completar cadastro). Fail-closed é o
+    // lado certo aqui: pior que pedir um cadastro já completo é mandar pro cartão quem
+    // não consegue pagar.
+    console.error("[billing-standing] consulta do perfil falhou:", tenantId, perfilRes.error.message)
+  }
+
+  // ⚠️ Teste é `trialing` **com data futura** — e SEM assinatura no gateway. Quem já pôs o
+  //    cartão durante o teste não está mais "em teste que vai cortar": a cobrança já está
+  //    armada pro dia do vencimento, e avisar "seu acesso será interrompido" seria mentira
+  //    que faz o cliente que ACABOU de pagar achar que o pagamento não pegou.
+  const emTrial =
+    normalizeState(row.lifecycle_state) === "trialing" &&
+    !!row.trial_ends_at &&
+    new Date(row.trial_ends_at).getTime() > Date.now() &&
+    !row.asaas_subscription_id
+
   const canAccess = row.active === true && !isTenantBlockedForAccess(row.lifecycle_state)
   const canSpend  = canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status)
 
@@ -308,6 +361,12 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
         tenantId, `${invoice.daysOverdue}d > ${PAST_DUE_GRACE_DAYS}d`,
       )
     }
+  } else if (emTrial) {
+    // ── Degrau 0 — o teste ────────────────────────────────────────────────────
+    // Vem DEPOIS de toda a escada de inadimplência de propósito: se por algum caminho
+    // um tenant em teste tiver fatura vencida ou gasto cortado, esse fato é mais
+    // urgente que o prazo do teste e deve vencer a frase da tela.
+    degrau = "trial"
   } else {
     degrau = "ok"
   }
@@ -334,6 +393,15 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     invoice,
     paused,
     continues,
+    trial: degrau === "trial" && row.trial_ends_at
+      ? {
+          endsAt: row.trial_ends_at,
+          diasRestantes: diasAte(row.trial_ends_at),
+          // ⚠️ MESMOS 5 campos de `getTitularParaCobranca`. Se um dia divergirem, a tela
+          //    oferece "Ativar assinatura" e o gate do pagamento recusa na cara da pessoa.
+          podeAssinar: Boolean(perfil?.legal_name && perfil?.tax_id && perfil?.billing_email && perfil?.zip && perfil?.number),
+        }
+      : null,
     nextClosingAt: nextClosing(
       row.billing_day,
       row.active === true && !!row.plan_id && row.subscription_status !== "canceled",

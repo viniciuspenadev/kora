@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
-import { hasModule } from "@/lib/modules"
+import { hasModule, hasModulePro } from "@/lib/modules"
 import { listResources, listServices, getAgendaRemindersEnabled } from "@/lib/actions/agenda"
 import { agendaConfirmStatus, listApprovedTemplates } from "@/lib/agenda/official-template"
 import { AgendaConfigClient } from "@/components/agenda/agenda-config-client"
@@ -13,11 +13,15 @@ export default async function AgendaConfigPage() {
   const tenantId = session.user.tenantId
   if (!(await hasModule(tenantId, "agenda"))) redirect("/inbox")
 
-  const [resources, services, remindersEnabled, remindersModule, { data: agentsRaw }] = await Promise.all([
+  const [resources, services, remindersEnabled, remindersModule, remindersPro, { data: agentsRaw }] = await Promise.all([
     listResources(true),
     listServices(true),
     getAgendaRemindersEnabled(),
     hasModule(tenantId, "agenda_reminders"),
+    // 🔒 Duas perguntas diferentes: o MÓDULO diz que o tenant tem a área de lembretes;
+    //    o PRO diz que ele pode DISPARAR (decisão do dono, 2026-08-04). Sem PRO a tela
+    //    aparece inteira, com selo e desabilitada — esconder recurso não vende upgrade.
+    hasModulePro(tenantId, "agenda_reminders"),
     supabaseAdmin
       .from("tenant_users")
       .select("user_id, profiles!tenant_users_user_id_fkey ( full_name )")
@@ -47,6 +51,7 @@ export default async function AgendaConfigPage() {
       agents={agents}
       remindersEnabled={remindersEnabled}
       remindersModule={remindersModule}
+      remindersPro={remindersPro}
       isMeta={isMeta}
       confirmStatus={confirmStatus}
       approvedTemplates={approvedTemplates}

@@ -96,6 +96,19 @@ export async function generateInvoiceForTenant(tenantId: string): Promise<{ erro
   const { data: plan } = await supabaseAdmin.from("plans").select("*").eq("id", tenant.plan_id).maybeSingle()
   if (!plan) return { error: "Plano do tenant não encontrado" }
 
+  // 🔴 PLANO GRATUITO NÃO GERA FATURA (2026-08-05). `createSubscriptionForTenant` já
+  //    recusava preço zero; aqui não havia guarda nenhuma, e o efeito era pior que uma
+  //    linha inútil no histórico: a fatura de **R$ 0,00** nasce `open` com vencimento, e 7
+  //    dias depois `standing.ts` a lê como VENCIDA. O ramo de fatura vencida é avaliado
+  //    ANTES do ramo de teste, então o cliente em trial passaria a ver *"fatura vencida —
+  //    R$ 0,00"* e **o aviso de fim do teste sumiria da tela** — exatamente a surpresa que
+  //    aquela superfície foi criada pra evitar, um dia antes.
+  // ⚠️ `skipped`, não `error`: não é falha, é o caminho normal de quem está no Trial.
+  //    Marcar como erro encheria o log do cron de alarme falso todo dia.
+  if ((plan.price_cents ?? 0) <= 0) {
+    return { skipped: true, error: "Plano sem valor — nada a faturar" }
+  }
+
   const period = currentPeriod(tenant.billing_day)
 
   const { count: dup } = await supabaseAdmin
@@ -169,6 +182,17 @@ export async function runMonthlyBilling(): Promise<{ generated: number; skipped:
     .eq("billing_day", todayDay)
     .not("plan_id", "is", null)
     .neq("subscription_status", "canceled")
+    // 🔴 SÓ QUEM É COBRADO PELO GATEWAY (2026-08-05). A ausência deste filtro era um
+    //    bug, e o próprio desenho já dizia por quê: *"`manual` → só o god mode governa,
+    //    **nunca a automação**"* (docs/asaas-billing-design.md §2). Este cron é automação.
+    // ⚠️ O estrago era silencioso e progressivo: cliente `manual` (cortesia, contrato
+    //    especial, sócio) não tem cartão no gateway, então a fatura gerada aqui **nunca
+    //    receberia pagamento**. Ela ficaria `open`, viraria `overdue` na tela em 7 dias, o
+    //    degrau cairia pra `grace` e a plataforma passaria a acusar de inadimplente
+    //    justamente quem foi isentado de propósito.
+    // ⚠️ Faturar cliente manual continua POSSÍVEL — pela mão, no god mode
+    //    (`admin-billing.ts`), que é onde a decisão dele mora. O que sai é a automação.
+    .eq("billing_mode", "gateway")
 
   const details: Array<{ tenantId: string; status: string; reason?: string }> = []
   let generated = 0, skipped = 0, failed = 0

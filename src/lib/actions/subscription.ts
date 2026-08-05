@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { rateLimit } from "@/lib/rate-limit"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
@@ -36,7 +37,21 @@ import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing
 export async function getMyBillingStanding(): Promise<BillingStanding | null> {
   const session = await auth()
   if (!session?.user?.tenantId) return null
-  return getBillingStanding(session.user.tenantId)
+
+  const standing = await getBillingStanding(session.user.tenantId)
+
+  // 🔒 ATENDENTE NÃO VÊ VALOR (auditoria 2026-08-05). Toda função exportada de um
+  //    arquivo `"use server"` é action PÚBLICA chamável via RSC — as telas de assinatura
+  //    redirecionam `agent`, mas a action não filtrava nada: bastava chamar direto pra o
+  //    atendente descobrir o valor e o atraso da fatura do patrão.
+  // ⚠️ Zera o VALOR, mantém o DEGRAU: o atendente precisa saber que campanhas estão
+  //    pausadas (é o trabalho dele), não quanto o dono deve. Devolver `null` inteiro
+  //    apagaria o aviso operacional junto com o dado financeiro.
+  if (session.user.role === "agent") {
+    return { ...standing, invoice: null, trial: null }
+  }
+
+  return standing
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -104,6 +119,31 @@ export async function ativarAssinatura(input: {
   }
 
   const ip = getClientIpFromHeaders(await headers())
+
+  // 🔴 TETO DE TENTATIVAS — ANTI CARD-TESTING (achado de auditoria PCI, 2026-08-05).
+  //
+  //    Sem isto, esta action era um **oráculo de teste de cartão rodando na NOSSA conta
+  //    merchant**, e a cadeia era explorável sem nenhum insider: qualquer um cria conta no
+  //    signup self-serve (que carimba `billing_mode: "gateway"` e faz o autor `owner`),
+  //    completa o próprio cadastro fiscal em /configuracoes/empresa — único gate real — e
+  //    passa a chamar isto à vontade, lendo a resposta do gateway pra separar PAN válido de
+  //    inválido. A idempotência de `createSubscriptionForTenant` só morde DEPOIS de existir
+  //    assinatura; antes disso as tentativas eram ilimitadas.
+  //
+  //    O dano não é o custo: é o Asaas bloquear nossa conta por enumeração e **derrubar a
+  //    cobrança de TODOS os clientes** — mais responsabilidade de fraude e escopo PCI.
+  //
+  // ⚠️ Dois baldes de propósito: por TENANT (o alvo real) e por IP (impede rodar o mesmo
+  //    ataque criando várias contas). 3/hora é folga enorme pra uso humano — quem erra o
+  //    cartão 3 vezes numa hora tem um problema com o cartão, não com o formulário.
+  // ⚠️ O contraste que denunciou a falta: `saveMyCompanyProfile` JÁ tinha teto — por um
+  //    motivo MENOR (cota de API do gateway) do que o desta aqui.
+  if (!rateLimit(`card:tenant:${session.user.tenantId}`, 3, 60 * 60_000).ok) {
+    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+  }
+  if (ip && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
+    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+  }
 
   const r = await createSubscriptionForTenant(
     session.user.tenantId,

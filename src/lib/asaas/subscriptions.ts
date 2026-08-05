@@ -128,12 +128,13 @@ export async function createSubscriptionForTenant(
   }
 
   // 4 · Assinatura. Daqui pra frente só o token circula.
+  const nextDueDate = primeiraCobranca(t.trial_ends_at, t.billing_day)
   try {
     const sub = await asaas.post<{ id?: string }>("/subscriptions", {
       customer:          cust.id,
       billingType:       "CREDIT_CARD",
       value:             valorCents / 100,          // o Asaas trabalha em reais
-      nextDueDate:       primeiraCobranca(t.trial_ends_at, t.billing_day),
+      nextDueDate,
       cycle:             "MONTHLY",
       description:       `Kora — plano ${plano?.name ?? ""}`.trim(),
       externalReference: tenantId,                  // 🔑 filtro de tenancy do webhook
@@ -142,8 +143,25 @@ export async function createSubscriptionForTenant(
     })
     if (!sub?.id) return { error: "O gateway não devolveu o id da assinatura." }
 
+    // 🔴 `billing_day` NASCE AQUI (2026-08-05). Sem isto, o motor de fatura nunca
+    //    alcança o cliente: `runMonthlyBilling` filtra `.eq("billing_day", hoje)` e NULL
+    //    não casa com inteiro nenhum. Medido em produção: **4 dos 5 tenants com
+    //    `billing_day` nulo**, e o único escritor no código inteiro era a mão do god mode.
+    //    Ou seja: o cliente punha o cartão, o Asaas cobrava todo mês, e a Kora **nunca
+    //    emitia fatura** — histórico vazio, nenhuma linha `paid`, e o cancelamento caindo
+    //    no fallback "sem evidência de ciclo pago, corte imediato".
+    // 🔑 O dia vem da PRIMEIRA COBRANÇA, não de "hoje": é a data que o gateway vai
+    //    repetir todo mês. Qualquer outro valor faria o nosso ciclo e o dele divergirem
+    //    desde o primeiro dia.
+    // ⚠️ Teto em 28 — mesma regra de `currentPeriod` (billing.ts). Dia 29-31 não existe
+    //    em todo mês, e o cron casa por igualdade exata: `billing_day=31` ficaria 5 meses
+    //    por ano sem faturar, em silêncio.
+    const diaDaCobranca = Math.min(28, Number(nextDueDate.slice(8, 10)) || 1)
+
     const { error: upErr } = await supabaseAdmin
-      .from("tenants").update({ asaas_subscription_id: sub.id }).eq("id", tenantId)
+      .from("tenants")
+      .update({ asaas_subscription_id: sub.id, billing_day: diaDaCobranca })
+      .eq("id", tenantId)
 
     // ⚠️ Criada lá e não gravada aqui = assinatura cobrando sem a Kora saber. Devolve o id
     //    na mensagem pra recuperação manual ser possível — sem ele, ninguém acha.

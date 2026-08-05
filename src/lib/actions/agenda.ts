@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, type ViewerScope } from "@/lib/visibility"
-import { requireModule, hasModule } from "@/lib/modules"
+import { requireModule, hasModule, hasModulePro } from "@/lib/modules"
 import { createNotification } from "@/lib/notifications"
 import { logAudit } from "@/lib/audit"
 import { ensureAgendaConfirmTemplate, agendaConfirmStatus, type AgendaTemplateStatus } from "@/lib/agenda/official-template"
@@ -132,6 +132,16 @@ export async function getAgendaRemindersEnabled(): Promise<boolean> {
 export async function setAgendaRemindersEnabled(enabled: boolean): Promise<{ error?: string }> {
   const s = await adminScope()
   await requireModule("agenda_reminders")   // entitlement: add-on premium (god mode)
+
+  // 🔒 PRO — gate REAL do recurso (decisão do dono, 2026-08-04). O módulo diz que o
+  //    tenant TEM a área de lembretes; o PRO diz que ele pode DISPARAR. A tela mostra o
+  //    controle desabilitado com o selo, e é aqui que a regra é imposta — `disabled` no
+  //    HTML é conforto, não autorização (a action é chamável direto via RSC).
+  // ⚠️ Só barra LIGAR. Desligar segue livre de propósito: quem perdeu o PRO precisa
+  //    conseguir parar o que já está no ar sem depender de suporte.
+  if (enabled && !(await hasModulePro(s.tenantId, "agenda_reminders"))) {
+    return { error: "Enviar lembretes automáticos é um recurso PRO. Fale com a gente para liberar." }
+  }
   const { error } = await supabaseAdmin.from("tenant_config")
     .upsert({ tenant_id: s.tenantId, agenda_reminders_enabled: enabled }, { onConflict: "tenant_id" })
   if (error) return { error: error.message }

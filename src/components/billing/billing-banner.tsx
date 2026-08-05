@@ -37,7 +37,7 @@ import type { BillingStanding } from "./standing-contract"
 //    `terminated` o acesso já caiu e a pessoa não está numa tela com faixa — ali a
 //    conversa é uma PÁGINA inteira (escopo do outro designer), não uma tarja.
 
-type DegrauVisivel = "grace" | "restricted" | "readonly"
+type DegrauVisivel = "trial" | "grace" | "restricted" | "readonly"
 
 const SUPERFICIE: Record<
   DegrauVisivel,
@@ -51,6 +51,17 @@ const SUPERFICIE: Record<
     tone: "quiet" | "primary" | "inverse"
   }
 > = {
+  // Teste — âmbar como a restrição, porque a consequência é real (o acesso cai), mas
+  // com o texto no futuro e não no passado: ninguém fez nada errado.
+  trial: {
+    faixa: "bg-amber-50 border-amber-200",
+    chip: "border-amber-200 bg-amber-100 text-amber-800",
+    titulo: "text-amber-900",
+    apoio: "text-amber-800",
+    rotulo: "text-amber-900",
+    item: "text-amber-800",
+    tone: "primary",
+  },
   // Carência — chrome, não aviso. Some no fundo branco da barra de navegação.
   grace: {
     faixa: "bg-white border-slate-200",
@@ -141,15 +152,27 @@ export function BillingBanner({
   const emAberto = tempoEmAberto(invoice)
 
   // O tom é o mesmo nos três: fato sobre o documento + o que continua verdadeiro.
+  // ⚠️ O teste reusa o MESMO render: não existe fatura aqui, então o que muda é só o
+  //    texto. Criar um segundo componente de faixa pro trial seria duas barras pra manter
+  //    e duas chances de divergirem em espaçamento, cor e comportamento.
+  const diasTrial   = standing.trial?.diasRestantes ?? 0
+  const podeAssinar = standing.trial?.podeAssinar === true
+
   const titulo =
-    degrau === "grace"
+    degrau === "trial"
+      ? (diasTrial <= 1 ? "Seu teste termina hoje." : `Seu teste termina em ${diasTrial} dias.`)
+      : degrau === "grace"
       ? `${assunto} está em aberto.`
       : degrau === "restricted"
         ? `${assunto} está em aberto${emAberto ? ` ${emAberto}` : ""}.`
         : `${assunto} segue em aberto.`
 
   const apoio =
-    degrau === "grace"
+    degrau === "trial"
+      ? (podeAssinar
+          ? "depois disso o acesso é interrompido até você ativar a assinatura"
+          : "complete o cadastro da empresa — sem ele não conseguimos emitir a cobrança")
+      : degrau === "grace"
       ? [linhaDoDocumento(invoice), "tudo segue funcionando normalmente"].filter(Boolean).join(" · ")
       : degrau === "restricted"
         ? linhaDoDocumento(invoice, nextClosingAt)
@@ -160,7 +183,8 @@ export function BillingBanner({
   // A carência fica SLIM por decisão: mesmo que o contrato mande listas, elas não são
   // renderizadas ali. No degrau 2 nada parou — listar "o que continua" quando nada
   // parou inventa uma consequência que ainda não existe.
-  const mostraListas = degrau !== "grace" && (paused.length > 0 || continues.length > 0)
+  // Teste também não lista: nada foi pausado, e "Continua: tudo" é ruído.
+  const mostraListas = degrau !== "grace" && degrau !== "trial" && (paused.length > 0 || continues.length > 0)
 
   return (
     <div
@@ -208,7 +232,18 @@ export function BillingBanner({
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        <PayNowButton href={payHref} onClick={onPay} tone={s.tone} size="sm" />
+        {degrau === "trial" ? (
+          // ⚠️ Sem cadastro completo o botão NÃO leva ao cartão: a tokenização falharia e
+          //    a pessoa teria digitado o cartão inteiro pra receber um erro previsível.
+          <PayNowButton
+            href={podeAssinar ? "/configuracoes/assinatura/pagamento" : "/configuracoes/empresa"}
+            label={podeAssinar ? "Ativar assinatura" : "Completar cadastro"}
+            tone={s.tone}
+            size="sm"
+          />
+        ) : (
+          <PayNowButton href={payHref} onClick={onPay} tone={s.tone} size="sm" />
+        )}
         {dispensavel && (
           <button
             type="button"

@@ -52,10 +52,10 @@ function workingHoursToDays(wh: WorkingHoursDay[]): Record<number, DayState> {
 }
 
 export function AgendaConfigClient({
-  initialResources, initialServices, agents, remindersEnabled, remindersModule, isMeta, confirmStatus, approvedTemplates,
+  initialResources, initialServices, agents, remindersEnabled, remindersModule, remindersPro, isMeta, confirmStatus, approvedTemplates,
 }: {
   initialResources: ResourceRow[]; initialServices: ServiceRow[]; agents: Agent[]
-  remindersEnabled: boolean; remindersModule: boolean
+  remindersEnabled: boolean; remindersModule: boolean; remindersPro: boolean
   isMeta: boolean; confirmStatus: AgendaTemplateStatus; approvedTemplates: ApprovedTemplateOption[]
 }) {
   const [resources, setResources] = useState(initialResources)
@@ -65,7 +65,15 @@ export function AgendaConfigClient({
   const [reminders, setReminders] = useState(remindersEnabled)
 
   const [creatingAgenda, setCreatingAgenda] = useState(false)
-  const premiumCta = () => toast("Lembretes automáticos é um add-on premium. Fale com a gente pra ativar.")
+  // ⚠️ DUAS travas, mensagens diferentes — quem não tem o módulo e quem tem o módulo
+  //    mas não o PRO precisam ouvir coisas distintas, senão um dos dois vai atrás da
+  //    coisa errada com o suporte.
+  const remindersLocked = !remindersModule || !remindersPro
+  const premiumCta = () => toast(
+    !remindersModule
+      ? "Lembretes automáticos é um add-on premium. Fale com a gente pra ativar."
+      : "Enviar lembretes é um recurso PRO. Fale com a gente pra liberar no seu plano.",
+  )
 
   // "Criar minha agenda" — 1 clique pra quem atende sozinho (não vê "recurso").
   async function createMyAgenda() {
@@ -98,7 +106,7 @@ export function AgendaConfigClient({
     >
       <div className="space-y-6">
         {/* AVISOS AUTOMÁTICOS — master switch (backend-enforced + entitlement premium) */}
-        <PremiumGate locked={!remindersModule} description="Avise, lembre e confirme com seus clientes automaticamente no WhatsApp." onCta={premiumCta}>
+        <PremiumGate locked={remindersLocked} description="Avise, lembre e confirme com seus clientes automaticamente no WhatsApp." onCta={premiumCta}>
           <section className="rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex items-start gap-3">
               <div className="size-9 rounded-lg bg-primary-50 grid place-items-center shrink-0"><BellRing className="size-4 text-primary-600" /></div>
@@ -213,7 +221,7 @@ export function AgendaConfigClient({
         <ServiceDialog
           service={editSvc === "new" ? null : editSvc}
           resources={resources}
-          remindersModule={remindersModule}
+          remindersModule={remindersModule && remindersPro}
           isMeta={isMeta}
           confirmStatus={confirmStatus}
           approvedTemplates={approvedTemplates}

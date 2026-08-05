@@ -32,6 +32,7 @@ export function PayNowButton({
   onClick,
   tone = "primary",
   size = "md",
+  label,
   className,
 }: {
   href?: string
@@ -39,6 +40,13 @@ export function PayNowButton({
   onClick?: () => void
   tone?: Tone
   size?: "sm" | "md"
+  /**
+   * Sobrescreve o rótulo. Existe pro degrau `trial`, onde a ação não é "pagar agora"
+   * (não há fatura) e sim "ativar assinatura" — ou "completar cadastro", quando a pessoa
+   * ainda não consegue pagar. Um segundo componente de botão só pra trocar o texto seria
+   * duas aparências pra manter alinhadas.
+   */
+  label?: string
   className?: string
 }) {
   const cls = cn(
@@ -51,13 +59,13 @@ export function PayNowButton({
   if (onClick) {
     return (
       <button type="button" onClick={onClick} className={cls}>
-        {PAY_LABEL}
+        {label ?? PAY_LABEL}
       </button>
     )
   }
   return (
     <Link href={href} className={cls}>
-      {PAY_LABEL}
+      {label ?? PAY_LABEL}
     </Link>
   )
 }
