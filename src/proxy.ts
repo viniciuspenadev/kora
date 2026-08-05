@@ -97,7 +97,6 @@ export function proxy(req: NextRequest) {
     })
   }
 
-  const res  = NextResponse.next()
   const path = req.nextUrl.pathname
 
   // 🔑 Caminho da requisição, legível pelos Server Components (2026-08-05).
@@ -105,12 +104,19 @@ export function proxy(req: NextRequest) {
   //    Um layout do App Router **não sabe qual rota está sendo renderizada** — `headers()`
   //    não traz o pathname, e os `x-invoke-path`/`x-pathname` que circulam por aí são
   //    internos do Next, sem contrato: medi na produção e **nenhum dos dois existe**.
-  //    Depender deles seria escrever um gate que falha aberto — ou, pior, um redirect que
-  //    nunca encontra sua própria exceção e entra em laço infinito.
-  // ⚠️ `x-kora-path` é NOSSO: setado aqui, em toda requisição, com o valor canônico do
-  //    `nextUrl`. Quem consome (hoje: o desvio de `trial_ended` no layout do app) tem
-  //    garantia de presença, e a rota de exceção é sempre reconhecível.
-  res.headers.set("x-kora-path", path)
+  //
+  // 🔴 TEM QUE IR NO REQUEST, NÃO NO RESPONSE — e essa distinção derrubou uma conta.
+  //    A 1ª versão fazia `res.headers.set(...)`. O header chegava no NAVEGADOR (dava pra
+  //    ver no curl — e foi assim que eu "confirmei" que funcionava), mas o `headers()` do
+  //    Server Component lê o REQUEST, onde ele nunca chegou. Resultado: o desvio de
+  //    `trial_ended` lia rota vazia, não reconhecia a própria exceção e redirecionava
+  //    **inclusive** `/configuracoes/assinatura` pra si mesma ⇒ laço infinito de redirect,
+  //    a página recarregando sem parar, cada volta disparando ~30 consultas até estourar
+  //    as conexões (cascata de `TypeError: fetch failed`, que parecia banco fora do ar).
+  //    Lição: inspecionar a RESPOSTA não prova nada sobre o que o servidor RECEBE.
+  const reqHeaders = new Headers(req.headers)
+  reqHeaders.set("x-kora-path", path)
+  const res = NextResponse.next({ request: { headers: reqHeaders } })
 
   // ── Sempre aplicar ──────────────────────────────────────
   res.headers.set("X-Content-Type-Options",   "nosniff")

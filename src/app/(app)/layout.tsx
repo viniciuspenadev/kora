@@ -93,7 +93,36 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     //    contrato. Medi em produção: **nenhum dos dois existe**. O efeito seria `rota` vazia
     //    ⇒ nada liberado ⇒ redirect também em `/configuracoes/assinatura` ⇒ **laço
     //    infinito**, e a pessoa que veio pagar não conseguiria nem abrir a tela de pagar.
-    const rota = hdrs.get("x-kora-path") ?? ""
+    //
+    // 🔴 O ERRO ACONTECEU MESMO ASSIM (05/08, conta do dono). O proxy carimbava o header
+    //    na RESPOSTA (`res.headers.set`) e o `headers()` daqui lê a REQUISIÇÃO — então
+    //    `rota` vinha vazia, o redirect disparava também em cima do próprio destino e a
+    //    página recarregou sem parar até derrubar as conexões do banco. Corrigido lá
+    //    (`NextResponse.next({ request: { headers } })`); o cinto está logo abaixo.
+    const rota = hdrs.get("x-kora-path")
+
+    // 🔒 CINTO: sem header NÃO se redireciona — redirect às cegas é o laço de novo.
+    //    Fica fechado (o teste acabou, o produto tranca), mas numa tela estática que não
+    //    navega pra lugar nenhum. Trocar um laço infinito por uma tela honesta.
+    if (rota === null) {
+      console.error("[app-layout] x-kora-path ausente — proxy não carimbou. Bloqueio estático.")
+      return (
+        <div className="min-h-dvh flex items-center justify-center bg-slate-50 px-6">
+          <div className="max-w-sm text-center">
+            <h1 className="text-lg font-bold text-slate-900">Seu teste terminou</h1>
+            <p className="mt-2 text-sm text-slate-600 leading-relaxed">
+              Não conseguimos abrir a tela de assinatura agora. Recarregue a página — se
+              continuar, fale com a gente que ativamos seu plano manualmente.
+            </p>
+            <a href="/configuracoes/assinatura"
+              className="mt-5 inline-flex h-10 items-center rounded-lg bg-primary px-5 text-sm font-semibold text-white">
+              Tentar de novo
+            </a>
+          </div>
+        </div>
+      )
+    }
+
     const liberado = rota.startsWith("/configuracoes/assinatura") || rota.startsWith("/configuracoes/empresa")
     if (!liberado) redirect("/configuracoes/assinatura")
   }
