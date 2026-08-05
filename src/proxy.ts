@@ -168,8 +168,29 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // Aplica em tudo exceto assets estáticos do Next + favicon
+  // Aplica em tudo exceto assets estáticos do Next + favicon.
+  //
+  // 🔴 `api/webhooks` SAIU DAQUI (2026-08-05) — e o motivo é perda de mensagem, não
+  //    performance. Quando o proxy roda numa rota, **o Next clona e bufferiza o corpo em
+  //    memória** pra permitir leitura dupla, com teto padrão de **10MB**. Passando disso
+  //    ele **trunca em silêncio** e deixa a requisição seguir (doc oficial:
+  //    `proxyClientMaxBodySize` — *"The request will **not** fail... only the partial body
+  //    will be available"*).
+  //    O estrago medido na VPS: a Evolution manda mídia em base64 no corpo; um payload de
+  //    >10MB chegava cortado ao meio, o `JSON.parse` do webhook falhava, respondíamos
+  //    `400 Bad JSON` — e a Evolution **não re-entrega**. Mensagem de cliente perdida, com
+  //    um 400 como único vestígio.
+  //    Pior: o nosso próprio teto (`EVOLUTION_WEBHOOK_MAX_BYTES`, 50MB) dizia que cabia —
+  //    ou seja, os dois números discordavam e a divergência destruía mensagem.
+  //
+  // ⚠️ Custo de sair: webhook deixa de receber `nosniff`, `Referrer-Policy` e HSTS. São
+  //    headers de NAVEGADOR, e webhook é chamada servidor-a-servidor sem UI — o próprio
+  //    proxy já retornava cedo pra essas rotas (§"Webhooks: sem UI, sem CSP/XFO").
+  //    Nenhuma autenticação mora aqui: cada webhook valida o próprio segredo.
+  // ⚠️ A alternativa seria subir `experimental.proxyClientMaxBodySize`, mas ela mantém o
+  //    buffer: um vídeo de 30MB ficaria ~60MB em heap (cópia do proxy + nossa leitura).
+  //    Sair do matcher elimina a cópia em vez de aumentá-la.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
+    "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|api/webhooks).*)",
   ],
 }
