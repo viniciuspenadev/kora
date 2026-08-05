@@ -432,9 +432,11 @@ async function liberar(
   //    módulos do plano contratado **nunca eram ligados**. Quem saía do Trial pagando
   //    ficava com os módulos do Trial pra sempre, e quem escolhia um plano maior pagava
   //    por ele sem receber. O dinheiro entrava e o produto não mudava.
-  // ⚠️ Aqui é o lugar certo, e não na escolha do plano: `escolherPlano` grava a INTENÇÃO
-  //    (`plan_id`), este ramo LIBERA — e ele só roda com pagamento confirmado. Liberar na
-  //    escolha deixaria qualquer um marcar o plano mais caro e nunca pagar.
+  // ⚠️ Aqui é o lugar certo, e não na escolha do plano. A cadeia tem três marcos distintos,
+  //    e confundi-los foi o bug de 05/08: `escolherPlano` **não persiste nada** (só valida);
+  //    `criarAssinatura` carimba `plan_id` quando o compromisso existe de fato; e este ramo
+  //    LIBERA os módulos, só com pagamento confirmado. Liberar na escolha deixaria qualquer
+  //    um marcar o plano mais caro e nunca pagar.
   // ⚠️ Best-effort com log ALTO: falhar aqui deixa um cliente que PAGOU sem os módulos.
   //    Não desfaz a liberação (ele pagou, o acesso é dele) — grita pra ser reparado à mão.
   const { data: comPlano } = await supabaseAdmin

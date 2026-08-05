@@ -157,7 +157,10 @@ export function StandingHero({
               receber um erro que a gente já sabia. */}
           {standing.degrau === "trial" && (
             standing.trial?.podeAssinar ? (
-              <Link href="/configuracoes/assinatura/pagamento" className={BTN_PRIMARY_LG}>
+              // 🔑 Vai pro CATÁLOGO, não direto pro cartão. O checkout precisa saber QUAL
+              //    plano cobrar, e desde 05/08 esse dado não mora mais no tenant antes da
+              //    contratação — quem está em teste ainda não escolheu nada.
+              <Link href="/configuracoes/assinatura/planos" className={BTN_PRIMARY_LG}>
                 <CreditCard className="size-4" /> Ativar assinatura
               </Link>
             ) : (

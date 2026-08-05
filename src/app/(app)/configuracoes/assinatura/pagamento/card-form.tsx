@@ -23,6 +23,8 @@ import { ativarAssinatura, type TitularPreenchido } from "@/lib/actions/subscrip
 
 interface Props {
   titular:    TitularPreenchido
+  /** Id do plano a contratar. Viaja com o cartão e é revalidado no servidor. */
+  planoId:    string
   planoNome:  string
   valorCents: number
   primeiraCobranca: string | null
@@ -68,7 +70,7 @@ function bandeira(num: string): string | null {
 
 const grupos = (d: string) => d.replace(/\D/g, "").slice(0, 19).replace(/(.{4})/g, "$1 ").trim()
 
-export function CardForm({ titular, planoNome, valorCents, primeiraCobranca, emTrial, onSucesso, compacto = false }: Props) {
+export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobranca, emTrial, onSucesso, compacto = false }: Props) {
   const router = useRouter()
   const [numero, setNumero]   = useState("")
   const [nome, setNome]       = useState(titular.nome.toUpperCase())
@@ -104,6 +106,7 @@ export function CardForm({ titular, planoNome, valorCents, primeiraCobranca, emT
     setErro(null)
     start(async () => {
       const r = await ativarAssinatura({
+        planoId,
         holderName:  nome,
         number:      digitos,
         expiryMonth: mm ?? "",

@@ -55,17 +55,29 @@ export async function getMyBillingStanding(): Promise<BillingStanding | null> {
 }
 
 /**
- * Registra o plano ESCOLHIDO pelo cliente e devolve pra tela seguir pro pagamento.
+ * Valida a escolha do cliente e libera a tela a seguir pro pagamento. **NÃO PERSISTE NADA.**
  *
- * 🔑 Grava `tenants.plan_id` e **NÃO chama `applyPlan`** — a distinção é o coração disto.
- *    `plan_id` diz *"é este que ele vai pagar"* (o preço da assinatura, a cota da fatura);
- *    `applyPlan` é que LIBERA módulo. Se liberasse aqui, bastaria escolher o plano mais
- *    caro e nunca pagar pra ficar com tudo. Quem libera é o webhook, quando o dinheiro
- *    entra (`liberar()`).
+ * 🔴 ANTES ELA GRAVAVA `tenants.plan_id` — e isso rotulava como contratante quem só
+ *    clicou. Medido na conta do dono (05/08): ele estava no **Trial**, clicou pra ver o
+ *    PLANO III e a plataforma passou a dizer *"Plano PLANO III"* no topo e
+ *    **"Sua conta do mês: R$ 249,90"** no painel da direita. Uma cobrança que ele não
+ *    devia, exibida como se devesse, sem cartão nenhum informado.
  *
- * ⚠️ Só planos que o GOD MODE deixou compráveis: ativo e com preço. Confiar no id que veio
- *    da tela deixaria o cliente escolher, via RSC, um plano desativado ou o próprio Trial
- *    de R$ 0 — e aí ele "assina" de graça.
+ *    A raiz era semântica, não de tela: `plan_id` significa **"o plano que este cliente
+ *    TEM"** — ela alimenta rótulo, painel da conta, valor da fatura e `criarAssinatura`.
+ *    Eu a usei também pra guardar *"o plano que ele PRETENDE ter"*. Uma coluna com dois
+ *    significados: no instante do clique, todo leitor passou a acreditar na intenção como
+ *    se fosse fato. E carrinho abandonado é o caso mais comum que existe — todo cliente
+ *    que clicasse e desistisse ficaria marcado, e o Trial dele seria sobrescrito.
+ *
+ * ✅ Agora a escolha VIAJA pelo fluxo (modal → cartão) e só vira `plan_id` no momento em
+ *    que vira compromisso de verdade: quando `criarAssinatura` cria a assinatura no
+ *    gateway. `plan_id` volta a ter um significado só.
+ *
+ * ⚠️ A validação continua aqui — e continua valendo, porque o passo do cartão revalida o
+ *    mesmo id. Só planos que o GOD MODE deixou compráveis: ativo e com preço. Confiar no
+ *    id que veio da tela deixaria o cliente escolher, via RSC, um plano desativado ou o
+ *    próprio Trial de R$ 0 — e aí ele "assina" de graça.
  */
 export async function escolherPlano(planoId: string): Promise<{ error?: string; ok?: boolean }> {
   const session = await auth()
@@ -117,13 +129,9 @@ export async function escolherPlano(planoId: string): Promise<{ error?: string; 
     return { error: "A cobrança desta conta é combinada com a nossa equipe." }
   }
 
-  const { error } = await supabaseAdmin
-    .from("tenants")
-    .update({ plan_id: planoId, updated_at: new Date().toISOString() })
-    .eq("id", session.user.tenantId)
-
-  if (error) return { error: "Não foi possível registrar o plano. Tente de novo." }
-
+  // ⚠️ Nenhuma escrita. O que sai daqui é só um "pode seguir" — quem carimba o plano é a
+  //    criação da assinatura. O registro da INTENÇÃO fica no audit log, que é onde
+  //    intenção deve morar: ele conta a história sem afirmar um fato comercial.
   await logAudit({
     tenantId:   session.user.tenantId,
     actorId:    session.user.id,
@@ -190,12 +198,30 @@ export async function getTitularParaCobranca(): Promise<TitularPreenchido | null
  */
 export async function ativarAssinatura(input: {
   holderName: string; number: string; expiryMonth: string; expiryYear: string; ccv: string
+  /** Plano escolhido no passo anterior. Revalidado aqui — a tela não é fonte de verdade. */
+  planoId: string
 }): Promise<{ ok: true; id: string } | { error: string }> {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Sessão expirada. Entre de novo." }
   if (!["owner", "admin"].includes(session.user.role)) {
     return { error: "Apenas o responsável pela conta pode ativar a assinatura." }
   }
+
+  // 🔴 REVALIDAR O PLANO AQUI, não só no passo anterior. Desde que `escolherPlano` parou de
+  //    persistir, o id do plano chega pela REDE junto com o cartão — e isto é uma Server
+  //    Action pública. Confiar no que a tela mandou seria deixar o cliente montar a
+  //    requisição à mão com o id do Trial (R$ 0) ou de um plano que o god mode desativou, e
+  //    assinar o produto caro pagando outro preço. O gate é o mesmo do `escolherPlano`:
+  //    ativo e com preço > 0.
+  const { data: planoOk } = await supabaseAdmin
+    .from("plans")
+    .select("id")
+    .eq("id", input.planoId)
+    .eq("active", true)
+    .gt("price_cents", 0)
+    .maybeSingle()
+
+  if (!planoOk) return { error: "Este plano não está disponível. Recarregue a página." }
 
   const titular = await getTitularParaCobranca()
   if (!titular?.completo) {
@@ -231,6 +257,7 @@ export async function ativarAssinatura(input: {
 
   const r = await createSubscriptionForTenant(
     session.user.tenantId,
+    input.planoId,
     {
       holderName:  input.holderName.trim(),
       number:      input.number,

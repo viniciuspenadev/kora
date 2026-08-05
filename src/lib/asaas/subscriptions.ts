@@ -51,6 +51,15 @@ const digits = (s: string) => (s ?? "").replace(/\D/g, "")
  */
 export async function createSubscriptionForTenant(
   tenantId: string,
+  /**
+   * Plano a contratar. **Vem por parâmetro, não de `tenants.plan_id`** (mudança 05/08).
+   *
+   * 🔑 `plan_id` só passa a valer QUANDO a assinatura existe — é aqui que "escolheu" vira
+   *    "contratou". Antes, a escolha era gravada lá no clique, e quem só olhou o catálogo
+   *    aparecia como cliente do plano caro, com a conta do mês exibindo um valor que ele
+   *    não devia.
+   */
+  planoId: string,
   card: CardInput,
   holder: HolderInput,
   remoteIp: string,
@@ -59,25 +68,33 @@ export async function createSubscriptionForTenant(
   const cust = await ensureAsaasCustomer(tenantId)
   if ("error" in cust) return cust
 
-  // 2 · Estado do tenant: valor, ciclo e data da primeira cobrança.
-  const { data: row, error: tErr } = await supabaseAdmin
-    .from("tenants")
-    .select("id, name, billing_day, trial_ends_at, asaas_subscription_id, billing_mode, plans:plan_id ( name, price_cents )")
-    .eq("id", tenantId)
-    .maybeSingle()
+  // 2 · Estado do tenant: ciclo e data da primeira cobrança.
+  const [{ data: row, error: tErr }, { data: planoRow }] = await Promise.all([
+    supabaseAdmin
+      .from("tenants")
+      .select("id, name, billing_day, trial_ends_at, asaas_subscription_id, billing_mode")
+      .eq("id", tenantId)
+      .maybeSingle(),
+    // ⚠️ Terceira revalidação do plano (tela → action → aqui). Não é paranoia repetida: este
+    //    motor também é chamado de fora da action, e um preço errado aqui vira cobrança
+    //    recorrente errada no cartão de um cliente real.
+    supabaseAdmin
+      .from("plans")
+      .select("id, name, price_cents")
+      .eq("id", planoId)
+      .eq("active", true)
+      .maybeSingle(),
+  ])
 
   if (tErr)  return { error: "Não foi possível ler o cliente." }
   if (!row)  return { error: "Cliente não encontrado." }
 
-  // ⚠️ O embed do PostgREST chega tipado como ARRAY, mesmo sendo 1:1. `limits.ts` e
-  //    `lifecycle-core.ts` já normalizam assim; o revisor apontou a assimetria em
-  //    `subscription-view.ts`, e aqui o `tsc` cobrou na hora. Normalizar é o padrão da casa.
   const t = row as unknown as {
     name: string; billing_day: number | null; trial_ends_at: string | null
     asaas_subscription_id: string | null; billing_mode: string | null
-    plans: { name: string; price_cents: number } | { name: string; price_cents: number }[] | null
   }
-  const plano = Array.isArray(t.plans) ? (t.plans[0] ?? null) : t.plans
+  const plano = planoRow as { id: string; name: string; price_cents: number } | null
+  if (!plano) return { error: "Plano indisponível. Escolha um plano antes de ativar." }
 
   // ⚠️ Idempotência: assinatura já existe ⇒ devolve. Criar a segunda faria o cliente ser
   //    cobrado DUAS vezes por mês, e o segundo id sobrescreveria o primeiro — deixando a
@@ -158,9 +175,13 @@ export async function createSubscriptionForTenant(
     //    por ano sem faturar, em silêncio.
     const diaDaCobranca = Math.min(28, Number(nextDueDate.slice(8, 10)) || 1)
 
+    // 🔑 `plan_id` NASCE AQUI TAMBÉM — e este é o ponto exato em que "escolheu" vira
+    //    "contratou". Gravar antes (no clique do catálogo) foi o bug de 05/08: rotulava
+    //    como cliente do PLANO III quem estava em Trial e só tinha olhado o preço.
+    //    Aqui a afirmação é verdadeira: existe assinatura no gateway, com valor e cartão.
     const { error: upErr } = await supabaseAdmin
       .from("tenants")
-      .update({ asaas_subscription_id: sub.id, billing_day: diaDaCobranca })
+      .update({ asaas_subscription_id: sub.id, billing_day: diaDaCobranca, plan_id: plano.id })
       .eq("id", tenantId)
 
     // ⚠️ Criada lá e não gravada aqui = assinatura cobrando sem a Kora saber. Devolve o id

@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useState, useTransition, useRef, useEffect } from "react"
 import { Check, X, Loader2, AlertCircle, ArrowRight, ChevronLeft, ChevronRight } from "lucide-react"
 import { escolherPlano } from "@/lib/actions/subscription"
@@ -28,7 +29,7 @@ import { SourceLogo } from "@/components/chat/source-logo"
 type Passo = "planos" | "cadastro" | "pagamento" | "pronto"
 
 export function PlanosModal({
-  planos, podeAssinar, perfil, titular, primeiraCobranca,
+  planos, podeAssinar, perfil, titular, primeiraCobranca, bloqueante = true,
 }: {
   planos: PlanoVitrine[]
   /** Cadastro fiscal completo? Sem ele a tokenização do cartão falha. */
@@ -39,6 +40,13 @@ export function PlanosModal({
   titular: TitularPreenchido | null
   /** Data da 1ª cobrança, já formatada. */
   primeiraCobranca: string | null
+  /**
+   * `true` = o teste ACABOU e esta é a única tela (sem saída, por decisão do dono).
+   * `false` = a pessoa veio escolher um plano por vontade própria, ainda dentro do teste —
+   * e prender quem ainda tem produto pra usar seria transformar uma visita ao catálogo em
+   * sequestro. Muda o texto e devolve a saída.
+   */
+  bloqueante?: boolean
 }) {
   const [pending, startT] = useTransition()
   const [erro, setErro] = useState("")
@@ -134,9 +142,17 @@ export function PlanosModal({
             ~1056px. Em `max-w-4xl` (896px) três planos JÁ estouravam — e a navegação
             estava gateada em `> 3`, então não havia nem seta nem bolinha pra alcançar
             o terceiro. Cabiam dois; o resto era inalcançável. */}
-        <div className="w-full max-w-6xl max-h-full flex flex-col rounded-2xl bg-white shadow-2xl overflow-hidden">
+        <div className="relative w-full max-w-6xl max-h-full flex flex-col rounded-2xl bg-white shadow-2xl overflow-hidden">
 
           <header className="shrink-0 px-6 sm:px-8 pt-6 pb-4 border-b border-slate-100">
+            {/* ⚠️ A saída existe SÓ no modo não-bloqueante, e some depois que o cartão passa
+                (`pronto`): fechar em cima do sucesso deixaria a pessoa sem saber se pagou. */}
+            {!bloqueante && passo !== "pronto" && (
+              <Link href="/configuracoes/assinatura" aria-label="Fechar"
+                className="absolute right-4 top-4 size-8 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 inline-flex items-center justify-center transition-colors">
+                <X className="size-4" />
+              </Link>
+            )}
             <div className="flex items-start gap-3">
               {/* Voltar existe a partir do 2º passo — e SÓ até o pagamento passar.
                   Depois de cobrado o cartão não há "voltar": o dinheiro já saiu. */}
@@ -150,13 +166,15 @@ export function PlanosModal({
               )}
               <div className="min-w-0">
                 <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-                  {passo === "planos"    ? "Seu teste terminou"
+                  {passo === "planos"    ? (bloqueante ? "Seu teste terminou" : "Escolha seu plano")
                    : passo === "cadastro" ? "Falta só o cadastro"
                    : passo === "pagamento" ? `Assinar ${planoEscolhido?.nome ?? ""}`.trim()
                    : "Tudo certo!"}
                 </h1>
                 <p className="mt-1.5 text-sm text-slate-500 leading-relaxed">
-                  {passo === "planos"    ? "Escolha um plano para voltar a usar o Kora. Suas conversas, contatos e configurações estão intactos — nada precisa ser refeito."
+                  {passo === "planos"    ? (bloqueante
+                       ? "Escolha um plano para voltar a usar o Kora. Suas conversas, contatos e configurações estão intactos — nada precisa ser refeito."
+                       : "Seu teste continua até a data do resumo. Ao assinar, a cobrança só começa quando ele terminar.")
                    : passo === "cadastro" ? "São os dados que a nota fiscal e o cartão exigem."
                    : passo === "pagamento" ? "O pagamento é processado com criptografia. Não guardamos o número do seu cartão."
                    : "Sua assinatura está ativa e o Kora voltou a funcionar."}
@@ -186,6 +204,7 @@ export function PlanosModal({
                     titular ? (
                       <CardForm
                         titular={titular}
+                        planoId={planoEscolhido.id}
                         planoNome={planoEscolhido.nome}
                         valorCents={planoEscolhido.precoCents}
                         primeiraCobranca={primeiraCobranca}
