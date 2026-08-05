@@ -41,6 +41,54 @@ const CAMPOS_DO_CLIENTE = [
 
 export type CampoFiscal = (typeof CAMPOS_DO_CLIENTE)[number]
 
+// ═══════════════════════════════════════════════════════════════
+// "Dá pra cobrar este cliente?" — A REGRA, em UM lugar só
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔴 ELA EXISTIA EM QUATRO CÓPIAS, e a quarta derrubou uma compra (05/08). Cada cópia
+//    trazia um comentário avisando do risco — `standing.ts` dizia textualmente *"MESMOS 5
+//    campos de getTitularParaCobranca. Se um dia divergirem, a tela oferece 'Ativar
+//    assinatura' e o gate do pagamento recusa na cara da pessoa"*. Foi exatamente isso:
+//    o telefone entrou em três das quatro, a quarta ficou pra trás, a tela pulou o passo
+//    de cadastro e o pagamento recusou citando campos que estavam preenchidos.
+//
+// 🔑 Comentário não impede divergência — só uma função impede. Quem precisa saber se dá
+//    pra cobrar CHAMA daqui. Campo novo exigido pelo gateway se adiciona em UMA linha e
+//    todas as telas concordam no mesmo instante.
+//
+// ⚠️ `faltamParaCobrar` devolve os campos que faltam PELO NOME que o cliente vê. Dizer
+//    "complete CNPJ, CEP e número" pra quem tem os três preenchidos e um telefone inválido
+//    é mandar a pessoa procurar um defeito que não existe.
+
+/** O que a cobrança no cartão exige, com o rótulo que aparece pro cliente. */
+const EXIGIDO_PELA_COBRANCA = [
+  { campo: "legal_name",    rotulo: "nome ou razão social" },
+  { campo: "tax_id",        rotulo: "CPF ou CNPJ" },
+  { campo: "billing_email", rotulo: "e-mail de faturamento" },
+  { campo: "zip",           rotulo: "CEP" },
+  { campo: "number",        rotulo: "número do endereço" },
+  { campo: "phone",         rotulo: "telefone com DDD" },
+] as const
+
+type PerfilBruto = Record<string, string | null | undefined> | null | undefined
+
+/** Rótulos do que falta pra conseguir cobrar. Vazio = dá pra cobrar. */
+export function faltamParaCobrar(p: PerfilBruto): string[] {
+  return EXIGIDO_PELA_COBRANCA.filter(({ campo }) => {
+    const v = (p?.[campo] ?? "").toString().trim()
+    if (!v) return true
+    // ⚠️ Telefone é o único que precisa de FORMA, não só presença: um número guardado mas
+    //    inválido passa em "está preenchido?" e o gateway recusa mesmo assim.
+    if (campo === "phone") return !isValidPhoneBR(v)
+    return false
+  }).map(({ rotulo }) => rotulo)
+}
+
+/** `true` quando o cadastro permite tokenizar o cartão. Fonte única. */
+export function podeCobrar(p: PerfilBruto): boolean {
+  return faltamParaCobrar(p).length === 0
+}
+
 /**
  * 🔴 `notes` FICA DE FORA de propósito — é o campo de anotação interna do god mode sobre
  *    o cliente ("negocia desconto", "vai cancelar"). Deixar o próprio cliente reescrever
@@ -168,7 +216,11 @@ export function normalizarPerfilFiscal(
   //    recusa da cobrança. O aviso acima estava escrito aqui desde o começo — e o campo
   //    novo entrou sem ser confrontado com ele.
   const numero = limpa(v.number)
-  const completo = Boolean(nome && email && doc && cep && numero && isValidPhoneBR(tel))
+  // 🔑 Mesma fonte das telas (`podeCobrar`), alimentada com os valores JÁ normalizados —
+  //    senão o cadastro poderia dizer "completo" e a tela de assinatura discordar.
+  const completo = podeCobrar({
+    legal_name: nome, tax_id: doc, billing_email: email, zip: cep, number: numero, phone: tel,
+  })
 
   if (opts.exigirCobranca) {
     if (!email)  return { error: "Informe o e-mail de faturamento." }

@@ -1,8 +1,10 @@
 "use client"
 
+import Link from "next/link"
 import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { ShieldCheck, Lock, CheckCircle2, CreditCard } from "lucide-react"
+import { maskCpfCnpj, maskCep, maskPhone } from "@/lib/masks"
 import { ativarAssinatura, type TitularPreenchido } from "@/lib/actions/subscription"
 
 // ═══════════════════════════════════════════════════════════════
@@ -29,6 +31,8 @@ interface Props {
   valorCents: number
   primeiraCobranca: string | null
   emTrial:    boolean
+  /** Volta pro passo de cadastro (contexto do modal). Ausente ⇒ link pra /configuracoes/empresa. */
+  onEditarCadastro?: () => void
   /**
    * O que fazer quando o pagamento passa. Ausente ⇒ mostra a tela de sucesso própria
    * (uso na página `/pagamento`).
@@ -70,7 +74,7 @@ function bandeira(num: string): string | null {
 
 const grupos = (d: string) => d.replace(/\D/g, "").slice(0, 19).replace(/(.{4})/g, "$1 ").trim()
 
-export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobranca, emTrial, onSucesso, compacto = false }: Props) {
+export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobranca, emTrial, onSucesso, onEditarCadastro, compacto = false }: Props) {
   const router = useRouter()
   const [numero, setNumero]   = useState("")
   const [nome, setNome]       = useState(titular.nome.toUpperCase())
@@ -151,6 +155,42 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
 
   return (
     <div className={compacto ? "space-y-4" : "grid gap-5 lg:grid-cols-[1fr_320px] items-start"}>
+      {/* ── Quem está sendo cobrado ────────────────────────────────────────────────
+          🔑 IDEIA DO DONO (05/08), e ela conserta uma classe inteira de falha: todo
+             checkout sério mostra os dados do titular antes de pedir o cartão. Não é
+             burocracia — é a única chance da pessoa VER um dado errado antes de pagar.
+             O caso que motivou: um telefone inválido guardado no cadastro derrubou a
+             cobrança, e ele não aparecia em tela nenhuma do fluxo. Com este bloco, o
+             erro fica visível ANTES do cartão, e não depois da recusa.
+          ⚠️ Também protege contra contestação: o titular confirma que é ele quem paga. */}
+      <div className={compacto ? "" : "lg:col-span-2"}>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Cobrança em nome de</p>
+              <p className="mt-1 text-sm font-semibold text-slate-900 truncate">{titular.nome}</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {[maskCpfCnpj(titular.cpfCnpj), titular.email].filter(Boolean).join(" · ")}
+              </p>
+              <p className="text-xs text-slate-500">
+                {[titular.cep && `CEP ${maskCep(titular.cep)}`, titular.numero && `nº ${titular.numero}`,
+                  titular.telefone && maskPhone(titular.telefone)].filter(Boolean).join(" · ")}
+              </p>
+            </div>
+            {onEditarCadastro ? (
+              <button type="button" onClick={onEditarCadastro}
+                className="shrink-0 text-xs font-semibold text-primary hover:underline">
+                Editar
+              </button>
+            ) : (
+              <Link href="/configuracoes/empresa" className="shrink-0 text-xs font-semibold text-primary hover:underline">
+                Editar
+              </Link>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* ── Formulário ─────────────────────────────────────────── */}
       <div className="rounded-xl border border-slate-200 bg-white shadow-card overflow-hidden">
         <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">

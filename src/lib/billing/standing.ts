@@ -1,5 +1,6 @@
 import "server-only"
 import { cache } from "react"
+import { podeCobrar } from "@/lib/billing/fiscal-profile"
 import { supabaseAdmin } from "@/lib/supabase"
 import {
   isTenantBlockedForAccess,
@@ -269,7 +270,7 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     // um botão de pagar que o gate recusa depois.
     supabaseAdmin
       .from("tenant_billing_profile")
-      .select("legal_name, tax_id, billing_email, zip, number")
+      .select("legal_name, tax_id, billing_email, zip, number, phone")
       .eq("tenant_id", tenantId)
       .maybeSingle(),
     supabaseAdmin
@@ -449,9 +450,11 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
       ? {
           endsAt: row.trial_ends_at,
           diasRestantes: diasAte(row.trial_ends_at),
-          // ⚠️ MESMOS 5 campos de `getTitularParaCobranca`. Se um dia divergirem, a tela
-          //    oferece "Ativar assinatura" e o gate do pagamento recusa na cara da pessoa.
-          podeAssinar: Boolean(perfil?.legal_name && perfil?.tax_id && perfil?.billing_email && perfil?.zip && perfil?.number),
+          // 🔑 FONTE ÚNICA (`podeCobrar`). Esta linha já foi uma cópia inline dos campos,
+          //    com um comentário avisando do risco de divergir — e divergiu: o telefone
+          //    entrou nas outras réguas e não nesta, a tela ofereceu "Assinar", e o
+          //    pagamento recusou pedindo dados que estavam preenchidos.
+          podeAssinar: podeCobrar(perfil),
         }
       : null,
     nextClosingAt: nextClosing(

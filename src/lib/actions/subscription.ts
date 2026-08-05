@@ -1,7 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
-import { isValidPhoneBR } from "@/lib/masks"
+import { podeCobrar, faltamParaCobrar } from "@/lib/billing/fiscal-profile"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit, getClientIpFromHeaders } from "@/lib/rate-limit"
 import { logAudit } from "@/lib/audit"
@@ -155,6 +155,14 @@ export async function escolherPlano(planoId: string): Promise<{ error?: string; 
 export interface TitularPreenchido {
   nome: string; email: string; cpfCnpj: string; cep: string; numero: string; telefone: string
   completo: boolean
+  /**
+   * Rótulos do que falta pra conseguir cobrar — vazio quando `completo`.
+   *
+   * ⚠️ Calculado AQUI, sobre o perfil cru, e não pelo chamador: as chaves deste objeto são
+   *    as da TELA (`cpfCnpj`, `cep`), não as do banco (`tax_id`, `zip`). Recalcular lá fora
+   *    acusaria todos os campos como ausentes.
+   */
+  faltam: string[]
 }
 
 /**
@@ -181,6 +189,7 @@ export async function getTitularParaCobranca(): Promise<TitularPreenchido | null
     numero:   (p.number || "").trim(),
     telefone: (p.phone || "").trim(),
     completo: false,
+    faltam:   faltamParaCobrar(p),
   }
   // ⚠️ O Asaas EXIGE cpfCnpj, cep, número E TELEFONE no `creditCardHolderInfo`. Sem eles a
   //    tokenização falha com erro do gateway — melhor a tela saber ANTES e mandar o
@@ -193,7 +202,7 @@ export async function getTitularParaCobranca(): Promise<TitularPreenchido | null
   //    onde corrigir. `completo` é a promessa "dá pra cobrar"; ela estava mentindo.
   // ⚠️ Valida a FORMA, não só a presença: um telefone guardado mas inválido reproduz
   //    exatamente o mesmo erro, com o mesmo cartão já digitado.
-  t.completo = Boolean(t.nome && t.email && t.cpfCnpj && t.cep && t.numero && isValidPhoneBR(t.telefone))
+  t.completo = podeCobrar(p)
   return t
 }
 
@@ -234,7 +243,14 @@ export async function ativarAssinatura(input: {
 
   const titular = await getTitularParaCobranca()
   if (!titular?.completo) {
-    return { error: "Complete os dados de faturamento (CNPJ, CEP e número) antes de ativar." }
+    // 🔴 A mensagem antiga era FIXA — *"Complete os dados de faturamento (CNPJ, CEP e
+    //    número)"* — e mandou o dono procurar defeito nos três campos que ele tinha
+    //    preenchidos, enquanto o que faltava era o telefone (05/08). Erro que nomeia o
+    //    campo errado é pior que erro genérico: ele custa tempo e confiança.
+    const faltam = titular?.faltam ?? []
+    return { error: faltam.length
+      ? `Falta completar: ${faltam.join(", ")}.`
+      : "Complete os dados de faturamento antes de ativar." }
   }
 
   const ip = getClientIpFromHeaders(await headers())

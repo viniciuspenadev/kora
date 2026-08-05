@@ -239,6 +239,7 @@ export function PlanosModal({
                         primeiraCobranca={primeiraCobranca}
                         emTrial={false}
                         compacto
+                        onEditarCadastro={() => setPasso("cadastro")}
                         onSucesso={() => setPasso("pronto")}
                       />
                     ) : (
