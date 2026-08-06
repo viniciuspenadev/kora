@@ -9,7 +9,6 @@ import { verifyTurnstile } from "@/lib/turnstile"
 import { rateLimit } from "@/lib/rate-limit"
 import { applyDefaultModules } from "@/lib/modules"
 import { applyPlan, getSignupTrialPlan } from "@/lib/plans"
-import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { sendEmail, buildVerificationEmail } from "@/lib/email/send"
 import { seedTrustForCurrentDevice } from "@/lib/auth/trust"
 
@@ -376,12 +375,26 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
   if (row.plan_id) await applyPlan(tenant.id, row.plan_id as string)
   else await applyDefaultModules(tenant.id)
 
-  // Auto-provisiona a instância WhatsApp (QR self-connect). Fire-and-forget.
-  try {
-    await autoProvisionWhatsApp(tenant.id, tenant.slug)
-  } catch (err) {
-    console.error("[signup] auto-provision falhou:", err)
-  }
+  // ── Sem auto-provisionar WhatsApp (decisão do dono, 2026-08-06) ──────────
+  //
+  // 🔴 O SIGNUP CRIAVA UMA INSTÂNCIA NA EVOLUTION PRA TODA CONTA NOVA, e isso estragava
+  //    quatro coisas ao mesmo tempo:
+  //      1. **Matava o gate de plano.** Todo tenant nascia com uma linha em
+  //         `whatsapp_instances`, então qualquer checagem do tipo "ele já tem número?"
+  //         era verdadeira desde o primeiro segundo — foi exatamente assim que o gate de
+  //         `multi_instance` da tela de Integrações nasceu inerte (medido em 06/08).
+  //      2. **Gastava recurso por cadastro abandonado.** Cada instância é uma sessão
+  //         Baileys viva no servidor da Evolution; signup de teste, spam ou desistência
+  //         deixava uma lá pra sempre.
+  //      3. **Mentia na tela.** "1 número" para quem nunca conectou nada.
+  //      4. **Virava órfã ao apagar o tenant.** O delete do tenant não fala com a
+  //         Evolution — na limpeza de 06/08 foi preciso apagar à mão.
+  //
+  // 🔑 Criar número é ATO DO CLIENTE, não efeito colateral do cadastro: acontece no botão
+  //    de Integrações → `addQrNumber`, que checa papel E cota (`requireLimit`) antes de
+  //    provisionar. A tela vazia já convida com "Conecte seu primeiro número".
+  // ⚠️ `autoProvisionWhatsApp` continua existindo e sendo usada — pelo god mode e por
+  //    `addQrNumber`. O que saiu foi a chamada automática, não a capacidade.
 
   return { ok: true, activated: autoActivate }
 }

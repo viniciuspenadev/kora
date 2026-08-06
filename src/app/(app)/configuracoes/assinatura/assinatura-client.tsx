@@ -41,7 +41,7 @@ import { BloqueioTotal } from "./components/bloqueio-total"
 //   flutuando. Cara de extrato, que é o que ele é.
 
 export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
-  const { standing, incluso, resumo, conta, medidas, faturaAberta } = mock
+  const { standing, incluso, cobranca, resumo, conta, medidas, faturaAberta } = mock
   const [modal, setModal]       = useState<null | "pagar" | "dias" | "plano">(null)
   const [bloqueio, setBloqueio] = useState(standing.degrau === "readonly")
   const [adiado, setAdiado]     = useState(false)
@@ -55,6 +55,7 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
         <StandingHero
           standing={standing}
           conta={conta}
+          cobranca={cobranca}
           planoNome={resumo.planoNome}
           formaPagamento={resumo.formaPagamento}
           cicloDia={resumo.cicloDia}

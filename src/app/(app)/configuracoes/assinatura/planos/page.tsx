@@ -47,7 +47,7 @@ export default async function EscolherPlanoPage() {
       titular={titular}
       // ⚠️ Mesma data que o `createSubscriptionForTenant` usa como `nextDueDate`. Prometer
       //    aqui um dia diferente do que o gateway cobra vira ticket no primeiro ciclo.
-      primeiraCobranca={(() => { const d = dataDaPrimeiraCobranca(mock.standing.trial?.endsAt); return d ? dataLonga(d) : null })()}
+      primeiraCobranca={dataLonga(dataDaPrimeiraCobranca())}
       // Aqui ele ESCOLHE — ainda tem produto. Quem trava é o `trial_ended`, na tela de
       // assinatura, onde o modal nasce sem saída de propósito.
       bloqueante={false}

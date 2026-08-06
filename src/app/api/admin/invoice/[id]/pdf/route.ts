@@ -1,14 +1,20 @@
 import { NextResponse, type NextRequest } from "next/server"
-import { createElement } from "react"
 import { auth } from "@/auth"
-import { supabaseAdmin } from "@/lib/supabase"
-import { renderToBuffer } from "@react-pdf/renderer"
-import { InvoicePdf, type InvoicePdfData, type Party, type IssuerParty } from "@/lib/pdf/invoice-pdf"
+import { renderInvoicePdf } from "@/lib/pdf/invoice-render"
+
+/**
+ * GET /api/admin/invoice/[id]/pdf — a mesma fatura, pela ótica da operação.
+ *
+ * ⚠️ A MONTAGEM saiu daqui para `lib/pdf/invoice-render.ts` (06/08/2026), quando o cliente
+ *    ganhou a rota dele. Eram 60 linhas de leitura, ordenação de itens e mapeamento que
+ *    teriam que existir em dois lugares — e divergiriam no primeiro campo novo, fazendo
+ *    operação e cliente lerem faturas diferentes do mesmo mês.
+ * 🔒 Sem `tenantId`: o platform admin atende todos os clientes, então aqui é de propósito
+ *    que não há filtro de tenant. O gate é o `isPlatformAdmin` logo abaixo.
+ */
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-
-const KIND_ORDER: Record<string, number> = { plan: 0, overage: 1, addon: 2, oneoff: 3 }
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth()
@@ -17,44 +23,16 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const { id } = await params
+  const out = await renderInvoicePdf(id)
 
-  const { data: inv } = await supabaseAdmin
-    .from("invoices").select("*, invoice_items(*)").eq("id", id).maybeSingle()
-  if (!inv) return NextResponse.json({ error: "Fatura não encontrada" }, { status: 404 })
-
-  const [{ data: tenant }, { data: customer }, { data: issuer }] = await Promise.all([
-    supabaseAdmin.from("tenants").select("name").eq("id", inv.tenant_id).maybeSingle(),
-    supabaseAdmin.from("tenant_billing_profile").select("*").eq("tenant_id", inv.tenant_id).maybeSingle(),
-    supabaseAdmin.from("billing_issuer").select("*").eq("id", true).maybeSingle(),
-  ])
-
-  const items = ((inv.invoice_items ?? []) as Array<{ kind: string; description: string; quantity: number; unit_price_cents: number; amount_cents: number }>)
-    .slice()
-    .sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9))
-
-  const data: InvoicePdfData = {
-    ref:            id.slice(0, 8).toUpperCase(),
-    status:         inv.status,
-    period_start:   inv.period_start,
-    period_end:     inv.period_end,
-    due_date:       inv.due_date,
-    issued_at:      inv.issued_at,
-    subtotal_cents: inv.subtotal_cents,
-    total_cents:    inv.total_cents,
-    items:          items.map((it) => ({ description: it.description, quantity: it.quantity, unit_price_cents: it.unit_price_cents, amount_cents: it.amount_cents })),
-    customer:       (customer ?? null) as Party | null,
-    customerName:   tenant?.name ?? "—",
-    issuer:         (issuer ?? null) as IssuerParty | null,
+  if ("error" in out) {
+    return NextResponse.json({ error: out.error }, { status: out.status })
   }
 
-  const buffer = await renderToBuffer(
-    createElement(InvoicePdf, { data }) as Parameters<typeof renderToBuffer>[0],
-  )
-
-  return new NextResponse(buffer as unknown as BodyInit, {
+  return new NextResponse(out.buffer as unknown as BodyInit, {
     headers: {
       "Content-Type":        "application/pdf",
-      "Content-Disposition": `inline; filename="fatura-${data.ref}.pdf"`,
+      "Content-Disposition": `inline; filename="fatura-${out.ref}.pdf"`,
       "Cache-Control":       "private, no-store",
     },
   })

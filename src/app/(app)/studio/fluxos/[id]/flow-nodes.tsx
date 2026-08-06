@@ -11,10 +11,10 @@ import { createContext, useContext, useMemo, useState } from "react"
 import { Handle, Position, useNodeId, useStore, type NodeProps } from "@xyflow/react"
 import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
 import type { FlowGraph } from "@/lib/ai-v2/flow/types"
-import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck } from "lucide-react"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck, Link2 } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import { SourceLogo } from "@/components/chat/source-logo"
-import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
+import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig, RichMessage } from "@/lib/ai-v2/flow/types"
 
 const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
 const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
@@ -349,14 +349,44 @@ function IgCommentStartCard({ t, kw, selected }: { t: TriggerSummary; kw: string
 }
 
 function MessageNode(p: NodeProps) {
-  const text = String(cfgOf(p).text ?? "")
+  const cfg  = cfgOf(p)
+  const rich = cfg.rich as RichMessage | undefined
+  const text = String(rich?.text ?? cfg.text ?? "")
+  const btns = rich?.buttons ?? []
+  // Só botão de RESPOSTA vira saída. O de link aparece (a pessoa configurou, precisa ver)
+  // mas SEM handle — dele não sai linha porque o toque vai pro navegador e nunca volta.
+  const replies = btns.filter((b) => b.kind === "reply")
+
   return (
     <>
       <TargetHandle />
       <Card icon={MessageSquare} accent="bg-sky-100 text-sky-700" title="Mensagem" selected={p.selected}>
+        {rich?.media?.path && (
+          <div className="mb-1 flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-[10px] text-slate-500">
+            <ImageIcon className="size-3" /> imagem
+          </div>
+        )}
         <Bubble text={text} placeholder="escreva a mensagem…" />
+        {btns.length > 0 && (
+          <div className="mt-1.5 space-y-1">
+            {btns.map((b) => (
+              <div key={b.id} className="relative flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[10px] text-slate-600">
+                {b.kind === "url" && <Link2 className="size-2.5 shrink-0 text-slate-400" />}
+                <span className="truncate">{b.label || "botão"}</span>
+                {b.kind === "reply" && <BranchHandle id={b.id} color="#0284c7" />}
+              </div>
+            ))}
+          </div>
+        )}
+        {replies.length > 0 && (
+          <div className="relative mt-1 rounded-md border border-dashed border-slate-200 px-1.5 py-1 text-[10px] text-slate-400">
+            escreveu
+            <BranchHandle id="else" color="#94a3b8" />
+          </div>
+        )}
       </Card>
-      <SourceHandle />
+      {/* Sem botão de resposta o nó não espera nem ramifica → saída única, como sempre foi. */}
+      {replies.length === 0 && <SourceHandle />}
     </>
   )
 }

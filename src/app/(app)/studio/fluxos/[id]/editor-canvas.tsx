@@ -152,6 +152,18 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
   const [keywords, setKeywords]     = useState((flow.trigger?.keywords ?? []).join(", "))
   const [mode, setMode]             = useState<"receptive" | "active" | "auto">(flow.trigger?.mode ?? "receptive")
   const [trigChannels, setChannels] = useState<string[]>(flow.trigger?.channels ?? [])
+  /**
+   * Canais que este fluxo REALMENTE alcança — alimenta o quadro "como vai sair" nos nós
+   * Menu e Agendar. Vazio = todos.
+   *
+   * ⚠️ Instagram **não é opção do filtro de canal** (o seletor só tem WhatsApp e Site).
+   *    Então o Direct é alcançado de dois jeitos: gatilho que é do Instagram por
+   *    definição, ou **filtro vazio** — que é o caso comum e o que faz o aviso importar.
+   */
+  const flowChannels = useMemo(
+    () => (triggerType === "ig_comment" || triggerType === "ig_story_reply" ? ["instagram"] : trigChannels),
+    [triggerType, trigChannels],
+  )
   const [trigInstances, setInsts]   = useState<string[]>(flow.trigger?.instances ?? [])
   const [trigAds, setAds]           = useState<string[]>(flow.trigger?.adIds ?? [])
   const [kwMatch, setKwMatch]       = useState<"contains" | "exact">(flow.trigger?.keywordMatch ?? "contains")
@@ -445,6 +457,26 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
     else if (t === "ai_router") valid = new Set([...((config.routes as { id: string }[] | undefined) ?? []).map((r) => r.id), "else"])
     else if (t === "switch")    valid = new Set([...((config.cases as { id: string }[] | undefined) ?? []).map((c) => c.id), "else"])
     else if (t === "ai_agent")  valid = new Set(((config.outcomes as { id: string }[] | undefined) ?? []).map((o) => o.id))
+    // Mensagem: só botão de RESPOSTA tem saída (o de link não devolve evento). Apagar um
+    // botão, ou trocá-lo pra link, tem que levar a linha junto — senão fica aresta órfã
+    // apontando pra um handle que não existe mais.
+    else if (t === "message") {
+      const btns = ((config.rich as { buttons?: { id: string; kind: string }[] } | undefined)?.buttons ?? [])
+        .filter((b) => b.kind === "reply")
+      valid = new Set([...btns.map((b) => b.id), ...(btns.length ? ["else"] : [])])
+      /**
+       * ⚠️ Aqui a poda precisa derrubar TAMBÉM a aresta sem handle (a saída única de
+       *    antes) — coisa que os outros nós ramificados não fazem, porque eles nunca
+       *    tiveram saída única.
+       *
+       *    Ao ganhar o primeiro botão de resposta, o nó **deixa de desenhar** a saída
+       *    única. A linha antiga continuaria no dado, presa a um ponto que sumiu da tela:
+       *    o motor a usaria como destino de TODOS os botões (é o fallback natural do
+       *    `edgeTarget`) e ninguém entenderia por quê. Melhor sumir a linha e a pessoa
+       *    religar o que quer — visível ganha de mágico.
+       */
+      if (btns.length) setEdges((eds) => eds.filter((e) => e.source !== selectedId || e.sourceHandle != null))
+    }
     if (valid) {
       const keep = valid
       setEdges((eds) => eds.filter((e) => e.source !== selectedId || e.sourceHandle == null || keep.has(e.sourceHandle)))
@@ -620,7 +652,7 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
           {!selectedNode
             ? <NodePicker onPick={addNode} />
             : selectedNode.type !== "start"
-            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} outcomeLabels={agentOutcomeLabels} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} outcomeLabels={agentOutcomeLabels} flowChannels={flowChannels} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}
                 mode={mode} channels={trigChannels} instances={trigInstances}

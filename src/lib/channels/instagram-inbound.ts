@@ -14,6 +14,7 @@ import type { RichMessage } from "@/lib/ai-v2/flow/types"
 import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
 import { claimIgAutomation } from "@/lib/instagram/automation-quota"
 import { slimAdMeta } from "@/lib/ad-reply"
+import { renderVars, withAliases } from "@/lib/variables/registry"
 import type { ExternalAdReply } from "@/types/chat"
 
 /**
@@ -109,10 +110,29 @@ async function maybeEnrich(token: string | null, tenantId: string, igsid: string
   let needName = created
   let needAvatar = created
   if (!created) {
-    const { data } = await supabaseAdmin.from("chat_contacts").select("push_name, profile_pic_url").eq("id", contactId).single()
+    const { data } = await supabaseAdmin.from("chat_contacts").select("push_name, profile_pic_url, ig_username").eq("id", contactId).single()
     const pn  = data?.push_name as string | null
     const pic = data?.profile_pic_url as string | null
-    needName = !pn || pn === IG_PLACEHOLDER_NAME
+    const ig  = data?.ig_username as string | null
+    /**
+     * 🔴 BUG CORRIGIDO 2026-08-06 (achado pelo owner num teste real).
+     *
+     * Quem chega por COMENTÁRIO é gravado com `push_name = "@handle"` — é tudo que a Meta
+     * deixa saber naquele instante (perfil de quem só comentou responde ERRO). A promessa
+     * escrita em `seedCommentContact` era que esse `@` sumiria no 1º reply, quando o
+     * perfil finalmente libera.
+     *
+     * **Não sumia.** Esta linha só considerava provisório o nome VAZIO ou o placeholder
+     * genérico; `"@joaosilva"` não é nenhum dos dois, então o enriquecimento concluía
+     * "já tem nome" e nunca buscava o real. Todo contato vindo de comentário ficava
+     * `@handle` PARA SEMPRE no inbox — e, com as variáveis, `{{nome}}` mentiria pra
+     * sempre junto.
+     *
+     * ⚠️ A comparação é EXATA contra o handle que nós mesmos gravamos, não um
+     *    `startsWith("@")`: atendente que batizou o contato de "@promo-black-friday" fez
+     *    uma escolha, e escolha de humano não se sobrescreve.
+     */
+    needName = !pn || pn === IG_PLACEHOLDER_NAME || (!!ig && pn === `@${ig}`)
     // Avatar precisa se: não tem, OU aponta pra URL crua de CDN (padrão antigo que
     // expira → 403). Contato já migrado (`/api/avatar/...`) não re-baixa. Auto-cura.
     needAvatar = !pic || pic.includes("cdninstagram.com") || pic.includes("fbcdn.net")
@@ -398,6 +418,21 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
         tenantId:       ctx.tenantId,
         conversationId: ctx.convId,
         incomingText:   routable,
+        /**
+         * 🔴 ID DO BOTÃO TOCADO — **pré-requisito** do botão nativo, não melhoria.
+         *
+         * O `interactive_id` já era extraído acima (postback/quick_reply) e **jogado
+         * fora**: só o texto seguia pro motor. Enquanto o Direct só mandava texto
+         * numerado isso era inofensivo — a pessoa digitava um número.
+         *
+         * Passou a MORDER quando o Menu ganhou botão nativo aqui: o toque volta com o
+         * RÓTULO, e `parseMenuReply` testa NÚMERO antes de rótulo. Um menu com
+         * "Plano Pro 3 meses" na 2ª posição casaria o "3" e mandaria a pessoa pra
+         * opção 3 — ramo errado, calado. Com o id, o casamento é por identidade e o
+         * texto vira só o que o atendente lê no inbox (o WhatsApp Oficial já fazia
+         * assim, `meta-inbound.ts`).
+         */
+        optionId:       (dec.metadata.interactive_id as string | null) ?? undefined,
         // Sinal do INBOUND: a mesma conversa mistura resposta de story com mensagem
         // normal, então isto não pode sair de coluna da conversa.
         signals: {
@@ -677,6 +712,32 @@ async function updateAutomationRun(runId: string, patch: RunPatch): Promise<void
  * vem no próprio webhook É o nome — e some sozinho no primeiro reply, quando o
  * `maybeEnrich` do handleDm passa a ter permissão e busca nome/foto de verdade.
  */
+/**
+ * Nome REAL de quem já está na base (comentarista recorrente) — `null` pra desconhecido.
+ *
+ * Existe porque `{{nome}}` no Direct precisa valer alguma coisa para quem JÁ conversou
+ * com a marca: greetar "Oi @joaosilva" alguém que você registrou como "João Silva" é pior
+ * que não personalizar. Para quem comenta pela 1ª vez não há resposta possível (a Meta
+ * recusa o perfil), e aí o chamador cai no `@`.
+ *
+ * ⚠️ Descarta os nomes PROVISÓRIOS (`@handle` e o placeholder genérico): eles são o que a
+ *    gente mesmo gravou por falta de coisa melhor, não nome de verdade.
+ */
+async function knownContactName(tenantId: string, username: string | null): Promise<string | null> {
+  if (!username) return null
+  try {
+    const { data } = await supabaseAdmin
+      .from("chat_contacts").select("custom_name, push_name")
+      .eq("tenant_id", tenantId).eq("ig_username", username)
+      .limit(1).maybeSingle()
+    const n = ((data?.custom_name as string | null) || (data?.push_name as string | null) || "").trim()
+    if (!n || n === IG_PLACEHOLDER_NAME || n === `@${username}`) return null
+    return n
+  } catch {
+    return null   // best-effort: personalização nunca atrasa nem derruba a bala única
+  }
+}
+
 async function seedCommentContact(tenantId: string, contactId: string, username: string | null): Promise<void> {
   if (!username) return
   const { error } = await supabaseAdmin.from("chat_contacts")
@@ -804,9 +865,33 @@ async function handleComment(igAccountId: string | null, value: Record<string, u
   //    a bala é única. Se a imagem sumiu do bucket ou a Meta recusou o upload do anexo,
   //    mandar o texto puro entrega ALGO — abortar entregaria nada e queimaria o comentário
   //    do mesmo jeito (o dedup por comment_id não deixa tentar de novo).
-  let payload: Record<string, unknown> = { text: rule.reply_text }
+  /**
+   * Variáveis do Direct e da resposta pública.
+   *
+   * 🔴 **O que dá pra saber AQUI é pouco, e é regra da Meta, não escolha nossa.** Neste
+   *    ponto o contato ainda NEM EXISTE — o IGSID só chega no `recipient_id` da resposta
+   *    do envio, lá embaixo. Tudo que o webhook do comentário entrega é o `@`.
+   *
+   * Então `{{nome}}` resolve assim:
+   *   • já está na base (comentarista recorrente) → **nome real**, via `ig_username`;
+   *   • primeira vez → `@handle`, que é a única identidade que a Meta libera antes da
+   *     pessoa responder.
+   *
+   * ⚠️ A busca é best-effort de propósito: falhou, ficou lento, não achou → cai no `@` e
+   *    o Direct sai igual. A bala é única; nenhuma personalização vale atrasá-la.
+   */
+  const atHandle = username ? `@${username}` : ""
+  const igVars = withAliases({
+    usuario: atHandle,
+    nome:    (await knownContactName(conn.tenantId, username)) || atHandle,
+  })
+
+  let payload: Record<string, unknown> = { text: renderVars(rule.reply_text ?? "", igVars) }
   if (richDm) {
-    const built = await buildIgMessage(richDm, {
+    // Só o TEXTO é interpolado. Rótulo de botão tem 20 caracteres — um nome longo
+    // estouraria o limite e a Meta cortaria no meio, na única mensagem que existe.
+    const richDmVars: typeof richDm = { ...richDm, text: renderVars(richDm.text ?? "", igVars) }
+    const built = await buildIgMessage(richDmVars, {
       token: conn.token, igAccountId, origin: process.env.AUTH_URL ?? process.env.NEXTAUTH_URL,
     })
     if ("error" in built) {
@@ -868,7 +953,11 @@ async function handleComment(igAccountId: string | null, value: Record<string, u
   // 4) Resposta pública (best-effort) — é o que avisa quem NÃO segue a abrir a aba
   //    "Solicitações", onde a private reply cai pra ele. Por último de propósito: é a
   //    etapa menos importante e não pode atrasar nem derrubar o carimbo.
-  const publicText = pickPublicReply(rule.public_reply)
+  // ⚠️ Aqui o natural é `{{usuario}}`, não `{{nome}}`: é espaço PÚBLICO. Nome real de
+  //    terceiro embaixo de um post é invasivo — o `@` é a identidade que a pessoa
+  //    escolheu mostrar. (Notificar não é argumento: a resposta já é aninhada no
+  //    comentário dela, então o Instagram avisa de qualquer jeito.)
+  const publicText = renderVars(pickPublicReply(rule.public_reply) ?? "", igVars)
   if (publicText) {
     const rr = await replyToIgComment(conn.token, commentId, publicText)
     if ("error" in rr) log("comment-public-err", { commentId, err: rr.error })

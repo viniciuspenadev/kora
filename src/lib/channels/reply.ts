@@ -11,8 +11,10 @@
 
 import "server-only"
 import { getProvider } from "@/lib/providers"
-import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
+import { getInstagramSender, sendInstagramText, sendInstagramMessage } from "@/lib/instagram/api"
+import { buildIgMessage } from "@/lib/instagram/rich-render"
 import type { ContentType, InteractivePayload, ReplyContext } from "@/lib/providers/types"
+import type { RichMessage } from "@/lib/ai-v2/flow/types"
 
 type ProviderInstance = Parameters<typeof getProvider>[0]
 
@@ -79,13 +81,27 @@ export async function sendChannelText(
  * NÃO altera o caminho de texto. Usada pelo nó "Enviar mídia" do Studio.
  * A URL deve ser pública (provider busca o arquivo). Transcode/upload não
  * acontece aqui (ao contrário da server-action sendChatMedia do inbox).
+ *
+ * 🔴 **NÃO LANÇA em canal sem entrega de mídia — devolve `null`** (mesmo contrato da
+ *    irmã `sendChannelInteractive`), pra o chamador degradar.
+ *
+ *    Antes, o `default` fazia `throw`. Como o `case "send_media"` do runtime não trata
+ *    exceção, ela subia até o guarda-chuva do turno (`run.ts`) e **matava o turno
+ *    inteiro**: o cliente final não recebia NADA e o run ficava parado no nó anterior.
+ *    Ou seja, arrastar "Enviar mídia" pra um fluxo de Instagram publicava um fluxo que
+ *    quebrava na 1ª execução. É a mesma lição já aprendida no `sendBotTemplate`
+ *    ("recusar é aceitável, recusar calado não" — ai-v2/outbound.ts).
+ *
+ * ⚠️ `null` significa **"o canal não entrega mídia por este caminho"**, não "falhou o
+ *    envio". Falha real do provider (rede/400) continua lançando de dentro do `case
+ *    "whatsapp"` — são coisas diferentes e o chamador as trata diferente.
  */
 export async function sendChannelMedia(
   target:   ReplyTarget,
   media:    { url: string; mediaType: ContentType; caption?: string; fileName?: string },
   instance: ProviderInstance,
   replyTo?: ReplyContext,
-): Promise<{ messageId: string | null }> {
+): Promise<{ messageId: string | null } | null> {
   const channel = target.channel ?? "whatsapp"
 
   switch (channel) {
@@ -94,17 +110,71 @@ export async function sendChannelMedia(
       return { messageId: r.messageId ?? null }
     }
     case "site":
-      return { messageId: null }
+      // ⚠️ Widget-chat NÃO entrega mídia — e isto é diferente do texto. O polling do
+      // widget seleciona só `content, sender_type, created_at`
+      // (`/api/site/messages/route.ts`), então `media_url` nunca chega ao visitante. A
+      // linha até era persistida e o ATENDENTE a via no inbox, o que fazia o fluxo (e o
+      // inbox) acreditarem numa entrega que não aconteceu. Enquanto o widget não buscar
+      // mídia, isto é recusa honesta, não sucesso.
+      return null
     default:
-      throw new Error(`Mídia no canal '${channel}' ainda não suportada`)
+      // Instagram / Messenger / TikTok: sem caminho de mídia implementado ainda.
+      // Quando o envio rico compartilhado existir (docs/studio-rich-message-design.md
+      // §5), o Instagram sai daqui e ganha entrega de verdade.
+      return null
   }
+}
+
+/**
+ * Envia uma MENSAGEM RICA (texto · imagem · botões · cartão) pelo canal, escolhendo o
+ * veículo de maior fidelidade que ele aceita. `null` = **não entreguei** — o chamador
+ * degrada (nunca lança; ver a lição registrada em `sendChannelMedia`).
+ *
+ * 🔴 É a costura que faltava no produto. `buildIgMessage` — o montador de cartão/botões
+ *    do Instagram, testado ao vivo — existia com **um único consumidor no código
+ *    inteiro**: a resposta privada ao comentário. Não era um caminho de envio, era um
+ *    beco. Daqui em diante qualquer nó que produza uma mensagem rica entrega por aqui.
+ *
+ * Desenho: docs/studio-rich-message-design.md §5.
+ */
+export async function sendChannelRich(
+  target: ReplyTarget,
+  msg:    RichMessage,
+): Promise<{ messageId: string | null } | null> {
+  const channel = target.channel ?? "whatsapp"
+  // WhatsApp Oficial / Baileys / site entram em fases seguintes; hoje seguem pelos
+  // caminhos de texto e interativo que já existem.
+  if (channel !== "instagram") return null
+
+  if (!target.tenantId) return null
+  const igsid = target.externalId
+  if (!igsid) return null
+  const sender = await getInstagramSender(target.tenantId)
+  if (!sender) return null
+
+  const built = await buildIgMessage(msg, {
+    token: sender.token, igAccountId: sender.igAccountId,
+    origin: process.env.AUTH_URL ?? process.env.NEXTAUTH_URL,
+  })
+  if ("error" in built) {
+    console.error("[reply.rich] montagem falhou:", built.error)
+    return null
+  }
+
+  const r = await sendInstagramMessage(sender.igAccountId, igsid, sender.token, built.message)
+  if ("error" in r) {
+    // Inclui o caso "janela de 24h fechada" — a Meta recusa e nós degradamos, em vez de
+    // deixar a exceção subir e matar o turno.
+    console.error("[reply.rich] envio recusado:", r.error)
+    return null
+  }
+  return { messageId: r.messageId }
 }
 
 /**
  * Tenta enviar uma mensagem INTERATIVA nativa (botões/lista/CTA) pelo canal.
  * Diferente das irmãs: NÃO lança em canal/provider sem suporte — retorna `null`
  * pra o chamador cair num fallback (ex: o nó Menu vira menu numerado no Baileys).
- * Só o provider Oficial (Meta Cloud) implementa `sendInteractive`.
  */
 export async function sendChannelInteractive(
   target:   ReplyTarget,
@@ -113,6 +183,29 @@ export async function sendChannelInteractive(
   replyTo?: ReplyContext,
 ): Promise<{ messageId: string | null } | null> {
   const channel = target.channel ?? "whatsapp"
+
+  /**
+   * 🔴 INSTAGRAM — o ganho que os nós **Menu** e **Agendar** recebem de graça.
+   *
+   * Até aqui este caminho era WhatsApp-only, então TODO Menu/Agendar rodando no Direct
+   * degradava pra texto numerado ("digite 1, 2 ou 3") — mesmo o Instagram aceitando
+   * botão nativo e mesmo o renderizador estando pronto e testado. Isso passa a valer em
+   * fluxo **já publicado**, sem ninguém reconfigurar nada.
+   *
+   * ⚠️ Só BOTÕES. Lista e CTA não existem no Direct ⇒ `null` e o chamador cai no
+   *    numerado — que continua sendo o certo pra 4+ opções (a escada de fidelidade de
+   *    `flow/interactive.ts` já decide isso antes de chegar aqui).
+   */
+  if (channel === "instagram") {
+    const btns = payload.buttons ?? []
+    if (!btns.length || !payload.body.trim()) return null
+    return sendChannelRich(target, {
+      format:  "buttons",
+      text:    payload.body,
+      buttons: btns.map((b) => ({ id: b.id, label: b.title, kind: "reply" as const })),
+    })
+  }
+
   if (channel !== "whatsapp") return null
 
   const provider = getProvider(instance)

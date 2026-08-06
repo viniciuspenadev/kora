@@ -212,13 +212,36 @@ export async function sendIgReaction(
 }
 
 /** Envia um texto via Instagram Send API (Graph). Só vale dentro da janela 24h. */
-export async function sendInstagramText(
-  igAccountId: string, recipientIgsid: string, token: string, text: string,
+/**
+ * DM pra uma PESSOA com o objeto `message` já montado (texto · cartão · botões · anexo).
+ *
+ * 🔴 **Era o quadrante que faltava.** A matriz de envio do Instagram tinha três células
+ *    preenchidas e uma vazia:
+ *
+ *    |                    | texto                 | objeto rico            |
+ *    |--------------------|-----------------------|------------------------|
+ *    | pro COMENTÁRIO     | `sendIgPrivateReply`  | `sendIgPrivateReplyRaw`|
+ *    | pra PESSOA (DM)    | `sendInstagramText`   | **esta função**        |
+ *
+ *    Ou seja: o Instagram já sabia montar template rico (`buildIgMessage`) e já sabia
+ *    mandar DM — nunca faziam as duas coisas juntas, e por isso o cartão com botões só
+ *    existia na resposta ao comentário. Mesma URL e mesmo corpo da irmã de texto; muda
+ *    só o conteúdo de `message`.
+ *
+ * ⚠️ Diferente do `...PrivateReplyRaw`, aqui o destinatário é `{ id: <IGSID> }` e **não**
+ *    `{ comment_id }` — e isto exige a **janela de 24h aberta**. Fora dela a Meta recusa;
+ *    quem chama degrada (nunca deixa a exceção derrubar o turno).
+ *
+ * Quem monta o `message` é `buildIgMessage` (lib/instagram/rich-render.ts) — este arquivo
+ * não conhece template nenhum, igual ao caminho da bala única.
+ */
+export async function sendInstagramMessage(
+  igAccountId: string, recipientIgsid: string, token: string, message: Record<string, unknown>,
 ): Promise<{ messageId: string | null } | { error: string }> {
   try {
     const r = await fetch(`${IG_BASE}/${igAccountId}/messages?access_token=${encodeURIComponent(token)}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recipient: { id: recipientIgsid }, message: { text } }),
+      body: JSON.stringify({ recipient: { id: recipientIgsid }, message }),
       signal: AbortSignal.timeout(T_TEXT),
     })
     const j = await r.json() as { message_id?: string; error?: { message?: string } }
@@ -227,6 +250,14 @@ export async function sendInstagramText(
   } catch (e) {
     return { error: netErr(e, T_TEXT, "envio de mensagem") }
   }
+}
+
+/** Texto puro pra uma pessoa. Casca sobre `sendInstagramMessage` — mesma relação que
+ *  `sendIgPrivateReply` tem com `sendIgPrivateReplyRaw`: um caminho de rede só. */
+export async function sendInstagramText(
+  igAccountId: string, recipientIgsid: string, token: string, text: string,
+): Promise<{ messageId: string | null } | { error: string }> {
+  return sendInstagramMessage(igAccountId, recipientIgsid, token, { text })
 }
 
 /**

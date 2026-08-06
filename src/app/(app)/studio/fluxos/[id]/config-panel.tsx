@@ -10,7 +10,7 @@ import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-of
 import { SourceLogo } from "@/components/chat/source-logo"
 import { SimpleSelect } from "@/components/ui/select"
 import { genId, type RFNode } from "./graph-sync"
-import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
+import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode, RichMessage } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import type { IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
 import { IgCommentModal } from "@/components/studio/ig-comment-modal"
@@ -27,6 +27,7 @@ export interface ResOpt {
 }
 import { WhatsAppPreview } from "@/components/studio/whatsapp-preview"
 import { varsForContext } from "@/lib/variables/registry"
+import { RichComposer } from "@/components/studio/rich-composer"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
@@ -45,6 +46,22 @@ interface Opt { id: string; label: string }
 
 // Variáveis de contato sempre disponíveis no fluxo (cérebro único: registry "flow").
 const CONTACT_VARS = varsForContext("flow").map((v) => ({ token: v.token, label: v.label }))
+
+/**
+ * Canal cujos limites o compositor deve obedecer: **o mais apertado** entre os que este
+ * fluxo alcança.
+ *
+ * 🔴 Um fluxo que pega Instagram E WhatsApp tem que caber em 1.000 caracteres (o teto do
+ *    Direct), não em 4.096 — senão a Meta corta no meio **só no Instagram**, e o cliente
+ *    descobre depois de publicar. Filtro de canal vazio = alcança tudo, inclusive o
+ *    Direct, e é o caso mais comum.
+ */
+function restrictiveChannel(channels: string[]): string {
+  if (channels.length === 0) return "instagram"                 // sem filtro = alcança tudo
+  if (channels.includes("instagram")) return "instagram"
+  if (channels.includes("whatsapp")) return "whatsapp"
+  return channels[0]
+}
 
 // Campo de texto COM guia de variáveis: chips que inserem {{token}} no cursor (o
 // cliente nunca digita chaves). Mostra os campos de contato + as variáveis que ele
@@ -95,28 +112,83 @@ function VarField({
 }
 
 // Seletor de estilo de exibição (numerado vs botões/lista) — compartilhado Menu/Agendar.
-function RenderSelect({ value, onChange }: { value: RenderMode; onChange: (v: RenderMode) => void }) {
+/**
+ * 🔴 O que VAI SAIR em cada canal que este fluxo alcança — não é aviso, é o fato.
+ *
+ * Aviso é lido uma vez e ignorado; isto fica visível e descreve o resultado. Nasceu de um
+ * problema real: a degradação por canal (o cartão que virou "digite 1") só era descoberta
+ * DEPOIS de publicar, e em canal nenhum a tela dizia o que ia acontecer.
+ *
+ * ⚠️ Só lista canal que o fluxo alcança de verdade — fluxo só de WhatsApp não vê linha de
+ *    Instagram. Informação que não te serve vira ruído, e ruído a pessoa aprende a pular.
+ */
+function ChannelOutcomes({ kind, render, channels }: {
+  kind: "menu" | "schedule"
+  render: RenderMode
+  /** Canais que o fluxo alcança. Vazio = todos (gatilho sem filtro de canal). */
+  channels: string[]
+}) {
+  const all = channels.length === 0
+  const has = (c: string) => all || channels.includes(c)
+  const forced = render === "numbered"
+  const rows: { label: string; how: string }[] = []
+
+  if (has("whatsapp")) {
+    rows.push({ label: "WhatsApp Oficial", how: forced ? "lista numerada" : "botões (até 3) ou lista (até 10)" })
+    rows.push({ label: "WhatsApp (QR)", how: "lista numerada" })
+  }
+  if (has("instagram")) {
+    // Agendar é SEMPRE numerado no Direct (não tem lista, e 3 botões não bastam pra
+    // horário). Menu cabe em botão porque quem define as opções é o autor.
+    rows.push({
+      label: "Instagram",
+      how: kind === "schedule" || forced ? "lista numerada" : "botões (até 3), senão numerada",
+    })
+  }
+  if (has("site")) rows.push({ label: "Site (chat)", how: "lista numerada" })
+  if (rows.length === 0) return null
+
   return (
-    <div>
+    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+      <p className="text-[11px] font-medium text-slate-600 mb-1">
+        Como {kind === "schedule" ? "os horários" : "as opções"} vão sair neste fluxo
+      </p>
+      <ul className="space-y-0.5">
+        {rows.map((r) => (
+          <li key={r.label} className="text-[11px] text-slate-500 flex gap-1.5">
+            <span className="text-slate-600 shrink-0">{r.label}</span>
+            <span className="text-slate-300">·</span>
+            <span>{r.how}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function RenderSelect({ value, onChange, kind, channels }: {
+  value: RenderMode; onChange: (v: RenderMode) => void
+  kind: "menu" | "schedule"; channels: string[]
+}) {
+  return (
+    <div className="space-y-1.5">
       <label className={LABEL}>Estilo das opções</label>
       <SimpleSelect value={value} onChange={(v) => onChange(v as RenderMode)} options={[
         { value: "auto",        label: "Automático (recomendado)" },
         { value: "interactive", label: "Botões / lista nativa" },
         { value: "numbered",    label: "Lista numerada (texto)" },
       ]} />
-      <p className="text-[11px] text-slate-400 mt-1">
-        {value === "numbered"
-          ? "Sempre texto numerado — o cliente responde com o número, em qualquer canal."
-          : "Botões/lista nativa no WhatsApp oficial (Meta); no não-oficial (QR), cai pro numerado."}
-      </p>
+      <ChannelOutcomes kind={kind} render={value} channels={channels} />
     </div>
   )
 }
 
 export function ConfigPanel({
-  node, departments, agents = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], outcomeLabels = {}, onChange, onDelete,
+  node, departments, agents = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], outcomeLabels = {}, flowChannels = [], onChange, onDelete,
 }: {
   node: RFNode
+  /** Canais que este fluxo alcanca (vazio = todos). Alimenta o quadro "como vai sair". */
+  flowChannels?: string[]
   departments: { id: string; name: string }[]
   agents?: { id: string; name: string }[]
   flows: { id: string; name: string }[]
@@ -151,9 +223,22 @@ export function ConfigPanel({
       {type === "start" && <p className="text-xs text-slate-400">O ponto de entrada do fluxo. Conecte-o ao primeiro passo.</p>}
 
       {type === "message" && (
-        <div>
-          <label className={LABEL}>Mensagem</label>
-          <VarField multiline rows={4} value={String(cfg.text ?? "")} onChange={(v) => set({ text: v })} placeholder="Texto enviado ao cliente" flowVars={flowVars} />
+        <div className="space-y-2">
+          {/* 🔴 O MESMO compositor do direct de abertura (rich-composer.tsx). Um editor
+              rico só lá deixaria a mensagem de abertura mais capaz que o fluxo inteiro
+              depois dela — foi o que motivou esta fase.
+              ⚠️ Grava `rich` E `text`: o `text` é o campo legado que a versão anterior do
+                 app ainda lê durante um deploy (mesmo padrão de `dm` × `dmRich`). */}
+          <RichComposer
+            value={(cfg.rich as RichMessage | undefined) ?? { text: String(cfg.text ?? "") }}
+            channel={restrictiveChannel(flowChannels)}
+            vars={[...CONTACT_VARS, ...flowVars.map((t) => ({ token: t, label: "Variável do fluxo" }))]}
+            onChange={(v) => set({ rich: v, text: v.text ?? "" })}
+          />
+          <p className="text-[11px] text-slate-400">
+            Botão de resposta faz o nó <b>esperar</b> e cria uma saída pra cada um, mais a
+            saída <b>&ldquo;escreveu&rdquo;</b>. Só texto (ou só botão de link) envia e segue direto.
+          </p>
         </div>
       )}
 
@@ -180,7 +265,7 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "menu" && <MenuConfig cfg={cfg as unknown as MenuNodeConfig} set={set} flowVars={flowVars} />}
+      {type === "menu" && <MenuConfig cfg={cfg as unknown as MenuNodeConfig} set={set} flowVars={flowVars} flowChannels={flowChannels} />}
 
       {type === "condition" && <ConditionConfig cfg={cfg} set={set} tags={tags} />}
 
@@ -364,7 +449,7 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} />}
+      {type === "schedule" && <ScheduleConfig cfg={cfg} set={set} services={services} resources={resources} ownerRouting={ownerRouting} flowVars={flowVars} flowChannels={flowChannels} />}
 
       {type === "ai_agent" && <AgentConfig cfg={cfg} set={set} tags={tags} stages={stages} services={services} resources={resources} ownerRouting={ownerRouting} outcomeLabels={outcomeLabels} />}
 
@@ -511,7 +596,7 @@ export function ConfigPanel({
   )
 }
 
-function MenuConfig({ cfg, set, flowVars }: { cfg: MenuNodeConfig; set: (patch: Record<string, unknown>) => void; flowVars: string[] }) {
+function MenuConfig({ cfg, set, flowVars, flowChannels = [] }: { cfg: MenuNodeConfig; set: (patch: Record<string, unknown>) => void; flowVars: string[]; flowChannels?: string[] }) {
   const options: Opt[] = cfg.options ?? []
   return (
     <div className="space-y-3">
@@ -569,7 +654,7 @@ function MenuConfig({ cfg, set, flowVars }: { cfg: MenuNodeConfig; set: (patch: 
         <label className={LABEL}>Se não entender <span className="text-slate-400 font-normal">(opcional)</span></label>
         <input className={INPUT} value={cfg.noMatch ?? ""} onChange={(e) => set({ noMatch: e.target.value })} placeholder="Não entendi. Responda com o número." />
       </div>
-      <RenderSelect value={cfg.render ?? "auto"} onChange={(v) => set({ render: v })} />
+      <RenderSelect value={cfg.render ?? "auto"} onChange={(v) => set({ render: v })} kind="menu" channels={flowChannels} />
       {options.some((o) => o.label.trim()) && (
         <WhatsAppPreview
           render={cfg.render ?? "auto"}
@@ -1078,19 +1163,26 @@ function AgendaTargetFields({ target, setTarget, services, resources, ownerRouti
   /** Nó Agendar: inclui "✳ Cliente escolhe" na lista de serviços. */
   servicePickOption?: boolean
 }) {
-  const agendaValue = target.mode === "owner" ? "owner" : target.mode === "ai" ? "ai" : (target.resourceId ?? "")
-  const serviceValue = target.servicePick ? "pick" : (target.serviceId ?? "")
+  // 🔴 "" = NUNCA ESCOLHEU (placeholder). "any" = escolheu "qualquer uma". Antes os dois
+  //    eram a mesma coisa, e por isso dava pra publicar um Agendar que ninguém abriu.
+  const agendaValue = target.mode === "owner" ? "owner"
+    : target.mode === "ai" ? "ai"
+    : (target.resourceId ?? (target.anyResource ? "any" : ""))
+  const serviceValue = target.servicePick ? "pick"
+    : (target.serviceId ?? (target.anyService ? "any" : ""))
 
   const setAgenda = (v: string) => {
-    if (v === "owner")   return setTarget({ mode: "owner", resourceId: null })
-    if (v === "ai")      return setTarget({ mode: "ai",    resourceId: null })
-    if (v === "")        return setTarget({ mode: "fixed", resourceId: null })
-    return setTarget({ mode: "fixed", resourceId: v })
+    if (v === "owner")   return setTarget({ mode: "owner", resourceId: null, anyResource: false })
+    if (v === "ai")      return setTarget({ mode: "ai",    resourceId: null, anyResource: false })
+    if (v === "any")     return setTarget({ mode: "fixed", resourceId: null, anyResource: true })
+    if (v === "")        return setTarget({ mode: "fixed", resourceId: null, anyResource: false })
+    return setTarget({ mode: "fixed", resourceId: v, anyResource: false })
   }
   const setService = (v: string) => {
-    if (v === "pick") return setTarget({ servicePick: true,  serviceId: null })
-    if (v === "")     return setTarget({ servicePick: false, serviceId: null })
-    return setTarget({ servicePick: false, serviceId: v })
+    if (v === "pick") return setTarget({ servicePick: true,  serviceId: null, anyService: false })
+    if (v === "any")  return setTarget({ servicePick: false, serviceId: null, anyService: true })
+    if (v === "")     return setTarget({ servicePick: false, serviceId: null, anyService: false })
+    return setTarget({ servicePick: false, serviceId: v, anyService: false })
   }
 
   // Legenda dinâmica — a opção responde a própria pergunta ("cai onde, na prática?").
@@ -1104,6 +1196,10 @@ function AgendaTargetFields({ target, setTarget, services, resources, ownerRouti
     legend = r
       ? `Cai sempre em: ${r.name}${weekendNote(r)}.`
       : "⚠️ A agenda fixada não está mais ativa — o passo vai sair por “sem horário”."
+  } else if (!target.anyResource) {
+    // Nunca escolheu — e agora isso é DISTINGUÍVEL de "qualquer agenda". O fluxo não
+    // publica assim (ver validateSchedulePublish), então o aviso já aparece aqui.
+    legend = "⚠️ Escolha a agenda — o fluxo não publica enquanto isso não estiver definido. “Qualquer agenda disponível” também é uma escolha válida."
   } else {
     let pool = resources
     if (target.serviceId && !target.servicePick) {
@@ -1121,14 +1217,18 @@ function AgendaTargetFields({ target, setTarget, services, resources, ownerRouti
 
   return (
     <div className="space-y-1.5">
+      {/* 🔴 Rótulos dizem o EFEITO, não o campo. "— Serviço: (opcional) —" foi lido pelo
+          owner como "Serviço Oficial" (2026-08-06): se ele leu errado, o cliente lê. */}
       <SimpleSelect value={agendaValue} onChange={setAgenda} options={[
-        { value: "", label: "— Agenda: aleatória —" },
+        { value: "", label: "— Escolha a agenda —", disabled: true },
+        { value: "any", label: "Qualquer agenda disponível" },
         { value: "owner", label: `★ Responsável pelo cliente${ownerRouting ? "" : " — em breve"}`, disabled: !ownerRouting },
         ...(aiOption ? [{ value: "ai", label: "A IA decide pela conversa" }] : []),
         ...resources.map((r) => ({ value: r.id, label: r.name })),
       ]} />
       <SimpleSelect value={serviceValue} onChange={setService} options={[
-        { value: "", label: "— Serviço: (opcional) —" },
+        { value: "", label: "— Escolha o serviço —", disabled: true },
+        { value: "any", label: "Sem serviço específico" },
         ...(servicePickOption ? [{ value: "pick", label: "✳ Cliente escolhe (lista os serviços)" }] : []),
         ...services.map((s) => ({ value: s.id, label: s.name })),
       ]} />
@@ -1142,38 +1242,31 @@ function AgendaTargetFields({ target, setTarget, services, resources, ownerRouti
   )
 }
 
-function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars }: {
+function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars, flowChannels = [] }: {
   cfg: Record<string, unknown>; set: (patch: Record<string, unknown>) => void
   services: SvcOpt[]; resources: ResOpt[]; ownerRouting: boolean
-  flowVars: string[]
+  flowVars: string[]; flowChannels?: string[]
 }) {
   const target    = (cfg.target as AgendaBinding | undefined) ?? { mode: "fixed" }
   const setTarget = (patch: Partial<AgendaBinding>) => set({ target: { ...target, ...patch } })
   const offerMode = String(cfg.offerMode ?? "slots")
-  const aiParse   = !!cfg.aiParse
   return (
     <div className="space-y-3">
-      <p className="text-xs text-slate-400">Oferece os horários <b>reais</b> da agenda, o cliente escolhe e o sistema <b>marca</b> — sempre por regra (à prova de alucinação).</p>
-
-      <label className="flex items-start gap-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5 cursor-pointer">
-        <input type="checkbox" checked={aiParse} onChange={(e) => set({ aiParse: e.target.checked })} className="mt-0.5 accent-violet-600" />
-        <div>
-          <span className="text-xs font-semibold text-violet-700 inline-flex items-center gap-1"><Sparkles className="size-3" /> Entender o pedido com IA</span>
-          <p className="text-[11px] text-slate-500 mt-0.5">A IA lê a conversa e já identifica o <b>serviço</b> e o <b>dia/período</b> (ex: &ldquo;drenagem sexta à tarde&rdquo;) → o sistema oferta os horários <b>reais</b> e marca. Não identificou o serviço? mostra a lista. A IA só <b>interpreta</b> — nunca inventa horário nem confirma. <b>Consome IA.</b></p>
-        </div>
-      </label>
+      <p className="text-xs text-slate-400">Oferece os horários <b>reais</b> da agenda, o cliente escolhe e o sistema <b>marca</b> — sempre por regra, sem IA.</p>
 
       <div className="rounded-lg border border-primary-100 bg-primary-50/40 p-2.5 space-y-2">
         <label className={LABEL}>Em qual agenda cai?</label>
         <AgendaTargetFields target={target} setTarget={setTarget} services={services} resources={resources}
           ownerRouting={ownerRouting} servicePickOption />
-        {aiParse && (
-          <p className="text-[11px] text-slate-400">Com <b>Entender com IA</b>, o serviço pode vir da conversa — deixe o serviço aberto aqui (a agenda ainda vale como restrição).</p>
-        )}
       </div>
 
+      {/* 🔴 Nasce DESMARCADO (owner, 2026-08-06: "tirar o check automático"). Antes o
+          ausente valia `true` e todo Agendar perguntava sem ninguém ter pedido.
+          ⚠️ Vira opt-in, não sumiu: quem já tem horário e passa de novo pelo fluxo ganha
+             um SEGUNDO compromisso quando isto está desligado — a rede continua
+             disponível pra quem a quiser. */}
       <label className="flex items-start gap-2 text-xs text-slate-600 cursor-pointer">
-        <input type="checkbox" className="mt-0.5" checked={cfg.offerReschedule !== false}
+        <input type="checkbox" className="mt-0.5" checked={cfg.offerReschedule === true}
           onChange={(e) => set({ offerReschedule: e.target.checked })} />
         <span>
           <b className="font-medium text-slate-700">Oferecer remarcação quando o cliente já tem horário</b>
@@ -1220,7 +1313,7 @@ function ScheduleConfig({ cfg, set, services, resources, ownerRouting, flowVars 
         <p className="text-[11px] text-slate-400 mt-1">Use <code className="bg-slate-100 px-1 rounded">{"{{horario}}"}</code> pro horário marcado.</p>
       </div>
 
-      <RenderSelect value={(cfg.render as RenderMode) ?? "auto"} onChange={(v) => set({ render: v })} />
+      <RenderSelect value={(cfg.render as RenderMode) ?? "auto"} onChange={(v) => set({ render: v })} kind="schedule" channels={flowChannels} />
       <WhatsAppPreview
         render={(cfg.render as RenderMode) ?? "auto"}
         body={offerMode === "by_day" ? "Qual dia fica melhor pra você?" : (String(cfg.intro ?? "").trim() || "Escolha o melhor horário:")}

@@ -141,7 +141,7 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
         <h2 className="mt-3 text-base font-bold text-slate-900">Recebemos seu pagamento</h2>
         <p className="mt-1 text-sm text-slate-600 leading-relaxed">
           {primeiraCobranca
-            ? <>A primeira cobrança de <strong>{brl(valorCents)}</strong> acontece em <strong>{primeiraCobranca}</strong>.</>
+            ? <>Cobrança de <strong>{brl(valorCents)}</strong> feita em <strong>{primeiraCobranca}</strong>. A partir daqui ela é mensal e automática.</>
             : <>A cobrança de <strong>{brl(valorCents)}</strong> passa a ser mensal.</>}
           {" "}A confirmação do banco leva alguns segundos.
         </p>
@@ -313,7 +313,7 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
           <div className="pt-3 border-t border-slate-100">
             <p className="text-[11px] text-slate-500 leading-relaxed">
               {emTrial
-                ? "Seu teste segue normalmente até a data acima. A primeira cobrança acontece exatamente quando ele termina — nada é cobrado agora."
+                ? "A cobrança acontece agora e o plano libera em seguida. Você abre mão dos dias restantes de teste — em troca, passa a usar o plano completo hoje."
                 : "A cobrança é mensal e automática, sempre no mesmo dia."}
             </p>
           </div>

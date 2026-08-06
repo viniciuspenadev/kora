@@ -31,17 +31,34 @@ export type ComposerPart = "text" | "image" | "buttons"
 
 const NEW_ID = () => `b${Math.random().toString(36).slice(2, 8)}`
 
-export function RichComposer({ value, onChange, channel = "instagram", onFocusPart }: {
+export function RichComposer({ value, onChange, channel = "instagram", onFocusPart, vars = [] }: {
   value:    RichMessage
   onChange: (v: RichMessage) => void
   channel?: string
   /** Avisa qual parte está em foco — é o que faz a prévia acompanhar. */
   onFocusPart?: (p: ComposerPart) => void
+  /** Variáveis ofertadas como chips sob o texto. Vazio = sem chips. */
+  vars?: { token: string; label: string }[]
 }) {
   const limits = getChannelCompose(channel)
   const [busy, startUpload] = useTransition()
   const [err, setErr]       = useState<string | null>(null)
   const fileRef             = useRef<HTMLInputElement>(null)
+  const textRef             = useRef<HTMLTextAreaElement>(null)
+
+  /** Insere `{{token}}` no cursor (não no fim) — quem escreve está no meio da frase. */
+  function insertVar(token: string) {
+    const el = textRef.current
+    const cur = value.text ?? ""
+    const chip = `{{${token}}}`
+    if (!el) { onChange({ ...value, text: (cur + chip).slice(0, limits.textMax) }); return }
+    const a = el.selectionStart ?? cur.length
+    const b = el.selectionEnd ?? cur.length
+    const next = (cur.slice(0, a) + chip + cur.slice(b)).slice(0, limits.textMax)
+    onChange({ ...value, text: next })
+    // Cursor depois do chip, no próximo tick (o React ainda vai re-renderizar).
+    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(a + chip.length, a + chip.length) })
+  }
 
   const buttons = value.buttons ?? []
   const set = (patch: Partial<RichMessage>) => onChange({ ...value, ...patch })
@@ -119,6 +136,7 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
       {show.text && (
       <div>
         <textarea
+          ref={textRef}
           value={value.text ?? ""}
           onFocus={() => onFocusPart?.("text")}
           onChange={(e) => set({ text: e.target.value.slice(0, limits.textMax) })}
@@ -126,6 +144,19 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
           placeholder="Oi! Vi que você comentou 😊"
           className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-[14px] resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300"
         />
+        {/* Chips que inserem no cursor — o cliente NUNCA digita chaves (mesmo padrão do
+            editor de fluxo e do de templates; linguagem visual não se reinventa). */}
+        {vars.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 mt-1.5">
+            <span className="text-[10px] text-slate-400">Inserir:</span>
+            {vars.map((v) => (
+              <button key={v.token} type="button" title={v.label} onClick={() => insertVar(v.token)}
+                className="px-1.5 py-0.5 text-[10px] font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 rounded transition-colors">
+                {`{{${v.token}}}`}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="mt-1 flex items-center justify-between text-[11px]">
           <span className="text-slate-400">Uma mensagem por comentário. É a única chance.</span>
           <span className={(value.text?.length ?? 0) > limits.textMax - 60 ? "text-amber-600 font-medium" : "text-slate-300"}>

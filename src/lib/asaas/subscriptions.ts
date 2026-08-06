@@ -200,7 +200,7 @@ export async function createSubscriptionForTenant(
   }
 
   // 4 · Assinatura. Daqui pra frente só o token circula.
-  const nextDueDate = primeiraCobranca(t.trial_ends_at, t.billing_day)
+  const nextDueDate = primeiraCobranca()
   try {
     const sub = await asaas.post<{ id?: string }>("/subscriptions", {
       customer:          cust.id,
@@ -279,37 +279,31 @@ export async function createSubscriptionForTenant(
  *    24h de Brasília — o revisor mediu isso na EVVICAMP (`trial_ends_at` 01:01Z = dia 4 no
  *    Brasil, dia 5 em UTC), e o efeito seria cobrar um dia depois do fim do teste.
  */
-function primeiraCobranca(trialEndsAt: string | null, billingDay: number | null): string {
-  const fmt = (d: Date) =>
-    new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" })
-      .format(d)
-
-  // 🔴 NUNCA UMA DATA NO PASSADO (05/08). O ramo abaixo devolvia o fim do trial cru — e
-  //    quem assina DEPOIS que o teste venceu (`trial_ended`, o caso mais comum de todos:
-  //    a pessoa travou, viu o modal e resolveu pagar) tem `trial_ends_at` no passado. O
-  //    gateway recusa `nextDueDate` retroativo, então a assinatura simplesmente não era
-  //    criada — o cliente digitava o cartão e levava um erro do Asaas no fim da trilha.
-  // 🔑 Piso em HOJE: o teste já acabou, então cobrar hoje é exatamente o combinado
-  //    ("o fim do teste e a primeira cobrança são o mesmo dia"). Para quem ainda está no
-  //    teste nada muda — a data futura passa intacta.
-  const hojeStr = fmt(new Date())
-  if (trialEndsAt) {
-    const fim = new Date(trialEndsAt)
-    if (!Number.isNaN(fim.getTime())) {
-      const d = fmt(fim)
-      return d < hojeStr ? hojeStr : d
-    }
-  }
-
-  const hoje = new Date()
-  if (billingDay && billingDay >= 1 && billingDay <= 31) {
-    const alvo = new Date(hoje)
-    alvo.setUTCDate(billingDay)
-    if (alvo <= hoje) alvo.setUTCMonth(alvo.getUTCMonth() + 1)
-    return fmt(alvo)
-  }
-
-  return fmt(new Date(hoje.getTime() + 30 * 86_400_000))
+function primeiraCobranca(): string {
+  // 🔴 COBRA HOJE, SEMPRE (decisão do dono, 2026-08-06).
+  //
+  //    A versão anterior usava `nextDueDate = fim do trial`, pra o fim do teste e a
+  //    primeira cobrança caírem no mesmo dia. Parecia elegante e estava errado na prática:
+  //    quem assinava no meio do teste ficava com a assinatura ACTIVE, a cobrança PENDING
+  //    pra dali a 5 dias, e **nenhum webhook** — logo, nenhuma liberação. O cliente pagava
+  //    e continuava com os módulos do teste, olhando uma tela que já dizia o nome do plano
+  //    novo. Medido ao vivo em 06/08: assinatura criada, `pay_…` PENDING pro dia 11, tenant
+  //    ainda `trialing` com 5 módulos em vez de 19.
+  //
+  // 🔑 A REGRA DO DONO: *"na hora que efetivar o pagamento é quando é registrado o dia de
+  //    pagamento, e quando efetiva o pagamento a liberação é instantânea. Não tem porque o
+  //    cara esperar os dias de teste pra depois liberar o que ele tem direito."*
+  //    Quem antecipa perde os dias restantes do teste — escolha dele, e é o padrão do
+  //    mercado. Em troca, recebe o produto no segundo seguinte.
+  //
+  // ⚠️ O ciclo mensal passa a ancorar no DIA DA COMPRA (o `billing_day` deriva daqui), não
+  //    no fim do teste. E a cobrança imediata é o que faz o `PAYMENT_CONFIRMED` chegar em
+  //    segundos — é ele que dispara `liberar()` e aplica o plano.
+  // ⚠️ Fuso de São Paulo porque é o que o Asaas usa pra virar o dia: em UTC, uma compra às
+  //    22h de Brasília viraria "amanhã" e a cobrança sairia com um dia de atraso.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date())
 }
 
 /**

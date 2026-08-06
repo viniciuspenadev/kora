@@ -33,7 +33,12 @@ const TOM: Record<Tom, { rail: string; lead: string }> = {
 }
 
 /** A frase do degrau. Fonte única — B1 e a faixa da tela cheia usam esta. */
-export function fraseDoDegrau(standing: BillingStanding, conta: ContaDoMes): {
+export function fraseDoDegrau(
+  standing: BillingStanding,
+  conta: ContaDoMes,
+  /** Verdade do gateway (valor e data reais). `null` ⇒ usa a projeção local. */
+  cobranca?: { valorCents: number; proximaEm: string | null } | null,
+): {
   tom: Tom; lead: string; tail: React.ReactNode
 } {
   const forte = (t: string) => <span className="font-bold text-slate-900">{t}</span>
@@ -70,13 +75,26 @@ export function fraseDoDegrau(standing: BillingStanding, conta: ContaDoMes): {
           : <>Complete o cadastro da sua empresa para poder ativar — seus dados e conversas estão intactos.</>,
       }
 
-    case "ok":
+    case "ok": {
+      // 🔴 A FRASE ERRAVA OS DOIS NÚMEROS (achado do dono, 06/08). Ela usava
+      //    `conta.totalCents` (preço ATUAL do plano) e `nextClosingAt` (projeção do
+      //    `billing_day`) — e anunciou *"próxima fatura de R$ 599,90 fecha em 11 de agosto"*
+      //    para uma assinatura congelada em R$ 5,00 que cobra em 11 de SETEMBRO.
+      //    O valor errava porque mudar o preço do plano não viaja pro gateway; a data
+      //    errava porque a projeção não sabia que aquela cobrança já tinha sido paga
+      //    adiantada.
+      // 🔑 Havendo assinatura no gateway, ele é a fonte: é ele que debita o cartão.
+      //    Sem ela (cliente manual/legado) ou se o Asaas não responder, cai na projeção —
+      //    imprecisa, mas é o melhor que se sabe.
+      const valor = cobranca?.valorCents ?? conta.totalCents
+      const quando = cobranca?.proximaEm ?? standing.nextClosingAt
       return {
         tom: "ok", lead: "Tudo certo.",
-        tail: standing.nextClosingAt ? (
-          <>Sua próxima fatura de {forte(brl(conta.totalCents))} fecha em {forte(dataLonga(standing.nextClosingAt))}.</>
+        tail: quando ? (
+          <>Sua próxima fatura de {forte(brl(valor))} fecha em {forte(dataLonga(quando))}.</>
         ) : <>Sua assinatura está em dia.</>,
       }
+    }
 
     case "grace":
       return {
@@ -113,10 +131,11 @@ export function fraseDoDegrau(standing: BillingStanding, conta: ContaDoMes): {
 }
 
 export function StandingHero({
-  standing, conta, planoNome, formaPagamento, cicloDia,
+  standing, conta, cobranca, planoNome, formaPagamento, cicloDia,
   onPagar, onMaisDias, adiamentoUsado, onExportar,
 }: {
   standing:        BillingStanding
+  cobranca?:       { valorCents: number; proximaEm: string | null } | null
   conta:           ContaDoMes
   planoNome:       string
   formaPagamento:  string
@@ -126,7 +145,7 @@ export function StandingHero({
   adiamentoUsado:  boolean
   onExportar:      () => void
 }) {
-  const { tom, lead, tail } = fraseDoDegrau(standing, conta)
+  const { tom, lead, tail } = fraseDoDegrau(standing, conta, cobranca)
   const t     = TOM[tom]
   const inv   = standing.invoice
   const fim   = standing.degrau === "terminated"

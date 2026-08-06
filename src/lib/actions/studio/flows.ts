@@ -23,6 +23,7 @@ async function assertAutomationQuota(tenantId: string): Promise<string | null> {
   return null
 }
 import type { FlowGraph, FlowTrigger } from "@/lib/ai-v2/flow/types"
+import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import { checkFlowGraphLimits } from "@/lib/ai-v2/flow/limits"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
 
@@ -171,6 +172,58 @@ async function validateIgPublish(tenantId: string, trigger: FlowTrigger): Promis
       return `Rótulo de botão tem no máximo ${buttonLabelMax} caracteres.`
     }
     if ((rich.text ?? "").length > textMax) return `O direct tem no máximo ${textMax} caracteres.`
+  }
+  return null
+}
+
+/**
+ * Recusa server-side de publicar um fluxo com nó **Agendar** que não teria como marcar
+ * (fail-closed, mesma doutrina do `validateIgPublish`).
+ *
+ * 🔴 O motor já degrada sozinho — sem agenda o nó sai por "sem horário" e o fluxo segue.
+ *    Mas degradar em silêncio é a armadilha: o cliente publica, acha que está agendando,
+ *    e descobre semanas depois que ninguém marcou nada. O aviso tem que vir ANTES.
+ *
+ * Três recusas, da mais grave pra menos:
+ *   1. módulo `agenda` desligado          → o nó nunca sequer tenta;
+ *   2. nenhuma agenda ativa COM jornada   → não existe vaga possível, nunca;
+ *   3. o nó não teve destino escolhido    → ninguém decidiu (≠ escolher "qualquer uma").
+ */
+async function validateSchedulePublish(tenantId: string, graph: FlowGraph): Promise<string | null> {
+  const nodes = graph.nodes.filter((n) => n.type === "schedule")
+  if (nodes.length === 0) return null
+
+  if (!(await hasModule(tenantId, "agenda"))) {
+    return "Este fluxo usa o nó Agendar, mas o módulo de Agenda não está habilitado nesta conta. Fale com o suporte pra liberar."
+  }
+
+  const { data } = await supabaseAdmin
+    .from("tenant_resources")
+    .select("id, name, working_hours")
+    .eq("tenant_id", tenantId).eq("active", true)
+  const resources = (data ?? []) as { id: string; name: string; working_hours: unknown }[]
+  if (resources.length === 0) {
+    return "Este fluxo usa o nó Agendar, mas você ainda não tem nenhuma agenda ativa. Crie uma em Agenda → Configuração antes de publicar."
+  }
+  // ⚠️ Agenda SEM jornada nunca gera vaga — o nó sairia por "sem horário" pra sempre.
+  //    Sem esta checagem a recusa acima viraria teatro: existe agenda, mas não existe hora.
+  const withHours = resources.filter((r) => Array.isArray(r.working_hours) && r.working_hours.length > 0)
+  if (withHours.length === 0) {
+    return "Este fluxo usa o nó Agendar, mas nenhuma agenda ativa tem horário de atendimento configurado — não existiria vaga pra oferecer. Defina a jornada em Agenda → Configuração."
+  }
+
+  for (const n of nodes) {
+    const t = (n.config as { target?: AgendaBinding }).target
+    // Nunca escolheu ≠ escolheu "qualquer agenda" (`anyResource`). Nó antigo, salvo antes
+    // desta distinção existir, tem `mode:"fixed"` sem resourceId e sem anyResource — e cai
+    // aqui de propósito: é exatamente o caso "ninguém abriu o nó".
+    if (!t || (t.mode === "fixed" && !t.resourceId && !t.anyResource)) {
+      return "Um nó Agendar está sem agenda definida. Abra o nó e escolha onde o horário cai — “Qualquer agenda disponível” também vale."
+    }
+    // Agenda fixada que saiu do ar (desativada/removida) = nó morto publicado.
+    if (t.mode === "fixed" && t.resourceId && !resources.some((r) => r.id === t.resourceId)) {
+      return "Um nó Agendar aponta para uma agenda que não está mais ativa. Abra o nó e escolha outra."
+    }
   }
   return null
 }
@@ -342,6 +395,10 @@ export async function publishFlow(
   // o cliente acha que está no ar e os comentários passam batidos.
   const igErr = await validateIgPublish(session.user.tenantId, patch.trigger)
   if (igErr) return { error: igErr }
+
+  // Nó Agendar sem agenda que funcione = mesma armadilha silenciosa do gatilho do IG.
+  const schedErr = await validateSchedulePublish(session.user.tenantId, patch.graph)
+  if (schedErr) return { error: schedErr }
 
   // Pega a versão atual pra incrementar + snapshot.
   const { data: cur } = await supabaseAdmin

@@ -60,7 +60,7 @@ export default async function AssinaturaPage({
           // ⚠️ Mesma data que o `createSubscriptionForTenant` vai usar como `nextDueDate`
           //    — prometer na tela um dia diferente do que o gateway cobra é o tipo de
           //    divergência que vira ticket no primeiro ciclo.
-          primeiraCobranca={(() => { const d = dataDaPrimeiraCobranca(mock.standing.trial?.endsAt); return d ? dataLonga(d) : null })()}
+          primeiraCobranca={dataLonga(dataDaPrimeiraCobranca())}
         />
       )}
     </AssinaturaShell>

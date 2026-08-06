@@ -1,7 +1,6 @@
 "use client"
 
 import Link from "next/link"
-import { toast } from "sonner"
 import { ArrowLeft, Check, Download, FileText, Mail } from "lucide-react"
 import { brl, dataCheia, dataLonga, num, plural } from "../../format"
 import type { Fatura } from "../../types"
@@ -38,7 +37,14 @@ export function FaturaClient({ fatura }: { fatura: Fatura }) {
   const linhasExtras = fatura.linhas.filter((l) => l.kind !== "plan")
 
   // TODO(dev): gerar/baixar o PDF real.
-  const baixarPdf = () => toast.success("Preparando o PDF — o download começa em instantes.")
+  // 🔴 ERA UM TOAST E MAIS NADA (achado do dono, 06/08). Os dois botões — "Baixar
+  //    comprovante" e "Baixar PDF" — chamavam esta função, que só dizia "preparando o PDF"
+  //    e não preparava coisa nenhuma. O documento JÁ era gerado desde sempre, mas só o god
+  //    mode alcançava a rota; o cliente, titular da fatura e quem precisa dela pra
+  //    contabilidade, não tinha por onde baixar.
+  // 🔑 Abre em aba nova em vez de forçar download: PDF de fatura a pessoa quer CONFERIR
+  //    antes de guardar, e o navegador já dá o botão de salvar no visualizador.
+  const baixarPdf = () => window.open(`/api/faturas/${fatura.id}/pdf`, "_blank", "noopener")
 
   return (
     <div className="min-h-full bg-canvas">

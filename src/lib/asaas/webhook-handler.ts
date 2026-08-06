@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { applyPlan } from "@/lib/plans"
+import { generateInvoiceForTenant } from "@/lib/billing"
 import { normalizeState } from "@/lib/lifecycle-shared"
 import { asaas, AsaasError } from "./client"
 
@@ -337,7 +338,7 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<void> {
     .limit(1).maybeSingle()
   if (jaBaixada) return
 
-  const { data: alvo, error: buscaErr } = await supabaseAdmin
+  const { data: encontrada, error: buscaErr } = await supabaseAdmin
     .from("invoices")
     .select("id, total_cents")
     .eq("tenant_id", tenantId)
@@ -346,6 +347,9 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<void> {
     .order("due_date", { ascending: true, nullsFirst: false })
     .limit(1)
     .maybeSingle()
+
+  // Mutável: o ramo abaixo pode CRIAR a fatura quando o pagamento chega antes dela.
+  let alvo = encontrada
 
   if (buscaErr) {
     // 🔴 Grita. Dinheiro entrou e o livro não soube — é exatamente o estado que este
@@ -357,12 +361,41 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<void> {
     return
   }
 
+  // 🔴 PAGAMENTO SEM FATURA GERAVA A FATURA — DE NADA (corrigido 06/08/2026).
+  //
+  //    Antes este ramo só logava e voltava. O dinheiro entrava no gateway e **não existia
+  //    registro nenhum no nosso livro**: o cliente pagava, o produto liberava, e ele não
+  //    tinha fatura pra ver, baixar ou levar pra contabilidade. Medido ao vivo: assinatura
+  //    paga, `invoices` com ZERO linhas pro tenant.
+  //
+  //    E não era caso de borda — era o caminho NORMAL da primeira cobrança. A fatura só
+  //    nasce no `billing_day` pelo cron; o primeiro pagamento acontece antes disso, então
+  //    todo cliente novo caía aqui. Nos meses seguintes vira cara-ou-coroa entre o cron
+  //    (09h UTC) e a cobrança do cartão (madrugada).
+  //
+  // 🔑 Se o dinheiro entrou, a fatura TEM que existir: gera agora e dá baixa na sequência.
+  //    `generateInvoiceForTenant` é idempotente por período (a guarda dele evita duplicar
+  //    se o cron rodar depois), então gerar aqui não cria fatura dobrada.
+  // ⚠️ Falhar aqui NÃO desfaz a liberação: o cliente pagou e o acesso é dele. Grita no log
+  //    pra alguém emitir à mão — dinheiro sem fatura é problema de livro, não de produto.
   if (!alvo) {
-    console.log(JSON.stringify({
-      src: "asaas-handler", kind: "pagamento-sem-fatura",
-      tenant: tenantId, payment: ev.payment_id,
-    }))
-    return
+    const nova = await generateInvoiceForTenant(tenantId)
+    if (nova.id) {
+      const { data: recem } = await supabaseAdmin
+        .from("invoices").select("id, total_cents").eq("id", nova.id).maybeSingle()
+      alvo = (recem ?? null) as typeof alvo
+      console.log(JSON.stringify({
+        src: "asaas-handler", kind: "fatura-gerada-no-pagamento",
+        tenant: tenantId, payment: ev.payment_id, invoice: nova.id,
+      }))
+    }
+    if (!alvo) {
+      console.error(JSON.stringify({
+        src: "asaas-handler", kind: "pagamento-SEM-FATURA-emitir-a-mao",
+        tenant: tenantId, payment: ev.payment_id, motivo: nova.error ?? (nova.skipped ? "plano sem valor" : "desconhecido"),
+      }))
+      return
+    }
   }
 
   const pago = typeof ev.payload?.payment?.value === "number" ? Math.round(ev.payload.payment.value * 100) : null

@@ -8,6 +8,10 @@ import { RichComposer } from "./rich-composer"
 import { PostPicker } from "@/components/integrations/instagram/post-picker"
 import { dmHint, type IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
 import { freezeInstagramThumbs } from "@/lib/actions/instagram-media"
+import { varsForContext } from "@/lib/variables/registry"
+
+// Cérebro único: o catálogo vem do registro, não de uma lista escrita aqui.
+const IG_VARS = varsForContext("instagram").map((v) => ({ token: v.token, label: v.label }))
 
 /**
  * Editor do gatilho de comentário — ÚNICO desde 2026-08-02.
@@ -200,9 +204,15 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
           <RichComposer
             value={rich}
             channel="instagram"
+            vars={IG_VARS}
             onFocusPart={() => setFocus("direct")}
             onChange={(v) => set({ dmRich: v, dm: (v.text ?? "").slice(0, DM_MAX) })}
           />
+          <p className="mt-1.5 text-[11px] text-slate-400">
+            <b>{"{{nome}}"}</b> vira o nome real de quem já conversou com você. Para quem
+            comenta pela primeira vez, vira o <b>@</b> — a Meta só libera o nome depois que
+            a pessoa responde.
+          </p>
           {/* Verificador VIVO — mesma função do painel atual (dmHint), não uma cópia. */}
           {hint.tone !== "none" && (
             <p className={`mt-2 flex items-start gap-1.5 text-[11px] ${hint.tone === "ok" ? "text-emerald-600" : "text-amber-600"}`}>
@@ -226,8 +236,13 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
               <div key={i} className="flex items-center gap-1.5">
                 <input value={r} onFocus={() => setFocus("comments")}
                   onChange={(e) => set({ publicReplies: draft.publicReplies.map((x, j) => j === i ? e.target.value : x) })}
-                  placeholder="Te chamei no direct!"
+                  placeholder="Te chamei no direct, {{usuario}}!"
                   className="flex-1 h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                <button type="button" aria-label="Adicionar @ do cliente" title="Inserir {{usuario}}"
+                  onClick={() => set({ publicReplies: draft.publicReplies.map((x, j) => j === i ? `${x}{{usuario}}` : x) })}
+                  className="h-9 px-2 rounded-lg text-[10px] font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 transition-colors">
+                  {"{{usuario}}"}
+                </button>
                 <button type="button" aria-label="Remover resposta"
                   onClick={() => set({ publicReplies: draft.publicReplies.filter((_, j) => j !== i) })}
                   className="size-9 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600">
@@ -235,6 +250,10 @@ export function IgCommentModal({ open, value, username, onChange, onClose }: {
                 </button>
               </div>
             ))}
+            <p className="text-[11px] text-slate-400 pt-0.5">
+              Aqui o <b>@</b> é o certo, não o nome: o comentário é público, e o @ é a
+              identidade que a pessoa escolheu mostrar.
+            </p>
             <button type="button" onClick={() => { setFocus("comments"); set({ publicReplies: [...draft.publicReplies, ""] }) }}
               className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium text-primary-600 hover:bg-primary/5 rounded-lg transition-colors">
               <Plus className="size-3.5" /> nova variação

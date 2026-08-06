@@ -57,7 +57,24 @@ export interface FlowGraph {
 }
 
 // ── Config tipada por nó (lida via `as unknown as X` + validação) ──
-export interface MessageNodeConfig { text: string }
+export interface MessageNodeConfig {
+  text: string
+  /**
+   * Formato rico (texto · imagem · botões · cartão) — o MESMO objeto do direct de abertura.
+   * Quando existe, VENCE o `text`.
+   *
+   * ⚠️ ADITIVO: nó salvo antes disto não tem o campo e segue pelo `text` puro, byte a byte
+   *    igual ao de antes. O compositor grava os DOIS (o `text` recebe o texto) — mesmo
+   *    padrão do gatilho de comentário (`dm` × `dmRich`), pelo mesmo motivo: durante um
+   *    deploy a versão anterior do app ainda lê a coluna antiga.
+   *
+   * 🔴 **Botão de resposta faz o nó ESPERAR e RAMIFICAR** (uma saída por botão + a saída
+   *    "Escreveu"). Não há caixinha de "esperar resposta?": pôr um botão de resposta já é
+   *    dizer que espera. Botão de LINK não espera nem ramifica — o toque abre o navegador e
+   *    não devolve evento nenhum.
+   */
+  rich?: RichMessage
+}
 export interface SendMediaNodeConfig {
   url:       string
   mediaType: "image" | "audio" | "video" | "document"
@@ -194,10 +211,10 @@ export interface CollectNodeConfig {
 export interface ScheduleNodeConfig {
   /** Destino (binding): fixed (agenda/serviço) · owner (carteira). Sem "ai" (não há IA aqui). */
   target?:      AgendaBinding
-  /** Entender o pedido com IA: a IA INTERPRETA serviço + dia/período da conversa
-   *  (tool forçada, não oferta nem marca) → o motor oferta os horários reais e marca.
-   *  Conversacional ("drenagem sexta tarde") e à prova de alucinação. Consome token. */
-  aiParse?:     boolean
+  // ⚠️ `aiParse` ("Entender o pedido com IA") REMOVIDO em 2026-08-06 — decisão do owner:
+  //    **este nó não usa IA.** Config antiga que ainda tenha o campo é simplesmente
+  //    ignorada (jsonb; nada a migrar), e o fluxo passa a se comportar como já se
+  //    comportava pra quem não tinha o add-on `ai`. Não reintroduzir sem pedido.
   /** Como oferecer: "slots" (lista plana dos próximos horários, default) ·
    *  "by_day" (cliente escolhe o DIA primeiro → depois o horário do dia). */
   offerMode?:   "slots" | "by_day"

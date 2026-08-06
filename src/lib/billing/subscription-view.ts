@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { listAllLimits, getStorageBreakdown } from "@/lib/limits"
 import { LIMIT_META, type LimitInfo, type LimitResource } from "@/lib/limits-shared"
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
+import { getCobrancaDoGateway } from "@/lib/asaas/subscription-info"
 
 // ═══════════════════════════════════════════════════════════════
 // Telas de assinatura — o DADO REAL (substitui buildMock)
@@ -58,6 +59,14 @@ export interface ContaDoMesData {
 
 export interface AssinaturaView {
   standing:  BillingStanding
+  /**
+   * O que o GATEWAY vai cobrar e quando. `null` = sem assinatura no gateway (cliente
+   * manual/legado) ou o Asaas não respondeu — nesse caso a tela usa a projeção local.
+   *
+   * 🔑 Existe porque a projeção local errava os dois números quando o preço do plano
+   *    mudava ou o cliente pagava adiantado (achado do dono, 06/08). Ver `subscription-info`.
+   */
+  cobranca:  { valorCents: number; proximaEm: string | null } | null
   /** Módulos que a conta REALMENTE tem ligados, pelo nome do catálogo. */
   incluso:   string[]
   resumo:    AssinaturaResumoData
@@ -105,6 +114,12 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
       .select("module_slug, module_catalog!inner ( name, active )")
       .eq("tenant_id", tenantId).eq("enabled", true),
   ])
+
+  // ⚠️ Depende do `tenantRow` acima, então fica fora do `Promise.all`. É uma chamada HTTP
+  //    numa tela de baixo tráfego, memoizada por request e fail-soft.
+  const cobranca = await getCobrancaDoGateway(
+    (tenantRow.data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id,
+  )
 
   // Nome do catálogo, ordenado — a ordem do banco não significa nada pro cliente.
   const incluso = ((modulos.data ?? []) as unknown as {
@@ -211,6 +226,7 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
       adiamentoAte:   null,
     },
     incluso,
+    cobranca: cobranca ? { valorCents: cobranca.valorCents, proximaEm: cobranca.proximaEm } : null,
     conta: {
       planoLabel: plano?.name ?? "Sem plano",
       planoCents,

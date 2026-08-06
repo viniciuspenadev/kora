@@ -17,9 +17,8 @@
 import "server-only"
 import { sendBotText } from "../outbound"
 import { sendOptions } from "./interactive"
-import { parseScheduleRequest, localDayRange, inPeriod } from "./ai-schedule"
 import type { ExecCtx } from "../capabilities/types"
-import type { ScheduleNodeConfig } from "./types"
+import type { ScheduleNodeConfig, RenderMode } from "./types"
 import { supabaseAdmin } from "@/lib/supabase"
 import { resolveAgendaTargets, availabilityPool, availabilitySlots, pickFreeInPool, bookAppointment, moveAppointment, ownerResource } from "@/lib/agenda/booking"
 import { linkOwnerOnAppointment } from "@/lib/carteira"
@@ -62,9 +61,12 @@ export type ScheduleStash =
   // (mudar horário = mesmo dia · mudar data · marcar um novo). Formato do owner (§7).
   | { mode: "collision"; appts: { id: string; iso: string; label: string }[]; resolved: Resolved }
   | { mode: "collision_action"; appt: { id: string; iso: string; label: string }; resolved: Resolved; withNew?: boolean }
-  // aiParse: a IA não identificou o serviço → o cliente escolhe (picker determinístico);
-  // dia/período já interpretados ficam guardados pra estreitar a oferta depois.
-  | { mode: "pick_service"; services: { id: string; name: string }[]; fromDate: string; period: string }
+  // ✳ "Cliente escolhe o serviço" — picker determinístico, custo zero.
+  // ⚠️ `fromDate`/`period` existiam pra guardar o dia/período que a IA tinha captado e
+  //    estreitar a oferta depois. Com "Entender com IA" removido, ninguém mais preenche
+  //    (o picker sempre gravava ""), então saíram. Run em voo que tenha os campos no
+  //    stash apenas os ignora — degrada pra oferta normal, nunca quebra.
+  | { mode: "pick_service"; services: { id: string; name: string }[] }
 
 // ── núcleo: resolve destino + disponibilidade ──────────────────
 export interface ScheduleOffer { slots: string[]; serviceId: string | null; pool: string[] }
@@ -80,8 +82,30 @@ async function resolvePool(ctx: ExecCtx, cfg: ScheduleNodeConfig) {
   })
 }
 
-/** Destino já resolvido (aiParse: serviço escolhido pela IA/picker) — pula resolvePool. */
+/** Destino já resolvido (✳ picker: serviço escolhido pelo cliente) — pula resolvePool. */
 type Resolved = { serviceId: string | null; pool: string[] }
+
+/**
+ * Veículo das opções DESTE nó no canal em que a conversa está.
+ *
+ * 🔴 **No Instagram, o Agendar é SEMPRE numerado** (decisão do owner, 2026-08-06). O
+ *    Direct aceita no máximo 3 botões e **não tem lista** — e horário é justamente o caso
+ *    em que 3 opções não bastam: cortar de 6 pra 3 corta pela metade a chance de alguma
+ *    servir, e agendamento vive de encaixar.
+ *
+ * ⚠️ E o motivo mais forte não é o limite, é a PREVISIBILIDADE: sem esta regra o nó
+ *    mudaria de cara sozinho conforme a agenda do dia (3 vagas → botão, 4 → texto). Quem
+ *    monta o fluxo não controla quantas vagas existem, então veria o próprio nó
+ *    trocando de formato sem ter mexido em nada.
+ *
+ * O **Menu** NÃO segue esta regra de propósito: lá quem escolhe as opções é o autor, que
+ * sabe quantas são e pode caber em 3.
+ */
+function scheduleRender(ctx: ExecCtx, cfg: ScheduleNodeConfig): RenderMode {
+  const channel = ctx.channel ?? ctx.contact.primary_channel
+  if (channel === "instagram") return "numbered"
+  return cfg.render ?? "auto"
+}
 
 /** Modo "slots": resolve destino + UNIÃO de horários do pool (null = sem destino). */
 export async function prepareScheduleOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, resolved?: Resolved): Promise<ScheduleOffer | null> {
@@ -186,7 +210,7 @@ const SCHED_META = { studio_schedule: true }
  *  data — o DIA vira seção da lista; o título carrega só a hora. */
 export async function sendScheduleOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, slots: string[]): Promise<void> {
   await sendOptions(ctx, {
-    render:     cfg.render,
+    render:     scheduleRender(ctx, cfg),
     body:       cfg.intro?.trim() || "Escolha o melhor horário:",
     items:      slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s), group: fmtTitleDay(s) })),
     last:       { id: NONE_ID, title: NONE_LABEL },
@@ -200,7 +224,7 @@ async function sendDateOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extra
   const page = stash.dayKeys.slice(stash.pageStart, stash.pageStart + DATE_PAGE)
   const hasMore = stash.pageStart + DATE_PAGE < stash.dayKeys.length
   await sendOptions(ctx, {
-    render:     cfg.render,
+    render:     scheduleRender(ctx, cfg),
     body:       DATE_PROMPT,
     items:      page.map((k, i) => ({ id: `schedule:day:${i}`, title: fmtTitleDay(stash.byDay[k][0]) })),
     last:       hasMore ? { id: MORE_ID, title: MORE_LABEL } : { id: NONE_ID, title: NONE_LABEL },
@@ -214,7 +238,7 @@ async function sendDateOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extra
 async function sendTimeOffer(ctx: ExecCtx, cfg: ScheduleNodeConfig, stash: Extract<ScheduleStash, { phase: "time" }>): Promise<void> {
   const day = fmtFullDay(stash.slots[0])
   await sendOptions(ctx, {
-    render:     cfg.render,
+    render:     scheduleRender(ctx, cfg),
     body:       cfg.intro?.trim() ? `${cfg.intro.trim()} (${day})` : `Horários de ${day}:`,
     items:      stash.slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s), group: periodOf(s) })),
     last:       { id: BACK_ID, title: BACK_LABEL },
@@ -360,7 +384,7 @@ type CollisionAppt = { id: string; iso: string; label: string }
 /** Vários agendamentos → lista "qual você quer mexer?" (títulos ≤19, cabem inteiros). */
 async function sendCollisionMenu(ctx: ExecCtx, cfg: ScheduleNodeConfig, appts: CollisionAppt[]): Promise<void> {
   await sendOptions(ctx, {
-    render:     cfg.render,
+    render:     scheduleRender(ctx, cfg),
     body:       "Vi que você já tem estes horários. Qual você quer remarcar?",
     items:      appts.slice(0, 9).map((a, i) => ({ id: `schedule:appt:${i}`, title: a.label })),
     last:       { id: "schedule:new", title: "Marcar um novo" },
@@ -374,7 +398,7 @@ async function sendCollisionMenu(ctx: ExecCtx, cfg: ScheduleNodeConfig, appts: C
  *  quando "novo" já foi oferecido na lista anterior. */
 async function sendCollisionAction(ctx: ExecCtx, cfg: ScheduleNodeConfig, appt: CollisionAppt, withNew: boolean): Promise<void> {
   await sendOptions(ctx, {
-    render: cfg.render,
+    render: scheduleRender(ctx, cfg),
     body:   `Você já tem um horário marcado:\n📅 ${fmtFull(appt.iso)}\nO que você prefere?`,
     items: [
       { id: "schedule:act:time", title: "Mudar o horário" },
@@ -401,13 +425,58 @@ function parseActionPick(optionId: string | undefined, reply: string): ActionPic
   return null
 }
 
+/**
+ * Intervalo UTC [00:00, 24:00) de um dia local `YYYY-MM-DD`. `null` = data inválida.
+ *
+ * ⚠️ Morava em `ai-schedule.ts`, que foi apagado junto com "Entender o pedido com IA"
+ *    (2026-08-06). Isto **não é código de IA** — é aritmética de fuso, e quem usa é a
+ *    REMARCAÇÃO (ofertar horários do mesmo dia do compromisso existente). Veio pra cá
+ *    porque a remarcação é o único consumidor, e manter um arquivo chamado "ai-*" só pra
+ *    guardar contas de fuso mentiria sobre o que o código faz.
+ */
+function localDayRange(dateStr: string): { start: number; end: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim())
+  if (!m) return null
+  const tzOffsetMs = (instant: number): number => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: TZ, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(new Date(instant))
+    const p: Record<string, number> = {}
+    for (const x of parts) if (x.type !== "literal") p[x.type] = Number(x.value)
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - instant
+  }
+  const guess = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0)
+  const start = guess - tzOffsetMs(guess)
+  return { start, end: start + 24 * 3600_000 }
+}
+
+/**
+ * Horários livres de UM dia. Usado só pela REMARCAÇÃO ("mudar o horário" oferta o mesmo
+ * dia do compromisso). ⚠️ Tinha um parâmetro `period` (manhã/tarde/noite) que só a IA
+ * preenchia — saiu junto com ela; a remarcação sempre passou o dia inteiro.
+ */
+async function daySlots(ctx: ExecCtx, cfg: ScheduleNodeConfig, r: Resolved, fromDate: string): Promise<string[]> {
+  const range = localDayRange(fromDate)
+  if (!range) return []
+  const now = Date.now()
+  if (range.end <= now) return []
+  const merged = await availabilityPool(ctx.tenantId, {
+    pool: r.pool, serviceId: r.serviceId,
+    rangeStart: new Date(Math.max(now, range.start)).toISOString(),
+    rangeEnd:   new Date(range.end).toISOString(),
+  })
+  const max = Math.min(Math.max(1, cfg.maxSlots ?? MAXSLOTS_DEFAULT), MAXSLOTS_CAP)
+  return merged.map((s) => s.start).slice(0, max)
+}
+
 /** "Mudar o horário": oferta os horários do MESMO dia do agendamento (com remarcação
  *  costurada). Dia lotado → cai graciosamente pro fluxo de datas. */
 async function offerSameDayTimes(ctx: ExecCtx, cfg: ScheduleNodeConfig, appt: CollisionAppt, resolved: Resolved): Promise<ScheduleResume> {
-  const slots = await daySlots(ctx, cfg, resolved, dayKey(appt.iso), "")
+  const slots = await daySlots(ctx, cfg, resolved, dayKey(appt.iso))
   if (slots.length === 0) return startNormal(ctx, cfg, resolved, appt.id)
   await sendOptions(ctx, {
-    render:     cfg.render,
+    render:     scheduleRender(ctx, cfg),
     body:       `Horários de ${fmtFullDay(appt.iso)}:`,
     items:      slots.map((s, i) => ({ id: `schedule:slot:${i}`, title: fmtTime(s), group: periodOf(s) })),
     last:       { id: NONE_ID, title: NONE_LABEL },
@@ -490,13 +559,18 @@ export async function resumeSchedule(
     }
     const r = await resolveServiceId(ctx, cfg, stash.services[idx].id)
     if (!r) return { kind: "branch", branch: "sem_horario", responded: false }
-    // Colisão PÓS-escolha (✳ e aiParse-picker): o serviço agora é conhecido → detecta
-    // agendamento existente ANTES de ofertar, escopado pelo serviço escolhido.
-    if (cfg.offerReschedule !== false) {
+    // Colisão PÓS-escolha (✳): o serviço agora é conhecido → detecta agendamento
+    // existente ANTES de ofertar, escopado pelo serviço escolhido.
+    if (cfg.offerReschedule === true) {
       const appts = await findContactAppointments(ctx, { serviceId: stash.services[idx].id })
       if (appts.length > 0) return startCollision(ctx, cfg, appts, r)
     }
-    return offerForResolved(ctx, cfg, r, stash.fromDate, stash.period)
+    // ⚠️ Era `offerForResolved(..., stash.fromDate, stash.period)` — a oferta ESTREITADA
+    //    pro dia/período que a IA tinha captado. Sem "Entender com IA" não existe mais
+    //    quem preencha essas dicas (o picker sempre gravava ""), então o caminho estreito
+    //    virou inalcançável e saiu junto. Oferta normal é o que sobra — e é o que já
+    //    acontecia na prática pra quem não tinha o add-on.
+    return startNormal(ctx, cfg, r)
   }
 
   // ── modo slots (default; cobre stash antigo sem `mode`) ──
@@ -577,18 +651,6 @@ export async function resumeSchedule(
   return out
 }
 
-// ── aiParse: a IA INTERPRETA (serviço/dia/período); o motor oferta/marca ──
-// A IA só preenche {serviço, dia, período} — não oferta, não marca, não confirma
-// (impossível alucinar/cravar). Serviço casa contra a lista REAL; não casou → picker.
-function matchService(name: string, services: { id: string; name: string }[]): string | null {
-  const n = name.trim().toLowerCase()
-  if (!n) return null
-  const exact = services.find((s) => s.name.trim().toLowerCase() === n)
-  if (exact) return exact.id
-  const partial = services.find((s) => { const sn = s.name.trim().toLowerCase(); return sn && (n.includes(sn) || sn.includes(n)) })
-  return partial?.id ?? null
-}
-
 async function resolveServiceId(ctx: ExecCtx, cfg: ScheduleNodeConfig, serviceId: string): Promise<Resolved | null> {
   const t = cfg.target
   const res = await resolveAgendaTargets(ctx.tenantId, {
@@ -602,26 +664,9 @@ async function resolveServiceId(ctx: ExecCtx, cfg: ScheduleNodeConfig, serviceId
   return { serviceId: res.serviceId, pool: res.pool }
 }
 
-/** Horários de UM dia (filtrado por período) — a alavanca "sexta à tarde". */
-async function daySlots(ctx: ExecCtx, cfg: ScheduleNodeConfig, r: Resolved, fromDate: string, period: string): Promise<string[]> {
-  const range = localDayRange(fromDate)
-  if (!range) return []
-  const now = Date.now()
-  if (range.end <= now) return []
-  const merged = await availabilityPool(ctx.tenantId, {
-    pool: r.pool, serviceId: r.serviceId,
-    rangeStart: new Date(Math.max(now, range.start)).toISOString(),
-    rangeEnd:   new Date(range.end).toISOString(),
-  })
-  let slots = merged.map((s) => s.start)
-  if (period) slots = slots.filter((s) => inPeriod(s, period))
-  const max = Math.min(Math.max(1, cfg.maxSlots ?? MAXSLOTS_DEFAULT), MAXSLOTS_CAP)
-  return slots.slice(0, max)
-}
-
 async function sendServicePicker(ctx: ExecCtx, cfg: ScheduleNodeConfig, services: { id: string; name: string }[]): Promise<void> {
   await sendOptions(ctx, {
-    render:     cfg.render,
+    render:     scheduleRender(ctx, cfg),
     body:       "Qual serviço você quer agendar?",
     items:      services.slice(0, 10).map((s, i) => ({ id: `schedule:svc:${i}`, title: s.name })),
     listButton: "Ver serviços",
@@ -638,19 +683,6 @@ function pickServiceIndex(reply: string, services: { id: string; name: string }[
   const num = r.match(/\d+/)
   if (num) { const idx = parseInt(num[0], 10) - 1; if (idx >= 0 && idx < services.length) return idx }
   return null
-}
-
-/** Serviço resolvido → oferta (estreitada pro dia/período se a IA captou). */
-async function offerForResolved(ctx: ExecCtx, cfg: ScheduleNodeConfig, r: Resolved, fromDate: string, period: string): Promise<ScheduleResume> {
-  if (fromDate) {
-    const slots = await daySlots(ctx, cfg, r, fromDate, period)
-    if (slots.length > 0) {
-      await sendScheduleOffer(ctx, cfg, slots)
-      return { kind: "wait", stash: { mode: "slots", serviceId: r.serviceId, pool: r.pool, slots } }
-    }
-    await sendBotText(ctx, "Nesse dia não achei horário livre — veja as próximas opções 👇", SCHED_META)
-  }
-  return startNormal(ctx, cfg, r)
 }
 
 // ── ADVANCE: primeira oferta do nó ─────────────────────────────
@@ -716,7 +748,7 @@ export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Prom
   //   • ✳ cliente escolhe → a colisão roda DEPOIS da escolha (resumeSchedule
   //                  pick_service), escopada pelo serviço escolhido.
   // docs/crm-reschedule-node-design.md §D2 + crm-agenda-owner-routing-design.md §6.2.
-  const offerResched   = cfg.offerReschedule !== false
+  const offerResched   = cfg.offerReschedule === true
   const servicePick    = !!cfg.target?.servicePick
   const isOwnerMode    = cfg.target?.mode === "owner"
   // Serviço fixado escopa a colisão TAMBÉM no ★ (auditoria 2026-07-22 BAIXO-5: ★+serviço
@@ -742,24 +774,21 @@ export async function startSchedule(ctx: ExecCtx, cfg: ScheduleNodeConfig): Prom
     const services = await listPickableServices(ctx, cfg)
     if (services.length === 0) return startNormal(ctx, cfg)   // sem serviço cadastrado → oferta avulsa
     await sendServicePicker(ctx, cfg, services)
-    return { kind: "wait", stash: { mode: "pick_service", services, fromDate: "", period: "" } }
+    return { kind: "wait", stash: { mode: "pick_service", services } }
   }
-  // aiParse ("Entender com IA") precisa do add-on `ai`; sem ele, cai no modo
-  // determinístico (botões) — o agendamento continua funcionando, só sem interpretar texto.
-  if (!cfg.aiParse || !(await hasModule(ctx.tenantId, "ai"))) return startNormal(ctx, cfg)
-
-  const services = ctx.services ?? []
-  const parsed = await parseScheduleRequest(ctx.model ?? "gpt-4.1", ctx.history ?? [], services.map((s) => s.name),
-    { tenantId: ctx.tenantId, conversationId: ctx.conversationId, kind: "ai_parse" })
-  const matchedId = matchService(parsed.service, services) ?? (services.length === 1 ? services[0].id : null)
-
-  if (matchedId) {
-    const r = await resolveServiceId(ctx, cfg, matchedId)
-    if (!r) return { kind: "branch", branch: "sem_horario", responded: false }
-    return offerForResolved(ctx, cfg, r, parsed.fromDate, parsed.period)
-  }
-  // serviço não identificado → picker determinístico (sem serviços cadastrados → oferta normal).
-  if (services.length === 0) return startNormal(ctx, cfg)
-  await sendServicePicker(ctx, cfg, services)
-  return { kind: "wait", stash: { mode: "pick_service", services, fromDate: parsed.fromDate, period: parsed.period } }
+  /**
+   * 🔴 "Entender o pedido com IA" REMOVIDO (decisão do owner, 2026-08-06): **este nó não
+   *    usa IA.** A IA interpretava "drenagem sexta à tarde" e preenchia {serviço, dia,
+   *    período}; o motor é que ofertava e marcava.
+   *
+   *    A remoção é segura porque o caminho determinístico **já era o padrão de boa parte
+   *    da base**: quem não tinha o add-on `ai` sempre caiu aqui. Fluxo publicado com a
+   *    opção ligada passa a se comportar como um sem a opção — nada trava.
+   *
+   * ⚠️ O que NÃO saiu junto, de propósito: o ✳ "Cliente escolhe o serviço" (acima) é um
+   *    picker DETERMINÍSTICO, custo zero. Ele compartilha maquinário com o que foi
+   *    removido (`resolveServiceId`, `offerForResolved`, o resume `pick_service`) — saiu
+   *    quem PENSA, ficou quem OFERTA.
+   */
+  return startNormal(ctx, cfg)
 }

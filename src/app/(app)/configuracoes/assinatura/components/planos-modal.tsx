@@ -220,7 +220,7 @@ export function PlanosModal({
                 <p className="mt-1.5 text-sm text-slate-500 leading-relaxed">
                   {passo === "planos"    ? (bloqueante
                        ? "Escolha um plano para voltar a usar o Kora. Suas conversas, contatos e configurações estão intactos — nada precisa ser refeito."
-                       : "Seu teste continua até a data do resumo. Ao assinar, a cobrança só começa quando ele terminar.")
+                       : "Ao assinar, a cobrança é feita agora e o plano libera na hora — você troca os dias restantes de teste pelo produto completo.")
                    : passo === "cadastro" ? "São os dados que a nota fiscal e o cartão exigem."
                    : passo === "pagamento" ? "O pagamento é processado com criptografia. Não guardamos o número do seu cartão."
                    : "Sua assinatura está ativa e o Kora voltou a funcionar."}
@@ -294,7 +294,7 @@ export function PlanosModal({
                       <p className="mt-1.5 text-sm text-slate-500 leading-relaxed max-w-sm mx-auto">
                         {liberado === true
                           ? (primeiraCobranca
-                              ? <>A primeira cobrança acontece em <strong className="text-slate-700">{primeiraCobranca}</strong>.</>
+                              ? <>Cobrança feita em <strong className="text-slate-700">{primeiraCobranca}</strong>. A partir daqui ela é mensal e automática.</>
                               : <>A cobrança passa a ser mensal e automática.</>)
                           : liberado === false
                           ? <>A confirmação do banco está demorando mais que o normal. Seu pagamento foi enviado e nada será cobrado duas vezes — recarregue em alguns minutos ou fale com a gente.</>

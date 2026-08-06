@@ -56,6 +56,8 @@ export interface AssinaturaMock {
   standing:     BillingStanding
   /** Módulos que a conta REALMENTE tem, pelo nome do catálogo. Ver `subscription-view`. */
   incluso:      string[]
+  /** O que o gateway vai cobrar e quando. `null` ⇒ tela usa a projeção local. */
+  cobranca:     { valorCents: number; proximaEm: string | null } | null
   resumo:       AssinaturaResumo
   conta:        ContaDoMes
   medidas:      LinhaMedida[]
@@ -217,5 +219,5 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
 
   // ⚠️ A prévia (`?degrau=`) usa os mesmos rótulos do mock — ela existe pra revisar os
   //    5 estados da escada, não pra refletir o catálogo real de um tenant.
-  return { standing, incluso: TUDO, resumo, conta, medidas, discretas, faturaAberta, faturas }
+  return { standing, incluso: TUDO, cobranca: null, resumo, conta, medidas, discretas, faturaAberta, faturas }
 }

@@ -41,6 +41,17 @@ export interface AgendaBinding {
   /** ✳ "Cliente escolhe o serviço": o nó lista os serviços (determinístico, sem token)
    *  e o cliente escolhe na conversa. Quando true, `serviceId` é ignorado. */
   servicePick?: boolean
+  /**
+   * 🔴 A pessoa ESCOLHEU "qualquer agenda" (sorteio no pool) — diferente de nunca ter
+   *    aberto o nó. Antes, os dois estados gravavam a MESMA coisa (`resourceId` vazio),
+   *    então era impossível recusar publicação de um Agendar que ninguém configurou sem
+   *    recusar junto quem legitimamente quer sorteio. Decisão do owner (2026-08-06):
+   *    escolher "qualquer uma" continua valendo — não escolher, não.
+   */
+  anyResource?: boolean
+  /** Idem pro serviço: escolheu "sem serviço específico" (o compromisso nasce sem
+   *  serviço) × nunca escolheu. */
+  anyService?:  boolean
 }
 
 /** Sub-opções das tools de CONSULTA do nó de IA ({ toolId: { chave: boolean } }) —

@@ -138,7 +138,10 @@ export default async function PagamentoPage({ searchParams }: {
         <h1 className="text-lg font-bold text-slate-900">Ativar assinatura</h1>
         <p className="mt-1 text-sm text-slate-500">
           {emTrial
-            ? "Seu teste continua até a data do resumo. Nada é cobrado agora."
+            // 🔴 PROMETIA "nada é cobrado agora" E AGORA COBRA (06/08). Deixar este texto
+            //    seria tirar dinheiro de alguém logo depois de dizer que não tiraria — o
+            //    tipo de mentira que vira estorno e reclamação, com razão.
+            ? "A cobrança é feita agora e seu plano libera na hora. Os dias restantes de teste são substituídos pelo plano contratado."
             : "A cobrança passa a ser mensal e automática."}
         </p>
       </div>

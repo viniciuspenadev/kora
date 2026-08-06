@@ -76,3 +76,54 @@ export function parseMenuReply(cfg: MenuNodeConfig, reply: string): { id: string
   }
   return null
 }
+
+/**
+ * Escolha de botão no nó **Mensagem** — irmã de `resolveMenuChoice`, com uma regra a
+ * MENOS e uma a MAIS.
+ *
+ * 🔴 **Por que não reusar `parseMenuReply`:** ele procura dígito em QUALQUER lugar da
+ *    frase, porque no Menu a pessoa está sendo perguntada e "2" é a resposta esperada. No
+ *    Mensagem, texto livre é legítimo (é a saída "Escreveu") — e aí aquela regra vira
+ *    armadilha:
+ *
+ *      Nó com ▸ Valores ▸ Atendente. A pessoa escreve "sou o cliente 2 da loja".
+ *      O casamento solto acha o "2" e manda pra Atendente. Ramo errado, calado.
+ *
+ * A escada, do mais confiável pro menos:
+ *   1. `optionId` — tap num botão nativo (Instagram/WhatsApp Oficial). Identidade, imune a
+ *      rótulo repetido ou truncado. É a fonte da verdade quando existe.
+ *   2. rótulo exato — quem digitou o texto do botão escolheu ele.
+ *   3. número SOZINHO ("2", "2." , " 2 ") — é como o canal sem botão nativo apresenta as
+ *      opções. **Número no meio de frase NÃO conta.**
+ *
+ * Sem match → `null` ⇒ o chamador usa a saída "Escreveu".
+ */
+export function resolveRichButton(
+  rich: { buttons?: { id: string; label: string; kind: "reply" | "url" }[] } | undefined,
+  reply: string,
+  optionId?: string,
+): { id: string; label: string } | null {
+  // ⚠️ Só botão de RESPOSTA vira ramo. O de link manda a pessoa pro navegador e nunca
+  //    devolve evento — não há o que casar.
+  const opts = (rich?.buttons ?? []).filter((b) => b.kind === "reply")
+  if (opts.length === 0) return null
+
+  if (optionId) {
+    const byId = opts.find((o) => o.id === optionId)
+    if (byId) return { id: byId.id, label: byId.label }
+    // id desconhecido (nó editado desde o envio, ou tap de outro contexto) → tenta texto.
+  }
+
+  const r = reply.trim().toLowerCase()
+  if (!r) return null
+
+  const byLabel = opts.find((o) => o.label.trim().toLowerCase() === r)
+  if (byLabel) return { id: byLabel.id, label: byLabel.label }
+
+  const only = /^(\d{1,2})[.)]?$/.exec(r)
+  if (only) {
+    const i = parseInt(only[1], 10) - 1
+    if (i >= 0 && i < opts.length) return { id: opts[i].id, label: opts[i].label }
+  }
+  return null
+}

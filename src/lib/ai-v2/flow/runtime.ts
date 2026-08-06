@@ -15,7 +15,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { isPlausiblePhone } from "@/lib/phone-utils"
 import { normalizeLifecycle } from "@/lib/lifecycle-stage"
-import { sendBotText, sendBotMedia, sendBotTemplate } from "../outbound"
+import { sendBotText, sendBotMedia, sendBotTemplate, sendBotRich } from "../outbound"
 import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
 import { captureContactField } from "../capabilities/update-contact"
 import { runOutreach } from "./outreach"
@@ -25,7 +25,7 @@ import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { classifyIntent } from "./router"
-import { sendMenu, resolveMenuChoice } from "./menu"
+import { sendMenu, resolveMenuChoice, resolveRichButton } from "./menu"
 import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
 import { deferralConcepts } from "./boundary"
 import { resolveConnectedSources } from "./data-sources"
@@ -573,6 +573,18 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       variables[`menu:${node.id}`] = picked.id
       currentId = edgeTarget(graph, node.id, picked.id)
+    } else if (node?.type === "message") {
+      /**
+       * Nó **Mensagem** com BOTÃO DE RESPOSTA — ele parou aqui esperando a escolha.
+       *
+       * 🔴 Diferente do **Menu**, aqui NÃO existe re-pergunta. O Menu é uma pergunta (não
+       *    escolher é erro); o Mensagem é um recado com atalhos, e escrever outra coisa é
+       *    legítimo — vai pra saída "Escreveu" (`else`), que o autor conectou.
+       */
+      const cfg    = node.config as unknown as MessageNodeConfig
+      const picked = resolveRichButton(cfg.rich, input.incomingText, input.optionId)
+      variables[`message:${node.id}`] = picked?.id ?? "else"
+      currentId = edgeTarget(graph, node.id, picked?.id ?? "else")
     } else if (node?.type === "collect") {
       const cfg    = node.config as unknown as CollectNodeConfig
       const fields = collectFields(cfg)
@@ -698,8 +710,35 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "message": {
         const cfg = node.config as unknown as MessageNodeConfig
-        const text = interpolate((cfg.text ?? "").trim(), variables)
-        if (text) { await sendBotText(ctx, text, { studio_flow: true }); responded = true }
+        const rich = cfg.rich
+
+        // Nó ANTIGO (só `text`) → caminho de sempre, byte a byte. O campo rico é aditivo.
+        if (!rich) {
+          const text = interpolate((cfg.text ?? "").trim(), variables)
+          if (text) { await sendBotText(ctx, text, { studio_flow: true }); responded = true }
+          currentId = edgeTarget(graph, node.id)
+          break
+        }
+
+        const sendable: typeof rich = { ...rich, text: interpolate((rich.text ?? "").trim(), variables) }
+        // ⚠️ Só o TEXTO interpola — rótulo de botão não. Rótulo tem 20 caracteres e um
+        //    nome longo seria cortado no meio pelo canal.
+        if (sendable.text || sendable.media?.path) {
+          await sendBotRich(ctx, sendable, { studio_flow: true })
+          responded = true
+        }
+
+        /**
+         * 🔴 BOTÃO DE RESPOSTA ⇒ o nó ESPERA e RAMIFICA. Sem caixinha de "esperar?": pôr
+         *    um botão de resposta já é dizer que espera. Botão de LINK não conta — o toque
+         *    abre o navegador e nunca devolve evento, então esperar seria esperar o que não
+         *    vem.
+         */
+        const waits = (rich.buttons ?? []).some((b) => b.kind === "reply")
+        if (waits) {
+          await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+          return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+        }
         currentId = edgeTarget(graph, node.id)
         break
       }
@@ -761,6 +800,27 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         const resumeAt = new Date(Date.now() + ms).toISOString()
         // Pré-avança pra saída "no prazo" (aresta default) — o cron retoma deste alvo.
         const next = edgeTarget(graph, node.id)
+
+        /**
+         * 🔴 DORMIR SÓ FAZ SENTIDO SE HÁ PRA ONDE ACORDAR.
+         *
+         * Sem "no prazo" E sem "returned", o run era gravado `waiting`, com despertador e
+         * SEM destino nenhum. E enquanto ele existe, `activeFlowRun` o devolve ⇒ **nenhum
+         * outro fluxo consegue começar naquela conversa** — uma janela do tamanho exato do
+         * tempo configurado ("Esperar 3 dias" = 3 dias de conversa sequestrada por um fluxo
+         * que não vai fazer nada). Era o ÚNICO nó que não caía no fim implícito quando a
+         * saída está solta; agora ele se comporta como os outros 23.
+         *
+         * ⚠️ A condição olha as DUAS saídas de propósito. Só "returned" ligado é config
+         *    LEGÍTIMA — "espere 2 dias; se o cliente voltar antes, faça X; se não voltar,
+         *    encerre" — e ela EXIGE o sono, porque `returned` só dispara com um inbound
+         *    durante a espera. Checar só o "no prazo" mataria esse fluxo.
+         *
+         * `currentId = null` (e não um `break` seco): o laço re-testa `currentId` e um
+         * break sem zerar re-entraria NESTE mesmo nó até estourar MAX_HOPS.
+         */
+        if (!next && !edgeTarget(graph, node.id, "returned")) { currentId = null; break }
+
         // Marca ONDE dormimos: se um INBOUND chegar ANTES do prazo (cliente voltou), o
         // resume roteia pela saída "returned" deste nó (ver bloco RESUME). Overwrite a
         // cada wait → sempre aponta pro nó de espera atual.

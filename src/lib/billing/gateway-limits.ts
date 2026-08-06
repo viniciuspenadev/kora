@@ -39,15 +39,13 @@ export function abaixoDoMinimoDoCartao(priceCents: number | null | undefined): b
  * ⚠️ Espelha `primeiraCobranca` de `asaas/subscriptions.ts`. As duas trabalham em
  *    `America/Sao_Paulo` porque é o fuso que o Asaas usa pra virar o dia.
  */
-export function dataDaPrimeiraCobranca(trialEndsAt: string | null | undefined): string | null {
-  const fmt = (d: Date) =>
-    new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(d)
-  const hoje = fmt(new Date())
-  if (!trialEndsAt) return null
-  const fim = new Date(trialEndsAt)
-  if (Number.isNaN(fim.getTime())) return null
-  const d = fmt(fim)
-  return d < hoje ? hoje : d
+export function dataDaPrimeiraCobranca(): string {
+  // ⚠️ Espelha `primeiraCobranca` de `asaas/subscriptions.ts`, que desde 06/08 cobra HOJE.
+  //    Enquanto ela devolvia o fim do teste, esta tinha que replicar o piso — agora as duas
+  //    dizem a mesma coisa simples, e a tela promete exatamente o que o gateway executa.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date())
 }
 
 /**
