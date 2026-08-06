@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Check, Copy, QrCode } from "lucide-react"
 import { toast } from "sonner"
+import { linkSuporte } from "@/lib/support"
 import { brl, dataLonga } from "../format"
 
 // ═══════════════════════════════════════════════════════════════
@@ -65,9 +66,10 @@ export function PixBox({
             O código Pix desta fatura ainda não está disponível por aqui. Fale com a gente
             que a gente te envia agora mesmo — sua conta não é afetada enquanto isso.
           </p>
-          <a href="mailto:suporte@kora.app?subject=Pagamento%20de%20fatura"
+          <a href={linkSuporte("Olá! Quero pagar a fatura da minha assinatura Kora.")}
+            target="_blank" rel="noopener noreferrer"
             className="mt-4 inline-flex h-10 items-center rounded-lg bg-primary px-5 text-sm font-semibold text-white">
-            Falar sobre esta fatura
+            Falar no WhatsApp
           </a>
         </div>
       </div>

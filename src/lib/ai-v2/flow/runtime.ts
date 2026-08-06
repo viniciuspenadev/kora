@@ -15,7 +15,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { isPlausiblePhone } from "@/lib/phone-utils"
 import { normalizeLifecycle } from "@/lib/lifecycle-stage"
-import { sendBotText, sendBotMedia, sendBotTemplate, sendBotRich } from "../outbound"
+import { sendBotText, sendBotMedia, sendBotTemplate, sendBotRich, noteFlowSkip } from "../outbound"
 import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, ASSIGN, type ExecCtx } from "../capabilities"
 import { captureContactField } from "../capabilities/update-contact"
 import { runOutreach } from "./outreach"
@@ -726,6 +726,23 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         if (sendable.text || sendable.media?.path) {
           await sendBotRich(ctx, sendable, { studio_flow: true })
           responded = true
+        } else {
+          /**
+           * 🔴 NADA A ENVIAR — e antes isto era SILÊNCIO (achado numa execução real do
+           *    owner, 2026-08-06: fluxo "parou no segundo nó").
+           *
+           *    O caso real: nó no formato "Texto e botões" **sem texto**, só com botões de
+           *    link. A Meta exige o texto nesse formato, então não havia mensagem possível
+           *    — o nó era pulado, o fluxo seguia pro fim, e ninguém ficava sabendo. O
+           *    cliente final recebia a 1ª mensagem e nada depois.
+           *
+           *    Publicar isto passou a ser recusado (`validateMessagePublish`), mas a nota
+           *    fica como rede: fluxo publicado ANTES da recusa existir continua no ar, e
+           *    "não entregou" tem que aparecer pra quem atende.
+           */
+          await noteFlowSkip(ctx,
+            "⚠️ Nó Mensagem não enviou nada: o formato escolhido exige texto e ele está vazio. Abra o nó no Kora Studio e escreva a mensagem.",
+            { node: "message", node_id: node.id })
         }
 
         /**

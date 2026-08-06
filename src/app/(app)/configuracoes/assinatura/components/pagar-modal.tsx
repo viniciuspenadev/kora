@@ -2,6 +2,7 @@
 
 import { Barcode, CreditCard, Wallet } from "lucide-react"
 import { BTN_GHOST, BTN_WHITE, ModalShell } from "./modal-shell"
+import { linkSuporte } from "@/lib/support"
 import { PixBox } from "./pix-box"
 import { brl, dataLonga } from "../format"
 
@@ -52,11 +53,12 @@ export function PagarModal({
               🔑 Enquanto boleto e cartão avulso não existirem, o honesto é dizer o que
               existe: falar com a gente. Um caminho real vale mais que dois falsos. */}
           <a
-            // Mesmo endereço que o resto da tela de assinatura já usa — não inventar um segundo canal.
-            href="mailto:suporte@kora.app?subject=Outra%20forma%20de%20pagamento"
+            // Contato vem de `lib/support` — o número mora em UM lugar só.
+            href={linkSuporte("Olá! Quero pagar minha fatura Kora por outra forma.")}
+            target="_blank" rel="noopener noreferrer"
             className={BTN_WHITE}
           >
-            <CreditCard className="size-3.5" /> Falar sobre outra forma de pagamento
+            <CreditCard className="size-3.5" /> Falar no WhatsApp
           </a>
           <p className="text-[11px] text-slate-400 mt-2">
             Boleto e cartão avulso a gente resolve junto com você — o que estiver pausado

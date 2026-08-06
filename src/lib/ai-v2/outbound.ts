@@ -327,7 +327,7 @@ async function persistBotMessage(
  * Padrão da casa pra falha de nó (capabilities/transfer.ts): recusar é aceitável,
  * recusar CALADO não — o atendente precisa ver no inbox e agir.
  */
-async function noteFlowSkip(ctx: OutboundCtx, content: string, meta: Record<string, unknown>): Promise<void> {
+export async function noteFlowSkip(ctx: OutboundCtx, content: string, meta: Record<string, unknown>): Promise<void> {
   const { error } = await supabaseAdmin.from("chat_messages").insert({
     conversation_id: ctx.conversationId, tenant_id: ctx.tenantId,
     sender_type: "system", content_type: "text", content,

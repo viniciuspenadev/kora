@@ -24,6 +24,7 @@ async function assertAutomationQuota(tenantId: string): Promise<string | null> {
 }
 import type { FlowGraph, FlowTrigger } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
+import type { RichMessage } from "@/lib/ai-v2/flow/types"
 import { checkFlowGraphLimits } from "@/lib/ai-v2/flow/limits"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
 
@@ -228,6 +229,30 @@ async function validateSchedulePublish(tenantId: string, graph: FlowGraph): Prom
   return null
 }
 
+/**
+ * Recusa publicar nó **Mensagem** cujo formato rico está incompleto.
+ *
+ * 🔴 Nasceu de uma execução REAL do owner (2026-08-06): um nó no formato "Texto e botões"
+ *    **sem texto**, só com botões de link. A Meta exige o texto nesse formato ⇒ não havia
+ *    mensagem possível. O fluxo pulava o nó, seguia pro fim, e o cliente final recebia a
+ *    1ª mensagem e **nada depois** — sem erro, sem aviso, sem registro. O owner só
+ *    descobriu porque foi olhar.
+ *
+ * ⚠️ Usa `richFormatMissing`, a **MESMA** função que o compositor usa pra avisar na tela.
+ *    Uma segunda régua aqui divergiria da primeira, e a divergência significa exatamente
+ *    isto: publicar o que a tela disse que estava ok.
+ */
+function validateMessagePublish(graph: FlowGraph): string | null {
+  for (const n of graph.nodes) {
+    if (n.type !== "message") continue
+    const rich = (n.config as { rich?: RichMessage }).rich
+    if (!rich) continue                       // nó legado (texto puro) — nada a validar
+    const falta = richFormatMissing(rich)
+    if (falta) return `Um nó Mensagem está incompleto: ${falta.toLowerCase()}`
+  }
+  return null
+}
+
 export async function listFlows(): Promise<StudioFlowSummary[]> {
   const session = await requireAdmin()
   const { data, error } = await supabaseAdmin
@@ -399,6 +424,10 @@ export async function publishFlow(
   // Nó Agendar sem agenda que funcione = mesma armadilha silenciosa do gatilho do IG.
   const schedErr = await validateSchedulePublish(session.user.tenantId, patch.graph)
   if (schedErr) return { error: schedErr }
+
+  // Nó Mensagem com formato incompleto = nó que não envia nada, calado (caso real).
+  const msgErr = validateMessagePublish(patch.graph)
+  if (msgErr) return { error: msgErr }
 
   // Pega a versão atual pra incrementar + snapshot.
   const { data: cur } = await supabaseAdmin
