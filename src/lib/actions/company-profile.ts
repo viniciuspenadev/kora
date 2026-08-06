@@ -6,7 +6,9 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { logAudit } from "@/lib/audit"
 import { rateLimit } from "@/lib/rate-limit"
 import { normalizarPerfilFiscal, type EntradaFiscal } from "@/lib/billing/fiscal-profile"
+import { podeCobrar } from "@/lib/billing/fiscal-profile"
 import { syncAsaasCustomer } from "@/lib/asaas/customers"
+import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 
 // ═══════════════════════════════════════════════════════════════
 // Cadastro da empresa — lado do CLIENTE (/configuracoes/empresa)
@@ -90,10 +92,14 @@ export async function getMyCompanyProfile(): Promise<PerfilEmpresa | null> {
     district:               p.district ?? VAZIO,
     city:                   p.city ?? VAZIO,
     state:                  p.state ?? VAZIO,
-    documento_travado:      Boolean(t.asaas_subscription_id),
-    completo: Boolean(
-      (p.legal_name ?? t.name) && p.billing_email && p.tax_id && p.zip && p.number,
-    ),
+    // ⚠️ Só assinatura REAL trava o documento. Com a reserva do claim, travava o CPF/CNPJ
+    //    de quem ainda nem tinha assinado — e sem documento corrigível não há como cobrar.
+    documento_travado:      Boolean(assinaturaRealId(t.asaas_subscription_id)),
+    // 🔑 FONTE ÚNICA (`podeCobrar`). Era a 6ª cópia da régua, e como as outras estava sem
+    //    o telefone — dizia "completo" pra quem o checkout recusaria.
+    // ⚠️ `legal_name` cai pro nome do tenant quando o perfil ainda não tem razão social,
+    //    igual ao campo acima: é o mesmo valor que a tela mostra.
+    completo: podeCobrar({ ...p, legal_name: p.legal_name ?? t.name }),
   }
 }
 
@@ -162,7 +168,7 @@ export async function saveMyCompanyProfile(
   //    envolve olhar o que já foi cobrado. Por isso passa por gente.
   const { data: atual } = await supabaseAdmin
     .from("tenants").select("asaas_subscription_id").eq("id", tenantId).maybeSingle()
-  const temAssinatura = Boolean((atual as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id)
+  const temAssinatura = Boolean(assinaturaRealId((atual as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id))
 
   if (temAssinatura) {
     const { data: anterior } = await supabaseAdmin

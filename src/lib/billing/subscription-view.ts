@@ -58,6 +58,8 @@ export interface ContaDoMesData {
 
 export interface AssinaturaView {
   standing:  BillingStanding
+  /** Módulos que a conta REALMENTE tem ligados, pelo nome do catálogo. */
+  incluso:   string[]
   resumo:    AssinaturaResumoData
   conta:     ContaDoMesData
   medidas:   LinhaMedidaData[]
@@ -80,18 +82,42 @@ function mb(n: number): string {
  * layout podem chamar sem pagar duas vezes.
  */
 export const getAssinaturaView = cache(async (tenantId: string): Promise<AssinaturaView> => {
-  const [standing, limits, tenantRow, perfil] = await Promise.all([
+  const [standing, limits, tenantRow, perfil, modulos] = await Promise.all([
     getBillingStanding(tenantId),
     listAllLimits(tenantId),
     supabaseAdmin.from("tenants")
-      .select("billing_day, plan_id, plans:plan_id ( name, price_cents, user_quota, extra_user_price_cents )")
+      .select("billing_day, plan_id, asaas_subscription_id, plans:plan_id ( name, price_cents, user_quota, extra_user_price_cents )")
       .eq("id", tenantId).maybeSingle(),
     supabaseAdmin.from("tenant_billing_profile")
       .select("billing_email").eq("tenant_id", tenantId).maybeSingle(),
+    // 🔴 "O QUE ESTÁ INCLUSO" VINHA VAZIO (achado do dono, 05/08 — print da tela). O card
+    //    era alimentado por `standing.continues`, e as duas coisas respondem perguntas
+    //    DIFERENTES: `continues` é *"o que ainda funciona apesar do problema"* — vazio por
+    //    definição em conta saudável, porque nada foi cortado —, enquanto o título promete
+    //    *"o que sua assinatura te deixa fazer hoje"*. Cliente pagante via um título com
+    //    nada embaixo, justo na tela que existe pra justificar a mensalidade.
+    // 🔑 A fonte certa é o que o tenant REALMENTE tem ligado, com o nome do catálogo —
+    //    mesma verdade que o god mode e a vitrine de planos usam.
+    // ⚠️ Consulta mora AQUI, no carregador da tela, e não em `getBillingStanding`: aquele
+    //    roda no banner de TODA página do app, e ninguém precisa da lista de módulos pra
+    //    desenhar um aviso.
+    supabaseAdmin.from("tenant_modules")
+      .select("module_slug, module_catalog!inner ( name, active )")
+      .eq("tenant_id", tenantId).eq("enabled", true),
   ])
+
+  // Nome do catálogo, ordenado — a ordem do banco não significa nada pro cliente.
+  const incluso = ((modulos.data ?? []) as unknown as {
+    module_catalog: { name: string; active: boolean } | { name: string; active: boolean }[] | null
+  }[])
+    .map((m) => (Array.isArray(m.module_catalog) ? m.module_catalog[0] : m.module_catalog))
+    .filter((c): c is { name: string; active: boolean } => !!c && c.active)
+    .map((c) => c.name)
+    .sort((a, b) => a.localeCompare(b, "pt-BR"))
 
   const t = tenantRow.data as {
     billing_day: number | null
+    asaas_subscription_id?: string | null
     plans: { name: string; price_cents: number; user_quota: number | null; extra_user_price_cents: number | null } | null
   } | null
   const plano = t?.plans ?? null
@@ -170,14 +196,21 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
       planoNome:  plano?.name ?? "Sem plano",
       planoCents,
       cicloDia:   t?.billing_day ?? null,
-      // ⚠️ Honestidade: não há gateway integrado ainda (docs/asaas-billing-design.md).
-      //    Escrever "Cartão de crédito" aqui seria a tela afirmando um meio de pagamento
-      //    que não existe — o tipo de mentira pequena que destrói a confiança na fatura.
-      formaPagamento: "A definir",
+      // 🔴 ERA FIXO EM "A definir", com um comentário dizendo que não havia gateway
+      //    integrado — e havia: o cliente podia pagar no cartão e a tela continuava
+      //    dizendo "a definir" pra sempre (achado do dono, 05/08). O comentário
+      //    envelheceu junto com o código que ele justificava.
+      // ⚠️ Deriva do FATO (existe assinatura no gateway?), não de constante. E continua
+      //    honesto no outro caso: sem assinatura, "A definir" é a verdade.
+      // ⚠️ Sem bandeira nem 4 últimos dígitos de propósito — não guardamos nada do cartão
+      //    (só o token). Exibi-los exigiria persistir dado de cartão, e a economia de um
+      //    clique não paga o custo de entrar nesse terreno.
+      formaPagamento: t?.asaas_subscription_id ? "Cartão de crédito" : "A definir",
       emailCobranca:  (perfil.data as { billing_email?: string } | null)?.billing_email ?? "",
       adiamentoUsado: false,   // TODO(asaas): exige carimbo no banco pra valer (§ modais)
       adiamentoAte:   null,
     },
+    incluso,
     conta: {
       planoLabel: plano?.name ?? "Sem plano",
       planoCents,

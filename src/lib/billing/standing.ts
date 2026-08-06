@@ -1,5 +1,6 @@
 import "server-only"
 import { cache } from "react"
+import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { podeCobrar } from "@/lib/billing/fiscal-profile"
 import { supabaseAdmin } from "@/lib/supabase"
 import {
@@ -356,7 +357,9 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     normalizeState(row.lifecycle_state) === "trialing" &&
     !!row.trial_ends_at &&
     new Date(row.trial_ends_at).getTime() > Date.now() &&
-    !row.asaas_subscription_id
+    // ⚠️ Reserva de claim não conta como assinatura: contava, e o cliente em teste PERDIA
+    //    o aviso "faltam N dias" no meio de uma tentativa de pagamento.
+    !assinaturaRealId(row.asaas_subscription_id)
 
   const canAccess = row.active === true && !isTenantBlockedForAccess(row.lifecycle_state)
   const canSpend  = canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status)
@@ -372,6 +375,15 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     //    escada — cai em `readonly` por ser o mais próximo: sem acesso, nada gasta,
     //    dado intacto. É o único degrau atribuído por aproximação neste módulo.
     degrau = normalizeState(row.lifecycle_state) === "deactivated" ? "terminated" : "readonly"
+  } else if (normalizeState(row.lifecycle_state) === "trial_ended") {
+    // 🔴 SUBIU PRA CÁ EM 05/08. Ficava lá embaixo, depois de `!canSpend` e de fatura
+    //    vencida — e como `trial_ended` agora corta gasto de verdade, ele passaria a cair
+    //    em `restricted`, cuja tela diz *"seu atendimento e seus dados seguem no ar"* pra
+    //    uma conta que o layout acabou de trancar. Duas telas contando histórias
+    //    diferentes sobre o mesmo cliente.
+    // 🔑 "Seu teste acabou" é mais específico E mais acionável que "gasto cortado": diz o
+    //    que houve e o que fazer. Degrau mais específico vence.
+    degrau = "trial_ended"
   } else if (!canSpend) {
     // Degrau 3 — `past_due` OU `canceled`. São causas diferentes com o MESMO
     // enforcement (corta gasto, mantém acesso), e o degrau descreve enforcement.
@@ -396,8 +408,6 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
         tenantId, `${invoice.daysOverdue}d > ${PAST_DUE_GRACE_DAYS}d`,
       )
     }
-  } else if (normalizeState(row.lifecycle_state) === "trial_ended") {
-    degrau = "trial_ended"
   } else if (emTrial) {
     // ── Degrau 0 — o teste ────────────────────────────────────────────────────
     // Vem DEPOIS de toda a escada de inadimplência de propósito: se por algum caminho

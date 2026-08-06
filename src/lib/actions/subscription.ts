@@ -9,6 +9,7 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { createSubscriptionForTenant } from "@/lib/asaas/subscriptions"
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
+import { abaixoDoMinimoDoCartao, assinaturaRealId } from "@/lib/billing/gateway-limits"
 
 // ═══════════════════════════════════════════════════════════════
 // Assinatura — leitura pro app do tenant
@@ -97,6 +98,15 @@ export async function escolherPlano(planoId: string): Promise<{ error?: string; 
 
   if (!plano) return { error: "Este plano não está disponível. Recarregue a página." }
 
+  // ⚠️ Abaixo do piso do gateway = plano IMPOSSÍVEL de cobrar no cartão. Barra aqui, no
+  //    clique, e não depois do cadastro e do cartão digitado: a pessoa não tem como
+  //    resolver isso sozinha (o preço é do god mode), então o mínimo é não fazer ela
+  //    percorrer a trilha inteira pra descobrir.
+  if (abaixoDoMinimoDoCartao((plano as { price_cents?: number }).price_cents)) {
+    console.error("[billing] plano abaixo do mínimo do cartão:", planoId)
+    return { error: "Este plano está indisponível para contratação. Fale com a gente." }
+  }
+
   // 🔴 SÓ A PRIMEIRA ESCOLHA — furo que eu mesmo abri e fechei no mesmo dia (2026-08-05).
   //
   //    Sem esta guarda, um cliente PAGANTE podia se rebaixar sozinho e ficar com tudo:
@@ -120,7 +130,7 @@ export async function escolherPlano(planoId: string): Promise<{ error?: string; 
     .maybeSingle()
   const tenant = t as { asaas_subscription_id?: string | null; billing_mode?: string | null } | null
 
-  if (tenant?.asaas_subscription_id) {
+  if (assinaturaRealId(tenant?.asaas_subscription_id)) {
     return { error: "Sua assinatura já está ativa. Para mudar de plano, fale com a gente." }
   }
   // ⚠️ `manual` é governado SÓ pelo god mode (docs/asaas-billing-design.md §2). Deixar o

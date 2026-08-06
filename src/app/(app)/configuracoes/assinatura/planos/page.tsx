@@ -6,6 +6,7 @@ import { getTitularParaCobranca } from "@/lib/actions/subscription"
 import { loadAssinatura } from "../loader"
 import { dataLonga } from "../format"
 import { PlanosModal } from "../components/planos-modal"
+import { dataDaPrimeiraCobranca } from "@/lib/billing/gateway-limits"
 
 // B6 · Escolher plano (catálogo + trilha de contratação)
 //
@@ -46,7 +47,7 @@ export default async function EscolherPlanoPage() {
       titular={titular}
       // ⚠️ Mesma data que o `createSubscriptionForTenant` usa como `nextDueDate`. Prometer
       //    aqui um dia diferente do que o gateway cobra vira ticket no primeiro ciclo.
-      primeiraCobranca={mock.standing.trial?.endsAt ? dataLonga(mock.standing.trial.endsAt) : null}
+      primeiraCobranca={(() => { const d = dataDaPrimeiraCobranca(mock.standing.trial?.endsAt); return d ? dataLonga(d) : null })()}
       // Aqui ele ESCOLHE — ainda tem produto. Quem trava é o `trial_ended`, na tela de
       // assinatura, onde o modal nasce sem saída de propósito.
       bloqueante={false}

@@ -42,6 +42,15 @@ interface Item {
    *    ligado ainda — que é exatamente o estado de todo cliente novo.
    */
   needsOfficial?: boolean
+  /**
+   * Item que só existe pra quem contrata DENTRO do produto.
+   *
+   * 🔑 Cliente `billing_mode='manual'` é cobrado por fora (decisão do dono, 05/08). Pra ele
+   *    a Assinatura não é um extra escondido — ela simplesmente não se aplica.
+   * ⚠️ Esconder aqui é só cortesia visual; quem realmente barra é o layout da pasta
+   *    (`assinatura/layout.tsx`). Menu não é segurança.
+   */
+  needsSelfServiceBilling?: boolean
 }
 
 const GROUPS: { key: string; label: string; items: Item[] }[] = [
@@ -69,7 +78,7 @@ const GROUPS: { key: string; label: string; items: Item[] }[] = [
     //    rotas leem dado real (`loadAssinatura`/`loadFatura`) e o modo prévia (`?degrau=`)
     //    está restrito a platform admin DENTRO de cada página — ou seja, a trava de layout
     //    que existia virou redundante e saiu junto.
-    { href: "/configuracoes/assinatura", label: "Assinatura",    icon: CreditCard },
+    { href: "/configuracoes/assinatura", label: "Assinatura",    icon: CreditCard, needsSelfServiceBilling: true },
   ] },
   // ⚠️ Canais (WhatsApp) e Chat do site NÃO entram aqui: CANAL se conecta e se gerencia
   //    em /integracoes, que é onde estão os cards com status, número e sinal de vida.
@@ -105,7 +114,11 @@ const GROUPS: { key: string; label: string; items: Item[] }[] = [
   ] },
 ]
 
-export function SettingsNav({ modules, hasOfficial }: { modules: string[]; hasOfficial: boolean }) {
+export function SettingsNav({ modules, hasOfficial, selfServiceBilling }: {
+  modules: string[]; hasOfficial: boolean
+  /** Cobrança acontece dentro do produto? `false` = cliente faturado por fora. */
+  selfServiceBilling: boolean
+}) {
   const pathname = usePathname()
   const [q, setQ] = useState("")
   const modSet = useMemo(() => new Set(modules), [modules])
@@ -118,10 +131,11 @@ export function SettingsNav({ modules, hasOfficial }: { modules: string[]; hasOf
         items: g.items.filter((i) =>
           (!i.module || modSet.has(i.module)) &&
           (!i.needsOfficial || hasOfficial) &&
+          (!i.needsSelfServiceBilling || selfServiceBilling) &&
           (!term || i.label.toLowerCase().includes(term))),
       }))
       .filter((g) => g.items.length > 0)
-  }, [q, modSet, hasOfficial])
+  }, [q, modSet, hasOfficial, selfServiceBilling])
 
   return (
     <aside className="w-full lg:w-64 shrink-0 border-b lg:border-b-0 lg:border-r border-slate-200 bg-white">

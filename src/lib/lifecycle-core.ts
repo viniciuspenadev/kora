@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { logAudit } from "@/lib/audit"
 import { revokeTenantAccess, type RevokeTenantAccessResult } from "@/lib/auth/revoke-tenant-access"
 import { TRANSITIONS, normalizeState, type LifecycleAction, type LifecycleState } from "@/lib/lifecycle-shared"
+import { cancelSubscriptionForTenant } from "@/lib/asaas/subscriptions"
 
 const DAY = 86_400_000
 
@@ -122,6 +123,21 @@ export async function transitionLifecycleCore(
   let revoked: RevokeTenantAccessResult | null = null
   if (REVOKING.has(action)) {
     revoked = await revokeTenantAccess(tenantId)
+
+    // 💳 E CANCELA A COBRANÇA (05/08/2026). A cascata revogava sessão, token e push — tudo
+    //    que dá ACESSO — e deixava a assinatura recorrente viva no gateway. O cliente
+    //    perdia o produto e **continuava sendo debitado todo mês, indefinidamente**.
+    //    Cobrar sem entregar é o pior lado possível pra errar, e não havia nenhuma chamada
+    //    de cancelamento no repositório inteiro (auditoria de 05/08).
+    // ⚠️ Best-effort, como o resto da cascata: o estado já foi escrito e o acesso já caiu.
+    //    Falha aqui NÃO desfaz a transição — grita no log pra cancelamento manual, porque
+    //    manter o cliente com acesso só porque o gateway não respondeu seria pior.
+    const cancel = await cancelSubscriptionForTenant(tenantId)
+    if ("error" in cancel) {
+      console.error(JSON.stringify({
+        src: "lifecycle", kind: "assinatura-NAO-cancelada", tenant: tenantId, action,
+      }))
+    }
   }
 
   await logAudit({

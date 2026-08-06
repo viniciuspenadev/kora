@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { abaixoDoMinimoDoCartao } from "@/lib/billing/gateway-limits"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { applyPlan } from "@/lib/plans"
@@ -68,9 +69,20 @@ export interface PlanInput {
   active:                 boolean
 }
 
+
 function validate(input: PlanInput): string | null {
   if (!input.name.trim())                  return "Dê um nome ao plano"
   if (input.price_cents < 0)               return "Preço inválido"
+  // 🔑 Piso do GATEWAY, não nosso — fonte única em `billing/gateway-limits.ts`.
+  //    Sem esta linha o god mode publica um plano que o cartão nunca consegue cobrar,
+  //    e quem descobre é o cliente no fim do checkout (medido 05/08, plano a R$ 1,00).
+  // ⚠️ O piso só vale pra plano ATIVO (correção 05/08). Sem esta condição, um plano legado
+  //    salvo abaixo do mínimo ficava PRESO: o único caminho de arquivá-lo é este mesmo
+  //    formulário, e a validação recusava salvar — ou seja, a guarda impedia de consertar
+  //    exatamente o que ela existe pra evitar. Desativar tem que ser sempre possível.
+  if (input.active && abaixoDoMinimoDoCartao(input.price_cents)) {
+    return "O gateway não cobra menos de R$ 5,00 no cartão. Use R$ 0 para plano gratuito, ou R$ 5,00 ou mais."
+  }
   if (input.user_quota < 1)                return "A cota de usuários precisa ser ao menos 1"
   if (input.extra_user_price_cents < 0)    return "Preço por usuário adicional inválido"
   if (input.trial_days < 0)                return "Dias de validade inválidos"
@@ -242,8 +254,37 @@ export async function assignPlanToTenant(tenantId: string, planId: string | null
   await requirePlatformAdmin()
 
   if (!planId) {
-    const { error } = await supabaseAdmin.from("tenants").update({ plan_id: null }).eq("id", tenantId)
+    // 🔴 "REMOVER PLANO" ERA UM UPGRADE GRÁTIS (auditoria 05/08/2026). O update mexia SÓ em
+    //    `plan_id` e deixava três rastros que, juntos, davam ao cliente mais do que
+    //    qualquer plano vendido:
+    //      1. todos os módulos continuavam ligados (`applyPlan` nunca revogou nada);
+    //      2. `tenants.plan` seguia na string antiga (ex.: `'pro'`), e é ela que o
+    //         `resolveMax` usa como fallback ⇒ o cliente herdava os limites LEGADOS —
+    //         15 usuários, 20 GB, 3 números oficiais — contra `users: 1` dos planos reais;
+    //      3. sem `plan_id`, `runMonthlyBilling` pula o tenant ⇒ **nunca mais é faturado**.
+    //    Um clique do operador = produto máximo com isenção permanente, em silêncio.
+    // 🔑 "Sem plano" tem que significar sem plano: zera a string legada e desliga o que o
+    //    plano dava. Desativa, não deleta — o histórico do `tenant_modules` fica.
+    // ⚠️ O que foi ligado À MÃO permanece: mesma regra da revogação em `applyPlan`.
+    const { data: antes } = await supabaseAdmin
+      .from("tenants").select("plan_id").eq("id", tenantId).maybeSingle()
+    const anterior = (antes as { plan_id?: string | null } | null)?.plan_id ?? null
+
+    const { error } = await supabaseAdmin
+      .from("tenants").update({ plan_id: null, plan: null }).eq("id", tenantId)
     if (error) return { error: error.message }
+
+    if (anterior) {
+      const { data: velho } = await supabaseAdmin
+        .from("plans").select("included_modules").eq("id", anterior).maybeSingle()
+      const doVelho = ((velho as { included_modules?: string[] | null } | null)?.included_modules ?? []).filter(Boolean)
+      if (doVelho.length > 0) {
+        await supabaseAdmin.from("tenant_modules")
+          .update({ enabled: false, pro: false, reason: "Plano removido" })
+          .eq("tenant_id", tenantId)
+          .in("module_slug", doVelho)
+      }
+    }
   } else {
     // Fonte única: aplica plan_id + plan string + módulos do plano (mantém manuais).
     const r = await applyPlan(tenantId, planId)

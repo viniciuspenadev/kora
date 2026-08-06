@@ -2,6 +2,7 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getEnabledModuleSlugs } from "@/lib/modules"
+import { temAssinaturaNoProduto } from "@/lib/billing/self-service"
 import { SettingsNav } from "@/components/app/settings-nav"
 
 /**
@@ -25,7 +26,10 @@ export default async function ConfiguracoesLayout({ children }: { children: Reac
   //    sem `meta_business_account_id`/`meta_access_token` — os MESMOS dois campos
   //    conferidos aqui, de propósito: se a checagem daqui fosse mais frouxa, o menu
   //    voltaria a oferecer a porta que a página recusa.
-  const [modules, { data: oficial }] = await Promise.all([
+  // ⚠️ `selfServiceBilling` esconde a Assinatura de quem é faturado POR FORA (decisão do
+  //    dono, 05/08). Aqui é só cortesia visual — quem barra de verdade é
+  //    `assinatura/layout.tsx`, porque esconder o item não fecha a rota.
+  const [modules, { data: oficial }, selfServiceBilling] = await Promise.all([
     getEnabledModuleSlugs(session.user.tenantId),
     supabaseAdmin
       .from("whatsapp_instances")
@@ -36,11 +40,12 @@ export default async function ConfiguracoesLayout({ children }: { children: Reac
       .not("meta_access_token", "is", null)
       .limit(1)
       .maybeSingle(),
+    temAssinaturaNoProduto(session.user.tenantId),
   ])
 
   return (
     <div className="min-h-full bg-canvas flex flex-col lg:flex-row">
-      <SettingsNav modules={[...modules]} hasOfficial={!!oficial} />
+      <SettingsNav modules={[...modules]} hasOfficial={!!oficial} selfServiceBilling={selfServiceBilling} />
       <div className="min-w-0 flex-1">{children}</div>
     </div>
   )

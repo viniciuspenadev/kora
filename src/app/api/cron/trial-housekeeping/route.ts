@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { requireCronSecret } from "@/lib/cron-auth"
 import { runTrialHousekeeping } from "@/lib/trial-housekeeping"
+import { reconcileAsaas } from "@/lib/asaas/reconcile"
 import { supabaseAdmin } from "@/lib/supabase"
 
 /**
@@ -55,9 +56,24 @@ export async function GET(req: NextRequest) {
   // Sequencial e independentes: a reconciliação do storage não pode ser derrubada por
   // uma falha do housekeeping de trial, nem o contrário.
   const result  = await runTrialHousekeeping()
+
+  // 💳 RECONCILIAÇÃO COM O GATEWAY (05/08/2026). Roda DEPOIS do housekeeping de propósito:
+  //    o bloco 1.a já não suspende quem tem assinatura, e esta varredura libera quem pagou
+  //    e ficou preso em `trial_ended` porque o webhook se perdeu. Sem ela, uma única
+  //    entrega HTTP falha deixava um cliente pagante travado, indefinidamente e em
+  //    silêncio — o webhook era ponto único de falha do produto inteiro.
+  // ⚠️ Não derruba o cron se falhar: as outras tarefas do dia não dependem dela.
+  let billing: Awaited<ReturnType<typeof reconcileAsaas>> | { erro: string }
+  try {
+    billing = await reconcileAsaas()
+  } catch (e) {
+    billing = { erro: (e as Error).message }
+    console.error("[cron/reconcile-asaas]", (e as Error).message)
+  }
+
   const storage = await reconcileStorage()
   const elapsedMs = Date.now() - startedAt
 
   console.log("[cron/trial-housekeeping]", JSON.stringify({ elapsedMs, ...result, storage }))
-  return NextResponse.json({ ok: true, elapsedMs, ...result, storage })
+  return NextResponse.json({ ok: true, elapsedMs, ...result, billing, storage })
 }

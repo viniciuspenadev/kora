@@ -2,6 +2,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { transitionLifecycleCore } from "@/lib/lifecycle-core"
 import { TRIAL_ENDED_GRACE_DAYS } from "@/lib/lifecycle-shared"
+import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 
 /**
  * Housekeeping diário do trial (chamado pelo cron /api/cron/trial-housekeeping):
@@ -34,7 +35,9 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
     // ⚠️ Quem manda no estado dele daqui pra frente é o webhook: pagamento confirmado
     //    move `trialing → active`; vencido move pra `past_due` (degrau 3). Este cron
     //    continua dono APENAS de quem terminou o teste sem configurar pagamento.
-    if ((t as { asaas_subscription_id?: string | null }).asaas_subscription_id) continue
+    // ⚠️ Reserva órfã do claim NÃO pode fazer o teste virar vitalício (era o efeito: o
+    //    cron pulava o tenant pra sempre e ele seguia gastando IA na nossa chave).
+    if (assinaturaRealId((t as { asaas_subscription_id?: string | null }).asaas_subscription_id)) continue
 
     // 🔴 ENCERRA O TESTE, NÃO SUSPENDE (decisão do dono, 2026-08-05).
     //    Suspender negava o login — e a tela de login não distingue "seu teste acabou" de
@@ -58,6 +61,14 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
     .select("id")
     .eq("lifecycle_state", "trial_ended")
     .lt("trial_ends_at", limite)
+    // 🔴 MESMA GUARDA DO BLOCO 1, QUE FALTAVA AQUI (05/08). O bloco acima pula quem tem
+    //    assinatura no gateway; este não pulava — e a diferença derrubava exatamente quem
+    //    tinha pagado. Cenário medido na auditoria: cliente assina, o webhook se perde (ou
+    //    a rota está fora do ar por 1 minuto), ele fica em `trial_ended`, e 48h depois
+    //    ESTE bloco o **suspende** — login negado, com o cartão sendo debitado todo mês.
+    // ⚠️ A reconciliação abaixo é a outra metade: ela LIBERA quem pagou e ficou pra trás.
+    //    Esta guarda garante que, enquanto ela não roda, ninguém é punido por engano.
+    .is("asaas_subscription_id", null)
   if (spErr) console.error("[housekeeping] leitura de testes encerrados falhou:", spErr.message)
 
   for (const t of semPagar ?? []) {

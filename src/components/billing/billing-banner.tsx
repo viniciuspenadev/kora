@@ -126,11 +126,21 @@ function hojeLocal(): string {
 
 export function BillingBanner({
   standing,
+  selfServiceBilling = true,
   payHref,
   onPay,
   className,
 }: {
   standing: BillingStanding
+  /**
+   * A cobrança deste cliente acontece DENTRO do produto?
+   *
+   * 🔴 `false` = faturado por fora. Sem esta prop, o banner oferecia "Ativar assinatura"
+   *    pra tenant `manual` e o clique batia no portão da área de Assinatura — a mesma
+   *    "porta que bate na cara" que o menu já tinha aprendido a esconder (achado do QA,
+   *    06/08). Em produção, **4 dos 5 tenants são `manual`**.
+   */
+  selfServiceBilling?: boolean
   payHref?: string
   /** Presente ⇒ o CTA abre o pagamento na própria tela em vez de navegar. */
   onPay?: () => void
@@ -246,7 +256,9 @@ export function BillingBanner({
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {degrau === "trial" || degrau === "trial_ended" ? (
+        {/* ⚠️ Cliente faturado por fora não recebe CTA de compra nenhum — o aviso (o que
+            está acontecendo com a conta) continua valendo; o botão é que não tem destino. */}
+        {!selfServiceBilling ? null : degrau === "trial" || degrau === "trial_ended" ? (
           // ⚠️ Sem cadastro completo o botão NÃO leva ao cartão: a tokenização falharia e
           //    a pessoa teria digitado o cartão inteiro pra receber um erro previsível.
           <PayNowButton

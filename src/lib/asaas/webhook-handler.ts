@@ -1,7 +1,8 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { applyPlan } from "@/lib/plans"
-import { asaas } from "./client"
+import { normalizeState } from "@/lib/lifecycle-shared"
+import { asaas, AsaasError } from "./client"
 
 // ═══════════════════════════════════════════════════════════════
 // Processamento dos eventos do Asaas — onde a escada é acionada
@@ -79,6 +80,7 @@ interface EventRow {
    */
   payload: {
     payment?:      { id?: string; customer?: string; value?: number; status?: string }
+    /** Preenchido pela consulta ao gateway, não pelo payload. */
     subscription?: { id?: string; customer?: string; status?: string }
   } | null
   processed_at: string | null
@@ -413,7 +415,99 @@ async function liberar(
   tenant: { id: string; lifecycle_state: string | null },
   ev: EventRow,
 ): Promise<void> {
-  const patch: Record<string, unknown> = { subscription_status: "active" }
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 CORROBORAR ANTES DE LIBERAR (05/08/2026) — a assimetria estava furada
+  // ══════════════════════════════════════════════════════════════════════════
+  // Este arquivo declarava que bloquear exige confirmação no gateway e liberar não, com
+  // o argumento de que "o token do webhook já protege". Mas o token é o MESMO controle
+  // nos dois sentidos — contá-lo duas vezes não faz dele dois controles. Na prática,
+  // liberar acreditava no corpo da requisição: não perguntava se o pagamento existe, se
+  // é da NOSSA assinatura, nem se o valor bate.
+  //
+  // 🔴 E NÃO É TEÓRICO: foi assim que eu testei a ativação em 05/08. Disparei dois
+  //    eventos com `payment_id` que NÃO EXISTE no Asaas e o sistema ativou a conta,
+  //    ligou os módulos e limpou o `trial_ends_at`. O teste virou, sem querer, a prova
+  //    de conceito do furo. Quem tiver o token (log de proxy, print do painel, `.env`
+  //    vazado, ex-funcionário) ativa qualquer tenant de graça, para sempre.
+  //
+  // ⚠️ Falha de REDE não pune e não libera: deixa o evento PENDENTE (sem `processed_at`)
+  //    pra a reconciliação do cron pegar. Marcar como processado aqui perderia um
+  //    pagamento real por causa de um timeout — e o dinheiro já entrou.
+  // ⚠️ Já `pagamento inexistente` ou status que não confirma são FECHADOS com nota: não é
+  //    transitório, é evento que não deveria liberar nada.
+  if (!ev.payment_id) { await fechar(ev.id, "sem payment_id — não libera"); return }
+
+  let pagamento: { status?: string; subscription?: string | null; customer?: string | null }
+  try {
+    pagamento = await asaas.get(`/payments/${ev.payment_id}`)
+  } catch (e) {
+    const msg = (e as Error).message
+    // 404 = o pagamento não existe no gateway ⇒ payload forjado ou id inválido. Fecha.
+    if (e instanceof AsaasError && e.status === 404) {
+      console.error(JSON.stringify({
+        src: "asaas-handler", kind: "pagamento-inexistente-nao-libera",
+        tenant: tenant.id, payment: ev.payment_id,
+      }))
+      await fechar(ev.id, "pagamento não existe no gateway")
+      return
+    }
+    // Qualquer outra falha é tratada como transitória: NÃO fecha, pra ser reprocessado.
+    console.error("[asaas-handler] não confirmou pagamento, NÃO libera (fica pendente):", ev.payment_id, msg)
+    return
+  }
+
+  // 🔒 O `customer` do PAYLOAD é forjável (é o corpo da requisição) e é por ele que o
+  //    filtro de tenancy acha o tenant. Confere contra o pagamento REAL do gateway: sem
+  //    isto, quem tivesse o token podia replayar um pagamento confirmado legítimo com o
+  //    `customer` trocado e liberar outro tenant.
+  const { data: donoRow } = await supabaseAdmin
+    .from("tenants").select("asaas_customer_id").eq("id", tenant.id).maybeSingle()
+  const nossoCustomer = (donoRow as { asaas_customer_id?: string | null } | null)?.asaas_customer_id ?? null
+  if (nossoCustomer && pagamento?.customer && pagamento.customer !== nossoCustomer) {
+    await fechar(ev.id, "pagamento é de outro cliente do gateway")
+    return
+  }
+
+  const status = pagamento?.status ?? ""
+  if (!["CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"].includes(status)) {
+    await fechar(ev.id, `gateway diz status=${status} — não libera`)
+    return
+  }
+
+  // ⚠️ O pagamento tem que ser DA NOSSA assinatura. Sem isto, uma cobrança avulsa de R$ 5
+  //    criada no painel do Asaas destrava um plano de R$ 249,90 — o evento chega com o
+  //    mesmo `customer` e o filtro de tenancy o aceita.
+  // ⚠️ Tenant sem `asaas_subscription_id` (ativação manual, cliente legado) não tem contra
+  //    o que comparar: aí a checagem é pulada de propósito, com log — apertar aqui
+  //    quebraria quem a operação ativou à mão.
+  const { data: assinatura } = await supabaseAdmin
+    .from("tenants").select("asaas_subscription_id").eq("id", tenant.id).maybeSingle()
+  const bruto = (assinatura as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id ?? null
+  // ⚠️ `pending:<uuid>` é a RESERVA do claim atômico (subscriptions.ts), não um id de
+  //    assinatura. Compará-la com o `subscription` do gateway recusaria um pagamento
+  //    legítimo que chegasse no meio da ativação.
+  const nossa = bruto && !bruto.startsWith("pending:") ? bruto : null
+  // 🔴 IGUALDADE ESTRITA (06/08). A versão anterior exigia `pagamento?.subscription`
+  //    presente — e **cobrança avulsa criada no painel do Asaas não tem esse campo**.
+  //    Confirmado em payload real de produção. Ou seja: a guarda escrita pra impedir que
+  //    "uma cobrança avulsa de R$ 5 destrave um plano de R$ 249,90" deixava passar
+  //    exatamente esse caso, e só barrava o mais improvável (pagamento de outra assinatura).
+  if (nossa && pagamento?.subscription !== nossa) {
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "pagamento-de-outra-assinatura",
+      tenant: tenant.id, payment: ev.payment_id, esperada: nossa, veio: pagamento.subscription,
+    }))
+    await fechar(ev.id, "pagamento não pertence à assinatura deste cliente")
+    return
+  }
+
+  const patch: Record<string, unknown> = {
+    subscription_status: "active",
+    // 🔑 Limpa o carimbo de encerramento (05/08). `encerrar()` grava `subscription_ends_at`
+    //    e NINGUÉM limpava: quem cancelava e recontratava antes da data era derrubado pela
+    //    varredura 1.b do housekeeping — marcado `canceled` de novo, já pagando.
+    subscription_ends_at: null,
+  }
 
   // ⚠️ Fim do trial: quem pagou sai de `trialing` e vira cliente. Sem isto, ele ficaria
   //    `trialing` com `trial_ends_at` vencido pra sempre — e qualquer varredura futura de
@@ -428,7 +522,7 @@ async function liberar(
   //    ⇒ modal persistente na cara de quem acabou de pagar, para sempre.
   // ⚠️ Mesma classe do `KNOWN_STATES` de ontem: estado novo no tipo, consumidor antigo
   //    intacto, `tsc` verde. Estado novo obriga a varrer QUEM DECIDE em cima dele.
-  if (tenant.lifecycle_state === "trialing" || tenant.lifecycle_state === "trial_ended") {
+  if (["trialing", "trial_ended"].includes(normalizeState(tenant.lifecycle_state))) {
     patch.lifecycle_state = "active"
     patch.trial_ends_at   = null
     patch.active          = true
@@ -498,8 +592,10 @@ async function restringir(
     }
   } catch (e) {
     // Não confirmou ⇒ não pune. Fica pendente e pode ser reprocessado.
-    console.error("[asaas-handler] não confirmou o pagamento, NÃO restringindo:", ev.payment_id, (e as Error).message)
-    await fechar(ev.id, "não foi possível confirmar no gateway")
+    // ⚠️ NÃO fecha (06/08): o comentário acima dizia "fica pendente e pode ser
+    //    reprocessado" e o código FECHAVA — um timeout num `PAYMENT_OVERDUE` legítimo
+    //    virava inadimplente que nunca era restringido. Simétrico ao `liberar`.
+    console.error("[asaas-handler] não confirmou o pagamento, NÃO restringindo (fica pendente):", ev.payment_id, (e as Error).message)
     return
   }
 

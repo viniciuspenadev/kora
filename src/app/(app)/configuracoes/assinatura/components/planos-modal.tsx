@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useState, useTransition, useRef, useEffect } from "react"
 import { Check, X, Loader2, AlertCircle, ArrowRight, ChevronLeft, ChevronRight } from "lucide-react"
-import { escolherPlano, getMyBillingStanding } from "@/lib/actions/subscription"
+import { escolherPlano, getMyBillingStanding, getTitularParaCobranca } from "@/lib/actions/subscription"
 import type { PlanoVitrine } from "@/lib/billing/plans-view"
 import { CATEGORIA_LABEL } from "@/lib/modules-shared"
 import { CadastroRapido } from "./cadastro-rapido"
@@ -64,6 +64,12 @@ export function PlanosModal({
   const [liberado, setLiberado] = useState<boolean | null>(null)
   const [planoEscolhido, setPlanoEscolhido] = useState<PlanoVitrine | null>(null)
   const [cadastroOk, setCadastroOk] = useState(podeAssinar)
+  // 🔑 O titular que chegou por prop é o do SERVIDOR, de antes do cadastro rápido. Quem
+  //    preenche no modal precisa ver os próprios dados no bloco "Cobrança em nome de" —
+  //    senão ele aparece em branco justamente na tela que existe pra conferir antes de
+  //    pagar (achado do QA, 05/08). Recarregar a página resolveria, mas desmontaria o
+  //    modal no meio da compra.
+  const [titularAtual, setTitularAtual] = useState(titular)
 
   // ── Trilho horizontal ────────────────────────────────────────────────────
   // O índice visível sai da POSIÇÃO DE ROLAGEM, não de um estado que a bolinha escreve:
@@ -135,14 +141,25 @@ export function PlanosModal({
   // ⚠️ Teto de ~60s. Se o webhook atrasar mais que isso a tela para de girar e explica —
   //    girar pra sempre faria a pessoa achar que o pagamento falhou e pagar de novo.
   useEffect(() => {
-    if (passo !== "pronto" || liberado) return
+    // 🔴 `liberado` começa `null`, que é falsy — então `if (... || liberado) return` NÃO
+    //    impedia o efeito de rodar de novo quando ele virava `false`, e o polling dava
+    //    DOIS ciclos (~120s, 40 chamadas) em vez de um. Comparar com `!== null` fecha isso.
+    if (passo !== "pronto" || liberado !== null) return
     let vivo = true
     let tentativas = 0
     const t = setInterval(async () => {
       tentativas++
       const st = await getMyBillingStanding()
       if (!vivo) return
-      if (st && st.degrau !== "trial_ended") { setLiberado(true); clearInterval(t); return }
+      // 🔴 A condição era `degrau !== "trial_ended"` — e pra quem ainda está DENTRO do
+      //    teste (degrau `trial`) ela já nascia verdadeira: a tela anunciava "Assinatura
+      //    ativada" na primeira consulta, sem o gateway ter confirmado nada (achado do QA).
+      // 🔑 O que prova pagamento é a assinatura ter saído do estado de teste: `ok`/`grace`
+      //    significam cliente pagante. `trial` e `trial_ended` não provam nada.
+      // ⚠️ WHITELIST (06/08). Com blacklist, `restricted`/`readonly`/`terminated` contavam
+      //    como "liberado" — a tela dizia "Assinatura ativada" e oferecia "Voltar a usar"
+      //    pra uma conta que não liberou nada. Só `ok` e `grace` são cliente pagante.
+      if (st && (st.degrau === "ok" || st.degrau === "grace")) { setLiberado(true); clearInterval(t); return }
       if (tentativas >= 20) { setLiberado(false); clearInterval(t) }
     }, 3000)
     return () => { vivo = false; clearInterval(t) }
@@ -219,7 +236,10 @@ export function PlanosModal({
                   {passo === "cadastro" && (
                     <CadastroRapido
                       inicial={perfil}
-                      onPronto={() => {
+                      onPronto={async () => {
+                        // Rebusca o titular recém-salvo pra o resumo do cartão mostrar os
+                        // dados de verdade em vez dos que vieram vazios do servidor.
+                        try { setTitularAtual(await getTitularParaCobranca()) } catch {}
                         // ⚠️ Marca aqui em vez de recarregar a página: o `podeAssinar` que
                         //    chegou por prop é de ANTES do salvamento, e recarregar
                         //    desmontaria o modal no meio da compra.
@@ -229,10 +249,18 @@ export function PlanosModal({
                     />
                   )}
 
+                  {/* 🔴 Era `titular ?` — nulidade, não completude (achado do QA). Como
+                      `getTitularParaCobranca` só devolve `null` sem sessão ou sem papel, e
+                      as duas páginas já barram por papel, o objeto NUNCA é nulo: o ramo de
+                      fallback era código morto e quem acabou de preencher o cadastro no
+                      modal via o bloco "Cobrança em nome de" **em branco** — exatamente o
+                      bloco que existe pra pessoa conferir os dados antes de pagar.
+                      ⚠️ `cadastroOk` cobre quem salvou NESTA sessão: a prop `titular` veio
+                      do servidor ANTES do salvamento e continuaria incompleta. */}
                   {passo === "pagamento" && planoEscolhido && (
-                    titular ? (
+                    titularAtual && (titularAtual.completo || cadastroOk) ? (
                       <CardForm
-                        titular={titular}
+                        titular={titularAtual}
                         planoId={planoEscolhido.id}
                         planoNome={planoEscolhido.nome}
                         valorCents={planoEscolhido.precoCents}

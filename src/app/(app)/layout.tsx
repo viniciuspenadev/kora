@@ -15,6 +15,8 @@ import { getSetupState } from "@/lib/onboarding"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
 import { getSelfPause } from "@/lib/actions/auto-assign"
+import { getBillingStanding } from "@/lib/billing/standing"
+import { BillingBanner } from "@/components/billing"
 
 /**
  * Quando o wizard de boas-vindas entrou no ar.
@@ -38,10 +40,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const isManager = ["owner", "admin"].includes(session.user.role)
   const showOnboarding = isManager
   // Tudo em UM round-trip paralelo (tenant validado logo abaixo) — latência de navegação.
-  const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes, scope] = await Promise.all([
+  const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes, scope, standing] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("name, plan, active, lifecycle_state, created_at, onboarding_profile_at, onboarding_skipped_at")
+      .select("name, plan, active, lifecycle_state, billing_mode, created_at, onboarding_profile_at, onboarding_skipped_at")
       .eq("id", session.user.tenantId)
       .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
@@ -71,6 +73,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           .order("position")
       : Promise.resolve({ data: null }),
     getViewerScope(),
+    // ⚠️ Só pra quem decide compra: o atendente não vê valor de fatura (mesmo recorte de
+    //    `getMyBillingStanding`). E é `null` pra ele, então o banner nem renderiza.
+    isManager ? getBillingStanding(session.user.tenantId) : Promise.resolve(null),
   ])
   if (!tenant) redirect("/auth/signin")
   if (!tenant.active) redirect("/auth/signin")
@@ -87,6 +92,50 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   //    seria trancar a pessoa do lado de fora da solução.
   // ⚠️ Atendente não chega aqui: `auth()` já o barrou pelo papel (isTenantBlockedForAccessAs).
   if (normalizeState(tenant.lifecycle_state as string | null) === "trial_ended") {
+    // 🔴 CLIENTE FATURADO POR FORA NÃO PODE SER MANDADO PRA CÁ (05/08). Ele não contrata
+    //    no produto: a área de Assinatura foi fechada pra ele em `assinatura/layout.tsx`.
+    //    Mandá-lo pra lá produziria PING-PONG — este layout manda pra assinatura, o portão
+    //    de lá manda pra perfil, este manda pra assinatura de novo: **laço infinito**, o
+    //    mesmo defeito que derrubou a conta do dono hoje de manhã, por outra porta.
+    //    Peguei escrevendo o segundo; o primeiro custou uma tarde.
+    // 🔑 Ele fica FECHADO do mesmo jeito (o teste dele acabou), mas numa tela estática que
+    //    não navega: quem resolve a cobrança dele é a nossa equipe, não um checkout.
+    if ((tenant as { billing_mode?: string | null }).billing_mode !== "gateway") {
+      return (
+        <div className="min-h-dvh flex items-center justify-center bg-slate-50 px-6">
+          <div className="max-w-sm text-center">
+            <h1 className="text-lg font-bold text-slate-900">Seu período de teste terminou</h1>
+            <p className="mt-2 text-sm text-slate-600 leading-relaxed">
+              A cobrança da sua conta é combinada direto com a nossa equipe. Fale com o seu
+              contato para liberar o acesso — seus dados e conversas continuam guardados.
+            </p>
+          </div>
+        </div>
+      )
+    }
+
+    // 🔴 ATENDENTE NÃO ENTRA NO DESVIO (achado do QA, 06/08). `auth()` barra o `agent` em
+    //    `trial_ended` — mas só no re-check de 5 em 5 minutos. NESSA JANELA ele continua
+    //    logado, e o par de gates se empurrava: paywall manda pra `/assinatura`, a página
+    //    de assinatura devolve `agent` pro `/inbox`, o paywall manda de novo ⇒ **laço
+    //    infinito**, com ~9 consultas por volta. Gatilho real: o cron encerra o teste no
+    //    meio do expediente, com a equipe logada.
+    // 🔑 Tela estática: ele fica sabendo o que houve, e ninguém navega — logo não laça.
+    //    Ele também não resolve assinatura, então mandá-lo pra lá nunca fez sentido.
+    if (session.user.role === "agent") {
+      return (
+        <div className="min-h-dvh flex items-center justify-center bg-slate-50 px-6">
+          <div className="max-w-sm text-center">
+            <h1 className="text-lg font-bold text-slate-900">Acesso pausado</h1>
+            <p className="mt-2 text-sm text-slate-600 leading-relaxed">
+              O período de teste desta conta terminou. Avise o responsável — assim que a
+              assinatura for ativada, tudo volta exatamente como estava.
+            </p>
+          </div>
+        </div>
+      )
+    }
+
     const hdrs = await headers()
     // ⚠️ `x-kora-path` é carimbado pelo NOSSO proxy (src/proxy.ts) em toda requisição.
     //    A 1ª versão disto lia `x-invoke-path`/`x-pathname` — headers INTERNOS do Next, sem
@@ -150,7 +199,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     onboarding_skipped_at?: string | null
   }
   const contaNova = !!t.created_at && new Date(t.created_at) >= WIZARD_NO_AR_DESDE
-  if (isManager && contaNova && !t.onboarding_profile_at && !t.onboarding_skipped_at) {
+  // ⚠️ NÃO desvia quem está com o teste vencido (achado do dev sênior + QA, 06/08). Este
+  //    bloco roda DEPOIS do paywall e não respeitava a allow-list dele: conta nova que
+  //    venceu antes do 1º login era mandada pro wizard **inclusive** em
+  //    `/configuracoes/assinatura` — ou seja, o caminho curto pro pagamento ficava
+  //    inalcançável justamente no momento de maior intenção de compra.
+  const testeVencido = normalizeState(tenant.lifecycle_state as string | null) === "trial_ended"
+  if (isManager && contaNova && !testeVencido && !t.onboarding_profile_at && !t.onboarding_skipped_at) {
     redirect("/bem-vindo")
   }
   const hasOfficial = !!officialRes.data
@@ -199,6 +254,25 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               arredondado no encontro sidebar × topo (só md+; mobile é full-bleed). */}
           <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-canvas md:rounded-tl-[22px]">
             <PushPrompt />
+            {/* 🔴 O AVISO DE COBRANÇA NUNCA FOI MONTADO (auditoria 05/08/2026). Os seis
+                componentes de `@/components/billing` existem, estão corretos e tinham
+                **ZERO imports** em todo o `src/` — a mesma falha silenciosa do `<Toaster/>`
+                que ficou meses sem renderizar.
+                O efeito era o pior possível pro negócio: como 100% dos clientes entram por
+                teste, 100% deles chegavam ao fim do teste **sem um único aviso prévio**.
+                O campo `standing.trial` foi criado justamente pra dizer "faltam N dias" e
+                a única superfície que o exibiria não existia na tela. Idem pra `grace` e
+                `restricted`: a IA e as campanhas paravam e o cliente não recebia
+                explicação em lugar nenhum — só se navegasse até a assinatura por conta.
+                ⚠️ Ele se auto-silencia no degrau `ok` (contrato do componente), então não
+                polui a tela de quem está em dia. */}
+            {standing && (
+              <BillingBanner
+                standing={standing}
+                selfServiceBilling={(tenant as { billing_mode?: string | null }).billing_mode === "gateway"}
+                payHref="/configuracoes/assinatura"
+              />
+            )}
             {setup && !setup.allDone && <OnboardingBanner setup={setup} />}
             <main className="flex-1 overflow-y-auto">{children}</main>
           </div>

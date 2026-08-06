@@ -9,6 +9,7 @@ import { dataLonga } from "./format"
 import { getMyCompanyProfile } from "@/lib/actions/company-profile"
 import { getTitularParaCobranca } from "@/lib/actions/subscription"
 import { PlanosModal } from "./components/planos-modal"
+import { dataDaPrimeiraCobranca } from "@/lib/billing/gateway-limits"
 
 // B1 · Minha assinatura
 // ⚠️ Gate igual ao de /configuracoes/uso (owner + admin). TODO(orquestrador):
@@ -59,7 +60,7 @@ export default async function AssinaturaPage({
           // ⚠️ Mesma data que o `createSubscriptionForTenant` vai usar como `nextDueDate`
           //    — prometer na tela um dia diferente do que o gateway cobra é o tipo de
           //    divergência que vira ticket no primeiro ciclo.
-          primeiraCobranca={mock.standing.trial?.endsAt ? dataLonga(mock.standing.trial.endsAt) : null}
+          primeiraCobranca={(() => { const d = dataDaPrimeiraCobranca(mock.standing.trial?.endsAt); return d ? dataLonga(d) : null })()}
         />
       )}
     </AssinaturaShell>

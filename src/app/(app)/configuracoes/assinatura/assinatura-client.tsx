@@ -41,7 +41,7 @@ import { BloqueioTotal } from "./components/bloqueio-total"
 //   flutuando. Cara de extrato, que é o que ele é.
 
 export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
-  const { standing, resumo, conta, medidas, faturaAberta } = mock
+  const { standing, incluso, resumo, conta, medidas, faturaAberta } = mock
   const [modal, setModal]       = useState<null | "pagar" | "dias" | "plano">(null)
   const [bloqueio, setBloqueio] = useState(standing.degrau === "readonly")
   const [adiado, setAdiado]     = useState(false)
@@ -67,12 +67,20 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4 items-start">
           {/* ── Coluna principal ── */}
           <div className="min-w-0 space-y-4">
+            {/* 🔴 A LISTA VINHA DE `standing.continues` e o card ficava VAZIO em conta
+                saudável (print do dono, 05/08). São perguntas diferentes: `continues` é
+                "o que ainda funciona apesar do problema" — vazio quando nada foi cortado —,
+                e o título promete "o que sua assinatura te deixa fazer". Cliente pagante
+                via um título com nada embaixo, na tela que justifica a mensalidade.
+                ⚠️ Em degrau degradado as duas listas convivem: `incluso` mostra o que ele
+                tem, `paused` risca o que parou. */}
+            {(incluso.length > 0 || standing.paused.length > 0) && (
             <SectionCard
               title="O que está incluso"
               description="O que sua assinatura te deixa fazer hoje"
             >
               <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
-                {standing.continues.map((item) => (
+                {incluso.map((item) => (
                   <li key={item} className="flex items-center gap-2 py-0.5">
                     <Check className="size-4 text-emerald-600 shrink-0" strokeWidth={2.5} />
                     <span className="text-sm text-slate-700">{item}</span>
@@ -96,6 +104,7 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
                 </p>
               )}
             </SectionCard>
+            )}
 
             {/* Prévia do consumo — glance, não relatório. A profundidade é a aba Consumo. */}
             <SectionCard

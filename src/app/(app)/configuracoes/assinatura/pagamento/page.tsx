@@ -5,6 +5,7 @@ import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getTitularParaCobranca } from "@/lib/actions/subscription"
 import { CardForm } from "./card-form"
+import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 
 // B5 · Ativar assinatura (captura de cartão)
 //
@@ -66,7 +67,9 @@ export default async function PagamentoPage({ searchParams }: {
   // Cada um com a saída certa. Mostrar o formulário e deixar o gateway recusar depois
   // seria transferir pro cliente um problema que é nosso e que a gente já conhece aqui.
 
-  if (t?.asaas_subscription_id) {
+  // ⚠️ Reserva de claim (`pending:`) NÃO é assinatura — tratá-la como tal escondia o
+  //    formulário de cartão e o cliente ficava sem conseguir pagar.
+  if (assinaturaRealId(t?.asaas_subscription_id)) {
     return (
       <Aviso titulo="Sua assinatura já está ativa">
         Não é preciso informar o cartão de novo. Para trocá-lo, fale com a gente.
@@ -112,8 +115,12 @@ export default async function PagamentoPage({ searchParams }: {
     return (
       <Aviso titulo="Faltam alguns dados de faturamento">
         <>
-          Para emitir a cobrança precisamos do seu <strong>CNPJ ou CPF</strong>,{" "}
-          <strong>CEP</strong> e <strong>número do endereço</strong>.
+          {/* 🔴 Era uma lista FIXA de três campos — e mandou o dono procurar defeito
+              justamente nos três que ele tinha preenchidos, enquanto faltava o telefone
+              (05/08). A action já foi corrigida pra nomear o campo certo; esta página
+              tinha ficado pra trás com o texto antigo. */}
+          Para emitir a cobrança ainda falta:{" "}
+          <strong>{titular?.faltam?.length ? titular.faltam.join(", ") : "completar o cadastro"}</strong>.
           <Link href="/configuracoes/empresa"
             className="mt-4 inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg bg-primary hover:bg-primary-700 text-white text-sm font-semibold transition-colors">
             Completar cadastro <ArrowRight className="size-4" />

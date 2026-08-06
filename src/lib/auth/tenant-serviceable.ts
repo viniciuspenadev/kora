@@ -135,13 +135,13 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
 
   const canAccess = !isTenantBlockedForAccess(row.lifecycle_state)
   // ⚠️ `trial_ended` NÃO tira o acesso (o dono entra pra pagar) mas TIRA o gasto: campanha,
-  //    IA e automação param. Sem isto o teste vencido viraria produto de graça enquanto
-  //    durasse a carência — e é justamente esse custo que o prazo existe pra limitar.
-  const trialAcabou = SPEND_BLOCKED_LIFECYCLE.has(normalizeState(row.lifecycle_state))
+  //    IA e automação param. Essa regra ERA APLICADA AQUI, à mão — e por isso o caminho em
+  //    lote (`serviceableFromRow`) ficou cego a ela e os crons seguiram gastando. Agora ela
+  //    mora dentro de `isTenantBlockedForSpend`, e esta função voltou a ser só uma casca.
   return {
     degraded: false,
     canAccess,
-    canSpend: canAccess && !trialAcabou && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
+    canSpend: canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
   }
 })
 

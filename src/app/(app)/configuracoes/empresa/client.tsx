@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import {
   Building2, User, Loader2, Check, AlertCircle, Sparkles, MapPin, Lock,
 } from "lucide-react"
-import { maskCpfCnpj, maskCep, maskPhone, isValidCpf, isValidCnpj } from "@/lib/masks"
+import { maskCpfCnpj, maskCep, maskPhone, isValidCpf, isValidCnpj, isValidPhoneBR } from "@/lib/masks"
 import { lookupCnpj } from "@/lib/cnpj"
 import { lookupCep } from "@/lib/cep"
 import { saveMyCompanyProfile, type PerfilEmpresa } from "@/lib/actions/company-profile"
@@ -66,6 +66,14 @@ export function EmpresaClient({ inicial }: { inicial: PerfilEmpresa }) {
       { ok: /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(f.billing_email.trim()), label: "E-mail de faturamento" },
       { ok: f.zip.replace(/\D/g, "").length === 8, label: "CEP" },
       { ok: f.number.trim().length > 0,            label: "Número do endereço" },
+      // 🔴 O TELEFONE FALTAVA AQUI (05/08) — e esta lista é a que pinta o selo verde
+      //    "Cadastro completo — pronto para faturamento". O gate de pagamento exige
+      //    telefone VÁLIDO desde hoje; esta tela não exigia nenhum. Resultado medido:
+      //    selo verde aqui, recusa no checkout, e a pessoa mandada de volta pra cá pelo
+      //    hero — laço de contradição entre duas telas do mesmo produto.
+      //    O comentário logo acima já dizia que as três réguas precisam concordar; ele
+      //    não impediu a divergência porque comentário nunca impede — função impede.
+      { ok: isValidPhoneBR(f.phone),               label: "Telefone com DDD" },
     ]
   }, [f, ehPF])
 

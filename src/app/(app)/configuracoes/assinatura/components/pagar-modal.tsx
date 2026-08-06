@@ -46,12 +46,21 @@ export function PagarModal({
 
         <div className="pt-3 border-t border-slate-100">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">Outras formas</p>
-          <div className="flex items-center gap-2 flex-wrap">
-            <button type="button" className={BTN_WHITE}><Barcode className="size-3.5" /> Baixar boleto</button>
-            <button type="button" className={BTN_WHITE}><CreditCard className="size-3.5" /> Pagar no cartão</button>
-          </div>
+          {/* 🔴 ERAM DOIS BOTÕES SEM `onClick` (achado do QA, 05/08): clicar não fazia
+              nada, nem erro, nem log. Botão que não responde ensina que a tela é
+              decorativa — e essa lição contamina os botões que FUNCIONAM.
+              🔑 Enquanto boleto e cartão avulso não existirem, o honesto é dizer o que
+              existe: falar com a gente. Um caminho real vale mais que dois falsos. */}
+          <a
+            // Mesmo endereço que o resto da tela de assinatura já usa — não inventar um segundo canal.
+            href="mailto:suporte@kora.app?subject=Outra%20forma%20de%20pagamento"
+            className={BTN_WHITE}
+          >
+            <CreditCard className="size-3.5" /> Falar sobre outra forma de pagamento
+          </a>
           <p className="text-[11px] text-slate-400 mt-2">
-            Boleto leva até 3 dias úteis pra compensar — o que estiver pausado só volta depois disso.
+            Boleto e cartão avulso a gente resolve junto com você — o que estiver pausado
+            volta assim que o pagamento cair.
           </p>
         </div>
       </div>

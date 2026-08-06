@@ -2,6 +2,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { CANAL_DO_MODULO } from "@/lib/modules-shared"
 import { LIMIT_META } from "@/lib/limits-shared"
+import { MINIMO_CARTAO_CENTS } from "@/lib/billing/gateway-limits"
 
 // ═══════════════════════════════════════════════════════════════
 // Vitrine de planos — o que o CLIENTE pode contratar
@@ -79,8 +80,19 @@ export async function listPlansForClient(tenantId: string): Promise<PlanoVitrine
       .from("plans")
       .select("id, name, description, price_cents, user_quota, extra_user_price_cents, included_modules, pro_modules, limits")
       .eq("active", true)
-      .gt("price_cents", 0)
-      .order("position", { ascending: true }),
+      // 🔴 PISO DO GATEWAY NA VITRINE (05/08). Filtrava só `price > 0`, e por isso um plano
+      //    salvo abaixo do mínimo do cartão aparecia no catálogo com preço e botão
+      //    "Assinar" — o cliente clicava e levava *"indisponível para contratação"*. Pior
+      //    no `trial_ended`, onde o modal não fecha: a pessoa ficava trancada numa tela
+      //    cujo único objetivo é vender, clicando num card que recusa.
+      //    Aconteceu em produção com o PLANO III a R$ 1,00.
+      // ⚠️ Mesmo número do god mode e do motor de assinatura (`gateway-limits.ts`) — a
+      //    vitrine não pode oferecer o que o checkout recusa.
+      .gte("price_cents", MINIMO_CARTAO_CENTS)
+      // ⚠️ Desempate por preço: `position` nasce 0 em todo plano criado pelo god mode, e
+      //    ordenar só por ela embaralhava os cards entre carregamentos.
+      .order("position", { ascending: true })
+      .order("price_cents", { ascending: true }),
     supabaseAdmin.from("tenants").select("plan_id").eq("id", tenantId).maybeSingle(),
     supabaseAdmin.from("module_catalog").select("slug, name, position, category, is_core"),
   ])

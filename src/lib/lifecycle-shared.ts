@@ -259,6 +259,17 @@ export function isTenantBlockedForSpend(
 ): boolean {
   if (isTenantBlockedForAccess(lifecycleState)) return true
 
+  // 🔴 `trial_ended` MORA AQUI DESDE 05/08 — antes ficava do lado de fora, e o custo foi
+  //    dinheiro saindo. `checkTenantStatus` aplicava `SPEND_BLOCKED_LIFECYCLE` por conta
+  //    própria; `serviceableFromRow` (o caminho em LOTE, usado pelos crons) chamava só
+  //    esta função e não sabia do estado. Resultado medido na auditoria: conta com teste
+  //    vencido seguia disparando template pago da Meta (`campaigns/engine.ts`), lembrete
+  //    de agenda (`agenda/reminders.ts`) e re-engajamento por IA na nossa chave
+  //    (`ai-v2/flow/inactivity.ts`) — exatamente os três crons que mais gastam — enquanto
+  //    a tela do cliente listava os três como PAUSADOS.
+  // 🔑 Regra de gasto mora na função de gasto. Quem chama vira casca; casca não diverge.
+  if (SPEND_BLOCKED_LIFECYCLE.has(normalizeState(lifecycleState))) return true
+
   const sub = subscriptionStatus ?? "active"   // coluna é NOT NULL DEFAULT 'active'
   if (BLOCKED_SUBSCRIPTION.has(sub)) return true
   if (!KNOWN_SUBSCRIPTION.has(sub) && !warnedSubs.has(sub)) {

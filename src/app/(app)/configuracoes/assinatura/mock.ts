@@ -54,6 +54,8 @@ function escada(degrau: BillingDegrau): Pick<BillingStanding, "paused" | "contin
 
 export interface AssinaturaMock {
   standing:     BillingStanding
+  /** Módulos que a conta REALMENTE tem, pelo nome do catálogo. Ver `subscription-view`. */
+  incluso:      string[]
   resumo:       AssinaturaResumo
   conta:        ContaDoMes
   medidas:      LinhaMedida[]
@@ -213,5 +215,7 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
     adiamentoAte: faturaAberta ? emDias(-atraso + 12, hoje) : null,
   }
 
-  return { standing, resumo, conta, medidas, discretas, faturaAberta, faturas }
+  // ⚠️ A prévia (`?degrau=`) usa os mesmos rótulos do mock — ela existe pra revisar os
+  //    5 estados da escada, não pra refletir o catálogo real de um tenant.
+  return { standing, incluso: TUDO, resumo, conta, medidas, discretas, faturaAberta, faturas }
 }

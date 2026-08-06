@@ -29,6 +29,15 @@ export function PixBox({
   const [verQr, setVerQr]     = useState(compacto)
 
   async function copiar() {
+    // 🔴 SEM ISTO, COPIAR NADA ANUNCIAVA SUCESSO (achado do QA, 05/08). O código Pix vem
+    //    vazio dos dois carregadores (a integração de fatura avulsa não existe), e
+    //    `clipboard.writeText("")` **resolve com sucesso** — então a pessoa via o toast
+    //    verde "Código Pix copiado", ia ao banco e colava nada. Falha silenciosa na tela
+    //    onde o dinheiro entra é a pior de todas: ela não parece falha.
+    if (!pixCopiaECola) {
+      toast.error("O código Pix ainda não está disponível para esta fatura. Fale com a gente.")
+      return
+    }
     try {
       await navigator.clipboard.writeText(pixCopiaECola)
       setCopiado(true)
@@ -37,6 +46,32 @@ export function PixBox({
     } catch {
       toast.error("Não consegui copiar — selecione o código e copie na mão")
     }
+  }
+
+  // 🔴 SEM CÓDIGO PIX, NÃO SE DESENHA UM PIX (achado do QA, 06/08). A integração de
+  //    cobrança avulsa não existe: `invoicesView` devolve string vazia SEMPRE. A tela
+  //    mesmo assim mostrava o campo do código (caixa cinza, que lê como "falhou o
+  //    carregamento") e um **QR falso** — ruído determinístico desenhado a partir de uma
+  //    string vazia — ao lado da instrução *"aponte a câmera pra cá, o valor já vem
+  //    preenchido"*. Um QR que não é QR, na tela onde o dinheiro entra.
+  // 🔑 Enquanto não houver PSP, o honesto é dizer que o caminho ainda não está aqui e
+  //    apontar pra um humano. Some a tela, fica o recado.
+  if (!pixCopiaECola) {
+    return (
+      <div className={compacto ? "" : "bg-white rounded-xl border border-slate-200 shadow-card overflow-hidden"}>
+        <div className={compacto ? "" : "px-5 sm:px-6 py-5"}>
+          <p className="text-sm font-semibold text-slate-900">Pagamento desta fatura</p>
+          <p className="mt-1.5 text-sm text-slate-600 leading-relaxed">
+            O código Pix desta fatura ainda não está disponível por aqui. Fale com a gente
+            que a gente te envia agora mesmo — sua conta não é afetada enquanto isso.
+          </p>
+          <a href="mailto:suporte@kora.app?subject=Pagamento%20de%20fatura"
+            className="mt-4 inline-flex h-10 items-center rounded-lg bg-primary px-5 text-sm font-semibold text-white">
+            Falar sobre esta fatura
+          </a>
+        </div>
+      </div>
+    )
   }
 
   return (

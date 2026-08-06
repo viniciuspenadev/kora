@@ -86,6 +86,7 @@ export async function applyPlan(tenantId: string, planId: string): Promise<{ ok:
     .eq("id", tenantId)
 
   const mods = ((plan.included_modules as string[] | null) ?? []).filter(Boolean)
+  const doNovo = new Set(mods)
   if (mods.length > 0) {
     // Poda pelo incluído: PRO de um módulo que o plano não inclui não faz sentido.
     // ⚠️ CORRIGIDO 2026-08-03 — este comentário dizia "(CHECK no banco)" e era FALSO.
@@ -116,5 +117,68 @@ export async function applyPlan(tenantId: string, planId: string): Promise<{ ok:
     // Plano sem módulos definidos → core + default-on (não deixa o tenant pelado).
     await applyDefaultModules(tenantId)
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 REVOGAÇÃO — o que veio DE PLANO e o plano atual não dá (05/08/2026)
+  // ══════════════════════════════════════════════════════════════════════════
+  // Até hoje esta função era uma CATRACA DE UM SENTIDO SÓ: só ligava módulo, nunca
+  // desligava. Com os números reais do catálogo isso virava vazamento garantido:
+  //
+  //     Trial     R$   0,00 → 16 módulos
+  //     PLANO I   R$  99,90 →  4 módulos
+  //     PLANO II  R$ 149,90 →  7 módulos
+  //
+  // Quem testava e assinava o plano mais barato ficava com os 16 pra sempre.
+  //
+  // 🔴 A 1ª VERSÃO DESTA CORREÇÃO NASCEU MORTA (achado dos dois revisores, 06/08).
+  //    Ela comparava `tenants.plan_id` ANTES × plano novo — mas `createSubscriptionForTenant`
+  //    **já grava o `plan_id` novo** ao criar a assinatura, e o webhook relê essa mesma
+  //    coluna pra chamar esta função. Então "anterior" e "novo" chegavam IGUAIS e o bloco
+  //    era pulado **sempre**, justamente no único caminho que o cliente percorre. Só
+  //    funcionava pelo god mode. Duas correções minhas do mesmo dia se anulando.
+  //
+  // 🔑 A REGRA AGORA É DE PROCEDÊNCIA, não de comparação: revoga o que ESTA função
+  //    concedeu (`reason` = "Incluído no plano%") e o plano atual não inclui. Não depende
+  //    de ordem de escrita, não depende de saber qual era o plano antigo, e sobrevive à
+  //    corrida entre o webhook e o update da assinatura.
+  // ⚠️ O que foi ligado À MÃO fica intocado — reason próprio ("Piloto CRM Negócios",
+  //    "Backfill inicial", null). Conferido em produção: os rótulos são distintos.
+  //    É a regra que o dono definiu: *"é desativação, não precisa deletar nada"*.
+  // ⚠️ Plano SEM lista de módulos não revoga nada: ali `applyDefaultModules` acabou de
+  //    ligar o core, e revogar contra uma lista vazia apagaria o que a linha de cima ligou.
+  if (mods.length > 0) {
+    const { data: ligados } = await supabaseAdmin
+      .from("tenant_modules")
+      .select("module_slug, reason")
+      .eq("tenant_id", tenantId)
+      .eq("enabled", true)
+
+    const revogar = ((ligados ?? []) as { module_slug: string; reason: string | null }[])
+      .filter((m) => (m.reason ?? "").startsWith("Incluído no plano"))
+      .map((m) => m.module_slug)
+      .filter((slug) => !doNovo.has(slug))
+
+    if (revogar.length > 0) {
+      const { error } = await supabaseAdmin
+        .from("tenant_modules")
+        .update({ enabled: false, pro: false, reason: "Não incluído no plano atual" })
+        .eq("tenant_id", tenantId)
+        .in("module_slug", revogar)
+
+      // ⚠️ Best-effort com log ALTO: falhar deixa módulo a mais (seguro pro cliente), mas
+      //    é receita saindo — tem que aparecer.
+      if (error) {
+        console.error(JSON.stringify({
+          src: "plans", kind: "revogacao-falhou", tenant: tenantId, plano: planId,
+          modulos: revogar, msg: error.message,
+        }))
+      } else {
+        console.log(JSON.stringify({
+          src: "plans", kind: "modulos-revogados", tenant: tenantId, plano: planId, modulos: revogar,
+        }))
+      }
+    }
+  }
+
   return { ok: true }
 }

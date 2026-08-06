@@ -44,6 +44,7 @@ export async function loadAssinatura(tenantId: string): Promise<AssinaturaMock> 
 
   return {
     standing:  view.standing,
+    incluso:   view.incluso,
     resumo:    view.resumo,
     conta:     view.conta,
     medidas:   view.medidas,
