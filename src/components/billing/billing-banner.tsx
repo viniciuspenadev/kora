@@ -158,7 +158,13 @@ export function BillingBanner({
   if (degrau === "ok" || degrau === "terminated") return null
 
   const s = SUPERFICIE[degrau]
-  const dispensavel = degrau === "grace"
+  // ⚠️ `trial` entrou aqui (pedido do dono, 06/08). O aviso do teste ficava fixo no topo
+  //    de TODA tela, sem saída — e quem já sabe que o teste termina em 5 dias não precisa
+  //    ler isso a cada clique. Aviso que não se pode dispensar vira ruído, e ruído é o que
+  //    faz o cliente parar de ler os avisos que importam.
+  // ⚠️ `trial_ended` continua NÃO dispensável de propósito: ali o produto está travado e o
+  //    aviso é a própria instrução do que fazer.
+  const dispensavel = degrau === "grace" || degrau === "trial"
 
   if (dispensavel) {
     // Enquanto o navegador não responde, nada é pintado — evita a faixa piscar e sumir.
@@ -262,7 +268,13 @@ export function BillingBanner({
           // ⚠️ Sem cadastro completo o botão NÃO leva ao cartão: a tokenização falharia e
           //    a pessoa teria digitado o cartão inteiro pra receber um erro previsível.
           <PayNowButton
-            href={podeAssinar ? "/configuracoes/assinatura/pagamento" : "/configuracoes/empresa"}
+            // 🔴 IA PRO CHECKOUT SEM PLANO (achado do dono, 06/08): o botão apontava pra
+            //    `/pagamento`, e desde 05/08 essa página exige `?plano=<id>` — sem ele ela
+            //    responde "escolha um plano primeiro". Ou seja: o botão do topo parecia
+            //    quebrado enquanto o botão IGUAL, dentro da tela, funcionava. Dois CTAs com
+            //    o mesmo rótulo e destinos diferentes é sempre um deles envelhecendo.
+            // 🔑 Mesmo destino do hero: a vitrine, que abre a trilha de compra completa.
+            href={podeAssinar ? "/configuracoes/assinatura/planos" : "/configuracoes/empresa"}
             label={podeAssinar ? "Ativar assinatura" : "Completar cadastro"}
             tone={s.tone}
             size="sm"

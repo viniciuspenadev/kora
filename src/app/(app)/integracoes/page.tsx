@@ -91,7 +91,15 @@ export default async function IntegracoesPage() {
     {
       slug: "whatsapp", name: "WhatsApp", source: "whatsapp_inbound", type: "Canal",
       href: "/integracoes/whatsapp",
-      status: waConnected.length > 0 ? "connected" : "available",
+      // 🔴 ESTE CARD NÃO CHECAVA MÓDULO NENHUM (achado do dono, 06/08). Ele dizia
+      //    "Disponível — Conectar" para QUALQUER tenant, mesmo sem WhatsApp no plano.
+      //    Medido no catálogo: o Trial não inclui `multi_instance` nem `whatsapp_official`,
+      //    e mesmo assim o card convidava a conectar. Oferecer o que o plano não vende é
+      //    prometer com a tela o que o produto vai negar depois.
+      // ⚠️ Dois módulos servem este card (QR e API Oficial): basta UM pra o canal existir.
+      status: waConnected.length > 0 ? "connected"
+        : (modules.has("multi_instance") || modules.has("whatsapp_official")) ? "available"
+        : "locked",
       headline: list.length === 0
         ? "Conecte seu primeiro número — oficial pela Meta ou via QR Code."
         : `${list.length} ${list.length === 1 ? "número conectado" : "números conectados"}`,
@@ -120,7 +128,8 @@ export default async function IntegracoesPage() {
     {
       slug: "instagram", name: "Instagram Direct", source: "instagram", type: "Canal",
       href: "/integracoes/instagram",
-      status: igConnected ? "connected" : modules.has("instagram_direct") ? "available" : "soon",
+      // ⚠️ `locked`, não `soon`: o Instagram EXISTE e funciona — o que falta é o plano.
+      status: igConnected ? "connected" : modules.has("instagram_direct") ? "available" : "locked",
       headline: igConnected && igConn?.username
         ? `@${igConn.username}`
         : "Receba e responda mensagens do Instagram dentro da Kora.",
@@ -141,7 +150,9 @@ export default async function IntegracoesPage() {
       // "Conectado" só com sinal de vida REAL (o widget pediu configuração). Sem o
       // carimbo a gente não afirma que está instalado — dizer "conectado" porque a
       // config existe seria o mesmo erro de contar o `updated_at` como atividade.
-      status: !modules.has("widget_site") ? "soon" : widgetLive ? "connected" : "available",
+      // ⚠️ Era `soon` ("Em breve") para quem não tinha o módulo — e o widget existe há
+      //    meses. Dizer "em breve" sobre um recurso pronto tira a venda e mente junto.
+      status: !modules.has("widget_site") ? "locked" : widgetLive ? "connected" : "available",
       headline: widgetLive
         ? (widgetOrigin ? `Instalado em ${widgetOrigin.replace(/^https?:\/\//, "")}` : "Instalado e recebendo visitas")
         : "Capture leads com um widget instalado no seu site.",

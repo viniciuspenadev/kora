@@ -39,7 +39,24 @@ export default async function WhatsappNumbersPage() {
   // Estado por tipo: canal habilitado + limite do plano (gate de verdade é server-side).
   const fmtUsage = (l: { used: number; max: number | null }) => `${l.used}/${l.max ?? "∞"}`
   const officialState = { enabled: modules.has("whatsapp_official") || official.length > 0, atLimit: !officialLimit.ok, usage: fmtUsage(officialLimit) }
-  const qrState       = { enabled: !hideQr, atLimit: !qrLimit.ok, usage: fmtUsage(qrLimit) }
+  // 🔴 O QR NÃO CHECAVA MÓDULO (achado do dono, 06/08). `enabled` olhava só a flag
+  //    `hide_qr_channel` do tenant — então "Adicionar número por QR Code" era oferecido a
+  //    quem não tem `multi_instance` no plano, e o card de Integrações convidava a
+  //    conectar. Medido: o Trial não inclui NENHUM módulo de WhatsApp, e a tela oferecia
+  //    os dois caminhos assim mesmo.
+  // ⚠️ `|| qr.length > 0` pelo mesmo motivo do canal oficial logo acima: quem já tem número
+  //    conectado (de antes do módulo existir, ou de um plano anterior) continua gerenciando
+  //    o que é dele. O gate fecha a porta de ENTRADA, não tranca ninguém do lado de fora.
+  // 🔴 O FALLBACK PRECISA SER "CONECTADO", NÃO "EXISTE LINHA" (06/08). A 1ª versão usava
+  //    `qr.length > 0` pra preservar quem já tinha número de antes do módulo existir — só
+  //    que o **signup auto-provisiona uma instância pra toda conta nova**
+  //    (`signup.ts` → `autoProvisionWhatsApp`). Ou seja: a condição era verdadeira desde o
+  //    primeiro segundo de vida do tenant e o gate de módulo **nunca mordia**. Medido no
+  //    tenant recém-criado: instância `disconnected`, sem número, e o canal aparecia livre.
+  // 🔑 Instância que nunca pareou é placeholder, não patrimônio. O fallback protege quem
+  //    tem um número FUNCIONANDO — esse sim não pode ser trancado por troca de plano.
+  const qrConectados = list.filter((i) => i.provider !== "meta_cloud" && CONNECTED.has(i.status ?? ""))
+  const qrState       = { enabled: !hideQr && (modules.has("multi_instance") || qrConectados.length > 0), atLimit: !qrLimit.ok, usage: fmtUsage(qrLimit) }
   const connectedCount = list.filter((i) => CONNECTED.has(i.status ?? "")).length
 
   return (

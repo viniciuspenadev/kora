@@ -5,11 +5,30 @@ import { Globe } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { getWidgetConfig, getDetectedSiteDomains, type WidgetConfig } from "@/lib/actions/site-widget"
 import { SiteWidgetClient } from "./client"
+import { getEnabledModuleSlugs } from "@/lib/modules"
+import { ModuloNaoIncluido } from "@/components/app/modulo-nao-incluido"
 
 export default async function ConfigSitePage() {
   const session = await auth()
   if (!session) redirect("/auth/signin")
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
+
+  // 🔴 GATE DE MÓDULO QUE NÃO EXISTIA (achado do dono, 06/08/2026). Esta página só checava
+  //    PAPEL. O card de Integrações dizia "Em breve" para quem não tem `widget_site`, mas o
+  //    botão continuava navegando — e por outro caminho ainda: Relatórios → seção do site →
+  //    "Configurar widget" → configuração aberta e editável, de um canal que o plano não
+  //    inclui. Menu fechado, porta destrancada.
+  // ⚠️ Renderiza em vez de redirecionar: gate que redireciona já criou três laços neste
+  //    projeto em um dia. Tela estática não navega.
+  const modules = await getEnabledModuleSlugs(session.user.tenantId)
+  if (!modules.has("widget_site")) {
+    return (
+      <ModuloNaoIncluido
+        titulo="Widget do site"
+        descricao="Um chat no seu site que vira conversa aqui dentro — o visitante manda a primeira mensagem e o atendimento continua no mesmo lugar dos outros canais."
+      />
+    )
+  }
 
   const [cfg, detectedDomains] = await Promise.all([
     getWidgetConfig(),

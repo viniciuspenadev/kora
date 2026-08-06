@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { generatePolicyMarkdown } from "@/lib/privacy-policy-template"
+import { hasModule } from "@/lib/modules"
 
 export interface WidgetQuestion {
   id:          string
@@ -166,6 +167,9 @@ export async function uploadWidgetLogo(formData: FormData): Promise<{ url?: stri
   const session  = await requireAdmin()
   const tenantId = session.user.tenantId
 
+  const semModulo = await exigirModuloWidget(tenantId)
+  if (semModulo) return semModulo
+
   const file = formData.get("file")
   if (!(file instanceof File))    return { error: "Arquivo ausente." }
   if (file.size === 0)            return { error: "Arquivo vazio." }
@@ -185,9 +189,31 @@ export async function uploadWidgetLogo(formData: FormData): Promise<{ url?: stri
   return { url: data.publicUrl }
 }
 
+
+/**
+ * Gate de MÓDULO das escritas do widget.
+ *
+ * 🔴 NÃO EXISTIA (achado do dono, 06/08/2026), e a pergunta dele foi exatamente a certa:
+ *    *"o backend barra?"*. Não barrava. As três actions de escrita checavam só PAPEL —
+ *    então qualquer owner/admin de um tenant SEM `widget_site` no plano configurava o
+ *    widget chamando a Server Action direto, ignorando tela e menu. Esconder o card e
+ *    gatear a página é UI; UI não é gate, porque toda função exportada de um arquivo
+ *    `"use server"` é chamável por qualquer sessão autenticada.
+ * ⚠️ A LEITURA (`getWidgetConfig`) continua livre de propósito: ver a própria configuração
+ *    não gasta nada, e barrar leitura só criaria tela quebrada pra quem já configurou e
+ *    depois trocou de plano.
+ */
+async function exigirModuloWidget(tenantId: string): Promise<{ error: string } | null> {
+  if (await hasModule(tenantId, "widget_site")) return null
+  return { error: "O Widget do site não está incluído no seu plano." }
+}
+
 export async function updateWidgetConfig(input: Partial<WidgetConfig>): Promise<{ error?: string }> {
   const session = await requireAdmin()
   const tenantId = session.user.tenantId
+
+  const semModulo = await exigirModuloWidget(tenantId)
+  if (semModulo) return semModulo
 
   // ─── Hard input validation ──────────────────────────────────
   // 1. Hex color (impede CSS injection — CWE-79 via style attr)

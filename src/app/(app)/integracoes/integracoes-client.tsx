@@ -7,7 +7,14 @@ import { Search, ChevronDown, Globe, Settings2, Clock } from "lucide-react"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu"
 
-export type IntegrationStatus = "connected" | "available" | "soon"
+/**
+ * ⚠️ `soon` e `locked` são coisas DIFERENTES, e confundi-las mentia pro cliente
+ *    (achado do dono, 06/08): "Em breve" diz *"a gente ainda não construiu"*, enquanto
+ *    `locked` é *"existe, funciona, e não está no seu plano"*. O Widget do site aparecia
+ *    como "Em breve" pra quem simplesmente não tinha o módulo — ou seja, a plataforma
+ *    escondia uma oportunidade de venda atrás de uma desculpa de engenharia.
+ */
+export type IntegrationStatus = "connected" | "available" | "soon" | "locked"
 
 export interface IntegrationCard {
   slug:     string
@@ -41,6 +48,7 @@ const STATUS_META: Record<IntegrationStatus, { label: string; cls: string; dot: 
   connected: { label: "Conectado",  cls: "bg-emerald-50 text-emerald-700 ring-emerald-200", dot: "bg-emerald-500" },
   available: { label: "Disponível", cls: "bg-slate-50 text-slate-600 ring-slate-200",       dot: "bg-slate-400" },
   soon:      { label: "Em breve",   cls: "bg-slate-50 text-slate-400 ring-slate-200",       dot: "bg-slate-300" },
+  locked:    { label: "Fora do seu plano", cls: "bg-amber-50 text-amber-700 ring-amber-200",  dot: "bg-amber-400" },
 }
 
 function FilterSelect({ icon: Icon, label, value, options, onChange }: {
@@ -149,7 +157,16 @@ function Card({ c }: { c: IntegrationCard }) {
             )}
           </div>
         )}
-        {soon || !c.href ? (
+        {c.status === "locked" ? (
+          /* 🔑 Leva pros PLANOS, não pra tela do recurso. O card trancado era clicável e
+             caía direto na configuração — a página não tinha gate de módulo, então dava
+             pra configurar um canal que o plano não inclui (achado do dono, 06/08).
+             Aqui ele vira o que sempre deveria ter sido: um convite de upgrade. */
+          <Link href="/configuracoes/assinatura"
+            className="block w-full h-10 rounded-xl border border-amber-300 text-amber-800 text-[13px] font-semibold grid place-items-center hover:bg-amber-50 transition-colors">
+            Ver planos
+          </Link>
+        ) : soon || !c.href ? (
           <span className="block w-full h-10 rounded-xl bg-slate-100 text-slate-400 text-[13px] font-semibold grid place-items-center cursor-default">
             Em breve
           </span>
@@ -170,7 +187,7 @@ export function IntegracoesClient({ cards }: { cards: IntegrationCard[] }) {
   const [type, setType]   = useState("all")
 
   const counts = useMemo(() => {
-    const c = { all: cards.length, connected: 0, available: 0, soon: 0 }
+    const c = { all: cards.length, connected: 0, available: 0, soon: 0, locked: 0 }
     for (const x of cards) c[x.status]++
     return c
   }, [cards])
@@ -193,6 +210,7 @@ export function IntegracoesClient({ cards }: { cards: IntegrationCard[] }) {
     { key: "connected", label: "Conectados",  count: counts.connected },
     { key: "available", label: "Disponíveis", count: counts.available },
     { key: "soon",      label: "Em breve",    count: counts.soon },
+    { key: "locked",    label: "Fora do plano", count: counts.locked },
   ]
 
   return (
