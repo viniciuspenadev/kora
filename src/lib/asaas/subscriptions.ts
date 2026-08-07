@@ -1,9 +1,10 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { isMobilePhoneBR } from "@/lib/masks"
-import { asaas, AsaasError } from "./client"
+import { asaas, AsaasError, mensagemSeguraDoGateway } from "./client"
 import { ensureAsaasCustomer } from "./customers"
 import { abaixoDoMinimoDoCartao, assinaturaRealId, novaReservaDeClaim } from "@/lib/billing/gateway-limits"
+import { encryptSecret } from "@/lib/crypto/secrets"
 
 // ═══════════════════════════════════════════════════════════════
 // Assinatura recorrente no cartão
@@ -200,8 +201,12 @@ export async function createSubscriptionForTenant(
     creditCardToken = tok.creditCardToken
   } catch (e) {
     // ⚠️ Só a MENSAGEM do erro. Nunca o objeto `card`, nunca o payload.
+    // 🔒 E a mensagem passa por `mensagemSeguraDoGateway`: recusa vira UMA frase, sempre a
+    //    mesma. Devolver o motivo exato do banco transformaria esta action num oráculo de
+    //    teste de cartão — o motivo cru fica no log do servidor, abaixo.
+    console.error("[asaas] tokenize recusado:", tenantId, (e as Error).message)
     await soltarReserva()
-    return { error: e instanceof AsaasError ? e.message : "Não foi possível validar o cartão." }
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível validar o cartão.") }
   }
 
   // 4 · Assinatura. Daqui pra frente só o token circula.
@@ -245,6 +250,11 @@ export async function createSubscriptionForTenant(
         asaas_subscription_id: sub.id,
         billing_day: diaDaCobranca,
         plan_id: plano.id,
+        // 🔒 CIFRADO. Guardar o token é o que permite cobrar a diferença de um upgrade e
+        //    retentar cobrança recusada sem pedir o cartão de novo. Não é dado de cartão:
+        //    é identificador opaco, válido só na nossa conta Asaas e só pra este cliente.
+        //    Racional completo em `20260807_asaas_card_token.sql`.
+        asaas_card_token: encryptSecret(creditCardToken),
         // 🔑 Recontratação: sem limpar, a varredura 1.b do housekeeping marcaria `canceled`
         //    na data antiga — derrubando quem acabou de pagar de novo.
         subscription_ends_at: null,
@@ -267,8 +277,9 @@ export async function createSubscriptionForTenant(
   } catch (e) {
     // ⚠️ Solta a vaga: sem isto, uma falha na criação deixaria o tenant com o marcador
     //    `pending:` para sempre — e ele nunca mais conseguiria assinar.
+    console.error("[asaas] criação de assinatura falhou:", tenantId, (e as Error).message)
     await soltarReserva()
-    return { error: e instanceof AsaasError ? e.message : "Não foi possível criar a assinatura." }
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível criar a assinatura.") }
   }
 }
 
@@ -312,6 +323,121 @@ function primeiraCobranca(): string {
 }
 
 /**
+ * Troca o cartão da assinatura vigente. **Não cobra nada.**
+ *
+ * 🔴 NÃO EXISTIA CAMINHO NENHUM (achado 2026-08-07). Havia UMA chamada de tokenização no
+ *    repositório inteiro, dentro de `createSubscriptionForTenant` — e ela sai antes
+ *    quando já existe assinatura. Ou seja: cliente com cartão vencido **não tinha como
+ *    atualizar**, nem tela, nem botão. A única saída era falar com o suporte e alguém
+ *    resolver no painel do Asaas.
+ *
+ * 🔑 Endpoint dedicado do gateway: `PUT /subscriptions/{id}/creditCard`. Ele atualiza a
+ *    assinatura **e as cobranças pendentes ligadas a ela** — que é o que impede a próxima
+ *    tentativa de bater no cartão velho de novo. E não gera cobrança imediata.
+ *
+ * ⚠️ PCI: mesmas três regras do arquivo. O cartão entra por parâmetro, é usado UMA vez, e
+ *    nada dele é persistido — nem aqui, nem no retorno.
+ * ⚠️ Este é um SEGUNDO oráculo de validação de cartão rodando na nossa conta merchant.
+ *    O teto anti card-testing vale igual, e mora na action (`trocarCartaoDaAssinatura`).
+ */
+export async function updateSubscriptionCard(
+  tenantId: string,
+  card: CardInput,
+  holder: HolderInput,
+  remoteIp: string,
+): Promise<{ ok: true } | { error: string }> {
+  const { data } = await supabaseAdmin
+    .from("tenants").select("asaas_subscription_id, asaas_customer_id, billing_mode")
+    .eq("id", tenantId).maybeSingle()
+
+  const row = data as {
+    asaas_subscription_id?: string | null
+    asaas_customer_id?: string | null
+    billing_mode?: string | null
+  } | null
+  const id   = assinaturaRealId(row?.asaas_subscription_id)
+  const cust = row?.asaas_customer_id ?? null
+
+  // ⚠️ Sem assinatura não há o que trocar — e mandar essa pessoa pro formulário de cartão
+  //    seria pedir dado sensível pra nada. Quem não tem assinatura CONTRATA, não troca.
+  if (!id) return { error: "Você ainda não tem uma assinatura ativa." }
+
+  // ⚠️ `manual` não é governado pela automação (§2 do design): a cobrança dele acontece
+  //    fora do gateway, então não existe cartão nosso pra trocar.
+  if (row?.billing_mode !== "gateway") {
+    return { error: "A cobrança desta conta é combinada com a nossa equipe." }
+  }
+
+  // ⚠️ Tokenizar exige o customer. Sem ele o estado é incoerente (assinatura sem cliente) —
+  //    fail-closed com mensagem acionável em vez de mandar cartão pro gateway e ver no que dá.
+  if (!cust) return { error: "Cadastro incompleto no gateway. Fale com a gente." }
+
+  // 🔑 TOKENIZA PRIMEIRO, depois manda o TOKEN — não o cartão. Dois ganhos: o número passa
+  //    por menos superfície (uma chamada em vez de duas), e sobra um token pra guardar, que
+  //    é o que destrava upgrade com proporcional e retentativa de cobrança recusada.
+  //    A doc do Asaas recomenda o token quando a tokenização está ativa.
+  let token: string
+  try {
+    const tok = await asaas.post<{ creditCardToken?: string }>("/creditCard/tokenize", {
+      customer: cust,
+      creditCard: {
+        holderName:  card.holderName,
+        number:      digits(card.number),
+        expiryMonth: card.expiryMonth,
+        expiryYear:  card.expiryYear,
+        ccv:         card.ccv,
+      },
+      creditCardHolderInfo: {
+        name:          holder.name,
+        email:         holder.email,
+        cpfCnpj:       digits(holder.cpfCnpj),
+        postalCode:    digits(holder.postalCode),
+        addressNumber: holder.addressNumber,
+        // Mesma regra da criação: celular vai em `mobilePhone`, não no campo do fixo.
+        ...(isMobilePhoneBR(holder.phone)
+          ? { phone: digits(holder.phone), mobilePhone: digits(holder.phone) }
+          : { phone: digits(holder.phone) }),
+      },
+      remoteIp,
+    })
+    if (!tok?.creditCardToken) return { error: "O gateway não devolveu o token do cartão." }
+    token = tok.creditCardToken
+  } catch (e) {
+    // ⚠️ Só a MENSAGEM. Nunca o objeto `card`. E a mensagem é a segura: esta é a SEGUNDA
+    //    porta pro mesmo oráculo de teste de cartão, então vale a mesma regra da criação.
+    console.error("[asaas] tokenize da troca recusado:", tenantId, (e as Error).message)
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível validar o cartão.") }
+  }
+
+  try {
+    await asaas.post(`/subscriptions/${id}/creditCard`, { creditCardToken: token, remoteIp })
+  } catch (e) {
+    console.error("[asaas] troca de cartão falhou:", tenantId, (e as Error).message)
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível atualizar o cartão.") }
+  }
+
+  // 🔒 Guarda CIFRADO (`encryptSecret`, mesmo padrão dos outros segredos). O token não é
+  //    dado de cartão — é identificador opaco, válido só na nossa conta e só pra este
+  //    cliente. Ver a migration `20260807_asaas_card_token.sql` pro racional completo.
+  // ⚠️ Best-effort: se a gravação falhar, o cartão JÁ foi trocado no gateway e a cobrança
+  //    mensal está salva. Perder o token só custa o atalho do upgrade — não vale desfazer
+  //    uma troca bem-sucedida por causa disso. Grita no log pra aparecer.
+  const { error: upErr } = await supabaseAdmin
+    .from("tenants")
+    .update({ asaas_card_token: encryptSecret(token) })
+    .eq("id", tenantId)
+
+  if (upErr) {
+    console.error(JSON.stringify({
+      src: "asaas", kind: "token-nao-gravado", tenant: tenantId, msg: upErr.message,
+    }))
+  }
+
+  console.log(JSON.stringify({ src: "asaas", kind: "cartao-atualizado", tenant: tenantId, subscription: id }))
+  return { ok: true }
+}
+
+/**
  * Cancela a assinatura recorrente do tenant no gateway.
  *
  * 🔴 NÃO EXISTIA (auditoria 05/08/2026), e a falta era do pior tipo: **cobrar sem
@@ -336,8 +462,18 @@ export async function cancelSubscriptionForTenant(
     .from("tenants").select("asaas_subscription_id").eq("id", tenantId).maybeSingle()
 
   const id = (data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id ?? null
-  // Sem assinatura, ou só a reserva do claim: nada a cancelar no gateway.
-  if (!id || id.startsWith("pending:")) return { ok: true }
+  // Sem assinatura, ou só a reserva do claim: nada a cancelar NO GATEWAY.
+  // ⚠️ Mas o token local ainda é limpo. Sem isto, um tenant que perdeu a assinatura por
+  //    outro caminho (cancelada no painel do Asaas, reserva órfã) ficaria com uma
+  //    credencial de cobrança guardada sem nada pra cobrar — credencial que sobrevive ao
+  //    próprio propósito é resíduo, e resíduo é o que auditoria encontra depois.
+  if (!id || id.startsWith("pending:")) {
+    await supabaseAdmin.from("tenants")
+      .update({ asaas_card_token: null })
+      .eq("id", tenantId)
+      .not("asaas_card_token", "is", null)
+    return { ok: true }
+  }
 
   try {
     await asaas.del(`/subscriptions/${id}`)
@@ -351,8 +487,12 @@ export async function cancelSubscriptionForTenant(
     }
   }
 
+  // 🔒 O TOKEN MORRE COM A ASSINATURA. Sem recorrência não há motivo pra manter uma
+  //    credencial de cobrança guardada — e credencial que sobrevive ao seu propósito é
+  //    exatamente o tipo de resíduo que uma auditoria acha depois. Recontratar tokeniza
+  //    de novo, com o cartão que a pessoa informar naquele momento.
   await supabaseAdmin.from("tenants")
-    .update({ asaas_subscription_id: null })
+    .update({ asaas_subscription_id: null, asaas_card_token: null })
     .eq("id", tenantId)
 
   console.log(JSON.stringify({ src: "asaas", kind: "assinatura-cancelada", tenant: tenantId, subscription: id }))

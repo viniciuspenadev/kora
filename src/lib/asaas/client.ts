@@ -99,6 +99,45 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 }
 
+/**
+ * Traduz o erro do gateway pra uma frase que ajuda o cliente e **não ensina o atacante**.
+ *
+ * 🔴 O ERRO CRU VOLTAVA PRO BROWSER (achado na auditoria de 07/08/2026). O Asaas distingue
+ *    "cartão inexistente" de "cartão válido sem saldo" de "cartão bloqueado" — e essa
+ *    distinção é **exatamente o sinal que um testador de cartões precisa**. Devolvendo a
+ *    mensagem dele, a Kora virava um oráculo de validação de PAN rodando na nossa conta
+ *    merchant, com duas portas desde hoje: contratar e trocar cartão.
+ *
+ *    O dano não é o custo das chamadas: é o Asaas bloquear a conta por enumeração e
+ *    **derrubar a cobrança de todos os clientes** — mais responsabilidade de fraude.
+ *
+ * 🔑 O cliente recebe o que ele PODE agir sobre; o motivo exato fica no log do servidor.
+ *    Recusa é recusa: "não passou, tente outro cartão ou fale com seu banco" é tudo que
+ *    ele consegue fazer de útil, e é verdade em todos os casos de recusa.
+ * ⚠️ Erros que NÃO são sobre o cartão (dado do titular faltando, plano inválido, conta em
+ *    modo errado) seguem passando: são acionáveis, não vazam nada e a pessoa precisa deles
+ *    pra se desbloquear sozinha.
+ */
+export function mensagemSeguraDoGateway(e: unknown, fallback: string): string {
+  if (!(e instanceof AsaasError)) return fallback
+
+  const cru = (e.message ?? "").toLowerCase()
+
+  // Sinais de RECUSA — todos colapsam numa frase só, de propósito.
+  const recusa = [
+    "recusad", "negad", "declin", "insufficient", "saldo", "limite",
+    "invalid credit card", "cartão inválido", "cartao invalido",
+    "expirad", "vencid", "bloquead", "não autorizada", "nao autorizada",
+    "transação não", "transacao nao", "fraud", "cvv", "código de segurança",
+  ]
+  if (recusa.some((s) => cru.includes(s))) {
+    return "Não conseguimos autorizar este cartão. Confira os dados, tente outro cartão ou fale com o seu banco."
+  }
+
+  // Erro de dado do titular/negócio: acionável e sem valor pro atacante — passa direto.
+  return e.message
+}
+
 export const asaas = {
   get:  <T>(path: string)                => request<T>("GET",    path),
   post: <T>(path: string, body: unknown) => request<T>("POST",   path, body),

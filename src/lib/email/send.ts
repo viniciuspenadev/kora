@@ -19,21 +19,65 @@
 
 import { supabaseAdmin } from "@/lib/supabase"
 
+/**
+ * Todo e-mail que a Kora sabe mandar. **Fonte única do identificador.**
+ *
+ * 🔴 ERA `string` SOLTA, e isso criava um bug invisível por construção: um typo em
+ *    `templateSlug` gravava no outbox, enviava normalmente, e **sumia de todo filtro** do
+ *    `/admin/emails/log` e de qualquer deduplicação. Ninguém percebia — o e-mail chegava.
+ * 🔑 Como união, um typo vira erro de `tsc` antes de existir. É a mesma ideia do
+ *    `check-server-actions.mjs`: transformar disciplina em coisa que a máquina cobra.
+ * ⚠️ Slug novo entra AQUI e no `EMAIL_CATALOG` — senão ele existe, funciona, e ninguém
+ *    consegue pré-visualizar nem mandar teste pelo god mode (o bug do `<Toaster/>`, que
+ *    ficou meses correto e nunca montado).
+ */
+export type EmailSlug =
+  | "signup_verification"
+  | "login_verification"
+  | "new_device_login"
+  | "invite"
+  | "whatsapp_health_alert"
+  | "daily_report"
+  | "novidades"
+  // ── Cobrança (2026-08-07) ────────────────────────────────────────────────
+  | "billing_payment_confirmed"
+  | "billing_card_failed"
+  | "billing_overdue"
+  | "billing_restored"
+
 interface SendInput {
   to:           string
   subject:      string
   html:         string
   text?:        string
   /** Slug do template do catalog (pra agrupar/filtrar no outbox). */
-  templateSlug: string
+  templateSlug: EmailSlug
   /** Vincula o envio ao tenant pra filtros no /admin/emails/log. */
   tenantId?:    string
   /** Payload extra opcional armazenado em email_outbox.metadata. */
   metadata?:    Record<string, unknown>
+  /**
+   * Chave de idempotência. Presente ⇒ **este e-mail sai UMA vez, para sempre**.
+   *
+   * 🔴 EXISTE PORQUE O GATILHO REPETE (2026-08-07). Os avisos de cobrança são disparados
+   *    por webhook de gateway, que é *at-least-once* por contrato, e pela reconciliação de
+   *    15 min, que pode reprocessar o mesmo pagamento. Sem trava, o cliente recebe o mesmo
+   *    "pagamento confirmado" duas, três vezes — e e-mail repetido sobre dinheiro destrói
+   *    confiança mais rápido que e-mail nenhum.
+   *
+   * 🔑 A chave é o FATO DE NEGÓCIO, nunca o id do evento. `pagamento:<tenant>:<payment_id>`
+   *    e não `evento:<evt_id>` — porque o MESMO pagamento chega em eventos diferentes.
+   *
+   * ⚠️ Quem NÃO passa chave continua sem trava (verificação de login, convite, relatório):
+   *    o índice no banco é parcial. Nada do que funciona hoje muda.
+   */
+  dedupeKey?:   string
 }
 
 export type EmailResult =
   | { ok: true;  id: string }
+  /** Já havia sido enviado com esta `dedupeKey` — não é erro, é a trava funcionando. */
+  | { ok: true;  id: null; duplicate: true }
   | { ok: false; configured: false }
   | { ok: false; configured: true; error: string }
 
@@ -43,7 +87,13 @@ export async function sendEmail(input: SendInput): Promise<EmailResult> {
 
   // ── 1. Cria registro no outbox (status=pending) antes de bater na API ──
   //    Garante que mesmo se a chamada falhar/timeout, o admin VÊ a tentativa.
-  const { data: outbox } = await supabaseAdmin
+  //
+  // 🔑 E É AQUI QUE A IDEMPOTÊNCIA ACONTECE: com `dedupeKey`, o índice único parcial
+  //    `uq_email_outbox_dedupe` faz a SEGUNDA tentativa violar a constraint (23505). A
+  //    gente sai antes de chamar o Resend — o e-mail simplesmente não sai de novo.
+  //    Trava no BANCO, não no código: dois processos concorrentes (webhook + cron de
+  //    reconciliação) não se enxergam, mas o índice enxerga os dois.
+  const { data: outbox, error: insErr } = await supabaseAdmin
     .from("email_outbox")
     .insert({
       tenant_id:     input.tenantId ?? null,
@@ -52,11 +102,37 @@ export async function sendEmail(input: SendInput): Promise<EmailResult> {
       subject:       input.subject,
       status:        "pending",
       metadata:      input.metadata ?? {},
+      dedupe_key:    input.dedupeKey ?? null,
     })
     .select("id")
     .single()
 
+  // 23505 = já enviamos este fato pra este destinatário. Caminho NORMAL, não erro.
+  if (insErr?.code === "23505") return { ok: true, id: null, duplicate: true }
+
+  // ⚠️ Qualquer OUTRA falha de insert não impede o envio: o outbox é registro, não
+  //    permissão. Perder a linha de log é ruim; não avisar o cliente é pior.
+  if (insErr) {
+    console.error("[email] outbox falhou (envio segue):", input.templateSlug, insErr.message)
+  }
+
   const outboxId = outbox?.id as string | undefined
+
+  /**
+   * Devolve a chave pro mundo quando a falha é TRANSITÓRIA.
+   *
+   * 🔴 Sem isto, um Resend fora do ar por 30 segundos queimaria a chave para sempre: a
+   *    linha ficaria `failed` ocupando o índice, e o aviso — recibo, cartão recusado —
+   *    **nunca mais seria tentado**. O cliente nunca saberia, e o log mostraria "enviado
+   *    uma vez", que é a pior forma de mentir.
+   * ⚠️ Só em falha transitória. Endereço inválido é permanente: re-tentar não conserta e
+   *    ainda queima reputação do domínio.
+   */
+  const liberarChave = async () => {
+    if (outboxId && input.dedupeKey) {
+      await supabaseAdmin.from("email_outbox").update({ dedupe_key: null }).eq("id", outboxId)
+    }
+  }
 
   if (!apiKey || !from) {
     if (outboxId) {
@@ -65,6 +141,9 @@ export async function sendEmail(input: SendInput): Promise<EmailResult> {
         .update({ status: "failed", error: "RESEND_API_KEY ou EMAIL_FROM não configurados" })
         .eq("id", outboxId)
     }
+    // Env some num redeploy ⇒ transitório. Queimar a chave aqui faria TODO aviso do
+    // período sumir permanentemente, mesmo depois de a env voltar.
+    await liberarChave()
     return { ok: false, configured: false }
   }
 
@@ -95,6 +174,13 @@ export async function sendEmail(input: SendInput): Promise<EmailResult> {
           .update({ status: "failed", error: errorMsg })
           .eq("id", outboxId)
       }
+      // ⚠️ A DISTINÇÃO IMPORTA: 5xx e 429 passam (fila cheia, instabilidade) ⇒ solta a
+      //    chave pra tentar de novo. 4xx é o Resend dizendo que o pedido está errado —
+      //    endereço inválido, domínio não verificado. Re-tentar isso não conserta nada e
+      //    ainda queima reputação do domínio, então a chave FICA e o caso vira trabalho
+      //    humano (aparece em /admin/emails/log como `failed`).
+      const transitorio = res.status >= 500 || res.status === 429
+      if (transitorio) await liberarChave()
       return { ok: false, configured: true, error: errorMsg }
     }
 
@@ -120,6 +206,8 @@ export async function sendEmail(input: SendInput): Promise<EmailResult> {
         .update({ status: "failed", error: errorMsg })
         .eq("id", outboxId)
     }
+    // Rede/timeout ⇒ transitório: solta a chave pra a próxima passada poder avisar.
+    await liberarChave()
     return { ok: false, configured: true, error: errorMsg }
   }
 }

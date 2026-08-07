@@ -16,12 +16,13 @@
  *   3. Aparece automaticamente em /admin/emails
  */
 
-import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVerificationEmail, buildHealthAlertEmail, buildLoginCodeEmail, buildNewDeviceEmail } from "./send"
+import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVerificationEmail, buildHealthAlertEmail, buildLoginCodeEmail, buildNewDeviceEmail, type EmailSlug } from "./send"
 
 const WA = "https://wa.me/5511987253394"
 
 export interface EmailTemplateMeta {
-  slug:        string
+  /** ⚠️ Tipado (`EmailSlug`, em `send.ts`): slug fora da união não compila. */
+  slug:        EmailSlug
   name:        string
   description: string
   trigger:     string

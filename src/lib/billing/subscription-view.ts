@@ -5,6 +5,7 @@ import { listAllLimits, getStorageBreakdown } from "@/lib/limits"
 import { LIMIT_META, type LimitInfo, type LimitResource } from "@/lib/limits-shared"
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
 import { getCobrancaDoGateway } from "@/lib/asaas/subscription-info"
+import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 
 // ═══════════════════════════════════════════════════════════════
 // Telas de assinatura — o DADO REAL (substitui buildMock)
@@ -67,6 +68,15 @@ export interface AssinaturaView {
    *    mudava ou o cliente pagava adiantado (achado do dono, 06/08). Ver `subscription-info`.
    */
   cobranca:  { valorCents: number; proximaEm: string | null } | null
+  /**
+   * Existe assinatura de verdade no gateway? Governa a porta de "Trocar cartão".
+   *
+   * ⚠️ Campo PRÓPRIO, e não `cobranca !== null`, de propósito: `cobranca` é `null` também
+   *    quando o Asaas não responde. Usar aquilo como sinal faria o botão de trocar cartão
+   *    **sumir num blip de rede** — justo pra quem está tentando resolver uma cobrança
+   *    recusada. Este lê do banco, que não depende do gateway estar de pé.
+   */
+  temAssinatura: boolean
   /** Módulos que a conta REALMENTE tem ligados, pelo nome do catálogo. */
   incluso:   string[]
   resumo:    AssinaturaResumoData
@@ -227,6 +237,9 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     },
     incluso,
     cobranca: cobranca ? { valorCents: cobranca.valorCents, proximaEm: cobranca.proximaEm } : null,
+    temAssinatura: !!assinaturaRealId(
+      (tenantRow.data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id,
+    ),
     conta: {
       planoLabel: plano?.name ?? "Sem plano",
       planoCents,

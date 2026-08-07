@@ -7,7 +7,7 @@ import { rateLimit, getClientIpFromHeaders } from "@/lib/rate-limit"
 import { logAudit } from "@/lib/audit"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
-import { createSubscriptionForTenant } from "@/lib/asaas/subscriptions"
+import { createSubscriptionForTenant, updateSubscriptionCard } from "@/lib/asaas/subscriptions"
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
 import { abaixoDoMinimoDoCartao, assinaturaRealId } from "@/lib/billing/gateway-limits"
 
@@ -314,4 +314,84 @@ export async function ativarAssinatura(input: {
   if ("error" in r) return { error: r.error }
   revalidatePath("/configuracoes/assinatura")
   return { ok: true, id: r.id }
+}
+
+/**
+ * Troca o cartão da assinatura vigente. **Não cobra nada.**
+ *
+ * 🔴 O produto não tinha esse caminho (07/08). Cartão vencido = cliente sem saída: o
+ *    gateway recusa a renovação, a escada corta o produto, e ele não tinha onde atualizar.
+ *    O aviso de "cartão recusado" que vamos mandar por e-mail só faz sentido com esta
+ *    tela existindo — senão é aviso que aponta pra lugar nenhum.
+ *
+ * 🔒 As MESMAS quatro paredes de `ativarAssinatura`, e pelo mesmo motivo: isto também é um
+ *    oráculo de validação de cartão rodando na nossa conta merchant. Quem tiver sessão de
+ *    owner poderia testar PANs em série lendo a resposta do gateway.
+ *      1. sessão · 2. papel (owner/admin) · 3. cadastro fiscal completo · 4. teto por
+ *      tenant E por IP.
+ * ⚠️ O balde é o MESMO da ativação (`card:tenant:` / `card:ip:`), de propósito: são duas
+ *    portas pro mesmo oráculo, e baldes separados dobrariam o orçamento do atacante.
+ */
+export async function trocarCartaoDaAssinatura(input: {
+  holderName: string; number: string; expiryMonth: string; expiryYear: string; ccv: string
+}): Promise<{ ok: true } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Sessão expirada. Entre de novo." }
+  if (!["owner", "admin"].includes(session.user.role)) {
+    return { error: "Apenas o responsável pela conta pode trocar o cartão." }
+  }
+
+  // ⚠️ O gateway exige o titular completo pra tokenizar — igual à contratação. Sem isto o
+  //    cliente digitaria o cartão inteiro pra receber um erro que a gente já sabia.
+  const titular = await getTitularParaCobranca()
+  if (!titular?.completo) {
+    const faltam = titular?.faltam ?? []
+    return { error: faltam.length
+      ? `Falta completar: ${faltam.join(", ")}.`
+      : "Complete os dados de faturamento antes de trocar o cartão." }
+  }
+
+  const ip = getClientIpFromHeaders(await headers())
+  if (!rateLimit(`card:tenant:${session.user.tenantId}`, 3, 60 * 60_000).ok) {
+    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+  }
+  if (ip && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
+    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+  }
+
+  const r = await updateSubscriptionCard(
+    session.user.tenantId,
+    {
+      holderName:  input.holderName.trim(),
+      number:      input.number,
+      expiryMonth: input.expiryMonth,
+      expiryYear:  input.expiryYear,
+      ccv:         input.ccv,
+    },
+    {
+      name:          titular.nome,
+      email:         titular.email,
+      cpfCnpj:       titular.cpfCnpj,
+      postalCode:    titular.cep,
+      addressNumber: titular.numero,
+      phone:         titular.telefone,
+    },
+    ip,
+  )
+
+  if ("error" in r) return { error: r.error }
+
+  await logAudit({
+    tenantId:   session.user.tenantId,
+    actorId:    session.user.id,
+    actorEmail: session.user.email ?? null,
+    action:     "billing.card_updated",
+    targetType: "tenant",
+    targetId:   session.user.tenantId,
+    // ⚠️ Nada do cartão no audit. Nem os 4 últimos: o log é lido por gente que não precisa.
+    metadata:   {},
+  })
+
+  revalidatePath("/configuracoes/assinatura")
+  return { ok: true }
 }

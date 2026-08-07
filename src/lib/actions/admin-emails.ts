@@ -106,7 +106,11 @@ export async function adminSendTemplateTest(opts: {
     subject:      built.subject,
     html:         built.html,
     text:         built.text,
-    templateSlug: opts.slug,
+    // ⚠️ O slug vem do TEMPLATE encontrado, não da entrada crua: aqui já passamos pelo
+    //    `getEmailTemplate`, então este valor é comprovadamente do catálogo. Usar
+    //    `opts.slug` gravaria no outbox o que o cliente da action mandou — inclusive um
+    //    typo, que depois sumiria de todo filtro do log.
+    templateSlug: tpl.slug,
     metadata:     { test: true },
   })
 
