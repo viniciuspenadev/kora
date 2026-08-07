@@ -1,0 +1,717 @@
+import "server-only"
+import { supabaseAdmin } from "@/lib/supabase"
+import { decryptSecret } from "@/lib/crypto/secrets"
+
+/**
+ * Cliente mínimo da Graph API do Instagram (caminho "Instagram Login").
+ * Base: graph.instagram.com. Usado pra (a) validar/descobrir a conta no connect,
+ * (b) enriquecer o contato (nome/@/foto) e (c) ENVIAR DM (outbound). Token decifrado.
+ * Doc: docs/instagram-direct-design.md.
+ */
+
+const IG_BASE = "https://graph.instagram.com"
+
+/**
+ * ⏱️ TODA chamada à Graph API leva timeout. `fetch` no Node não tem prazo default:
+ * Meta pendurada = o `after()` do webhook fica preso até a plataforma matar o processo,
+ * e o claim daquele comentário fica `claimed` pra sempre (o índice único de dedup
+ * `uq_ig_runs_dedup` impede reprocessar o mesmo comment_id).
+ *
+ * Os valores saem do custo real de cada chamada, não de um número redondo único:
+ *   • TEXT  — envio de DM / private reply / resposta pública: payload minúsculo, no
+ *             caminho quente do webhook e do inbox. Esperar mais atrasa o atendente.
+ *   • READ  — leitura curta (/me, perfil, subscribe, refresh de token, wake).
+ *   • MEDIA — /me/media: a Meta monta thumbnails de ~24 posts; é a chamada mais pesada
+ *             do arquivo e roda numa grade que já mostra "carregando".
+ *   • OAUTH — code → token: dois saltos (api.instagram.com → graph) com o cliente
+ *             parado no redirect; falhar aqui obriga refazer o login inteiro.
+ */
+const T_TEXT  = 10_000
+const T_READ  =  8_000
+const T_MEDIA = 25_000
+const T_OAUTH = 15_000
+
+/**
+ * `AbortSignal.timeout()` rejeita com DOMException `TimeoutError`, mas o undici do Node
+ * às vezes embrulha num `TypeError: fetch failed` com a causa dentro — daí os dois testes.
+ */
+function isTimeoutError(e: unknown): boolean {
+  const err   = e as { name?: string; cause?: { name?: string } } | null
+  const names = [err?.name, err?.cause?.name]
+  return names.some((n) => n === "TimeoutError" || n === "AbortError")
+}
+
+/** Erro de rede legível: timeout vira "não respondeu em Ns", não uma string opaca. */
+function netErr(e: unknown, ms: number, what: string): string {
+  if (isTimeoutError(e)) {
+    return `O Instagram não respondeu em ${Math.round(ms / 1000)}s (${what}). Tente de novo em instantes.`
+  }
+  return (e as Error)?.message ?? String(e)
+}
+
+/**
+ * Conta IG conectada + token (decifrado) do tenant — pra OUTBOUND.
+ *
+ * ⚠️ `.order(created_at).limit(1)` e **nunca** `.maybeSingle()`: com DUAS conexões
+ * ativas no mesmo tenant o PostgREST devolve `PGRST116` e — se o erro for descartado —
+ * a função retorna `null`, derrubando TODO o outbound do Instagram de uma vez (resposta
+ * do atendente no inbox, fluxo do Studio, re-subscribe do webhook) com a mensagem
+ * "conta não conectada" enquanto a tela de Integrações mostra as duas conectadas.
+ * Mesma armadilha, mesmo remédio de `activeIgConnectionId` (actions/studio/flows.ts).
+ * A mais antiga vence — escolha determinística, igual à da projeção de regras.
+ */
+export async function getInstagramSender(tenantId: string): Promise<{ igAccountId: string; token: string } | null> {
+  const { data, error } = await supabaseAdmin.from("channel_connections")
+    .select("external_account_id, access_token")
+    .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active")
+    .order("created_at", { ascending: true })
+    .limit(1)
+  if (error) { console.error("[ig-sender] select:", error.code, error.message); return null }
+  const row   = data?.[0]
+  const acc   = (row?.external_account_id as string | null) ?? null
+  const token = decryptSecret((row?.access_token as string | null) ?? null)
+  if (!acc || !token) return null
+  return { igAccountId: acc, token }
+}
+
+/**
+ * URL de CDN **fresca** da foto de perfil da conta conectada.
+ *
+ * ⚠️ Essa URL é assinada e **expira em poucos dias** (medido 2026-08-01: `oe=` ~6 dias) —
+ *    exatamente a armadilha da thumb de post. Por isso ela NUNCA é guardada em lugar
+ *    nenhum: quem chama é o proxy `/api/ig-avatar`, que busca e transmite os bytes na
+ *    hora. Guardar a string seria repetir o bug que `freezeIgThumb` existe pra evitar.
+ *
+ * Coberto por `instagram_business_basic` — é o perfil da própria conta que autorizou.
+ */
+export async function fetchIgProfilePicture(token: string): Promise<string | null> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/me?fields=profile_picture_url&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) },
+    )
+    const j = await r.json() as { profile_picture_url?: string; error?: { message?: string } }
+    if (!r.ok || j.error) {
+      console.error("[ig-avatar] graph:", j.error?.message ?? `HTTP ${r.status}`)
+      return null
+    }
+    return j.profile_picture_url ?? null
+  } catch (e) {
+    console.error("[ig-avatar] graph:", (e as Error).message)
+    return null
+  }
+}
+
+export interface IgStoryItem {
+  id:        string
+  mediaType: string | null
+  thumbUrl:  string | null
+  timestamp: string | null
+  permalink: string | null
+}
+
+/**
+ * Stories **ATIVOS** da conta conectada.
+ *
+ * ⚠️ Story vive 24h. Esta lista é sempre "o que está no ar AGORA" — nunca histórico.
+ *    Quem apontar um gatilho pra um story específico tem um fluxo com prazo de validade:
+ *    amanhã aquele id não existe mais e o gatilho para de casar (fail-closed, não dispara
+ *    no story errado). É por isso que o default do gatilho é **todos**.
+ */
+export async function listIgStories(token: string): Promise<{ items: IgStoryItem[] } | { error: string }> {
+  try {
+    const fields = "id,media_type,media_url,thumbnail_url,timestamp,permalink"
+    const r = await fetch(`${IG_BASE}/me/stories?fields=${fields}&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) })
+    const j = await r.json() as {
+      data?: Array<{ id?: string; media_type?: string; media_url?: string; thumbnail_url?: string; timestamp?: string; permalink?: string }>
+      error?: { message?: string }
+    }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return {
+      items: (j.data ?? []).filter((m) => m.id).map((m) => ({
+        id:        String(m.id),
+        mediaType: m.media_type ?? null,
+        // Vídeo não tem imagem servível em `media_url` → cai na thumbnail.
+        thumbUrl:  m.thumbnail_url ?? m.media_url ?? null,
+        timestamp: m.timestamp ?? null,
+        permalink: m.permalink ?? null,
+      })),
+    }
+  } catch (e) {
+    return { error: netErr(e, T_READ, "lista de stories") }
+  }
+}
+
+/**
+ * Sobe mídia PRA META e devolve o `attachment_id` — **sem URL nenhuma no caminho**.
+ *
+ * 🔴 É o que permite o bucket de imagens do cliente continuar PRIVADO (o dono vetou URL
+ *    exposta em 2026-08-01). Os bytes vão do nosso storage → nosso servidor → Meta.
+ *
+ * ✅ Verificado ao vivo (2026-08-01): a Attachment Upload API funciona no caminho do
+ *    **Instagram Login** (`graph.instagram.com/<ig-user-id>/message_attachments`), tanto
+ *    por URL quanto por `multipart`. A doc arquivada só descrevia o caminho da Página do
+ *    Facebook — ver docs/instagram-api/media-upload.md.
+ *
+ * `is_reusable`: a mesma imagem disparada pra muita gente sobe UMA vez. É o que evita
+ * timeout com imagem pesada em campanha.
+ */
+export async function uploadIgAttachment(
+  token: string, igAccountId: string, bytes: Buffer, mime: string,
+  kind: "image" | "video" | "audio" | "file" = "image",
+): Promise<{ attachmentId: string } | { error: string }> {
+  try {
+    const fd = new FormData()
+    fd.append("message", JSON.stringify({ attachment: { type: kind, payload: { is_reusable: true } } }))
+    fd.append("filedata", new Blob([new Uint8Array(bytes)], { type: mime }), `upload.${mime.split("/")[1] ?? "bin"}`)
+
+    const r = await fetch(`${IG_BASE}/${igAccountId}/message_attachments`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}` }, body: fd,
+      signal: AbortSignal.timeout(T_MEDIA),
+    })
+    const j = await r.json() as { attachment_id?: string; error?: { message?: string } }
+    if (!r.ok || j.error || !j.attachment_id) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { attachmentId: String(j.attachment_id) }
+  } catch (e) {
+    return { error: netErr(e, T_MEDIA, "upload de mídia") }
+  }
+}
+
+/**
+ * ❤️ Reage a uma mensagem recebida (o "curtir automático" das respostas de story).
+ *
+ * ⚠️ Usa `sender_action`, NÃO `message` — é outro formato de corpo
+ *    (docs/instagram-api/send-message.md §"Reagir / desreagir").
+ *
+ * Best-effort por natureza: falhar em curtir não pode derrubar a ingestão da mensagem nem
+ * o fluxo. Quem chama ignora o erro (mas ele é logado — degradação silenciosa é o que se
+ * evita neste código).
+ */
+export async function sendIgReaction(
+  token: string, igAccountId: string, recipientIgsid: string, messageId: string,
+  reaction: string = "love",
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    const r = await fetch(`${IG_BASE}/${igAccountId}/messages`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body:    JSON.stringify({
+        recipient:     { id: recipientIgsid },
+        sender_action: "react",
+        payload:       { message_id: messageId, reaction },
+      }),
+      signal: AbortSignal.timeout(T_TEXT),
+    })
+    const j = await r.json() as { error?: { message?: string } }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { ok: true }
+  } catch (e) {
+    return { error: netErr(e, T_TEXT, "reação à mensagem") }
+  }
+}
+
+/** Envia um texto via Instagram Send API (Graph). Só vale dentro da janela 24h. */
+/**
+ * DM pra uma PESSOA com o objeto `message` já montado (texto · cartão · botões · anexo).
+ *
+ * 🔴 **Era o quadrante que faltava.** A matriz de envio do Instagram tinha três células
+ *    preenchidas e uma vazia:
+ *
+ *    |                    | texto                 | objeto rico            |
+ *    |--------------------|-----------------------|------------------------|
+ *    | pro COMENTÁRIO     | `sendIgPrivateReply`  | `sendIgPrivateReplyRaw`|
+ *    | pra PESSOA (DM)    | `sendInstagramText`   | **esta função**        |
+ *
+ *    Ou seja: o Instagram já sabia montar template rico (`buildIgMessage`) e já sabia
+ *    mandar DM — nunca faziam as duas coisas juntas, e por isso o cartão com botões só
+ *    existia na resposta ao comentário. Mesma URL e mesmo corpo da irmã de texto; muda
+ *    só o conteúdo de `message`.
+ *
+ * ⚠️ Diferente do `...PrivateReplyRaw`, aqui o destinatário é `{ id: <IGSID> }` e **não**
+ *    `{ comment_id }` — e isto exige a **janela de 24h aberta**. Fora dela a Meta recusa;
+ *    quem chama degrada (nunca deixa a exceção derrubar o turno).
+ *
+ * Quem monta o `message` é `buildIgMessage` (lib/instagram/rich-render.ts) — este arquivo
+ * não conhece template nenhum, igual ao caminho da bala única.
+ */
+export async function sendInstagramMessage(
+  igAccountId: string, recipientIgsid: string, token: string, message: Record<string, unknown>,
+): Promise<{ messageId: string | null } | { error: string }> {
+  try {
+    const r = await fetch(`${IG_BASE}/${igAccountId}/messages?access_token=${encodeURIComponent(token)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipient: { id: recipientIgsid }, message }),
+      signal: AbortSignal.timeout(T_TEXT),
+    })
+    const j = await r.json() as { message_id?: string; error?: { message?: string } }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { messageId: j.message_id ?? null }
+  } catch (e) {
+    return { error: netErr(e, T_TEXT, "envio de mensagem") }
+  }
+}
+
+/** Texto puro pra uma pessoa. Casca sobre `sendInstagramMessage` — mesma relação que
+ *  `sendIgPrivateReply` tem com `sendIgPrivateReplyRaw`: um caminho de rede só. */
+export async function sendInstagramText(
+  igAccountId: string, recipientIgsid: string, token: string, text: string,
+): Promise<{ messageId: string | null } | { error: string }> {
+  return sendInstagramMessage(igAccountId, recipientIgsid, token, { text })
+}
+
+/**
+ * Campos de webhook que o nosso ingestor trata. Reação chega APENAS via
+ * `message_reactions` (separado de `messages` — confirmado na doc da Meta);
+ * sem assinar esse campo, a reação reverte no app e nunca chega no webhook.
+ */
+export const IG_WEBHOOK_FIELDS = "messages,message_reactions,messaging_postbacks,messaging_seen,messaging_referral"
+/** Base + `comments` (comment-to-DM). Exige `instagram_business_manage_comments` NA CONTA. */
+export const IG_WEBHOOK_FIELDS_COMMENTS = `${IG_WEBHOOK_FIELDS},comments`
+/**
+ * Base + comentário + os dois campos que a Meta ACEITOU na sondagem de 2026-08-01:
+ *   • `story_reactions` — reação (só emoji) a story. 🔴 Fecha um furo real: o gatilho
+ *     "respondeu seu story" promete "qualquer palavra OU REAÇÃO", e reação pura pode não
+ *     chegar pelo `messages`. Sem este campo a promessa seria mentira pra metade dos casos.
+ *   • `live_comments` — comentário em transmissão ao vivo.
+ * Ver docs/instagram-api/webhooks-and-user-profile.md (os 23 campos válidos).
+ */
+export const IG_WEBHOOK_FIELDS_FULL = `${IG_WEBHOOK_FIELDS_COMMENTS},story_reactions,live_comments`
+/**
+ * ⚠️ `follow` (novo seguidor) fica FORA do degrau normal de propósito.
+ *
+ * O nome é válido no schema da Meta, mas assinar devolve `{"success": false}` com HTTP 200
+ * quando a permissão não foi concedida — e ela é concedida **seletivamente** (tipo/idade da
+ * conta, região, verificação do negócio) e **pode ser recolhida sem aviso**.
+ *
+ * Por isso ele é tentado à parte, por `probeIgFollowField`, e o resultado é GUARDADO: o
+ * gatilho de novo seguidor precisa poder dizer "aguardando liberação da Meta" em vez de
+ * ficar ligado e nunca disparar. Falha silenciosa é o pior desfecho — foi a lição do dia.
+ */
+export const IG_FIELD_FOLLOW = "follow"
+
+/**
+ * Auto-assina a conta autorizada nos campos de webhook (self-provision — o controle
+ * fica no backend, não num toggle manual do painel da Meta). Idempotente; não-fatal.
+ *
+ * 🔴 DEGRAU, NÃO INTERRUPTOR. Tenta com `comments`; se a Meta recusar (conta sem a
+ *    permissão — ela não foi aprovada pra todo mundo ainda), **repete sem** e mantém o
+ *    messaging vivo. Sem esse degrau, assinar um campo não aprovado derruba a chamada
+ *    INTEIRA — e como ela é não-fatal, a conta ficaria conectada sem receber mensagem
+ *    nenhuma, em silêncio. É o pior desfecho possível e o mais difícil de perceber.
+ *
+ * Efeito prático: a conta de teste do dono (que já tem a permissão) passa a receber
+ * comentário HOJE; qualquer outra conta segue exatamente como antes. Quando a Meta
+ * aprovar pra geral, ninguém precisa mexer aqui — o 1º ramo simplesmente passa a valer
+ * pra todos, conforme cada conta refizer o OAuth.
+ *
+ * Devolve quais campos ficaram valendo — quem chama loga isso, senão o degrau vira uma
+ * degradação invisível (o mesmo erro que a gente passou o dia caçando).
+ */
+export async function subscribeIgWebhooks(
+  token: string,
+): Promise<{ ok: true; fields: string; comments: boolean } | { error: string }> {
+  // Tipo de retorno EXPLÍCITO: sem ele o TS infere um union com props opcionais
+  // (`{error: string; ok?: undefined} | ...`) e `"error" in base` não estreita direito.
+  const attempt = async (fields: string): Promise<{ ok: true } | { error: string; status?: number }> => {
+    const r = await fetch(`${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`, {
+      method: "POST", signal: AbortSignal.timeout(T_READ),
+    })
+    const j = await r.json() as { success?: boolean; error?: { message?: string } }
+    if (!r.ok || j.error) {
+      return { error: j.error?.message ?? `HTTP ${r.status}`, status: r.status }
+    }
+    return { ok: true as const }
+  }
+
+  /**
+   * 🔴 O ERRO É DE PERMISSÃO ou é PASSAGEIRO? (QA 2026-08-01)
+   *
+   * A escada só pode descer quando a Meta diz "essa conta não tem esse campo". Descer por
+   * 429/5xx/timeout REBAIXA uma conta que estava completa: ela perde `comments` e o
+   * comment-to-DM morre — e o carimbo ainda registra `webhook_comments: false`, fazendo a
+   * degradação parecer decisão da Meta. Não há retry nem reconciliação pra desfazer.
+   *
+   * Fail-CLOSED em relação à degradação: na dúvida, ABORTA em vez de descer.
+   */
+  const passageiro = (e: { status?: number }) => !e.status || e.status === 429 || e.status >= 500
+
+  try {
+    // ESCADA, do mais rico ao mínimo. Cada POST define a lista INTEIRA — por isso cada
+    // degrau manda tudo que quer manter, nunca só o campo novo.
+    const full = await attempt(IG_WEBHOOK_FIELDS_FULL)
+    if (!("error" in full)) return { ok: true, fields: IG_WEBHOOK_FIELDS_FULL, comments: true }
+    if (passageiro(full)) return { error: full.error }        // não rebaixa por instabilidade
+    console.warn("[ig-subscribe] sem story_reactions/live_comments:", full.error)
+
+    const withComments = await attempt(IG_WEBHOOK_FIELDS_COMMENTS)
+    if (!("error" in withComments)) return { ok: true, fields: IG_WEBHOOK_FIELDS_COMMENTS, comments: true }
+    if (passageiro(withComments)) return { error: withComments.error }
+    console.warn("[ig-subscribe] sem `comments` (conta provavelmente ainda não tem a permissão):", withComments.error)
+
+    const base = await attempt(IG_WEBHOOK_FIELDS)
+    if ("error" in base) return { error: base.error }
+    return { ok: true, fields: IG_WEBHOOK_FIELDS, comments: false }
+  } catch (e) {
+    return { error: netErr(e, T_READ, "assinatura do webhook") }
+  }
+}
+
+/**
+ * A conta tem a permissão de **novo seguidor**? Descobre TENTANDO — não há endpoint que
+ * pergunte.
+ *
+ * 🔴 A Meta responde `HTTP 200` com `{"success": false}` quando o campo é válido mas a
+ *    permissão não foi concedida. Ou seja: `r.ok` NÃO basta — sem ler o `success`, o
+ *    recurso ficaria "ligado" e nunca dispararia. Medido em 2026-08-01 na `@omni.kora`.
+ *
+ * ⚠️ Em caso de sucesso a assinatura FICA com o `follow` (é o que se quer). Em caso de
+ *    falha, a lista anterior é reposta — a chamada que falha não altera nada, mas repor é
+ *    explícito pra não depender desse detalhe do lado da Meta.
+ */
+export async function probeIgFollowField(
+  token: string, currentFields: string,
+): Promise<{ available: boolean }> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(`${currentFields},${IG_FIELD_FOLLOW}`)}&access_token=${encodeURIComponent(token)}`,
+      { method: "POST", signal: AbortSignal.timeout(T_READ) },
+    )
+    const j = await r.json() as { success?: boolean; error?: { message?: string } }
+    const available = r.ok && j.success !== false && !j.error
+    if (!available) {
+      // Repõe o estado bom — barato e remove qualquer dúvida sobre o que ficou valendo.
+      await fetch(`${IG_BASE}/me/subscribed_apps?subscribed_fields=${encodeURIComponent(currentFields)}&access_token=${encodeURIComponent(token)}`,
+        { method: "POST", signal: AbortSignal.timeout(T_READ) }).catch(() => {})
+    }
+    return { available }
+  } catch {
+    return { available: false }        // fail-closed: na dúvida, "não liberado"
+  }
+}
+
+const APP_ID     = () => process.env.INSTAGRAM_APP_ID ?? ""
+const APP_SECRET = () => process.env.INSTAGRAM_APP_SECRET ?? ""
+
+/**
+ * Escopos pedidos no Business Login.
+ *
+ * 🔴 `instagram_business_manage_comments` VOLTOU em 2026-07-30 (pedido do dono) pra
+ *    gravar o screencast do comment-to-DM, que é justamente a evidência que a Meta exige
+ *    pra aprovar essa permissão. Sem ela no OAuth, a conta de teste não recebe o webhook
+ *    de comentário e o vídeo não existe — é um ovo-e-galinha que só se resolve pedindo.
+ *
+ * ⚠️ RISCO CONHECIDO E ACEITO PELO DONO, enquanto a Meta não aprova pra geral: quem NÃO
+ *    é admin/desenvolvedor/testador do app pode receber erro ao clicar em Conectar
+ *    Instagram (a Meta reage a permissão não aprovada ora omitindo-a, ora recusando o
+ *    OAuth inteiro — o comportamento não é o mesmo em todo fluxo). Hoje só a conta do
+ *    dono tem Instagram conectado, então o risco é teórico — mas **não conectar
+ *    Instagram pra cliente novo até a aprovação sair**. Reverter = tirar daqui e refazer
+ *    o OAuth; nada no banco muda.
+ *
+ * ⚠️ Escopo NÃO se renova sozinho: `refreshIgToken` renova o TOKEN, não a permissão.
+ *    Toda conta já conectada precisa refazer o Conectar pra ganhar comentários.
+ *
+ * O `subscribeIgWebhooks` acima é resiliente a isso: conta sem a permissão cai de volta
+ * pros campos base e segue recebendo mensagem normalmente.
+ */
+export const IG_SCOPES = "instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments"
+
+/** URL de autorização do Instagram Business Login (o "botão Conectar"). */
+export function buildIgAuthorizeUrl(redirectUri: string, state: string): string {
+  const p = new URLSearchParams({
+    client_id:     APP_ID(),
+    redirect_uri:  redirectUri,
+    response_type: "code",
+    scope:         IG_SCOPES,
+    state,
+  })
+  return `https://www.instagram.com/oauth/authorize?${p.toString()}`
+}
+
+/** Troca o `code` do OAuth por um token LONG-LIVED (~60d, renovável). */
+export async function exchangeIgCode(
+  code: string, redirectUri: string,
+): Promise<{ token: string; userId: string; expiresIn: number | null } | { error: string }> {
+  try {
+    // 1) code → token short-lived
+    const form = new URLSearchParams({
+      client_id: APP_ID(), client_secret: APP_SECRET(),
+      grant_type: "authorization_code", redirect_uri: redirectUri, code,
+    })
+    const r = await fetch("https://api.instagram.com/oauth/access_token", {
+      method: "POST", body: form, signal: AbortSignal.timeout(T_OAUTH),
+    })
+    const j = await r.json() as { access_token?: string; user_id?: string | number; error_message?: string }
+    if (!r.ok || !j.access_token) return { error: j.error_message ?? `HTTP ${r.status}` }
+    const shortToken = j.access_token
+    const userId = String(j.user_id ?? "")
+
+    // 2) short-lived → long-lived
+    const r2 = await fetch(
+      `${IG_BASE}/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(APP_SECRET())}&access_token=${encodeURIComponent(shortToken)}`,
+      { signal: AbortSignal.timeout(T_OAUTH) },
+    )
+    const j2 = await r2.json() as { access_token?: string; expires_in?: number }
+    return { token: j2.access_token ?? shortToken, userId, expiresIn: j2.expires_in ?? null }
+  } catch (e) {
+    return { error: netErr(e, T_OAUTH, "troca do código de autorização") }
+  }
+}
+
+/** Um post/reel da conta conectada — o que a grade do seletor precisa mostrar. */
+export interface IgMediaItem {
+  id:            string
+  caption:       string | null
+  mediaType:     string          // IMAGE | VIDEO | CAROUSEL_ALBUM
+  isReel:        boolean
+  thumbUrl:      string | null   // ⚠️ URL de CDN — EXPIRA. Ver nota abaixo.
+  permalink:     string | null
+  timestamp:     string | null
+  commentsCount: number | null   // dado-herói do tile: é o que faz escolher o post certo
+}
+
+/**
+ * Lista os posts/reels da conta conectada — alimenta o seletor visual de post da
+ * automação de comentário. Coberto por `instagram_business_basic` (leitura de mídia
+ * da própria conta), **sem permissão nova**.
+ *
+ * ⚠️ **`thumbUrl` é URL de CDN da Meta e EXPIRA** (mesma dor já resolvida no avatar do
+ * Instagram). Vale pra grade, que é efêmera. Pro card do fluxo — que fica semanas na
+ * tela — a thumbnail do post ESCOLHIDO tem que ser baixada e congelada no momento da
+ * escolha, senão o canvas quebra em dias.
+ *
+ * ⚠️ A API **não busca por legenda**. A busca do seletor é client-side sobre o que já
+ * foi carregado; pro arquivo antigo, o caminho é colar o link do post.
+ *
+ * Paginação por cursor (`after`), como o resto do Graph.
+ */
+export async function listIgMedia(
+  token: string, opts?: { limit?: number; after?: string },
+): Promise<{ items: IgMediaItem[]; nextCursor: string | null } | { error: string }> {
+  const fields = "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,comments_count"
+  const params = new URLSearchParams({
+    fields,
+    limit:        String(opts?.limit ?? 24),
+    access_token: token,
+  })
+  if (opts?.after) params.set("after", opts.after)
+
+  try {
+    const r = await fetch(`${IG_BASE}/me/media?${params.toString()}`, { signal: AbortSignal.timeout(T_MEDIA) })
+    const j = await r.json() as {
+      data?: Array<{
+        id?: string; caption?: string; media_type?: string; media_product_type?: string
+        media_url?: string; thumbnail_url?: string; permalink?: string
+        timestamp?: string; comments_count?: number
+      }>
+      paging?: { cursors?: { after?: string }; next?: string }
+      error?: { message?: string }
+    }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+
+    const items: IgMediaItem[] = (j.data ?? []).map((m) => ({
+      id:            String(m.id ?? ""),
+      caption:       m.caption?.trim() || null,
+      mediaType:     m.media_type ?? "IMAGE",
+      isReel:        m.media_product_type === "REELS",
+      // Vídeo/reel não tem `media_url` servível como imagem → usa a thumbnail.
+      thumbUrl:      m.thumbnail_url ?? m.media_url ?? null,
+      permalink:     m.permalink ?? null,
+      timestamp:     m.timestamp ?? null,
+      commentsCount: typeof m.comments_count === "number" ? m.comments_count : null,
+    })).filter((m) => m.id)
+
+    // Só devolve cursor se há próxima página de verdade (senão a UI pagina no vazio).
+    const nextCursor = j.paging?.next ? (j.paging?.cursors?.after ?? null) : null
+    return { items, nextCursor }
+  } catch (e) {
+    return { error: netErr(e, T_MEDIA, "lista de publicações") }
+  }
+}
+
+/**
+ * **Private Reply** — resposta privada no Direct a quem comentou num post/reel.
+ *
+ * É a ÚNICA porta de entrada sancionada pra conversa fria no Instagram: quem só comentou
+ * nunca te mandou mensagem, então a janela de 24h não existe — mas a Meta abre uma exceção
+ * pro comentário.
+ *
+ * Regras (docs/instagram-api/private-replies-and-entry-points.md):
+ *  • **1 mensagem por comentário**, e só uma. Não há segunda chance.
+ *  • **7 dias** a partir do comentário (em Live, só durante a transmissão).
+ *  • A conversa só continua se a pessoa RESPONDER — aí abre a janela de 24h normal.
+ *  • Cai na caixa de entrada de quem segue, e em "Solicitações" de quem não segue.
+ *
+ * O retorno traz o **IGSID** de quem comentou (`recipient_id`) — é assim que a gente
+ * descobre a identidade, já que o perfil dele é inacessível enquanto não responder
+ * (regra de consentimento da User Profile API).
+ */
+export async function sendIgPrivateReply(
+  token: string, igAccountId: string, commentId: string, text: string,
+): Promise<{ recipientId: string; messageId: string } | { error: string }> {
+  return sendIgPrivateReplyRaw(token, igAccountId, commentId, { text })
+}
+
+/**
+ * Mesma bala única, com o `message` já montado (texto · card · botões · anexo).
+ *
+ * Quem monta é `buildIgMessage` (lib/instagram/rich-render.ts) — aqui só entra o objeto
+ * pronto, pra este arquivo não ter que conhecer template nenhum.
+ *
+ * ⚠️ Vale TODA a advertência de `sendIgPrivateReply`: uma por comentário, irrecuperável.
+ *    Formato inválido não devolve a bala — por isso o compositor valida antes de salvar e
+ *    `validateIgPublish` recusa publicar o que a Meta rejeitaria.
+ */
+export async function sendIgPrivateReplyRaw(
+  token: string, igAccountId: string, commentId: string, message: Record<string, unknown>,
+): Promise<{ recipientId: string; messageId: string } | { error: string }> {
+  try {
+    const r = await fetch(`${IG_BASE}/${igAccountId}/messages`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body:    JSON.stringify({ recipient: { comment_id: commentId }, message }),
+      signal:  AbortSignal.timeout(T_TEXT),
+    })
+    const j = await r.json() as { recipient_id?: string; message_id?: string; error?: { message?: string } }
+    if (!r.ok || j.error || !j.recipient_id) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { recipientId: String(j.recipient_id), messageId: String(j.message_id ?? "") }
+  } catch (e) {
+    // Timeout aqui é o caso mais delicado do arquivo: a bala é ÚNICA por comentário e a
+    // Meta pode ter aceitado a DM mesmo sem a resposta chegar. Vira `failed` no ledger
+    // (devolve a cota) e não é re-tentado — o dedup por comment_id impede segundo disparo.
+    return { error: netErr(e, T_TEXT, "resposta privada do comentário") }
+  }
+}
+
+/**
+ * Ledger (`instagram_automation_runs`): o 1º reply da pessoa fecha o funil da automação
+ * premium — claimed → sent → **replied**. Forward-only (só sai de `sent`), espelhando
+ * `markRecipientReplied` das campanhas.
+ *
+ * ⚠️ Mora AQUI, e não no ingestor que escreve o resto do ledger, só por dependência:
+ * quem consome é o `run.ts`, e `run.ts → instagram-inbound → dispatch → run.ts` fecharia
+ * um ciclo de import. Este módulo não importa nada do motor.
+ */
+export async function markIgAutomationReplied(tenantId: string, runId: string): Promise<void> {
+  const now = new Date().toISOString()
+  const { error } = await supabaseAdmin.from("instagram_automation_runs")
+    .update({ status: "replied", replied_at: now, updated_at: now })
+    .eq("id", runId).eq("tenant_id", tenantId).eq("status", "sent")
+  if (error) console.error("[ig-ledger] markReplied:", error.code, error.message)
+}
+
+/**
+ * **Resposta PÚBLICA ao comentário** — o *"te chamei no direct 👀"* visível a todos,
+ * respondendo o próprio comentário.
+ *
+ * Não é enfeite (decisão do owner, §8.2 do desenho): quem **não segue** recebe a private
+ * reply em **"Solicitações"**, aba que muita gente nunca abre. A resposta pública é o que
+ * avisa a pessoa a ir olhar — sem ela, a bala única é gasta numa mensagem que talvez nem
+ * seja vista. De quebra puxa mais comentários e sinaliza engajamento pro algoritmo.
+ *
+ * Caminho do Instagram Login: `POST /<IG_COMMENT_ID>/replies?message=…` em
+ * graph.instagram.com (o `message` vai na query string, forma documentada pela Meta —
+ * esta edge não aceita corpo JSON como a de mensagens). Mesma permissão da private
+ * reply: `instagram_business_manage_comments`.
+ *
+ * Best-effort no runtime: falhar aqui NÃO invalida o Direct que já saiu.
+ */
+export async function replyToIgComment(
+  token: string, commentId: string, text: string,
+): Promise<{ id: string } | { error: string }> {
+  try {
+    const r = await fetch(`${IG_BASE}/${commentId}/replies?message=${encodeURIComponent(text)}`, {
+      method:  "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      signal:  AbortSignal.timeout(T_TEXT),
+    })
+    const j = await r.json() as { id?: string; error?: { message?: string } }
+    if (!r.ok || j.error || !j.id) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { id: String(j.id) }
+  } catch (e) {
+    return { error: netErr(e, T_TEXT, "resposta pública do comentário") }
+  }
+}
+
+/**
+ * "Acorda" a conta na Conversations API — best-effort, chamado uma vez no connect.
+ *
+ * ⚠️ Gotcha documentado pela Meta: conta **Creator** (não Business) **só passa a receber
+ * webhook depois** que o app faz uma primeira chamada à Conversations API. Sem isso o
+ * cliente conecta, vê "conectado", e nenhuma mensagem chega — sem erro nenhum.
+ * Em conta Business é inofensivo (uma leitura a mais no connect).
+ */
+export async function wakeIgConversations(token: string): Promise<{ ok: boolean }> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/me/conversations?platform=instagram&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) },
+    )
+    return { ok: r.ok }
+  } catch (e) {
+    // Best-effort: nunca derruba o connect. Mas timeout aqui explica conta Creator que
+    // conecta e não recebe webhook — por isso o motivo vai pro log, não pro vazio.
+    console.error("[ig-wake]", netErr(e, T_READ, "wake da Conversations API"))
+    return { ok: false }
+  }
+}
+
+/**
+ * Renova um token long-lived por mais ~60 dias (`ig_refresh_token`).
+ *
+ * Sem isso, TODA conexão de cliente morre sozinha ~60 dias depois de conectar — e morre
+ * calada: o webhook simplesmente para de ser aceito. Chamado pelo cron diário
+ * (`/api/cron/instagram-refresh`).
+ *
+ * Regras da Meta: o token precisa ter **mais de 24h de vida** e **ainda não ter expirado**.
+ * Token expirado é irrecuperável — só reconectando pelo OAuth.
+ */
+export async function refreshIgToken(
+  token: string,
+): Promise<{ token: string; expiresIn: number | null } | { error: string }> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) },
+    )
+    const j = await r.json() as { access_token?: string; expires_in?: number; error?: { message?: string } }
+    if (!r.ok || j.error || !j.access_token) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    return { token: j.access_token, expiresIn: j.expires_in ?? null }
+  } catch (e) {
+    return { error: netErr(e, T_READ, "renovação do token") }
+  }
+}
+
+/** /me — valida o token e descobre a conta conectada (id + @handle). */
+export async function fetchIgAccount(token: string): Promise<{ userId: string; username: string } | { error: string }> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/me?fields=user_id,username&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) },
+    )
+    const j = await r.json() as { user_id?: string | number; id?: string | number; username?: string; error?: { message?: string } }
+    if (!r.ok || j.error) return { error: j.error?.message ?? `HTTP ${r.status}` }
+    const userId = String(j.user_id ?? j.id ?? "")
+    if (!userId) return { error: "resposta sem user_id" }
+    return { userId, username: j.username ?? "" }
+  } catch (e) {
+    return { error: netErr(e, T_READ, "validação da conta") }
+  }
+}
+
+/** Perfil de um usuário (por IGSID) — nome real, @handle e foto. Best-effort. */
+export async function fetchIgProfile(igsid: string, token: string): Promise<{ name?: string; username?: string; profilePic?: string } | null> {
+  try {
+    const r = await fetch(
+      `${IG_BASE}/${igsid}?fields=name,username,profile_pic&access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(T_READ) },
+    )
+    const j = await r.json() as { name?: string; username?: string; profile_pic?: string; error?: { message?: string } }
+    if (!r.ok || j.error) { console.error("[ig-profile]", j.error?.message ?? `HTTP ${r.status}`); return null }
+    return { name: j.name, username: j.username, profilePic: j.profile_pic }
+  } catch (e) {
+    console.error("[ig-profile]", netErr(e, T_READ, "perfil do usuário"))
+    return null
+  }
+}
