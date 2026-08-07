@@ -80,10 +80,18 @@ export async function applyPlan(tenantId: string, planId: string): Promise<{ ok:
     .maybeSingle()
   if (!plan) return { ok: false, error: "Plano não encontrado." }
 
-  await supabaseAdmin
+  // 🔴 O CORAÇÃO DA FUNÇÃO. Até 07/08 este erro era descartado e a função ainda devolvia
+  //    `{ ok: true }` no fim — mentia sucesso mesmo se o plano NUNCA fosse gravado. Captura
+  //    e sai ANTES dos upserts de módulo: numa falha transitória, pular os módulos é o
+  //    comportamento honesto e auto-curável (o reconcile re-roda `liberar`→`applyPlan`).
+  const { error: planErr } = await supabaseAdmin
     .from("tenants")
     .update({ plan_id: planId, plan: tierFromName(plan.name as string) })
     .eq("id", tenantId)
+  if (planErr) {
+    console.error(JSON.stringify({ src: "plans", kind: "apply-plan-falhou-na-escrita", tenant: tenantId, plano: planId, msg: planErr.message }))
+    return { ok: false, error: "Não foi possível aplicar o plano." }
+  }
 
   const mods = ((plan.included_modules as string[] | null) ?? []).filter(Boolean)
   const doNovo = new Set(mods)

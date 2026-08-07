@@ -335,9 +335,22 @@ export async function confirmSignup(email: string, code: string): Promise<{ ok: 
     //    do teste e a primeira cobrança viram o mesmo dia (o cron de trial já respeita isso).
     billing_mode:    "gateway",
   }).select("id, slug").single()
-  if (tErr || !tenant) return { ok: false, error: "Erro ao criar o ambiente." }
+  if (tErr || !tenant) {
+    // Compensa o profile órfão (o insert do tenant falhou → não pode sobrar dono sem casa).
+    await supabaseAdmin.from("profiles").delete().eq("id", profile.id)
+    return { ok: false, error: "Erro ao criar o ambiente." }
+  }
 
-  await supabaseAdmin.from("tenant_users").insert({ tenant_id: tenant.id, user_id: profile.id, role: "owner", active: true })
+  // Fecha o trio de identidade/acesso: sem tenant_users a empresa nasce SEM DONO (ninguém entra).
+  // Este é o único insert do bloco que precisa checar+compensar; os de baixo são recuperáveis.
+  const { error: muErr } = await supabaseAdmin.from("tenant_users")
+    .insert({ tenant_id: tenant.id, user_id: profile.id, role: "owner", active: true })
+  if (muErr) {
+    await supabaseAdmin.from("tenants").delete().eq("id", tenant.id)
+    await supabaseAdmin.from("profiles").delete().eq("id", profile.id)
+    console.error(JSON.stringify({ src: "signup", kind: "trio-falhou-rollback", tenant: tenant.id, msg: muErr.message }))
+    return { ok: false, error: "Erro ao criar a conta. Tente novamente." }
+  }
   // ── Perfil fiscal: nasce com o que a porta sabe ──────────────────────────
   //
   // ⚠️ SÓ nome, e-mail e telefone. Documento e endereço são a 1ª pergunta do wizard de

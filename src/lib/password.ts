@@ -9,7 +9,7 @@
  */
 export function validatePassword(pw: string): string | null {
   if (!pw || pw.length < 8) return "A senha precisa ter pelo menos 8 caracteres."
-  if (pw.length > 200)       return "Senha muito longa (máx. 200 caracteres)."
+  if (Buffer.byteLength(pw, "utf8") > 72) return "Senha muito longa (máx. 72 caracteres)."
   if (!/[a-zA-Z]/.test(pw))  return "A senha precisa ter pelo menos uma letra."
   if (!/[0-9]/.test(pw))     return "A senha precisa ter pelo menos um número."
   return null

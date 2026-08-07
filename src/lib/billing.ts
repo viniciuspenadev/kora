@@ -154,7 +154,14 @@ export async function generateInvoiceForTenant(tenantId: string): Promise<{ erro
       subtotal_cents: subtotal, total_cents: subtotal, issued_at: new Date().toISOString(),
     })
     .select("id").single()
-  if (error) return { error: error.message }
+  if (error) {
+    // 🔴 Rede de idempotência no BANCO (07/08). O count-check acima evita o trabalho na
+    //    maioria dos casos, mas cron × pagamento podem ler `dup=0` juntos e inserir os dois.
+    //    O índice único parcial `uq_invoices_tenant_period_active` transforma a 2ª inserção
+    //    em 23505 — tratada aqui como o mesmo "já existe" do count path, não vaza erro cru.
+    if ((error as { code?: string }).code === "23505") return { error: "Já existe uma fatura para este período", skipped: true }
+    return { error: error.message }
+  }
 
   const { error: itemsErr } = await supabaseAdmin
     .from("invoice_items").insert(items.map((i) => ({ ...i, invoice_id: inv.id })))

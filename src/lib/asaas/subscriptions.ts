@@ -66,11 +66,7 @@ export async function createSubscriptionForTenant(
   holder: HolderInput,
   remoteIp: string,
 ): Promise<{ id: string } | { error: string }> {
-  // 1 · Cliente no gateway (idempotente).
-  const cust = await ensureAsaasCustomer(tenantId)
-  if ("error" in cust) return cust
-
-  // 2 · Estado do tenant: ciclo e data da primeira cobrança.
+  // 1 · Estado do tenant: ciclo e data da primeira cobrança.
   const [{ data: row, error: tErr }, { data: planoRow }] = await Promise.all([
     supabaseAdmin
       .from("tenants")
@@ -158,6 +154,15 @@ export async function createSubscriptionForTenant(
     await soltarReserva()
     return { error: "O plano deste cliente está com preço zero. Corrija o plano antes de cobrar." }
   }
+
+  // 2 · Cliente no gateway (idempotente) — DEPOIS do claim atômico (07/08). Antes, esta
+  //    chamada rodava ANTES da reserva: duas ativações concorrentes do mesmo tenant criavam
+  //    DOIS customers no Asaas antes de qualquer uma travar a vaga. Agora só o vencedor do
+  //    claim — já validado billing_mode/piso/preço — cria o customer.
+  // ⚠️ Falha aqui (sem CPF/CNPJ, erro de gateway) DEVE soltar a reserva antes de retornar,
+  //    senão o marcador `pending:` fica preso e o tenant nunca mais consegue assinar.
+  const cust = await ensureAsaasCustomer(tenantId)
+  if ("error" in cust) { await soltarReserva(); return cust }
 
   // 3 · Tokeniza — o cartão passa por aqui UMA vez e vira um identificador opaco.
   let creditCardToken: string

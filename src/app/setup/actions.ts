@@ -6,11 +6,23 @@ import { validatePassword } from "@/lib/password"
 import { seedTrustForCurrentDevice } from "@/lib/auth/trust"
 
 export async function registerSuperAdmin(formData: FormData): Promise<{ error?: string; ok?: boolean }> {
-  const { count } = await supabaseAdmin
+  // Camada 1 — kill-switch durável: uma vez concluído o bootstrap da plataforma,
+  // o owner seta SETUP_DISABLED=true no ambiente e o endpoint fica trancado
+  // permanentemente, antes de qualquer query no banco.
+  if (process.env.SETUP_DISABLED === "true") {
+    return { error: "Setup desabilitado." }
+  }
+
+  // Camada 2 — fail-CLOSED no count: o error precisa abortar. Se o SELECT
+  // falhar (count undefined) NÃO podemos prosseguir e criar um super-admin.
+  const { count, error: countErr } = await supabaseAdmin
     .from("platform_admins")
     .select("id", { count: "exact", head: true })
-
-  if ((count ?? 0) > 0) {
+  if (countErr || count == null) {
+    console.error("[setup] falha ao validar estado do setup:", countErr)
+    return { error: "Não foi possível validar o estado do setup. Tente novamente." }
+  }
+  if (count > 0) {
     return { error: "Setup já foi concluído." }
   }
 
@@ -30,15 +42,21 @@ export async function registerSuperAdmin(formData: FormData): Promise<{ error?: 
     .select("id")
     .single()
 
-  if (profileError) return { error: `Erro ao criar perfil: ${profileError.message}` }
+  if (profileError) {
+    console.error("[setup] falha ao criar profile:", profileError)
+    return { error: "Não foi possível concluir o cadastro. Tente novamente." }
+  }
 
-  const { error: adminError } = await supabaseAdmin
-    .from("platform_admins")
-    .insert({ user_id: profile.id })
+  // Camada 3 — trava atômica de corrida: advisory lock serializa concorrentes
+  // e o insert condicional só funciona com platform_admins VAZIA. Fecha o TOCTOU.
+  const { data: bootstrapped, error: bootErr } = await supabaseAdmin
+    .rpc("bootstrap_platform_admin", { p_user_id: profile.id })
 
-  if (adminError) {
+  if (bootErr || bootstrapped !== true) {
+    // corrida perdeu OU já existia admin → desfaz o profile órfão
     await supabaseAdmin.from("profiles").delete().eq("id", profile.id)
-    return { error: `Erro ao registrar admin: ${adminError.message}` }
+    if (bootErr) console.error("[setup] falha no bootstrap_platform_admin:", bootErr)
+    return { error: bootErr ? "Erro ao registrar admin." : "Setup já foi concluído." }
   }
 
   // Device trust: bootstrap único da plataforma, a pessoa acabou de criar a

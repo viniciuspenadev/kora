@@ -147,6 +147,27 @@ export async function listMySessions(): Promise<MySession[]> {
   }))
 }
 
+/** Revoga a sessão ATUAL no servidor (logout de verdade): deleta a linha de user_sessions
+ *  do sid corrente → um JWT copiado morre no próximo re-check (~5min) em vez de durar 30d.
+ *  Best-effort: nunca lança (o logout não pode ser bloqueado). */
+export async function endMyCurrentSession(): Promise<{ ok: boolean }> {
+  try {
+    const session = await auth()
+    const sid = session?.user?.sid
+    const me  = session?.user?.id
+    if (!sid || !me) return { ok: true } // sessão sem sid (fail-open do login) — nada a revogar
+    // device pra limpar o push do aparelho (mesmo padrão de admin-sessions.ts:97-106)
+    const { data: row } = await supabaseAdmin.from("user_sessions")
+      .select("device_id").eq("sid", sid).eq("user_id", me).maybeSingle()
+    await supabaseAdmin.from("user_sessions").delete().eq("sid", sid).eq("user_id", me)
+    const deviceId = (row as { device_id?: string | null } | null)?.device_id ?? null
+    if (deviceId) {
+      await supabaseAdmin.from("push_subscriptions").delete().eq("user_id", me).eq("device_id", deviceId)
+    }
+    return { ok: true }
+  } catch { return { ok: true } }
+}
+
 /** Revoga uma sessão própria (não dá pra revogar de outro usuário — escopo por user_id). */
 export async function revokeMySession(id: string): Promise<{ ok: boolean; error?: string }> {
   const session = await auth()

@@ -1,6 +1,7 @@
 "use client"
 import { signOut } from "next-auth/react"
 import { unsubscribeFromPush } from "@/lib/push/client"
+import { endMyCurrentSession } from "@/lib/actions/profile"
 
 /**
  * Logout que LIMPA a inscrição de push ANTES de encerrar a sessão.
@@ -15,5 +16,8 @@ import { unsubscribeFromPush } from "@/lib/push/client"
  */
 export async function logoutWithCleanup(opts?: Parameters<typeof signOut>[0]): Promise<void> {
   try { await unsubscribeFromPush() } catch { /* best-effort — não trava o logout */ }
+  // Revoga a linha de user_sessions do sid corrente (a sessão ainda vale → a action autentica).
+  // Sem isto, um JWT copiado sobrevivia 30d mesmo após logout — só o cookie caía.
+  try { await endMyCurrentSession() } catch { /* best-effort — não trava o logout */ }
   await signOut(opts)
 }
