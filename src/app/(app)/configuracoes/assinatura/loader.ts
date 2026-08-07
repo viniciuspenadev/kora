@@ -46,6 +46,7 @@ export async function loadAssinatura(tenantId: string): Promise<AssinaturaMock> 
     standing:  view.standing,
     incluso:   view.incluso,
     cobranca:  view.cobranca,
+    temAssinatura: view.temAssinatura,
     resumo:    view.resumo,
     conta:     view.conta,
     medidas:   view.medidas,

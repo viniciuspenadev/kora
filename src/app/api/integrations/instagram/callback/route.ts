@@ -45,10 +45,44 @@ export async function GET(req: NextRequest) {
   const ex = await exchangeIgCode(code, redirectUri)
   if ("error" in ex) return back(origin, `error=${encodeURIComponent(ex.error)}`)
 
-  // @handle pra display (o user_id já veio do exchange).
+  /**
+   * 🔴 LER A CONTA É REQUISITO, NÃO ENFEITE — e a versão anterior tratava como enfeite.
+   *
+   * Antes: falhou a leitura? gravava assim mesmo, com `username: null` e caindo pro
+   * `ex.userId` como id da conta. A tela então dizia **"conectado"** — e nada funcionava.
+   * Diagnóstico real (Moises Pena, 2026-08-07): autorização OK, mas leitura da conta,
+   * token de longa duração e assinatura de webhook **falharam os três**, e a conexão
+   * ficou `active` com `@` vazio, sem validade e sem webhook.
+   *
+   * ⚠️ O `ex.userId` **não é o id da conta do Instagram** — é o id do usuário no app, outro
+   *    namespace. O ingestor casa o webhook por id da CONTA, então uma conexão gravada com
+   *    o id errado jamais receberia comentário ou mensagem, mesmo com token bom. Gravar
+   *    aquilo não era "melhor que nada": era pior, porque parecia certo.
+   *
+   * Causa típica: app ainda em Análise (ou conta sem papel no app) — a Meta deixa
+   * autorizar e nega o resto.
+   */
   const acc = await fetchIgAccount(ex.token)
-  const externalAccountId = "error" in acc ? ex.userId : acc.userId
-  const username = "error" in acc ? null : acc.username
+  if ("error" in acc) {
+    console.error(JSON.stringify({ src: "ig-connect", kind: "account-read-failed", err: acc.error }))
+    return back(origin, `error=${encodeURIComponent(
+      "A Meta autorizou o acesso mas não liberou os dados da conta. Se o app ainda está em Análise, adicione esta conta como testadora no painel da Meta e tente de novo.",
+    )}`)
+  }
+  const externalAccountId = acc.userId
+  const username = acc.username
+
+  /**
+   * ⚠️ Token de LONGA duração ausente = a troca do §2 do `exchangeIgCode` falhou e sobrou o
+   *    curto (≈1h). Conexão que morre em uma hora não é conexão — e antes isso passava
+   *    calado, virando "parou de funcionar sozinho" dias depois.
+   */
+  if (!ex.expiresIn) {
+    console.error(JSON.stringify({ src: "ig-connect", kind: "no-long-lived-token", account: externalAccountId }))
+    return back(origin, `error=${encodeURIComponent(
+      "A Meta não emitiu o acesso de longa duração para esta conta — a conexão duraria menos de uma hora. Normalmente é app em Análise ou conta sem papel no app.",
+    )}`)
+  }
 
   // Anti-hijack: conta já em outro workspace?
   const { data: existing } = await supabaseAdmin.from("channel_connections")

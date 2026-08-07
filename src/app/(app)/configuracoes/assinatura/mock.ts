@@ -58,6 +58,8 @@ export interface AssinaturaMock {
   incluso:      string[]
   /** O que o gateway vai cobrar e quando. `null` ⇒ tela usa a projeção local. */
   cobranca:     { valorCents: number; proximaEm: string | null } | null
+  /** Tem assinatura real no gateway? Governa a porta de "Trocar cartão". */
+  temAssinatura: boolean
   resumo:       AssinaturaResumo
   conta:        ContaDoMes
   medidas:      LinhaMedida[]
@@ -219,5 +221,8 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
 
   // ⚠️ A prévia (`?degrau=`) usa os mesmos rótulos do mock — ela existe pra revisar os
   //    5 estados da escada, não pra refletir o catálogo real de um tenant.
-  return { standing, incluso: TUDO, cobranca: null, resumo, conta, medidas, discretas, faturaAberta, faturas }
+  // ⚠️ `temAssinatura: true` na PRÉVIA: o modo `?degrau=` existe pra revisar as telas dos
+  //    degraus, e esconder a porta de trocar cartão ali tiraria justamente uma das coisas
+  //    que o platform admin precisa conferir.
+  return { standing, incluso: TUDO, cobranca: null, temAssinatura: true, resumo, conta, medidas, discretas, faturaAberta, faturas }
 }

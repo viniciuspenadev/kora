@@ -1,6 +1,7 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { temAssinaturaNoProduto } from "@/lib/billing/self-service"
+import { linkSuporte } from "@/lib/support"
 
 /**
  * Portão da área de Assinatura.
@@ -36,9 +37,10 @@ export default async function AssinaturaAreaLayout({ children }: { children: Rea
             direto com o seu contato na Kora. Qualquer dúvida sobre valores ou nota fiscal,
             fale com a gente.
           </p>
-          <a href="mailto:suporte@kora.app?subject=D%C3%BAvida%20na%20cobran%C3%A7a"
+          <a href={linkSuporte("Olá! Tenho uma dúvida sobre a cobrança da minha conta Kora.")}
+            target="_blank" rel="noopener noreferrer"
             className="mt-4 inline-flex h-10 items-center rounded-lg bg-primary px-5 text-sm font-semibold text-white">
-            Falar sobre a cobrança
+            Falar no WhatsApp
           </a>
         </div>
       </div>

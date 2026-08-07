@@ -266,7 +266,6 @@ export function PlanosModal({
                         valorCents={planoEscolhido.precoCents}
                         primeiraCobranca={primeiraCobranca}
                         emTrial={false}
-                        compacto
                         onEditarCadastro={() => setPasso("cadastro")}
                         onSucesso={() => setPasso("pronto")}
                       />

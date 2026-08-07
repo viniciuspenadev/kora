@@ -16,6 +16,7 @@ import { getEnabledModuleSlugs } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
 import { getSelfPause } from "@/lib/actions/auto-assign"
 import { getBillingStanding } from "@/lib/billing/standing"
+import { linkSuporte } from "@/lib/support"
 import { BillingBanner } from "@/components/billing"
 
 /**
@@ -109,6 +110,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               A cobrança da sua conta é combinada direto com a nossa equipe. Fale com o seu
               contato para liberar o acesso — seus dados e conversas continuam guardados.
             </p>
+            {/* ⚠️ Esta tela é um BECO: sem sidebar, sem topbar, sem menu. Dizer "fale com a
+                gente" sem oferecer o caminho deixaria a pessoa travada e sem saída. */}
+            <a href={linkSuporte("Olá! Meu acesso à Kora está bloqueado e preciso regularizar a assinatura.")}
+              target="_blank" rel="noopener noreferrer"
+              className="mt-5 inline-flex h-10 items-center rounded-lg bg-primary px-5 text-sm font-semibold text-white">
+              Falar no WhatsApp
+            </a>
           </div>
         </div>
       )
@@ -131,6 +139,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               O período de teste desta conta terminou. Avise o responsável — assim que a
               assinatura for ativada, tudo volta exatamente como estava.
             </p>
+            {/* ⚠️ O atendente não resolve assinatura, mas pode ser o único que percebeu o
+                bloqueio. Dar o canal evita que ele fique sem ação nenhuma. */}
+            <a href={linkSuporte("Olá! O acesso da nossa equipe à Kora está pausado. Como regularizamos?")}
+              target="_blank" rel="noopener noreferrer"
+              className="mt-5 inline-flex h-10 items-center rounded-lg border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-700">
+              Falar no WhatsApp
+            </a>
           </div>
         </div>
       )

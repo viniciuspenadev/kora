@@ -3,8 +3,9 @@
 import { useState } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
-import { ArrowRight, Check, Download, Mail, Pause, Receipt } from "lucide-react"
+import { ArrowRight, Check, CreditCard, Download, MessageCircle, Pause, Receipt } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
+import { linkSuporte } from "@/lib/support"
 import { brl, dataCurta, dataLonga, num } from "./format"
 import type { AssinaturaMock } from "./mock"
 import { StandingHero } from "./components/standing-hero"
@@ -41,7 +42,7 @@ import { BloqueioTotal } from "./components/bloqueio-total"
 //   flutuando. Cara de extrato, que é o que ele é.
 
 export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
-  const { standing, incluso, cobranca, resumo, conta, medidas, faturaAberta } = mock
+  const { standing, incluso, cobranca, temAssinatura, resumo, conta, medidas, faturaAberta } = mock
   const [modal, setModal]       = useState<null | "pagar" | "dias" | "plano">(null)
   const [bloqueio, setBloqueio] = useState(standing.degrau === "readonly")
   const [adiado, setAdiado]     = useState(false)
@@ -191,12 +192,28 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
                 <Row termo="Cobrança" valor={resumo.cicloDia ? `todo dia ${resumo.cicloDia}` : "a definir"} />
                 <Row termo="Nota e aviso" valor={resumo.emailCobranca} />
               </dl>
-              <Link
-                href="/configuracoes/assinatura/faturas"
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary-600 hover:text-primary-700 mt-3"
-              >
-                <Receipt className="size-3.5" /> Ver faturas e comprovantes
-              </Link>
+              <div className="mt-3 flex flex-col gap-2 items-start">
+                <Link
+                  href="/configuracoes/assinatura/faturas"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary-600 hover:text-primary-700"
+                >
+                  <Receipt className="size-3.5" /> Ver faturas e comprovantes
+                </Link>
+                {/* 🔑 A PORTA QUE NÃO EXISTIA (07/08). Sem ela, cliente com cartão vencido
+                    não tinha onde agir: o gateway recusava a renovação, a escada cortava o
+                    produto, e a saída era ligar pro suporte. Fica aqui, ao lado da forma
+                    de pagamento — que é onde a pessoa vai procurar.
+                    ⚠️ Só aparece com assinatura de verdade no gateway: pra quem é faturado
+                    à mão ou ainda não contratou, não há cartão nosso pra trocar. */}
+                {temAssinatura && (
+                  <Link
+                    href="/configuracoes/assinatura/cartao"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary-600 hover:text-primary-700"
+                  >
+                    <CreditCard className="size-3.5" /> Trocar cartão
+                  </Link>
+                )}
+              </div>
             </div>
 
             {faturaAberta && (
@@ -227,11 +244,14 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
               <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
                 Disponível sempre, em qualquer situação da conta.
               </p>
+              {/* Contato vem de `lib/support` — número em UM lugar só. WhatsApp, e não
+                  e-mail, por coerência: a Kora vende atendimento por WhatsApp. */}
               <a
-                href="mailto:suporte@kora.app?subject=D%C3%BAvida%20na%20cobran%C3%A7a"
+                href={linkSuporte("Olá! Tenho uma dúvida sobre a cobrança da minha conta Kora.")}
+                target="_blank" rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 mt-3"
               >
-                <Mail className="size-3.5" /> Falar sobre a cobrança
+                <MessageCircle className="size-3.5" /> Falar sobre a cobrança
               </a>
             </div>
           </aside>

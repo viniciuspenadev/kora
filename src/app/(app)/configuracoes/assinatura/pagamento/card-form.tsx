@@ -3,9 +3,9 @@
 import Link from "next/link"
 import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { ShieldCheck, Lock, CheckCircle2, CreditCard } from "lucide-react"
-import { maskCpfCnpj, maskCep, maskPhone } from "@/lib/masks"
-import { ativarAssinatura, type TitularPreenchido } from "@/lib/actions/subscription"
+import { ShieldCheck, Lock, CheckCircle2 } from "lucide-react"
+import { maskCpfCnpj, maskPhone } from "@/lib/masks"
+import { ativarAssinatura, trocarCartaoDaAssinatura, type TitularPreenchido } from "@/lib/actions/subscription"
 
 // ═══════════════════════════════════════════════════════════════
 // Ativar assinatura — captura de cartão
@@ -42,8 +42,19 @@ interface Props {
    *    Luhn e duas chances de uma delas esquecer de limpar o campo na saída.
    */
   onSucesso?: () => void
-  /** Empilha o resumo em cima do formulário (coluna única) — pra caber dentro do modal. */
-  compacto?: boolean
+  /**
+   * O que este formulário faz com o cartão.
+   *
+   * 🔑 UM formulário, dois usos — e a diferença é de PROMESSA, não de layout: em
+   *    `assinar` o clique cobra; em `trocar` não sai um centavo, só a próxima cobrança
+   *    passa a usar o cartão novo. Dois componentes seriam duas superfícies PCI pra
+   *    auditar, duas validações de Luhn e duas chances de uma esquecer de limpar o campo.
+   */
+  modo?: "assinar" | "trocar"
+  // ⚠️ `compacto` SAIU no redesenho de 07/08. Ele existia pra empilhar o resumo lateral
+  //    dentro do modal — e o resumo lateral deixou de existir (era repetição do herói).
+  //    Prop que não faz nada é contrato mentindo: quem lê acha que tem duas variantes
+  //    pra manter, e uma delas envelhece sem ninguém notar.
 }
 
 const brl = (c: number) => (c / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -74,7 +85,8 @@ function bandeira(num: string): string | null {
 
 const grupos = (d: string) => d.replace(/\D/g, "").slice(0, 19).replace(/(.{4})/g, "$1 ").trim()
 
-export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobranca, emTrial, onSucesso, onEditarCadastro, compacto = false }: Props) {
+export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobranca, emTrial, onSucesso, onEditarCadastro, modo = "assinar" }: Props) {
+  const trocando = modo === "trocar"
   const router = useRouter()
   const [numero, setNumero]   = useState("")
   const [nome, setNome]       = useState(titular.nome.toUpperCase())
@@ -109,14 +121,16 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
   function enviar() {
     setErro(null)
     start(async () => {
-      const r = await ativarAssinatura({
-        planoId,
+      const dados = {
         holderName:  nome,
         number:      digitos,
         expiryMonth: mm ?? "",
         expiryYear:  `20${aa ?? ""}`,
         ccv:         cvv,
-      })
+      }
+      const r = trocando
+        ? await trocarCartaoDaAssinatura(dados)
+        : await ativarAssinatura({ planoId, ...dados })
       // ⚠️ Em QUALQUER saída, o cartão sai da memória do componente. Não fica "pro caso de
       //    tentar de novo" — a pessoa redigita, que é barato, e nada sensível sobrevive na
       //    aba aberta.
@@ -138,12 +152,18 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
             o produto é o webhook do gateway, que chega segundos depois. Afirmar ativação
             aqui é a tela prometer um estado que o servidor ainda não tem — e no caminho do
             teste encerrado isso mandava a pessoa de volta pro paywall logo após pagar. */}
-        <h2 className="mt-3 text-base font-bold text-slate-900">Recebemos seu pagamento</h2>
+        <h2 className="mt-3 text-base font-bold text-slate-900">
+          {trocando ? "Cartão atualizado" : "Recebemos seu pagamento"}
+        </h2>
         <p className="mt-1 text-sm text-slate-600 leading-relaxed">
-          {primeiraCobranca
+          {trocando
+            // ⚠️ Trocar cartão NÃO cobra — e dizer isso explicitamente evita o susto de
+            //    quem espera um débito que não vem, e a ligação pro suporte junto.
+            ? <>Nada foi cobrado agora. A partir da próxima cobrança{primeiraCobranca ? <> — <strong>{primeiraCobranca}</strong></> : null}, usamos este cartão.</>
+            : primeiraCobranca
             ? <>Cobrança de <strong>{brl(valorCents)}</strong> feita em <strong>{primeiraCobranca}</strong>. A partir daqui ela é mensal e automática.</>
             : <>A cobrança de <strong>{brl(valorCents)}</strong> passa a ser mensal.</>}
-          {" "}A confirmação do banco leva alguns segundos.
+          {trocando ? null : <>{" "}A confirmação do banco leva alguns segundos.</>}
         </p>
         <button onClick={() => router.push("/configuracoes/assinatura")}
           className="mt-4 h-9 px-4 text-xs font-semibold rounded-lg bg-primary text-white hover:bg-primary/90">
@@ -154,84 +174,84 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
   }
 
   return (
-    <div className={compacto ? "space-y-4" : "grid gap-5 lg:grid-cols-[1fr_320px] items-start"}>
-      {/* ── Quem está sendo cobrado ────────────────────────────────────────────────
-          🔑 IDEIA DO DONO (05/08), e ela conserta uma classe inteira de falha: todo
-             checkout sério mostra os dados do titular antes de pedir o cartão. Não é
-             burocracia — é a única chance da pessoa VER um dado errado antes de pagar.
-             O caso que motivou: um telefone inválido guardado no cadastro derrubou a
-             cobrança, e ele não aparecia em tela nenhuma do fluxo. Com este bloco, o
-             erro fica visível ANTES do cartão, e não depois da recusa.
-          ⚠️ Também protege contra contestação: o titular confirma que é ele quem paga. */}
-      <div className={compacto ? "" : "lg:col-span-2"}>
-        <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Cobrança em nome de</p>
-              <p className="mt-1 text-sm font-semibold text-slate-900 truncate">{titular.nome}</p>
-              <p className="mt-0.5 text-xs text-slate-500">
-                {[maskCpfCnpj(titular.cpfCnpj), titular.email].filter(Boolean).join(" · ")}
-              </p>
-              <p className="text-xs text-slate-500">
-                {[titular.cep && `CEP ${maskCep(titular.cep)}`, titular.numero && `nº ${titular.numero}`,
-                  titular.telefone && maskPhone(titular.telefone)].filter(Boolean).join(" · ")}
-              </p>
-            </div>
-            {onEditarCadastro ? (
-              <button type="button" onClick={onEditarCadastro}
-                className="shrink-0 text-xs font-semibold text-primary hover:underline">
-                Editar
-              </button>
-            ) : (
-              <Link href="/configuracoes/empresa" className="shrink-0 text-xs font-semibold text-primary hover:underline">
-                Editar
-              </Link>
-            )}
+    // ⚠️ UM layout só pra modal e página (antes o `compacto` bifurcava em grid de 2
+    //    colunas). Checkout é tela de FOCO — largura estreita ajuda em qualquer lugar, e
+    //    duas variantes eram duas chances de uma envelhecer.
+    <div className="space-y-4 max-w-lg">
+      {/* ── O HERÓI: o que vai ser cobrado ───────────────────────────────────────
+          🔴 REDESENHO (dono, 07/08: "muito mal feita e nem um pouco intuitiva").
+             O valor — única coisa que a pessoa precisa confirmar antes de digitar o
+             cartão — aparecia em `text-sm` dentro do botão e numa linha de resumo, com o
+             mesmo peso do rótulo. Pelo §0.5 do design system isso é o sintoma exato de
+             "cara de IA": nenhum ponto de foco. Agora ele é âncora — `text-2xl`, bold,
+             `tabular-nums`, à direita.
+          ⚠️ Painel com divisória, não dois cards: o titular entra como segunda faixa do
+             MESMO bloco (§0.6.2). Antes ele era um card à parte E se repetia no resumo
+             lateral — a mesma informação, duas vezes, na mesma tela. */}
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        <div className="px-5 py-4 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Plano</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-900 truncate">{planoNome}</p>
           </div>
+          <div className="text-right shrink-0">
+            <p className="text-2xl font-bold text-slate-900 tabular-nums leading-none">{brl(valorCents)}</p>
+            {/* ⚠️ A legenda muda com o MODO, porque a promessa muda: contratar cobra hoje;
+                trocar cartão não cobra nada — dizer "cobrado hoje" ali seria prometer um
+                débito que não vai acontecer. */}
+            <p className="mt-1 text-[11px] text-slate-400">
+              {trocando
+                ? (primeiraCobranca ? `por mês · próxima em ${primeiraCobranca}` : "por mês")
+                : `por mês${primeiraCobranca ? ` · cobrado hoje, ${primeiraCobranca}` : ""}`}
+            </p>
+          </div>
+        </div>
+
+        {/* Titular — linha densa e conferível. É a única chance de a pessoa ver um dado
+            errado ANTES de pagar (foi um telefone inválido que derrubou uma cobrança). */}
+        <div className="px-5 py-3 border-t border-slate-100 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Cobrança em nome de</p>
+            <p className="mt-0.5 text-sm font-medium text-slate-800 truncate">{titular.nome}</p>
+            <p className="text-xs text-slate-500 truncate">
+              {[maskCpfCnpj(titular.cpfCnpj), titular.telefone && maskPhone(titular.telefone)].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+          {onEditarCadastro ? (
+            <button type="button" onClick={onEditarCadastro}
+              className="shrink-0 text-xs font-semibold text-primary hover:underline">
+              Editar
+            </button>
+          ) : (
+            <Link href="/configuracoes/empresa" className="shrink-0 text-xs font-semibold text-primary hover:underline">
+              Editar
+            </Link>
+          )}
         </div>
       </div>
 
-      {/* ── Formulário ─────────────────────────────────────────── */}
+      {/* ── Os campos, sem nada entre a decisão e a ação ───────────────────────── */}
       <div className="rounded-xl border border-slate-200 bg-white shadow-card overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-slate-900">Dados do cartão</h2>
-          {marca && (
-            <span className="text-[11px] font-semibold text-slate-500 border border-slate-200 rounded-md px-2 py-0.5">
-              {marca}
-            </span>
-          )}
-        </div>
-
-        <div className="p-5 space-y-4">
-          {/* Cartão que preenche ao vivo — o retorno visual que confirma "está indo bem". */}
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-white">
-            <div className="flex items-center justify-between">
-              <CreditCard className="size-5 text-slate-400" />
-              <span className="text-[11px] text-slate-400">{marca ?? "—"}</span>
-            </div>
-            <p className="mt-5 font-mono text-lg tracking-[0.12em] tabular-nums">
-              {grupos(digitos).padEnd(19, "•").slice(0, 23)}
-            </p>
-            <div className="mt-4 flex items-end justify-between gap-4">
-              <div className="min-w-0">
-                <p className="text-[9px] uppercase tracking-wider text-slate-500">Titular</p>
-                <p className="text-xs font-medium truncate">{nome || "—"}</p>
-              </div>
-              <div className="text-right">
-                <p className="text-[9px] uppercase tracking-wider text-slate-500">Validade</p>
-                <p className="text-xs font-medium tabular-nums">{validade || "MM/AA"}</p>
-              </div>
-            </div>
-          </div>
-
+        <div className="p-5 space-y-3.5">
           <Campo label="Número do cartão" erro={tocado.numero ? erros.numero : undefined}>
-            <input
-              value={grupos(numero)} inputMode="numeric" autoComplete="cc-number"
-              onChange={(e) => setNumero(e.target.value.replace(/\D/g, "").slice(0, 19))}
-              onBlur={() => setTocado((t) => ({ ...t, numero: true }))}
-              placeholder="0000 0000 0000 0000"
-              className="w-full h-11 rounded-lg border border-slate-300 px-3 text-sm font-mono tabular-nums outline-none focus:border-primary"
-            />
+            {/* 🔑 A bandeira virou chip DENTRO do campo, onde ela significa algo — antes
+                era um cartão desenhado de ~120px que só repetia o que a pessoa acabou de
+                digitar. Num modal de altura travada, aquilo empurrava o botão pra fora da
+                vista, e o custo de rolar num checkout é desistência. */}
+            <div className="relative">
+              <input
+                value={grupos(numero)} inputMode="numeric" autoComplete="cc-number"
+                onChange={(e) => setNumero(e.target.value.replace(/\D/g, "").slice(0, 19))}
+                onBlur={() => setTocado((t) => ({ ...t, numero: true }))}
+                placeholder="0000 0000 0000 0000"
+                className="w-full h-10 rounded-lg border border-slate-200 pl-3 pr-20 text-sm font-mono tabular-nums outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow"
+              />
+              {marca && (
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-bold uppercase tracking-wide text-slate-500 bg-slate-100 rounded px-1.5 py-0.5">
+                  {marca}
+                </span>
+              )}
+            </div>
           </Campo>
 
           <Campo label="Nome impresso no cartão" erro={tocado.nome ? erros.nome : undefined}>
@@ -240,7 +260,7 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
               onChange={(e) => setNome(e.target.value.toUpperCase())}
               onBlur={() => setTocado((t) => ({ ...t, nome: true }))}
               placeholder="COMO ESTÁ NO CARTÃO"
-              className="w-full h-11 rounded-lg border border-slate-300 px-3 text-sm uppercase outline-none focus:border-primary"
+              className="w-full h-10 rounded-lg border border-slate-200 px-3 text-sm uppercase outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow"
             />
           </Campo>
 
@@ -254,16 +274,16 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
                 }}
                 onBlur={() => setTocado((t) => ({ ...t, validade: true }))}
                 placeholder="MM/AA"
-                className="w-full h-11 rounded-lg border border-slate-300 px-3 text-sm tabular-nums outline-none focus:border-primary"
+                className="w-full h-10 rounded-lg border border-slate-200 px-3 text-sm tabular-nums outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow"
               />
             </Campo>
-            <Campo label="CVV" erro={tocado.cvv ? erros.cvv : undefined}>
+            <Campo label="CVV" erro={tocado.cvv ? erros.cvv : undefined} hint="3 dígitos no verso">
               <input
                 value={cvv} inputMode="numeric" autoComplete="cc-csc"
                 onChange={(e) => setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))}
                 onBlur={() => setTocado((t) => ({ ...t, cvv: true }))}
                 placeholder="000"
-                className="w-full h-11 rounded-lg border border-slate-300 px-3 text-sm tabular-nums outline-none focus:border-primary"
+                className="w-full h-10 rounded-lg border border-slate-200 px-3 text-sm tabular-nums outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-shadow"
               />
             </Campo>
           </div>
@@ -279,75 +299,61 @@ export function CardForm({ titular, planoId, planoNome, valorCents, primeiraCobr
             className="w-full h-11 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
           >
             <Lock className="size-4" />
-            {pending ? "Validando com o banco…" : `Ativar assinatura de ${brl(valorCents)}/mês`}
+            {pending
+              ? "Validando com o banco…"
+              : trocando ? "Salvar novo cartão" : `Ativar assinatura de ${brl(valorCents)}/mês`}
           </button>
 
-          {/* 🔒 A SEGURANÇA EXPLICADA EM PORTUGUÊS — pedido explícito do dono, e é o que
-              de fato reduz abandono num formulário de cartão. Cada frase é verificável no
-              código; nenhuma promete mais do que a implementação faz. */}
-          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
-            <p className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-              <ShieldCheck className="size-3.5 text-slate-600" /> Como seus dados são tratados
-            </p>
-            <ul className="space-y-1.5 text-[11px] text-slate-600 leading-relaxed">
+          {/* 🔒 A SEGURANÇA CONTINUA DITA EM PORTUGUÊS (pedido do dono) — mas em UMA linha,
+              com o detalhe atrás de um "saiba mais". Antes eram quatro linhas de texto
+              miúdo entre os campos e o botão: informação boa, no lugar errado. Quem quer
+              ler, abre; quem quer pagar, paga. Nenhuma frase promete mais do que o código
+              faz — cada uma é verificável em `asaas/subscriptions.ts`. */}
+          <details className="group rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
+            <summary className="flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer list-none">
+              <ShieldCheck className="size-3.5 text-emerald-600 shrink-0" />
+              <span><strong className="font-semibold text-slate-700">Não guardamos seu cartão.</strong> Processado pelo Asaas.</span>
+              <span className="ml-auto text-primary font-semibold group-open:hidden">saiba mais</span>
+            </summary>
+            <ul className="mt-2 space-y-1.5 text-[11px] text-slate-600 leading-relaxed border-t border-slate-200 pt-2">
               <li>· A conexão é criptografada de ponta a ponta.</li>
               <li>· O pagamento é processado pelo <strong>Asaas</strong>, instituição autorizada pelo Banco Central.</li>
-              <li>· <strong>A Kora não guarda o número do seu cartão.</strong> Guardamos apenas um código de autorização, que serve só para cobrar esta assinatura e não permite compras em nenhum outro lugar.</li>
+              <li>· Guardamos apenas um código de autorização, que serve só para cobrar esta assinatura e não permite compras em nenhum outro lugar.</li>
               <li>· Você pode cancelar quando quiser — e <strong>o acesso continua até o fim do período já pago</strong>.</li>
             </ul>
-          </div>
+          </details>
         </div>
       </div>
 
-      {/* ── O que está sendo contratado ────────────────────────── */}
-      <aside className="rounded-xl border border-slate-200 bg-white shadow-card overflow-hidden lg:sticky lg:top-4">
-        <div className="px-5 py-3.5 border-b border-slate-100">
-          <h2 className="text-sm font-bold text-slate-900">Resumo</h2>
-        </div>
-        <div className="p-5 space-y-3">
-          <Linha termo="Plano" valor={planoNome} />
-          <Linha termo="Cobrança" valor={`${brl(valorCents)} por mês`} />
-          {primeiraCobranca && (
-            <Linha termo={emTrial ? "1ª cobrança (fim do teste)" : "1ª cobrança"} valor={primeiraCobranca} />
-          )}
-          <div className="pt-3 border-t border-slate-100">
-            <p className="text-[11px] text-slate-500 leading-relaxed">
-              {emTrial
-                ? "A cobrança acontece agora e o plano libera em seguida. Você abre mão dos dias restantes de teste — em troca, passa a usar o plano completo hoje."
-                : "A cobrança é mensal e automática, sempre no mesmo dia."}
-            </p>
-          </div>
-
-          <div className="pt-3 border-t border-slate-100">
-            <p className="text-[11px] font-semibold text-slate-700">Titular</p>
-            <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-              {titular.nome}<br />{titular.cpfCnpj}
-            </p>
-            <p className="text-[10px] text-slate-400 mt-1.5">
-              Dados do seu cadastro. Para alterar, ajuste em Configurações.
-            </p>
-          </div>
-        </div>
-      </aside>
+      {/* 🔴 O "Resumo" LATERAL SAIU (07/08). Ele repetia plano, valor, data e titular —
+          tudo que o herói acima já mostra, e com MENOS presença. Duas superfícies
+          dizendo o mesmo na mesma tela não é reforço: é ruído que empurra o botão pra
+          baixo da dobra e cria duas versões pra manter (uma envelhece).
+          A única frase que ele tinha de próprio — o que acontece ao cobrar — virou a
+          legenda abaixo, junto do botão, que é onde ela é lida. */}
+      <p className="text-[11px] text-slate-400 leading-relaxed">
+        {trocando
+          ? "Nada é cobrado agora. O cartão novo passa a valer a partir da próxima cobrança — e também nas cobranças em aberto, se houver alguma."
+          : emTrial
+          ? "A cobrança acontece agora e o plano libera em seguida. Você abre mão dos dias restantes de teste — em troca, passa a usar o plano completo hoje."
+          : "A cobrança é mensal e automática, sempre no mesmo dia."}
+      </p>
     </div>
   )
 }
 
-function Campo({ label, erro, children }: { label: string; erro?: string; children: React.ReactNode }) {
+function Campo({ label, erro, hint, children }: {
+  label: string; erro?: string; hint?: string; children: React.ReactNode
+}) {
   return (
     <div>
-      <label className="block text-xs font-semibold text-slate-700 mb-1">{label}</label>
+      <label className="block text-xs font-semibold text-slate-700 mb-1.5">{label}</label>
       {children}
-      {erro && <p className="mt-1 text-[11px] font-medium text-red-600">{erro}</p>}
-    </div>
-  )
-}
-
-function Linha({ termo, valor }: { termo: string; valor: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-xs text-slate-500">{termo}</span>
-      <span className="text-xs font-semibold text-slate-900 text-right">{valor}</span>
+      {/* ⚠️ Erro tem precedência sobre a dica: mostrar os dois empilha ruído embaixo de um
+          campo estreito e a pessoa lê o menos importante primeiro. */}
+      {erro
+        ? <p className="mt-1 text-[11px] font-medium text-red-600">{erro}</p>
+        : hint ? <p className="mt-1 text-[11px] text-slate-400">{hint}</p> : null}
     </div>
   )
 }
