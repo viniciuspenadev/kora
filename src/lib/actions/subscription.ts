@@ -286,7 +286,15 @@ export async function ativarAssinatura(input: {
   if (!rateLimit(`card:tenant:${session.user.tenantId}`, 3, 60 * 60_000).ok) {
     return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
   }
-  if (ip && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
+  // 🔴 `"unknown"` FORA DO BALDE. `getClientIpFromHeaders` devolve a STRING "unknown"
+  //    quando não há `x-forwarded-for` — e ela é truthy, então `if (ip && …)` deixava
+  //    passar: TODOS os clientes caíam em `card:ip:unknown` e a plataforma inteira ficava
+  //    com um teto de 5 assinaturas por hora, recusando com "Muitas tentativas de cartão".
+  //    Um proxy mal configurado derrubaria a contratação de todo mundo de uma vez.
+  // ⚠️ O resto do código já sabia disso (`login.ts`, `ext-auth.ts`, revogação de device
+  //    testam `!== "unknown"`); só estas duas portas divergiram. O teto por TENANT, que é
+  //    o alvo real do anti card-testing, continua valendo em qualquer caso.
+  if (ip && ip !== "unknown" && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
     return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
   }
 
@@ -355,7 +363,15 @@ export async function trocarCartaoDaAssinatura(input: {
   if (!rateLimit(`card:tenant:${session.user.tenantId}`, 3, 60 * 60_000).ok) {
     return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
   }
-  if (ip && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
+  // 🔴 `"unknown"` FORA DO BALDE. `getClientIpFromHeaders` devolve a STRING "unknown"
+  //    quando não há `x-forwarded-for` — e ela é truthy, então `if (ip && …)` deixava
+  //    passar: TODOS os clientes caíam em `card:ip:unknown` e a plataforma inteira ficava
+  //    com um teto de 5 assinaturas por hora, recusando com "Muitas tentativas de cartão".
+  //    Um proxy mal configurado derrubaria a contratação de todo mundo de uma vez.
+  // ⚠️ O resto do código já sabia disso (`login.ts`, `ext-auth.ts`, revogação de device
+  //    testam `!== "unknown"`); só estas duas portas divergiram. O teto por TENANT, que é
+  //    o alvo real do anti card-testing, continua valendo em qualquer caso.
+  if (ip && ip !== "unknown" && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
     return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
   }
 

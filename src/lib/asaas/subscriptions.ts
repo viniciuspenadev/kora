@@ -5,6 +5,7 @@ import { asaas, AsaasError, mensagemSeguraDoGateway } from "./client"
 import { ensureAsaasCustomer } from "./customers"
 import { abaixoDoMinimoDoCartao, assinaturaRealId, novaReservaDeClaim } from "@/lib/billing/gateway-limits"
 import { encryptSecret } from "@/lib/crypto/secrets"
+import { detectarBandeira, normalizarBandeira, ultimos4, type Bandeira } from "@/lib/billing/card-brand"
 
 // ═══════════════════════════════════════════════════════════════
 // Assinatura recorrente no cartão
@@ -40,6 +41,76 @@ export interface HolderInput {
 }
 
 const digits = (s: string) => (s ?? "").replace(/\D/g, "")
+
+// ── Rótulo do cartão (bandeira + 4 últimos) ─────────────────────────────────
+//
+// 🔒 RÓTULO ≠ CREDENCIAL, e a diferença governa o tratamento. O `creditCardToken` permite
+//    COBRAR, então vai cifrado. Bandeira e 4 últimos permitem RECONHECER — é o mesmo dado
+//    que o cliente lê na fatura do banco dele — e vão em claro. Cifrar rótulo criaria a
+//    ilusão de proteção sobre algo que não é segredo de ninguém.
+// ⚠️ O PAN completo, a validade e o CVV continuam **exclusivamente** com o gateway (regra
+//    2 do topo deste arquivo). `ultimos4` corta em 4 dígitos venha o dado de onde vier.
+
+/** O que a tokenização devolve. Só os campos que a gente usa — o resto é ignorado. */
+interface RespostaTokenize {
+  creditCardToken?:  string
+  /** Já vem MASCARADO pelo Asaas (só os 4 últimos). Passa por `ultimos4` mesmo assim. */
+  creditCardNumber?: string
+  creditCardBrand?:  string
+}
+
+/**
+ * A assinatura deste tenant existe no gateway? Pergunta pelo `externalReference`.
+ *
+ * 🔴 EXISTE PORQUE TIMEOUT NÃO É "NÃO CRIOU" (achado da auditoria, 07/08). O `catch` da
+ *    criação soltava a reserva do claim para QUALQUER exceção — inclusive o `AbortError`
+ *    dos 20s de timeout. Só que o Asaas pode ter criado a assinatura e, como a primeira
+ *    cobrança é **hoje**, já ter debitado o cartão. A pessoa lia um erro, o teto permitia
+ *    mais 2 tentativas na hora, e a segunda criava uma **SEGUNDA assinatura mensal** —
+ *    exatamente o dano que o claim atômico foi escrito pra impedir, entrando pela porta
+ *    que o próprio tratamento de erro abria. A primeira cobrava pra sempre, invisível.
+ *
+ * 🔑 `externalReference` já era gravado na criação e **ninguém consultava**. Agora ele é a
+ *    rede embaixo: antes de liberar a vaga, a gente PERGUNTA.
+ *
+ * ⚠️ Devolve `undefined` quando a própria consulta falha — e isso é diferente de `null`
+ *    ("perguntei, não existe"). Quem chama precisa tratar os três casos: existe, não
+ *    existe, e não sei. Colapsar "não sei" em "não existe" reintroduz o bug inteiro.
+ */
+export async function procurarAssinaturaNoGateway(tenantId: string): Promise<string | null | undefined> {
+  try {
+    const r = await asaas.get<{ data?: Array<{ id?: string; status?: string }> }>(
+      `/subscriptions?externalReference=${encodeURIComponent(tenantId)}&limit=10`,
+    )
+    const viva = (r?.data ?? []).find((s) => s?.id && s.status !== "INACTIVE" && s.status !== "EXPIRED")
+    return viva?.id ?? null
+  } catch (e) {
+    console.error("[asaas] não consegui corroborar assinatura:", tenantId, (e as Error).message)
+    return undefined
+  }
+}
+
+/** Piso: o que dá pra saber do número digitado, sem depender da resposta do gateway. */
+function rotuloDoCartaoDigitado(numero: string): { bandeira: Bandeira | null; ultimos4: string | null } {
+  return { bandeira: detectarBandeira(numero), ultimos4: ultimos4(numero) }
+}
+
+/**
+ * Teto: o que o GATEWAY diz, com o palpite local de reserva.
+ *
+ * 🔑 Quem processou o cartão sabe a bandeira sem depender de tabela de prefixo nenhuma —
+ *    e a nossa tabela, por melhor que fique, é sempre um retrato desatualizado das faixas
+ *    de emissão (Elo e Hipercard mudam). Quando o Asaas informa, ele ganha.
+ * ⚠️ Mas ele nem sempre informa, e um campo ausente não pode apagar o rótulo: sem o
+ *    fallback, a tela voltaria a não saber dizer qual cartão cobra o cliente.
+ */
+function rotuloDoGateway(tok: RespostaTokenize, numero: string): { bandeira: Bandeira | null; ultimos4: string | null } {
+  const local = rotuloDoCartaoDigitado(numero)
+  return {
+    bandeira: normalizarBandeira(tok.creditCardBrand) ?? local.bandeira,
+    ultimos4: ultimos4(tok.creditCardNumber) ?? local.ultimos4,
+  }
+}
 
 /**
  * Cria a assinatura recorrente do tenant.
@@ -167,8 +238,9 @@ export async function createSubscriptionForTenant(
 
   // 3 · Tokeniza — o cartão passa por aqui UMA vez e vira um identificador opaco.
   let creditCardToken: string
+  let rotulo = rotuloDoCartaoDigitado(card.number)
   try {
-    const tok = await asaas.post<{ creditCardToken?: string }>("/creditCard/tokenize", {
+    const tok = await asaas.post<RespostaTokenize>("/creditCard/tokenize", {
       customer: cust.id,
       creditCard: {
         holderName:  card.holderName,
@@ -199,6 +271,7 @@ export async function createSubscriptionForTenant(
     })
     if (!tok?.creditCardToken) { await soltarReserva(); return { error: "O gateway não devolveu o token do cartão." } }
     creditCardToken = tok.creditCardToken
+    rotulo = rotuloDoGateway(tok, card.number)
   } catch (e) {
     // ⚠️ Só a MENSAGEM do erro. Nunca o objeto `card`, nunca o payload.
     // 🔒 E a mensagem passa por `mensagemSeguraDoGateway`: recusa vira UMA frase, sempre a
@@ -255,6 +328,12 @@ export async function createSubscriptionForTenant(
         //    é identificador opaco, válido só na nossa conta Asaas e só pra este cliente.
         //    Racional completo em `20260807_asaas_card_token.sql`.
         asaas_card_token: encryptSecret(creditCardToken),
+        // 🔑 RÓTULO, não credencial: bandeira e 4 últimos são o que a tela precisa pra
+        //    dizer QUAL cartão cobra este cliente — o mesmo dado da fatura do banco dele.
+        //    Escritos juntos com o token, de propósito: rótulo sem credencial mentiria
+        //    ("Mastercard ···· 4242" pra uma assinatura que não existe mais).
+        card_brand: rotulo.bandeira,
+        card_last4: rotulo.ultimos4,
         // 🔑 Recontratação: sem limpar, a varredura 1.b do housekeeping marcaria `canceled`
         //    na data antiga — derrubando quem acabou de pagar de novo.
         subscription_ends_at: null,
@@ -275,9 +354,50 @@ export async function createSubscriptionForTenant(
     console.log(JSON.stringify({ src: "asaas", kind: "assinatura-criada", tenant: tenantId, subscription: sub.id }))
     return { id: sub.id }
   } catch (e) {
-    // ⚠️ Solta a vaga: sem isto, uma falha na criação deixaria o tenant com o marcador
-    //    `pending:` para sempre — e ele nunca mais conseguiria assinar.
     console.error("[asaas] criação de assinatura falhou:", tenantId, (e as Error).message)
+
+    // 🔴 ERRO DE REDE ≠ "NÃO CRIOU". `AsaasError` com `status 0` é timeout ou conexão
+    //    perdida — e nesses dois casos o gateway pode ter criado a assinatura E cobrado o
+    //    cartão (a primeira cobrança é hoje). Soltar a vaga aqui liberava a pessoa pra
+    //    tentar de novo e criar uma SEGUNDA assinatura mensal em cima de um débito que já
+    //    tinha passado. Antes de liberar, a gente PERGUNTA ao gateway.
+    if (e instanceof AsaasError && e.status === 0) {
+      const existente = await procurarAssinaturaNoGateway(tenantId)
+
+      // Existe: vincula em vez de liberar. O dinheiro saiu; a linha do banco tem que refletir.
+      if (existente) {
+        const { error: upErr } = await supabaseAdmin
+          .from("tenants")
+          .update({
+            asaas_subscription_id: existente,
+            billing_day:           Math.min(28, Number(nextDueDate.slice(8, 10)) || 1),
+            plan_id:               plano.id,
+            asaas_card_token:      encryptSecret(creditCardToken),
+            card_brand:            rotulo.bandeira,
+            card_last4:            rotulo.ultimos4,
+            subscription_ends_at:  null,
+          })
+          .eq("id", tenantId)
+        if (!upErr) {
+          console.error(JSON.stringify({ src: "asaas", kind: "assinatura-recuperada-pos-timeout",
+            tenant: tenantId, subscription: existente }))
+          return { id: existente }
+        }
+        console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, upErr.message)
+        return { error: `Assinatura criada no gateway (${existente}) mas não vinculada. Contate o suporte.` }
+      }
+
+      // ⚠️ `undefined` = a consulta TAMBÉM falhou, então não sabemos. A reserva FICA — e
+      //    ficar presa é o mal menor: é reparável à mão (e a faxina do reconcile corrobora
+      //    antes de limpar), enquanto liberar no escuro cobra o cliente duas vezes.
+      if (existente === undefined) {
+        return { error: "Não recebemos a confirmação do gateway. Aguarde um minuto e recarregue esta tela antes de tentar de novo." }
+      }
+    }
+
+    // ⚠️ Aqui a resposta do gateway é conhecida (recusa, dado inválido) OU ele confirmou
+    //    que nada foi criado: soltar a vaga é seguro, e obrigatório — sem isto o tenant
+    //    ficaria com o marcador `pending:` e nunca mais conseguiria assinar.
     await soltarReserva()
     return { error: mensagemSeguraDoGateway(e, "Não foi possível criar a assinatura.") }
   }
@@ -331,7 +451,10 @@ function primeiraCobranca(): string {
  *    atualizar**, nem tela, nem botão. A única saída era falar com o suporte e alguém
  *    resolver no painel do Asaas.
  *
- * 🔑 Endpoint dedicado do gateway: `PUT /subscriptions/{id}/creditCard`. Ele atualiza a
+ * 🔑 Endpoint dedicado do gateway: `POST /subscriptions/{id}/creditCard` (o comentário
+ *    dizia `PUT` e o código sempre fez `POST` — verbo errado lançaria e a troca nem
+ *    aconteceria, mas comentário que discorda do código é a próxima pessoa investigando o
+ *    lugar errado). Ele atualiza a
  *    assinatura **e as cobranças pendentes ligadas a ela** — que é o que impede a próxima
  *    tentativa de bater no cartão velho de novo. E não gera cobrança imediata.
  *
@@ -377,8 +500,9 @@ export async function updateSubscriptionCard(
   //    é o que destrava upgrade com proporcional e retentativa de cobrança recusada.
   //    A doc do Asaas recomenda o token quando a tokenização está ativa.
   let token: string
+  let rotulo = rotuloDoCartaoDigitado(card.number)
   try {
-    const tok = await asaas.post<{ creditCardToken?: string }>("/creditCard/tokenize", {
+    const tok = await asaas.post<RespostaTokenize>("/creditCard/tokenize", {
       customer: cust,
       creditCard: {
         holderName:  card.holderName,
@@ -402,6 +526,7 @@ export async function updateSubscriptionCard(
     })
     if (!tok?.creditCardToken) return { error: "O gateway não devolveu o token do cartão." }
     token = tok.creditCardToken
+    rotulo = rotuloDoGateway(tok, card.number)
   } catch (e) {
     // ⚠️ Só a MENSAGEM. Nunca o objeto `card`. E a mensagem é a segura: esta é a SEGUNDA
     //    porta pro mesmo oráculo de teste de cartão, então vale a mesma regra da criação.
@@ -424,7 +549,12 @@ export async function updateSubscriptionCard(
   //    uma troca bem-sucedida por causa disso. Grita no log pra aparecer.
   const { error: upErr } = await supabaseAdmin
     .from("tenants")
-    .update({ asaas_card_token: encryptSecret(token) })
+    .update({
+      asaas_card_token: encryptSecret(token),
+      // Rótulo e credencial andam juntos — ver o comentário na criação da assinatura.
+      card_brand: rotulo.bandeira,
+      card_last4: rotulo.ultimos4,
+    })
     .eq("id", tenantId)
 
   if (upErr) {
@@ -468,10 +598,13 @@ export async function cancelSubscriptionForTenant(
   //    credencial de cobrança guardada sem nada pra cobrar — credencial que sobrevive ao
   //    próprio propósito é resíduo, e resíduo é o que auditoria encontra depois.
   if (!id || id.startsWith("pending:")) {
+    // ⚠️ O filtro olhava SÓ o token. Se ele já fosse nulo mas o rótulo não — exatamente o
+    //    estado que uma limpeza parcial produz —, a linha não era tocada e o rótulo ficava
+    //    pra trás. Agora basta QUALQUER um dos três estar sujo pra a faxina rodar.
     await supabaseAdmin.from("tenants")
-      .update({ asaas_card_token: null })
+      .update({ asaas_card_token: null, card_brand: null, card_last4: null })
       .eq("id", tenantId)
-      .not("asaas_card_token", "is", null)
+      .or("asaas_card_token.not.is.null,card_brand.not.is.null,card_last4.not.is.null")
     return { ok: true }
   }
 
@@ -492,7 +625,7 @@ export async function cancelSubscriptionForTenant(
   //    exatamente o tipo de resíduo que uma auditoria acha depois. Recontratar tokeniza
   //    de novo, com o cartão que a pessoa informar naquele momento.
   await supabaseAdmin.from("tenants")
-    .update({ asaas_subscription_id: null, asaas_card_token: null })
+    .update({ asaas_subscription_id: null, asaas_card_token: null, card_brand: null, card_last4: null })
     .eq("id", tenantId)
 
   console.log(JSON.stringify({ src: "asaas", kind: "assinatura-cancelada", tenant: tenantId, subscription: id }))

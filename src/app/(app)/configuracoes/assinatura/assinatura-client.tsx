@@ -13,6 +13,8 @@ import { PagarModal } from "./components/pagar-modal"
 import { MaisDiasModal } from "./components/mais-dias-modal"
 import { CaberNoPlanoModal } from "./components/caber-no-plano-modal"
 import { BloqueioTotal } from "./components/bloqueio-total"
+import { CartaoModal } from "./components/cartao-modal"
+import { BandeiraLogo } from "@/components/billing/bandeira-logo"
 
 // ═══════════════════════════════════════════════════════════════
 // B1 · Minha assinatura
@@ -41,9 +43,26 @@ import { BloqueioTotal } from "./components/bloqueio-total"
 // • O RAIL DIREITO É UM PAINEL CONTÍNUO com divisórias, não três cartões
 //   flutuando. Cara de extrato, que é o que ele é.
 
-export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
-  const { standing, incluso, cobranca, temAssinatura, resumo, conta, medidas, faturaAberta } = mock
-  const [modal, setModal]       = useState<null | "pagar" | "dias" | "plano">(null)
+export function AssinaturaClient({ mock, abrirCartao = false, preview = false }: {
+  mock: AssinaturaMock
+  /** Chegou por `?cartao=1` (link do e-mail de cobrança recusada) — já abre o modal. */
+  abrirCartao?: boolean
+  /**
+   * Modo `?degrau=` (platform admin revisando os 5 degraus com dados fictícios).
+   *
+   * 🔴 Aqui o modal de cartão NÃO abre. O mock diz "Mastercard ···· 4242", mas
+   *    `trocarCartaoDaAssinatura` agiria sobre o cartão REAL do tenant da sessão do admin —
+   *    dado fictício em cima de ação verdadeira, numa tela de dinheiro.
+   */
+  preview?: boolean
+}) {
+  const { standing, incluso, cobranca, temAssinatura, cartao, resumo, conta, medidas, faturaAberta } = mock
+  // ⚠️ `temAssinatura` gateia a abertura automática: sem assinatura não há cartão pra
+  //    trocar, e abrir o modal mesmo assim pediria o dado mais sensível do produto sem
+  //    destino nenhum. Quem não tem, contrata.
+  const [modal, setModal] = useState<null | "pagar" | "dias" | "plano" | "cartao">(
+    abrirCartao && temAssinatura && !preview ? "cartao" : null,
+  )
   const [bloqueio, setBloqueio] = useState(standing.degrau === "readonly")
   const [adiado, setAdiado]     = useState(false)
 
@@ -188,7 +207,11 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
             <div className="px-5 py-4">
               <h2 className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Pagamento</h2>
               <dl className="mt-2.5 space-y-2">
-                <Row termo="Forma" valor={resumo.formaPagamento} />
+                {/* 🔑 A marca ao lado do rótulo responde "qual dos meus cartões é esse?"
+                    numa olhada. `formaPagamento` já vem com bandeira + 4 dígitos de
+                    `subscription-view`; aqui só se acrescenta o retrato. */}
+                <Row termo="Forma" valor={resumo.formaPagamento}
+                  icone={cartao ? <BandeiraLogo marca={cartao.bandeira} size={16} /> : null} />
                 <Row termo="Cobrança" valor={resumo.cicloDia ? `todo dia ${resumo.cicloDia}` : "a definir"} />
                 <Row termo="Nota e aviso" valor={resumo.emailCobranca} />
               </dl>
@@ -205,13 +228,17 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
                     de pagamento — que é onde a pessoa vai procurar.
                     ⚠️ Só aparece com assinatura de verdade no gateway: pra quem é faturado
                     à mão ou ainda não contratou, não há cartão nosso pra trocar. */}
-                {temAssinatura && (
-                  <Link
-                    href="/configuracoes/assinatura/cartao"
+                {/* ⚠️ MODAL, não navegação (07/08). Sair da tela pra trocar 4 campos custa
+                    o contexto inteiro — e o contexto aqui é a linha que acabou de dizer que
+                    a cobrança falhou. A rota continua existindo pro link do e-mail. */}
+                {temAssinatura && !preview && (
+                  <button
+                    type="button"
+                    onClick={() => setModal("cartao")}
                     className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary-600 hover:text-primary-700"
                   >
                     <CreditCard className="size-3.5" /> Trocar cartão
-                  </Link>
+                  </button>
                 )}
               </div>
             </div>
@@ -279,6 +306,20 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
         />
       )}
 
+      {modal === "cartao" && (
+        <CartaoModal
+          planoNome={resumo.planoNome}
+          // 🔑 Valor e data vêm do GATEWAY quando ele responde — é ele quem debita. O preço
+          //    de tabela é o piso: se o plano mudou de preço sem `PUT` na assinatura, o
+          //    cartão continua sendo cobrado pelo valor velho, e a tela tem que dizer o que
+          //    vai acontecer de verdade, não o que o catálogo diz hoje.
+          valorCents={cobranca?.valorCents ?? conta.planoCents}
+          proximaCobranca={cobranca?.proximaEm ? dataLonga(cobranca.proximaEm) : null}
+          cartaoAtual={cartao}
+          onClose={() => setModal(null)}
+        />
+      )}
+
       {modal === "plano" && (
         <CaberNoPlanoModal
           medidas={medidas}
@@ -300,11 +341,13 @@ export function AssinaturaClient({ mock }: { mock: AssinaturaMock }) {
   )
 }
 
-function Row({ termo, valor }: { termo: string; valor: string }) {
+function Row({ termo, valor, icone }: { termo: string; valor: string; icone?: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="text-xs text-slate-500 shrink-0">{termo}</dt>
-      <dd className="text-xs font-medium text-slate-700 truncate">{valor}</dd>
+      <dd className="text-xs font-medium text-slate-700 truncate flex items-center gap-1.5 min-w-0">
+        {icone}<span className="truncate">{valor}</span>
+      </dd>
     </div>
   )
 }

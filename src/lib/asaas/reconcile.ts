@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { asaas } from "./client"
 import { RESERVA_TTL_MS, idadeDaReservaMs } from "@/lib/billing/gateway-limits"
 import { processAsaasEvent } from "./webhook-handler"
+import { procurarAssinaturaNoGateway } from "./subscriptions"
 
 // ═══════════════════════════════════════════════════════════════
 // Reconciliação — o webhook deixa de ser ponto único de falha
@@ -62,6 +63,31 @@ export async function reconcileAsaas(): Promise<ReconcileResult> {
     // `null` = formato legado sem timestamp ⇒ não mexe (fail-safe: reserva presa é
     // reparável à mão; apagar a de quem está pagando agora cria cobrança em dobro).
     if (idade === null || idade < RESERVA_TTL_MS) continue
+
+    // 🔴 CORROBORA ANTES DE LIMPAR (achado da auditoria, 07/08). A faxina apagava a reserva
+    //    no escuro — e a reserva órfã nasce justamente do timeout, o caso em que a
+    //    assinatura PODE ter sido criada e o cartão cobrado. Limpar sem perguntar devolvia
+    //    a vaga e deixava a próxima tentativa criar a segunda assinatura mensal, com a
+    //    primeira cobrando pra sempre sem ninguém saber.
+    const existente = await procurarAssinaturaNoGateway(t.id)
+
+    // Existe: adota em vez de apagar. É o mesmo tenant, é o `externalReference` dele.
+    if (existente) {
+      const { error } = await supabaseAdmin
+        .from("tenants")
+        .update({ asaas_subscription_id: existente })
+        .eq("id", t.id)
+        .eq("asaas_subscription_id", t.asaas_subscription_id)
+      if (error) { out.erros++; continue }
+      out.reservasLimpas++
+      console.error(JSON.stringify({ src: "reconcile", kind: "reserva-virou-assinatura",
+        tenant: t.id, subscription: existente }))
+      continue
+    }
+    // ⚠️ `undefined` = o gateway não respondeu. Não sabemos ⇒ não mexe: a reserva presa é
+    //    reparável na próxima rodada; a cobrança em dobro, não.
+    if (existente === undefined) { out.erros++; continue }
+
     const { error } = await supabaseAdmin
       .from("tenants")
       .update({ asaas_subscription_id: null })

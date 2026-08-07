@@ -70,7 +70,23 @@ export async function GET(req: NextRequest) {
     )}`)
   }
   const externalAccountId = acc.userId
-  const username = acc.username
+  const username = acc.username?.trim()
+  /**
+   * ⚠️ `fetchIgAccount` devolve `username: j.username ?? ""` — o tipo diz `string`, mas o
+   *    valor pode ser VAZIO. Sem esta guarda, a linha nasceria com `username: ""`, e aí as
+   *    duas réguas de "sabemos qual conta é" divergiriam: a tela (que testa se tem
+   *    conteúdo) diria "conexão incompleta", e o envio (que testa se não é nulo) usaria a
+   *    conexão numa boa. Estado que contradiz a si mesmo é pior que estado ruim.
+   *
+   * Fechado AQUI, na origem, e não nas duas pontas: assim a invariante "conexão gravada
+   * sempre sabe de quem é" vale pra todo mundo que ler a tabela, inclusive código futuro.
+   */
+  if (!username) {
+    console.error(JSON.stringify({ src: "ig-connect", kind: "empty-username", account: externalAccountId }))
+    return back(origin, `error=${encodeURIComponent(
+      "A Meta não informou qual conta foi autorizada. Tente conectar novamente; se persistir, verifique se a conta é Comercial ou de Criador de conteúdo.",
+    )}`)
+  }
 
   /**
    * ⚠️ Token de LONGA duração ausente = a troca do §2 do `exchangeIgCode` falhou e sobrou o
@@ -101,6 +117,30 @@ export async function GET(req: NextRequest) {
     updated_at:          new Date().toISOString(),
   }, { onConflict: "channel,external_account_id" })
   if (error) return back(origin, `error=${encodeURIComponent(error.message)}`)
+
+  /**
+   * 🔴 UMA CONTA POR TENANT — derruba as OUTRAS conexões de Instagram deste workspace.
+   *
+   * O upsert casa por `(canal, id_da_conta)`. Quando uma tentativa anterior falhou no meio,
+   * o id gravado foi o do USUÁRIO no app (namespace diferente do id da CONTA), então a
+   * reconexão bem-sucedida **não sobrescreve** aquela linha: cria uma segunda. As duas
+   * ficam `active`, e o envio precisa desempatar — desempate que, até a auditoria de
+   * 2026-08-07, era "a mais antiga", ou seja, sempre o lixo.
+   *
+   * Consertar só a ordem trataria o sintoma. Aqui a linha velha simplesmente **para de ser
+   * elegível**: conectou uma conta, as anteriores do mesmo tenant saem de cena.
+   *
+   * ⚠️ Revoga, não apaga: o ledger de automações aponta pra `connection_id`, e apagar
+   *    deixaria o relatório do funil órfão. Também limpa o token — ele não vale mais nada
+   *    e não pode ficar guardado.
+   */
+  const { error: dedupErr } = await supabaseAdmin.from("channel_connections")
+    .update({ status: "revoked", access_token: null, updated_at: new Date().toISOString() })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("channel", "instagram")
+    .neq("external_account_id", externalAccountId)
+    .eq("status", "active")
+  if (dedupErr) console.error("[ig-connect] dedup:", dedupErr.code, dedupErr.message)
 
   // Auto-assina os campos de webhook (inclui message_reactions) — self-provision,
   // não depende de toggle manual no painel. Não-fatal: conexão vale mesmo se falhar.

@@ -70,6 +70,8 @@ export function PlanosModal({
   //    pagar (achado do QA, 05/08). Recarregar a página resolveria, mas desmontaria o
   //    modal no meio da compra.
   const [titularAtual, setTitularAtual] = useState(titular)
+  /** O cartão está sendo validado no banco AGORA — some toda saída enquanto isso. */
+  const [cobrando, setCobrando] = useState(false)
 
   // ── Trilho horizontal ────────────────────────────────────────────────────
   // O índice visível sai da POSIÇÃO DE ROLAGEM, não de um estado que a bolinha escreve:
@@ -193,7 +195,12 @@ export function PlanosModal({
           <header className="shrink-0 px-6 sm:px-8 pt-6 pb-4 border-b border-slate-100">
             {/* ⚠️ A saída existe SÓ no modo não-bloqueante, e some depois que o cartão passa
                 (`pronto`): fechar em cima do sucesso deixaria a pessoa sem saber se pagou. */}
-            {!bloqueante && passo !== "pronto" && (
+            {/* 🔴 A saída também SOME durante a tokenização (achado da auditoria, 07/08).
+                Este X é um `<Link>` — ele navega de verdade — e ficava clicável enquanto o
+                cartão estava sendo validado no banco. Sair ali deixa a pessoa sem saber se
+                foi cobrada, e o palpite dela vai ser "não fui": segunda tentativa em cima
+                de um pagamento que passou. É o caminho da contratação, o que gera dinheiro. */}
+            {!bloqueante && passo !== "pronto" && !cobrando && (
               <Link href="/configuracoes/assinatura" aria-label="Fechar"
                 className="absolute right-4 top-4 size-8 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 inline-flex items-center justify-center transition-colors">
                 <X className="size-4" />
@@ -202,7 +209,7 @@ export function PlanosModal({
             <div className="flex items-start gap-3">
               {/* Voltar existe a partir do 2º passo — e SÓ até o pagamento passar.
                   Depois de cobrado o cartão não há "voltar": o dinheiro já saiu. */}
-              {(passo === "cadastro" || passo === "pagamento") && (
+              {(passo === "cadastro" || passo === "pagamento") && !cobrando && (
                 <button type="button"
                   onClick={() => setPasso(passo === "pagamento" && !cadastroOk ? "cadastro" : "planos")}
                   className="mt-0.5 size-7 shrink-0 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 inline-flex items-center justify-center transition-colors"
@@ -210,26 +217,36 @@ export function PlanosModal({
                   <ChevronLeft className="size-4" />
                 </button>
               )}
-              <div className="min-w-0">
-                <h1 className="text-xl font-bold text-slate-900 tracking-tight">
-                  {passo === "planos"    ? (bloqueante ? "Seu teste terminou" : "Escolha seu plano")
-                   : passo === "cadastro" ? "Falta só o cadastro"
-                   : passo === "pagamento" ? `Assinar ${planoEscolhido?.nome ?? ""}`.trim()
-                   : "Tudo certo!"}
-                </h1>
-                <p className="mt-1.5 text-sm text-slate-500 leading-relaxed">
-                  {passo === "planos"    ? (bloqueante
-                       ? "Escolha um plano para voltar a usar o Kora. Suas conversas, contatos e configurações estão intactos — nada precisa ser refeito."
-                       : "Ao assinar, a cobrança é feita agora e o plano libera na hora — você troca os dias restantes de teste pelo produto completo.")
-                   : passo === "cadastro" ? "São os dados que a nota fiscal e o cartão exigem."
-                   : passo === "pagamento" ? "O pagamento é processado com criptografia. Não guardamos o número do seu cartão."
-                   : "Sua assinatura está ativa e o Kora voltou a funcionar."}
-                </p>
-              </div>
+              {/* ⚠️ NO PASSO DO CARTÃO O CABEÇALHO CALA (achado da revisão, 07/08). Ele
+                  dizia "Assinar PLANO III" e o herói do formulário repetia a MESMA frase
+                  20px abaixo, agora com o preço em 24px; e a linha sobre criptografia se
+                  repetia no rodapé do form. Duas superfícies dizendo o mesmo na mesma tela
+                  não é reforço — é ruído empurrando o CTA pra baixo. Quem manda ali é o
+                  herói, que é o único que fica grudado enquanto a pessoa digita. */}
+              {passo !== "pagamento" && (
+                <div className="min-w-0">
+                  <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                    {passo === "planos"    ? (bloqueante ? "Seu teste terminou" : "Escolha seu plano")
+                     : passo === "cadastro" ? "Falta só o cadastro"
+                     : "Tudo certo!"}
+                  </h1>
+                  <p className="mt-1.5 text-sm text-slate-500 leading-relaxed">
+                    {passo === "planos"    ? (bloqueante
+                         ? "Escolha um plano para voltar a usar o Kora. Suas conversas, contatos e configurações estão intactos — nada precisa ser refeito."
+                         : "Ao assinar, a cobrança é feita agora e o plano libera na hora — você troca os dias restantes de teste pelo produto completo.")
+                     : passo === "cadastro" ? "São os dados que a nota fiscal e o cartão exigem."
+                     : "Sua assinatura está ativa e o Kora voltou a funcionar."}
+                  </p>
+                </div>
+              )}
             </div>
           </header>
 
-          <div className="flex-1 min-h-0 flex flex-col px-6 sm:px-8 py-5">
+          {/* ⚠️ No passo do cartão o respiro horizontal é do PRÓPRIO formulário (`px-5` nas
+              zonas dele) — sem esta exceção somavam-se 44px de cada lado numa coluna de
+              512px, e as barras grudadas do form ficavam boiando no meio em vez de
+              encostarem nas bordas, que é o que faz elas lerem como fixas. */}
+          <div className={`flex-1 min-h-0 flex flex-col py-5 ${passo === "pagamento" ? "" : "px-6 sm:px-8"}`}>
             {passo !== "planos" ? (
               <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none">
                 <div className="max-w-lg mx-auto">
@@ -260,6 +277,7 @@ export function PlanosModal({
                   {passo === "pagamento" && planoEscolhido && (
                     titularAtual && (titularAtual.completo || cadastroOk) ? (
                       <CardForm
+                        modo="assinar"
                         titular={titularAtual}
                         planoId={planoEscolhido.id}
                         planoNome={planoEscolhido.nome}
@@ -267,6 +285,7 @@ export function PlanosModal({
                         primeiraCobranca={primeiraCobranca}
                         emTrial={false}
                         onEditarCadastro={() => setPasso("cadastro")}
+                        onPendingChange={setCobrando}
                         onSucesso={() => setPasso("pronto")}
                       />
                     ) : (

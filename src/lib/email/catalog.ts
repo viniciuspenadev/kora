@@ -17,8 +17,14 @@
  */
 
 import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVerificationEmail, buildHealthAlertEmail, buildLoginCodeEmail, buildNewDeviceEmail, type EmailSlug } from "./send"
+import { SUPORTE_WHATSAPP } from "@/lib/support"
 
-const WA = "https://wa.me/5511987253394"
+// 🔴 ERA UM NÚMERO HARDCODED E **DESATUALIZADO** (achado 07/08). Enquanto as telas do app
+//    apontavam pro número oficial, os e-mails que já saem — verificação de cadastro,
+//    convite, relatório diário — mandavam o cliente pra um número antigo. Ninguém percebe:
+//    contato errado não dá erro, só silêncio do outro lado.
+// 🔑 Fonte única em `lib/support.ts`. Trocar o número passa a ser um lugar só.
+const WA = `https://wa.me/${SUPORTE_WHATSAPP}`
 
 export interface EmailTemplateMeta {
   /** ⚠️ Tipado (`EmailSlug`, em `send.ts`): slug fora da união não compila. */

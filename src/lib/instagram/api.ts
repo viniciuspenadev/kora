@@ -61,10 +61,24 @@ function netErr(e: unknown, ms: number, what: string): string {
  * A mais antiga vence — escolha determinística, igual à da projeção de regras.
  */
 export async function getInstagramSender(tenantId: string): Promise<{ igAccountId: string; token: string } | null> {
+  /**
+   * 🔴 A ORDEM ERA "MAIS ANTIGA PRIMEIRO" — e isso premiava exatamente o lixo.
+   *
+   * Nada impede um tenant ter duas linhas de Instagram: quando a conexão falha no meio, o
+   * id gravado é o do usuário no app (namespace diferente do id da CONTA), então uma
+   * reconexão bem-sucedida **não** sobrescreve a linha ruim — insere outra. Com o
+   * desempate pela mais antiga, a ruim ganhava para sempre: o cliente reconectava direito,
+   * a tela mostrava tudo certo, e todo envio saía pela conexão morta.
+   *
+   * Agora: **exige `username`** (sem ele não sabemos qual conta é — ver a régua de
+   * "conectado" na tela) e desempata pela **mais recente**, que é a que a pessoa acabou
+   * de autorizar. Achado na auditoria de 2026-08-07.
+   */
   const { data, error } = await supabaseAdmin.from("channel_connections")
     .select("external_account_id, access_token")
     .eq("tenant_id", tenantId).eq("channel", "instagram").eq("status", "active")
-    .order("created_at", { ascending: true })
+    .not("username", "is", null)
+    .order("updated_at", { ascending: false })
     .limit(1)
   if (error) { console.error("[ig-sender] select:", error.code, error.message); return null }
   const row   = data?.[0]
@@ -452,8 +466,22 @@ export async function exchangeIgCode(
       `${IG_BASE}/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(APP_SECRET())}&access_token=${encodeURIComponent(shortToken)}`,
       { signal: AbortSignal.timeout(T_OAUTH) },
     )
-    const j2 = await r2.json() as { access_token?: string; expires_in?: number }
-    return { token: j2.access_token ?? shortToken, userId, expiresIn: j2.expires_in ?? null }
+    /**
+     * ⚠️ FALHA AQUI NÃO PODE PASSAR CALADA.
+     *
+     * A versão anterior fazia `j2.access_token ?? shortToken` e devolvia `expiresIn: null`
+     * — ou seja, quando a troca pelo token de 60 dias falhava, ela **entregava o de ~1h
+     * como se fosse o bom**. Quem chamava não tinha como distinguir "renovei" de
+     * "desisti", e o resultado era conexão que morria em uma hora e virava "parou de
+     * funcionar sozinho" dias depois. (Auditoria 2026-08-07.)
+     *
+     * Agora o erro é explícito. Quem chama decide — e o callback do connect recusa.
+     */
+    const j2 = await r2.json() as { access_token?: string; expires_in?: number; error?: { message?: string } }
+    if (!r2.ok || !j2.access_token) {
+      return { error: `não foi possível obter o acesso de longa duração: ${j2.error?.message ?? `HTTP ${r2.status}`}` }
+    }
+    return { token: j2.access_token, userId, expiresIn: j2.expires_in ?? null }
   } catch (e) {
     return { error: netErr(e, T_OAUTH, "troca do código de autorização") }
   }

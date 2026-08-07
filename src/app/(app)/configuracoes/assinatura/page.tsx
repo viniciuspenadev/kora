@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic"
 export default async function AssinaturaPage({
   searchParams,
 }: {
-  searchParams: Promise<{ degrau?: string }>
+  searchParams: Promise<{ degrau?: string; cartao?: string }>
 }) {
   const session = await auth()
   if (!session) redirect("/auth/signin")
@@ -30,7 +30,9 @@ export default async function AssinaturaPage({
   // `?degrau=` é o modo PRÉVIA (revisar os 5 estados da escada sem cliente inadimplente
   // de verdade). Só platform admin — o layout desta pasta já garante isso hoje, e a
   // checagem aqui sobrevive ao dia em que a rota abrir pros clientes.
-  const { degrau } = await searchParams
+  // `?cartao=1` abre o modal de troca de cartão já na chegada — é o alvo do link do e-mail
+  // de cobrança recusada (ver `cartao/page.tsx`).
+  const { degrau, cartao } = await searchParams
   const preview = degrau && session.user.isPlatformAdmin
   const mock = preview ? buildMock(parseDegrau(degrau)) : await loadAssinatura(session.user.tenantId)
 
@@ -50,7 +52,7 @@ export default async function AssinaturaPage({
 
   return (
     <AssinaturaShell>
-      <AssinaturaClient mock={mock} />
+      <AssinaturaClient mock={mock} abrirCartao={cartao === "1"} preview={!!preview} />
       {trilha && trilha[1] && (
         <PlanosModal
           planos={trilha[0]}

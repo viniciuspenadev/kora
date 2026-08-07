@@ -6,6 +6,7 @@ import { LIMIT_META, type LimitInfo, type LimitResource } from "@/lib/limits-sha
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
 import { getCobrancaDoGateway } from "@/lib/asaas/subscription-info"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
+import { normalizarBandeira, rotuloDoCartao, type Bandeira } from "@/lib/billing/card-brand"
 
 // ═══════════════════════════════════════════════════════════════
 // Telas de assinatura — o DADO REAL (substitui buildMock)
@@ -77,6 +78,17 @@ export interface AssinaturaView {
    *    recusada. Este lê do banco, que não depende do gateway estar de pé.
    */
   temAssinatura: boolean
+  /**
+   * O cartão que cobra este cliente — **rótulo, não credencial**.
+   *
+   * 🔒 Bandeira e 4 últimos dígitos são o mesmo dado que aparece na fatura do banco dele.
+   *    O PAN, a validade e o CVV nunca passaram pelo nosso banco; o token (que É
+   *    credencial) fica cifrado e **não sai desta camada**.
+   * ⚠️ `null` pra quem assinou antes de a gente registrar o rótulo. A tela diz "Cartão
+   *    cadastrado" nesse caso — inventar 4 dígitos seria exibir um identificador que não
+   *    identifica nada.
+   */
+  cartao: { bandeira: Bandeira | null; ultimos4: string } | null
   /** Módulos que a conta REALMENTE tem ligados, pelo nome do catálogo. */
   incluso:   string[]
   resumo:    AssinaturaResumoData
@@ -105,7 +117,7 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     getBillingStanding(tenantId),
     listAllLimits(tenantId),
     supabaseAdmin.from("tenants")
-      .select("billing_day, plan_id, asaas_subscription_id, plans:plan_id ( name, price_cents, user_quota, extra_user_price_cents )")
+      .select("billing_day, plan_id, asaas_subscription_id, card_brand, card_last4, plans:plan_id ( name, price_cents, user_quota, extra_user_price_cents )")
       .eq("id", tenantId).maybeSingle(),
     supabaseAdmin.from("tenant_billing_profile")
       .select("billing_email").eq("tenant_id", tenantId).maybeSingle(),
@@ -143,9 +155,18 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
   const t = tenantRow.data as {
     billing_day: number | null
     asaas_subscription_id?: string | null
+    card_brand?: string | null
+    card_last4?: string | null
     plans: { name: string; price_cents: number; user_quota: number | null; extra_user_price_cents: number | null } | null
   } | null
   const plano = t?.plans ?? null
+
+  // ⚠️ O rótulo do cartão só existe se houver ASSINATURA de verdade. Rótulo órfão (que a
+  //    revogação deveria ter limpado, ou que sobrou de um cancelamento pelo painel do
+  //    Asaas) faria a tela dizer "Mastercard ···· 4242" pra quem não tem o que cobrar.
+  const cartao = assinaturaRealId(t?.asaas_subscription_id) && /^\d{4}$/.test(t?.card_last4 ?? "")
+    ? { bandeira: normalizarBandeira(t?.card_brand), ultimos4: (t?.card_last4 as string) }
+    : null
 
   // ── A única linha que pode virar dinheiro hoje ────────────────
   //
@@ -227,19 +248,24 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
       //    envelheceu junto com o código que ele justificava.
       // ⚠️ Deriva do FATO (existe assinatura no gateway?), não de constante. E continua
       //    honesto no outro caso: sem assinatura, "A definir" é a verdade.
-      // ⚠️ Sem bandeira nem 4 últimos dígitos de propósito — não guardamos nada do cartão
-      //    (só o token). Exibi-los exigiria persistir dado de cartão, e a economia de um
-      //    clique não paga o custo de entrar nesse terreno.
-      formaPagamento: t?.asaas_subscription_id ? "Cartão de crédito" : "A definir",
+      // 🔑 Desde 07/08 diz QUAL cartão (`Mastercard ···· 4242`) e não só "Cartão de
+      //    crédito". Quem tem dois cartões não conseguia saber qual estava debitando — e
+      //    era essa a pergunta de quem abre esta linha. Degrada pro rótulo genérico quando
+      //    não temos os 4 dígitos (assinatura anterior ao registro).
+      // ⚠️ O fallback passa por `assinaturaRealId` como todo o resto do arquivo. Lendo o id
+      //    cru, um tenant com a RESERVA do claim presa (`pending:…`) lia "Cartão de
+      //    crédito" aqui e, duas linhas ao lado, não ganhava o botão de trocar cartão
+      //    (`temAssinatura` false) — duas afirmações contraditórias na mesma coluna.
+      formaPagamento: rotuloDoCartao(cartao?.bandeira, cartao?.ultimos4)
+        ?? (assinaturaRealId(t?.asaas_subscription_id) ? "Cartão de crédito" : "A definir"),
       emailCobranca:  (perfil.data as { billing_email?: string } | null)?.billing_email ?? "",
       adiamentoUsado: false,   // TODO(asaas): exige carimbo no banco pra valer (§ modais)
       adiamentoAte:   null,
     },
     incluso,
     cobranca: cobranca ? { valorCents: cobranca.valorCents, proximaEm: cobranca.proximaEm } : null,
-    temAssinatura: !!assinaturaRealId(
-      (tenantRow.data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id,
-    ),
+    temAssinatura: !!assinaturaRealId(t?.asaas_subscription_id),
+    cartao,
     conta: {
       planoLabel: plano?.name ?? "Sem plano",
       planoCents,

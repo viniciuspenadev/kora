@@ -15,7 +15,19 @@ export function InstagramConnectClient({ connection, notice }: { connection: Con
   const [error, setError] = useState<string | null>(null)
   const [okMsg, setOkMsg] = useState<string | null>(null)
 
-  const connected = connection?.status === "active" && connection.hasToken
+  /**
+   * 🔴 SABER DE QUEM É A CONTA FAZ PARTE DE ESTAR CONECTADO.
+   *
+   * A régua era `status ativo + tem token`. Não bastava: uma conexão pode ter token e
+   * status ativo e ainda assim ser inútil, porque nunca conseguimos ler QUAL conta é —
+   * e sem o id real da conta o webhook não casa nada (nem mensagem, nem comentário).
+   *
+   * Caso real (Moises Pena, 2026-08-07): a Meta autorizou mas negou os dados da conta
+   * (app em Análise). A linha ficou ativa, com token, **sem `@`** — e esta tela exibiu
+   * "Conectado", sem nem o @ do lado. O cliente achou que estava no ar por horas.
+   */
+  const incomplete = connection?.status === "active" && connection.hasToken && !connection.username
+  const connected  = connection?.status === "active" && connection.hasToken && !!connection.username
 
   function connectManual() {
     setError(null); setOkMsg(null)
@@ -84,6 +96,22 @@ export function InstagramConnectClient({ connection, notice }: { connection: Con
         <div className="space-y-3">
           {/* Conexão expirada — a renovação automática falhou (cliente revogou, conta mudou
               de tipo). Sem este aviso o usuário só veria "conectar" de novo, sem entender. */}
+          {/* Autorizou, mas a Meta não liberou os dados da conta — o estado que antes
+              aparecia como "Conectado" e não funcionava. Causa quase sempre a mesma:
+              app em Análise, ou conta sem papel no app. */}
+          {incomplete && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 flex items-start gap-2 text-xs text-amber-800">
+              <AlertCircle className="size-4 shrink-0 mt-px" />
+              <span>
+                <span className="font-semibold">A conexão não foi concluída.</span> O Instagram
+                autorizou o acesso, mas não liberou os dados da conta — então não conseguimos
+                receber mensagens nem comentários. Se o app ainda está em análise pela Meta,
+                a conta precisa ser adicionada como testadora. Reconecte abaixo para tentar
+                de novo.
+              </span>
+            </div>
+          )}
+
           {connection?.status === "needs_reauth" && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 flex items-start gap-2 text-xs text-amber-800">
               <AlertCircle className="size-4 shrink-0 mt-px" />

@@ -13,6 +13,7 @@ import type {
   Fatura, LinhaDiscreta, LinhaMedida,
 } from "./types"
 import { dataCurta, mesDe, parseData } from "./format"
+import type { Bandeira } from "@/lib/billing/card-brand"
 
 const DIA = 86_400_000
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
@@ -60,6 +61,8 @@ export interface AssinaturaMock {
   cobranca:     { valorCents: number; proximaEm: string | null } | null
   /** Tem assinatura real no gateway? Governa a porta de "Trocar cartão". */
   temAssinatura: boolean
+  /** Bandeira + 4 últimos do cartão em uso. `null` = não sabemos (assinatura antiga). */
+  cartao: { bandeira: Bandeira | null; ultimos4: string } | null
   resumo:       AssinaturaResumo
   conta:        ContaDoMes
   medidas:      LinhaMedida[]
@@ -224,5 +227,16 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
   // ⚠️ `temAssinatura: true` na PRÉVIA: o modo `?degrau=` existe pra revisar as telas dos
   //    degraus, e esconder a porta de trocar cartão ali tiraria justamente uma das coisas
   //    que o platform admin precisa conferir.
-  return { standing, incluso: TUDO, cobranca: null, temAssinatura: true, resumo, conta, medidas, discretas, faturaAberta, faturas }
+  // ⚠️ Cartão fictício na PRÉVIA de propósito: sem ele o rail de pagamento apareceria no
+  //    estado degradado ("não sabemos os últimos dígitos") justamente pra quem está
+  //    revisando a tela — e o estado normal ficaria sem superfície pra conferir.
+  // 🔴 Mas o MODAL de troca não abre na prévia (`assinatura-client.tsx`): ele agiria de
+  //    verdade sobre o cartão do tenant da sessão do admin, mostrando "Mastercard ···· 4242"
+  //    que não existe. Cartão fictício em cima de ação real, numa tela de dinheiro, é o
+  //    tipo de armadilha que só se descobre depois de alguém cair nela.
+  return {
+    standing, incluso: TUDO, cobranca: null, temAssinatura: true,
+    cartao: { bandeira: "mastercard", ultimos4: "4242" },
+    resumo, conta, medidas, discretas, faturaAberta, faturas,
+  }
 }

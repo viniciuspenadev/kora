@@ -240,6 +240,17 @@ async function encerrar(
       // ⚠️ `subscription_status` fica como está. Ele ainda é cliente pago até a data.
       subscription_ends_at:  fimDoCiclo,
       asaas_subscription_id: null,
+      // 🔒 O CARTÃO MORRE COM A ASSINATURA — E ESTE ERA O TERCEIRO CAMINHO DE REVOGAÇÃO,
+      //    o único que não limpava nada (achado das duas revisões, 07/08). Quem cancelasse
+      //    pelo painel do Asaas ficava com a credencial de cobrança cifrada guardada por
+      //    tempo indeterminado, junto do rótulo. Credencial que sobrevive ao próprio
+      //    propósito é exatamente o resíduo que uma auditoria acha depois — e a migration
+      //    `20260807_asaas_card_token.sql` já AFIRMAVA que este caminho limpava.
+      // ⚠️ Os três juntos, sempre: rótulo sem credencial mente na tela, credencial sem
+      //    assinatura é resíduo. Recontratar tokeniza de novo, com o cartão do momento.
+      asaas_card_token: null,
+      card_brand:       null,
+      card_last4:       null,
     })
     .eq("id", tenant.id)
 

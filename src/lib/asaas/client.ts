@@ -134,6 +134,19 @@ export function mensagemSeguraDoGateway(e: unknown, fallback: string): string {
     return "Não conseguimos autorizar este cartão. Confira os dados, tente outro cartão ou fale com o seu banco."
   }
 
+  // 🔴 REDE DE SEGURANÇA DA LISTA ACIMA (achado da auditoria, 07/08). A lista é por
+  //    SUBSTRING, então ela depende da redação exata do Asaas: *"Número do cartão
+  //    inválido"* casa com `cartão inválido`, mas *"O número do cartão informado é
+  //    inválido"* não casa com nada — e voltava cru, vazando a distinção entre PAN
+  //    estruturalmente inválido e cartão real recusado. Essa distinção É o sinal que um
+  //    testador de cartões procura.
+  // 🔑 Regra estrutural: se a mensagem fala do CARTÃO e não bateu em nada acima, ela
+  //    colapsa também. O que precisa passar são os erros de TITULAR e de negócio (CPF,
+  //    CEP, telefone, plano) — e nenhum deles menciona cartão.
+  if (/cart[ãa]o|credit\s?card|cvv|ccv/.test(cru)) {
+    return "Não conseguimos autorizar este cartão. Confira os dados, tente outro cartão ou fale com o seu banco."
+  }
+
   // Erro de dado do titular/negócio: acionável e sem valor pro atacante — passa direto.
   return e.message
 }

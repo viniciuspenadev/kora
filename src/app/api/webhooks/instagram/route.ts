@@ -19,7 +19,17 @@ export function GET(req: NextRequest) {
   const token     = sp.get("hub.verify_token")
   const challenge = sp.get("hub.challenge")
 
-  if (mode === "subscribe" && token && token === process.env.INSTAGRAM_VERIFY_TOKEN) {
+  // ⚠️ Comparação de tempo CONSTANTE, igual à da assinatura no POST. Era `===`, que sai
+  //    no primeiro byte diferente e, em tese, deixa o token ser descoberto caractere a
+  //    caractere. Risco baixo (endpoint só usado na configuração, segredo de pouco valor),
+  //    mas era a única linha do arquivo fora do padrão. Auditoria 2026-08-07.
+  // ⚠️ Compara o tamanho dos BUFFERS, não das strings: caractere multi-byte tem 1 de
+  //    comprimento e 2+ bytes, e `timingSafeEqual` LANÇA com tamanhos diferentes — o que
+  //    viraria erro 500 no lugar do 403, quebrando a verificação da URL na Meta.
+  const a = Buffer.from(token ?? "")
+  const b = Buffer.from(process.env.INSTAGRAM_VERIFY_TOKEN ?? "")
+  const match = b.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b)
+  if (mode === "subscribe" && match) {
     return new NextResponse(challenge ?? "", { status: 200 })
   }
   return new NextResponse("Forbidden", { status: 403 })

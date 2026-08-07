@@ -202,7 +202,9 @@ export async function saveMyCompanyProfile(
   })
 
   revalidatePath("/configuracoes/empresa")
-  revalidatePath("/configuracoes/assinatura/pagamento")
+  // ⚠️ Era `/configuracoes/assinatura/pagamento`, que virou um stub de redirect em 07/08.
+  //    Revalidar rota morta não quebra nada — e é justamente por isso que envelhece calada.
+  revalidatePath("/configuracoes/assinatura")
 
   // 6 · Espelha no gateway, se o cliente já existe lá.
   //
