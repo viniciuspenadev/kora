@@ -37,7 +37,7 @@ import type { BillingStanding } from "./standing-contract"
 //    `terminated` o acesso já caiu e a pessoa não está numa tela com faixa — ali a
 //    conversa é uma PÁGINA inteira (escopo do outro designer), não uma tarja.
 
-type DegrauVisivel = "trial" | "trial_ended" | "grace" | "restricted" | "readonly"
+type DegrauVisivel = "trial" | "trial_ended" | "grace" | "restricted" | "paywall" | "readonly"
 
 const SUPERFICIE: Record<
   DegrauVisivel,
@@ -90,6 +90,20 @@ const SUPERFICIE: Record<
     apoio: "text-amber-900/70",
     rotulo: "text-slate-700",
     item: "text-slate-600",
+    tone: "primary",
+  },
+  // Paywall — vermelho, como o teste encerrado: nos dois o produto PAROU e o que resta é
+  // resolver o pagamento. Âmbar aqui repetiria a cor da carência e apagaria a diferença
+  // entre "atenção, vai parar" e "parou".
+  // ⚠️ Onde ela aparece: só na área de assinatura. Nas outras rotas o layout já trocou o
+  //    app inteiro por esta conversa — a faixa é o reforço de contexto de quem veio pagar.
+  paywall: {
+    faixa: "bg-red-50 border-red-200",
+    chip: "border-red-200 bg-red-100 text-red-800",
+    titulo: "text-red-900",
+    apoio: "text-red-800",
+    rotulo: "text-red-900",
+    item: "text-red-800",
     tone: "primary",
   },
   // Bloqueio — firme. A firmeza vem do CONTRASTE (barra escura, editorial), não de
@@ -192,7 +206,11 @@ export function BillingBanner({
       : degrau === "grace"
       ? `${assunto} está em aberto.`
       : degrau === "restricted"
-        ? `${assunto} está em aberto${emAberto ? ` ${emAberto}` : ""}.`
+      ? `${assunto} está em aberto${emAberto ? ` ${emAberto}` : ""}.`
+      : degrau === "paywall"
+        // 🔑 Fala do ACESSO, não do documento. Quem chega nesta faixa já sabe que a fatura
+        //    está em aberto — o que mudou, e ele acabou de sentir, é que o produto fechou.
+        ? "Seu acesso está pausado por falta de pagamento."
         : `${assunto} segue em aberto.`
 
   const apoio =
@@ -205,7 +223,13 @@ export function BillingBanner({
       : degrau === "grace"
       ? [linhaDoDocumento(invoice), "tudo segue funcionando normalmente"].filter(Boolean).join(" · ")
       : degrau === "restricted"
-        ? linhaDoDocumento(invoice, nextClosingAt)
+      ? linhaDoDocumento(invoice, nextClosingAt)
+      : degrau === "paywall"
+        // ⚠️ NÃO herda a frase do `readonly` ("a conta está em leitura"): aqui o responsável
+        //    continua podendo agir — é a equipe dele que está do lado de fora. Dizer
+        //    "leitura" pra quem está prestes a pagar descreveria a conta errada.
+        ? [linhaDoDocumento(invoice), "regularize para reabrir o atendimento e o acesso da sua equipe"]
+            .filter(Boolean).join(" · ")
         : [linhaDoDocumento(invoice, nextClosingAt), "a conta está em leitura, e a exportação segue liberada"]
             .filter(Boolean)
             .join(" · ")

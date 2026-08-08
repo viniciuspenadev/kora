@@ -124,20 +124,54 @@ export const BLOCKED_LIFECYCLE: ReadonlySet<string> = new Set<LifecycleState>([
 const PAPEIS_QUE_PAGAM: ReadonlySet<string> = new Set(["owner", "admin"])
 
 /**
- * Acesso levando o PAPEL em conta. É a pergunta certa para `trial_ended`, onde o tenant
- * não está bloqueado — **a pessoa é que pode estar**.
+ * A linha do tenant que TODO gate de acesso precisa ler.
+ *
+ * 🔴 EXISTE PRA QUE NINGUÉM ESQUEÇA UMA COLUNA. São 6 gates de acesso (login ×3, sessão,
+ *    extensão ×2) e cada um monta o próprio `select`. Quando o paywall passou a depender
+ *    de `subscription_status` + `past_due_since` + `past_due_grace_days`, um `select`
+ *    desatualizado deixaria de enxergar o atraso e **abriria o acesso em silêncio** — sem
+ *    erro, sem log, exatamente do jeito que ninguém descobre.
+ * 🔑 Uma constante: coluna nova entra aqui e os 6 passam a lê-la juntos.
+ */
+export const COLUNAS_DE_ACESSO =
+  "id, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days"
+
+/** O que os gates de acesso leem da linha do tenant. Espelha `COLUNAS_DE_ACESSO`. */
+export interface AcessoDoTenant {
+  lifecycle_state:      string | null
+  subscription_status:  string | null
+  past_due_since:       string | null
+  past_due_grace_days:  number | null
+}
+
+/**
+ * Acesso levando o PAPEL em conta. É a pergunta certa no PAYWALL, onde o tenant não está
+ * bloqueado — **a pessoa é que pode estar**: quem pode pagar entra, quem não pode, não.
  *
  * ⚠️ Função separada em vez de um parâmetro novo em `isTenantBlockedForAccess`: aquela é
  *    chamada em 8 lugares, vários deles sem papel à mão (webhook, cron, gate de gasto).
  *    Parâmetro opcional ali significaria "sem papel = libera", e um chamador que
  *    esquecesse de passar abriria o acesso em silêncio. Aqui o papel é obrigatório.
+ *
+ * 🔴 RECEBE A LINHA INTEIRA, e não `(lifecycle, role)` como até 08/08. A mudança é
+ *    deliberada e custa 6 call sites: com dois argumentos soltos, ligar o paywall de
+ *    inadimplência significaria acrescentar parâmetros OPCIONAIS — e opcional num gate de
+ *    segurança quer dizer "quem esquecer, libera". O objeto obriga cada chamador a olhar
+ *    o próprio `select` e decidir conscientemente. É a lição do `KNOWN_STATES`: estado
+ *    novo obriga a varrer QUEM DECIDE em cima dele, e o `tsc` não faz isso sozinho.
  */
 export function isTenantBlockedForAccessAs(
-  lifecycleState: string | null | undefined,
+  tenant: AcessoDoTenant,
   role: string | null | undefined,
+  now: number = Date.now(),
 ): boolean {
-  if (isTenantBlockedForAccess(lifecycleState ?? null)) return true
-  if (normalizeState(lifecycleState) === "trial_ended") {
+  if (isTenantBlockedForAccess(tenant.lifecycle_state)) return true
+  // 🔑 O paywall (teste vencido OU atraso além da carência) não fecha o tenant — fecha
+  //    pra quem não decide pagamento. Owner e admin entram justamente pra resolver.
+  if (motivoDoPaywall(
+    tenant.lifecycle_state, tenant.subscription_status,
+    tenant.past_due_since, tenant.past_due_grace_days, now,
+  )) {
     return !PAPEIS_QUE_PAGAM.has(role ?? "")
   }
   return false
@@ -354,9 +388,31 @@ export function isTenantInPaywall(
   graceDays:          number | null | undefined,
   now:                number = Date.now(),
 ): boolean {
-  if (normalizeState(lifecycleState ?? null) === "trial_ended") return true
-  if ((subscriptionStatus ?? "active") !== "past_due") return false
-  return passouDaCarencia(pastDueSince, graceDays, now)
+  return motivoDoPaywall(lifecycleState, subscriptionStatus, pastDueSince, graceDays, now) !== null
+}
+
+/**
+ * O MESMO julgamento de `isTenantInPaywall`, mas dizendo **por quê**.
+ *
+ * 🔑 Existe porque a tela precisa falar certo. "Seu período de teste terminou" e "sua
+ *    fatura está em aberto" levam ao mesmo lugar (a assinatura) e exigem coisas
+ *    diferentes de quem lê — e um booleano obriga quem renderiza a redescobrir o motivo
+ *    por conta própria. Redescobrir = uma segunda regra, e a segunda regra diverge.
+ * ⚠️ Um booleano derivado deste, nunca o contrário: se a promoção do degrau 2 pro 3 mudar,
+ *    ela muda AQUI e as duas perguntas mudam juntas.
+ */
+export type MotivoPaywall = "trial_ended" | "past_due"
+
+export function motivoDoPaywall(
+  lifecycleState:     string | null | undefined,
+  subscriptionStatus: string | null | undefined,
+  pastDueSince:       string | null | undefined,
+  graceDays:          number | null | undefined,
+  now:                number = Date.now(),
+): MotivoPaywall | null {
+  if (normalizeState(lifecycleState ?? null) === "trial_ended") return "trial_ended"
+  if ((subscriptionStatus ?? "active") !== "past_due") return null
+  return passouDaCarencia(pastDueSince, graceDays, now) ? "past_due" : null
 }
 
 export const STATE_META: Record<LifecycleState, { label: string; badge: string; dot: string; hint: string }> = {

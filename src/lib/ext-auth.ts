@@ -3,7 +3,13 @@ import { createHash, randomBytes } from "crypto"
 import { supabaseAdmin } from "@/lib/supabase"
 import { rateLimit } from "@/lib/rate-limit"
 import { verifyPassword } from "@/lib/auth/login-core"
-import { isTenantBlockedForAccessAs } from "@/lib/lifecycle-shared"
+import { isTenantBlockedForAccessAs, COLUNAS_DE_ACESSO, type AcessoDoTenant } from "@/lib/lifecycle-shared"
+
+/** A linha do tenant que os dois gates da extensão leem — acesso + chaves do Companion. */
+type LinhaDeAcessoExt = AcessoDoTenant & {
+  id: string; active: boolean; name: string
+  companion_enabled: boolean | null
+}
 import { countLoginFailures, recordLoginFailure, clearLoginFailures } from "@/lib/auth/failures"
 import { resolveDevice } from "@/lib/auth/device"
 import { hasValidTrust, grantTrust } from "@/lib/auth/trust"
@@ -123,18 +129,17 @@ async function issueDeviceToken(input: {
   if (accessible.length > 0) {
     const { data: tens, error: tenErr } = await supabaseAdmin
       .from("tenants")
-      .select("id, name, active, lifecycle_state, companion_enabled")
+      .select(`${COLUNAS_DE_ACESSO}, name, companion_enabled`)
       .in("id", accessible.map((m) => m.tenant_id))
     if (!tenErr && tens) {
-      // ⚠️ Ciente do PAPEL: com o teste encerrado o atendente perde a extensão junto com
-      //    o app. Deixá-lo entrar pelo Companion seria uma porta lateral pro mesmo produto
-      //    que o navegador já recusa.
+      // ⚠️ Ciente do PAPEL: no paywall (teste vencido OU fatura além da carência) o
+      //    atendente perde a extensão junto com o app. Deixá-lo entrar pelo Companion seria
+      //    uma porta lateral pro mesmo produto que o navegador já recusa.
       const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
       const okIds = new Map(
-        tens
-          .filter((t) => t.active === true &&
-            !isTenantBlockedForAccessAs(t.lifecycle_state as string | null, papeis.get(t.id as string)))
-          .map((t) => [t.id as string, t]),
+        (tens as unknown as LinhaDeAcessoExt[])
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papeis.get(t.id)))
+          .map((t) => [t.id, t]),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
       if (accessible.length > 0) {
@@ -328,7 +333,7 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
   const [{ data: tenant }, { data: tu }, { data: prof }] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("name, active, lifecycle_state, companion_enabled, companion_send_enabled, companion_copilot_enabled")
+      .select(`${COLUNAS_DE_ACESSO}, name, companion_enabled, companion_send_enabled, companion_copilot_enabled`)
       .eq("id", row.tenant_id)
       .maybeSingle(),
     supabaseAdmin
@@ -342,7 +347,7 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
 
   // Gates fail-closed — a ORDEM importa pra mensagem certa chegar na sidebar.
   if (!tenant || tenant.active === false ||
-      isTenantBlockedForAccessAs(tenant.lifecycle_state as string | null, tu?.role as string | undefined))
+      isTenantBlockedForAccessAs(tenant as unknown as LinhaDeAcessoExt, tu?.role as string | undefined))
     throw new ExtError(403, "Conta indisponível.", "tenant_blocked")
   if (tenant.companion_enabled === false)
     throw new ExtError(403, "A extensão está desativada nesta conta.", "companion_disabled")

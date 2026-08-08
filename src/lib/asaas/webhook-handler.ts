@@ -2,9 +2,10 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { applyPlan } from "@/lib/plans"
 import { generateInvoiceForTenant } from "@/lib/billing"
-import { normalizeState } from "@/lib/lifecycle-shared"
+import { normalizeState, PAST_DUE_GRACE_DAYS } from "@/lib/lifecycle-shared"
 import { asaas, AsaasError } from "./client"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
+import { avisarCobranca } from "@/lib/billing/notify"
 
 // ═══════════════════════════════════════════════════════════════
 // Processamento dos eventos do Asaas — onde a escada é acionada
@@ -101,6 +102,26 @@ interface EventRow {
  * ⚠️ A distinção é entre "o assunto acabou" (mesmo que o desfecho seja 'não era nosso') e
  *    "não consegui agora". Só o primeiro fecha.
  */
+/** Asaas fala em reais; o livro da Kora é em centavos. `null` quando não veio valor. */
+function emCentavos(valor: number | null | undefined): number | null {
+  return typeof valor === "number" && Number.isFinite(valor) ? Math.round(valor * 100) : null
+}
+
+/**
+ * Quantos dias ainda faltam pro paywall, contados do carimbo.
+ *
+ * ⚠️ Mesma régua de `passouDaCarencia` (dias corridos de 24h a partir do carimbo), pra o
+ *    e-mail não prometer um prazo que o gate mede de outro jeito. Duas contas do mesmo
+ *    prazo é como a tela e o gate passam a discordar.
+ */
+function diasRestantesDeCarencia(desde: string, graceDoTenant: number | null | undefined): number {
+  const grace = typeof graceDoTenant === "number" && graceDoTenant >= 0 ? graceDoTenant : PAST_DUE_GRACE_DAYS
+  const inicio = new Date(desde).getTime()
+  if (!Number.isFinite(inicio)) return grace
+  const decorridos = Math.floor((Date.now() - inicio) / 86_400_000)
+  return Math.max(0, grace - decorridos)
+}
+
 async function fechar(id: string, nota?: string, definitivo = true): Promise<void> {
   await supabaseAdmin.from("asaas_webhook_events")
     .update({
@@ -167,7 +188,25 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
 
   const tipo = ev.event_type
 
-  if (SILENCIOSOS.has(tipo)) { await fechar(ev.id); return }
+  // 🔑 SILENCIOSO PRA A ESCADA — NÃO PRO CLIENTE. É a distinção que faltava: o cartão
+  //    recusado não move estado nenhum (o Asaas re-tenta sozinho, ver o bloco acima), mas é
+  //    o ÚNICO momento em que o cliente ainda consegue resolver sem ter perdido nada. Sem
+  //    este aviso, o primeiro sinal que ele recebe é a IA parando de responder dias depois.
+  // ⚠️ Uma vez por PAGAMENTO, não por tentativa: o Asaas re-tenta o mesmo `payment_id`
+  //    várias vezes e cada retentativa gera outro evento destes. A chave de idempotência é
+  //    o pagamento, então as retentativas não viram quatro e-mails iguais.
+  if (SILENCIOSOS.has(tipo)) {
+    if (tipo === "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED" && ev.payment_id) {
+      await avisarCobranca({
+        tenantId:   tenant.id,
+        aviso:      "cartao_recusado",
+        fato:       ev.payment_id,
+        valorCents: emCentavos(ev.payload?.payment?.value),
+      })
+    }
+    await fechar(ev.id)
+    return
+  }
 
   if (LIBERA.has(tipo)) { await liberar(tenant, ev); return }
 
@@ -625,7 +664,7 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<{ error
  *    o cliente.
  */
 async function liberar(
-  tenant: { id: string; lifecycle_state: string | null },
+  tenant: { id: string; lifecycle_state: string | null; subscription_status: string | null },
   ev: EventRow,
 ): Promise<void> {
   // ══════════════════════════════════════════════════════════════════════════
@@ -760,12 +799,26 @@ async function liberar(
     return
   }
 
+  // 🔴 FOTOGRAFA O ESTADO ANTERIOR **ANTES** DO UPDATE (achado por teste, 08/08). O aviso
+  //    de "voltou ao normal" depende de saber se ele estava cortado — e ler `tenant` depois
+  //    do patch abaixo é apostar que o objeto em memória não acompanha a escrita. Aposta
+  //    perdida no teste, e do tipo que em produção sairia como "ninguém recebeu o aviso",
+  //    sem erro nenhum pra investigar. Uma constante remove a aposta.
+  const estavaCortado = (tenant.subscription_status ?? "") === "past_due"
+
   const patch: Record<string, unknown> = {
     subscription_status: "active",
     // 🔑 Limpa o carimbo de encerramento (05/08). `encerrar()` grava `subscription_ends_at`
     //    e NINGUÉM limpava: quem cancelava e recontratava antes da data era derrubado pela
     //    varredura 1.b do housekeeping — marcado `canceled` de novo, já pagando.
     subscription_ends_at: null,
+    // 🔴 E LIMPA O RELÓGIO DO ATRASO. Sem esta linha o carimbo sobrevive ao pagamento —
+    //    é a "invariante 2" da migration (não está atrasado e tem data de atraso) — e o
+    //    estrago aparece só meses depois: no PRÓXIMO atraso, `passouDaCarencia` mede a
+    //    partir de uma data velha, dá "já passou" na hora e joga direto no paywall um
+    //    cliente que acabou de entrar no primeiro dia de carência. `restringir` também
+    //    sobrescreve carimbo velho, mas as duas guardas juntas é que fecham o caso.
+    past_due_since: null,
   }
 
   // ⚠️ Fim do trial: quem pagou sai de `trialing` e vira cliente. Sem isto, ele ficaria
@@ -831,6 +884,30 @@ async function liberar(
   const baixa = await darBaixaNaFatura(tenant.id, ev)
   if (baixa?.error) pendencia = pendencia ? `${pendencia}; ${baixa.error}` : baixa.error
 
+  // ── Avisos ────────────────────────────────────────────────────────────────
+  // ⚠️ ANTES do `return` da pendência, de propósito. Pendência é problema NOSSO de livro
+  //    (fatura não gerou, plano não aplicou); o dinheiro do cliente entrou de qualquer
+  //    forma. Segurar o recibo até o nosso livro fechar puniria ele pelo nosso defeito — e
+  //    o evento fica pendente, então o aviso sairia repetido a cada retentativa se não
+  //    fosse a chave de idempotência.
+  await avisarCobranca({
+    tenantId:   tenant.id,
+    aviso:      "pagamento_confirmado",
+    fato:       ev.payment_id,
+    valorCents: emCentavos(ev.payload?.payment?.value),
+    quando:     new Date().toISOString(),
+  })
+
+  // 🔑 "Voltou ao normal" SÓ pra quem tinha sido cortado. Mandar isso pra quem só pagou a
+  //    mensalidade do mês diria que algo esteve parado quando nada esteve — e o cliente
+  //    vai procurar o que perdeu. `past_due` é o único estado que a régua de inadimplência
+  //    de fato pausa (campanhas, IA e automações).
+  // ⚠️ Fim de teste NÃO entra aqui: pra quem nunca pagou, "voltou" não voltou de lugar
+  //    nenhum — a confirmação acima já diz tudo que ele precisa saber.
+  if (estavaCortado) {
+    await avisarCobranca({ tenantId: tenant.id, aviso: "restabelecido", fato: ev.payment_id })
+  }
+
   if (pendencia) { await fechar(ev.id, pendencia, false); return }
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "liberado", tenant: tenant.id, event: ev.event_type }))
@@ -855,11 +932,23 @@ async function restringir(
 ): Promise<void> {
   if (!ev.payment_id) { await fechar(ev.id, "sem payment_id para confirmar"); return }
 
+  // ⚠️ Sai do `try` pra ser usado no aviso lá embaixo. Vem do GATEWAY, não do payload: o
+  //    corpo da requisição é forjável e este é um e-mail que afirma um valor devido.
+  let cobranca: { value?: number; dueDate?: string } = {}
+
+  /** Estado do tenant lido DENTRO do try — o UPDATE abaixo decide o carimbo em cima dele. */
+  let estadoAtual: {
+    subscription_status?: string | null
+    past_due_since?:      string | null
+    past_due_grace_days?: number | null
+  } | null = null
+
   try {
-    const pag = await asaas.get<{ status?: string; customer?: string; subscription?: string }>(
+    const pag = await asaas.get<{ status?: string; customer?: string; subscription?: string; value?: number; dueDate?: string }>(
       `/payments/${ev.payment_id}`,
     )
     const status = pag?.status ?? ""
+    cobranca = { value: pag?.value, dueDate: pag?.dueDate }
 
     // 🔴 PROPRIEDADE, NÃO SÓ STATUS (H-3 do pentest 08/08). Esta função lia **apenas** o
     //    status e punia o tenant que o lookup por customer devolveu — enquanto `liberar()`,
@@ -869,7 +958,7 @@ async function restringir(
     //    automações de quem está em dia.
     // ⚠️ Fail-closed: divergiu, não pune — registra e encerra sem tocar no tenant.
     const { data: donoRow, error: donoErr } = await supabaseAdmin
-      .from("tenants").select("asaas_customer_id, asaas_subscription_id")
+      .from("tenants").select("asaas_customer_id, asaas_subscription_id, subscription_status, past_due_since, past_due_grace_days")
       .eq("id", tenant.id).maybeSingle()
 
     // ⚠️ Falha de leitura NÃO pode virar "checagem dispensada". Descartar o `error` aqui
@@ -877,7 +966,13 @@ async function restringir(
     //    este é o caminho que TIRA produto de quem paga. Sem evidência, não pune.
     if (donoErr) { await fechar(ev.id, `leitura do tenant falhou: ${donoErr.message}`, false); return }
 
-    const dono = donoRow as { asaas_customer_id?: string | null; asaas_subscription_id?: string | null } | null
+    const dono = donoRow as {
+      asaas_customer_id?: string | null; asaas_subscription_id?: string | null
+      subscription_status?: string | null; past_due_since?: string | null
+      past_due_grace_days?: number | null
+    } | null
+    // Sai do `try` pra o UPDATE e o aviso lá embaixo (ver `carimbo`).
+    estadoAtual = dono
 
     if (pag?.customer && dono?.asaas_customer_id && pag.customer !== dono.asaas_customer_id) {
       console.error(JSON.stringify({ src: "asaas-handler", kind: "restringir-customer-divergente",
@@ -910,8 +1005,26 @@ async function restringir(
     return
   }
 
+  // ── O relógio da carência começa AQUI ─────────────────────────────────────
+  //
+  // 🔑 CARIMBA NA TRANSIÇÃO, NÃO A CADA EVENTO. Se já estava `past_due`, o carimbo antigo
+  //    FICA: uma segunda fatura vencendo enquanto a primeira está aberta não pode reiniciar
+  //    a contagem — reiniciar daria carência infinita a quem acumula atraso, que é
+  //    exatamente o cliente que a escada existe pra alcançar.
+  // 🔑 E carimba **por cima** de um carimbo velho quando a transição é nova. Isso conserta
+  //    sozinho o estado que a migration chama de "carimbo órfão" (não está atrasado e tem
+  //    data de atraso): sem isso, um resíduo de meses atrás jogaria o cliente direto no
+  //    paywall no primeiro dia do novo atraso, sem carência nenhuma.
+  // ⚠️ Sem carimbo, `passouDaCarencia` responde **true** (fail-closed pela data). Ou seja:
+  //    esquecer de carimbar não abre o produto, fecha — o erro cai pro lado seguro, mas cai
+  //    em cima do cliente. Por isso a invariante 1 da migration existe pra ser consultada.
+  const jaEstavaAtrasado = (estadoAtual?.subscription_status ?? "") === "past_due"
+  const carimbo = jaEstavaAtrasado && estadoAtual?.past_due_since
+    ? estadoAtual.past_due_since
+    : new Date().toISOString()
+
   const { error } = await supabaseAdmin.from("tenants")
-    .update({ subscription_status: "past_due" }).eq("id", tenant.id)
+    .update({ subscription_status: "past_due", past_due_since: carimbo }).eq("id", tenant.id)
   if (error) { await fechar(ev.id, `falha ao restringir: ${error.message}`, false); return }
 
   // Estorno e chargeback não são inadimplência comum — o dinheiro VOLTOU, e isso costuma
@@ -919,6 +1032,25 @@ async function restringir(
   if (pedeOlhoHumano) {
     console.error(JSON.stringify({ src: "asaas-handler", kind: "ATENCAO-HUMANA",
       motivo: ev.event_type, tenant: tenant.id, payment: ev.payment_id }))
+  }
+
+  // 🔑 O AVISO É SÓ DO VENCIMENTO. Estorno e chargeback também caem aqui e também
+  //    restringem, mas mandar "sua fatura está em aberto" pra quem acabou de contestar a
+  //    cobrança no cartão é responder outra pergunta — esse caso pede gente, não template.
+  // ⚠️ Depois do UPDATE, nunca antes: e-mail que anuncia um corte que não aconteceu é pior
+  //    que corte sem aviso.
+  if (!pedeOlhoHumano) {
+    await avisarCobranca({
+      tenantId:   tenant.id,
+      aviso:      "fatura_vencida",
+      fato:       ev.payment_id,
+      valorCents: emCentavos(cobranca.value),
+      quando:     cobranca.dueDate ?? null,
+      // 🔑 DIAS QUE RESTAM, não a carência cheia. Numa segunda fatura vencida o relógio já
+      //    está correndo há dias — prometer "você tem 7 dias" ali seria dar um prazo que o
+      //    sistema não vai cumprir, e o cliente descobriria isso sendo cortado antes.
+      diasCarencia: diasRestantesDeCarencia(carimbo, estadoAtual?.past_due_grace_days),
+    })
   }
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "restringido", tenant: tenant.id, event: ev.event_type }))

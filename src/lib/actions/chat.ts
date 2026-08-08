@@ -19,6 +19,7 @@ import { resolveOrCreateContact, adoptRecipientJid } from "@/lib/contacts/identi
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 import { createNotification } from "@/lib/notifications"
 import { logConversationEvent } from "@/lib/atendimento/events"
+import { assertAtendimentoLiberado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -374,6 +375,9 @@ export async function sendMessage(
   if (!session) throw new Error("Não autenticado")
 
   const tenantId = session.user.tenantId
+  // 🔒 Degrau 3 — ver `assertAtendimentoLiberado`. NÃO é gate de gasto: dentro da carência
+  //    o atendimento manual continua liberado, de propósito.
+  await assertAtendimentoLiberado(tenantId)
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
@@ -546,6 +550,9 @@ export async function sendOfficialTemplate(
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
   const tenantId = session.user.tenantId
+  // 🔒 Degrau 3. Template oficial ainda por cima CUSTA (é cobrado pela Meta) — no paywall
+  //    seria produto pago saindo do nosso bolso pra quem não está pagando.
+  await assertAtendimentoLiberado(tenantId)
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
@@ -686,6 +693,13 @@ function metaFormatMessage(type: string): string {
 export async function sendChatMedia(conversationId: string, formData: FormData) {
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado." }
+
+  // 🔒 Degrau 3. ⚠️ Esta action devolve `{ error }` em vez de lançar (contrato dela), então
+  //    o gate vira retorno — lançar aqui quebraria o `useTransition` do compositor com um
+  //    erro não tratado em vez de uma frase na tela.
+  if ((await checkTenantStatus(session.user.tenantId)).inPaywall) {
+    return { error: "O acesso desta conta está pausado até a regularização do pagamento." }
+  }
 
   const file    = formData.get("file") as File | null
   const caption = (formData.get("caption") as string) || ""

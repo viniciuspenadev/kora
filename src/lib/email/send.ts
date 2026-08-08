@@ -1073,7 +1073,7 @@ function divider(): string {
   return `<tr><td class="px" style="padding:24px 44px 0 44px;"><div style="border-top:1px solid #eef2f7; line-height:1px; font-size:1px;">&nbsp;</div></td></tr>`
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")

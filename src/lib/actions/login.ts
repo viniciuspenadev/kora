@@ -41,6 +41,11 @@ const BLOCKED_NOTICE: Record<string, string> = {
   //    financeira do patrão pro funcionário**. "O responsável" é quem resolve; o motivo
   //    é entre a Kora e ele.
   trial_ended:      "O acesso desta conta está pausado. Avise o responsável — assim que for liberado, tudo volta como estava.",
+  // ⚠️ MESMA FRASE, e isso é a decisão — não preguiça. São dois motivos diferentes (teste
+  //    vencido × fatura em aberto) que produzem a MESMA situação pra quem lê: o acesso
+  //    dele está pausado e quem destrava é outra pessoa. Diferenciar aqui só serviria pra
+  //    contar ao funcionário que o patrão está devendo.
+  unpaid:           "O acesso desta conta está pausado. Avise o responsável — assim que for liberado, tudo volta como estava.",
 }
 
 export type BeginLoginResult =

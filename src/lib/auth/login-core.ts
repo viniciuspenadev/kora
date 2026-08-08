@@ -2,7 +2,13 @@ import "server-only"
 import { createHash, randomBytes } from "crypto"
 import bcrypt from "bcryptjs"
 import { supabaseAdmin } from "@/lib/supabase"
-import { isTenantBlockedForAccessAs } from "@/lib/lifecycle-shared"
+import {
+  isTenantBlockedForAccessAs, motivoDoPaywall,
+  COLUNAS_DE_ACESSO, type AcessoDoTenant,
+} from "@/lib/lifecycle-shared"
+
+/** A linha que os três gates deste arquivo leem. `active` é o booleano legado. */
+type LinhaDeAcesso = AcessoDoTenant & { id: string; active: boolean }
 
 // ═══════════════════════════════════════════════════════════════
 // Cérebro único do login (device trust — F2)
@@ -60,12 +66,12 @@ export async function firstAccessibleTenantId(userId: string): Promise<string | 
   if (accessible.length > 1) {
     const { data: tens, error } = await supabaseAdmin
       .from("tenants")
-      .select("id, active, lifecycle_state")
+      .select(COLUNAS_DE_ACESSO)
       .in("id", accessible)
     if (!error && tens) {
       const okIds = new Set(
-        tens
-          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t.lifecycle_state, papelDe.get(t.id as string)))
+        (tens as unknown as LinhaDeAcesso[])
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papelDe.get(t.id)))
           .map((t) => t.id),
       )
       const filtered = accessible.filter((id) => okIds.has(id))
@@ -83,7 +89,7 @@ export type VerifyResult =
   // ⚠️ Toda entrada nova aqui PRECISA de uma frase em `BLOCKED_NOTICE` (actions/login.ts).
   //    Sem a frase, o motivo cai no genérico e a pessoa lê "E-mail ou senha inválidos" —
   //    que é o defeito que `trial_ended` veio consertar.
-  | { status: "blocked"; reason: "pending_approval" | "suspended" | "trial_ended" }
+  | { status: "blocked"; reason: "pending_approval" | "suspended" | "trial_ended" | "unpaid" }
   | { status: "ok"; userId: string; tenantId: string; passwordChangedAt: string | null; isPlatformAdmin: boolean }
 
 /**
@@ -125,17 +131,29 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
   // Fail-OPEN em erro de query (não trava login por falha transitória).
   let accessible = memberships ?? []
   let states: string[] = []
+  /** Algum tenant barrou esta pessoa por ATRASO além da carência (degrau 3)? */
+  let barradoPorAtraso = false
   if (accessible.length > 0) {
     const { data: tens, error: tenErr } = await supabaseAdmin
       .from("tenants")
-      .select("id, active, lifecycle_state")
+      .select(COLUNAS_DE_ACESSO)
       .in("id", accessible.map((m) => m.tenant_id))
     if (!tenErr && tens) {
-      states = tens.map((t) => (t.lifecycle_state as string | null) ?? "")
+      const linhas = tens as unknown as LinhaDeAcesso[]
+      states = linhas.map((t) => t.lifecycle_state ?? "")
+      // ⚠️ O motivo do paywall NÃO está no `lifecycle_state` quando é atraso — ele nasce da
+      //    combinação assinatura × relógio. Sem esta linha, o atendente barrado por fatura
+      //    vencida cairia no `invalid` e leria "E-mail ou senha inválidos": ele reseta a
+      //    senha, não resolve, e liga pro dono dizendo que perdeu a conta. É exatamente o
+      //    defeito que o `trial_ended` veio consertar — e este é o caminho que vai
+      //    acontecer com MUITO mais gente.
+      barradoPorAtraso = linhas.some((t) => t.active === true && motivoDoPaywall(
+        t.lifecycle_state, t.subscription_status, t.past_due_since, t.past_due_grace_days,
+      ) === "past_due")
       const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
       const okIds = new Set(
-        tens
-          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t.lifecycle_state, papeis.get(t.id as string)))
+        linhas
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papeis.get(t.id)))
           .map((t) => t.id),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
@@ -158,6 +176,10 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
     //    Quem é barrado aqui é funcionário; a situação financeira do patrão não é assunto
     //    dele (mesma regra do `AgentServiceNotice`).
     if (states.includes("trial_ended"))      return { status: "blocked", reason: "trial_ended" }
+    // 🔑 Último da fila de propósito: é o degrau MENOS grave (a relação está de pé, só o
+    //    pagamento atrasou). Se a pessoa tem um tenant suspenso e outro atrasado, o motivo
+    //    que ela precisa ouvir é o mais grave.
+    if (barradoPorAtraso)                    return { status: "blocked", reason: "unpaid" }
     return { status: "invalid" }
   }
 
@@ -262,14 +284,14 @@ export async function redeemLoginTicket(
         : Promise.resolve({ data: null as { role: string; active: boolean } | null }),
       supabaseAdmin.from("platform_admins").select("id").eq("user_id", ticket.user_id).maybeSingle(),
       tenantId
-        ? supabaseAdmin.from("tenants").select("active, lifecycle_state").eq("id", tenantId).maybeSingle()
-        : Promise.resolve({ data: null as { active: boolean; lifecycle_state: string | null } | null }),
+        ? supabaseAdmin.from("tenants").select(COLUNAS_DE_ACESSO).eq("id", tenantId).maybeSingle()
+        : Promise.resolve({ data: null as LinhaDeAcesso | null }),
     ])
     if (!prof) return null
 
-    const tenantBlocked = !!ten.data &&
-      (ten.data.active === false ||
-        isTenantBlockedForAccessAs(ten.data.lifecycle_state, tu.data?.role as string | undefined))
+    const linha = ten.data as LinhaDeAcesso | null
+    const tenantBlocked = !!linha &&
+      (linha.active === false || isTenantBlockedForAccessAs(linha, tu.data?.role as string | undefined))
     const role = tu.data?.active === true && !tenantBlocked ? (tu.data.role as string) : ""
     const isPlatformAdmin = !!pa
     if (!role && !isPlatformAdmin) return null   // revogado na janela do ticket

@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import {
   isTenantBlockedForAccess,
   isTenantBlockedForSpend,
+  motivoDoPaywall,
   normalizeState,
   PAST_DUE_GRACE_DAYS,
 } from "@/lib/lifecycle-shared"
@@ -59,7 +60,21 @@ import {
  *    acabou e o produto para até ativar. Tratar os dois igual dá carência a quem nunca
  *    pagou e soa como cobrança pra quem nem virou cliente.
  */
-export type BillingDegrau = "trial" | "trial_ended" | "ok" | "grace" | "restricted" | "readonly" | "terminated"
+/**
+ * ⚠️ `paywall` É O DEGRAU 3 DA ESCADA RATIFICADA (08/08) — e ele não existia porque a
+ *    carência não existia: `restricted` cobria "atrasou" do primeiro dia ao infinito.
+ *    Agora são dois momentos com enforcement DIFERENTE, e por isso são dois degraus:
+ *      • `restricted` (degrau 2, dentro da carência) — corta o que GASTA (campanhas, IA,
+ *        automações). Login e atendimento seguem. É o que a tela sempre descreveu.
+ *      • `paywall` (degrau 3, passou da carência) — **o atendimento para** e só quem pode
+ *        pagar entra. Quem lê a frase de `restricted` aqui ouviria *"seu atendimento e
+ *        seus dados seguem no ar"* de dentro de um app que acabou de trancar — o mesmo
+ *        defeito que fez `trial_ended` virar degrau próprio em 05/08.
+ * 🔑 `trial_ended` continua separado de propósito: é paywall também, mas de quem **nunca
+ *    comprou nada** — não tem fatura, não tem carência, e a frase certa é outra.
+ */
+export type BillingDegrau =
+  | "trial" | "trial_ended" | "ok" | "grace" | "restricted" | "paywall" | "readonly" | "terminated"
 
 export interface BillingStanding {
   degrau: BillingDegrau
@@ -232,6 +247,9 @@ interface TenantBillingRow {
   trial_ends_at:       string | null
   asaas_subscription_id: string | null
   plan_id:             string | null
+  /** O relógio do atraso — é o que separa o degrau 2 do 3. */
+  past_due_since:      string | null
+  past_due_grace_days: number | null
 }
 interface InvoiceRow {
   id:          string
@@ -264,7 +282,7 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
   const [tenantRes, perfilRes, modRes, invRes] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id")
+      .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id, past_due_since, past_due_grace_days")
       .eq("id", tenantId)
       .maybeSingle(),
     // Mesmos 5 campos que `getTitularParaCobranca` exige — se divergirem, a tela promete
@@ -384,9 +402,19 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     // 🔑 "Seu teste acabou" é mais específico E mais acionável que "gasto cortado": diz o
     //    que houve e o que fazer. Degrau mais específico vence.
     degrau = "trial_ended"
+  } else if (motivoDoPaywall(
+    row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
+  ) === "past_due") {
+    // Degrau 3 — a carência acabou. **Vem ANTES de `restricted`**: os dois nascem de
+    // `past_due` e o mais específico tem que vencer, senão o cliente trancado leria a
+    // frase de quem ainda está funcionando.
+    // 🔒 MESMO predicado que o layout usa pra trancar a tela e que o `auth()` usa pra
+    //    barrar o atendente — importado, não recopiado. Se a tela e o gate discordarem
+    //    aqui, um dos dois está mentindo, e o cliente descobre no pior momento.
+    degrau = "paywall"
   } else if (!canSpend) {
-    // Degrau 3 — `past_due` OU `canceled`. São causas diferentes com o MESMO
-    // enforcement (corta gasto, mantém acesso), e o degrau descreve enforcement.
+    // Degrau 2 — `past_due` dentro da carência OU `canceled`. Causas diferentes com o
+    // MESMO enforcement (corta gasto, mantém acesso), e o degrau descreve enforcement.
     degrau = "restricted"
   } else if (invoice && invoice.daysOverdue > 0) {
     // Degrau 2 — venceu e **nada foi cortado**. É a verdade do sistema hoje: o único
@@ -435,6 +463,22 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     //    entrar pra ativar, e levar os dados embora se não quiser (LGPD Art. 18, sempre).
     paused = [...paraDeVerdade, "Atendimento pelo WhatsApp"]
     continues = ["Ativar sua assinatura", "Exportação dos seus dados"]
+  } else if (degrau === "paywall") {
+    // 🔴 AQUI O ATENDIMENTO ENTRA NA LISTA DO QUE PAROU — é a diferença material entre o
+    //    degrau 2 e o 3, e a razão de o degrau existir. A equipe perdeu o login (o gate de
+    //    acesso barra por papel) e só quem decide pagamento entra. Repetir a lista de
+    //    `restricted` aqui prometeria "atendimento manual continua" pra quem não consegue
+    //    nem abrir a caixa de entrada.
+    // ⚠️ Leitura, histórico e exportação NÃO entram em `paused`: o owner continua dentro e
+    //    continua enxergando tudo. Exportação é LGPD Art. 18 II — nunca sai da lista do que
+    //    continua, em degrau nenhum.
+    paused = [...paraDeVerdade, "Atendimento pelo WhatsApp", "Acesso da sua equipe"]
+    continues = [
+      "Seu acesso de responsável",
+      "Histórico e relatórios",
+      "Recebimento de mensagens",
+      "Exportação dos seus dados",
+    ]
   } else if (degrau === "restricted") {
     paused = paraDeVerdade
     continues = [...CONTINUES_RESTRICTED]

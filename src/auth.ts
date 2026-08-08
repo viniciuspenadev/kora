@@ -5,7 +5,7 @@ import { generateSupabaseToken } from "@/lib/supabase-token"
 import { getClientIp } from "@/lib/rate-limit"
 import { readDeviceKey } from "@/lib/auth/device"
 import { redeemLoginTicket } from "@/lib/auth/login-core"
-import { isTenantBlockedForAccessAs } from "@/lib/lifecycle-shared"
+import { isTenantBlockedForAccessAs, COLUNAS_DE_ACESSO, type AcessoDoTenant } from "@/lib/lifecycle-shared"
 import { randomUUID } from "crypto"
 
 /** Os papéis que a sessão promete. "" = sem papel (não passa em gate nenhum). */
@@ -56,8 +56,8 @@ async function revalidateAccess(
         ? supabaseAdmin.from("platform_admins").select("id").eq("user_id", userId).maybeSingle()
         : Promise.resolve({ data: null as { id: string } | null, error: null }),
       tenantId
-        ? supabaseAdmin.from("tenants").select("active, lifecycle_state").eq("id", tenantId).maybeSingle()
-        : Promise.resolve({ data: null as { active: boolean; lifecycle_state: string | null } | null, error: null }),
+        ? supabaseAdmin.from("tenants").select(COLUNAS_DE_ACESSO).eq("id", tenantId).maybeSingle()
+        : Promise.resolve({ data: null as (AcessoDoTenant & { active: boolean }) | null, error: null }),
     ])
 
     if (mem.error || pa.error) return { status: "error" }
@@ -68,14 +68,15 @@ async function revalidateAccess(
 
     // Gate de tenant: tenant inativo/pendente/suspenso = sem acesso (trial não-ativado,
     // suspensão por fim do trial, etc). Fail-OPEN em erro de query (não trava login).
-    const tenant = ten.data as { active: boolean; lifecycle_state: string | null } | null
-    // 🚪 Pergunta de ACESSO — deliberadamente sem assinatura: cliente em atraso continua
-    //    entrando (degrau 3). Quem corta o gasto dele é o guarda dos webhooks/crons.
-    // ⚠️ Ciente do PAPEL: com `trial_ended` o owner/admin continua dentro (pra pagar) e o
-    //    atendente cai no próximo re-check. `membership.role` já está carregado aqui.
+    const tenant = ten.data as (AcessoDoTenant & { active: boolean }) | null
+    // 🚪 Pergunta de ACESSO. Atraso DENTRO da carência (degrau 2) continua deixando entrar
+    //    — quem corta o gasto dele é o guarda dos webhooks/crons. Passada a carência vira
+    //    paywall (degrau 3) e aí o corte é por PAPEL, não por tenant.
+    // ⚠️ Ciente do papel: owner/admin seguem dentro (pra pagar) e o atendente cai no
+    //    próximo re-check de 5 min. `membership.role` já está carregado aqui.
     const tenantBlocked = !ten.error && !!tenant &&
       (tenant.active === false ||
-        isTenantBlockedForAccessAs(tenant.lifecycle_state, membership?.role))
+        isTenantBlockedForAccessAs(tenant, membership?.role))
 
     if (!isPlatformAdmin && (!membershipActive || tenantBlocked)) return { status: "revoked" }
     return { status: "ok", role: membershipActive ? membership!.role : "", isPlatformAdmin }

@@ -112,6 +112,20 @@ export function fraseDoDegrau(
         ) : <>Seu atendimento e seus dados seguem no ar.</>,
       }
 
+    // Degrau 3 — a carência acabou e o produto fechou. Quem lê isto é o responsável: ele é
+    // o único que ainda entra, e a tela dele é esta.
+    // ⚠️ NÃO reusa a frase de `restricted` (*"seu atendimento segue no ar"*): aqui o
+    //    atendimento parou e a equipe está do lado de fora. Prometer o contrário de dentro
+    //    de um app trancado é o defeito que separou `trial_ended` de `restricted` em 05/08.
+    case "paywall":
+      return {
+        tom: "parado",
+        lead: "Seu acesso está pausado por falta de pagamento.",
+        tail: inv ? (
+          <>A fatura de {forte(brl(inv.totalCents))} venceu há {forte(plural(inv.daysOverdue, "dia"))}. Regularize para reabrir o atendimento e o acesso da sua equipe — seus dados e conversas estão intactos.</>
+        ) : <>Regularize para reabrir o atendimento e o acesso da sua equipe — seus dados e conversas estão intactos.</>,
+      }
+
     case "readonly":
       return {
         tom: "parado",

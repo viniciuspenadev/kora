@@ -2,7 +2,7 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { cookies, headers } from "next/headers"
 import { supabaseAdmin } from "@/lib/supabase"
-import { normalizeState } from "@/lib/lifecycle-shared"
+import { motivoDoPaywall } from "@/lib/lifecycle-shared"
 import { Sidebar } from "@/components/app/sidebar"
 import { MobileSidebar } from "@/components/app/mobile-sidebar"
 import { AppShellProvider } from "@/components/app/app-shell-context"
@@ -44,7 +44,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const [{ data: tenant }, setup, enabledModules, selfPause, officialRes, pipelinesRes, dealPipelinesRes, scope, standing] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("name, plan, active, lifecycle_state, billing_mode, created_at, onboarding_profile_at, onboarding_skipped_at")
+      // ⚠️ As 3 colunas do paywall (`subscription_status`, `past_due_since`,
+      //    `past_due_grace_days`) viajam de graça nesta linha, que já era lida.
+      .select("name, plan, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, billing_mode, created_at, onboarding_profile_at, onboarding_skipped_at")
       .eq("id", session.user.tenantId)
       .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
@@ -81,31 +83,45 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!tenant) redirect("/auth/signin")
   if (!tenant.active) redirect("/auth/signin")
 
-  // ── Teste encerrado: a assinatura vira a única tela ────────────────────────
+  // ── Paywall: a assinatura vira a única tela ────────────────────────────────
   //
   // 🔴 Decisão do dono (2026-08-05): *"tela de assinatura persistente"*. Quem chega aqui
-  //    com o teste vencido e sem pagar NÃO navega no produto — ele vê o que precisa fazer
+  //    sem ter resolvido o pagamento NÃO navega no produto — ele vê o que precisa fazer
   //    pra voltar a ter produto. Banner no topo de um app funcionando seria dizer duas
   //    coisas contraditórias ao mesmo tempo.
+  // 🔑 DOIS MOTIVOS, MESMA TELA (08/08): teste vencido **e** fatura além da carência. Eram
+  //    um só até aqui; o segundo é o degrau 3 da escada ratificada e vai ser, de longe, o
+  //    mais frequente — teste vence uma vez por cliente, fatura vence todo mês.
   // ⚠️ A própria área de assinatura fica DE FORA do desvio, senão é laço infinito — e o
   //    destino é exatamente onde ele resolve. `/configuracoes/empresa` também escapa:
   //    sem cadastro fiscal completo ele **não consegue** pagar, então barrar essa tela
   //    seria trancar a pessoa do lado de fora da solução.
   // ⚠️ Atendente não chega aqui: `auth()` já o barrou pelo papel (isTenantBlockedForAccessAs).
-  if (normalizeState(tenant.lifecycle_state as string | null) === "trial_ended") {
+  const tp = tenant as {
+    lifecycle_state: string | null; subscription_status: string | null
+    past_due_since: string | null;  past_due_grace_days: number | null
+  }
+  const motivo = motivoDoPaywall(
+    tp.lifecycle_state, tp.subscription_status, tp.past_due_since, tp.past_due_grace_days,
+  )
+  if (motivo) {
+    // 🔑 O texto muda com o motivo; o comportamento não. Uma pessoa que atrasou a fatura
+    //    não pode ler "seu período de teste terminou" — ela ligaria pro suporte pra
+    //    dizer que nunca esteve em teste, e teria razão.
+    const titulo = motivo === "trial_ended" ? "Seu período de teste terminou" : "Sua fatura está em aberto"
     // 🔴 CLIENTE FATURADO POR FORA NÃO PODE SER MANDADO PRA CÁ (05/08). Ele não contrata
     //    no produto: a área de Assinatura foi fechada pra ele em `assinatura/layout.tsx`.
     //    Mandá-lo pra lá produziria PING-PONG — este layout manda pra assinatura, o portão
     //    de lá manda pra perfil, este manda pra assinatura de novo: **laço infinito**, o
     //    mesmo defeito que derrubou a conta do dono hoje de manhã, por outra porta.
     //    Peguei escrevendo o segundo; o primeiro custou uma tarde.
-    // 🔑 Ele fica FECHADO do mesmo jeito (o teste dele acabou), mas numa tela estática que
-    //    não navega: quem resolve a cobrança dele é a nossa equipe, não um checkout.
+    // 🔑 Ele fica FECHADO do mesmo jeito, mas numa tela estática que não navega: quem
+    //    resolve a cobrança dele é a nossa equipe, não um checkout.
     if ((tenant as { billing_mode?: string | null }).billing_mode !== "gateway") {
       return (
         <div className="min-h-dvh flex items-center justify-center bg-slate-50 px-6">
           <div className="max-w-sm text-center">
-            <h1 className="text-lg font-bold text-slate-900">Seu período de teste terminou</h1>
+            <h1 className="text-lg font-bold text-slate-900">{titulo}</h1>
             <p className="mt-2 text-sm text-slate-600 leading-relaxed">
               A cobrança da sua conta é combinada direto com a nossa equipe. Fale com o seu
               contato para liberar o acesso — seus dados e conversas continuam guardados.
@@ -122,12 +138,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       )
     }
 
-    // 🔴 ATENDENTE NÃO ENTRA NO DESVIO (achado do QA, 06/08). `auth()` barra o `agent` em
-    //    `trial_ended` — mas só no re-check de 5 em 5 minutos. NESSA JANELA ele continua
-    //    logado, e o par de gates se empurrava: paywall manda pra `/assinatura`, a página
-    //    de assinatura devolve `agent` pro `/inbox`, o paywall manda de novo ⇒ **laço
+    // 🔴 ATENDENTE NÃO ENTRA NO DESVIO (achado do QA, 06/08). `auth()` barra o `agent` no
+    //    paywall — mas só no re-check de 5 em 5 minutos. NESSA JANELA ele continua logado,
+    //    e o par de gates se empurrava: paywall manda pra `/assinatura`, a página de
+    //    assinatura devolve `agent` pro `/inbox`, o paywall manda de novo ⇒ **laço
     //    infinito**, com ~9 consultas por volta. Gatilho real: o cron encerra o teste no
-    //    meio do expediente, com a equipe logada.
+    //    meio do expediente, com a equipe logada — e agora também a fatura que vence.
     // 🔑 Tela estática: ele fica sabendo o que houve, e ninguém navega — logo não laça.
     //    Ele também não resolve assinatura, então mandá-lo pra lá nunca fez sentido.
     if (session.user.role === "agent") {
@@ -135,9 +151,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="min-h-dvh flex items-center justify-center bg-slate-50 px-6">
           <div className="max-w-sm text-center">
             <h1 className="text-lg font-bold text-slate-900">Acesso pausado</h1>
+            {/* 🔒 O ATENDENTE NÃO OUVE O MOTIVO — mesma regra do `BLOCKED_NOTICE` do login e
+                do `AgentServiceNotice`: a situação financeira do patrão não é assunto do
+                funcionário. Por isso esta frase é a MESMA nos dois motivos, de propósito. */}
             <p className="mt-2 text-sm text-slate-600 leading-relaxed">
-              O período de teste desta conta terminou. Avise o responsável — assim que a
-              assinatura for ativada, tudo volta exatamente como estava.
+              O acesso desta conta está pausado. Avise o responsável — assim que for
+              liberado, tudo volta exatamente como estava.
             </p>
             {/* ⚠️ O atendente não resolve assinatura, mas pode ser o único que percebeu o
                 bloqueio. Dar o canal evita que ele fique sem ação nenhuma. */}
@@ -166,14 +185,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     const rota = hdrs.get("x-kora-path")
 
     // 🔒 CINTO: sem header NÃO se redireciona — redirect às cegas é o laço de novo.
-    //    Fica fechado (o teste acabou, o produto tranca), mas numa tela estática que não
-    //    navega pra lugar nenhum. Trocar um laço infinito por uma tela honesta.
+    //    Fica fechado (o produto tranca), mas numa tela estática que não navega pra lugar
+    //    nenhum. Trocar um laço infinito por uma tela honesta.
     if (rota === null) {
       console.error("[app-layout] x-kora-path ausente — proxy não carimbou. Bloqueio estático.")
       return (
         <div className="min-h-dvh flex items-center justify-center bg-slate-50 px-6">
           <div className="max-w-sm text-center">
-            <h1 className="text-lg font-bold text-slate-900">Seu teste terminou</h1>
+            <h1 className="text-lg font-bold text-slate-900">{titulo}</h1>
             <p className="mt-2 text-sm text-slate-600 leading-relaxed">
               Não conseguimos abrir a tela de assinatura agora. Recarregue a página — se
               continuar, fale com a gente que ativamos seu plano manualmente.
@@ -214,13 +233,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     onboarding_skipped_at?: string | null
   }
   const contaNova = !!t.created_at && new Date(t.created_at) >= WIZARD_NO_AR_DESDE
-  // ⚠️ NÃO desvia quem está com o teste vencido (achado do dev sênior + QA, 06/08). Este
-  //    bloco roda DEPOIS do paywall e não respeitava a allow-list dele: conta nova que
-  //    venceu antes do 1º login era mandada pro wizard **inclusive** em
-  //    `/configuracoes/assinatura` — ou seja, o caminho curto pro pagamento ficava
-  //    inalcançável justamente no momento de maior intenção de compra.
-  const testeVencido = normalizeState(tenant.lifecycle_state as string | null) === "trial_ended"
-  if (isManager && contaNova && !testeVencido && !t.onboarding_profile_at && !t.onboarding_skipped_at) {
+  // ⚠️ NÃO desvia quem está no PAYWALL (achado do dev sênior + QA, 06/08). Este bloco roda
+  //    DEPOIS do paywall e não respeitava a allow-list dele: conta nova que venceu antes do
+  //    1º login era mandada pro wizard **inclusive** em `/configuracoes/assinatura` — ou
+  //    seja, o caminho curto pro pagamento ficava inalcançável justamente no momento de
+  //    maior intenção de compra.
+  // 🔑 Agora é `motivo` (os DOIS motivos), não só o teste vencido: sem isso a fatura
+  //    vencida reabriria o mesmo buraco pela porta nova.
+  if (isManager && contaNova && !motivo && !t.onboarding_profile_at && !t.onboarding_skipped_at) {
     redirect("/bem-vindo")
   }
   const hasOfficial = !!officialRes.data

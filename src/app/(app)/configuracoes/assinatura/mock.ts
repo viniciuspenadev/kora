@@ -26,12 +26,14 @@ function proximoFechamento(base = new Date()): string {
 
 export function parseDegrau(v: string | string[] | undefined): BillingDegrau {
   const s = Array.isArray(v) ? v[0] : v
-  return s === "trial" || s === "trial_ended" || s === "grace" || s === "restricted" || s === "readonly" || s === "terminated" ? s : "ok"
+  return s === "trial" || s === "trial_ended" || s === "grace" || s === "restricted"
+      || s === "paywall" || s === "readonly" || s === "terminated" ? s : "ok"
 }
 
 /** Atraso típico de cada degrau — a escada do docs/access-revocation-design.md §2. */
 // `trial` não tem atraso: não existe fatura em teste. Zero é o valor honesto.
-const ATRASO: Record<BillingDegrau, number> = { trial: 0, trial_ended: 0, ok: 0, grace: 3, restricted: 9, readonly: 21, terminated: 47 }
+// ⚠️ `paywall` fica entre a carência e o bloqueio: 9 dias = 2 além da carência padrão (7).
+const ATRASO: Record<BillingDegrau, number> = { trial: 0, trial_ended: 0, ok: 0, grace: 3, restricted: 5, paywall: 9, readonly: 21, terminated: 47 }
 
 // ── O que continua × o que parou (LINGUAGEM DE RESULTADO) ──────
 // A metade que CONTINUA é tão importante quanto a que parou: é ela que
@@ -46,6 +48,12 @@ const GASTA = ["Campanhas", "Inteligência artificial", "Automações"]
 function escada(degrau: BillingDegrau): Pick<BillingStanding, "paused" | "continues"> {
   if (degrau === "ok" || degrau === "grace") return { paused: [], continues: TUDO }
   if (degrau === "restricted") return { paused: GASTA, continues: TUDO.filter((x) => !GASTA.includes(x)) }
+  if (degrau === "paywall") {
+    // Degrau 3: além do que gasta, o ATENDIMENTO para e a equipe fica de fora. O
+    // responsável continua vendo tudo — é ele quem está lendo esta tela pra pagar.
+    const segue = ["Contatos e histórico", "Relatórios", "Exportar seus dados"]
+    return { paused: TUDO.filter((x) => !segue.includes(x)), continues: segue }
+  }
   if (degrau === "readonly") {
     const segue = ["Contatos e histórico", "Relatórios", "Exportar seus dados"]
     return { paused: TUDO.filter((x) => !segue.includes(x)), continues: segue }
@@ -76,7 +84,7 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
   const atraso     = ATRASO[degrau]
   const vencimento = emDias(-atraso, hoje)
   const fechaEm    = proximoFechamento(hoje)
-  const parado     = degrau === "restricted" || degrau === "readonly" || degrau === "terminated"
+  const parado     = degrau === "restricted" || degrau === "paywall" || degrau === "readonly" || degrau === "terminated"
 
   // Fatura em aberto (existe do degrau 2 em diante).
   const faturaAberta: Fatura | null = degrau === "ok" ? null : {

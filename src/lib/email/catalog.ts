@@ -17,6 +17,10 @@
  */
 
 import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVerificationEmail, buildHealthAlertEmail, buildLoginCodeEmail, buildNewDeviceEmail, type EmailSlug } from "./send"
+// ⚠️ Módulo próprio (o `send.ts` já passa de mil linhas). Entrar NO CATÁLOGO é obrigatório:
+//    foi por não estarem aqui que os quatro slugs de cobrança ficaram um ano declarados e
+//    invisíveis — sem template, sem preview no god mode e sem ninguém sentir falta.
+import { buildBillingConfirmedEmail, buildBillingCardFailedEmail, buildBillingOverdueEmail, buildBillingRestoredEmail } from "./billing-emails"
 import { SUPORTE_WHATSAPP } from "@/lib/support"
 
 // 🔴 ERA UM NÚMERO HARDCODED E **DESATUALIZADO** (achado 07/08). Enquanto as telas do app
@@ -158,6 +162,49 @@ export const EMAIL_CATALOG: EmailTemplateMeta[] = [
       waLink:         `${WA}?text=${encodeURIComponent("Oi! Quero saber mais sobre o Kora.")}`,
       waLinkAI:       `${WA}?text=${encodeURIComponent("Oi! Quero ativar a Kora IA (Pro/Enterprise).")}`,
     }),
+  },
+  // ── Cobrança ─────────────────────────────────────────────────────────────
+  // Os quatro degraus da escada, na ordem em que o cliente os vive.
+  {
+    slug:        "billing_card_failed",
+    name:        "Cartão recusado",
+    description: "Aviso de que a cobrança não passou. É o degrau 1 — nada foi cortado ainda.",
+    trigger:     "Disparado quando o gateway informa falha na cobrança do cartão, ANTES de qualquer corte. Escopo dinheiro (só owner).",
+    variables: [
+      { key: "valorCents", description: "Valor que não passou, em centavos", example: "34990" },
+    ],
+    build: () => buildBillingCardFailedEmail({ valorCents: 34990 }),
+  },
+  {
+    slug:        "billing_overdue",
+    name:        "Fatura em aberto",
+    description: "Fatura vencida: diz o que PAROU e, antes disso, o que continua funcionando.",
+    trigger:     "Disparado quando o tenant entra em atraso (degrau 2 — campanhas, IA e automações pausadas). Escopo dinheiro.",
+    variables: [
+      { key: "valorCents",   description: "Valor em aberto, em centavos",            example: "34990" },
+      { key: "quando",       description: "Data do vencimento, já formatada",         example: "11 de agosto" },
+      { key: "diasCarencia", description: "Dias restantes antes do produto fechar",   example: "7" },
+    ],
+    build: () => buildBillingOverdueEmail({ valorCents: 34990, quando: "11 de agosto", diasCarencia: 7 }),
+  },
+  {
+    slug:        "billing_payment_confirmed",
+    name:        "Pagamento confirmado",
+    description: "Confirmação ao cliente de que o pagamento entrou.",
+    trigger:     "Disparado pelo webhook do gateway ao confirmar o pagamento. Deduplicado pelo pagamento, não pelo evento.",
+    variables: [
+      { key: "valorCents", description: "Valor pago, em centavos",        example: "34990" },
+      { key: "quando",     description: "Data do pagamento, formatada",   example: "8 de agosto" },
+    ],
+    build: () => buildBillingConfirmedEmail({ valorCents: 34990, quando: "8 de agosto" }),
+  },
+  {
+    slug:        "billing_restored",
+    name:        "Tudo voltou ao normal",
+    description: "Fecha o ciclo: avisa que campanhas, IA e automações voltaram.",
+    trigger:     "Disparado quando o tenant sai do estado restrito depois de regularizar.",
+    variables:   [],
+    build: () => buildBillingRestoredEmail(),
   },
 ]
 

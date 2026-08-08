@@ -2,7 +2,7 @@ import "server-only"
 import { cache } from "react"
 import { supabaseAdmin } from "@/lib/supabase"
 import {
-  isTenantBlockedForAccess, isTenantBlockedForSpend,
+  isTenantBlockedForAccess, isTenantBlockedForSpend, isTenantInPaywall,
   SPEND_BLOCKED_LIFECYCLE, normalizeState,
 } from "@/lib/lifecycle-shared"
 
@@ -64,6 +64,9 @@ export interface TenantStatusRow {
   active:              boolean | null
   lifecycle_state:     string | null
   subscription_status: string | null
+  /** Só no caminho de UMA linha (`checkTenantStatus`); o lote não pergunta pelo paywall. */
+  past_due_since?:      string | null
+  past_due_grace_days?: number | null
 }
 
 function serviceableFromRow(row: TenantStatusRow | null | undefined): boolean {
@@ -102,6 +105,18 @@ export interface TenantStatusCheck {
    * Inadimplente ⇒ `false`, mas veja `canAccess` antes de DESCARTAR qualquer coisa.
    */
   canSpend: boolean
+  /**
+   * 🔒 "Ele passou da carência?" — o degrau 3 (teste vencido OU atraso além do prazo).
+   *
+   * 🔴 É uma TERCEIRA pergunta, e não um sinônimo de `!canSpend`. `canSpend` já é falso no
+   *    dia 1 do atraso (degrau 2), quando a política manda o atendimento CONTINUAR. Usar
+   *    um pelo outro corta o atendimento no primeiro dia — o erro que a escada existe pra
+   *    não cometer.
+   * ⚠️ `degraded` ⇒ `false` (não sei ⇒ não corto). Aqui o fail-OPEN é o lado certo: o
+   *    enforcement principal do paywall é a tela; um blip de banco não pode emudecer o
+   *    WhatsApp de quem está em dia.
+   */
+  inPaywall: boolean
 }
 
 /**
@@ -119,19 +134,23 @@ export interface TenantStatusCheck {
  *    auto-resposta e automação — e é ISSO que `canSpend` deve podar, lá dentro.
  */
 export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantStatusCheck> => {
-  if (!tenantId) return { degraded: false, canAccess: false, canSpend: false }
+  if (!tenantId) return { degraded: false, canAccess: false, canSpend: false, inPaywall: false }
   const { data, error } = await supabaseAdmin
     .from("tenants")
-    .select("active, lifecycle_state, subscription_status")
+    // ⚠️ As 2 colunas do relógio viajam nesta MESMA consulta, que já é memoizada por
+    //    request. Uma segunda consulta pro paywall pagaria o dobro em todo webhook e cron.
+    .select("active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days")
     .eq("id", tenantId)
     .maybeSingle()
 
   if (error) {
     console.error("[tenant-status] consulta falhou:", tenantId, error.message)
-    return { degraded: true, canAccess: false, canSpend: false }
+    // ⚠️ `inPaywall: false` no degradado — ver o docblock do campo: aqui o fail-OPEN é o
+    //    lado certo, ao contrário de `canSpend`.
+    return { degraded: true, canAccess: false, canSpend: false, inPaywall: false }
   }
   const row = data as TenantStatusRow | null
-  if (!row || row.active !== true) return { degraded: false, canAccess: false, canSpend: false }
+  if (!row || row.active !== true) return { degraded: false, canAccess: false, canSpend: false, inPaywall: false }
 
   const canAccess = !isTenantBlockedForAccess(row.lifecycle_state)
   // ⚠️ `trial_ended` NÃO tira o acesso (o dono entra pra pagar) mas TIRA o gasto: campanha,
@@ -142,8 +161,38 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
     degraded: false,
     canAccess,
     canSpend: canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
+    inPaywall: isTenantInPaywall(
+      row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
+    ),
   }
 })
+
+/** Erro tipado do degrau 3 — separado do de gasto porque a mensagem ao usuário é outra. */
+export class TenantInPaywallError extends Error {
+  readonly code = "tenant_in_paywall" as const
+  constructor() {
+    super("O acesso desta conta está pausado até a regularização do pagamento.")
+    this.name = "TenantInPaywallError"
+  }
+}
+
+/**
+ * Trava o ATENDIMENTO MANUAL no degrau 3. Chamada pelas três portas de envio.
+ *
+ * 🔴 SEM ISTO O RÓTULO SERIA DECORATIVO — e este arquivo tem uma regra sobre isso: *"o
+ *    degrau descreve o que é ENFORÇADO, nunca o que deveria estar"*. A tela do paywall diz
+ *    "Atendimento pelo WhatsApp — pausado", e o redirect do layout de fato tira o dono do
+ *    inbox. Mas redirect é UI: uma aba já aberta continua chamando a server action
+ *    diretamente, e o dono é justamente quem NUNCA perde a sessão (por decisão da
+ *    política — ele precisa entrar pra pagar). Sem gate no servidor, quem deixa a aba
+ *    aberta atende para sempre sem pagar, que é o buraco que a escada veio fechar.
+ *
+ * ⚠️ NÃO use `canSpend` no lugar: ele já é falso no dia 1 do atraso, e o degrau 2 manda o
+ *    atendimento CONTINUAR. São perguntas diferentes de propósito.
+ */
+export async function assertAtendimentoLiberado(tenantId: string): Promise<void> {
+  if ((await checkTenantStatus(tenantId)).inPaywall) throw new TenantInPaywallError()
+}
 
 /**
  * Atalho booleano de GASTO, **fail-closed** (erro de consulta ⇒ `false`).

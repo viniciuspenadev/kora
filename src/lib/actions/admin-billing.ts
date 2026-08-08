@@ -50,6 +50,31 @@ export async function updateTenantBilling(
   if (opts.subscription_status) {
     if (!SUB_STATUS.has(opts.subscription_status)) return { error: "Status inválido" }
     updates.subscription_status = opts.subscription_status
+
+    // ── O relógio da carência também nasce aqui ─────────────────────────────
+    //
+    // 🔴 ESTA AÇÃO ERA (E AINDA É) O ESCRITOR MAIS USADO DE `past_due` — a mão do operador.
+    //    Sem carimbar, marcar "em atraso" no god mode produzia um tenant `past_due` com
+    //    `past_due_since` NULO, e `passouDaCarencia` é **fail-closed pela data**: sem
+    //    carimbo ele responde "já passou" ⇒ o cliente vai pro paywall NA HORA, sem um dia
+    //    de carência, e a equipe dele perde o login no mesmo minuto. Um clique de operador
+    //    não pode ter esse alcance por omissão.
+    // 🔑 Mesma regra do webhook: carimba na TRANSIÇÃO (não reinicia relógio já em curso) e
+    //    limpa ao voltar pra `active`. Duas portas, uma regra — se divergirem, o cliente
+    //    ganha ou perde dias dependendo de quem o marcou.
+    const { data: atual } = await supabaseAdmin
+      .from("tenants").select("subscription_status, past_due_since").eq("id", tenantId).maybeSingle()
+    const antes = (atual as { subscription_status?: string | null; past_due_since?: string | null } | null)
+    if (opts.subscription_status === "past_due") {
+      const jaEstava = (antes?.subscription_status ?? "") === "past_due"
+      updates.past_due_since = jaEstava && antes?.past_due_since
+        ? antes.past_due_since
+        : new Date().toISOString()
+    } else {
+      // `active` ou `canceled`: o atraso deixou de existir como relógio. Deixar o carimbo
+      // pra trás é a "invariante 2" da migration — e ele voltaria a morder no próximo atraso.
+      updates.past_due_since = null
+    }
   }
   if (Object.keys(updates).length === 0) return {}
 
