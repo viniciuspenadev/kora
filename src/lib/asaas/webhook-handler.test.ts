@@ -18,8 +18,8 @@
 //    voltou a acontecer.
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { FakeDb } from "./__fakes__/fake-db"
-import { FakeGateway, AsaasError, mensagemSeguraDoGateway } from "./__fakes__/fake-gateway"
+import { FakeDb } from "@/test/fakes/fake-db"
+import { FakeGateway, AsaasError, mensagemSeguraDoGateway } from "@/test/fakes/fake-gateway"
 
 const db = new FakeDb()
 let gw = new FakeGateway()

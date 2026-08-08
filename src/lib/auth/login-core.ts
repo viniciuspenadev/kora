@@ -80,7 +80,10 @@ export type VerifyResult =
   /** Senha errada, email inexistente ou sem nenhum acesso — resposta ÚNICA (anti enumeração). */
   | { status: "invalid" }
   /** Senha CORRETA mas todos os tenants bloqueados — pode revelar o motivo (a pessoa provou posse). */
-  | { status: "blocked"; reason: "pending_approval" | "suspended" }
+  // ⚠️ Toda entrada nova aqui PRECISA de uma frase em `BLOCKED_NOTICE` (actions/login.ts).
+  //    Sem a frase, o motivo cai no genérico e a pessoa lê "E-mail ou senha inválidos" —
+  //    que é o defeito que `trial_ended` veio consertar.
+  | { status: "blocked"; reason: "pending_approval" | "suspended" | "trial_ended" }
   | { status: "ok"; userId: string; tenantId: string; passwordChangedAt: string | null; isPlatformAdmin: boolean }
 
 /**
