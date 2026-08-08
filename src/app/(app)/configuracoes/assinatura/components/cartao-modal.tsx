@@ -4,9 +4,10 @@ import Link from "next/link"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { CheckCircle2, CreditCard, Loader2 } from "lucide-react"
-import { getTitularParaCobranca, type TitularPreenchido } from "@/lib/actions/subscription"
+import { getTitularParaCobranca, getCobrancaEmAberto, type TitularPreenchido } from "@/lib/actions/subscription"
 import { BandeiraLogo } from "@/components/billing/bandeira-logo"
 import type { Bandeira } from "@/lib/billing/card-brand"
+import { brl } from "../format"
 import { CardForm } from "../pagamento/card-form"
 import { ModalShell, BTN_PRIMARY } from "./modal-shell"
 
@@ -25,11 +26,20 @@ import { ModalShell, BTN_PRIMARY } from "./modal-shell"
 //    que 99% das visitas não precisam, e a tela de assinatura já é a mais pesada do
 //    produto (ela fala com o gateway).
 
+/** O que o cliente deve agora — vem do GATEWAY na abertura, nunca da tela. */
+interface CobrancaAberta { valorCents: number; vencimento: string | null; outras: number }
+
 type Estado =
   | { fase: "carregando" }
-  | { fase: "pronto";     titular: TitularPreenchido }
+  | { fase: "pronto";     titular: TitularPreenchido; cobranca: CobrancaAberta | null }
   | { fase: "incompleto"; faltam: string[] }
-  | { fase: "sucesso";    bandeira: Bandeira | null; ultimos4: string | null }
+  | {
+      fase: "sucesso"
+      bandeira: Bandeira | null
+      ultimos4: string | null
+      /** Presente só quando houve regularização. Carrega os três desfechos. */
+      regularizacao?: { pagoCents: number; cartaoTrocado: boolean; outras: number }
+    }
 
 export function CartaoModal({
   planoNome, valorCents, proximaCobranca, cartaoAtual, onClose,
@@ -48,14 +58,21 @@ export function CartaoModal({
   //    não há clique-fora: quem fecha no meio da tokenização fica sem saber se trocou.
   const [pendente, setPendente] = useState(false)
 
+  // 🔑 O MODO É DECIDIDO PELA REALIDADE, não por quem abriu o modal. Se existe cobrança em
+  //    aberto no gateway, a tela vira "regularizar" — cobra agora e só então troca. Foi o
+  //    dono que achou o problema (08/08): quem tinha fatura vencida caía no modo "trocar" e
+  //    lia "Nada é cobrado agora", que é o oposto do que ele quer.
+  // ⚠️ As duas consultas em paralelo, na ABERTURA. Fazer isso no render da tela de
+  //    assinatura custaria uma chamada ao gateway em toda visita, pra um modal que quase
+  //    nunca abre.
   useEffect(() => {
     let vivo = true
-    getTitularParaCobranca()
-      .then((t) => {
+    Promise.all([getTitularParaCobranca(), getCobrancaEmAberto().catch(() => null)])
+      .then(([t, c]) => {
         if (!vivo) return
         // ⚠️ O gateway EXIGE o titular completo pra tokenizar. Sem isso a pessoa digitaria
         //    o cartão inteiro pra receber um erro que a gente já sabia antes de ela começar.
-        if (t?.completo) setEstado({ fase: "pronto", titular: t })
+        if (t?.completo) setEstado({ fase: "pronto", titular: t, cobranca: c ?? null })
         else setEstado({ fase: "incompleto", faltam: t?.faltam ?? [] })
       })
       .catch(() => { if (vivo) setEstado({ fase: "incompleto", faltam: [] }) })
@@ -106,16 +123,30 @@ export function CartaoModal({
       )}
 
       {estado.fase === "pronto" && (
-        <CardForm
-          modo="trocar"
-          titular={estado.titular}
-          planoNome={planoNome}
-          valorCents={valorCents}
-          proximaCobranca={proximaCobranca}
-          cartaoAtual={cartaoAtual}
-          onPendingChange={setPendente}
-          onSucesso={({ bandeira, ultimos4 }) => setEstado({ fase: "sucesso", bandeira, ultimos4 })}
-        />
+        estado.cobranca ? (
+          <CardForm
+            modo="regularizar"
+            titular={estado.titular}
+            planoNome={planoNome}
+            valorCents={estado.cobranca.valorCents}
+            vencimento={estado.cobranca.vencimento}
+            outras={estado.cobranca.outras}
+            cartaoAtual={cartaoAtual}
+            onPendingChange={setPendente}
+            onSucesso={({ bandeira, ultimos4, regularizacao }) => setEstado({ fase: "sucesso", bandeira, ultimos4, regularizacao })}
+          />
+        ) : (
+          <CardForm
+            modo="trocar"
+            titular={estado.titular}
+            planoNome={planoNome}
+            valorCents={valorCents}
+            proximaCobranca={proximaCobranca}
+            cartaoAtual={cartaoAtual}
+            onPendingChange={setPendente}
+            onSucesso={({ bandeira, ultimos4 }) => setEstado({ fase: "sucesso", bandeira, ultimos4 })}
+          />
+        )
       )}
 
       {estado.fase === "sucesso" && (
@@ -123,19 +154,55 @@ export function CartaoModal({
         //    pessoa tem que aceitar no escuro, na tela em que ela mais quer certeza.
         <div className="py-4 text-center">
           <CheckCircle2 className="size-8 text-emerald-600 mx-auto" />
-          <h4 className="mt-3 text-base font-bold text-slate-900">Cartão atualizado</h4>
+          <h4 className="mt-3 text-base font-bold text-slate-900">
+            {estado.regularizacao ? "Pagamento confirmado" : "Cartão atualizado"}
+          </h4>
           {estado.ultimos4 && (
             <p className="mt-2.5 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
               <BandeiraLogo marca={estado.bandeira} size={22} />
               <span className="text-sm font-semibold text-slate-900 tabular-nums">···· {estado.ultimos4}</span>
             </p>
           )}
-          <p className="mt-2.5 text-sm text-slate-600 leading-relaxed">
-            Nada foi cobrado agora.{" "}
-            {proximaCobranca
-              ? <>Ele passa a valer na cobrança de <strong>{proximaCobranca}</strong>.</>
-              : <>Ele passa a valer na próxima cobrança.</>}
-          </p>
+
+          {/* 🔴 TRÊS DESFECHOS, TRÊS FRASES. Colapsar em "pronto" esconderia justamente o
+              caso que precisa de ação: pagou, mas a assinatura seguiu no cartão velho. */}
+          {estado.regularizacao ? (
+            <div className="mt-2.5 space-y-2 text-sm text-slate-600 leading-relaxed">
+              <p>
+                Cobramos <strong>{brl(estado.regularizacao.pagoCents)}</strong> neste cartão.
+                {estado.regularizacao.cartaoTrocado
+                  ? <> Ele passa a valer também nas próximas cobranças.</>
+                  : null}
+              </p>
+
+              {!estado.regularizacao.cartaoTrocado && (
+                <p className="text-amber-900 bg-warning-bg border border-amber-200 rounded-lg px-3 py-2 text-xs">
+                  <strong>O pagamento entrou</strong>, mas não conseguimos deixar este cartão
+                  como o da assinatura — as próximas cobranças ainda vão no anterior. Tente a
+                  troca de novo daqui a pouco ou fale com a gente.
+                </p>
+              )}
+
+              {estado.regularizacao.outras > 0 && (
+                <p className="text-xs text-slate-500">
+                  Ainda {estado.regularizacao.outras === 1 ? "resta" : "restam"}{" "}
+                  <strong>{estado.regularizacao.outras}</strong>{" "}
+                  {estado.regularizacao.outras === 1 ? "cobrança em aberto" : "cobranças em aberto"} — abra esta tela de novo para quitar.
+                </p>
+              )}
+
+              {/* ⚠️ "Liberado" quem diz é o webhook, que chega segundos depois. Afirmar aqui
+                  seria prometer um estado que o servidor ainda não tem. */}
+              <p className="text-[11px] text-slate-400">A liberação do produto leva alguns segundos.</p>
+            </div>
+          ) : (
+            <p className="mt-2.5 text-sm text-slate-600 leading-relaxed">
+              Nada foi cobrado agora.{" "}
+              {proximaCobranca
+                ? <>Ele passa a valer na cobrança de <strong>{proximaCobranca}</strong>.</>
+                : <>Ele passa a valer na próxima cobrança.</>}
+            </p>
+          )}
         </div>
       )}
     </ModalShell>

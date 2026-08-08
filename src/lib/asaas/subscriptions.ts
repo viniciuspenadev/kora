@@ -491,6 +491,204 @@ function primeiraCobranca(): string {
  * ⚠️ Este é um SEGUNDO oráculo de validação de cartão rodando na nossa conta merchant.
  *    O teto anti card-testing vale igual, e mora na action (`trocarCartaoDaAssinatura`).
  */
+/** Uma cobrança em aberto DESTE tenant, já corroborada no gateway. */
+export interface CobrancaEmAberto {
+  id:          string
+  valorCents:  number
+  vencimento:  string | null
+  /** Quantas outras continuam em aberto depois desta. */
+  outras:      number
+}
+
+/**
+ * A cobrança em aberto mais ANTIGA deste tenant — a que ele tem que pagar primeiro.
+ *
+ * 🔒 TENANCY EM DUAS CAMADAS, e as duas importam:
+ *    1. a listagem é filtrada pelo `customer` que está NA NOSSA LINHA do tenant — nunca por
+ *       um id vindo da tela;
+ *    2. cada cobrança ainda é conferida contra a nossa assinatura (`payment.subscription`).
+ *    A primeira já isola por cliente; a segunda protege do caso em que o mesmo customer
+ *    tenha cobrança avulsa criada no painel — pagar aquilo aqui seria quitar uma dívida
+ *    que não é da assinatura, com o cartão que a pessoa acabou de digitar pra outra coisa.
+ *
+ * ⚠️ Devolve UMA, não todas. Pagar tudo em lote surpreenderia o cliente com um total que a
+ *    tela não prometeu; `outras` existe pra a tela poder dizer que ainda sobra.
+ * ⚠️ `undefined` = a consulta ao gateway falhou. Diferente de `null` ("perguntei, não há
+ *    nada em aberto") — quem chama precisa dos três casos, senão trata indisponibilidade
+ *    como "está tudo pago".
+ */
+export async function acharCobrancaEmAberto(tenantId: string): Promise<CobrancaEmAberto | null | undefined> {
+  const { data, error } = await supabaseAdmin
+    .from("tenants").select("asaas_customer_id, asaas_subscription_id, billing_mode")
+    .eq("id", tenantId).maybeSingle()
+  if (error) return undefined
+
+  const row  = data as { asaas_customer_id?: string | null; asaas_subscription_id?: string | null; billing_mode?: string | null } | null
+  const cust = row?.asaas_customer_id ?? null
+  const sub  = assinaturaRealId(row?.asaas_subscription_id)
+  if (!cust || row?.billing_mode !== "gateway") return null
+
+  try {
+    // `OVERDUE` e `PENDING`: a vencida é o caso do degrau 2/3, a pendente cobre a janela
+    // entre a cobrança nascer e vencer (cartão recusado no dia, cliente quer resolver já).
+    const r = await asaas.get<{ data?: Array<{ id?: string; value?: number; dueDate?: string; status?: string; subscription?: string }> }>(
+      `/payments?customer=${encodeURIComponent(cust)}&status=OVERDUE&limit=20`,
+    )
+    const p2 = await asaas.get<{ data?: Array<{ id?: string; value?: number; dueDate?: string; status?: string; subscription?: string }> }>(
+      `/payments?customer=${encodeURIComponent(cust)}&status=PENDING&limit=20`,
+    )
+
+    const nossas = [...(r?.data ?? []), ...(p2?.data ?? [])]
+      // 🔒 A segunda camada: só cobrança DA NOSSA ASSINATURA. Avulsa criada no painel do
+      //    Asaas não tem `subscription` e fica de fora — é dívida de outra natureza.
+      .filter((p) => !!p?.id && !!sub && p.subscription === sub)
+      .sort((a, b) => String(a.dueDate ?? "").localeCompare(String(b.dueDate ?? "")))
+
+    const alvo = nossas[0]
+    if (!alvo?.id) return null
+
+    return {
+      id:         alvo.id,
+      valorCents: Math.round((alvo.value ?? 0) * 100),
+      vencimento: alvo.dueDate ?? null,
+      outras:     Math.max(0, nossas.length - 1),
+    }
+  } catch (e) {
+    console.error("[asaas] busca de cobrança em aberto falhou:", tenantId, (e as Error).message)
+    return undefined
+  }
+}
+
+/**
+ * Regulariza: paga a cobrança em aberto com o cartão novo e **só então** troca o cartão.
+ *
+ * 🔑 A ORDEM É A DECISÃO (dono, 08/08): *"primeiro efetiva, depois efetuar a troca"*.
+ *    Cobrar antes de trocar significa que o cartão só vira o cartão da assinatura depois de
+ *    provar que funciona. Se ele for recusado, **nada muda** — o cliente não termina com a
+ *    assinatura apontando pra um cartão pior que o anterior.
+ *
+ * ✅ Três garantias vieram do PRÓPRIO GATEWAY, verificadas no sandbox em 08/08 — por isso
+ *    não precisei construí-las aqui (e construir seria pior, porque a minha versão teria
+ *    corrida entre réplicas):
+ *      • pagar a MESMA cobrança duas vezes é **recusado** pelo Asaas;
+ *      • o `value` mandado por quem chama é **ignorado** — vale o valor da cobrança
+ *        (testado: mandei 1,00 numa de 10,00 e cobrou 10,00);
+ *      • a cobrança paga é a MESMA (mesmo id) — não nasce uma segunda, então não existe
+ *        janela com duas cobranças vivas.
+ *
+ * ⚠️ O ESTADO RESIDUAL QUE NÃO DÁ PRA ELIMINAR: pagou e a troca falhou. O dinheiro entrou
+ *    (a fatura baixa pelo webhook) e a assinatura segue no cartão velho. Escolhi esta ordem
+ *    porque a inversa é pior — trocaria o cartão e deixaria a fatura aberta, que é o
+ *    problema do cliente **intacto**. Este caso devolve `cartaoTrocado: false` pra a tela
+ *    poder dizer as duas coisas em vez de um "erro" genérico.
+ */
+export async function regularizarComCartao(
+  tenantId: string,
+  card: CardInput,
+  holder: HolderInput,
+  remoteIp: string,
+): Promise<{ ok: true; pagoCents: number; cartaoTrocado: boolean; outras: number } | { error: string }> {
+  const cobranca = await acharCobrancaEmAberto(tenantId)
+  if (cobranca === undefined) return { error: "Não conseguimos consultar sua fatura agora. Tente de novo em instantes." }
+  if (cobranca === null)      return { error: "Não há cobrança em aberto nesta conta." }
+
+  const { data } = await supabaseAdmin
+    .from("tenants").select("asaas_subscription_id, asaas_customer_id, billing_mode")
+    .eq("id", tenantId).maybeSingle()
+  const row  = data as { asaas_subscription_id?: string | null; asaas_customer_id?: string | null; billing_mode?: string | null } | null
+  const sub  = assinaturaRealId(row?.asaas_subscription_id)
+  const cust = row?.asaas_customer_id ?? null
+  if (!sub || row?.billing_mode !== "gateway") return { error: "Esta conta não tem assinatura ativa no gateway." }
+  if (!cust) return { error: "Cadastro incompleto no gateway. Fale com a gente." }
+
+  // 1 · Tokeniza. Falhou aqui = cartão inválido, e **nada foi tocado**.
+  let token: string
+  let rotulo = rotuloDoCartaoDigitado(card.number)
+  try {
+    const tok = await asaas.post<RespostaTokenize>("/creditCard/tokenize", {
+      customer: cust,
+      creditCard: {
+        holderName:  card.holderName,
+        number:      digits(card.number),
+        expiryMonth: card.expiryMonth,
+        expiryYear:  card.expiryYear,
+        ccv:         card.ccv,
+      },
+      creditCardHolderInfo: {
+        name:          holder.name,
+        email:         holder.email,
+        cpfCnpj:       digits(holder.cpfCnpj),
+        postalCode:    digits(holder.postalCode),
+        addressNumber: holder.addressNumber,
+        ...(isMobilePhoneBR(holder.phone)
+          ? { phone: digits(holder.phone), mobilePhone: digits(holder.phone) }
+          : { phone: digits(holder.phone) }),
+      },
+      remoteIp,
+    })
+    if (!tok?.creditCardToken) return { error: "O gateway não devolveu o token do cartão." }
+    token  = tok.creditCardToken
+    rotulo = rotuloDoGateway(tok, card.number)
+  } catch (e) {
+    console.error("[asaas] tokenize da regularização recusado:", tenantId, (e as Error).message)
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível validar o cartão.") }
+  }
+
+  // Cifra ANTES de cobrar — mesma regra do P0-1: a única falha local possível acontece
+  // enquanto nada foi cobrado ainda.
+  let tokenCifrado: string
+  try {
+    tokenCifrado = encryptSecret(token)
+  } catch (e) {
+    console.error("[asaas] cifragem falhou ANTES de regularizar:", tenantId, (e as Error).message)
+    return { error: "Não foi possível concluir com segurança. Tente de novo em instantes." }
+  }
+
+  // 2 · COBRA. É aqui que o cartão prova que presta. Recusou ⇒ para, sem trocar nada.
+  try {
+    const pago = await asaas.post<{ status?: string; value?: number }>(
+      `/payments/${cobranca.id}/payWithCreditCard`,
+      { creditCardToken: token, remoteIp },
+    )
+    const st = pago?.status ?? ""
+    if (!["CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"].includes(st)) {
+      console.error(JSON.stringify({ src: "asaas", kind: "regularizacao-status-inesperado",
+        tenant: tenantId, payment: cobranca.id, status: st }))
+      return { error: "Não conseguimos confirmar o pagamento. Tente de novo ou fale com a gente." }
+    }
+  } catch (e) {
+    console.error("[asaas] cobrança da regularização recusada:", tenantId, (e as Error).message)
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível concluir o pagamento.") }
+  }
+
+  // 3 · Pagou. Daqui pra frente NADA desfaz — o dinheiro entrou e a fatura vai baixar pelo
+  //     webhook. A troca do cartão é melhoria; falhar nela não anula o pagamento.
+  let cartaoTrocado = true
+  try {
+    await asaas.post(`/subscriptions/${sub}/creditCard`, { creditCardToken: token, remoteIp })
+  } catch (e) {
+    cartaoTrocado = false
+    console.error(JSON.stringify({ src: "asaas", kind: "PAGOU-MAS-CARTAO-NAO-TROCADO",
+      tenant: tenantId, subscription: sub, payment: cobranca.id, msg: (e as Error).message }))
+  }
+
+  if (cartaoTrocado) {
+    const { error: upErr } = await supabaseAdmin
+      .from("tenants")
+      .update({ asaas_card_token: tokenCifrado, card_brand: rotulo.bandeira, card_last4: rotulo.ultimos4 })
+      .eq("id", tenantId)
+    if (upErr) {
+      console.error(JSON.stringify({ src: "asaas", kind: "regularizou-mas-rotulo-nao-gravado",
+        tenant: tenantId, msg: upErr.message }))
+    }
+  }
+
+  console.log(JSON.stringify({ src: "asaas", kind: "regularizado",
+    tenant: tenantId, payment: cobranca.id, cartaoTrocado, outras: cobranca.outras }))
+
+  return { ok: true, pagoCents: cobranca.valorCents, cartaoTrocado, outras: cobranca.outras }
+}
+
 export async function updateSubscriptionCard(
   tenantId: string,
   card: CardInput,

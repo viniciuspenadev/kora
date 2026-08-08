@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } 
 import { AlertCircle, ArrowRight, Loader2, MessageCircle, ShieldCheck } from "lucide-react"
 import { maskCpfCnpj, maskPhone } from "@/lib/masks"
 import { linkSuporte } from "@/lib/support"
-import { ativarAssinatura, trocarCartaoDaAssinatura, type TitularPreenchido } from "@/lib/actions/subscription"
+import { ativarAssinatura, trocarCartaoDaAssinatura, regularizarAssinatura, type TitularPreenchido } from "@/lib/actions/subscription"
 import { BandeiraLogo } from "@/components/billing/bandeira-logo"
 import {
   BANDEIRAS_ACEITAS, BANDEIRA_LABEL, MAX_DIGITOS_CARTAO, agruparNumero, detectarBandeira,
@@ -54,8 +54,14 @@ type Comum = {
    * ⚠️ Recebe o RÓTULO do cartão que passou (bandeira + 4 últimos) pro host poder ecoar
    *    "Mastercard ···· 4242" sem esperar o servidor. É o mesmo dado que já vai pro banco
    *    e que o cliente lê no extrato dele — não é dado sensível.
+   * ⚠️ No modo `regularizar` vem junto o DESFECHO. São três, e a tela não pode colapsá-los
+   *    num "pronto": pagou e trocou · pagou e a troca falhou · ainda sobra fatura.
    */
-  onSucesso: (cartao: { bandeira: Bandeira | null; ultimos4: string | null }) => void
+  onSucesso: (r: {
+    bandeira: Bandeira | null
+    ultimos4: string | null
+    regularizacao?: { pagoCents: number; cartaoTrocado: boolean; outras: number }
+  }) => void
   /**
    * Avisa o host que a validação com o banco começou/terminou.
    *
@@ -88,6 +94,24 @@ export type CardFormProps = Comum & (
       valorCents: number
       proximaCobranca: string | null
       /** O cartão que está sendo substituído. `null` = tenant anterior ao registro do rótulo. */
+      cartaoAtual: { bandeira: Bandeira | null; ultimos4: string } | null
+    }
+  | {
+      /**
+       * 🔴 O TERCEIRO MODO NASCEU DE UM ACHADO DO DONO (08/08). Cliente com fatura vencida
+       *    caía no modo `trocar` e lia **"Nada é cobrado agora"** — exatamente quando o que
+       *    ele quer é pagar e destravar. A frase era verdadeira no código e mentirosa no
+       *    contexto.
+       * 🔑 E a ORDEM aqui é regra dele: **primeiro cobra, depois troca**. O cartão só vira o
+       *    cartão da assinatura depois de provar que funciona (ver `regularizarComCartao`).
+       */
+      modo: "regularizar"
+      planoNome:  string
+      /** Valor da cobrança em aberto — vem do GATEWAY, nunca da tela. */
+      valorCents: number
+      vencimento: string | null
+      /** Quantas outras seguem em aberto depois desta. */
+      outras:     number
       cartaoAtual: { bandeira: Bandeira | null; ultimos4: string } | null
     }
 )
@@ -328,11 +352,11 @@ export function CardForm(props: CardFormProps) {
       //    voltava a funcionar — convite direto ao segundo envio em cima de um pagamento
       //    que passou. É o único cenário em que a pessoa PODE ter pagado, e era justamente
       //    o que a tela não contava.
-      let r: { ok?: true; id?: string } | { error: string }
+      let r: { ok?: true; id?: string; pagoCents?: number; cartaoTrocado?: boolean; outras?: number } | { error: string }
       try {
-        r = props.modo === "trocar"
-          ? await trocarCartaoDaAssinatura(dados)
-          : await ativarAssinatura({ planoId: props.planoId, ...dados })
+        r = props.modo === "trocar"      ? await trocarCartaoDaAssinatura(dados)
+          : props.modo === "regularizar" ? await regularizarAssinatura(dados)
+          :                                await ativarAssinatura({ planoId: props.planoId, ...dados })
       } catch {
         setNumero(""); setCvv("")
         setErro(INCERTO)
@@ -356,13 +380,26 @@ export function CardForm(props: CardFormProps) {
       // Sucesso: o RÓTULO é capturado antes, e o cartão sai da memória ANTES de o host
       // trocar de tela. O host recebe bandeira + 4 últimos; o número não sobrevive a esta
       // linha em lugar nenhum.
-      const rotulo = { bandeira: marca, ultimos4: numero.slice(-4) || null }
+      const rotulo = {
+        bandeira: marca,
+        ultimos4: numero.slice(-4) || null,
+        // ⚠️ Só existe no modo `regularizar`. `cartaoTrocado === false` é sucesso PARCIAL:
+        //    o dinheiro entrou e a fatura vai baixar, mas a assinatura seguiu no cartão
+        //    velho. A tela precisa dizer as duas coisas.
+        ...(props.modo === "regularizar" && "ok" in r
+          ? { regularizacao: { pagoCents: r.pagoCents ?? 0, cartaoTrocado: r.cartaoTrocado !== false, outras: r.outras ?? 0 } }
+          : {}),
+      }
       setNumero(""); setCvv(""); setValidade("")
       onSucesso(rotulo)
     })
   }
 
-  const cta = trocando ? "Salvar cartão" : `Pagar ${brl(props.valorCents)}`
+  // ⚠️ O rótulo do botão é a promessa mais lida da tela. Em `regularizar` ele diz as DUAS
+  //    coisas que vão acontecer, na ordem em que acontecem — cobra, depois guarda.
+  const cta = props.modo === "trocar"      ? "Salvar cartão"
+            : props.modo === "regularizar" ? `Pagar ${brl(props.valorCents)} e salvar cartão`
+            :                                `Pagar ${brl(props.valorCents)}`
 
   return (
     // 🔒 `method="post"` num formulário que NUNCA envia nativamente. Parece supérfluo e não
@@ -380,7 +417,25 @@ export function CardForm(props: CardFormProps) {
           ⚠️ Pôr R$ 349,00 em 24px numa tela que não cobra nada seria a tela prometendo um
              débito que não vai acontecer. */}
       <div className="sticky top-0 z-10 px-5 pt-5 pb-3 bg-white border-b border-slate-100">
-        {props.modo === "assinar" ? (
+        {props.modo === "regularizar" ? (
+          /* 🔴 O HERÓI AQUI É O QUE ELE DEVE — não o cartão atual, não o preço do plano.
+             Ele abriu esta tela pra resolver uma pendência; o número que importa é quanto
+             sai agora. E a legenda promete a COBRANÇA, não o silêncio: era exatamente a
+             frase "Nada é cobrado agora" que mentia neste contexto. */
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900">Regularizar pagamento</p>
+              <p className="mt-0.5 text-[11px] text-slate-400 leading-relaxed">
+                Cobramos agora neste cartão · ele passa a valer para as próximas
+                {props.vencimento ? <> · venceu em <span className="tabular-nums">{props.vencimento}</span></> : null}
+              </p>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-2xl font-bold text-slate-900 tabular-nums leading-none">{brl(props.valorCents)}</p>
+              <p className="mt-1 text-[11px] text-slate-400">em aberto</p>
+            </div>
+          </div>
+        ) : props.modo === "assinar" ? (
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-slate-900 truncate">Assinar {props.planoNome}</p>
@@ -436,6 +491,15 @@ export function CardForm(props: CardFormProps) {
           <p className="text-xs text-slate-500">
             {props.planoNome} · <span className="tabular-nums">{brl(props.valorCents)}</span>/mês
             {props.proximaCobranca ? <> · próxima cobrança em <span className="tabular-nums">{props.proximaCobranca}</span></> : null}
+          </p>
+        )}
+
+        {/* ⚠️ Mais de uma em aberto: dito ANTES de pagar, não depois. Descobrir que ainda
+            deve logo após ter pago é a sensação de ter sido enganado — mesmo sem engano. */}
+        {props.modo === "regularizar" && props.outras > 0 && (
+          <p className="text-xs text-amber-800 bg-warning-bg border border-amber-200 rounded-lg px-3 py-2">
+            Esta é a cobrança mais antiga. Depois dela ainda {props.outras === 1 ? "resta" : "restam"}{" "}
+            <strong>{props.outras}</strong> em aberto.
           </p>
         )}
 

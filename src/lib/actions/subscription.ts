@@ -7,7 +7,7 @@ import { rateLimit, getClientIpFromHeaders } from "@/lib/rate-limit"
 import { logAudit } from "@/lib/audit"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
-import { createSubscriptionForTenant, updateSubscriptionCard } from "@/lib/asaas/subscriptions"
+import { createSubscriptionForTenant, updateSubscriptionCard, regularizarComCartao, acharCobrancaEmAberto } from "@/lib/asaas/subscriptions"
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
 import { abaixoDoMinimoDoCartao, assinaturaRealId } from "@/lib/billing/gateway-limits"
 
@@ -284,7 +284,7 @@ export async function ativarAssinatura(input: {
   // ⚠️ O contraste que denunciou a falta: `saveMyCompanyProfile` JÁ tinha teto — por um
   //    motivo MENOR (cota de API do gateway) do que o desta aqui.
   if (!rateLimit(`card:tenant:${session.user.tenantId}`, 3, 60 * 60_000).ok) {
-    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+    return { error: "Muitas tentativas de cartão nesta conta. Por segurança, o cadastro de cartão fica bloqueado por uma hora." }
   }
   // 🔴 `"unknown"` FORA DO BALDE. `getClientIpFromHeaders` devolve a STRING "unknown"
   //    quando não há `x-forwarded-for` — e ela é truthy, então `if (ip && …)` deixava
@@ -295,7 +295,7 @@ export async function ativarAssinatura(input: {
   //    testam `!== "unknown"`); só estas duas portas divergiram. O teto por TENANT, que é
   //    o alvo real do anti card-testing, continua valendo em qualquer caso.
   if (ip && ip !== "unknown" && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
-    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+    return { error: "Muitas tentativas de cartão nesta conta. Por segurança, o cadastro de cartão fica bloqueado por uma hora." }
   }
 
   const r = await createSubscriptionForTenant(
@@ -361,7 +361,7 @@ export async function trocarCartaoDaAssinatura(input: {
 
   const ip = getClientIpFromHeaders(await headers())
   if (!rateLimit(`card:tenant:${session.user.tenantId}`, 3, 60 * 60_000).ok) {
-    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+    return { error: "Muitas tentativas de cartão nesta conta. Por segurança, o cadastro de cartão fica bloqueado por uma hora." }
   }
   // 🔴 `"unknown"` FORA DO BALDE. `getClientIpFromHeaders` devolve a STRING "unknown"
   //    quando não há `x-forwarded-for` — e ela é truthy, então `if (ip && …)` deixava
@@ -372,7 +372,7 @@ export async function trocarCartaoDaAssinatura(input: {
   //    testam `!== "unknown"`); só estas duas portas divergiram. O teto por TENANT, que é
   //    o alvo real do anti card-testing, continua valendo em qualquer caso.
   if (ip && ip !== "unknown" && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
-    return { error: "Muitas tentativas de cartão. Aguarde alguns minutos e tente de novo." }
+    return { error: "Muitas tentativas de cartão nesta conta. Por segurança, o cadastro de cartão fica bloqueado por uma hora." }
   }
 
   const r = await updateSubscriptionCard(
@@ -410,4 +410,102 @@ export async function trocarCartaoDaAssinatura(input: {
 
   revalidatePath("/configuracoes/assinatura")
   return { ok: true }
+}
+
+/**
+ * O que o cliente deve AGORA, direto do gateway. Alimenta o herói do modo "regularizar".
+ *
+ * 🔒 Sem parâmetros: o tenant vem da SESSÃO. Uma action que recebesse `tenantId` seria
+ *    leitura do estado financeiro de qualquer cliente — classe C-01..C-04.
+ * 🔒 O VALOR SAI DAQUI, nunca da tela. A tela mostra o que esta função devolveu, e a
+ *    cobrança usa o valor da própria cobrança no gateway (verificado no sandbox: mandar
+ *    `value` menor é ignorado). Duas barreiras pro mesmo risco, de propósito.
+ * ⚠️ Papel: owner/admin, igual às outras portas de cobrança. Atendente não vê valor.
+ */
+export async function getCobrancaEmAberto(): Promise<
+  { valorCents: number; vencimento: string | null; outras: number } | null
+> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return null
+  if (!["owner", "admin"].includes(session.user.role)) return null
+
+  const c = await acharCobrancaEmAberto(session.user.tenantId)
+  // ⚠️ `undefined` (gateway fora) e `null` (nada em aberto) colapsam em `null` aqui de
+  //    propósito: a tela não deve inventar um valor a pagar quando não sabe. Ela cai no
+  //    modo "trocar cartão" comum, que não promete cobrança nenhuma.
+  if (!c) return null
+  return { valorCents: c.valorCents, vencimento: c.vencimento, outras: c.outras }
+}
+
+/**
+ * Regulariza: paga a cobrança em aberto com o cartão novo e só então troca o cartão.
+ *
+ * 🔒 As MESMAS quatro paredes de `ativarAssinatura`/`trocarCartaoDaAssinatura`, e o MESMO
+ *    balde de teto: esta é a TERCEIRA porta pro mesmo oráculo de teste de cartão, e baldes
+ *    separados triplicariam o orçamento do atacante.
+ *      1. sessão · 2. papel (owner/admin) · 3. cadastro fiscal completo · 4. teto por
+ *      tenant E por IP.
+ * ⚠️ Nada do cartão volta no retorno, nem no audit — só o que a tela precisa dizer.
+ */
+export async function regularizarAssinatura(input: {
+  holderName: string; number: string; expiryMonth: string; expiryYear: string; ccv: string
+}): Promise<{ ok: true; pagoCents: number; cartaoTrocado: boolean; outras: number } | { error: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Sessão expirada. Entre de novo." }
+  if (!["owner", "admin"].includes(session.user.role)) {
+    return { error: "Apenas o responsável pela conta pode regularizar o pagamento." }
+  }
+
+  const titular = await getTitularParaCobranca()
+  if (!titular?.completo) {
+    const faltam = titular?.faltam ?? []
+    return { error: faltam.length
+      ? `Falta completar: ${faltam.join(", ")}.`
+      : "Complete os dados de faturamento antes de pagar." }
+  }
+
+  const ip = getClientIpFromHeaders(await headers())
+  if (!rateLimit(`card:tenant:${session.user.tenantId}`, 3, 60 * 60_000).ok) {
+    return { error: "Muitas tentativas de cartão nesta conta. Por segurança, o cadastro de cartão fica bloqueado por uma hora." }
+  }
+  if (ip && ip !== "unknown" && !rateLimit(`card:ip:${ip}`, 5, 60 * 60_000).ok) {
+    return { error: "Muitas tentativas de cartão nesta conta. Por segurança, o cadastro de cartão fica bloqueado por uma hora." }
+  }
+
+  const r = await regularizarComCartao(
+    session.user.tenantId,
+    {
+      holderName:  input.holderName.trim(),
+      number:      input.number,
+      expiryMonth: input.expiryMonth,
+      expiryYear:  input.expiryYear,
+      ccv:         input.ccv,
+    },
+    {
+      name:          titular.nome,
+      email:         titular.email,
+      cpfCnpj:       titular.cpfCnpj,
+      postalCode:    titular.cep,
+      addressNumber: titular.numero,
+      phone:         titular.telefone,
+    },
+    ip,
+  )
+
+  if ("error" in r) return { error: r.error }
+
+  await logAudit({
+    tenantId:   session.user.tenantId,
+    actorId:    session.user.id,
+    actorEmail: session.user.email ?? null,
+    action:     "billing.regularized",
+    targetType: "tenant",
+    targetId:   session.user.tenantId,
+    // ⚠️ Nada do cartão. O valor entra porque é fato comercial — numa disputa, "quanto foi
+    //    pago e quando" é a pergunta; "qual cartão" não é assunto de quem lê o log.
+    metadata:   { pago_cents: r.pagoCents, cartao_trocado: r.cartaoTrocado, outras_em_aberto: r.outras },
+  })
+
+  revalidatePath("/configuracoes/assinatura")
+  return r
 }
