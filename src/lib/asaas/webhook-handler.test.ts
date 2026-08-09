@@ -502,6 +502,36 @@ describe("avisos de cobrança", () => {
     expect(avisos()).toEqual([])                            // mas isso pede gente, não template
   })
 
+  // 🔴 A ASSIMETRIA (achada em teste ao vivo, 09/08): cobrança avulsa vencida COLOCA o
+  //    cliente em `past_due` (o `restringir` pula a checagem quando o pagamento não tem
+  //    assinatura), e pagá-la NÃO o tirava — o `liberar` recusava pela mesma ausência.
+  //    Ele entrava por uma porta sem saída, com o dinheiro já pago.
+  it("avulsa que COBRE o preço do plano libera (era recusada por não ter assinatura)", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(evento().processed_at).not.toBeNull()
+  })
+
+  it("avulsa PEQUENA continua recusada — R$5 não destrava plano de R$349,90", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 5 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(String(evento().error)).toContain("não pertence à assinatura")
+    expect(fatura().status).toBe("open")
+  })
+
+  it("pagamento de OUTRA assinatura segue recusado, mesmo cobrindo o plano", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: "sub_de_outro", value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(String(evento().error)).toContain("não pertence à assinatura")
+  })
+
   it("gateway diz que o pagamento NÃO venceu ⇒ não restringe e não avisa", async () => {
     montarCenario({ evento: { event_type: "PAYMENT_OVERDUE" } })
     gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })

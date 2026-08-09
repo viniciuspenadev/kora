@@ -812,7 +812,7 @@ async function liberar(
   //    existiu. Uma leitura = todas as guardas julgam o mesmo instante.
   const { data: donoRow, error: donoErr } = await supabaseAdmin
     .from("tenants")
-    .select("asaas_customer_id, asaas_subscription_id, subscription_ends_at, plan_id")
+    .select("asaas_customer_id, asaas_subscription_id, subscription_ends_at, plan_id, plans:plan_id ( price_cents )")
     .eq("id", tenant.id).maybeSingle()
 
   // 🔴 FALHA DE LEITURA DESLIGAVA AS GUARDAS (revalidação 08/08). O `error` era descartado:
@@ -854,12 +854,43 @@ async function liberar(
   //    "uma cobrança avulsa de R$ 5 destrave um plano de R$ 249,90" deixava passar
   //    exatamente esse caso, e só barrava o mais improvável (pagamento de outra assinatura).
   if (nossa && pagamento?.subscription !== nossa) {
-    console.error(JSON.stringify({
-      src: "asaas-handler", kind: "pagamento-de-outra-assinatura",
-      tenant: tenant.id, payment: ev.payment_id, esperada: nossa, veio: pagamento.subscription,
+    // 🔴 A ASSIMETRIA QUE ISTO FECHA (achada em teste ao vivo, 09/08). Esta guarda recusava
+    //    por **ausência de assinatura no pagamento** — e `restringir()`, do outro lado,
+    //    PULA a checagem equivalente nesse mesmo caso. Resultado: uma cobrança avulsa
+    //    vencida no painel do Asaas **colocava** o cliente em `past_due`, e pagá-la **não o
+    //    tirava**. Ele entrava no atraso por uma porta que não tem saída — e o dinheiro
+    //    dele já tinha entrado.
+    //
+    // 🔑 O objetivo da guarda continua valendo: impedir que uma avulsa de R$5 destrave um
+    //    plano de R$249,90. Mas o critério certo é o **VALOR**, não a existência do campo.
+    //    Quem pagou pelo menos o preço do plano quitou o que devia, tenha o pagamento
+    //    nascido da recorrência ou de uma cobrança criada à mão pra regularizar.
+    //
+    // ⚠️ Pagamento de OUTRA assinatura continua recusado sem exceção: ali a identidade é
+    //    conhecida e diverge — não é ambiguidade, é outro contrato.
+    const deOutraAssinatura = !!pagamento?.subscription
+    const pagoCents = emCentavos(pagamento?.value)
+    const pl = (dono as { plans?: { price_cents?: number } | { price_cents?: number }[] | null } | null)?.plans
+    const pisoDoPlano = (Array.isArray(pl) ? pl[0]?.price_cents : pl?.price_cents) ?? null
+
+    const cobreOPlano = pagoCents !== null && pisoDoPlano !== null && pagoCents >= pisoDoPlano
+
+    if (deOutraAssinatura || !cobreOPlano) {
+      console.error(JSON.stringify({
+        src: "asaas-handler", kind: "pagamento-de-outra-assinatura",
+        tenant: tenant.id, payment: ev.payment_id, esperada: nossa,
+        veio: pagamento?.subscription ?? null, pagoCents, pisoDoPlano,
+      }))
+      await fechar(ev.id, "pagamento não pertence à assinatura deste cliente")
+      return
+    }
+
+    // Avulsa que cobre o plano: libera, mas com log ALTO — é o caminho excepcional, e
+    // alguém deve poder achá-lo depois numa conferência.
+    console.warn(JSON.stringify({
+      src: "asaas-handler", kind: "liberado-por-cobranca-avulsa-que-cobre-o-plano",
+      tenant: tenant.id, payment: ev.payment_id, pagoCents, pisoDoPlano,
     }))
-    await fechar(ev.id, "pagamento não pertence à assinatura deste cliente")
-    return
   }
 
   // 🔴 UM EVENTO ANTIGO NÃO PODE RESSUSCITAR UMA ASSINATURA MORTA (revalidação 08/08).

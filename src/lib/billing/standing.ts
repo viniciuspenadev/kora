@@ -385,6 +385,11 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     //    o aviso "faltam N dias" no meio de uma tentativa de pagamento.
     !assinaturaRealId(row.asaas_subscription_id)
 
+  // Calculado UMA vez: o degrau usa, e o "próximo fechamento" também (ver o fim da função).
+  const motivo = motivoDoPaywall(
+    row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
+  )
+
   const canAccess = row.active === true && !isTenantBlockedForAccess(row.lifecycle_state)
   const canSpend  = canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status)
 
@@ -408,9 +413,7 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     // 🔑 "Seu teste acabou" é mais específico E mais acionável que "gasto cortado": diz o
     //    que houve e o que fazer. Degrau mais específico vence.
     degrau = "trial_ended"
-  } else if (["past_due", "canceled"].includes(motivoDoPaywall(
-    row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
-  ) ?? "")) {
+  } else if (["past_due", "canceled"].includes(motivo ?? "")) {
     // Degrau 3 — a carência acabou. **Vem ANTES de `restricted`**: os dois nascem de
     // `past_due` e o mais específico tem que vencer, senão o cliente trancado leria a
     // frase de quem ainda está funcionando.
@@ -517,9 +520,17 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
           podeAssinar: podeCobrar(perfil),
         }
       : null,
+    // 🔴 NO PAYWALL NÃO EXISTE PRÓXIMO FECHAMENTO (achado do dono, 09/08 — ele leu na tela
+    //    "fecha em 08/09" com a conta já cortada). A guarda que eu pus ontem em
+    //    `generateInvoiceForTenant` recusa gerar fatura pra quem está no paywall — período
+    //    não servido não vira cobrança. Então a tela prometia uma data que o cron **não vai
+    //    cumprir**: a mesma classe de tela que mente que a gente vinha caçando o dia
+    //    inteiro, criada por mim ao ligar o pré-pago e não varrer quem exibe.
+    // ⚠️ No degrau 2 a data CONTINUA verdadeira: lá a fatura é gerada normalmente. O que
+    //    some é só no paywall, onde a geração de fato para.
     nextClosingAt: nextClosing(
       row.billing_day,
-      row.active === true && !!row.plan_id && row.subscription_status !== "canceled",
+      row.active === true && !!row.plan_id && row.subscription_status !== "canceled" && !motivo,
     ),
   }
 })
