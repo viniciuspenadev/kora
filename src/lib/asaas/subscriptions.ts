@@ -538,10 +538,31 @@ export async function acharCobrancaEmAberto(tenantId: string): Promise<CobrancaE
       `/payments?customer=${encodeURIComponent(cust)}&status=PENDING&limit=20`,
     )
 
+    // 🔴 PENDENTE NÃO É O MESMO QUE EM ABERTO (achado em teste ao vivo, 09/08).
+    //
+    //    Toda assinatura ativa tem, PERMANENTEMENTE, uma cobrança `PENDING` do próximo
+    //    ciclo — ela nasce assim que o ciclo anterior é pago. Como ela é da nossa
+    //    assinatura, passava nos dois filtros abaixo e virava "cobrança em aberto".
+    //
+    //    O estrago: um cliente **em dia** que clicava em "Trocar cartão" caía no modo
+    //    REGULARIZAR e lia *"Pagar R$ X e salvar cartão"* — e, ao clicar, era **cobrado
+    //    hoje pela fatura do mês que vem**, sem ter pedido. É o inverso exato do defeito
+    //    que a gente corrigiu ontem: antes o modal dizia "nada é cobrado agora" quando ia
+    //    cobrar; agora dizia "vamos cobrar" pra quem só queria trocar o cartão.
+    //
+    // 🔑 O `PENDING` entrou por um caso legítimo (documentado logo acima): a cobrança
+    //    nasceu, o cartão falhou HOJE, e o cliente quer resolver antes de vencer. Nesse
+    //    caso ela vence hoje. O que não pode entrar é a do mês que vem.
+    // ⚠️ `OVERDUE` não precisa do filtro: por definição já passou do vencimento.
+    const hoje = new Date().toISOString().slice(0, 10)
+    const jaCobravel = (p: { status?: string; dueDate?: string }) =>
+      p.status !== "PENDING" || (p.dueDate ?? "9999-12-31") <= hoje
+
     const nossas = [...(r?.data ?? []), ...(p2?.data ?? [])]
       // 🔒 A segunda camada: só cobrança DA NOSSA ASSINATURA. Avulsa criada no painel do
       //    Asaas não tem `subscription` e fica de fora — é dívida de outra natureza.
       .filter((p) => !!p?.id && !!sub && p.subscription === sub)
+      .filter(jaCobravel)
       .sort((a, b) => String(a.dueDate ?? "").localeCompare(String(b.dueDate ?? "")))
 
     const alvo = nossas[0]

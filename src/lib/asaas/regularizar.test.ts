@@ -140,6 +140,31 @@ describe("recusado ⇒ NADA muda", () => {
     expect(tenant().asaas_card_token).toBe("enc:v1:token_ANTIGO")
   })
 
+  // 🔴 PENDENTE DO PRÓXIMO CICLO NÃO É "EM ABERTO" (achado em teste ao vivo, 09/08).
+  //    Toda assinatura ativa tem uma `PENDING` do mês que vem, permanentemente. Ela passava
+  //    nos filtros e fazia o modal abrir em REGULARIZAR pra cliente em dia — que ao clicar
+  //    era cobrado hoje pela fatura do mês seguinte, sem ter pedido.
+  it("cliente EM DIA: a pendente do próximo ciclo não é cobrança em aberto", async () => {
+    const amanha = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10)
+    gw.responde("GET /payments?customer=cus_kora&status=OVERDUE", { data: [] })
+    gw.responde("GET /payments?customer=cus_kora&status=PENDING", {
+      data: [{ id: "pay_proximo", value: 349.9, dueDate: amanha, status: "PENDING", subscription: SUB }],
+    })
+
+    expect(await acharCobrancaEmAberto(TENANT)).toBeNull()
+  })
+
+  it("pendente que vence HOJE continua sendo cobrável (cartão falhou no dia)", async () => {
+    const hoje = new Date().toISOString().slice(0, 10)
+    gw.responde("GET /payments?customer=cus_kora&status=OVERDUE", { data: [] })
+    gw.responde("GET /payments?customer=cus_kora&status=PENDING", {
+      data: [{ id: "pay_hoje", value: 349.9, dueDate: hoje, status: "PENDING", subscription: SUB }],
+    })
+
+    const r = await acharCobrancaEmAberto(TENANT)
+    expect(r?.id).toBe("pay_hoje")
+  })
+
   it("cartão recusado na TOKENIZAÇÃO nem chega a cobrar", async () => {
     gw.responde("POST /creditCard/tokenize", () => { throw new AsaasError(400, "cartão inválido") })
 
