@@ -218,7 +218,26 @@ export type SubscriptionStatus = "active" | "past_due" | "canceled"
  * de cobrança existe no código mas nunca foi agendado (entitlements-design §3.3 H-7).
  * Marcou à mão = decidiu cortar. Bloqueia na hora, e é o comportamento certo.
  */
-export const PAST_DUE_GRACE_DAYS = 7
+/**
+ * Carência padrão da inadimplência — **2 dias** (decisão do dono, 2026-08-09).
+ *
+ * 🔑 O MESMO NÚMERO DO FIM DO TESTE (`TRIAL_ENDED_GRACE_DAYS`), e não por acaso: os dois
+ *    respondem a mesma pergunta — *quanto tempo alguém tem pra consertar o meio de
+ *    pagamento antes de o produto fechar?* Um número só, fácil de explicar ao cliente.
+ *
+ * ⚠️ ISTO NÃO É PRAZO PARA PAGAR. Quando o relógio começa, o cliente **já** teve os 7 dias
+ *    até o vencimento e toda a régua de retentativa do Asaas — a carência só começa quando
+ *    o gateway DESISTE do cartão. Ela absorve falha mecânica (cartão vencido, limite,
+ *    banco fora), não inadimplência de quem não quer pagar.
+ *
+ * ⚠️ E ela NÃO segura o corte de gasto: campanhas, IA e automações param no instante do
+ *    `past_due`, com carência 2 ou 200 (`isTenantBlockedForSpend` não olha relógio). O que
+ *    ela governa é só a distância entre "parou de gastar" e "o produto fechou".
+ *
+ * 🔧 Ajustável por tenant em `tenants.past_due_grace_days` (god mode → Cobrança). `null`
+ *    cai aqui; `0` corta junto com o degrau 2, sem espera.
+ */
+export const PAST_DUE_GRACE_DAYS = 2
 
 /**
  * Status de assinatura que NEGAM acesso/serviço.
