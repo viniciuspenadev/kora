@@ -31,7 +31,11 @@ import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 export interface CobrancaDoGateway {
   /** Valor que o cartão vai debitar, em centavos. */
   valorCents: number
-  /** `YYYY-MM-DD` da próxima cobrança, conforme o gateway. */
+  /**
+   * `YYYY-MM-DD` de quando o cartão vai ser DEBITADO — o vencimento da cobrança pendente
+   * mais próxima. ⚠️ **Não** é o `nextDueDate` da assinatura: aquele é o próximo ciclo a
+   * ser gerado, e fica um mês à frente assim que a cobrança do mês corrente existe.
+   */
   proximaEm: string | null
   /** `ACTIVE`, `INACTIVE`, `EXPIRED`… — o estado real da recorrência. */
   status: string | null
@@ -48,9 +52,38 @@ export const getCobrancaDoGateway = cache(async (
       `/subscriptions/${id}`,
     )
     if (typeof sub?.value !== "number") return null
+
+    // ══════════════════════════════════════════════════════════════════════
+    // 🔴 `nextDueDate` NÃO É "QUANDO VEM A PRÓXIMA COBRANÇA" (achado do dono, 09/08)
+    // ══════════════════════════════════════════════════════════════════════
+    // Ele é *"o próximo ciclo que a assinatura ainda vai GERAR"*. Assim que o Asaas cria a
+    // cobrança de um mês, esse campo já pula para o mês seguinte — então usá-lo deixa a
+    // tela **sempre um ciclo à frente**.
+    //
+    // Medido ao vivo: assinatura criada em 08/08, cobrança de 08/08 confirmada, cobrança de
+    // **08/09 PENDENTE no gateway**, e `nextDueDate` marcando 08/10. A faixa do topo dizia
+    // *"sua próxima fatura fecha em 8 de outubro"* enquanto os cards da mesma página diziam
+    // 8 de setembro — o dono viu as duas juntas.
+    //
+    // 🔑 A pergunta que o cliente faz é "quando vou ser cobrado?". Quem responde isso é o
+    //    **vencimento da cobrança pendente mais próxima**, não o calendário de geração.
+    // ⚠️ Sem pendente (o ciclo ainda não foi gerado), o `nextDueDate` volta a ser a melhor
+    //    resposta disponível — aí ele significa exatamente o que a tela quer dizer.
+    let proximaEm = sub.nextDueDate ?? null
+    try {
+      const pend = await asaas.get<{ data?: Array<{ dueDate?: string }> }>(
+        `/payments?subscription=${encodeURIComponent(id)}&status=PENDING&limit=10`,
+      )
+      const datas = (pend?.data ?? []).map((p) => p.dueDate).filter(Boolean).sort() as string[]
+      if (datas.length > 0) proximaEm = datas[0]
+    } catch {
+      // Falhou a consulta das cobranças: fica o `nextDueDate`. Impreciso em um ciclo é
+      // melhor que a tela não dizer nada — e o erro cai pro lado de anunciar MAIS tarde.
+    }
+
     return {
       valorCents: Math.round(sub.value * 100),
-      proximaEm:  sub.nextDueDate ?? null,
+      proximaEm,
       status:     sub.status ?? null,
     }
   } catch (e) {

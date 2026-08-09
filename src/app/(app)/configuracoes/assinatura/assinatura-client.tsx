@@ -208,7 +208,13 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
               </div>
 
               <div className="flex items-baseline justify-between gap-3 mt-3 pt-3 border-t border-slate-100">
-                <span className="text-xs font-semibold text-slate-500">Parcial</span>
+                {/* ⚠️ ERA "Parcial", e a palavra ficou AMBÍGUA em 08/08: `partial` virou um
+                    STATUS DE FATURA de verdade ("recebemos parte do que era devido"), e ele
+                    aparece com esse mesmo rótulo nas telas de fatura. Aqui o sentido é
+                    outro — é o total acumulado do ciclo, que ainda pode mudar. Dois
+                    significados com o mesmo nome, na mesma área do produto, é confusão de
+                    suporte esperando acontecer. */}
+                <span className="text-xs font-semibold text-slate-500">Total até aqui</span>
                 <span className="text-xl font-bold text-slate-900 tabular-nums">{brl(conta.totalCents)}</span>
               </div>
 
@@ -283,10 +289,13 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
                 onClick={exportar}
                 className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-700"
               >
-                <Download className="size-3.5" /> Baixar meus dados
+                {/* ⚠️ "Solicitar", não "Baixar" — não existe download imediato. Eu corrigi
+                    esse texto ontem no outro ponto da mesma tela e não varri este: mesma
+                    classe de erro do dia (fechar onde se achou, não varrer os irmãos). */}
+                <Download className="size-3.5" /> Solicitar meus dados
               </button>
               <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">
-                Disponível sempre, em qualquer situação da conta.
+                Disponível sempre, em qualquer situação da conta — nossa equipe prepara e envia.
               </p>
               {/* Contato vem de `lib/support` — número em UM lugar só. WhatsApp, e não
                   e-mail, por coerência: a Kora vende atendimento por WhatsApp. */}
