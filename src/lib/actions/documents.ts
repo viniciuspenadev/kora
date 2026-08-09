@@ -8,6 +8,7 @@ import { canAccessDeal } from "@/lib/actions/deals"
 import { getProvider } from "@/lib/providers"
 import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { logConversationEvent } from "@/lib/atendimento/events"
+import { atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import {
   createQuote, createNewVersion, saveQuoteDraft, activateQuoteDraft, discardQuoteDraft, getDealDocuments, getDocumentSettings,
   markDocumentSent, markDocumentAccepted, markDocumentDeclined, voidDocument,
@@ -197,6 +198,12 @@ export async function sendQuoteInChat(
   const gate = await requireDocumentAccess(docId)
   if ("error" in gate) return gate
   const { tenantId, userId } = gate
+
+  // 🔒 Degrau 3 — mandar a cotação é OUTBOUND pelo WhatsApp, com o mesmo custo e a mesma
+  //    política dos outros envios. Escapava do gate porque não mora em `chat.ts` (H-07).
+  if (atendimentoBloqueado(await checkTenantStatus(tenantId))) {
+    return { error: "O acesso desta conta está pausado até a regularização do pagamento." }
+  }
 
   const { data: docRow } = await supabaseAdmin
     .from("commercial_documents")

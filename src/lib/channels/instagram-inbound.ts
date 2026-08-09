@@ -1,6 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
-import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
+import { checkTenantStatus, gastoBloqueado } from "@/lib/auth/tenant-serviceable"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
@@ -75,6 +75,19 @@ const KIND_MIME: Record<string, string> = { audio: "audio/mp4", image: "image/jp
 
 /** Baixa a mídia do IG (URL temporária do attachment) e sobe no bucket → toca de verdade. */
 async function storeIgMedia(tenantId: string, conversationId: string, url: string, kind: string): Promise<{ mediaUrl: string; mime: string; storagePath: string } | null> {
+  // 🔴 H-08 NO INSTAGRAM (achado do QA, 09/08). O gate de gasto do webhook era só um `log`
+  //    e o download rodava igual — mesmo vetor de terceiro externo já fechado no Baileys e
+  //    no Meta Cloud: qualquer pessoa mandando mídia no Direct de um inadimplente fazia a
+  //    Kora baixar e guardar o arquivo, sem limite.
+  // 🔑 O gate mora AQUI, no helper, e não no webhook: é o ponto por onde todo download do
+  //    IG passa, então um caminho novo herda a trava sem o autor precisar saber que ela
+  //    existe. Foi a lição das 6 portas de envio.
+  // ⚠️ Devolve `null` — que é o mesmo desfecho de "não consegui baixar" que os chamadores
+  //    já tratam. A MENSAGEM continua entrando; só o arquivo não desce.
+  if (gastoBloqueado(await checkTenantStatus(tenantId))) {
+    log("media-skip-billing", { tenantId, conversationId })
+    return null
+  }
   try {
     const r = await fetch(url)
     if (!r.ok) { log("media-err", { reason: `fetch ${r.status}` }); return null }
@@ -835,6 +848,16 @@ async function handleComment(igAccountId: string | null, value: Record<string, u
   //    nem pro log (I6).
   const rule  = pickCommentRule(rules, mediaId, typeof c.text === "string" ? c.text : "")
   if (!rule) { log("comment-skip", { reason: "no-rule", commentId, hasRules: rules.length > 0 }); return }
+
+  // 🔒 Gate de GASTO no comment-to-DM (achado do QA, 09/08). Diferente da mídia, aqui sai
+  //    **mensagem** em nome do tenant — automação de captura rodando por quem está em
+  //    `past_due` ou no paywall. É acionável por qualquer pessoa que comente num post dele.
+  // ⚠️ Antes de consumir cota: recusar depois de contar seria cobrar do cliente uma
+  //    automação que não aconteceu.
+  if (gastoBloqueado(await checkTenantStatus(conn.tenantId))) {
+    log("comment-skip", { reason: "billing", commentId, tenantId: conn.tenantId })
+    return
+  }
   // Vazio = nada a enviar. Rico com imagem e sem texto É válido (vai a imagem sozinha).
   const richDm = rule.reply_rich ?? null
   const hasDm  = richDm ? !!(richDm.text?.trim() || richDm.media?.path) : !!rule.reply_text?.trim()

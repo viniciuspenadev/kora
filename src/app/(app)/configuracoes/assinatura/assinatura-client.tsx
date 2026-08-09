@@ -66,8 +66,25 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
   const [bloqueio, setBloqueio] = useState(standing.degrau === "readonly")
   const [adiado, setAdiado]     = useState(false)
 
-  // TODO(dev): dispara a exportação real (LGPD Art. 18) e avisa por e-mail.
-  const exportar = () => toast.success("Estamos preparando seu arquivo — você recebe o link por e-mail em alguns minutos.")
+  // 🔴 ISTO ERA UM `toast` COM `TODO` (M-04.5 do pentest de 08/08). O botão dizia
+  //    *"estamos preparando seu arquivo — você recebe o link por e-mail"* e **nada era
+  //    preparado, nenhum e-mail saía**. Não é feature faltando: é o produto afirmando um
+  //    direito do Art. 18 II, na tela de quem está decidindo ir embora, e não cumprindo.
+  //    Pior, a lista do que "continua funcionando" em TODOS os degraus inclui "Exportação
+  //    dos seus dados" — a promessa aparecia até no paywall.
+  //
+  // 🔑 A exportação por tenant não existe (o `exportPersonalData` do `lgpd.ts` é por
+  //    CONTATO — o consumidor final, outro titular). E o processo real já foi definido
+  //    pelo dono: *"ele solicita isso ao suporte"*. Então a correção não é fingir um
+  //    download: é abrir o canal que de fato atende, com o pedido pronto.
+  // ⚠️ Quando a exportação automática existir, este handler troca de corpo e a tela não
+  //    muda — o botão já está no lugar certo, dizendo a coisa certa.
+  const exportar = () => {
+    window.open(
+      linkSuporte("Olá! Quero solicitar a exportação dos dados da minha conta na Kora (LGPD)."),
+      "_blank", "noopener,noreferrer",
+    )
+  }
 
   return (
     <>

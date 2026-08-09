@@ -58,6 +58,13 @@ function referenciaDe(periodStart: string | null, fallback: string): string {
 function statusDe(status: string | null, dueDate: string | null): FaturaStatusView {
   if (status === "paid") return "paid"
   if (status === "void") return "void"
+  // ⚠️ `partial` (nasceu 08/08) NÃO ganha estado próprio aqui, e a omissão é deliberada:
+  //    ele cai em `open`/`overdue` pela data, que é a verdade que importa pro cliente —
+  //    **ainda falta pagar**, e a urgência é a mesma. Um 5º estado na tela exigiria a UI
+  //    saber exibir "recebido X de Y", que não existe; enquanto não existir, inventar o
+  //    rótulo mostraria uma palavra nova sem o número que a explica.
+  // 🔑 O que NÃO pode acontecer é `partial` virar "paga" ou sumir da lista — e não vira:
+  //    o `standing.ts` já o conta como em aberto, e este mapa o trata como devido.
   if (dueDate) {
     const venc = new Date(`${dueDate}T23:59:59Z`).getTime()
     if (Number.isFinite(venc) && venc < Date.now()) return "overdue"

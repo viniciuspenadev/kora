@@ -79,6 +79,10 @@ export function CartaoModal({
     return () => { vivo = false }
   }, [])
 
+  // O cabeçalho tem que contar a MESMA história do botão. Enquanto carrega, ninguém sabe
+  // ainda se há cobrança — e a resposta honesta nesse instante é não afirmar nada.
+  const temCobranca = estado.fase === "pronto" && !!estado.cobranca
+
   const fechar = () => {
     // Só recarrega o servidor se algo mudou de fato — o rail da direita passa a mostrar o
     // cartão novo, e essa é a confirmação que fica depois que o modal some.
@@ -89,8 +93,15 @@ export function CartaoModal({
   return (
     <ModalShell
       icon={CreditCard}
-      title="Trocar cartão"
-      desc={estado.fase === "sucesso" ? undefined : "Nada é cobrado agora"}
+      // 🔴 O CABEÇALHO MENTIA (M-04.2 do pentest de 08/08). O modo passou a ser decidido
+      //    pela realidade e o botão passou a dizer "Pagar R$ X" — mas o título seguiu
+      //    "Trocar cartão · Nada é cobrado agora", INCONDICIONAL, contradizendo o botão
+      //    logo abaixo. Ou seja: eu corrigi a mentira que o dono apontou e deixei a mesma
+      //    frase no topo, 29 linhas abaixo do comentário que celebra a correção.
+      title={temCobranca ? "Regularizar pagamento" : "Trocar cartão"}
+      desc={estado.fase === "sucesso"
+        ? undefined
+        : temCobranca ? "Cobramos agora neste cartão" : "Nada é cobrado agora"}
       size="checkout"
       mobileFullscreen
       closeButton

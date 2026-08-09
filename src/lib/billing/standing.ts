@@ -177,7 +177,13 @@ const DAY_MS = 86_400_000
  * confiasse no status veria "0 faturas vencidas" para sempre.
  * `draft` fica de fora (não foi emitida); `void` e `paid` idem, pelo óbvio.
  */
-const UNPAID_STATUSES = ["open", "overdue"]
+// 🔴 `partial` PRECISOU ENTRAR AQUI (08/08, no mesmo dia em que o estado nasceu). Sem ele,
+//    uma fatura que recebeu PARTE saía da conta de "em aberto" — e o cliente que ainda deve
+//    o restante lia **"Tudo certo. Sua assinatura está em dia"**. Ou seja: o estado criado
+//    pra impedir o livro de mentir faria a TELA mentir, que é pior, porque é a versão que o
+//    cliente vê. Estado novo obriga a varrer quem decide em cima dele — a lição está escrita
+//    neste repositório desde o `KNOWN_STATES`, e eu repeti o erro.
+const UNPAID_STATUSES = ["open", "overdue", "partial"]
 
 /** Meia-noite UTC de hoje — mesma base de tempo de `currentPeriod`/`runMonthlyBilling`. */
 function todayUtcMs(): number {
@@ -402,9 +408,9 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     // 🔑 "Seu teste acabou" é mais específico E mais acionável que "gasto cortado": diz o
     //    que houve e o que fazer. Degrau mais específico vence.
     degrau = "trial_ended"
-  } else if (motivoDoPaywall(
+  } else if (["past_due", "canceled"].includes(motivoDoPaywall(
     row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
-  ) === "past_due") {
+  ) ?? "")) {
     // Degrau 3 — a carência acabou. **Vem ANTES de `restricted`**: os dois nascem de
     // `past_due` e o mais específico tem que vencer, senão o cliente trancado leria a
     // frase de quem ainda está funcionando.

@@ -89,7 +89,7 @@ export type VerifyResult =
   // ⚠️ Toda entrada nova aqui PRECISA de uma frase em `BLOCKED_NOTICE` (actions/login.ts).
   //    Sem a frase, o motivo cai no genérico e a pessoa lê "E-mail ou senha inválidos" —
   //    que é o defeito que `trial_ended` veio consertar.
-  | { status: "blocked"; reason: "pending_approval" | "suspended" | "trial_ended" | "unpaid" }
+  | { status: "blocked"; reason: "pending_approval" | "suspended" | "trial_ended" | "unpaid" | "indisponivel" }
   | { status: "ok"; userId: string; tenantId: string; passwordChangedAt: string | null; isPlatformAdmin: boolean }
 
 /**
@@ -138,7 +138,23 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
       .from("tenants")
       .select(COLUNAS_DE_ACESSO)
       .in("id", accessible.map((m) => m.tenant_id))
-    if (!tenErr && tens) {
+    // 🔴 FALHA DE LEITURA NÃO PODE CONCEDER LOGIN NOVO (H-11 do pentest de 08/08). Com
+    //    `tenErr`, o bloco inteiro era pulado: `accessible` ficava com TODAS as memberships
+    //    sem filtro e a função devolvia `ok` — ou seja, um blip na tabela `tenants` abria
+    //    login para tenant **suspenso ou desativado**. O comentário dizia "fail-OPEN em
+    //    erro de query (não trava login por falha transitória)", e essa era a intenção; o
+    //    alcance é que estava errado.
+    // 🔑 A distinção que resolve: falha de leitura **não deixa entrar**, mas também **não
+    //    acusa de senha errada**. Devolver `invalid` mandaria a pessoa trocar a senha por
+    //    causa de um problema nosso. `blocked` com motivo próprio diz a verdade —
+    //    "tente de novo em instantes" — e não abre a porta.
+    // ⚠️ Só existe janela porque a leitura é do gate de ACESSO. Sessões já ativas seguem
+    //    revalidando a cada 5 min por outro caminho.
+    if (tenErr) {
+      console.error("[login] leitura de tenants falhou — login NEGADO (fail-closed):", tenErr.message)
+      return { status: "blocked", reason: "indisponivel" }
+    }
+    if (tens) {
       const linhas = tens as unknown as LinhaDeAcesso[]
       states = linhas.map((t) => t.lifecycle_state ?? "")
       // ⚠️ O motivo do paywall NÃO está no `lifecycle_state` quando é atraso — ele nasce da

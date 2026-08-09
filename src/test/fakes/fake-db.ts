@@ -68,13 +68,16 @@ type Resultado = { data: unknown; error: { message: string } | null }
 
 class FakeQuery implements PromiseLike<Resultado> {
   private filtros: Filtro[] = []
-  private op: "select" | "update" | "insert" = "select"
+  private op: "select" | "update" | "insert" | "delete" = "select"
   private patch: Row | null = null
   private inserindo: Row[] = []
   private limite: number | null = null
   private ordem: { col: string; asc: boolean } | null = null
   private retornaRepresentacao = false
-  private single = false
+  // ⚠️ NÃO renomear de volta pra `single`: a propriedade de instância SOMBREIA o método
+  //    `single()` do protótipo, e a chamada morre com "single is not a function" — que
+  //    parece bug do código sob teste e é do dublê. Custou uma investigação.
+  private unico = false
 
   constructor(
     private db: FakeDb,
@@ -86,6 +89,7 @@ class FakeQuery implements PromiseLike<Resultado> {
   select(_cols?: string) { if (this.op !== "select") this.retornaRepresentacao = true; return this }
   update(patch: Row)     { this.op = "update"; this.patch = patch; return this }
   insert(linhas: Row | Row[]) { this.op = "insert"; this.inserindo = Array.isArray(linhas) ? linhas : [linhas]; return this }
+  delete()               { this.op = "delete"; return this }
 
   eq(col: string, val: unknown)    { this.filtros.push((r) => r[col] === val); return this }
   neq(col: string, val: unknown)   { this.filtros.push((r) => r[col] !== val); return this }
@@ -96,7 +100,13 @@ class FakeQuery implements PromiseLike<Resultado> {
   not(col: string, _op: "is", val: null) { this.filtros.push((r) => (r[col] ?? null) !== val); return this }
   order(col: string, opts?: { ascending?: boolean }) { this.ordem = { col, asc: opts?.ascending !== false }; return this }
   limit(n: number) { this.limite = n; return this }
-  maybeSingle()    { this.single = true; return this }
+  maybeSingle()    { this.unico = true; return this }
+  // ⚠️ Mesmo comportamento do `maybeSingle` no dublê, de propósito. O `.single()` real
+  //    ERRA quando não vem exatamente 1 linha, mas o código sob teste sempre checa o
+  //    `error` do retorno — então a diferença não muda nenhum caminho aqui, e simular a
+  //    semântica estrita esconderia o cenário em vez de revelá-lo.
+  //    Existe porque `insert().select().single()` (billing.ts) não tinha suporte no dublê.
+  single()         { this.unico = true; return this }
 
   /**
    * `or("a.eq.1,b.eq.2,and(c.eq.3,d.lt.x)")` — só o suficiente pro `reconcile`.
@@ -123,16 +133,40 @@ class FakeQuery implements PromiseLike<Resultado> {
     const todas = this.db.tabelas.get(this.tabela) ?? []
 
     if (this.op === "insert") {
+      const criadas: Row[] = []
       for (const nova of this.inserindo) {
         // PK duplicada = 23505, o caminho que o reconcile trata como normal.
         if (nova.id != null && todas.some((r) => r.id === nova.id)) {
           const e = { message: "duplicate key value violates unique constraint", code: "23505" }
           return { data: null, error: e as unknown as { message: string } }
         }
-        todas.push({ ...nova })
+        // ⚠️ Id sintético quando o insert não traz um: no Postgres o default é
+        //    `gen_random_uuid()`, e sem isso `insert().select().single()` devolveria uma
+        //    linha sem `id` — o chamador crasharia num campo que em produção sempre existe.
+        const linha = { ...nova, id: nova.id ?? `fake_${this.tabela}_${todas.length + 1}` }
+        todas.push(linha)
+        criadas.push(linha)
       }
       this.db.tabelas.set(this.tabela, todas)
       this.log.push({ tabela: this.tabela, op: "insert" })
+      // `.select()` depois de `.insert()` = `returning` do PostgREST.
+      if (!this.retornaRepresentacao) return { data: null, error: null }
+      return { data: this.unico ? (criadas[0] ?? null) : criadas, error: null }
+    }
+
+    if (this.op === "delete") {
+      const sobrando = todas.filter((r) => !this.filtros.every((f) => f(r)))
+      const apagadas = todas.length - sobrando.length
+      this.db.tabelas.set(this.tabela, sobrando)
+      this.log.push({ tabela: this.tabela, op: "delete" })
+      // 🔑 CASCATA. O dublê precisa dela porque `invoice_items` tem
+      //    `on delete cascade` no schema real — sem simular, o teste da compensação do
+      //    H-06 passaria deixando itens órfãos que em produção não existiriam.
+      if (this.tabela === "invoices" && apagadas > 0) {
+        const vivos = new Set(sobrando.map((r) => r.id))
+        this.db.tabelas.set("invoice_items",
+          (this.db.tabelas.get("invoice_items") ?? []).filter((i) => vivos.has(i.invoice_id)))
+      }
       return { data: null, error: null }
     }
 
@@ -154,7 +188,7 @@ class FakeQuery implements PromiseLike<Resultado> {
     }
 
     this.log.push({ tabela: this.tabela, op: "select" })
-    if (this.single) return { data: casadas[0] ?? null, error: null }
+    if (this.unico) return { data: casadas[0] ?? null, error: null }
     return { data: casadas, error: null }
   }
 }

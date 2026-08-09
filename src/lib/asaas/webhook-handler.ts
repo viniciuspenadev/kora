@@ -503,7 +503,18 @@ async function calcularFimDoCiclo(tenantId: string, ev: EventRow): Promise<strin
 // ⚠️ Passou a DEVOLVER pendência (antes era `void`). Quem chama precisa saber se o livro
 //    ficou coerente: sem retorno, uma baixa que não aconteceu fechava o evento como
 //    sucesso e ninguém voltava lá.
-async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<{ error?: string }> {
+async function darBaixaNaFatura(
+  tenantId: string,
+  ev: EventRow,
+  /**
+   * O valor **do gateway**, em reais, vindo do `GET /payments/{id}`.
+   *
+   * 🔒 PARÂMETRO OBRIGATÓRIO de propósito: enquanto ele fosse lido de dentro do `ev`, a
+   *    função tinha como cair no payload sem ninguém perceber. Exigi-lo na assinatura faz
+   *    o `tsc` cobrar de qualquer chamador futuro de onde veio o número.
+   */
+  valorDoGateway: number | undefined,
+): Promise<{ error?: string }> {
   if (!ev.payment_id) return {}
 
   // Idempotência: `gateway_ref` já carimbado com ESTE pagamento ⇒ evento repetido.
@@ -514,15 +525,37 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<{ error
     .limit(1).maybeSingle()
   if (jaBaixada) return {}
 
-  const { data: encontrada, error: buscaErr } = await supabaseAdmin
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 QUAL FATURA ESTE PAGAMENTO QUITA — e por que `partial` NÃO pode vir junto
+  // ══════════════════════════════════════════════════════════════════════════
+  // A primeira versão disto (08/08) botou `partial` na MESMA busca, ordenada pela mais
+  // antiga, com o argumento "quem paga o restante tem que encontrá-la". O argumento estava
+  // certo e a implementação errada, porque a cobrança do ciclo SEGUINTE também é "um
+  // pagamento" — e, sendo a fatura parcial mais antiga, era ela que ele encontrava:
+  //
+  //   mês N   · fatura 429,80 · gateway cobra 349,90 (valor velho) ⇒ `partial`
+  //   mês N+1 · fatura 429,80 · gateway cobra 429,80 ⇒ pousa na fatura de **N**
+  //             ⇒ paid_cents 779,70 numa fatura de 429,80 (quebra a invariante 2),
+  //               a fatura de N+1 fica `open` PARA SEMPRE, e o cliente que pagou tudo
+  //               lê "fatura vencida" indefinidamente — a pendência que o pré-pago proíbe.
+  //
+  // 🔑 A REGRA CERTA: o dinheiro do ciclo corrente quita a fatura do ciclo corrente.
+  //    `open`/`overdue` primeiro; `partial` só quando NÃO há nenhuma em aberto — que é
+  //    exatamente o caso do complemento, o único que a versão anterior queria atender.
+  const buscarFatura = (status: string[]) => supabaseAdmin
     .from("invoices")
-    .select("id, total_cents")
+    .select("id, total_cents, paid_cents")
     .eq("tenant_id", tenantId)
-    .in("status", ["open", "overdue"])
+    .in("status", status)
     // A mais ANTIGA primeiro — mesma ordenação de `standing.ts`.
     .order("due_date", { ascending: true, nullsFirst: false })
     .limit(1)
     .maybeSingle()
+
+  let { data: encontrada, error: buscaErr } = await buscarFatura(["open", "overdue"])
+  if (!encontrada && !buscaErr) {
+    ;({ data: encontrada, error: buscaErr } = await buscarFatura(["partial"]))
+  }
 
   // Mutável: o ramo abaixo pode CRIAR a fatura quando o pagamento chega antes dela.
   let alvo = encontrada
@@ -558,7 +591,7 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<{ error
     const nova = await generateInvoiceForTenant(tenantId)
     if (nova.id) {
       const { data: recem } = await supabaseAdmin
-        .from("invoices").select("id, total_cents").eq("id", nova.id).maybeSingle()
+        .from("invoices").select("id, total_cents, paid_cents").eq("id", nova.id).maybeSingle()
       alvo = (recem ?? null) as typeof alvo
       console.log(JSON.stringify({
         src: "asaas-handler", kind: "fatura-gerada-no-pagamento",
@@ -582,8 +615,22 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<{ error
     }
   }
 
-  const pago = typeof ev.payload?.payment?.value === "number" ? Math.round(ev.payload.payment.value * 100) : null
+  // 🔒 SÓ O GATEWAY DIZ QUANTO ENTROU. O payload não é mais consultado aqui.
+  const pago = emCentavos(valorDoGateway)
   const devido = (alvo as { total_cents: number }).total_cents
+
+  // 🔴 SEM VALOR AUTORITATIVO, NÃO SE DÁ BAIXA. Antes, valor ausente pulava o piso e
+  //    quitava a fatura — era o furo. Agora fica pendente e o reconcile retenta por 7 dias.
+  // ⚠️ Deixar pendente é seguro AQUI porque `liberar()` já reativou o tenant antes desta
+  //    função: o cliente que pagou não fica cortado esperando o livro fechar. O que atrasa
+  //    é a baixa contábil, não o produto dele.
+  if (pago === null) {
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "SEM-VALOR-DO-GATEWAY-baixa-adiada",
+      tenant: tenantId, payment: ev.payment_id,
+    }))
+    return { error: "gateway não informou o valor do pagamento — baixa não aplicada" }
+  }
 
   // 🔴 PISO DE ACEITE = O PREÇO DO PLANO, NÃO O TOTAL DA FATURA (H-2 do pentest 08/08,
   //    corrigido na revalidação do mesmo dia).
@@ -606,7 +653,16 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<{ error
   const pl = (planoRow as { plans?: { price_cents?: number } | { price_cents?: number }[] | null } | null)?.plans
   const piso = (Array.isArray(pl) ? pl[0]?.price_cents : pl?.price_cents) ?? null
 
-  if (pago !== null && piso !== null && pago < piso) {
+  // 🔴 O PISO NÃO VALE PARA COMPLEMENTO DE PARCIAL (achado por teste, 08/08). Assim que
+  //    `partial` passou a existir, a segunda parcela é **por definição** menor que o preço
+  //    do plano — ela é o que faltava. Aplicar o piso ali recusaria justamente o pagamento
+  //    que quita a fatura, e o cliente ficaria pagando sem nunca sair do vermelho.
+  // 🔑 O piso existe pra barrar um pagamento AVULSO pequeno se passando pela recorrência.
+  //    Numa fatura que já recebeu algo, esse disfarce não existe: o dinheiro está pousando
+  //    numa dívida que já foi reconhecida.
+  const jaRecebido = (alvo as { paid_cents?: number | null }).paid_cents ?? 0
+
+  if (jaRecebido === 0 && pago !== null && piso !== null && pago < piso) {
     console.error(JSON.stringify({
       src: "asaas-handler", kind: "PAGAMENTO-MENOR-QUE-O-PLANO-revisar",
       tenant: tenantId, payment: ev.payment_id, pagoCents: pago, planoCents: piso, faturaCents: devido,
@@ -614,22 +670,52 @@ async function darBaixaNaFatura(tenantId: string, ev: EventRow): Promise<{ error
     return { error: `pagamento (${pago}) menor que o preço do plano (${piso}) — baixa não aplicada` }
   }
 
-  // ⚠️ Quitou a fatura inteira com menos que o total? Acontece, é a dívida do excedente que
-  //    não chega ao cartão. Registra o quanto ficou pra trás — sem esse log, a diferença
-  //    some sem ninguém nunca saber que existiu.
-  if (pago !== null && pago < devido) {
+  // ── Quanto entrou × quanto era devido ─────────────────────────────────────
+  //
+  // 🔴 ATÉ 08/08 ISTO ERA UM `console.warn` E A FATURA VIRAVA `paid` DE QUALQUER JEITO
+  //    (H-02 do pentest). O gateway cobrava só o plano, o excedente ficava de fora, e o
+  //    livro **declarava quitado** o que não foi — a diferença sumia sem deixar registro em
+  //    lugar nenhum. Não era erro de arredondamento: era receita entregue e apagada.
+  //
+  // 🔑 `paid_cents` + `partial` tornam o estado REPRESENTÁVEL, e é isso que para a mentira
+  //    mesmo antes de o `PUT` do valor fechar a diferença na origem. A fatura passa a poder
+  //    dizer "devia 429,80, recebi 349,90" em vez de fingir que está quitada.
+  // ⚠️ `paid_at` só na quitação: uma fatura parcial **não** tem data de pagamento, ela tem
+  //    um recebimento. Carimbar ali faria toda contagem de "faturas pagas" incluí-la.
+  // 🔴 ACUMULA, NÃO SOBRESCREVE. Desde que `partial` entrou na busca acima, a MESMA fatura
+  //    pode receber um segundo pagamento — e escrever `paid_cents = pago` apagaria o
+  //    primeiro, fazendo uma fatura quitada em duas parcelas parecer eternamente parcial.
+  //    (`jaRecebido` foi lido acima, junto do piso, porque ele decide os dois.)
+  const somado = jaRecebido + pago
+  const quitou = somado >= devido
+
+  // 🔒 TETO CONTRA A INVARIANTE 2. Mesmo com a busca corrigida acima, um recebimento maior
+  //    que o devido é possível (pagamento manual no painel, valor editado no gateway) — e
+  //    gravar `paid_cents > total_cents` quebraria a consulta que a migration publica como
+  //    "deve voltar vazia para sempre". O excesso não é apagado: fica no log, com o
+  //    pagamento que o causou, pra alguém decidir o que fazer.
+  const recebidoTotal = Math.min(somado, devido)
+  if (somado > devido) {
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "RECEBIDO-MAIOR-QUE-O-DEVIDO-revisar",
+      tenant: tenantId, payment: ev.payment_id,
+      faturaCents: devido, somadoCents: somado, excedenteCents: somado - devido,
+    }))
+  }
+  if (!quitou) {
     console.warn(JSON.stringify({
-      src: "asaas-handler", kind: "baixa-com-excedente-nao-cobrado",
+      src: "asaas-handler", kind: "recebimento-parcial",
       tenant: tenantId, payment: ev.payment_id, pagoCents: pago, faturaCents: devido,
-      naoCobradoCents: devido - pago,
+      recebidoTotalCents: recebidoTotal, faltamCents: devido - recebidoTotal,
     }))
   }
 
   const { error } = await supabaseAdmin
     .from("invoices")
     .update({
-      status:      "paid",
-      paid_at:     new Date().toISOString(),
+      status:      quitou ? "paid" : "partial",
+      paid_cents:  recebidoTotal,
+      paid_at:     quitou ? new Date().toISOString() : null,
       paid_method: "credit_card",
       // 🔑 O ELO QUE FALTAVA. Daqui pra frente a fatura sabe qual pagamento a quitou —
       //    e a idempotência lá em cima passa a ter em que se apoiar.
@@ -689,7 +775,13 @@ async function liberar(
   //    transitório, é evento que não deveria liberar nada.
   if (!ev.payment_id) { await fechar(ev.id, "sem payment_id — não libera"); return }
 
-  let pagamento: { status?: string; subscription?: string | null; customer?: string | null }
+  // 🔴 `value` ENTROU AQUI (achado H-01 do pentest de 08/08). A resposta autoritativa do
+  //    gateway estava sendo buscada e o campo do VALOR não era nem lido — a baixa usava
+  //    `ev.payload.payment.value`, que é o corpo da requisição, forjável por quem tiver o
+  //    token do webhook. E o pior não era o valor mentido: **omitir** o campo fazia `pago`
+  //    virar `null`, o piso de aceite ser PULADO, e a fatura ser quitada sem comprovação
+  //    nenhuma. A prova estava a três linhas de distância, sem uso.
+  let pagamento: { status?: string; subscription?: string | null; customer?: string | null; value?: number }
   try {
     pagamento = await asaas.get(`/payments/${ev.payment_id}`)
   } catch (e) {
@@ -793,7 +885,7 @@ async function liberar(
   if (jaEncerrado) {
     console.warn(JSON.stringify({ src: "asaas-handler", kind: "liberacao-obsoleta-ignorada",
       tenant: tenant.id, payment: ev.payment_id }))
-    const baixaTardia = await darBaixaNaFatura(tenant.id, ev)
+    const baixaTardia = await darBaixaNaFatura(tenant.id, ev, pagamento?.value)
     await fechar(ev.id, baixaTardia?.error ?? "assinatura já encerrada — liberação não reaplicada",
       !baixaTardia?.error)
     return
@@ -881,7 +973,7 @@ async function liberar(
     }
   }
 
-  const baixa = await darBaixaNaFatura(tenant.id, ev)
+  const baixa = await darBaixaNaFatura(tenant.id, ev, pagamento?.value)
   if (baixa?.error) pendencia = pendencia ? `${pendencia}; ${baixa.error}` : baixa.error
 
   // ── Avisos ────────────────────────────────────────────────────────────────
@@ -894,7 +986,12 @@ async function liberar(
     tenantId:   tenant.id,
     aviso:      "pagamento_confirmado",
     fato:       ev.payment_id,
-    valorCents: emCentavos(ev.payload?.payment?.value),
+    // 🔴 O RECIBO USAVA O PAYLOAD — a correção do H-01 parou 13 linhas antes (QA, 09/08).
+    //    A baixa da fatura já usa o valor autoritativo do GET; o e-mail que **afirma um
+    //    valor ao cliente** continuava lendo o corpo da requisição, que é forjável. Sem
+    //    atacante nenhum, basta o payload divergir do GET pra o livro e o recibo contarem
+    //    histórias diferentes sobre o mesmo pagamento.
+    valorCents: emCentavos(pagamento?.value),
     quando:     new Date().toISOString(),
   })
 
@@ -1018,6 +1115,20 @@ async function restringir(
   // ⚠️ Sem carimbo, `passouDaCarencia` responde **true** (fail-closed pela data). Ou seja:
   //    esquecer de carimbar não abre o produto, fecha — o erro cai pro lado seguro, mas cai
   //    em cima do cliente. Por isso a invariante 1 da migration existe pra ser consultada.
+  // 🔴 `canceled` É TERMINAL — não se volta dele por evento atrasado (QA, 09/08). Sem esta
+  //    guarda, um `PAYMENT_OVERDUE` que ficou pendente e foi reprocessado depois do
+  //    encerramento movia o tenant de `canceled` (paywall, produto fechado) para `past_due`
+  //    com carimbo de AGORA — devolvendo **uma carência inteira** de produto liberado, com
+  //    atendimento e login da equipe de volta. Depois o housekeeping cortava de novo: o
+  //    corte virava serrilhado, sem ninguém ter decidido isso.
+  // 🔑 Simétrico à guarda `jaEncerrado` do `liberar()`: evento antigo não reabre nada.
+  if ((estadoAtual?.subscription_status ?? "") === "canceled") {
+    console.warn(JSON.stringify({ src: "asaas-handler", kind: "restricao-obsoleta-ignorada",
+      tenant: tenant.id, payment: ev.payment_id }))
+    await fechar(ev.id, "assinatura já encerrada — restrição não reaplicada")
+    return
+  }
+
   const jaEstavaAtrasado = (estadoAtual?.subscription_status ?? "") === "past_due"
   const carimbo = jaEstavaAtrasado && estadoAtual?.past_due_since
     ? estadoAtual.past_due_since

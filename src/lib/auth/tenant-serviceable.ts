@@ -190,8 +190,45 @@ export class TenantInPaywallError extends Error {
  * ⚠️ NÃO use `canSpend` no lugar: ele já é falso no dia 1 do atraso, e o degrau 2 manda o
  *    atendimento CONTINUAR. São perguntas diferentes de propósito.
  */
+/**
+ * O predicado ÚNICO de "esta conta pode mandar mensagem agora?".
+ *
+ * 🔴 A ESCADA ESTAVA INVERTIDA NO TOPO (achado do QA, 09/08). Os gates de envio perguntavam
+ *    só `inPaywall` — e `motivoDoPaywall` não conhece `suspended`/`deactivated`, além de
+ *    `checkTenantStatus` devolver `inPaywall: false` para qualquer tenant com
+ *    `active !== true`. Resultado: o degrau **3** bloqueava o envio e os degraus **4 e 5**,
+ *    que são mais severos e decididos por uma pessoa, deixavam passar — inclusive
+ *    `sendOfficialTemplate`, que é template PAGO da Meta. Não era só a janela de 5 min da
+ *    sessão: qualquer chamador do servidor passava.
+ *
+ * 🔑 Duas perguntas, um "não": está no paywall (degrau 3) **ou** deixou de ser cliente
+ *    (degraus 4/5). Como predicado único, nenhum gate novo consegue perguntar pela metade.
+ *
+ * ⚠️ `degraded` NÃO bloqueia: uma consulta que falhou não pode emudecer o WhatsApp de quem
+ *    está em dia. É a mesma assimetria do resto deste arquivo — errar servindo custa
+ *    centavos, errar bloqueando derruba a operação de um cliente pagante.
+ */
+export function atendimentoBloqueado(s: TenantStatusCheck): boolean {
+  return !s.degraded && (s.inPaywall || !s.canAccess)
+}
+
+/**
+ * O irmão de GASTO: "podemos pagar por esta conta agora?" — mídia pro Storage, LLM,
+ * transcrição, template pago, campanha.
+ *
+ * 🔑 Existe pelo mesmo motivo do de cima: o par `!degraded && !canSpend` estava escrito à
+ *    mão em cada ponto, e escrever à mão é como metade deles saiu errado (o `!degraded`
+ *    esquecido bloqueia quem está em dia; o `canSpend` esquecido gasta por quem não paga).
+ * ⚠️ NÃO é o mesmo que `atendimentoBloqueado`: o gasto cai já no **degrau 2**, quando o
+ *    atendimento manual ainda tem que funcionar. Trocar um pelo outro corta o atendimento
+ *    no dia 1 do atraso, ou custeia mídia de quem já está no paywall.
+ */
+export function gastoBloqueado(s: TenantStatusCheck): boolean {
+  return !s.degraded && !s.canSpend
+}
+
 export async function assertAtendimentoLiberado(tenantId: string): Promise<void> {
-  if ((await checkTenantStatus(tenantId)).inPaywall) throw new TenantInPaywallError()
+  if (atendimentoBloqueado(await checkTenantStatus(tenantId))) throw new TenantInPaywallError()
 }
 
 /**

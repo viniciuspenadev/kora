@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { checkLimit, monthlyQuotaResetsAt } from "@/lib/limits"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import Link from "next/link"
 import { Network, Plug } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
@@ -95,6 +96,15 @@ export default async function FluxosPage() {
   ])
   const temCanal = !!waLive || !!igLive || !!siteLive
 
+  // ── Degrau 2 da escada de cobrança ────────────────────────────────────────
+  // 🔴 Com fatura em aberto o motor não executa fluxo nenhum — e a tela dizia "Ativo".
+  //    O dono via Publicado · Ativo, nada acontecia, e ia depurar um fluxo sem defeito.
+  //    Mesma armadilha do aviso de cota logo acima, por outra causa.
+  // ⚠️ `degraded` não bloqueia a leitura: blip de banco não pode escrever "pausado" na
+  //    tela de quem está em dia.
+  const cobranca = await checkTenantStatus(tenantId)
+  const bloqueadoPorCobranca = !cobranca.degraded && !cobranca.canSpend
+
   const activations: Record<string, number> = {}
   const seen = new Map<string, Set<string>>()
   for (const s of (steps ?? []) as { flow_id: string; run_id: string }[]) {
@@ -141,6 +151,7 @@ export default async function FluxosPage() {
         igQuota={igQuota && !igQuota.ok
           ? { used: igQuota.used, max: igQuota.max ?? 0, resetsAt: monthlyQuotaResetsAt() }
           : null}
+        bloqueado={bloqueadoPorCobranca}
       />
     </PageShell>
   )

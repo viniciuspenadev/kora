@@ -7,6 +7,7 @@ import { Plus, Send, Loader2, Trash2, Clock, CheckCircle2, Pause, Ban, FileEdit,
 import { deleteCampaign, getCampaignWizardData, type CampaignRow, type CampaignStatus, type CampaignWizardData } from "@/lib/actions/campaigns"
 import { EmptyState } from "@/components/ui/empty-state"
 import { useConfirm } from "@/components/ui/confirm-dialog"
+import { AgentServiceNotice, BlockedAction, PausedCampaignCard } from "@/components/billing"
 import { WizardClient } from "./nova/wizard-client"
 
 const brl = (v: number | null) => v == null ? "—" : v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -22,7 +23,14 @@ const STATUS_META: Record<CampaignStatus, { label: string; cls: string; icon: ty
   failed:    { label: "Falhou",    cls: "bg-red-50 text-red-700 border-red-200",             icon: AlertTriangle },
 }
 
-export function CampanhasClient({ campaigns, hasOfficial }: { campaigns: CampaignRow[]; hasOfficial: boolean }) {
+export function CampanhasClient({ campaigns, hasOfficial, bloqueado = false, podeGerenciar = true }: {
+  campaigns: CampaignRow[]
+  hasOfficial: boolean
+  /** Degrau 2: fatura em aberto ⇒ campanha não sai. Decidido no servidor. */
+  bloqueado?: boolean
+  /** `false` ⇒ atendente: vê o efeito, nunca a causa financeira. */
+  podeGerenciar?: boolean
+}) {
   const router = useRouter()
   const [modalOpen, setModalOpen] = useState(false)
   const [wiz, setWiz] = useState<CampaignWizardData | null>(null)
@@ -47,14 +55,42 @@ export function CampanhasClient({ campaigns, hasOfficial }: { campaigns: Campaig
     )
   }
 
+  // 🔑 O trabalho que ficou esperando — e SÓ o que de fato está esperando. `running` e
+  //    `scheduled` são as duas situações em que o cliente mandou disparar e o motor não
+  //    envia. `paused` fica de fora de propósito: foi ELE que pausou, e atribuir isso à
+  //    cobrança seria culpar a fatura por uma decisão dele.
+  const emEspera = bloqueado && podeGerenciar
+    ? campaigns.filter((c) => (c.status === "running" || c.status === "scheduled") && c.recipients > 0)
+    : []
+
+  const novaCampanha = (
+    <button type="button" onClick={openModal}
+      className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
+      <Plus className="size-3.5" /> Nova campanha
+    </button>
+  )
+
   return (
     <div className="space-y-4">
+      {/* 🔒 Atendente: o EFEITO, nunca a causa. O componente não tem prop por onde o fato
+          financeiro entre — a garantia é estrutural, não editorial. */}
+      {bloqueado && !podeGerenciar && <AgentServiceNotice feature="Campanhas" variant="inline" />}
+
+      {/* 🔑 O que ficou na fila vem ANTES da lista: é a informação que muda a decisão de
+          pagar, e enterrá-la embaixo da tabela seria escondê-la de quem ela é. */}
+      {emEspera.map((c) => (
+        <PausedCampaignCard key={c.id} name={c.name} recipients={c.recipients} href={`/campanhas/${c.id}`} />
+      ))}
+
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-xs text-slate-400 tabular-nums">{campaigns.length} campanha{campaigns.length !== 1 ? "s" : ""}</span>
-        <button type="button" onClick={openModal}
-          className="ml-auto inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors">
-          <Plus className="size-3.5" /> Nova campanha
-        </button>
+        {/* ⚠️ O botão FICA, desativado e com o motivo do lado — sumir é pior que travar:
+            quem procura e não acha conclui que o produto quebrou e abre chamado. */}
+        <div className="ml-auto">
+          {bloqueado && podeGerenciar
+            ? <BlockedAction blocked>{novaCampanha}</BlockedAction>
+            : novaCampanha}
+        </div>
       </div>
 
       {campaigns.length === 0 ? (
@@ -62,7 +98,7 @@ export function CampanhasClient({ campaigns, hasOfficial }: { campaigns: Campaig
           icon={Send}
           title="Nenhuma campanha ainda"
           description="Crie a primeira: escolha a audiência (uma lista consentida), o template aprovado e o número de saída — com o custo estimado antes de disparar."
-          action={<button type="button" onClick={openModal} className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors"><Plus className="size-3.5" /> Nova campanha</button>}
+          action={bloqueado && podeGerenciar ? <BlockedAction blocked>{novaCampanha}</BlockedAction> : novaCampanha}
         />
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">

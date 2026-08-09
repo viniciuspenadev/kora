@@ -434,7 +434,7 @@ export async function processMetaWebhook(body: unknown): Promise<void> {
       for (const msg of (value.messages as MetaMessage[] | undefined) ?? []) {
         const nm = (msg.from && nameById.get(msg.from)) || (msg.from_user_id && nameById.get(msg.from_user_id)) || null
         const un = (msg.from && userById.get(msg.from)) || (msg.from_user_id && userById.get(msg.from_user_id)) || null
-        await processMessage(instance, msg, nm, un)
+        await processMessage(instance, msg, nm, un, status.degraded || status.canSpend)
           .catch((e) => console.error("[meta-webhook] message:", e))
       }
     }
@@ -450,7 +450,7 @@ async function findInstance(phoneNumberId: string): Promise<InstanceRow | null> 
   return (data ?? null) as InstanceRow | null
 }
 
-async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName: string | null, username: string | null = null) {
+async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName: string | null, username: string | null = null, allowSpend = true) {
   // BSUID — monitoramento (TEMPORÁRIO): captura o payload REAL da troca-de-número
   // (system `user_changed_user_id`) pra destravar o handler (docs/BUSID §6.4). O bloco
   // `system` traz `user_id` (novo BSUID) + `body` ("changed from OLD to NEW"). Remover após capturar.
@@ -489,7 +489,19 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   let mediaUrl: string | null = null
   let mediaMime: string | null = null
   const mediaFileName: string | null = ext.fileName ?? null
-  if (ext.download) {
+  // 🔴 H-08 ESTAVA FECHADO SÓ NO BAILEYS (achado do QA, 09/08). Aqui o `!canSpend` era um
+  //    `console.warn` e o download rodava igual — ou seja, o único vetor do pentest que um
+  //    **terceiro externo** aciona seguia aberto no canal OFICIAL, que é o que mais cresce.
+  //    Qualquer pessoa mandando mídia pro número de um inadimplente fazia a Kora baixar e
+  //    armazenar o arquivo, sem limite.
+  // ⚠️ A MENSAGEM entra igual — a política preserva o inbound em todo degrau. O que não
+  //    desce é o arquivo, e o metadado diz o porquê pra a bolha poder explicar.
+  if (ext.download && !allowSpend) {
+    metadata.media_skipped_reason = "billing"
+    metadata.media_error_at = new Date().toISOString()
+    console.warn(JSON.stringify({ src: "meta-webhook", kind: "midia-nao-baixada-por-cobranca",
+      tenant: instance.tenant_id, conversa: conv.id }))
+  } else if (ext.download) {
     const stored = await storeMedia(instance, conv.id, ext.download.obj, ext.download.storageType, mediaFileName)
     if ("error" in stored) {
       metadata.media_error = stored.error

@@ -77,13 +77,14 @@ export async function POST(
         } else if (!status.canAccess) {
           console.warn(`[Webhook Evolution] tenant não é mais cliente — evento ignorado (tenant ${instance.tenant_id}, event ${body.event})`)
           return
-        } else if (!status.canSpend) {
-          // ⏳ PENDENTE: o corte de gasto ainda não está dentro do dispatch (mídia/LLM/
-          //    automação). Até lá, inadimplente ingere E gasta — que é o estado anterior
-          //    ao gate, e é preferível a destruir a mensagem dele.
-          console.warn(`[Webhook Evolution] tenant inadimplente — ingere mas NÃO deveria gastar (tenant ${instance.tenant_id})`)
         }
-        await dispatchEvolutionEvent(instance, body)
+        // ✅ FECHADO EM 08/08 (H-08). Aqui morava um "⏳ PENDENTE" dizendo que o
+        //    inadimplente ingeria **e gastava** — mídia, Storage e transcrição rodavam.
+        //    Agora a mensagem entra igual (política: guardar o inbound é o produto) e o
+        //    que ela ARRASTA é podado: sem download de arquivo, sem transcrição.
+        // ⚠️ `degraded` (blip de banco) permite gastar: negar por uma consulta que falhou
+        //    puniria quem está em dia, e a mensagem é evento único que ninguém re-entrega.
+        await dispatchEvolutionEvent(instance, body, status.degraded || status.canSpend)
       } catch (err) {
         console.error("[Webhook Evolution] dispatch failed in after():", err)
       }

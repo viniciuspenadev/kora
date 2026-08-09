@@ -113,7 +113,7 @@ beforeEach(() => {
 // ── P0-4 · falha transitória não pode virar definitiva ──────────────────────
 describe("P0-4 — falha transitória deixa o evento PENDENTE", () => {
   it("falha de banco ao liberar NÃO fecha o evento (antes: perdido para sempre)", async () => {
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
     db.falharEm({ tabela: "tenants", op: "update", vezes: 1, msg: "conexão caiu" })
 
     await processAsaasEvent("evt_1")
@@ -123,7 +123,7 @@ describe("P0-4 — falha transitória deixa o evento PENDENTE", () => {
   })
 
   it("applyPlan que falha mantém o evento pendente — cliente pagou e não recebeu módulos", async () => {
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
     applyPlanMock.mockResolvedValue({ ok: false, error: "upsert falhou" } as never)
 
     await processAsaasEvent("evt_1")
@@ -133,7 +133,7 @@ describe("P0-4 — falha transitória deixa o evento PENDENTE", () => {
   })
 
   it("reprocessar depois que o banco volta conclui e fecha", async () => {
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
     db.falharEm({ tabela: "tenants", op: "update", vezes: 1 })
 
     await processAsaasEvent("evt_1")
@@ -151,7 +151,7 @@ describe("P0-4 — falha transitória deixa o evento PENDENTE", () => {
 // ── B2 · evento antigo não pode ressuscitar assinatura morta ────────────────
 describe("B2 — liberação obsoleta não desfaz um cancelamento posterior", () => {
   it("evento pendente reprocessado após o cancelamento NÃO reabre a assinatura", async () => {
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
     // O cancelamento já aconteceu: fim de ciclo carimbado e vínculo zerado.
     Object.assign(tenant(), { subscription_ends_at: "2026-09-11", asaas_subscription_id: null })
 
@@ -163,25 +163,124 @@ describe("B2 — liberação obsoleta não desfaz um cancelamento posterior", ()
 })
 
 // ── H-2 · piso de aceite ────────────────────────────────────────────────────
+//
+// 🔴 O VALOR AGORA VEM DO GATEWAY, NUNCA DO PAYLOAD (H-01 do pentest de 08/08). Estes
+//    testes passaram a stubar `value` no `GET /payments/{id}`, que é a fonte autoritativa.
+//    Quem tentar voltar a ler do `ev.payload` reprova aqui.
 describe("H-2 — piso é o preço do plano, não o total da fatura", () => {
-  it("paga o valor do PLANO com fatura tendo excedente ⇒ QUITA (o caso comum)", async () => {
+  // 🔴 ESTE TESTE AFIRMAVA O FURO — e o relatório do pentest citou exatamente ele como
+  //    prova: *"o teste atual ratifica esse comportamento: paga o valor do PLANO com fatura
+  //    tendo excedente ⇒ QUITA"*. Ele descrevia com precisão o que o código fazia, e o que
+  //    o código fazia era apagar receita entregue.
+  // 🔑 Com `paid_cents` + `partial`, o estado passou a ser REPRESENTÁVEL: a fatura diz o
+  //    que devia e o que recebeu, em vez de fingir que está quitada.
+  it("paga só o plano numa fatura COM excedente ⇒ PARCIAL, com a diferença registrada", async () => {
     fatura().total_cents = 42980            // plano 349,90 + 1 usuário extra 79,90
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("partial")
+    expect(fatura().paid_cents).toBe(34990)
+    expect(fatura().gateway_ref).toBe("pay_1")
+    // ⚠️ Parcial NÃO tem data de pagamento: ela tem um recebimento. Carimbar `paid_at`
+    //    faria toda contagem de "faturas pagas" incluí-la.
+    expect(fatura().paid_at).toBeNull()
+  })
+
+  it("pagou o total ⇒ QUITA, com `paid_cents` igual ao devido", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
 
     await processAsaasEvent("evt_1")
 
     expect(fatura().status).toBe("paid")
-    expect(fatura().gateway_ref).toBe("pay_1")
+    expect(fatura().paid_cents).toBe(34990)
+    expect(fatura().paid_at).not.toBeNull()
+  })
+
+  // 🔴 O CRÍTICO QUE O QA ACHOU (09/08). Botar `partial` na mesma busca ordenada pela mais
+  //    ANTIGA fazia a cobrança do ciclo SEGUINTE pousar na fatura parcial do ciclo anterior:
+  //    `paid_cents` passava do total (quebrando a invariante 2), a fatura corrente ficava
+  //    `open` PARA SEMPRE, e o cliente que pagou tudo lia "fatura vencida" indefinidamente.
+  it("havendo fatura ABERTA, o pagamento vai nela — não na parcial antiga", async () => {
+    db.seed("invoices", [
+      { id: "inv_velha", tenant_id: TENANT, status: "partial", total_cents: 42980, paid_cents: 34990, due_date: "2026-07-11", gateway_ref: null },
+      { id: "inv_nova",  tenant_id: TENANT, status: "open",    total_cents: 42980, paid_cents: 0,     due_date: "2026-08-11", gateway_ref: null },
+    ])
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 429.8 })
+
+    await processAsaasEvent("evt_1")
+
+    const velha = db.linhas("invoices").find((i) => i.id === "inv_velha")!
+    const nova  = db.linhas("invoices").find((i) => i.id === "inv_nova")!
+    expect(nova.status).toBe("paid")
+    expect(nova.paid_cents).toBe(42980)
+    // A antiga NÃO é tocada: ninguém a está pagando — a gente é que nunca a cobrou inteira.
+    expect(velha.paid_cents).toBe(34990)
+    expect(velha.status).toBe("partial")
+  })
+
+  it("recebido maior que o devido é CAPADO — a invariante 2 não pode quebrar", async () => {
+    fatura().total_cents = 10000
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().paid_cents).toBe(10000)   // nunca > total_cents
+    expect(fatura().status).toBe("paid")
+  })
+
+  // 🔑 O segundo pagamento tem que SOMAR. Sobrescrever faria uma fatura quitada em duas
+  //    parcelas parecer eternamente parcial — e o cliente seria cobrado de novo.
+  it("sem fatura aberta, o complemento encontra a parcial e quita", async () => {
+    fatura().total_cents = 42980
+    fatura().paid_cents  = 34990
+    fatura().status      = "partial"
+    evento().payment_id  = "pay_2"
+    evento().payload     = { payment: { id: "pay_2", customer: CUSTOMER } }
+    gw.responde("GET /payments/pay_2", { id: "pay_2", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 79.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().paid_cents).toBe(42980)
+    expect(fatura().status).toBe("paid")
   })
 
   it("paga MENOS que o plano ⇒ não quita e fica pendente pra revisão", async () => {
-    evento().payload = { payment: { id: "pay_1", customer: CUSTOMER, value: 5 } }
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 5 })
 
     await processAsaasEvent("evt_1")
 
     expect(fatura().status).toBe("open")
     expect(String(evento().error)).toContain("menor que o preço do plano")
+  })
+
+  // 🔒 H-01 — O FURO QUE ISTO TRANCA. O payload é o corpo da requisição: quem tiver o token
+  //    do webhook o escreve. Antes, **omitir** `value` fazia `pago` virar `null`, o piso ser
+  //    PULADO, e a fatura ser quitada sem comprovação nenhuma.
+  it("payload mente sobre o valor ⇒ o gateway vence e a fatura NÃO quita", async () => {
+    evento().payload = { payment: { id: "pay_1", customer: CUSTOMER, value: 999999 } }
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 5 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("open")
+    expect(String(evento().error)).toContain("menor que o preço do plano")
+  })
+
+  it("gateway sem valor ⇒ baixa ADIADA (antes: quitava sem comprovação)", async () => {
+    evento().payload = { payment: { id: "pay_1", customer: CUSTOMER } }   // sem `value`
+    // ⚠️ NÃO ADICIONE `value` AQUI. A ausência dele É o cenário — um "conserto" em massa
+    //    dos stubs já apagou este teste uma vez, e ele voltou verde mentindo.
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL /* sem value: proposital */ })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("open")
+    // ⚠️ Fica PENDENTE, não fechado: o reconcile retenta por 7 dias. E o tenant já foi
+    //    reativado antes desta função, então quem pagou não fica cortado esperando o livro.
+    expect(evento().processed_at).toBeNull()
+    expect(tenant().subscription_status).toBe("active")
   })
 })
 
@@ -302,7 +401,7 @@ describe("idempotência", () => {
   })
 
   it("segunda entrega do mesmo pagamento não dá baixa duas vezes", async () => {
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
     await processAsaasEvent("evt_1")
     expect(fatura().status).toBe("paid")
 
@@ -344,7 +443,7 @@ describe("avisos de cobrança", () => {
   })
 
   it("pagamento de quem estava EM DIA confirma e não diz que algo 'voltou'", async () => {
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
 
     await processAsaasEvent("evt_1")
 
@@ -353,7 +452,7 @@ describe("avisos de cobrança", () => {
 
   it("pagamento de quem estava CORTADO confirma E anuncia o restabelecimento", async () => {
     montarCenario({ tenant: { subscription_status: "past_due" } })
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
 
     await processAsaasEvent("evt_1")
 
@@ -361,7 +460,7 @@ describe("avisos de cobrança", () => {
   })
 
   it("recibo sai mesmo com pendência de livro — o dinheiro do cliente entrou", async () => {
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
     applyPlanMock.mockResolvedValue({ ok: false, error: "upsert falhou" } as never)
 
     await processAsaasEvent("evt_1")
@@ -405,7 +504,7 @@ describe("avisos de cobrança", () => {
 
   it("gateway diz que o pagamento NÃO venceu ⇒ não restringe e não avisa", async () => {
     montarCenario({ evento: { event_type: "PAYMENT_OVERDUE" } })
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
 
     await processAsaasEvent("evt_1")
 
@@ -471,7 +570,7 @@ describe("carimbo do atraso", () => {
 
   it("pagar LIMPA o carimbo — senão ele morde no próximo atraso", async () => {
     montarCenario({ tenant: { subscription_status: "past_due", past_due_since: "2026-08-01T00:00:00.000Z" } })
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
 
     await processAsaasEvent("evt_1")
 

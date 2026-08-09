@@ -112,6 +112,34 @@ describe("recusado ⇒ NADA muda", () => {
       .toBe("Não conseguimos autorizar este cartão. Confira os dados, tente outro cartão ou fale com o seu banco.")
   })
 
+  // ── H-03 · timeout é AMBÍGUO, recusa não é ──────────────────────────────
+  //
+  // 🔴 O FURO: qualquer exceção virava "não pagou". Mas um timeout pode ter sido processado
+  //    com a resposta perdida — e a próxima tentativa refazia a BUSCA, que já não enxergava
+  //    a cobrança recém-paga e pousava na **seguinte**. Um clique, duas parcelas.
+  it("timeout com o pagamento JÁ confirmado ⇒ segue como sucesso, não cobra de novo", async () => {
+    gw.responde("POST /payments/pay_venc/payWithCreditCard", () => { throw new Error("socket hang up") })
+    // O POST tinha dado certo lá no gateway; só a resposta se perdeu.
+    gw.responde("GET /payments/pay_venc", { id: "pay_venc", status: "CONFIRMED", value: 349.9 })
+
+    const r = await regularizar()
+
+    expect("error" in r).toBe(false)
+    // 🔑 A prova de que não houve segunda cobrança: o `payWithCreditCard` foi chamado UMA vez.
+    expect(gw.chamadas.filter((c: { path: string }) => c.path.includes("payWithCreditCard"))).toHaveLength(1)
+  })
+
+  it("timeout SEM conseguir reconsultar ⇒ diz 'não sabemos' e desencoraja o 2º clique", async () => {
+    gw.responde("POST /payments/pay_venc/payWithCreditCard", () => { throw new Error("socket hang up") })
+    gw.responde("GET /payments/pay_venc", () => { throw new Error("gateway fora do ar") })
+
+    const r = await regularizar()
+
+    expect((r as { error: string }).error).toContain("não repita a cobrança")
+    // Nada foi trocado: sem saber se pagou, não se mexe em nada.
+    expect(tenant().asaas_card_token).toBe("enc:v1:token_ANTIGO")
+  })
+
   it("cartão recusado na TOKENIZAÇÃO nem chega a cobrar", async () => {
     gw.responde("POST /creditCard/tokenize", () => { throw new AsaasError(400, "cartão inválido") })
 

@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getProvider } from "@/lib/providers"
+import { atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { createNotification } from "@/lib/notifications"
 import { getAvailability } from "@/lib/agenda/availability"
 import { moveAppointment } from "@/lib/agenda/booking"
@@ -43,6 +44,18 @@ export async function handleAgendaReply(args: {
   interactiveId?: string   // Meta: id do botão/row tocado (`agenda:*`) → roteio determinístico
 }): Promise<boolean> {
   const { tenantId, conversationId, text, instance, interactiveId } = args
+
+  // 🔴 A SÉTIMA PORTA DE SAÍDA (achado do QA, 09/08). Este interceptor manda mensagem pelo
+  //    número do tenant em TODOS os ramos — confirmação, remarcação, "sem horários", menu —
+  //    e não tinha gate nenhum. Pior que as outras seis: ele é acionado **de fora**, pelo
+  //    contato final respondendo "1"/"2" a uma confirmação já enviada. Basta uma pendência
+  //    armada antes do corte (o cron de lembretes é gateado, mas o carimbo sobrevive) e o
+  //    round-trip continua rodando enquanto a tela do cliente lista "Lembretes da agenda —
+  //    pausado" e "Atendimento pelo WhatsApp — pausado".
+  // 🔑 Usa o predicado único: paywall OU deixou de ser cliente. Devolve `false` (= "não
+  //    tratei"), então a mensagem segue o fluxo normal e é guardada — a política preserva o
+  //    inbound em todo degrau; o que para é a RESPOSTA automática.
+  if (atendimentoBloqueado(await checkTenantStatus(tenantId))) return false
 
   const { data: conv } = await supabaseAdmin.from("chat_conversations")
     .select("id, assigned_to, pending_agenda, contact_id, chat_contacts ( phone_number, custom_name, push_name, bsuid )")

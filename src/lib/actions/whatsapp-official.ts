@@ -8,6 +8,7 @@ import {
   type MetaBusinessProfile, type MetaTemplate, type TemplateAnalytics,
 } from "@/lib/providers/meta-cloud-provider"
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secrets"
+import { atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { parseVars, type TemplateVar } from "@/lib/whatsapp/template-vars"
 import { upsertTemplateCache } from "@/lib/channels/template-cache"
@@ -125,7 +126,7 @@ export async function connectWhatsAppOfficial(input: {
 }
 
 /** Resolve o provider Meta da instância oficial do tenant logado (owner/admin). */
-async function tenantMetaProvider(instanceId?: string): Promise<{ provider: MetaCloudProvider } | { error: string }> {
+async function tenantMetaProvider(instanceId?: string): Promise<{ provider: MetaCloudProvider; tenantId: string } | { error: string }> {
   const session = await auth()
   if (!session) return { error: "Não autenticado." }
   if (!["owner", "admin"].includes(session.user.role)) return { error: "Acesso restrito a administradores." }
@@ -144,6 +145,9 @@ async function tenantMetaProvider(instanceId?: string): Promise<{ provider: Meta
     return { error: "Instância oficial não configurada." }
   }
   return {
+    // ⚠️ Devolvido junto porque quem usa o provider precisa gatear por status, e chamar
+    //    `auth()` de novo lá fora leria a sessão duas vezes por envio.
+    tenantId: session.user.tenantId,
     provider: new MetaCloudProvider({
       meta_phone_number_id:     inst.meta_phone_number_id,
       meta_business_account_id: inst.meta_business_account_id ?? "",
@@ -674,6 +678,12 @@ export async function sendOfficialTest(input: {
 }): Promise<Result> {
   const r = await tenantMetaProvider(input.instanceId)
   if ("error" in r) return { ok: false, error: r.error }
+
+  // 🔒 Degrau 3 — "teste" manda mensagem de verdade e, no modo template, é template PAGO da
+  //    Meta. Sem o gate, virava a porta mais barata de continuar disparando no paywall.
+  if (atendimentoBloqueado(await checkTenantStatus(r.tenantId))) {
+    return { ok: false, error: "O acesso desta conta está pausado até a regularização do pagamento." }
+  }
 
   const phone = input.phone.replace(/\D/g, "")
   if (phone.length < 12) return { ok: false, error: "Use o número completo com DDI (ex: 5511999999999)." }

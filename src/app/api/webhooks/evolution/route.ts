@@ -128,6 +128,20 @@ export async function dispatchEvolutionEvent(
   instance: ResolvedInstance,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   body:     { event?: string; data?: any },
+  /**
+   * O tenant pode GASTAR por esta mensagem? (H-08 do pentest de 08/08)
+   *
+   * 🔴 A MENSAGEM SEMPRE ENTRA — isso não está em discussão e é a política: guardar o
+   *    inbound é o PRODUTO, e o degrau 5 retém dado. O que este parâmetro governa é o que
+   *    a mensagem ARRASTA junto: download de mídia pro nosso Storage e transcrição por
+   *    LLM. Esses dois seguiam rodando pra tenant inadimplente, e são acionáveis por
+   *    **qualquer remetente externo** — basta mandar um áudio pro número dele. É o único
+   *    achado do pentest que um terceiro provoca de fora.
+   *
+   * ⚠️ OBRIGATÓRIO, sem default. Um `allowSpend = true` opcional significaria "quem
+   *    esquecer de passar, gasta" — que é como as 6 portas de envio ficaram sem gate.
+   */
+  allowSpend: boolean,
 ): Promise<void> {
   const event = body.event
   if (!event) return
@@ -135,7 +149,7 @@ export async function dispatchEvolutionEvent(
   switch (event) {
     case "messages.upsert":
     case "MESSAGES_UPSERT":
-      await handleMessageUpsert(instance, body.data)
+      await handleMessageUpsert(instance, body.data, allowSpend)
       break
 
     case "messages.update":
@@ -194,6 +208,8 @@ export async function POST(req: NextRequest) {
 async function handleMessageUpsert(
   instance: InstanceRow,
   data:     EvolutionMessageData | EvolutionMessageData[],
+  /** Ver o docblock em `dispatchEvolutionEvent`. Obrigatório, sem default. */
+  allowSpend: boolean,
 ) {
   const instanceId = instance.id
   const tenantId   = instance.tenant_id
@@ -346,7 +362,12 @@ async function handleMessageUpsert(
         if (quoted)          metaFromMe.quoted            = quoted
 
         const isMediaFromMe = contentType === "image" || contentType === "audio" || contentType === "video" || contentType === "document"
-        if (isMediaFromMe) {
+        if (isMediaFromMe && !allowSpend) {
+          // A MENSAGEM fica; o arquivo não é baixado. Marcado no metadado pra a bolha saber
+          // explicar — e pra ser recuperável se um dia quisermos re-baixar após o pagamento.
+          metaFromMe.media_skipped_reason = "billing"
+          metaFromMe.media_error_at       = new Date().toISOString()
+        } else if (isMediaFromMe) {
           const stored = await downloadAndStoreMedia(instance, convFromMe.id, msg, contentType, mediaFileName)
           if ("error" in stored) {
             metaFromMe.media_error    = stored.error
@@ -422,7 +443,18 @@ async function handleMessageUpsert(
     if (quoted)          metadata.quoted            = quoted
 
     const isMedia = contentType === "image" || contentType === "audio" || contentType === "video" || contentType === "document"
-    if (isMedia) {
+    // 🔴 O VETOR QUE UM TERCEIRO ACIONA (H-08). Qualquer pessoa mandando mídia pro número
+    //    de um tenant inadimplente gerava download + Storage por conta da Kora, sem limite.
+    // ⚠️ A mensagem entra do mesmo jeito — só o ARQUIVO não desce. O texto, o remetente e a
+    //    hora ficam, então o atendimento manual (que a política preserva) segue possível.
+    if (isMedia && !allowSpend) {
+      metadata.media_skipped_reason = "billing"
+      metadata.media_error_at       = new Date().toISOString()
+      console.warn(JSON.stringify({
+        src: "evolution", kind: "midia-nao-baixada-por-cobranca",
+        tenant: instance.tenant_id, conversa: conversation.id,
+      }))
+    } else if (isMedia) {
       const stored = await downloadAndStoreMedia(instance, conversation.id, msg, contentType, mediaFileName)
       if ("error" in stored) {
         metadata.media_error           = stored.error

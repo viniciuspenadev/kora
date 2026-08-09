@@ -1,5 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { isTenantInPaywall } from "@/lib/lifecycle-shared"
+import { atualizarValorDaAssinatura } from "@/lib/asaas/subscriptions"
 
 /**
  * Núcleo financeiro (sem auth) — reusado por:
@@ -89,7 +91,10 @@ export function currentPeriod(billingDay: number | null): { start: string; end: 
  */
 export async function generateInvoiceForTenant(tenantId: string): Promise<{ error?: string; id?: string; skipped?: boolean }> {
   const { data: tenant } = await supabaseAdmin
-    .from("tenants").select("id, plan_id, billing_day").eq("id", tenantId).maybeSingle()
+    // As 4 colunas extras alimentam a guarda de paywall logo abaixo — a linha já era lida.
+    .from("tenants")
+    .select("id, plan_id, billing_day, lifecycle_state, subscription_status, past_due_since, past_due_grace_days")
+    .eq("id", tenantId).maybeSingle()
   if (!tenant)         return { error: "Tenant não encontrado" }
   if (!tenant.plan_id) return { error: "Tenant sem plano atribuído" }
 
@@ -107,6 +112,25 @@ export async function generateInvoiceForTenant(tenantId: string): Promise<{ erro
   //    Marcar como erro encheria o log do cron de alarme falso todo dia.
   if ((plan.price_cents ?? 0) <= 0) {
     return { skipped: true, error: "Plano sem valor — nada a faturar" }
+  }
+
+  // 🔴 PRÉ-PAGO: PERÍODO NÃO SERVIDO NÃO GERA FATURA (decisão do dono, 08/08 — *"elas nem
+  //    devem existir em período não servido"*). A fatura cobre o período **à frente**
+  //    (`currentPeriod`: começa hoje, termina daqui a um mês). Emitir uma para quem está no
+  //    paywall seria vender um mês que não vamos entregar — e é literalmente o que
+  //    acontecia: o cron só pulava `canceled`, então o bloqueado ganhava fatura nova todo
+  //    mês. Três meses parado = três faturas de um período que ele não usou.
+  // 🔑 Em pré-pago, fatura não paga não é dívida: é uma **oferta que expirou**. A que já
+  //    estava aberta é encerrada com `void_reason='nao_servido'`; as seguintes nem nascem.
+  // ⚠️ Aqui, e não só no cron: esta função também é chamada pelo webhook quando chega
+  //    pagamento sem fatura. Nesse caminho o tenant está pagando — não está no paywall —
+  //    então a guarda não atrapalha, e cobre o cron e a chamada avulsa de uma vez.
+  const emPaywall = isTenantInPaywall(
+    tenant.lifecycle_state, tenant.subscription_status,
+    tenant.past_due_since, tenant.past_due_grace_days,
+  )
+  if (emPaywall) {
+    return { skipped: true, error: "Tenant no paywall — período não servido não gera fatura" }
   }
 
   const period = currentPeriod(tenant.billing_day)
@@ -130,18 +154,61 @@ export async function generateInvoiceForTenant(tenantId: string): Promise<{ erro
   if (extra > 0 && plan.extra_user_price_cents > 0) {
     items.push({
       kind: "overage",
-      description: `${extra} usuário(s) adicional(is) — cota ${plan.user_quota}, ativos ${users}`,
+      // 🔑 A DESCRIÇÃO DIZ A FOTO E O PRAZO — decisão do dono (08/08): manter a defasagem
+      //    de um ciclo e **explicar na tela**, em vez de mexer no valor no meio do período.
+      //    Sem a data, o excedente vira o ticket clássico: *"eu tirei os usuários e
+      //    continuei pagando"*. Com ela, a pessoa entende que a contagem é do dia do
+      //    fechamento e que desativar antes do próximo já reduz.
+      // ⚠️ `medido em` é a foto, não o intervalo: quem desativa depois desta data paga
+      //    este ciclo e para no seguinte. É a regra que o dono escolheu por ser previsível
+      //    e controlável — proporcional por dias exigiria histórico por usuário, que não
+      //    existe, pra resolver um problema que ninguém levantou.
+      description: `${extra} usuário(s) adicional(is) — cota ${plan.user_quota}, ativos ${users} (medido em ${period.start})`,
       quantity: extra, unit_price_cents: plan.extra_user_price_cents, amount_cents: extra * plan.extra_user_price_cents,
     })
   }
 
-  const oneoffIds: string[] = []
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 A AVULSA SAI DA FATURA ATÉ EXISTIR COMO COBRAR (achado do QA, 09/08)
+  // ══════════════════════════════════════════════════════════════════════════
+  // Ela entrava na fatura, era marcada `active=false` ("consumida") e **nunca era cobrada
+  // em lugar nenhum** — não existe `POST /payments` no repositório, e ela é excluída do
+  // `PUT` do valor da assinatura de propósito (o que entra lá se repete todo mês).
+  //
+  // O QA viu o que eu não tinha visto: o problema não é "ainda não cobramos". É que o
+  // CONSUMO torna a perda **definitiva** — ela sai da fila de `tenant_charges` e não volta
+  // em ciclo nenhum. O operador cadastra R$ 150, a fatura afirma R$ 150 a mais, o cliente
+  // nunca é cobrado, e a cobrança some. Ainda por cima a fatura ficava `partial` para
+  // sempre, que era o gatilho do crítico nº 1.
+  //
+  // 🔑 Enquanto não existe caminho de cobrança, o comportamento honesto é: **não fatura e
+  //    não consome**. A avulsa fica pendente e visível no god mode, o total da fatura passa
+  //    a ser exatamente o que o gateway vai debitar, e nada é silenciosamente engolido.
+  // ⚠️ Add-on RECORRENTE continua entrando: ele vai no valor da assinatura pelo `PUT`, ou
+  //    seja, é cobrado de verdade. A assimetria é entre "cobrável" e "não cobrável", não
+  //    entre tipos de cobrança.
+  //
+  // ⏳ PENDENTE — a peça que fecha isto de verdade: criar a cobrança no gateway
+  //    (`POST /payments` com o token do cartão, idempotente por `externalReference`) e só
+  //    então faturar e consumir. É código que debita cartão de cliente real e precisa de
+  //    validação no sandbox antes de valer pra todo mundo.
+  const avulsasPendentes: Array<{ id: string; amount_cents: number }> = []
   for (const c of (charges ?? []) as Array<{ id: string; kind: string; description: string; amount_cents: number }>) {
+    if (c.kind !== "recurring_addon") {
+      avulsasPendentes.push({ id: c.id, amount_cents: c.amount_cents })
+      continue
+    }
     items.push({
-      kind: c.kind === "recurring_addon" ? "addon" : "oneoff",
+      kind: "addon",
       description: c.description, quantity: 1, unit_price_cents: c.amount_cents, amount_cents: c.amount_cents,
     })
-    if (c.kind === "oneoff") oneoffIds.push(c.id)
+  }
+  if (avulsasPendentes.length > 0) {
+    console.warn(JSON.stringify({
+      src: "billing", kind: "avulsas-nao-faturadas-sem-caminho-de-cobranca",
+      tenant: tenantId, quantas: avulsasPendentes.length,
+      totalCents: avulsasPendentes.reduce((s, a) => s + a.amount_cents, 0),
+    }))
   }
 
   const subtotal = items.reduce((s, i) => s + i.amount_cents, 0)
@@ -163,12 +230,79 @@ export async function generateInvoiceForTenant(tenantId: string): Promise<{ erro
     return { error: error.message }
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 DAQUI PRA BAIXO, TUDO OU NADA (H-06 do pentest de 08/08)
+  // ══════════════════════════════════════════════════════════════════════════
+  // Eram três escritas independentes — cabeçalho, itens, consumo das avulsas — e uma falha
+  // no meio deixava dois estados ruins, os DOIS irrecuperáveis pelo retry:
+  //
+  //   (a) fatura com `total_cents` certo e **zero linhas**. O PDF sai sem itens, e como o
+  //       índice único `(tenant_id, period_start)` bloqueia recriar o cabeçalho, a própria
+  //       função passa a responder "já existe uma fatura para este período" — para sempre.
+  //   (b) o consumo das avulsas falhava **com o retorno descartado**: elas seguiam
+  //       `active=true` e entravam DE NOVO na fatura do mês seguinte ⇒ **cobrança em dobro**.
+  //
+  // 🔑 Sem transação de verdade (o PostgREST não expõe uma), a saída é COMPENSAR: qualquer
+  //    falha depois do cabeçalho apaga o cabeçalho. Os itens caem junto por
+  //    `on delete cascade`. O retry recomeça do zero, que é o único estado de onde ele
+  //    consegue recomeçar.
+  // ⚠️ Apagar é seguro AQUI e só aqui: a fatura acabou de nascer, ninguém a viu, ninguém a
+  //    pagou. Não é "apagar fatura" como operação de negócio.
+  const desfazer = async (motivo: string) => {
+    const { error: delErr } = await supabaseAdmin.from("invoices").delete().eq("id", inv.id)
+    if (delErr) {
+      // O caso irredutível: falhou e não conseguimos nem limpar. Grita com o id, porque
+      // agora existe uma fatura pela metade que só a mão resolve.
+      console.error(JSON.stringify({
+        src: "billing", kind: "FATURA-PELA-METADE-limpar-a-mao",
+        tenant: tenantId, invoice: inv.id, motivo, erroDaLimpeza: delErr.message,
+      }))
+    }
+  }
+
   const { error: itemsErr } = await supabaseAdmin
     .from("invoice_items").insert(items.map((i) => ({ ...i, invoice_id: inv.id })))
-  if (itemsErr) return { error: itemsErr.message }
+  if (itemsErr) {
+    await desfazer(`itens não inseridos: ${itemsErr.message}`)
+    return { error: itemsErr.message }
+  }
 
-  if (oneoffIds.length > 0) {
-    await supabaseAdmin.from("tenant_charges").update({ active: false, updated_at: new Date().toISOString() }).in("id", oneoffIds)
+  // 🔴 O CONSUMO DAS AVULSAS SAIU DAQUI (QA, 09/08). Ele marcava `active=false` numa
+  //    cobrança que ninguém nunca cobrava — e era o consumo, não a falta de cobrança, que
+  //    tornava a perda DEFINITIVA: a avulsa saía da fila e não voltava em ciclo nenhum.
+  //    Enquanto não existir caminho de cobrança, ela não é faturada nem consumida (ver o
+  //    bloco de montagem dos itens). Consumir sem cobrar é apagar receita com um `update`.
+
+  // ── O gateway passa a cobrar o que a fatura diz (H-02) ────────────────────
+  //
+  // 🔴 A assinatura nascia com o preço do plano e **nunca mais era tocada**. A fatura soma
+  //    plano + excedente + adicionais; o cartão pagava só o plano. O excedente era
+  //    entregue, virava linha no livro, era declarado quitado e sumia.
+  //
+  // 🔑 RECALCULADO DO ZERO, todo ciclo — é isso que o faz **descer** quando o cliente
+  //    reduz a equipe (`setMemberActive` desativa, e a contagem acima já lê a mesma
+  //    coluna). O risco desta abordagem nunca foi subir: é ficar preso em cima.
+  //
+  // ⚠️ AVULSA FICA DE FORA, de propósito. O que entra no valor da assinatura **se repete
+  //    todo mês** — uma cobrança de setup viraria mensalidade eterna. Ela permanece só no
+  //    nosso livro até existir cobrança separada; nada regride (hoje ela também não é
+  //    cobrada), mas ninguém deve ler este código achando que ela passou a ser.
+  //
+  // ⚠️ Best-effort com log ALTO: a fatura acima já está correta e é ela que manda no nosso
+  //    livro. Falhar aqui significa que o gateway seguirá cobrando o valor anterior — uma
+  //    diferença de receita, não uma inconsistência de dado. Desfazer a fatura por causa
+  //    disso seria pior.
+  const recorrenteCents = items
+    .filter((i) => i.kind !== "oneoff")
+    .reduce((s, i) => s + i.amount_cents, 0)
+  if (recorrenteCents > 0) {
+    const r = await atualizarValorDaAssinatura(tenantId, recorrenteCents)
+    if ("error" in r) {
+      console.error(JSON.stringify({
+        src: "billing", kind: "fatura-emitida-mas-assinatura-nao-atualizada",
+        tenant: tenantId, invoice: inv.id, valorCents: recorrenteCents,
+      }))
+    }
   }
 
   return { id: inv.id }

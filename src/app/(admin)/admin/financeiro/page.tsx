@@ -7,14 +7,18 @@ import { computeBillingSummary } from "@/lib/billing"
 const BRL = (c: number) => (c / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 const fmtDate = (s: string | null) => s ? new Date(s + (s.length === 10 ? "T12:00:00" : "")).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }) : "—"
 
+// ⚠️ `partial` (nasceu 08/08) tem que existir nos DOIS mapas — sem entrada, o badge sai sem
+//    cor e o rótulo cai no valor cru. A tela irmã foi varrida no mesmo dia e este dashboard
+//    ficou de fora (achado do QA, 09/08).
 const STATUS_BADGE: Record<string, string> = {
   open:    "text-amber-700 bg-amber-50 border-amber-200",
+  partial: "text-amber-800 bg-amber-100 border-amber-300",
   paid:    "text-emerald-700 bg-emerald-50 border-emerald-200",
   overdue: "text-red-700 bg-red-50 border-red-200",
   void:    "text-slate-500 bg-slate-100 border-slate-200",
   draft:   "text-slate-600 bg-slate-50 border-slate-200",
 }
-const STATUS_LABEL: Record<string, string> = { open: "Aberta", paid: "Paga", overdue: "Vencida", void: "Anulada", draft: "Rascunho" }
+const STATUS_LABEL: Record<string, string> = { open: "Aberta", partial: "Parcial", paid: "Paga", overdue: "Vencida", void: "Anulada", draft: "Rascunho" }
 
 export default async function FinanceiroPage() {
   const now = new Date()
@@ -23,7 +27,7 @@ export default async function FinanceiroPage() {
 
   const [summary, { data: openOrPaid }, { data: recentInvoices }] = await Promise.all([
     computeBillingSummary(),
-    supabaseAdmin.from("invoices").select("status, total_cents, due_date, paid_at").neq("status", "void"),
+    supabaseAdmin.from("invoices").select("status, total_cents, paid_cents, due_date, paid_at").neq("status", "void"),
     supabaseAdmin.from("invoices").select("id, tenant_id, status, total_cents, period_start, period_end, due_date, tenants ( name, slug )").order("created_at", { ascending: false }).limit(30),
   ])
 
@@ -31,12 +35,25 @@ export default async function FinanceiroPage() {
 
   // KPIs de fatura
   let receivedMonth = 0, openSum = 0, openCount = 0, overdueSum = 0, overdueCount = 0
-  for (const inv of (openOrPaid ?? []) as Array<{ status: string; total_cents: number; due_date: string | null; paid_at: string | null }>) {
+  // 🔴 A CONTA IGNORAVA O QUE JÁ ENTROU (QA, 09/08). Uma fatura de 429,80 que recebeu
+  //    349,90 entrava INTEIRA em "Em aberto" e sumia de "Recebido no mês" — o painel
+  //    exagerava a inadimplência e subnotificava a receita, que é a pior combinação
+  //    possível num dashboard financeiro: leva a decisão errada nos dois eixos.
+  // 🔑 O saldo é `total - pago`; o recebido é `paid_cents`, venha ele de uma fatura
+  //    quitada ou parcial.
+  for (const inv of (openOrPaid ?? []) as Array<{ status: string; total_cents: number; paid_cents: number | null; due_date: string | null; paid_at: string | null }>) {
+    const pago  = inv.paid_cents ?? 0
+    const saldo = Math.max(0, inv.total_cents - pago)
+
     if (inv.status === "paid") {
-      if (inv.paid_at && inv.paid_at >= monthStart) receivedMonth += inv.total_cents
-    } else {
-      openSum += inv.total_cents; openCount++
-      if (inv.due_date && inv.due_date < today) { overdueSum += inv.total_cents; overdueCount++ }
+      if (inv.paid_at && inv.paid_at >= monthStart) receivedMonth += pago || inv.total_cents
+      continue
+    }
+    // ⚠️ O recebido de uma PARCIAL conta como receita: o dinheiro entrou de verdade.
+    receivedMonth += pago
+    if (saldo > 0) {
+      openSum += saldo; openCount++
+      if (inv.due_date && inv.due_date < today) { overdueSum += saldo; overdueCount++ }
     }
   }
 

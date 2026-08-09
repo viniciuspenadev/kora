@@ -657,8 +657,46 @@ export async function regularizarComCartao(
       return { error: "Não conseguimos confirmar o pagamento. Tente de novo ou fale com a gente." }
     }
   } catch (e) {
-    console.error("[asaas] cobrança da regularização recusada:", tenantId, (e as Error).message)
-    return { error: mensagemSeguraDoGateway(e, "Não foi possível concluir o pagamento.") }
+    // 🔴 "NÃO SEI SE COBROU" ≠ "NÃO COBROU" (H-03 do pentest de 08/08). Um timeout aqui é
+    //    ambíguo: o POST pode ter sido processado e só a RESPOSTA ter se perdido. Antes o
+    //    catch devolvia erro seco — e a próxima tentativa do cliente refazia a busca, que
+    //    já não enxergava a cobrança recém-paga e pousava na **seguinte**. Ele clicava uma
+    //    vez achando que estava pagando uma parcela e pagava duas.
+    //
+    // 🔑 MAS RECUSA NÃO É AMBIGUIDADE — e confundir as duas foi o primeiro jeito que eu
+    //    escrevi isto (o teste da frase única pegou). Um 4xx do Asaas significa que ele
+    //    RESPONDEU e negou: o cartão foi bloqueado, os dados estão errados, não há dinheiro.
+    //    Nada foi cobrado, e reconsultar só atrasaria a resposta pra dizer o mesmo. Ambíguo
+    //    é o silêncio: timeout, rede caída, 5xx — onde o POST pode ter sido processado.
+    if (e instanceof AsaasError && e.status >= 400 && e.status < 500) {
+      console.error("[asaas] cobrança da regularização recusada:", tenantId, (e as Error).message)
+      return { error: mensagemSeguraDoGateway(e, "Não foi possível concluir o pagamento.") }
+    }
+
+    // 🔑 A desambiguação é perguntar pelo pagamento EXATO — nunca refazer a busca. Se ele
+    //    já está confirmado, o POST tinha dado certo: seguimos como sucesso.
+    // ⚠️ A releitura também pode falhar (o gateway está instável, foi o que nos trouxe
+    //    aqui). Aí a resposta honesta é "não sabemos" — e a frase pede pra CONFERIR antes
+    //    de tentar de novo, em vez de convidar a um segundo clique às cegas.
+    let confirmado = false
+    try {
+      const conf = await asaas.get<{ status?: string }>(`/payments/${cobranca.id}`)
+      confirmado = ["CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"].includes(conf?.status ?? "")
+    } catch {
+      console.error(JSON.stringify({ src: "asaas", kind: "REGULARIZACAO-AMBIGUA-nao-reconsultou",
+        tenant: tenantId, payment: cobranca.id }))
+      return { error: "Não conseguimos confirmar se o pagamento foi concluído. Confira sua fatura antes de tentar de novo — não repita a cobrança." }
+    }
+
+    if (!confirmado) {
+      console.error("[asaas] cobrança da regularização recusada:", tenantId, (e as Error).message)
+      return { error: mensagemSeguraDoGateway(e, "Não foi possível concluir o pagamento.") }
+    }
+
+    // O POST tinha dado certo; só a resposta se perdeu. Segue o fluxo normal (troca de
+    // cartão + rótulo) em vez de mandar o cliente pagar de novo.
+    console.warn(JSON.stringify({ src: "asaas", kind: "regularizacao-confirmada-apos-timeout",
+      tenant: tenantId, payment: cobranca.id }))
   }
 
   // 3 · Pagou. Daqui pra frente NADA desfaz — o dinheiro entrou e a fatura vai baixar pelo
@@ -874,4 +912,63 @@ export async function cancelSubscriptionForTenant(
 
   console.log(JSON.stringify({ src: "asaas", kind: "assinatura-cancelada", tenant: tenantId, subscription: id }))
   return { ok: true }
+}
+
+/**
+ * Atualiza o VALOR da recorrência no gateway (decisão do dono, 08/08: opção A —
+ * *"não pagou tudo, perde acesso. Excedente de usuário faz parte do pacote"*).
+ *
+ * 🔴 POR QUE ISTO PRECISOU EXISTIR (H-02 do pentest). A assinatura nascia com o preço do
+ *    plano e **nunca mais era tocada** — não havia um único `PUT` de valor no repositório.
+ *    A fatura, porém, soma plano + excedente + adicionais. Resultado: o excedente era
+ *    entregue, entrava no livro como devido, era declarado quitado e **desaparecia**. Perda
+ *    de receita no caminho normal, sem falha e sem atacante.
+ *
+ * 🔑 O VALOR É CALCULADO DO ZERO A CADA CICLO, e é isso que faz ele **descer** quando o
+ *    cliente reduz a equipe. O risco desta abordagem nunca foi subir — é ficar preso em
+ *    cima: quem tira 5 logins e continua pagando por eles descobre sozinho, e aí já não
+ *    confia mais na conta.
+ *
+ * ⚠️ AVULSA NÃO ENTRA. O que entra aqui se repete **todo mês** — é uma recorrência. Uma
+ *    cobrança de setup que virasse valor de assinatura seria cobrada para sempre. Avulsa
+ *    tem que ser cobrança separada; enquanto não for, ela vive só no nosso livro.
+ *
+ * ⚠️ DEFASAGEM DE UM CICLO, e é inerente: o Asaas gera a cobrança antes do vencimento,
+ *    então um `PUT` de hoje vale para a PRÓXIMA. O cliente vê no cartão o excedente do
+ *    ciclo que fechou — igual conta de luz. Decisão do dono: manter assim e **explicar na
+ *    tela**, em vez de mexer no valor no meio do ciclo (que trocaria um ticket por uma
+ *    classe de divergência).
+ */
+export async function atualizarValorDaAssinatura(
+  tenantId: string,
+  valorCents: number,
+): Promise<{ ok: true; aplicado: boolean } | { error: string }> {
+  if (!Number.isInteger(valorCents) || valorCents <= 0) {
+    return { error: "Valor de assinatura inválido" }
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("tenants").select("asaas_subscription_id").eq("id", tenantId).maybeSingle()
+  if (error) return { error: `leitura do vínculo falhou: ${error.message}` }
+
+  const id = assinaturaRealId((data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id)
+  // Sem assinatura vigente (cliente manual, legado, ou ativação em curso): não é erro —
+  // simplesmente não há recorrência para atualizar.
+  if (!id) return { ok: true, aplicado: false }
+
+  try {
+    // ⚠️ O Asaas fala em REAIS. Mandar centavos aqui multiplicaria a cobrança por 100 —
+    //    o tipo de engano que só aparece no extrato do cliente.
+    await asaas.put(`/subscriptions/${id}`, { value: valorCents / 100 })
+  } catch (e) {
+    // Não desfaz nada e não bloqueia o ciclo: a fatura do nosso lado está correta, e o
+    // gateway continua cobrando o valor anterior. Grita porque a diferença é receita.
+    console.error(JSON.stringify({ src: "asaas", kind: "VALOR-DA-ASSINATURA-NAO-ATUALIZADO",
+      tenant: tenantId, subscription: id, valorCents, msg: (e as Error).message }))
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível atualizar o valor da assinatura.") }
+  }
+
+  console.log(JSON.stringify({ src: "asaas", kind: "valor-da-assinatura-atualizado",
+    tenant: tenantId, subscription: id, valorCents }))
+  return { ok: true, aplicado: true }
 }

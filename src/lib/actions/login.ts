@@ -46,6 +46,11 @@ const BLOCKED_NOTICE: Record<string, string> = {
   //    dele está pausado e quem destrava é outra pessoa. Diferenciar aqui só serviria pra
   //    contar ao funcionário que o patrão está devendo.
   unpaid:           "O acesso desta conta está pausado. Avise o responsável — assim que for liberado, tudo volta como estava.",
+  // ⚠️ NÃO é "senha inválida" e NÃO é bloqueio: é falha NOSSA de leitura. Mandar a pessoa
+  //    trocar a senha por causa de um blip do nosso banco é o defeito que o `trial_ended`
+  //    veio consertar, por outra porta. A frase assume a culpa e pede a única coisa que
+  //    resolve: esperar um instante.
+  indisponivel:     "Não conseguimos verificar sua conta agora. Tente de novo em alguns instantes.",
 }
 
 export type BeginLoginResult =

@@ -1,8 +1,9 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { transitionLifecycleCore } from "@/lib/lifecycle-core"
-import { TRIAL_ENDED_GRACE_DAYS } from "@/lib/lifecycle-shared"
+import { TRIAL_ENDED_GRACE_DAYS, passouDaCarencia } from "@/lib/lifecycle-shared"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
+import { cancelSubscriptionForTenant } from "@/lib/asaas/subscriptions"
 
 /**
  * Housekeeping diário do trial (chamado pelo cron /api/cron/trial-housekeeping):
@@ -14,7 +15,11 @@ import { assinaturaRealId } from "@/lib/billing/gateway-limits"
  *  2. (M2 / LGPD Art. 16) PURGA PII de `signup_verifications` consumidas (conta
  *     já criada) ou expiradas (abandonadas) — minimização de dados.
  */
-export async function runTrialHousekeeping(): Promise<{ suspended: number; purged: number; outboxPurged: number }> {
+export async function runTrialHousekeeping(): Promise<{
+  suspended: number; purged: number; outboxPurged: number
+  /** Quantos passaram da carência e tiveram a cobrança encerrada (pré-pago). */
+  encerradosPorFalta: number
+}> {
   const nowIso = new Date().toISOString()
 
   // 1. Suspende trials vencidos — via o CORE (server-only, não-action; `system:true`
@@ -97,10 +102,39 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
   for (const t of vencidos ?? []) {
     const { error } = await supabaseAdmin
       .from("tenants")
-      .update({ subscription_status: "canceled", subscription_ends_at: null })
+      // 🔴 `past_due_since: null` — este era o QUARTO escritor de `subscription_status` e
+      //    o único que eu não cobri (M-02 do pentest de 08/08). Sem limpar aqui, um tenant
+      //    que estava atrasado e depois é encerrado guarda um carimbo órfão, e a invariante
+      //    2 da migration — publicada como "deve voltar vazia para sempre" — passa a
+      //    devolver linhas. Quem consultasse concluiria que o carimbo é confiável.
+      // 🔴 `subscription_ends_at` NÃO PODE SER LIMPO AQUI (achado do QA, 09/08). Ele é o
+      //    ÚNICO carimbo em que `jaEncerrado` se apoia pra impedir que um
+      //    `PAYMENT_CONFIRMED` tardio ressuscite a assinatura — e este bloco o apagava
+      //    justamente ao encerrar. O tenant voltava a `active` sem assinatura e sem cartão,
+      //    fora do alcance de todas as varreduras. A data cumpriu o papel dela e é
+      //    histórico: fica.
+      // 🔑 `subscription_ended_reason` entra junto: este é o caminho de quem cancelou por
+      //    vontade própria, e sem ele a invariante 4 da migration devolve linha no primeiro
+      //    cancelamento normal — apagando a distinção que a coluna veio criar.
+      .update({
+        subscription_status:       "canceled",
+        subscription_ended_reason: "pedido_do_cliente",
+        past_due_since:            null,
+      })
       .eq("id", (t as { id: string }).id)
     if (error) console.error("[housekeeping] falha ao encerrar assinatura:", (t as { id: string }).id, error.message)
-    else encerrados++
+    // 🔑 SIMÉTRICO AO BLOCO 4 (achado do QA, 09/08): quem cancela com fatura aberta ficava
+    //    `canceled` — logo, no paywall, logo, sem gerar mais nada — **com uma cobrança de
+    //    um período que nunca será entregue**, para sempre. A regra do dono vale igual nos
+    //    dois caminhos: em pré-pago, período não servido não gera cobrança.
+    else {
+      const { error: anErr } = await supabaseAdmin.from("invoices")
+        .update({ status: "void", void_reason: "nao_servido", updated_at: new Date().toISOString() })
+        .eq("tenant_id", (t as { id: string }).id)
+        .in("status", ["open", "overdue", "partial"])
+      if (anErr) console.error("[housekeeping] faturas não anuladas no cancelamento:", (t as { id: string }).id, anErr.message)
+      encerrados++
+    }
   }
   if (encerrados > 0) console.log(JSON.stringify({ src: "housekeeping", kind: "assinaturas-encerradas", n: encerrados }))
 
@@ -118,5 +152,94 @@ export async function runTrialHousekeeping(): Promise<{ suspended: number; purge
     .from("email_outbox").delete().lt("created_at", cutoff).select("id")
   const outboxPurged = oldMail?.length ?? 0
 
-  return { suspended, purged, outboxPurged }
+  // ── 4 · PRÉ-PAGO: passou da carência ⇒ a relação de cobrança ENCERRA ──────
+  //
+  // 🔴 O PROBLEMA QUE ISTO FECHA (achado do dono, 08/08): quem entrava no paywall
+  //    continuava com a assinatura viva no Asaas **e** ganhando fatura nova todo mês. Três
+  //    meses parado = três faturas de um período que ele não usou, mais uma recorrência
+  //    que ninguém pediu. Dívida acumulando dos dois lados, para alguém que não está
+  //    recebendo nada. A regra do produto é pagamento **antecipado**: pendência não pode
+  //    sequer existir.
+  //
+  // 🔑 O PAYWALL É UM ESTADO DERIVADO, não um evento — ninguém "entra" nele, ele é
+  //    calculado na leitura. Por isso o desligamento precisa de varredura: é aqui que o
+  //    relógio vira consequência.
+  //
+  // 🔑 E `canceled` passa a ser o terminal ÚNICO do paywall — tenha ele cancelado ou
+  //    simplesmente parado de pagar. O que distingue os dois é `subscription_ended_reason`,
+  //    porque colapsar "ele saiu" e "ele não pagou" apagaria a informação mais valiosa que
+  //    a saída de um cliente produz.
+  //
+  // ⚠️ NÃO mexe em `lifecycle_state`. Encerrar a relação segue sendo decisão humana
+  //    (degraus 4 e 5). Isto encerra a COBRANÇA, que é outra alavanca.
+  let encerradosPorFalta = 0
+  const { data: atrasados, error: atrErr } = await supabaseAdmin
+    .from("tenants")
+    .select("id, past_due_since, past_due_grace_days, asaas_subscription_id")
+    .eq("subscription_status", "past_due")
+    .eq("billing_mode", "gateway")
+  if (atrErr) console.error("[housekeeping] leitura de atrasados falhou:", atrErr.message)
+
+  for (const row of (atrasados ?? []) as Array<{
+    id: string; past_due_since: string | null; past_due_grace_days: number | null
+    asaas_subscription_id: string | null
+  }>) {
+    // ⚠️ O filtro fino é em TS porque a carência é POR TENANT — não dá pra expressar
+    //    `now - past_due_since >= past_due_grace_days` num filtro do PostgREST. São poucas
+    //    linhas (só quem está atrasado) e existe índice parcial em `past_due_since`.
+    if (!passouDaCarencia(row.past_due_since, row.past_due_grace_days)) continue
+
+    // 1º desliga a cobrança. Se falhar, NÃO marca `canceled` — senão o cliente fica
+    // "encerrado" no nosso livro e debitado no cartão, que é o pior estado possível.
+    // ⚠️ A varredura de cobrança órfã do `reconcile` é a segunda rede, para o caso de
+    //    isto falhar depois de a marcação já ter acontecido numa rodada anterior.
+    if (assinaturaRealId(row.asaas_subscription_id)) {
+      const c = await cancelSubscriptionForTenant(row.id)
+      if ("error" in c) {
+        console.error(JSON.stringify({ src: "housekeeping", kind: "PAYWALL-NAO-DESLIGOU-COBRANCA",
+          tenant: row.id }))
+        continue
+      }
+    }
+
+    const { error: upErr } = await supabaseAdmin.from("tenants")
+      .update({
+        subscription_status:       "canceled",
+        subscription_ended_reason: "falta_de_pagamento",
+        // O relógio do atraso cumpriu o papel dele; deixá-lo aqui viraria carimbo órfão.
+        past_due_since:            null,
+        // 🔴 SEM ESTE CARIMBO O ENCERRAMENTO É REVERSÍVEL POR ACIDENTE (achado do QA,
+        //    09/08). A guarda que impede um evento antigo de ressuscitar a assinatura é
+        //    `jaEncerrado = !!subscription_ends_at && !nossa` (webhook-handler): ela EXIGE
+        //    a data. Sem ela, um `PAYMENT_CONFIRMED` pendente — e o reconcile retenta por
+        //    **7 dias, exatamente o tamanho da carência padrão** — reescrevia
+        //    `subscription_status: "active"` num tenant sem assinatura e sem cartão.
+        //    Ninguém mais olharia pra ele: não está em `past_due`, não tem `ends_at`, não
+        //    está `suspended`. Produto inteiro, de graça, para sempre.
+        // ⚠️ `now` e não uma data futura: ele NÃO pagou este período. O acesso acaba agora.
+        subscription_ends_at:      new Date().toISOString(),
+      })
+      .eq("id", row.id)
+      .eq("subscription_status", "past_due")   // guarda de concorrência
+    if (upErr) { console.error("[housekeeping] falha ao encerrar por falta de pagamento:", row.id, upErr.message); continue }
+
+    // 🔑 A FATURA ABERTA NÃO É DÍVIDA — É UMA OFERTA QUE EXPIROU. Ela cobre o período
+    //    **à frente** (`currentPeriod` começa hoje), e esse período não vai ser entregue.
+    //    Mantê-la aberta sujaria o livro para sempre com um valor que não se pretende
+    //    cobrar; anular sem dizer por quê apagaria a diferença entre isso e um erro nosso.
+    const { error: vErr } = await supabaseAdmin.from("invoices")
+      .update({ status: "void", void_reason: "nao_servido", updated_at: new Date().toISOString() })
+      .eq("tenant_id", row.id)
+      .in("status", ["open", "overdue", "partial"])
+    if (vErr) console.error("[housekeeping] faturas não anuladas:", row.id, vErr.message)
+
+    encerradosPorFalta++
+    console.warn(JSON.stringify({ src: "housekeeping", kind: "cobranca-encerrada-por-falta-de-pagamento",
+      tenant: row.id }))
+  }
+  if (encerradosPorFalta > 0) {
+    console.log(JSON.stringify({ src: "housekeeping", kind: "paywall-encerrou-cobranca", n: encerradosPorFalta }))
+  }
+
+  return { suspended, purged, outboxPurged, encerradosPorFalta }
 }

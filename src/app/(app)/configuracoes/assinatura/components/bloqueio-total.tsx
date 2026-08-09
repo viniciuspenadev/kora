@@ -98,15 +98,17 @@ export function BloqueioTotal({
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-slate-900">Baixar meus dados</p>
                   <p className="text-xs text-slate-500 mt-0.5 max-w-md leading-relaxed">
-                    Contatos, conversas, negócios e arquivos em CSV. Disponível sempre — inclusive agora,
-                    e mesmo se você decidir não continuar com a Kora.
+                    Contatos, conversas, negócios e arquivos. Disponível sempre — inclusive agora,
+                    e mesmo se você decidir não continuar com a Kora. Nossa equipe prepara e envia.
                   </p>
                 </div>
                 <button
                   type="button" onClick={onExportar}
                   className="h-10 px-4 inline-flex items-center justify-center gap-2 text-sm font-semibold bg-white border border-slate-300 text-slate-800 hover:bg-white hover:border-slate-400 rounded-lg transition-colors shrink-0"
                 >
-                  <Download className="size-4" /> Baixar (CSV)
+                  {/* ⚠️ "Solicitar", não "Baixar": não existe download imediato, e prometer
+                      um é a mentira que este botão acabou de deixar de contar. */}
+                  <Download className="size-4" /> Solicitar exportação
                 </button>
               </div>
             </div>

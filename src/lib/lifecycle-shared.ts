@@ -401,7 +401,7 @@ export function isTenantInPaywall(
  * ⚠️ Um booleano derivado deste, nunca o contrário: se a promoção do degrau 2 pro 3 mudar,
  *    ela muda AQUI e as duas perguntas mudam juntas.
  */
-export type MotivoPaywall = "trial_ended" | "past_due"
+export type MotivoPaywall = "trial_ended" | "past_due" | "canceled"
 
 export function motivoDoPaywall(
   lifecycleState:     string | null | undefined,
@@ -411,7 +411,22 @@ export function motivoDoPaywall(
   now:                number = Date.now(),
 ): MotivoPaywall | null {
   if (normalizeState(lifecycleState ?? null) === "trial_ended") return "trial_ended"
-  if ((subscriptionStatus ?? "active") !== "past_due") return null
+  const sub = subscriptionStatus ?? "active"
+
+  // 🔴 `canceled` ENTROU EM 08/08 (H-14 do pentest). Sem ele, cancelar era o melhor negócio
+  //    possível pro cliente: parava de pagar e ficava com a caixa de entrada inteira e a
+  //    equipe toda trabalhando, para sempre — só perdia campanha e IA. É o mesmo "grátis
+  //    pra sempre" que o `encerrar()` fechou, reaberto pela porta do lado.
+  //
+  // 🔑 ATENÇÃO AO QUE `canceled` SIGNIFICA, porque é contraintuitivo: ele **não** é
+  //    "acabou de cancelar". Durante todo o ciclo já pago o tenant segue `active` — o
+  //    webhook só carimba `subscription_ends_at` e não corta nada, que é a regra do dono
+  //    ("ele tem tudo até o último dia dele"). Quem escreve `canceled` é a varredura
+  //    diária, **depois** que essa data passa. Então este ramo só alcança quem já
+  //    consumiu o que pagou e segue sem assinatura.
+  if (sub === "canceled") return "canceled"
+
+  if (sub !== "past_due") return null
   return passouDaCarencia(pastDueSince, graceDays, now) ? "past_due" : null
 }
 

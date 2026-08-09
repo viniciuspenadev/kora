@@ -108,7 +108,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     // 🔑 O texto muda com o motivo; o comportamento não. Uma pessoa que atrasou a fatura
     //    não pode ler "seu período de teste terminou" — ela ligaria pro suporte pra
     //    dizer que nunca esteve em teste, e teria razão.
-    const titulo = motivo === "trial_ended" ? "Seu período de teste terminou" : "Sua fatura está em aberto"
+    const titulo =
+      motivo === "trial_ended" ? "Seu período de teste terminou"
+      : motivo === "canceled"  ? "Sua assinatura foi encerrada"
+      :                          "Sua fatura está em aberto"
     // 🔴 CLIENTE FATURADO POR FORA NÃO PODE SER MANDADO PRA CÁ (05/08). Ele não contrata
     //    no produto: a área de Assinatura foi fechada pra ele em `assinatura/layout.tsx`.
     //    Mandá-lo pra lá produziria PING-PONG — este layout manda pra assinatura, o portão

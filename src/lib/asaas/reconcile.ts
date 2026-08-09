@@ -1,9 +1,9 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { asaas } from "./client"
-import { RESERVA_TTL_MS, idadeDaReservaMs } from "@/lib/billing/gateway-limits"
+import { RESERVA_TTL_MS, idadeDaReservaMs, assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { processAsaasEvent } from "./webhook-handler"
-import { procurarAssinaturaNoGateway } from "./subscriptions"
+import { procurarAssinaturaNoGateway, cancelSubscriptionForTenant } from "./subscriptions"
 
 // ═══════════════════════════════════════════════════════════════
 // Reconciliação — o webhook deixa de ser ponto único de falha
@@ -34,10 +34,12 @@ export interface ReconcileResult {
   erros:          number
   /** Reservas de claim abandonadas por crash/deploy que foram devolvidas. */
   reservasLimpas: number
+  /** Assinaturas de clientes já cortados que seguiam vivas no gateway (H-04). */
+  cobrancasEncerradas: number
 }
 
 export async function reconcileAsaas(): Promise<ReconcileResult> {
-  const out: ReconcileResult = { reprocessados: 0, liberados: 0, erros: 0, reservasLimpas: 0 }
+  const out: ReconcileResult = { reprocessados: 0, liberados: 0, erros: 0, reservasLimpas: 0, cobrancasEncerradas: 0 }
 
   // ── 0 · Faxina de reservas órfãs do claim atômico ────────────────────────
   // 🔴 SEM ISTO O CLIENTE FICA MURADO PRA SEMPRE (achado dos dois revisores, 06/08).
@@ -53,12 +55,13 @@ export async function reconcileAsaas(): Promise<ReconcileResult> {
   //    segundos e desarmava o claim atômico. Ver `novaReservaDeClaim`.
   const { data: orfas } = await supabaseAdmin
     .from("tenants")
-    .select("id, asaas_subscription_id")
+    // `plan_id` entrou pra o log de adoção órfã dizer se ele ficou faltando (H-13).
+    .select("id, asaas_subscription_id, plan_id")
     .like("asaas_subscription_id", "pending:%")
     .order("id")
     .limit(100)
 
-  for (const t of (orfas ?? []) as { id: string; asaas_subscription_id: string }[]) {
+  for (const t of (orfas ?? []) as { id: string; asaas_subscription_id: string; plan_id: string | null }[]) {
     const idade = idadeDaReservaMs(t.asaas_subscription_id)
     // `null` = formato legado sem timestamp ⇒ não mexe (fail-safe: reserva presa é
     // reparável à mão; apagar a de quem está pagando agora cria cobrança em dobro).
@@ -73,15 +76,54 @@ export async function reconcileAsaas(): Promise<ReconcileResult> {
 
     // Existe: adota em vez de apagar. É o mesmo tenant, é o `externalReference` dele.
     if (existente) {
+      // 🔴 ADOTAR SÓ O ID DEIXAVA O TENANT MEIO-ATIVADO (H-13 do pentest de 08/08). O
+      //    caminho de recuperação em processo grava SETE campos; este gravava um. O cartão
+      //    passava a ser debitado e o resto ficava velho ou nulo — com um efeito que
+      //    ninguém liga ao cancelamento: **`billing_day` nulo tira o tenant do alcance do
+      //    cron de faturamento** (`runMonthlyBilling` casa por igualdade exata), então ele
+      //    paga todo mês e **nenhuma fatura é emitida, para sempre**.
+      //
+      // 🔑 O QUE DÁ PRA RECUPERAR VEM DO GATEWAY, que é a fonte autoritativa do ciclo:
+      //    `nextDueDate` → `billing_day`, exatamente como a criação faz.
+      // 🔴 O QUE **NÃO** DÁ: token do cartão, bandeira e últimos 4 nasceram na requisição
+      //    que morreu e nunca foram persistidos. Não existe de onde tirar — inventar seria
+      //    gravar mentira sobre qual cartão cobra. Fica nulo (a tela diz "A definir", e o
+      //    cliente recadastra) e o log lista o que ficou faltando.
+      const patch: Record<string, unknown> = {
+        asaas_subscription_id: existente,
+        // O carimbo de encerramento não pode sobreviver a uma assinatura viva.
+        subscription_ends_at:  null,
+      }
+      let diaDoGateway: number | null = null
+      try {
+        const sub = await asaas.get<{ nextDueDate?: string }>(`/subscriptions/${existente}`)
+        if (sub?.nextDueDate) {
+          diaDoGateway = Math.min(28, Number(sub.nextDueDate.slice(8, 10)) || 1)
+          patch.billing_day = diaDoGateway
+        }
+      } catch {
+        // Sem o ciclo do gateway não dá pra derivar o dia — melhor adotar o id (que para a
+        // cobrança em dobro) e gritar do que não adotar nada.
+      }
+
       const { error } = await supabaseAdmin
         .from("tenants")
-        .update({ asaas_subscription_id: existente })
+        .update(patch)
         .eq("id", t.id)
         .eq("asaas_subscription_id", t.asaas_subscription_id)
       if (error) { out.erros++; continue }
       out.reservasLimpas++
+
+      // ⚠️ `console.error` e não `log`: adoção órfã é sempre um tenant que precisa de olho
+      //    humano. A linha diz exatamente o que ficou faltando pra alguém completar.
+      const faltando = [
+        diaDoGateway === null ? "billing_day" : null,
+        t.plan_id ? null : "plan_id",
+        "cartao(token/bandeira/ultimos4)",
+      ].filter(Boolean)
       console.error(JSON.stringify({ src: "reconcile", kind: "reserva-virou-assinatura",
-        tenant: t.id, subscription: existente }))
+        tenant: t.id, subscription: existente, billing_day: diaDoGateway,
+        completar_a_mao: faltando }))
       continue
     }
     // ⚠️ `undefined` = o gateway não respondeu. Não sabemos ⇒ não mexe: a reserva presa é
@@ -258,6 +300,60 @@ export async function reconcileAsaas(): Promise<ReconcileResult> {
       out.erros++
       console.error("[reconcile] consulta ao gateway falhou:", t.id, (err as Error).message)
     }
+  }
+
+  // ── 3 · Cliente CORTADO que continua sendo debitado (H-04) ────────────────
+  //
+  // 🔴 O PIOR LADO POSSÍVEL DE ERRAR: cobrar sem entregar. Suspender/desativar revoga o
+  //    acesso e MANDA cancelar no gateway — mas em best-effort: se o Asaas não responder
+  //    naquele segundo, o estado é gravado, o acesso cai, e a assinatura segue debitando o
+  //    cartão **todo mês, indefinidamente**. O único sinal era um `console.error` que
+  //    ninguém lê. Não havia retentativa nem varredura: `cancelSubscriptionForTenant` tinha
+  //    UM chamador em todo o repositório.
+  //
+  // 🔑 A FILA É O PRÓPRIO ESTADO — por isso isto não precisou de tabela de outbox nem de
+  //    coluna nova. O cancelamento bem-sucedido **zera** `asaas_subscription_id`; a falha
+  //    não zera. Então "acesso cortado E vínculo ainda de pé" **é**, por construção, a
+  //    definição de "cancelamento pendente". Inventar um `cancel_pending` seria criar um
+  //    segundo lugar pra mesma verdade — e dois lugares divergem.
+  //
+  // ⚠️ ISTO NÃO É AUTO-REPARO DE DIVERGÊNCIA (diretriz do dono, 08/08: "auto reparar agora
+  //    não é o correto"). A decisão já foi tomada por um humano no god mode; o que falhou
+  //    foi a EXECUÇÃO dela. Retentar é terminar um serviço já ordenado, não decidir nada
+  //    novo — e é idempotente (o gateway trata 404 como já-cancelado).
+  const { data: cortados, error: cortErr } = await supabaseAdmin
+    .from("tenants")
+    .select("id, lifecycle_state, asaas_subscription_id")
+    .in("lifecycle_state", ["suspended", "deactivated"])
+    .not("asaas_subscription_id", "is", null)
+    .limit(50)
+
+  if (cortErr) {
+    out.erros++
+    console.error("[reconcile] varredura de cobrança órfã falhou:", cortErr.message)
+  }
+
+  for (const row of (cortados ?? []) as Array<{ id: string; lifecycle_state: string; asaas_subscription_id: string }>) {
+    // ⚠️ Reserva `pending:` não é assinatura — é o claim atômico de uma ativação em curso.
+    //    Cancelar em cima dela derrubaria quem está pagando neste segundo.
+    if (assinaturaRealId(row.asaas_subscription_id) === null) continue
+
+    const r = await cancelSubscriptionForTenant(row.id)
+    if ("error" in r) {
+      out.erros++
+      // 🔴 Grita a cada rodada, de propósito: enquanto isto aparecer, existe um cartão
+      //    sendo debitado por um produto que não está sendo entregue.
+      console.error(JSON.stringify({
+        src: "reconcile", kind: "COBRANCA-VIVA-DE-CLIENTE-CORTADO",
+        tenant: row.id, estado: row.lifecycle_state, assinatura: row.asaas_subscription_id,
+      }))
+      continue
+    }
+    out.cobrancasEncerradas++
+    console.warn(JSON.stringify({
+      src: "reconcile", kind: "cobranca-encerrada-tardiamente",
+      tenant: row.id, estado: row.lifecycle_state,
+    }))
   }
 
   return out

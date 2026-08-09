@@ -30,8 +30,20 @@ const TRIGGER_LABEL: Record<string, string> = {
 }
 
 type FlowState = "published" | "paused" | "draft"
-function flowState(f: StudioFlowSummary): FlowState {
-  if (f.status === "published") return f.active ? "published" : "paused"
+/**
+ * 🔴 `bloqueado` ENTRA AQUI, e não na pílula — de propósito. Com fatura em aberto o motor
+ *    não executa fluxo nenhum (`dispatch` filtra por `canSpend`), então "Ativo" é
+ *    mentira: o dono lê que está no ar, o fluxo não roda, e ele vai depurar um fluxo que
+ *    não tem defeito. Foi a queixa do dono sobre o Studio, com essas palavras: *"vai ver
+ *    pausado e bem informado"*.
+ * 🔑 Tratar aqui, e não em cada superfície, é o que mantém a tela COERENTE: a pílula, a
+ *    contagem das abas e o KPI do topo derivam todos desta função. Mexer só na pílula
+ *    produziria "3 ativos" em cima de três linhas escritas "Pausado".
+ * ⚠️ Não mexe em `f.active` (o dado): o interruptor do dono continua sendo dele, e quando
+ *    a fatura for paga tudo volta sozinho, sem nada pra reconfigurar.
+ */
+function flowState(f: StudioFlowSummary, bloqueado = false): FlowState {
+  if (f.status === "published") return f.active && !bloqueado ? "published" : "paused"
   return "draft"
 }
 const purposeOf = (f: StudioFlowSummary): Purpose => f.purpose ?? "atendimento"
@@ -154,11 +166,15 @@ function EntryCell({ t }: { t: FlowTrigger | null }) {
   )
 }
 
-function FlowRow({ f, count, busy, igQuota, errored, onToggle, onClone, onDelete }: {
+function FlowRow({ f, count, busy, igQuota, errored, bloqueado, onToggle, onClone, onDelete }: {
   f: StudioFlowSummary; count: number; busy: boolean; igQuota?: IgQuotaState | null; errored: boolean
+  bloqueado: boolean
   onToggle: () => void; onClone: () => void; onDelete: () => void
 }) {
-  const st = flowState(f)
+  const st = flowState(f, bloqueado)
+  // Só onde MORDE: fluxo que o dono ligou e que a cobrança está segurando. Em rascunho, ou
+  // num que ele mesmo desligou, o aviso seria ruído (mesma régua do selo de cota abaixo).
+  const cobrancaHalted = bloqueado && f.status === "published" && f.active
   // Selo só onde a cota MORDE: fluxo de comentário publicado. Em rascunho ou pausado o
   // dono já sabe por que não roda — o aviso ali seria ruído.
   const quotaHalted = !!igQuota && f.trigger?.type === "ig_comment" && st === "published"
@@ -173,7 +189,16 @@ function FlowRow({ f, count, busy, igQuota, errored, onToggle, onClone, onDelete
             <Link href={`/studio/fluxos/${f.id}`} className="block text-[13px] font-bold text-slate-900 hover:text-primary-600 truncate leading-tight">
               {f.name}
             </Link>
-            {quotaHalted && (
+            {/* 🔑 Vem ANTES do selo de cota: se os dois valerem, a cobrança é a que
+                resolve — pagar destrava tudo, e comprar cota a mais não destrava nada. */}
+            {cobrancaHalted && (
+              <Link href="/configuracoes/assinatura"
+                title="Suas automações estão pausadas enquanto houver fatura em aberto. Nada foi perdido: os fluxos voltam a rodar sozinhos assim que o pagamento entrar."
+                className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 hover:underline">
+                <Zap className="size-2.5" /> pausado pela fatura em aberto — volta sozinho após o pagamento
+              </Link>
+            )}
+            {quotaHalted && !cobrancaHalted && (
               // Frase do TENANT, não do fluxo: se soar local, o dono mexe NESTE fluxo,
               // não resolve, e repete nos outros nove.
               <Link href="/configuracoes/uso"
@@ -254,11 +279,13 @@ function MoreDots() {
 
 type SortKey = "recent" | "most" | "name"
 
-export function FlowsClient({ flows, activations, erroredFlowIds, igQuota }: {
+export function FlowsClient({ flows, activations, erroredFlowIds, igQuota, bloqueado = false }: {
   flows: StudioFlowSummary[]
   activations: Record<string, number>
   erroredFlowIds?: string[]
   igQuota?: IgQuotaState | null
+  /** Degrau 2 da escada de cobrança: o motor não executa fluxo nenhum. Vem do servidor. */
+  bloqueado?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -275,7 +302,7 @@ export function FlowsClient({ flows, activations, erroredFlowIds, igQuota }: {
 
   const counts = useMemo(() => {
     const c = { all: flows.length, published: 0, paused: 0, draft: 0 }
-    for (const f of flows) c[flowState(f)]++
+    for (const f of flows) c[flowState(f, bloqueado)]++
     return c
   }, [flows])
 
@@ -303,7 +330,7 @@ export function FlowsClient({ flows, activations, erroredFlowIds, igQuota }: {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     const out = flows.filter((f) => {
-      if (tab !== "all" && flowState(f) !== tab) return false
+      if (tab !== "all" && flowState(f, bloqueado) !== tab) return false
       if (category !== "all" && purposeOf(f) !== category) return false
       if (channel !== "all" && !flowChannels(f.trigger).includes(channel)) return false
       if (trigger !== "all") {
@@ -450,7 +477,7 @@ export function FlowsClient({ flows, activations, erroredFlowIds, igQuota }: {
               <tbody className="divide-y divide-slate-100">
                 {visible.map((f) => (
                   <FlowRow key={f.id} f={f} count={activations[f.id] ?? 0} busy={busyId === f.id}
-                    igQuota={igQuota} errored={errored.has(f.id)}
+                    igQuota={igQuota} errored={errored.has(f.id)} bloqueado={bloqueado}
                     onToggle={() => handleToggleActive(f.id, !f.active)}
                     onClone={() => handleClone(f.id)} onDelete={() => setDeleting(f.id)} />
                 ))}

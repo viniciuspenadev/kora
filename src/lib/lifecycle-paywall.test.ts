@@ -77,8 +77,25 @@ describe("o motivo do paywall", () => {
     expect(motivoDoPaywall("active", "active", haDias(90), 7, AGORA)).toBeNull()
   })
 
-  it("cancelada NÃO é paywall — corta gasto, não acesso (são perguntas diferentes)", () => {
-    expect(motivoDoPaywall("active", "canceled", null, null, AGORA)).toBeNull()
+  // 🔴 ESTE TESTE AFIRMAVA O BURACO ATÉ 08/08. Ele dizia "cancelada NÃO é paywall", e o
+  //    pentest mostrou o que isso valia na prática: o cliente parava de pagar e ficava com
+  //    a caixa de entrada inteira e a equipe toda trabalhando, para sempre.
+  // ⚠️ `canceled` NÃO é "acabou de cancelar" — durante todo o ciclo já pago o tenant segue
+  //    `active` (regra do dono: "ele tem tudo até o último dia dele"). Quem escreve
+  //    `canceled` é a varredura diária DEPOIS que a data passa. O teste abaixo cobre as
+  //    duas metades, porque inverter uma sem a outra recria o furo ou corta quem pagou.
+  it("cancelada É paywall — mas só DEPOIS do ciclo pago", () => {
+    // Dentro do ciclo: cancelou, mas ainda está `active` ⇒ nada é cortado.
+    expect(motivoDoPaywall("active", "active", null, null, AGORA)).toBeNull()
+    // Passada a data, a varredura carimba `canceled` ⇒ produto fecha.
+    expect(motivoDoPaywall("active", "canceled", null, null, AGORA)).toBe("canceled")
+  })
+
+  it("no paywall por cancelamento, quem paga ainda entra pra reativar", () => {
+    const encerrado = base({ subscription_status: "canceled" })
+    expect(isTenantBlockedForAccessAs(encerrado, "owner", AGORA)).toBe(false)
+    expect(isTenantBlockedForAccessAs(encerrado, "admin", AGORA)).toBe(false)
+    expect(isTenantBlockedForAccessAs(encerrado, "agent", AGORA)).toBe(true)
   })
 
   it("o booleano é derivado do motivo, nunca uma segunda regra", () => {

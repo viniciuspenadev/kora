@@ -2,6 +2,7 @@
 
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { revalidatePath } from "next/cache"
 import { randomBytes } from "crypto"
 import { getProvider } from "@/lib/providers"
@@ -1012,6 +1013,15 @@ async function loadInviteContext(inviteId: string, tenantId: string) {
 export async function sendInviteViaWhatsApp(inviteId: string): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
   const tenantId = session.user.tenantId
+
+  // 🔒 Porta de envio, logo tem gate (achado do QA, 09/08). Esta action manda mensagem pelo
+  //    número do tenant e só checava PAPEL — no degrau 3, enquanto a tela afirma
+  //    "Atendimento pelo WhatsApp — pausado", o owner (que por política nunca perde a
+  //    sessão) seguia emitindo por aqui. O texto é fixo e o destino é o telefone do
+  //    convite, então o alcance é pequeno; o princípio é o mesmo das outras sete.
+  if (atendimentoBloqueado(await checkTenantStatus(tenantId))) {
+    return { error: "O acesso desta conta está pausado até a regularização do pagamento." }
+  }
 
   const ctx = await loadInviteContext(inviteId, tenantId)
   if (!ctx) return { error: "Convite não encontrado ou já aceito" }

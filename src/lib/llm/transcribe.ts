@@ -14,6 +14,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { runTranscription, TRANSCRIBE_MODEL } from "./openai"
 import { costOfTranscription } from "./pricing"
 import { recordAiUsage } from "./usage"
@@ -36,6 +37,17 @@ export async function transcribeStoredAudio(args: {
 }): Promise<string | null> {
   try {
     if (!(await hasModule(args.tenantId, "ai"))) return null
+
+    // 🔒 GATE DE GASTO (H-08 do pentest de 08/08). Transcrever é chamada paga na NOSSA
+    //    chave, disparada por um áudio que **qualquer pessoa de fora** manda pro número do
+    //    cliente. O helper só olhava a licença do módulo `ai`, nunca se o cliente estava
+    //    pagando — então um inadimplente virava fonte de custo acionável por terceiros.
+    // ⚠️ Redundante hoje (sem mídia baixada não existe `storagePath`, e a mídia já é pulada
+    //    no webhook) e mantido de propósito: a defesa mora onde o DINHEIRO sai, pra um
+    //    chamador futuro não reabrir o caminho sem saber que ele existia.
+    // ⚠️ `degraded` NÃO impede: blip de banco não pode emudecer a IA de quem está em dia.
+    const gasto = await checkTenantStatus(args.tenantId)
+    if (!gasto.degraded && !gasto.canSpend) return null
 
     const t0 = Date.now()
     const { data, error } = await supabaseAdmin.storage.from(CHAT_BUCKET).download(args.storagePath)

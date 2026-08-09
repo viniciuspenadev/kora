@@ -6,6 +6,7 @@ import { requireModule } from "@/lib/modules"
 import { type SegmentRules } from "@/lib/crm/segment-rules"
 import { resolveAudienceContacts, classifyRecipient, CONV_PRICE } from "@/lib/campaigns/audience"
 import { materializeRecipients } from "@/lib/campaigns/engine"
+import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { openerTemplateNode } from "@/lib/campaigns/flow-opener"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import type { FlowGraph } from "@/lib/ai-v2/flow/types"
@@ -344,6 +345,28 @@ export async function startCampaign(id: string): Promise<{ ok: true; queued: num
   if (!c) return { error: "Campanha não encontrada" }
   const C = c as { status: string; template_category: "MARKETING" | "UTILITY"; audience_kind: "list" | "tag"; audience_id: string }
   if (!["draft", "scheduled"].includes(C.status)) return { error: "A campanha não pode ser disparada neste estado" }
+
+  // ── Gate de cobrança ──────────────────────────────────────────────────────
+  //
+  // 🔴 NÃO É SOBRE IMPEDIR GASTO — o gasto JÁ estava impedido, e é exatamente por isso
+  //    que a falta deste gate era ruim. `engine.ts` filtra por `filterServiceableTenants`
+  //    antes de disparar, então uma campanha começada em atraso virava `running`,
+  //    materializava os destinatários e **nunca enviava nada**: parada para sempre, sem
+  //    erro, sem explicação, com cara de produto quebrado. O cliente conclui que a Kora
+  //    falhou, não que ele está devendo — e abre chamado em vez de pagar.
+  //
+  // 🔑 Recusar na porta é mais honesto E mais barato: ele lê o motivo, a campanha fica
+  //    `draft` intacta, e disparar depois de regularizar é um clique. Sem estado sujo.
+  //
+  // ⚠️ Usa a resposta de GASTO (`canSpend`), não a de paywall: campanha é o primeiro
+  //    corte da escada, no dia 1 do atraso — bem antes de o atendimento parar.
+  // ⚠️ `degraded` (blip de banco) NÃO recusa: negar o disparo de quem está em dia por
+  //    causa de uma consulta que falhou é o erro caro. O `engine` continua fail-closed
+  //    lá na frente, então nada é gasto no escuro.
+  const status = await checkTenantStatus(t)
+  if (!status.degraded && !status.canSpend) {
+    return { error: "Campanhas estão pausadas enquanto houver fatura em aberto. Regularize em Configurações → Assinatura para voltar a disparar." }
+  }
 
   const mat = await materializeRecipients(t, id, C.audience_kind, C.audience_id, C.template_category)
   if ("error" in mat) return mat

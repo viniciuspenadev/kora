@@ -19,13 +19,24 @@ const fmtDate = (s: string | null) => s ? new Date(s + (s.length === 10 ? "T12:0
 
 const STATUS_BADGE: Record<string, string> = {
   open:    "text-amber-700 bg-amber-50 border-amber-200",
+  // Âmbar como "aberta" — ela AINDA é uma fatura a receber, só que com parte paga.
+  partial: "text-amber-800 bg-amber-100 border-amber-300",
   paid:    "text-emerald-700 bg-emerald-50 border-emerald-200",
   overdue: "text-red-700 bg-red-50 border-red-200",
   void:    "text-slate-500 bg-slate-100 border-slate-200",
   draft:   "text-slate-600 bg-slate-50 border-slate-200",
 }
-const STATUS_LABEL: Record<string, string> = { open: "Aberta", paid: "Paga", overdue: "Vencida", void: "Anulada", draft: "Rascunho" }
+// ⚠️ `partial` nasceu em 08/08 e PRECISA existir nos dois mapas: sem entrada, o badge
+//    renderiza sem cor e o rótulo vem `undefined` — a fatura aparece sem status nenhum
+//    justamente naquela em que falta dinheiro.
+const STATUS_LABEL: Record<string, string> = { open: "Aberta", partial: "Parcial", paid: "Paga", overdue: "Vencida", void: "Anulada", draft: "Rascunho" }
 const SUB_LABEL: Record<string, string> = { active: "Ativa", past_due: "Inadimplente", canceled: "Cancelada" }
+
+/** Só o placeholder. A regra de verdade é `PAST_DUE_GRACE_DAYS`, no servidor — este número
+ *  informa, nunca decide. (Constante do lado do cliente pra não arrastar o módulo de
+ *  lifecycle, que é `server-only`, pro bundle do navegador.) */
+const PADRAO_CARENCIA = 7
+const diasDesde = (iso: string) => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000))
 
 interface Props {
   tenantId:           string
@@ -33,6 +44,10 @@ interface Props {
   currentPlan:        Plan | null
   billingDay:         number | null
   subscriptionStatus: string
+  /** `null` = usa o padrão do sistema. `0` = corta junto com o degrau 2, sem espera. */
+  graceDays:          number | null
+  /** Quando o atraso começou. Carimbado pelo webhook ou por esta tela; `null` = não está atrasado. */
+  pastDueSince:       string | null
   activeUsers:        number
   charges:            TenantCharge[]
   invoices:           InvoiceWithItems[]
@@ -42,6 +57,9 @@ export function CobrancaClient(p: Props) {
   const [planId, setPlanId]   = useState(p.currentPlan?.id ?? "")
   const [day, setDay]         = useState(p.billingDay != null ? String(p.billingDay) : "")
   const [status, setStatus]   = useState(p.subscriptionStatus)
+  // Vazio ≠ zero: vazio = padrão do sistema · "0" = cortar na hora. O `String()` preserva
+  // o zero que um `|| ""` engoliria.
+  const [grace, setGrace]     = useState(p.graceDays != null ? String(p.graceDays) : "")
   const [err, setErr]         = useState<string | null>(null)
   const [ok, setOk]           = useState<string | null>(null)
   const [pending, startT]     = useTransition()
@@ -65,6 +83,10 @@ export function CobrancaClient(p: Props) {
       const r2 = await updateTenantBilling(p.tenantId, {
         billing_day: day.trim() === "" ? null : parseInt(day, 10),
         subscription_status: status,
+        // ⚠️ `trim() === ""` e não `!grace`: com `!` o "0" digitado viraria `null` e o
+        //    tenant ganharia os 7 dias padrão em vez do corte imediato que o operador
+        //    escolheu. Mesmo cuidado do lado do servidor.
+        past_due_grace_days: grace.trim() === "" ? null : parseInt(grace, 10),
       })
       flash(r2, "Assinatura salva.")
     })
@@ -105,6 +127,44 @@ export function CobrancaClient(p: Props) {
                 <select value={status} onChange={(e) => setStatus(e.target.value)} className={INP}>
                   {Object.entries(SUB_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
+              </div>
+            </div>
+
+            {/* ── Carência (degrau 2 → 3) ─────────────────────────────────────
+                🔑 Este campo É a decisão comercial do dono, exposta. O padrão do sistema
+                   serve pra todo mundo; um cliente grande em negociação pode receber 30
+                   dias, e um que já quebrou acordo pode receber 0.
+                ⚠️ O rótulo diz o que acontece no FIM do prazo, não "carência" seco: quem
+                   opera precisa saber que o número decide quando a equipe do cliente
+                   perde o login — é a ação mais drástica desta tela. */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Carência do atraso
+                </label>
+                <input value={grace} onChange={(e) => setGrace(e.target.value)} inputMode="numeric"
+                  placeholder={`padrão (${PADRAO_CARENCIA} dias)`} className={INP} />
+                <p className="mt-1 text-[10px] text-slate-400 leading-relaxed">
+                  Dias entre a fatura vencer e o acesso da equipe ser cortado. Vazio = padrão ·
+                  <b> 0 = corta na hora</b> · teto 90.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Relógio</label>
+                {/* 🔴 SEM ISTO O OPERADOR AJUSTA NO ESCURO. O número de dias só significa
+                    alguma coisa junto do carimbo: 7 dias de carência num atraso que começou
+                    há 9 já cortou. Mostrar os dois lado a lado é o que transforma o campo
+                    numa decisão em vez de um chute. */}
+                <div className="h-9 px-3 rounded-lg border border-slate-200 bg-slate-50 flex items-center">
+                  {p.pastDueSince ? (
+                    <span className="text-xs text-slate-700 tabular-nums">
+                      atraso desde <b>{fmtDate(p.pastDueSince.slice(0, 10))}</b>
+                      <span className="text-slate-400"> · {diasDesde(p.pastDueSince)}d corridos</span>
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">sem atraso em curso</span>
+                  )}
+                </div>
               </div>
             </div>
             <button type="button" onClick={saveSubscription} disabled={pending} className="h-9 px-4 text-xs font-semibold rounded-lg bg-primary text-white hover:bg-primary-700 inline-flex items-center gap-1.5 disabled:opacity-50">

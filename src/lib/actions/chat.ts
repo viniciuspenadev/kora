@@ -19,7 +19,7 @@ import { resolveOrCreateContact, adoptRecipientJid } from "@/lib/contacts/identi
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
 import { createNotification } from "@/lib/notifications"
 import { logConversationEvent } from "@/lib/atendimento/events"
-import { assertAtendimentoLiberado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
+import { assertAtendimentoLiberado, atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -697,7 +697,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   // 🔒 Degrau 3. ⚠️ Esta action devolve `{ error }` em vez de lançar (contrato dela), então
   //    o gate vira retorno — lançar aqui quebraria o `useTransition` do compositor com um
   //    erro não tratado em vez de uma frase na tela.
-  if ((await checkTenantStatus(session.user.tenantId)).inPaywall) {
+  if (atendimentoBloqueado(await checkTenantStatus(session.user.tenantId))) {
     return { error: "O acesso desta conta está pausado até a regularização do pagamento." }
   }
 
@@ -908,6 +908,19 @@ async function resolveSendContext(
   const session = await auth()
   if (!session?.user?.tenantId) return { error: "Não autenticado." }
   const tenantId = session.user.tenantId
+
+  // 🔴 O GATE MORA AQUI, E NÃO NOS CHAMADORES (achado H-07 do pentest de 08/08). Eu havia
+  //    gateado três portas — texto, template e mídia — e existiam SEIS. Reação,
+  //    localização, contato e figurinha passam todas por esta função, e nenhuma tinha gate:
+  //    no paywall, uma aba já aberta seguia mandando por elas indefinidamente.
+  // 🔑 Somar quatro chamadas resolveria hoje e falharia na quinta porta. Aqui é o ponto por
+  //    onde toda porta nova passa obrigatoriamente — quem escrever a próxima herda o gate
+  //    sem precisar saber que ele existe.
+  // ⚠️ Devolve `{ error }` em vez de lançar: é o contrato desta função, e lançar quebraria
+  //    o `useTransition` do compositor com erro não tratado em vez de uma frase na tela.
+  if (atendimentoBloqueado(await checkTenantStatus(tenantId))) {
+    return { error: "O acesso desta conta está pausado até a regularização do pagamento." }
+  }
 
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
