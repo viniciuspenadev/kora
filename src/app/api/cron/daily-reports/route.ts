@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { sendDailyReports } from "@/lib/reports/daily"
 import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 
 /**
  * GET /api/cron/daily-reports
@@ -15,27 +16,27 @@ import { requireCronSecret } from "@/lib/cron-auth"
  *   (21h UTC = 18h BRT)
  */
 
+// ⚠️ `maxDuration` saiu: é diretiva da Vercel e inerte no nosso runtime standalone.
+//    O tempo real passa a viver em `cron_runs.meta.ms`.
 export const dynamic = "force-dynamic"
-export const maxDuration = 60  // até 1min de execução (orquestra todos tenants)
 
 export async function GET(req: NextRequest) {
   const denied = requireCronSecret(req)
   if (denied) return denied
 
-  const startedAt = Date.now()
-  const results = await sendDailyReports()
-  const elapsedMs = Date.now() - startedAt
+  const saida = await executarJob({ job: "daily-reports" }, async () => {
+    const results = await sendDailyReports()
+    return {
+      processed: results.filter((r) => r.status === "sent").length,
+      failed:    results.filter((r) => r.status === "failed").length,
+      // 🔒 Só CONTAGEM no livro. `results` traz linha por tenant e é o tipo de coisa que
+      //    engorda `meta` sem responder nada — a resposta HTTP continua completa.
+      meta:      { total: results.length, skipped: results.filter((r) => r.status === "skipped").length },
+    }
+  })
 
-  // Sumário pra logs do scheduler
-  const summary = {
-    elapsedMs,
-    total:   results.length,
-    sent:    results.filter((r) => r.status === "sent").length,
-    skipped: results.filter((r) => r.status === "skipped").length,
-    failed:  results.filter((r) => r.status === "failed").length,
-  }
+  if (saida.pulado) return NextResponse.json({ ok: true, pulado: "já em execução" })
 
-  console.log("[cron/daily-reports]", JSON.stringify(summary))
-
-  return NextResponse.json({ ok: true, summary, results })
+  console.log("[cron/daily-reports]", JSON.stringify(saida.resultado))
+  return NextResponse.json({ ok: true, ...saida.resultado })
 }

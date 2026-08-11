@@ -184,7 +184,14 @@ class FakeQuery implements PromiseLike<Resultado> {
     if (this.op === "update") {
       for (const r of casadas) Object.assign(r, this.patch)
       this.log.push({ tabela: this.tabela, op: "update", patch: this.patch ?? undefined })
-      return { data: this.retornaRepresentacao ? casadas : null, error: null }
+      if (!this.retornaRepresentacao) return { data: null, error: null }
+      // 🔴 `unico` VALE AQUI TAMBÉM (achado 10/08). O dublê devolvia sempre um ARRAY, e o
+      //    PostgREST devolve OBJETO com `.maybeSingle()`. A divergência é traiçoeira: um
+      //    array **vazio** é truthy, então o padrão `if (!data) return` — que é a base do
+      //    claim atômico (`UPDATE ... RETURNING`, 0 linhas = não é meu) — nunca dispararia
+      //    no teste. O dublê aprovaria um código que, em produção, processa um evento que
+      //    não reivindicou.
+      return { data: this.unico ? (casadas[0] ?? null) : casadas, error: null }
     }
 
     this.log.push({ tabela: this.tabela, op: "select" })

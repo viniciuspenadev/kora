@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 import { runInstagramTokenRefresh, reconcileStaleIgClaims } from "@/lib/instagram/refresh"
 
 /**
@@ -28,12 +29,21 @@ export async function GET(req: NextRequest) {
   const denied = requireCronSecret(req)
   if (denied) return denied
 
-  const startedAt = Date.now()
-  const result = await runInstagramTokenRefresh()
-  // Independente do refresh: token que não renovou não pode impedir a devolução de cota.
-  const { reconciled } = await reconcileStaleIgClaims()
-  const elapsedMs = Date.now() - startedAt
+  // 🔑 O nome do job é `instagram-token-refresh`, e a rota é `/instagram-refresh`. Os dois
+  //    DIVERGEM — é por isso que o livro é chaveado pelo nome do job, nunca pelo caminho.
+  const saida = await executarJob({ job: "instagram-token-refresh" }, async () => {
+    const result = await runInstagramTokenRefresh()
+    // Independente do refresh: token que não renovou não pode impedir a devolução de cota.
+    const { reconciled } = await reconcileStaleIgClaims()
+    return {
+      processed: result.refreshed,
+      failed:    result.failed,
+      meta:      { checked: result.checked, skipped: result.skipped, reconciled },
+    }
+  })
 
-  console.log("[cron/instagram-refresh]", JSON.stringify({ elapsedMs, ...result, reconciled }))
-  return NextResponse.json({ ok: true, elapsedMs, ...result, reconciled })
+  if (saida.pulado) return NextResponse.json({ ok: true, pulado: "já em execução" })
+
+  console.log("[cron/instagram-refresh]", JSON.stringify(saida.resultado))
+  return NextResponse.json({ ok: true, ...saida.resultado })
 }

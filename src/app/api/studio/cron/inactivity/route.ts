@@ -8,20 +8,23 @@
 
 import { NextResponse } from "next/server"
 import { runInactivityTick } from "@/lib/ai-v2/flow/inactivity"
+import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
 
 export async function POST(req: Request): Promise<Response> {
-  const secret = process.env.CRON_SECRET
-  if (!secret || req.headers.get("x-cron-secret") !== secret) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
+  const negado = requireCronSecret(req)
+  if (negado) return negado
 
   try {
-    const r = await runInactivityTick()
-    return NextResponse.json(r)
+    const saida = await executarJob({ job: "studio-inactivity-tick" }, async () => {
+      const r = await runInactivityTick()
+      return { processed: r.fired ?? 0, meta: { ...r } }
+    })
+    return NextResponse.json(saida.pulado ? { pulado: true } : saida.resultado?.meta)
   } catch (e) {
     console.error("[studio/cron/inactivity]", e instanceof Error ? e.message : e)
     return NextResponse.json({ error: e instanceof Error ? e.message : "erro" }, { status: 500 })

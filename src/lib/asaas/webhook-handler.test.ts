@@ -92,6 +92,8 @@ function montarCenario(over: { tenant?: Record<string, unknown>; evento?: Record
     payment_id: "pay_1",
     received_at: "2026-08-08T00:00:00Z",
     processed_at: null,
+    // ⚠️ Explícito pelo mesmo motivo dos campos do tenant: a coluna existe sempre no banco.
+    claimed_at: null,
     error: null,
     payload: { payment: { id: "pay_1", customer: CUSTOMER, value: 349.9 } },
     ...over.evento,
@@ -618,5 +620,75 @@ describe("carimbo do atraso", () => {
 
     expect(tenant().subscription_status).toBe("active")
     expect(tenant().past_due_since).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// O claim atômico — a trava que impede creditar o mesmo pagamento duas vezes
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔴 O QUE VOLTARIA SEM ISTO. Aqui havia `select` + `if (ev.processed_at) return` —
+//    check-then-act. Dois processos leem `null`, os dois passam, os dois somam
+//    `paid_cents` em memória e os dois gravam. Não é hipótese: `reconcileAsaas` tem DOIS
+//    jobs chamando (`reconcile-billing` de 15 em 15 min e `trial-housekeeping` às 08:05,
+//    com nomes de job diferentes — logo, travas diferentes) e a entrega do Asaas é
+//    at-least-once por contrato. A guarda `.neq("status","paid")` da baixa **não pega
+//    fatura `partial`**, que é justo o caso do pagamento complementar.
+describe("claim atômico do evento", () => {
+  it("evento JÁ REIVINDICADO por outro processo é ignorado — sem creditar de novo", async () => {
+    montarCenario({ evento: { claimed_at: new Date().toISOString() } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    // 🔑 A prova: a fatura não foi tocada. Sem o claim, esta linha viraria `paid`
+    //    pela SEGUNDA vez — e num pagamento parcial isso somaria em cima do já somado.
+    expect(fatura().status).toBe("open")
+    expect(evento().processed_at).toBeNull()
+  })
+
+  it("evento já CONCLUÍDO é ignorado (o caso antigo continua fechado)", async () => {
+    montarCenario({ evento: { processed_at: "2026-08-08T01:00:00Z" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("open")
+  })
+
+  // 🔴 O RISCO OPOSTO, que é o motivo de `claimed_at` ser coluna SEPARADA de
+  //    `processed_at`: se a reivindicação não expirasse, um processo que morre no meio
+  //    (deploy, restart) prenderia o evento PARA SEMPRE — a varredura de recuperação
+  //    procura `processed_at IS NULL`, e ele continuaria assim, reivindicado por um
+  //    fantasma. Trocaríamos "crédito duplicado" por "pagamento perdido".
+  it("reivindicação VENCIDA é retomada — evento não fica preso por processo morto", async () => {
+    const meiaHoraAtras = new Date(Date.now() - 30 * 60_000).toISOString()
+    montarCenario({ evento: { claimed_at: meiaHoraAtras } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("paid")
+    expect(evento().processed_at).toBeTruthy()
+  })
+
+  it("concluir SOLTA a reivindicação — sem resíduo pendurado na linha", async () => {
+    montarCenario()
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    // Claim pendurado numa linha já resolvida faz a invariante de "claim órfão" mentir.
+    expect(evento().claimed_at).toBeNull()
+  })
+
+  it("evento recusado pelo filtro de tenancy também solta a reivindicação", async () => {
+    montarCenario({ evento: { payload: { payment: { id: "pay_1", customer: "cus_de_outro", value: 349.9 } } } })
+
+    await processAsaasEvent("evt_1")
+
+    // 🔑 Sem soltar aqui, um evento de outro cliente ficaria reivindicado até a lease
+    //    vencer — e a fila de recuperação o veria como "em processamento" por 15 min.
+    expect(evento().claimed_at).toBeNull()
   })
 })

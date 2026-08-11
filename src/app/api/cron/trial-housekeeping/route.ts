@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 import { runTrialHousekeeping } from "@/lib/trial-housekeeping"
 import { reconcileAsaas } from "@/lib/asaas/reconcile"
 import { supabaseAdmin } from "@/lib/supabase"
@@ -45,35 +46,50 @@ async function reconcileStorage() {
   return row ?? null
 }
 
+// ⚠️ `maxDuration` saiu: diretiva da Vercel, inerte no runtime standalone. Este é o job
+//    mais pesado da frota (3 varreduras + reconciliação inteira + RPC de storage) e é
+//    justamente o que reportava "39 ms" — o tempo de enfileirar, não o de trabalhar.
+//    A duração real passa a viver em `cron_runs.meta.ms`.
 export const dynamic = "force-dynamic"
-export const maxDuration = 60
 
 export async function GET(req: NextRequest) {
   const denied = requireCronSecret(req)
   if (denied) return denied
 
-  const startedAt = Date.now()
-  // Sequencial e independentes: a reconciliação do storage não pode ser derrubada por
-  // uma falha do housekeeping de trial, nem o contrário.
-  const result  = await runTrialHousekeeping()
+  const saida = await executarJob({ job: "trial-housekeeping" }, async () => {
+    // Sequencial e independentes: a reconciliação do storage não pode ser derrubada por
+    // uma falha do housekeeping de trial, nem o contrário.
+    const result = await runTrialHousekeeping()
 
-  // 💳 RECONCILIAÇÃO COM O GATEWAY (05/08/2026). Roda DEPOIS do housekeeping de propósito:
-  //    o bloco 1.a já não suspende quem tem assinatura, e esta varredura libera quem pagou
-  //    e ficou preso em `trial_ended` porque o webhook se perdeu. Sem ela, uma única
-  //    entrega HTTP falha deixava um cliente pagante travado, indefinidamente e em
-  //    silêncio — o webhook era ponto único de falha do produto inteiro.
-  // ⚠️ Não derruba o cron se falhar: as outras tarefas do dia não dependem dela.
-  let billing: Awaited<ReturnType<typeof reconcileAsaas>> | { erro: string }
-  try {
-    billing = await reconcileAsaas()
-  } catch (e) {
-    billing = { erro: (e as Error).message }
-    console.error("[cron/reconcile-asaas]", (e as Error).message)
-  }
+    // 💳 RECONCILIAÇÃO COM O GATEWAY (05/08/2026). Roda DEPOIS do housekeeping de
+    //    propósito: o bloco 1.a já não suspende quem tem assinatura, e esta varredura
+    //    libera quem pagou e ficou preso em `trial_ended` porque o webhook se perdeu. Sem
+    //    ela, uma única entrega HTTP falha deixava um cliente pagante travado,
+    //    indefinidamente e em silêncio — o webhook era ponto único de falha do produto.
+    // ⚠️ Não derruba o cron se falhar: as outras tarefas do dia não dependem dela.
+    // 🔑 E ela toma a trava `reconcile-asaas` POR DENTRO — é o que impede este job e o
+    //    `reconcile-billing` de reconciliarem em paralelo (nomes de job diferentes não
+    //    colidem entre si).
+    let billing: Awaited<ReturnType<typeof reconcileAsaas>> | { erro: string }
+    try {
+      billing = await reconcileAsaas()
+    } catch (e) {
+      billing = { erro: (e as Error).message }
+      console.error("[cron/reconcile-asaas]", (e as Error).message)
+    }
 
-  const storage = await reconcileStorage()
-  const elapsedMs = Date.now() - startedAt
+    const storage = await reconcileStorage()
 
-  console.log("[cron/trial-housekeeping]", JSON.stringify({ elapsedMs, ...result, storage }))
-  return NextResponse.json({ ok: true, elapsedMs, ...result, billing, storage })
+    return {
+      processed: result.suspended + result.encerradosPorFalta,
+      meta: { ...result, storage, billing },
+      // 🔴 O QUE NÃO CABE AQUI: devolver `billing`/`storage` inteiros na resposta HTTP
+      //    continua valendo — quem chama por curl quer ver tudo. O livro fica com a forma.
+    }
+  })
+
+  if (saida.pulado) return NextResponse.json({ ok: true, pulado: "já em execução" })
+
+  console.log("[cron/trial-housekeeping]", JSON.stringify(saida.resultado?.meta))
+  return NextResponse.json({ ok: true, ...(saida.resultado?.meta ?? {}) })
 }

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server"
-import fs from "node:fs"
-import path from "node:path"
+import { readBuildId } from "@/lib/build-id"
 
 /**
  * GET /api/version
@@ -14,30 +13,18 @@ import path from "node:path"
  *
  * Em dev (`next dev`), BUILD_ID é a string "development" (estática) → não
  * dispara banner com HMR.
+ *
+ * 🔑 A leitura saiu daqui para [lib/build-id.ts](../../../lib/build-id.ts) porque o livro
+ *    de execuções dos crons (`cron_runs.meta.build`) precisa do MESMO número — é ele que
+ *    faz "o job quebrou às 14:03" casar com "deployamos às 14:02".
  */
 
 export const dynamic   = "force-dynamic"
 export const revalidate = 0
 
-let cachedVersion: string | null = null
-
-function readVersion(): string {
-  if (cachedVersion) return cachedVersion
-  try {
-    const buildIdPath = path.join(process.cwd(), ".next", "BUILD_ID")
-    cachedVersion = fs.readFileSync(buildIdPath, "utf8").trim()
-  } catch {
-    // Fallback — env vars opcionais (compatibilidade com Vercel + custom CI)
-    cachedVersion = process.env.VERCEL_GIT_COMMIT_SHA
-                 ?? process.env.NEXT_PUBLIC_BUILD_ID
-                 ?? "dev"
-  }
-  return cachedVersion
-}
-
 export async function GET() {
   return NextResponse.json(
-    { version: readVersion() },
+    { version: readBuildId() },
     {
       headers: {
         "Cache-Control": "no-store, must-revalidate",

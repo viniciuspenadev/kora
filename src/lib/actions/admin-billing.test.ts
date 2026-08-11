@@ -19,7 +19,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 
 vi.mock("server-only", () => ({}))
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }))
-vi.mock("@/auth", () => ({ auth: async () => ({ user: { isPlatformAdmin: true } }) }))
+// ⚠️ `id` e `email` fazem parte do dublê porque a TRILHA depende deles: sem identidade do
+//    operador, o rastro registra `null` e não responde a pergunta que ele existe pra
+//    responder ("quem fez isso?"). O teste abaixo cobra isso.
+vi.mock("@/auth", () => ({
+  auth: async () => ({ user: { id: "op_1", email: "operador@kora.com", isPlatformAdmin: true } }),
+}))
 vi.mock("@/lib/billing", () => ({ generateInvoiceForTenant: async () => ({}) }))
 // 🔒 "Cancelada" no god mode agora CANCELA no gateway antes de escrever (QA 09/08). O dublê
 //    deixa o desfecho programável, porque a regra nova é justamente: falhou lá ⇒ não escreve.
@@ -30,11 +35,21 @@ vi.mock("@/lib/asaas/subscriptions", () => ({ cancelSubscriptionForTenant: () =>
 let linha: Record<string, unknown> = {}
 let patch: Record<string, unknown> | null = null
 
+/** O que foi para a trilha de auditoria — é o que prova que a ação deixou rastro. */
+let auditado: Record<string, unknown>[] = []
+
 vi.mock("@/lib/supabase", () => ({
   supabaseAdmin: {
-    from: () => ({
-      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: linha, error: null }) }) }),
-      update: (p: Record<string, unknown>) => { patch = p; return { eq: async () => ({ error: null }) } },
+    from: (tabela: string) => ({
+      select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: linha, error: null }) }), maybeSingle: async () => ({ data: linha, error: null }) }) }),
+      update: (p: Record<string, unknown>) => { patch = p; return { eq: () => ({ eq: async () => ({ error: null }) }), then: (r: (v: unknown) => unknown) => r({ error: null }) } },
+      // 🔑 `insert` existe pra a TRILHA ser exercitada. Sem ele o `logAudit` falhava em
+      //    silêncio (fire-and-forget, por desenho) e os testes passavam sem provar nada
+      //    sobre auditoria — que é justamente o que não pode faltar numa ação de dinheiro.
+      insert: async (row: Record<string, unknown>) => {
+        if (tabela === "audit_log") auditado.push(row)
+        return { error: null }
+      },
     }),
   },
 }))
@@ -46,8 +61,42 @@ const TENANT = "11111111-1111-1111-1111-111111111111"
 beforeEach(() => {
   linha = { subscription_status: "active", past_due_since: null }
   patch = null
+  auditado = []
   cancelarMock.mockClear()
   cancelarMock.mockResolvedValue({ ok: true })
+})
+
+// ── A trilha ────────────────────────────────────────────────────────────────
+//
+// 🔴 MEDIDO EM 08/08: ZERO chamadas de auditoria em todos os arquivos que mexem em
+//    dinheiro. O único ator registrado era o CLIENTE; as ações do operador e do sistema,
+//    não. Se alguém contestasse "vocês me cancelaram sem avisar", não havia resposta.
+describe("trilha de auditoria do god mode", () => {
+  it("mudar o status deixa rastro com QUEM, de QUÊ para QUÊ", async () => {
+    await updateTenantBilling(TENANT, { subscription_status: "past_due" })
+
+    expect(auditado).toHaveLength(1)
+    const a = auditado[0]
+    expect(a.action).toBe("billing.status_alterado")
+    expect(a.actor_user_id).toBeTruthy()                       // é gente, não sistema
+    expect((a.before_data as Record<string, unknown>).subscription_status).toBe("active")
+    expect((a.after_data as Record<string, unknown>).subscription_status).toBe("past_due")
+  })
+
+  it("ação humana NÃO se disfarça de sistema", async () => {
+    await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+    // ⚠️ Já aconteceu de uma transição feita à mão ficar marcada como `system:cron` e
+    //    induzir a leitura errada depois. `system:*` é reservado pra máquina.
+    expect(String(auditado[0].actor_email ?? "")).not.toMatch(/^system:/)
+  })
+
+  it("operação que FALHA não deixa rastro de sucesso", async () => {
+    cancelarMock.mockResolvedValueOnce({ error: "gateway fora do ar" })
+
+    await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+
+    expect(auditado).toHaveLength(0)
+  })
 })
 
 describe("carência definida à mão", () => {

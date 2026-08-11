@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 import { reconcileAsaas } from "@/lib/asaas/reconcile"
 
 /**
@@ -37,19 +38,34 @@ export async function GET(req: NextRequest) {
   const negado = requireCronSecret(req)
   if (negado) return negado
 
-  const t0 = Date.now()
   try {
-    const r = await reconcileAsaas()
-    const elapsedMs = Date.now() - t0
+    // ⚠️ A trava EFETIVA da reconciliação NÃO é esta — é a que `reconcileAsaas` toma por
+    //    dentro, com o nome do TRABALHO (`reconcile-asaas`). Motivo: ela tem DOIS
+    //    chamadores (este job e o `trial-housekeeping`), com nomes de job diferentes; uma
+    //    trava por nome de job serializa cada um contra si mesmo e nunca um contra o
+    //    outro — e os dois creditariam o mesmo pagamento. Aqui a trava só impede este
+    //    job de se atropelar.
+    const saida = await executarJob({ job: "reconcile-billing" }, async () => {
+      const r = await reconcileAsaas()
+      return {
+        processed: r.reprocessados + r.liberados,
+        failed:    r.erros,
+        meta:      { ...r },
+      }
+    })
 
+    if (saida.pulado) return NextResponse.json({ ok: true, pulado: "já em execução" })
+
+    const r = saida.resultado
     // ⚠️ Log só quando houve TRABALHO. Um job de 15 em 15 minutos que grita "0, 0, 0" 96
     //    vezes por dia treina todo mundo a ignorar o log dele — e aí o dia em que ele
-    //    tiver algo a dizer passa despercebido.
-    if (r.reprocessados > 0 || r.liberados > 0 || r.reservasLimpas > 0 || r.erros > 0) {
-      console.log(JSON.stringify({ src: "cron", kind: "reconcile-billing", elapsedMs, ...r }))
+    //    tiver algo a dizer passa despercebido. (O livro registra as 96 de qualquer forma:
+    //    é ele que sabe se o job rodou, não o log.)
+    if ((r.processed ?? 0) > 0 || (r.failed ?? 0) > 0) {
+      console.log(JSON.stringify({ src: "cron", kind: "reconcile-billing", ...r }))
     }
 
-    return NextResponse.json({ ok: true, elapsedMs, ...r })
+    return NextResponse.json({ ok: true, ...r })
   } catch (e) {
     console.error("[cron/reconcile-billing]", (e as Error).message)
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })

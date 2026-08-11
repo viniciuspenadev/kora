@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 import { decryptSecret } from "@/lib/crypto/secrets"
 
 /**
@@ -83,10 +84,25 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
   }
 }
 
+// ⚠️ Esta rota era a única das seis sem `dynamic`/`maxDuration`. `dynamic` entra;
+//    `maxDuration` NÃO — é diretiva da Vercel e inerte no runtime standalone.
+export const dynamic = "force-dynamic"
+
 export async function GET(req: NextRequest) {
   const denied = requireCronSecret(req)
   if (denied) return denied
 
+  const saida = await executarJob({ job: "ping-evolution" }, varrerEvolution)
+  if (saida.pulado) return NextResponse.json({ ok: true, pulado: "já em execução" })
+  return NextResponse.json({ ok: true, ...(saida.resultado?.meta ?? {}) })
+}
+
+/**
+ * 🔑 O CORPO SAIU DO HANDLER pra caber no invólucro sem reindentar 80 linhas — e de quebra
+ *    a rota virou o que ela deveria ser: portaria (autentica, registra, responde). Quem
+ *    faz o trabalho é uma função com nome.
+ */
+async function varrerEvolution() {
   // ── 1. Servidores únicos (ping leve) ────────────────────────
   const { data: servers } = await supabaseAdmin.from("evolution_servers").select("url")
 
@@ -190,9 +206,10 @@ export async function GET(req: NextRequest) {
     instResults.push({ id: i.id, state: connState, urlMatches })
   }
 
-  return NextResponse.json({
-    ok:        true,
-    servers:   serverResults,
-    instances: instResults,
-  })
+  return {
+    // "Processado" aqui é telemetria de saúde colhida, não dinheiro movido.
+    processed: serverResults.length + instResults.length,
+    failed:    serverResults.filter((s) => s.status !== "ok").length,
+    meta:      { servers: serverResults, instances: instResults },
+  }
 }

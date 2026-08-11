@@ -6,18 +6,21 @@
 
 import { NextResponse } from "next/server"
 import { runTaskReminderSweep } from "@/lib/crm/task-reminders"
+import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function POST(req: Request): Promise<Response> {
-  const secret = process.env.CRON_SECRET
-  if (!secret || req.headers.get("x-cron-secret") !== secret) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
+  const negado = requireCronSecret(req)
+  if (negado) return negado
   try {
-    const r = await runTaskReminderSweep()
-    return NextResponse.json(r)
+    const saida = await executarJob({ job: "crm-task-reminders-sweep" }, async () => {
+      const r = await runTaskReminderSweep()
+      return { processed: r.notified ?? 0, meta: { ...r } }
+    })
+    return NextResponse.json(saida.pulado ? { pulado: true } : saida.resultado?.meta)
   } catch (e) {
     console.error("[tasks/cron] sweep falhou:", e instanceof Error ? e.message : e)
     return NextResponse.json({ error: "sweep_failed" }, { status: 500 })

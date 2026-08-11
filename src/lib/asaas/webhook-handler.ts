@@ -6,6 +6,7 @@ import { normalizeState, PAST_DUE_GRACE_DAYS } from "@/lib/lifecycle-shared"
 import { asaas, AsaasError } from "./client"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { avisarCobranca } from "@/lib/billing/notify"
+import { auditarCobranca } from "@/lib/billing/audit"
 
 // ═══════════════════════════════════════════════════════════════
 // Processamento dos eventos do Asaas — onde a escada é acionada
@@ -122,26 +123,62 @@ function diasRestantesDeCarencia(desde: string, graceDoTenant: number | null | u
   return Math.max(0, grace - decorridos)
 }
 
+/**
+ * Encerra o evento. `definitivo = false` devolve ele pra fila de retentativa.
+ *
+ * 🔑 `claimed_at: null` SEMPRE. Soltar a reivindicação é o que permite a retentativa
+ *    acontecer de imediato em vez de esperar a lease de 15 min vencer — e, no caminho
+ *    definitivo, é higiene: claim sem dono pendurado numa linha já resolvida é o tipo de
+ *    resíduo que faz a invariante de claim órfão mentir.
+ */
 async function fechar(id: string, nota?: string, definitivo = true): Promise<void> {
   await supabaseAdmin.from("asaas_webhook_events")
     .update({
       processed_at: definitivo ? new Date().toISOString() : null,
+      claimed_at:   null,
       error:        nota ?? null,
     })
     .eq("id", id)
 }
 
+/**
+ * Quanto tempo uma reivindicação vale antes de ser considerada abandonada.
+ *
+ * ⚠️ Tem que ser MAIOR que o pior tempo de processamento de um evento (algumas chamadas ao
+ *    gateway) e MENOR que a janela em que a perda começa a doer. 15 min é folgado nos dois
+ *    lados; a invariante da migration mede se está errado.
+ */
+const CLAIM_LEASE_MS = 15 * 60_000
+
 export async function processAsaasEvent(eventId: string): Promise<void> {
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔒 CLAIM ATÔMICO — o que impede o mesmo pagamento de ser creditado duas vezes
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 AQUI HAVIA UM `select` + `if (ev.processed_at) return`. Check-then-act: dois
+  //    processos leem `null`, os dois passam, os dois somam `paid_cents` em memória e os
+  //    dois gravam. E não é hipótese — `reconcileAsaas` tem dois jobs chamando e a
+  //    entrega do Asaas é at-least-once. A guarda `.neq("status","paid")` da baixa **não
+  //    pega fatura `partial`**, que é justo o caso do pagamento complementar.
+  //
+  // 🔑 Agora o UPDATE é a trava E a leitura: quem afeta 0 linhas não tem o evento e sai.
+  //    O banco serializa; os dois processos não precisam se enxergar.
+  const limite = new Date(Date.now() - CLAIM_LEASE_MS).toISOString()
   const { data, error } = await supabaseAdmin
     .from("asaas_webhook_events")
-    .select("id, event_type, payment_id, payload, processed_at")
+    .update({ claimed_at: new Date().toISOString() })
     .eq("id", eventId)
+    .is("processed_at", null)
+    // Livre, OU reivindicado por alguém que já morreu (lease vencida). Sem o segundo
+    // ramo, um processo que cai no meio prenderia o evento para sempre.
+    .or(`claimed_at.is.null,claimed_at.lt.${limite}`)
+    .select("id, event_type, payment_id, payload, processed_at")
     .maybeSingle()
 
-  if (error) { console.error("[asaas-handler] leitura falhou:", eventId, error.message); return }
+  if (error) { console.error("[asaas-handler] claim falhou:", eventId, error.message); return }
+  // Nada voltou = já concluído, ou outro processo está com ele agora. Os dois casos são
+  // "não é meu", e sair é o certo — a próxima varredura pega se sobrar algo.
   if (!data) return
   const ev = data as EventRow
-  if (ev.processed_at) return   // já resolvido (corrida entre entrega e reprocessamento)
 
   // Cobre os dois envelopes (ver o comentário em `EventRow.payload`).
   const customerId = ev.payload?.payment?.customer ?? ev.payload?.subscription?.customer ?? null
@@ -417,6 +454,18 @@ async function encerrar(
     await fechar(ev.id, "vínculo mudou durante o encerramento — não aplicado")
     return
   }
+
+  await auditarCobranca({
+    tenantId: tenant.id,
+    acao:     "billing.assinatura_encerrada",
+    origem:   "webhook",
+    alvo:     { tipo: "subscription", id: atual },
+    antes:    { asaas_subscription_id: atual, subscription_ends_at: linha?.subscription_ends_at ?? null },
+    // ⚠️ Registra que o cartão foi apagado: é a explicação de por que a tela passa a dizer
+    //    "A definir" e de por que recontratar pede o cartão de novo.
+    depois:   { asaas_subscription_id: null, subscription_ends_at: fimDoCiclo, cartao: "removido" },
+    extra:    { evento: ev.event_type },
+  })
 
   console.error(JSON.stringify({ src: "asaas-handler", kind: "ASSINATURA-ENCERRADA",
     motivo: ev.event_type, tenant: tenant.id, acesso_ate: fimDoCiclo }))
@@ -1036,6 +1085,20 @@ async function liberar(
     await avisarCobranca({ tenantId: tenant.id, aviso: "restabelecido", fato: ev.payment_id })
   }
 
+  // 🔑 A TRILHA GUARDA O EFEITO, não o evento. O `asaas_webhook_events` já registra o que
+  //    o gateway disse; o que faltava era o que MUDOU por causa dele — sem isso dá pra
+  //    saber que um pagamento chegou e não dá pra saber que ele devolveu o acesso de sete
+  //    pessoas, nem em que segundo.
+  await auditarCobranca({
+    tenantId: tenant.id,
+    acao:     "billing.liberado",
+    origem:   "webhook",
+    alvo:     { tipo: "payment", id: ev.payment_id },
+    antes:    { subscription_status: tenant.subscription_status, lifecycle_state: tenant.lifecycle_state },
+    depois:   { subscription_status: "active", ...(patch.lifecycle_state ? { lifecycle_state: patch.lifecycle_state } : {}) },
+    extra:    { valorCents: emCentavos(pagamento?.value), evento: ev.event_type, pendencia },
+  })
+
   if (pendencia) { await fechar(ev.id, pendencia, false); return }
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "liberado", tenant: tenant.id, event: ev.event_type }))
@@ -1194,6 +1257,23 @@ async function restringir(
       diasCarencia: diasRestantesDeCarencia(carimbo, estadoAtual?.past_due_grace_days),
     })
   }
+
+  // 🔑 O registro mais importante da trilha: é este que corta campanhas, IA e automações,
+  //    e (passada a carência) o acesso da equipe. Guarda o CARIMBO, porque é dele que
+  //    depende quando o produto fecha — numa disputa, é a linha que responde "desde quando".
+  await auditarCobranca({
+    tenantId: tenant.id,
+    acao:     "billing.restringido",
+    origem:   "webhook",
+    alvo:     { tipo: "payment", id: ev.payment_id },
+    antes:    { subscription_status: estadoAtual?.subscription_status ?? null, past_due_since: estadoAtual?.past_due_since ?? null },
+    depois:   { subscription_status: "past_due", past_due_since: carimbo },
+    extra:    {
+      evento: ev.event_type, valorCents: emCentavos(cobranca.value),
+      vencimento: cobranca.dueDate ?? null, pedeOlhoHumano,
+      carenciaDias: estadoAtual?.past_due_grace_days ?? null,
+    },
+  })
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "restringido", tenant: tenant.id, event: ev.event_type }))
   await fechar(ev.id)

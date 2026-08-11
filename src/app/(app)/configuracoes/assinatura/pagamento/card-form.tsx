@@ -7,6 +7,7 @@ import { maskCpfCnpj, maskPhone } from "@/lib/masks"
 import { linkSuporte } from "@/lib/support"
 import { ativarAssinatura, trocarCartaoDaAssinatura, regularizarAssinatura, type TitularPreenchido } from "@/lib/actions/subscription"
 import { BandeiraLogo } from "@/components/billing/bandeira-logo"
+import { CardPreview, type ZonaAtiva } from "./card-preview"
 import {
   BANDEIRAS_ACEITAS, BANDEIRA_LABEL, MAX_DIGITOS_CARTAO, agruparNumero, detectarBandeira,
   digitosDoCvv, digitosDoNumero, placeholderDoNumero, type Bandeira,
@@ -175,6 +176,30 @@ export function CardForm(props: CardFormProps) {
     titular.cpfCnpj.replace(/\D/g, "").length === 11 ? titular.nome.toUpperCase() : "",
   )
   const [tocado, setTocado]   = useState<Record<string, boolean>>({})
+  /**
+   * Qual campo está com o cursor — só a prévia consome.
+   *
+   * ⚠️ É estado SEPARADO de `tocado` de propósito: `tocado` é "já saiu daqui uma vez" e
+   *    governa quando o ERRO pode aparecer; este é "está aqui agora" e governa o destaque.
+   *    Fundir os dois faria o erro nascer no primeiro foco, que é a hostilidade que a
+   *    decisão 3 do cabeçalho existe pra evitar.
+   */
+  const [zona, setZona] = useState<ZonaAtiva>(null)
+
+  /**
+   * Sair de um campo: apaga o destaque e — **só se houver algo digitado** — libera o erro.
+   *
+   * 🔴 CAMPO VAZIO E INTOCADO NÃO ACUSA (achado do dono, 09/08). O foco automático põe o
+   *    cursor no número ao abrir; bastava a pessoa clicar em qualquer lugar pra o
+   *    formulário responder **"Digite o número do cartão"** em vermelho, num campo que ela
+   *    nunca tocou. Isso é o produto brigando com quem chegou pra pagar.
+   * ⚠️ Não afrouxa nada: o envio (`enviar`) marca os quatro campos de uma vez, então
+   *    ninguém passa sem preencher — o erro só deixa de aparecer ANTES da hora.
+   */
+  const sair = (campo: "numero" | "validade" | "cvv" | "nome", preenchido: boolean) => {
+    setZona(null)
+    if (preenchido) setTocado((t) => ({ ...t, [campo]: true }))
+  }
   const [erro, setErro]       = useState<string | null>(null)
   const [recusas, setRecusas] = useState(0)
   const [pending, start]      = useTransition()
@@ -453,10 +478,19 @@ export function CardForm(props: CardFormProps) {
             </div>
           </div>
         ) : (
-          <div className="flex items-start justify-between gap-4">
+          /* 🔴 NÃO REPETIR O TÍTULO DO HOST (achado do dono, 09/08). Este herói dizia
+             "Trocar cartão · Nada é cobrado agora" — exatamente as duas frases que o
+             cabeçalho do modal já mostra 40px acima. O usuário lia a mesma coisa duas
+             vezes e o espaço gasto empurrava os campos pra fora da tela.
+             ⚠️ O que sobra aqui é o que SÓ este bloco sabe: o plano, o valor e a data (que
+                antes flutuavam soltos numa linha abaixo) + a transição de cartões. */
+          <div className="flex items-end justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-slate-900">Trocar cartão</p>
-              <p className="mt-0.5 text-[11px] text-slate-400">Nada é cobrado agora</p>
+              <p className="text-sm font-semibold text-slate-900 truncate">{props.planoNome}</p>
+              <p className="mt-0.5 text-[11px] text-slate-400 leading-relaxed">
+                <span className="tabular-nums">{brl(props.valorCents)}</span>/mês
+                {props.proximaCobranca ? <> · próxima em <span className="tabular-nums">{props.proximaCobranca}</span></> : null}
+              </p>
             </div>
             {/* A transição responde "o que vai acontecer" sem uma linha de texto: o cartão
                 que sai desbota, o que entra aparece assim que a bandeira é reconhecida.
@@ -486,14 +520,9 @@ export function CardForm(props: CardFormProps) {
           rodapé fixos, e não como blocos flutuando. E o componente cai igual nos dois
           hosts sem cada um recalcular respiro. */}
       <div className="px-5 pt-4 space-y-3.5">
-        {/* Tira de contexto do modo `trocar`: o valor existe, só não é herói aqui. */}
-        {trocando && (
-          <p className="text-xs text-slate-500">
-            {props.planoNome} · <span className="tabular-nums">{brl(props.valorCents)}</span>/mês
-            {props.proximaCobranca ? <> · próxima cobrança em <span className="tabular-nums">{props.proximaCobranca}</span></> : null}
-          </p>
-        )}
-
+        {/* ⚠️ A tira "PLANO · R$ X/mês · próxima em …" que morava aqui SUBIU pro herói. Ela
+            flutuava solta entre o cabeçalho e o primeiro campo, dizendo um terço do que o
+            topo já dizia — e agora o topo diz tudo, num lugar só, que não rola pra fora. */}
         {/* ⚠️ Mais de uma em aberto: dito ANTES de pagar, não depois. Descobrir que ainda
             deve logo após ter pago é a sensação de ter sido enganado — mesmo sem engano. */}
         {props.modo === "regularizar" && props.outras > 0 && (
@@ -502,6 +531,15 @@ export function CardForm(props: CardFormProps) {
             <strong>{props.outras}</strong> em aberto.
           </p>
         )}
+
+        {/* ── Prévia do cartão ───────────────────────────────────────────────────
+            🔑 NOS TRÊS MODOS, inclusive em `trocar`. Cheguei a cortá-la ali por parecer
+               repetição do herói (o chip do cartão que sai → o que entra), e não é: o herói
+               responde "qual vai ficar valendo", a prévia responde "eu digitei certo". São
+               perguntas diferentes, e `trocar` é justamente o modo que mais se repete na
+               vida do cliente — cortar a conferência logo nele seria entregar o conforto só
+               a quem digita cartão uma vez. */}
+        <CardPreview numero={numero} validade={validade} cvv={cvv} nome={nome} marca={marca} zona={zona} />
 
         {/* ── Número ─────────────────────────────────────────────────────────── */}
         <Campo
@@ -518,7 +556,8 @@ export function CardForm(props: CardFormProps) {
             <input
               ref={refNumero} id="cc-numero" name="cardnumber"
               value={mascarado} onChange={aoDigitarNumero}
-              onBlur={() => setTocado((t) => ({ ...t, numero: true }))}
+              onFocus={() => setZona("numero")}
+              onBlur={() => sair("numero", numero.length > 0)}
               inputMode="numeric" pattern="[0-9\s]*" enterKeyHint="next" autoComplete="cc-number"
               aria-invalid={tocado.numero && !!erros.numero}
               placeholder={placeholderDoNumero(marca)}
@@ -554,7 +593,8 @@ export function CardForm(props: CardFormProps) {
                 if (d.length >= 4 && validade.length < 5) refCvv.current?.focus()
               }}
               onKeyDown={(e) => voltarNoVazio(e, validade.length === 0, refNumero)}
-              onBlur={() => setTocado((t) => ({ ...t, validade: true }))}
+              onFocus={() => setZona("validade")}
+              onBlur={() => sair("validade", validade.length > 0)}
               // ⚠️ SEM `maxLength` de propósito. Ele parece o reforço óbvio e é a armadilha:
               //    o navegador clamparia o `MM/YYYY` do autofill em 5 caracteres ANTES do
               //    handler ver o ano inteiro — reintroduzindo o mesmo "cartão vencido".
@@ -584,7 +624,8 @@ export function CardForm(props: CardFormProps) {
                 if (d.length === tamCvv && d.length > cvv.length) refNome.current?.focus()
               }}
               onKeyDown={(e) => voltarNoVazio(e, cvv.length === 0, refValidade)}
-              onBlur={() => setTocado((t) => ({ ...t, cvv: true }))}
+              onFocus={() => setZona("cvv")}
+              onBlur={() => sair("cvv", cvv.length > 0)}
               inputMode="numeric" enterKeyHint="next" autoComplete="cc-csc"
               aria-invalid={tocado.cvv && !!erros.cvv}
               placeholder={"0".repeat(tamCvv)}
@@ -600,7 +641,8 @@ export function CardForm(props: CardFormProps) {
             value={nome}
             // Dígito não existe em relevo de cartão — filtrar aqui evita o erro do gateway.
             onChange={(e) => setNome(e.target.value.replace(/[^\p{L}\s'-]/gu, "").toUpperCase().slice(0, 26))}
-            onBlur={() => setTocado((t) => ({ ...t, nome: true }))}
+            onFocus={() => setZona("nome")}
+            onBlur={() => sair("nome", nome.trim().length > 0)}
             enterKeyHint="done" autoCapitalize="characters" autoComplete="cc-name"
             aria-invalid={tocado.nome && !!erros.nome}
             placeholder="COMO ESTÁ NO CARTÃO"

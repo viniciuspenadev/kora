@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { generateInvoiceForTenant } from "@/lib/billing"
 import { cancelSubscriptionForTenant } from "@/lib/asaas/subscriptions"
+import { auditarCobranca } from "@/lib/billing/audit"
 
 /**
  * Financeiro (god mode) — controle interno, gateway-ready.
@@ -40,7 +41,10 @@ export async function updateTenantBilling(
   tenantId: string,
   opts: { billing_day?: number | null; subscription_status?: string; past_due_grace_days?: number | null },
 ): Promise<{ error?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
+
+  /** Estado ANTES — usado pelo carimbo da carência e pela trilha de auditoria. */
+  let antes: { subscription_status?: string | null; past_due_since?: string | null } | null = null
 
   const updates: Record<string, unknown> = { }
   if ("billing_day" in opts) {
@@ -80,7 +84,7 @@ export async function updateTenantBilling(
     //    ganha ou perde dias dependendo de quem o marcou.
     const { data: atual } = await supabaseAdmin
       .from("tenants").select("subscription_status, past_due_since").eq("id", tenantId).maybeSingle()
-    const antes = (atual as { subscription_status?: string | null; past_due_since?: string | null } | null)
+    antes = (atual as { subscription_status?: string | null; past_due_since?: string | null } | null)
 
     // ── "Cancelada" no god mode precisa CANCELAR ─────────────────────────────
     //
@@ -122,6 +126,21 @@ export async function updateTenantBilling(
 
   const { error } = await supabaseAdmin.from("tenants").update(updates).eq("id", tenantId)
   if (error) return { error: error.message }
+
+  // 🔑 A AÇÃO MAIS CONTESTÁVEL DESTA TELA. Marcar "Cancelada" fecha o produto (paywall) e
+  //    cancela a cobrança; mexer na carência decide **quando a equipe do cliente perde o
+  //    login**. Nenhuma das duas deixava rastro: com dois operadores, não havia como saber
+  //    qual agiu, nem quando, nem de qual valor para qual.
+  await auditarCobranca({
+    tenantId,
+    acao:       "billing.status_alterado",
+    origem:     "humano",
+    actorId:    session.user.id,
+    actorEmail: session.user.email,
+    antes:      { subscription_status: antes?.subscription_status ?? null, past_due_since: antes?.past_due_since ?? null },
+    depois:     updates,
+  })
+
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   return {}
 }
@@ -190,7 +209,7 @@ export async function generateInvoice(tenantId: string): Promise<{ error?: strin
 //       a mesma classe do M-02, que eu tinha acabado de documentar.
 
 export async function markInvoicePaid(invoiceId: string, tenantId: string, method: string): Promise<{ error?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
 
   // 🔑 Baixa manual quita a fatura INTEIRA — não existe "recebi metade" pela mão do
   //    operador. Ler o total garante `paid_cents = total_cents` em vez do default `0`, que
@@ -211,12 +230,26 @@ export async function markInvoicePaid(invoiceId: string, tenantId: string, metho
     .eq("id", invoiceId)
     .eq("tenant_id", tenantId)
   if (error) return { error: error.message }
+
+  // 🔑 Dar uma fatura por paga SEM dinheiro ter entrado é a operação que mais pede
+  //    explicação depois — inclusive porque `paid_method` fica registrado como o operador
+  //    escolheu, e não como o gateway confirmou.
+  await auditarCobranca({
+    tenantId,
+    acao:       "billing.fatura_baixada",
+    origem:     "humano",
+    actorId:    session.user.id,
+    actorEmail: session.user.email,
+    alvo:       { tipo: "invoice", id: invoiceId },
+    depois:     { status: "paid", paid_cents: (inv as { total_cents: number }).total_cents, paid_method: method },
+  })
+
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   return {}
 }
 
 export async function voidInvoice(invoiceId: string, tenantId: string): Promise<{ error?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
   const { error } = await supabaseAdmin
     .from("invoices")
     // ⚠️ `erro_operacional` é o motivo certo aqui, e é justamente a distinção que a coluna
@@ -226,6 +259,17 @@ export async function voidInvoice(invoiceId: string, tenantId: string): Promise<
     .eq("id", invoiceId)
     .eq("tenant_id", tenantId)
   if (error) return { error: error.message }
+
+  await auditarCobranca({
+    tenantId,
+    acao:       "billing.fatura_anulada",
+    origem:     "humano",
+    actorId:    session.user.id,
+    actorEmail: session.user.email,
+    alvo:       { tipo: "invoice", id: invoiceId },
+    depois:     { status: "void", void_reason: "erro_operacional" },
+  })
+
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   return {}
 }

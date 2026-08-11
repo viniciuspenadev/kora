@@ -4,6 +4,7 @@ import { asaas } from "./client"
 import { RESERVA_TTL_MS, idadeDaReservaMs, assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { processAsaasEvent } from "./webhook-handler"
 import { procurarAssinaturaNoGateway, cancelSubscriptionForTenant } from "./subscriptions"
+import { executarJob } from "@/lib/cron/run"
 
 // ═══════════════════════════════════════════════════════════════
 // Reconciliação — o webhook deixa de ser ponto único de falha
@@ -38,7 +39,46 @@ export interface ReconcileResult {
   cobrancasEncerradas: number
 }
 
-export async function reconcileAsaas(): Promise<ReconcileResult> {
+/**
+ * 🔒 A TRAVA DESTA FUNÇÃO É DELA, NÃO DO JOB QUE A CHAMA (10/08).
+ *
+ * 🔴 O FURO QUE ISTO FECHA: `reconcileAsaas` tem **dois** chamadores — o job
+ *    `reconcile-billing` (a cada 15 min) e o `trial-housekeeping` (diário, 08:05). Uma
+ *    trava chaveada pelo nome do JOB serializa cada um contra si mesmo e **nunca um contra
+ *    o outro**. Sequência real:
+ *      08:05 housekeeping pega a trava dele e começa (o job mais pesado da frota);
+ *      08:15 reconcile-billing pega a trava DELE — ninguém colide — e processa evt_X;
+ *      08:16 o housekeeping chega no reconcile dele e processa evt_X também.
+ *    Os dois passam pelo `if (ev.processed_at) return`, que é check-then-act; os dois leem
+ *    `paid_cents`, somam em memória e gravam. **Crédito em dobro.**
+ *
+ * 🔑 A trava acompanha o TRABALHO (`reconcile-asaas`), não a rota. Toda função de negócio
+ *    com mais de um chamador agendado segue esta regra.
+ *
+ * ⚠️ Colidir devolve zeros — não é erro. Significa "já tem alguém reconciliando", e a
+ *    próxima janela (15 min) pega o que sobrou. O `pulado: true` deixa isso legível para
+ *    quem lê a resposta do cron, em vez de parecer uma rodada sem trabalho.
+ */
+export async function reconcileAsaas(): Promise<ReconcileResult & { pulado?: true }> {
+  const zero = (): ReconcileResult =>
+    ({ reprocessados: 0, liberados: 0, erros: 0, reservasLimpas: 0, cobrancasEncerradas: 0 })
+
+  // ⚠️ O resultado volta por variável, não pelo `meta` do livro. `meta` é `unknown` por
+  //    desenho (é dado de observação, não contrato) — devolver o resultado de negócio por
+  //    ali obrigaria um cast que apagaria a checagem de tipo dos chamadores.
+  let resultado: ReconcileResult | null = null
+
+  const saida = await executarJob({ job: "reconcile-asaas" }, async () => {
+    const r = await reconciliar()
+    resultado = r
+    return { processed: r.reprocessados + r.liberados, failed: r.erros, meta: { ...r } }
+  })
+
+  if (saida.pulado) return { ...zero(), pulado: true }
+  return resultado ?? zero()
+}
+
+async function reconciliar(): Promise<ReconcileResult> {
   const out: ReconcileResult = { reprocessados: 0, liberados: 0, erros: 0, reservasLimpas: 0, cobrancasEncerradas: 0 }
 
   // ── 0 · Faxina de reservas órfãs do claim atômico ────────────────────────

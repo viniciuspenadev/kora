@@ -9,6 +9,8 @@ import { NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { filterServiceableTenants } from "@/lib/auth/tenant-serviceable"
 import { resumeStudioRun } from "@/lib/ai-v2/run"
+import { requireCronSecret } from "@/lib/cron-auth"
+import { executarJob } from "@/lib/cron/run"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -16,11 +18,17 @@ export const dynamic = "force-dynamic"
 const MAX_BATCH = 50
 
 export async function POST(req: Request): Promise<Response> {
-  const secret = process.env.CRON_SECRET
-  if (!secret || req.headers.get("x-cron-secret") !== secret) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
+  const negado = requireCronSecret(req)
+  if (negado) return negado
 
+  // 🔴 `travar: false` pelo mesmo motivo do motor de campanhas: cadência de 1 minuto com
+  //    lote de 50 runs que fazem chamada de LLM — sobreposição é normal, e travar por nome
+  //    de job faria um lote lento pular os ticks seguintes inteiros.
+  const saida = await executarJob({ job: "studio-wait-resume", travar: false }, () => retomar())
+  return NextResponse.json(saida.pulado ? { pulado: true } : saida.resultado?.meta)
+}
+
+async function retomar() {
   const nowIso = new Date().toISOString()
   const { data: due, error } = await supabaseAdmin
     .from("studio_flow_runs")
@@ -31,7 +39,10 @@ export async function POST(req: Request): Promise<Response> {
     .order("resume_at", { ascending: true })
     .limit(MAX_BATCH)
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // 🔑 LANÇA em vez de responder: quem monta a resposta HTTP agora é o handler, e o
+  //    invólucro precisa VER a falha pra registrar a corrida como `failed`. Devolver um
+  //    500 daqui faria o livro registrar "ok" sobre um tick que não leu nada.
+  if (error) throw new Error(`leitura dos runs falhou: ${error.message}`)
 
   const runs = due ?? []
 
@@ -42,7 +53,7 @@ export async function POST(req: Request): Promise<Response> {
   //    estado do run (persistente). Deixar `waiting` é reversível — o próximo tick retoma.
   if (degraded) {
     console.error("[studio/cron] status dos tenants indisponível — retomada abortada")
-    return NextResponse.json({ checked: 0, resumed: 0, degraded: true })
+    return { processed: 0, meta: { checked: 0, resumed: 0, degraded: true } }
   }
 
   let resumed = 0
@@ -56,5 +67,5 @@ export async function POST(req: Request): Promise<Response> {
     }
   }
 
-  return NextResponse.json({ checked: runs.length, resumed })
+  return { processed: resumed, meta: { checked: runs.length, resumed } }
 }
