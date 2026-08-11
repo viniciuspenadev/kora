@@ -308,6 +308,13 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
       .select("id, status, due_date, total_cents")
       .eq("tenant_id", tenantId)
       .in("status", UNPAID_STATUSES)
+      // 🔑 SÓ O CICLO (§9.5 do livro-caixa, 11/08). Esta consulta alimenta o degrau da
+      //    assinatura — é ela que decide se o cliente lê "fatura em aberto" e se caminha pro
+      //    paywall. Uma cobrança AVULSA em aberto (setup, multa, diferença de upgrade) é
+      //    dívida legítima, mas ela NÃO é a relação recorrente: deixá-la aqui faria uma
+      //    cobrança extra não paga **cortar o produto** de um cliente com a mensalidade em
+      //    dia. Cobrar o avulso é assunto comercial; derrubar o acesso por ele, não.
+      .eq("kind", "recorrente")
       // ASC = a mais antiga primeiro (é a que ele tem que pagar). NULL vai pro fim no
       // Postgres, então a primeira COM vencimento aparece antes de qualquer sem.
       .order("due_date", { ascending: true })

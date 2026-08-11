@@ -35,7 +35,11 @@ vi.mock("./client", () => ({
 const applyPlanMock = vi.fn(async () => ({ ok: true as const }))
 vi.mock("@/lib/plans", () => ({ applyPlan: (...a: unknown[]) => applyPlanMock(...(a as [])) }))
 const gerarFaturaMock = vi.fn(async () => ({ id: "inv_nova" as string | undefined, skipped: false, error: undefined as string | undefined }))
-vi.mock("@/lib/billing", () => ({ generateInvoiceForTenant: () => gerarFaturaMock() }))
+// ⚠️ ENCAMINHA OS ARGUMENTOS (11/08). Antes era `() => gerarFaturaMock()`, que os DESCARTAVA
+//    — e isso tornava impossível afirmar COM QUE opções a emissão foi chamada. Descobri ao
+//    tentar provar que a baixa passa `{ dinheiroJaEntrou: true }`: o espião não via nada.
+//    Mock que engole argumento transforma "não verifiquei" em "verifiquei e estava certo".
+vi.mock("@/lib/billing", () => ({ generateInvoiceForTenant: (...a: unknown[]) => gerarFaturaMock(...(a as [])) }))
 // 🔑 ESPIÃO, NÃO SÓ MOCK. O defeito que os e-mails vieram consertar não era e-mail errado —
 //    era e-mail **nunca chamado** (`resolveBillingRecipients` e `dedupeKey` ficaram prontos e
 //    sem chamador). Só o teste do disparador não pegaria isso: quem tem que provar a fiação

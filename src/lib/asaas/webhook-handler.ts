@@ -270,6 +270,29 @@ async function despachar(ev: EventRow): Promise<void> {
   }
   const tenant = tenantRow as { id: string; lifecycle_state: string | null; subscription_status: string | null; billing_mode: string | null }
 
+  // 🔑 CARIMBA O DONO NO EVENTO (§9.4/4 do livro-caixa, 11/08). Medido antes: `tenant_id`
+  //    estava NULL em 14/14 linhas — a coluna existia e ninguém a escrevia. Sem ela é
+  //    impossível responder PELO BANCO a pergunta mais básica de suporte e de auditoria:
+  //    *"quais pagamentos afetaram este cliente?"*. Só dava para descobrir abrindo o payload
+  //    de cada evento e cruzando o `customer` na mão.
+  // ⚠️ Aqui, e NÃO no insert da rota: lá o evento é gravado antes de qualquer consulta, de
+  //    propósito — persistir primeiro é o que impede o evento de se perder. Descobrir o dono
+  //    custaria uma ida ao banco no caminho mais crítico. Aqui o tenant já está resolvido e
+  //    já passou pelas checagens de propriedade; carimbar não custa consulta nenhuma.
+  // ⚠️ Best-effort deliberado: falhar em carimbar NÃO pode derrubar o processamento do
+  //    pagamento. É metadado de rastreabilidade, não decisão de dinheiro.
+  {
+    const { error: erroCarimbo } = await supabaseAdmin
+      .from("asaas_webhook_events").update({ tenant_id: tenant.id })
+      .eq("id", ev.id).is("tenant_id", null)
+    if (erroCarimbo) {
+      console.warn(JSON.stringify({
+        src: "asaas-handler", kind: "carimbo-de-tenant-no-evento-falhou",
+        event: ev.id, tenant: tenant.id, msg: erroCarimbo.message,
+      }))
+    }
+  }
+
   // ⚠️ Cliente `manual` (ativado à mão) NUNCA é movido pela automação — §2 do design.
   //    Se ele tem customer no Asaas por algum motivo, o evento é registrado e ignorado.
   if (tenant.billing_mode !== "gateway") {
@@ -563,6 +586,13 @@ async function calcularFimDoCiclo(tenantId: string, ev: EventRow): Promise<strin
     .select("period_end")
     .eq("tenant_id", tenantId)
     .eq("status", "paid")
+    // 🔑 SÓ O CICLO (§9.5 do livro-caixa, 11/08). Esta consulta responde "até quando o
+    //    cliente já pagou" e vira a data de encerramento do acesso dele. A fatura AVULSA
+    //    carrega `period_start = period_end = dia da cobrança` — um período de UM dia, que
+    //    não representa ciclo nenhum. Sem este filtro, uma avulsa paga hoje seria a "última
+    //    paga" e o acesso seria encerrado HOJE, mesmo com a mensalidade em dia até o fim do
+    //    mês. É a mesma classe do corte imediato que a F1 fechou, entrando por outra porta.
+    .eq("kind", "recorrente")
     .order("period_end", { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle()
@@ -646,7 +676,15 @@ async function darBaixaNaFatura(
    *    o `tsc` cobrar de qualquer chamador futuro de onde veio o número.
    */
   valorDoGateway: number | undefined,
-): Promise<{ error?: string }> {
+  // 🔑 `quitou` EXISTE PARA A REGRA 3 DO DONO — "pagamento parcial não libera nada" (11/08).
+  //    Três valores, e a diferença entre os dois últimos é o ponto:
+  //      true      → o pagamento cobriu a fatura ⇒ pode liberar
+  //      false     → cobriu em parte ⇒ NÃO libera (é a regra)
+  //      undefined → NÃO SE SABE (evento repetido, pagamento sem fatura, plano sem valor).
+  //                  Aqui libera-se assim mesmo: o cliente pagou, e segurar o produto dele
+  //                  por causa de uma lacuna no NOSSO livro é puni-lo pelo nosso defeito.
+  //    Só se retém acesso quando se SABE que faltou dinheiro — nunca por ignorância.
+): Promise<{ error?: string; quitou?: boolean }> {
   if (!ev.payment_id) return {}
 
   // Idempotência: `gateway_ref` já carimbado com ESTE pagamento ⇒ evento repetido.
@@ -732,7 +770,11 @@ async function darBaixaNaFatura(
   // ⚠️ Falhar aqui NÃO desfaz a liberação: o cliente pagou e o acesso é dele. Grita no log
   //    pra alguém emitir à mão — dinheiro sem fatura é problema de livro, não de produto.
   if (!alvo) {
-    const nova = await generateInvoiceForTenant(tenantId)
+    // 🔑 `dinheiroJaEntrou`: o gateway ACABOU de confirmar este pagamento (o valor veio do
+    //    `GET /payments/{id}`, não do payload). Sem isto, a baixa passando a rodar ANTES da
+    //    liberação faria a guarda de paywall barrar justamente quem pagou — e o dinheiro
+    //    ficaria sem fatura. Ver o docblock de `generateInvoiceForTenant`.
+    const nova = await generateInvoiceForTenant(tenantId, { dinheiroJaEntrou: true })
     if (nova.id) {
       // 🔴 ALARME FALSO + BAIXA PERDIDA (F1, 11/08). Com o `error` descartado, uma falha ao
       //    reler a fatura RECÉM-CRIADA deixava `alvo` nulo e o fluxo caía no ramo
@@ -809,8 +851,20 @@ async function darBaixaNaFatura(
   //    descartado: uma falha de leitura fazia `piso = null`, e a checagem abaixo era
   //    **pulada por inteiro** — um pagamento menor que o próprio plano quitava a fatura.
   //    Não saber o piso não é o mesmo que não haver piso.
-  const { data: planoRow, error: erroPiso } = await supabaseAdmin
-    .from("tenants").select("plans:plan_id ( price_cents )").eq("id", tenantId).maybeSingle()
+  // 🔴 O PISO VEM DA FATURA-ALVO, NÃO DO PLANO ATUAL DO CLIENTE (§9.2 do livro-caixa, 11/08).
+  //    Antes lia `tenants.plans:plan_id(price_cents)` — o preço de HOJE — e isso PUNIA
+  //    exatamente quem faz upgrade: cliente no plano de R$ 5 recebe a fatura do ciclo, troca
+  //    para o de R$ 349 no dia 10, e o pagamento da cobrança VELHA (R$ 5) passa a ser
+  //    comparado contra o piso NOVO (R$ 349) ⇒ **recusado**. O cliente paga exatamente o que
+  //    devia, o sistema responde "pagamento menor que o preço do plano", e ele vai pro
+  //    paywall por ter gasto MAIS conosco.
+  // 🔑 A régua honesta é o valor CONGELADO no documento que está sendo pago. A fatura já
+  //    guarda esse número no item `plan` (billing.ts emite `kind='plan'` com o preço do
+  //    momento) — é ele que diz quanto ESTA cobrança vale, e ele não muda quando o plano muda.
+  const { data: itemPlano, error: erroPiso } = await supabaseAdmin
+    .from("invoice_items").select("amount_cents")
+    .eq("invoice_id", (alvo as { id: string }).id).eq("kind", "plan")
+    .limit(1).maybeSingle()
   if (erroPiso) {
     console.error(JSON.stringify({
       src: "asaas-handler", kind: "piso-indisponivel-baixa-adiada",
@@ -818,8 +872,34 @@ async function darBaixaNaFatura(
     }))
     return { error: "não foi possível conferir o valor mínimo aceitável para este pagamento" }
   }
-  const pl = (planoRow as { plans?: { price_cents?: number } | { price_cents?: number }[] | null } | null)?.plans
-  const piso = (Array.isArray(pl) ? pl[0]?.price_cents : pl?.price_cents) ?? null
+  let piso = (itemPlano as { amount_cents?: number } | null)?.amount_cents ?? null
+
+  // ⚠️ FATURA SEM ITEM DE PLANO ⇒ RECUA PRO PLANO ATUAL, NÃO DESLIGA A TRAVA.
+  //    Fatura sem itens é defeito NOSSO de escrituração e existiu em produção (a `32de2448`,
+  //    R$ 5,00, zero itens). A primeira versão desta correção PULAVA a checagem nesse caso,
+  //    argumentando "não punir o cliente pelo nosso erro" — e os testes H-2 reprovaram, com
+  //    razão: o piso existe pra barrar **pagamento avulso pequeno se passando pela cobrança
+  //    recorrente**, e essa proteção não pode evaporar porque uma fatura nasceu torta.
+  // 🔑 O recuo preserva a trava em 100% dos casos e mantém o defeito do upgrade corrigido no
+  //    caminho normal — que é onde ele acontecia. O caso anômalo volta ao comportamento
+  //    antigo, e grita.
+  if (piso === null) {
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "FATURA-SEM-ITEM-DE-PLANO-piso-do-plano-atual",
+      tenant: tenantId, payment: ev.payment_id, invoice: (alvo as { id: string }).id,
+    }))
+    const { data: planoRow, error: erroPlano } = await supabaseAdmin
+      .from("tenants").select("plans:plan_id ( price_cents )").eq("id", tenantId).maybeSingle()
+    if (erroPlano) {
+      console.error(JSON.stringify({
+        src: "asaas-handler", kind: "piso-indisponivel-baixa-adiada",
+        tenant: tenantId, payment: ev.payment_id, msg: erroPlano.message,
+      }))
+      return { error: "não foi possível conferir o valor mínimo aceitável para este pagamento" }
+    }
+    const pl = (planoRow as { plans?: { price_cents?: number } | { price_cents?: number }[] | null } | null)?.plans
+    piso = (Array.isArray(pl) ? pl[0]?.price_cents : pl?.price_cents) ?? null
+  }
 
   // 🔴 O PISO NÃO VALE PARA COMPLEMENTO DE PARCIAL (achado por teste, 08/08). Assim que
   //    `partial` passou a existir, a segunda parcela é **por definição** menor que o preço
@@ -903,8 +983,11 @@ async function darBaixaNaFatura(
   console.log(JSON.stringify({
     src: "asaas-handler", kind: "fatura-baixada",
     tenant: tenantId, payment: ev.payment_id, invoice: (alvo as { id: string }).id,
+    quitou,
   }))
-  return {}
+  // 🔑 Este é o ÚNICO caminho que SABE se o dinheiro cobriu a fatura — todos os `return {}`
+  //    acima são "não sei", e o chamador trata os dois de forma diferente (ver a assinatura).
+  return { quitou }
 }
 
 /**
@@ -1131,8 +1214,26 @@ async function liberar(
     patch.active          = true
   }
 
-  const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenant.id)
-  if (error) { await fechar(ev, `falha ao liberar: ${error.message}`, false); return }
+  // ═════════════════════════════════════════════════════════════════════════════
+  // 🔴 A ORDEM AQUI É REGRA DE NEGÓCIO, NÃO ESTILO — invertida em 11/08
+  // ═════════════════════════════════════════════════════════════════════════════
+  // Era: LIBERA → aplica plano → dá baixa. Ou seja, o produto era destravado **antes de
+  // alguém conferir se o dinheiro cobria a fatura** — e QUALQUER confirmação de pagamento
+  // liberava, inclusive uma parcial.
+  // 🗳️ Regra 3 do dono (11/08): *"pagamento parcial no Kora não libera nada. Pra ativar, ele
+  //    seleciona o plano. Pagou, aí libera."*
+  // ➜ Agora: aplica plano → dá baixa (que RESPONDE se cobriu) → libera **se** cobriu.
+  //
+  // ⚠️ O QUE TORNAVA ESSA INVERSÃO IMPOSSÍVEL, e como foi resolvido: `darBaixaNaFatura`, no
+  //    caminho "pagamento sem fatura", chama `generateInvoiceForTenant` — que tem guarda de
+  //    paywall. Com a liberação depois, um cliente em paywall que paga cairia na guarda e o
+  //    dinheiro ficaria sem fatura. A guarda pergunta "este período vai ser servido?", e a
+  //    resposta com dinheiro na mão é SIM — ela só descobria isso pela ORDEM das chamadas.
+  //    Passou a ser dito explicitamente: `{ dinheiroJaEntrou: true }` (ver o docblock lá).
+  // ⚠️ `applyPlan` sobe junto e NÃO depende da liberação: ele lê a tabela `plans` e grava
+  //    `plan_id`/`plan` — conferido, não pressuposto. E `plan_id` já vem carimbado da criação
+  //    da assinatura, então a fatura nasce com o plano certo mesmo antes do patch.
+  let pendencia: string | null = null
 
   // 🔴 APLICA O PLANO — elo que faltava (2026-08-05). `applyPlan` só era chamado pelo god
   //    mode e pelo signup: o cliente pagava, o `subscription_status` virava `active`, e os
@@ -1155,7 +1256,6 @@ async function liberar(
   // ⚠️ Continua NÃO desfazendo a liberação — ele pagou, o acesso é dele. O que muda é que
   //    o evento volta pra fila em vez de morrer, e `applyPlan` é idempotente (upsert), então
   //    repetir é seguro.
-  let pendencia: string | null = null
 
   // ⚠️ Vem da leitura única lá de cima. `plan_id` é carimbado na criação da assinatura —
   //    muito antes deste pagamento — e o `patch` acima não encosta nele, então o valor do
@@ -1174,6 +1274,34 @@ async function liberar(
 
   const baixa = await darBaixaNaFatura(tenant.id, ev, pagamento?.value)
   if (baixa?.error) pendencia = pendencia ? `${pendencia}; ${baixa.error}` : baixa.error
+
+  // ── A LIBERAÇÃO, agora CONDICIONADA ao dinheiro ter coberto a fatura ────────
+  // 🔑 Só `quitou === false` retém o acesso — e isso é deliberado. `undefined` significa
+  //    "não sei" (evento repetido, pagamento sem fatura, plano sem valor) e nesses casos
+  //    LIBERA: o cliente pagou, e segurar o produto dele por uma lacuna no NOSSO livro seria
+  //    puni-lo pelo nosso defeito. Retém-se acesso por CONHECIMENTO, nunca por ignorância —
+  //    a mesma régua que a F1 aplicou em todo o caminho do dinheiro.
+  if (baixa?.quitou === false) {
+    console.warn(JSON.stringify({
+      src: "asaas-handler", kind: "pagamento-parcial-NAO-libera",
+      tenant: tenant.id, payment: ev.payment_id,
+    }))
+    // O dinheiro ENTROU e está registrado na fatura (a baixa já rodou) — o que não acontece
+    // é o destravamento. O evento fecha como resolvido: não há o que retentar, e insistir
+    // faria a régua de avisos disparar de novo a cada rodada.
+    await avisarCobranca({
+      tenantId: tenant.id,
+      aviso:    "pagamento_confirmado",
+      fato:     ev.payment_id,
+      valorCents: emCentavos(pagamento?.value) ?? undefined,
+    })
+    await fechar(ev, pendencia ?? "pagamento parcial — registrado, sem liberar acesso",
+      !pendencia)
+    return
+  }
+
+  const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenant.id)
+  if (error) { await fechar(ev, `falha ao liberar: ${error.message}`, false); return }
 
   // ── Avisos ────────────────────────────────────────────────────────────────
   // ⚠️ ANTES do `return` da pendência, de propósito. Pendência é problema NOSSO de livro

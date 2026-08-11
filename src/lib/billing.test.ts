@@ -86,6 +86,55 @@ describe("caminho feliz", () => {
   })
 })
 
+// ═══════════════════════════════════════════════════════════════════════════
+// A GUARDA DE PAYWALL — e o sinal que a desarma quando o dinheiro já entrou
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔴 ESTA GUARDA NUNCA TEVE TESTE — nem antes nem depois de 11/08, e ela decide se um
+//    cliente bloqueado ganha ou não fatura. A lacuna só apareceu quando fui deployar e
+//    perguntei "o que prova a mudança que acabei de fazer?". Nada provava.
+// 🔑 A regra do pré-pago: período não servido não gera cobrança. Mas quando o pagamento
+//    ACABOU de ser confirmado, o período VAI ser servido — e até 11/08 a função descobria
+//    isso pela ORDEM em que era chamada (o `liberar()` limpava o paywall antes da baixa).
+//    Inverter essa ordem, para a regra 3 do dono ("parcial não libera"), quebrava a
+//    suposição em silêncio: o cliente bloqueado pagaria e o dinheiro ficaria SEM FATURA.
+describe("guarda de paywall na emissão", () => {
+  /** Tenant em paywall de verdade: atrasado além da carência. */
+  function emPaywall() {
+    const t = db.linhas("tenants")[0]
+    t.subscription_status = "past_due"
+    t.past_due_since      = "2026-01-01T00:00:00Z"   // muito além de qualquer carência
+    t.past_due_grace_days = 2
+  }
+
+  it("cliente em paywall NÃO ganha fatura — período não servido não se cobra", async () => {
+    emPaywall()
+
+    const r = await generateInvoiceForTenant(TENANT)
+
+    expect(r.skipped).toBe(true)
+    expect(faturas()).toHaveLength(0)
+  })
+
+  it("🔑 mas se o dinheiro JÁ ENTROU, a fatura nasce — senão o pagamento fica sem lastro", async () => {
+    emPaywall()
+
+    const r = await generateInvoiceForTenant(TENANT, { dinheiroJaEntrou: true })
+
+    expect(r.skipped).toBeFalsy()
+    expect(r.id).toBeTruthy()
+    expect(faturas()).toHaveLength(1)
+    // E ela nasce completa: sem itens, o piso de aceite da baixa perde a régua.
+    expect(itens().length).toBeGreaterThan(0)
+  })
+
+  it("o sinal NÃO é um bypass geral: quem não está em paywall segue o caminho normal", async () => {
+    const r = await generateInvoiceForTenant(TENANT, { dinheiroJaEntrou: true })
+
+    expect(r.skipped).toBeFalsy()
+    expect(faturas()).toHaveLength(1)
+  })
+})
+
 describe("falha no meio NÃO deixa fatura pela metade", () => {
   it("itens falharam ⇒ o cabeçalho é APAGADO (senão o retry bate no índice único pra sempre)", async () => {
     db.falharEm({ tabela: "invoice_items", op: "insert", vezes: 1, msg: "conexão caiu" })

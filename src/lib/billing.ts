@@ -110,7 +110,29 @@ export function currentPeriod(billingDay: number | null): { start: string; end: 
  * Itens: plano base + overage de usuários + add-ons recorrentes + avulsas
  * pendentes. Idempotente por período (recusa se já houver fatura não-void).
  */
-export async function generateInvoiceForTenant(tenantId: string): Promise<{ error?: string; id?: string; skipped?: boolean }> {
+/**
+ * @param opts.dinheiroJaEntrou — o chamador AFIRMA que um pagamento acabou de ser confirmado
+ *   para este período. Só o caminho do webhook usa (`darBaixaNaFatura`), e ele é o único que
+ *   tem essa informação de primeira mão.
+ *
+ * 🔑 POR QUE ESTE PARÂMETRO EXISTE (11/08): a guarda de paywall abaixo pergunta *"este
+ *    período vai ser servido?"*. Quando o dinheiro **já entrou**, a resposta é sim — e até
+ *    hoje a função descobria isso por ORDEM: o `liberar()` limpava o paywall ANTES de chamar
+ *    a baixa, então a guarda nunca via um pagante bloqueado. Funcionava, mas por acidente de
+ *    sequência, e o comentário da guarda declarava a suposição ("nesse caminho o tenant está
+ *    pagando — não está no paywall") sem nada que a garantisse.
+ * ⚠️ Isso travava a regra 3 do dono ("parcial não libera"): para condicionar a liberação ao
+ *    pagamento cobrir a fatura, a baixa precisa rodar ANTES da liberação — e aí a guarda
+ *    passaria a barrar justamente quem pagou, deixando dinheiro sem fatura.
+ * 🔒 NÃO É BYPASS: não desliga regra nenhuma para o cron nem para o god mode, que continuam
+ *    barrados no paywall. Só troca uma inferência frágil por uma afirmação explícita de quem
+ *    sabe. Quem chamar com isto mentindo gera fatura de período não servido — por isso o
+ *    único chamador autorizado é a baixa, logo após o gateway confirmar o pagamento.
+ */
+export async function generateInvoiceForTenant(
+  tenantId: string,
+  opts?: { dinheiroJaEntrou?: boolean },
+): Promise<{ error?: string; id?: string; skipped?: boolean }> {
   const { data: tenant, error: tenantErr } = await supabaseAdmin
     // As 4 colunas extras alimentam a guarda de paywall logo abaixo — a linha já era lida.
     .from("tenants")
@@ -168,8 +190,17 @@ export async function generateInvoiceForTenant(tenantId: string): Promise<{ erro
     tenant.lifecycle_state, tenant.subscription_status,
     tenant.past_due_since, tenant.past_due_grace_days,
   )
-  if (emPaywall) {
+  // 🔑 `dinheiroJaEntrou` desarma a guarda — e SÓ ela. Ver o porquê no docblock da função:
+  //    período pago é período servido, e quem sabe disso é o caminho do pagamento, não a
+  //    ordem em que as funções foram chamadas.
+  if (emPaywall && !opts?.dinheiroJaEntrou) {
     return { skipped: true, error: "Tenant no paywall — período não servido não gera fatura" }
+  }
+  if (emPaywall && opts?.dinheiroJaEntrou) {
+    console.log(JSON.stringify({
+      src: "billing", kind: "fatura-emitida-para-tenant-em-paywall-porque-pagou",
+      tenant: tenantId,
+    }))
   }
 
   const period = currentPeriod(tenant.billing_day)
@@ -361,7 +392,15 @@ export async function generateInvoiceForTenant(tenantId: string): Promise<{ erro
   //    diferença de receita, não uma inconsistência de dado. Desfazer a fatura por causa
   //    disso seria pior.
   const recorrenteCents = items
-    .filter((i) => i.kind !== "oneoff")
+    // 🔴 ALLOW-LIST, NUNCA DENY-LIST (§9.5 do livro-caixa, 11/08). Isto define o valor
+    //    RECORRENTE que vai pro gateway — o que o cliente paga TODO MÊS. Com `!== "oneoff"`,
+    //    qualquer tipo novo entrava por omissão, e o primeiro deles já seria desastre:
+    //    `discount` (a cortesia que o dono escolheu em 11/08) é linha NEGATIVA de UM mês —
+    //    somada aqui, ela viraria a mensalidade permanente. Cortesia de um mês baixaria o
+    //    preço do cliente PARA SEMPRE, e ninguém perceberia até o fim do ano.
+    // 🔑 A lista positiva obriga quem criar um tipo novo a decidir conscientemente se ele é
+    //    recorrente. Esquecer passa a significar "fica de fora", que é o lado seguro.
+    .filter((i) => ["plan", "overage", "addon"].includes(i.kind))
     .reduce((s, i) => s + i.amount_cents, 0)
   if (recorrenteCents > 0) {
     const r = await atualizarValorDaAssinatura(tenantId, recorrenteCents)

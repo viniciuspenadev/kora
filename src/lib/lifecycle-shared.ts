@@ -214,9 +214,20 @@ export type SubscriptionStatus = "active" | "past_due" | "canceled"
  * Quando a coluna de carimbo existir, `isTenantBlockedAt` abaixo já aplica a carência
  * aqui e o job pode marcar `past_due` no dia 1.
  *
- * 🔴 Hoje o único escritor de `past_due` é a MÃO do admin (`admin-billing.ts:52`) — o cron
- * de cobrança existe no código mas nunca foi agendado (entitlements-design §3.3 H-7).
- * Marcou à mão = decidiu cortar. Bloqueia na hora, e é o comportamento certo.
+ * 🔴 ⚠️ O PARÁGRAFO ACIMA ENVELHECEU — corrigido em 2026-08-11. Ele dizia que a carência
+ * "mora na transição" porque `tenants.past_due_since` não existia e o único escritor de
+ * `past_due` era a mão do admin. **As duas coisas mudaram**, e deixar isso escrito era
+ * pior que não documentar: é texto que afirma, sobre quem tem poder de cortar acesso, o
+ * contrário do que o código faz.
+ *
+ * O que vale HOJE — os dois escritores de `past_due`, ambos legítimos:
+ *   1. **O WEBHOOK, automático** ([webhook-handler.ts](asaas/webhook-handler.ts), `restringir`):
+ *      no `PAYMENT_OVERDUE`, depois de corroborar no gateway (status E propriedade). É o
+ *      caminho normal da inadimplência — quando o Asaas desiste do cartão, o gasto para.
+ *   2. **A mão do admin** (`admin-billing.ts`), que é decisão humana de cortar.
+ * Os dois carimbam `past_due_since` **na transição** (a coluna existe), e é esse carimbo
+ * que `passouDaCarencia` lê. O cron de cobrança **está agendado** desde 2026-08-04
+ * (`20260804_cron_billing.sql`, job `billing-monthly`).
  */
 /**
  * Carência padrão da inadimplência — **2 dias** (decisão do dono, 2026-08-09).

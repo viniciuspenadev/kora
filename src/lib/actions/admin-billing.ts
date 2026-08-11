@@ -269,7 +269,13 @@ export async function voidInvoice(invoiceId: string, tenantId: string): Promise<
     // ⚠️ `erro_operacional` é o motivo certo aqui, e é justamente a distinção que a coluna
     //    veio criar: anulação pela mão do operador é engano nosso; `nao_servido` é o
     //    funcionamento normal do pré-pago, e quem o escreve é o housekeeping.
-    .update({ status: "void", void_reason: "erro_operacional", updated_at: new Date().toISOString() })
+    // 🔑 `gateway_charge_id: null` LIBERA A VAGA (§9.3 do livro-caixa, 11/08). O índice único
+    //    `uq_invoices_gateway_charge` exclui `void`, então a cobrança do gateway não fica
+    //    presa aqui — mas a cadeia de resolução do pagamento casa por `gateway_charge_id`, e
+    //    deixá-lo carimbado numa fatura ANULADA faria o dinheiro apontar para um documento
+    //    morto: o alvo é recusado, e o pagamento fica parado sem caminho de saída. Anular a
+    //    fatura tem de soltar a cobrança junto — as duas coisas são o mesmo ato.
+    .update({ status: "void", void_reason: "erro_operacional", gateway_charge_id: null, updated_at: new Date().toISOString() })
     .eq("id", invoiceId)
     .eq("tenant_id", tenantId)
   if (error) return { error: error.message }
