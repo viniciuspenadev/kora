@@ -10,13 +10,30 @@
 // Este check FALHA o build se aparecer uma export nesse padrão. Regra: helper
 // interno NÃO se exporta de "use server" (mover pra módulo server-only), OU
 // chama um guard (assertSessionTenant) na primeira linha. Ver skill database-rules §2.
-import { readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
-const cand = execSync(`grep -rl '"use server"' src --include=*.ts --include=*.tsx`, { encoding: "utf8" })
-  .split("\n").filter(Boolean);
+// 🔴 SEM `grep`, E ISSO NÃO É PREFERÊNCIA (2026-08-11). Este check passou a rodar no
+//    `prebuild`, ou seja, DENTRO do container — e a imagem é `node:22-alpine`, cujo grep
+//    é o do BusyBox, que **não tem `--include`** (isso é GNU grep). O build quebrou no
+//    primeiro deploy com `grep: unrecognized option: include=*.ts`.
+//
+// ⚠️ A lição: eu tinha conferido que o `grep` EXISTE no container. Existir e aceitar as
+//    mesmas opções são duas coisas diferentes — e a máquina de desenvolvimento tinha GNU
+//    grep, então o teste local passava. Ferramenta externa num passo de build é uma
+//    suposição sobre o ambiente; `node:fs` não é suposição nenhuma.
+function varrer(dir) {
+  const out = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) { out.push(...varrer(p)); continue; }
+    if (e.name.endsWith(".ts") || e.name.endsWith(".tsx")) out.push(p);
+  }
+  return out;
+}
+
 // Só arquivos cuja 1ª linha não-vazia é a diretiva "use server" (não comentário).
-const actionFiles = cand.filter((f) => {
+const actionFiles = varrer("src").filter((f) => {
   const first = readFileSync(f, "utf8").split("\n").map((l) => l.trim()).find((l) => l.length);
   return first === '"use server"' || first === "'use server'";
 });
