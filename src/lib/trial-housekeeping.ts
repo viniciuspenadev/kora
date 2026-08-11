@@ -138,6 +138,21 @@ export async function runTrialHousekeeping(): Promise<{
   }
   if (encerrados > 0) console.log(JSON.stringify({ src: "housekeeping", kind: "assinaturas-encerradas", n: encerrados }))
 
+  // ── 1.c · RETENÇÃO DO LIVRO DE EXECUÇÕES ────────────────────────────────
+  // 🔴 O DESIGN PROMETIA ISTO E NÃO EXISTIA (revisão 11/08). O §13.5 dizia "retenção é
+  //    declaração… é purgada pelo housekeeping" — e não havia purga nenhuma. São ~3.100
+  //    linhas/dia (os dois jobs de cadência de 1 minuto sozinhos fazem 2.880), ou seja
+  //    ~1,1 milhão por ano, guardadas para sempre, com texto de erro de terceiro dentro.
+  //    Declarar retenção e não implementar é pior que não declarar: alguém lê a política
+  //    e para de se preocupar.
+  // ⚠️ 90 dias é o que responde "o que houve no fechamento do mês passado" — a pergunta
+  //    que se faz quando uma fatura sai errada. Menos que isso não cobre um ciclo.
+  {
+    const corte = new Date(Date.now() - 90 * 86_400_000).toISOString()
+    const { error } = await supabaseAdmin.from("cron_runs").delete().lt("started_at", corte)
+    if (error) console.error("[housekeeping] purga do livro de execuções falhou:", error.message)
+  }
+
   // 2. Purga PII: consumidas + expiradas (sequencial pra não dupla-contar a corrida).
   const { data: consumed } = await supabaseAdmin
     .from("signup_verifications").delete().not("consumed_at", "is", null).select("id")

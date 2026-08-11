@@ -9,11 +9,13 @@ import { executarJob } from "@/lib/cron/run"
  * Geração mensal automática de faturas. Roda 1x/dia; gera a fatura dos tenants
  * cujo billing_day == dia de hoje (UTC), ativos, com plano e assinatura não-cancelada.
  *
- * Autentica via Bearer CRON_SECRET (Vercel envia auto; outros hosts configuram externo).
+ * Autentica via Bearer CRON_SECRET, enviado pelo pg_cron (lido do Vault do Supabase).
  * Idempotente: generateInvoiceForTenant recusa fatura duplicada por período.
  *
- * Schedule sugerido (vercel.json): { "path": "/api/cron/billing", "schedule": "0 9 * * *" }
- * (9h UTC = 6h BRT — gera cedo, antes do expediente.)
+ * Agendamento REAL: job `billing-monthly` no pg_cron do Supabase, "0 9 * * *" (9h UTC =
+ * 6h BRT). Ver `supabase/migrations/20260806_cron_secret_to_vault.sql`.
+ * ⚠️ Não há `vercel.json` neste projeto e nunca houve — rodamos Node standalone em
+ *    container. Instrução apontando pra Vercel manda o próximo leitor pro lugar errado.
  */
 
 // ⚠️ `maxDuration` SAIU (10/08). Ele é diretiva da Vercel e é **inerte** no nosso runtime

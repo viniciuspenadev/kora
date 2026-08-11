@@ -19,7 +19,13 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const saida = await executarJob({ job: "agenda-reminders-sweep" }, async () => {
       const r = await runAgendaReminderSweep()
-      return { processed: r.processed, meta: { ...r } }
+      // 🔴 CAMPOS ALISTADOS, NÃO `{ ...r }` (revisão 11/08). Espalhar o objeto interno
+      //    numa coluna PERSISTIDA é espalhamento cego: hoje todos os seis jobs devolvem
+      //    só contadores, mas no dia em que alguém acrescentar `errosPorTenant: [...]` ou
+      //    `destinatarios: [...]` naquele retorno, isso entra no livro sem ninguém
+      //    decidir. O redator é o único anteparo e ele pega padrão, não semântica.
+      //    Alistar custa uma linha por job e fecha a classe inteira.
+      return { processed: r.processed, meta: { tenants: r.tenants, processed: r.processed } }
     })
     return NextResponse.json(saida.pulado ? { pulado: true } : saida.resultado?.meta)
   } catch (e) {

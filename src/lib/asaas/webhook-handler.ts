@@ -88,6 +88,18 @@ interface EventRow {
     subscription?: { id?: string; customer?: string; status?: string }
   } | null
   processed_at: string | null
+  /**
+   * 🔒 O CARIMBO DA MINHA REIVINDICAÇÃO — devolvido pelo `UPDATE … RETURNING` do claim.
+   *    É o que permite `fechar()` conferir que ainda sou o dono antes de escrever. Provado
+   *    em 11/08 que o `RETURNING` devolve o valor PÓS-escrita, não o anterior.
+   */
+  claimed_at: string | null
+  /**
+   * Marca local (não vai pro banco): `fechar()` já rodou. O `finally` de
+   * `processAsaasEvent` usa isto pra soltar a reivindicação em qualquer saída que não
+   * tenha fechado — inclusive exceção.
+   */
+  fechado?: boolean
 }
 
 /**
@@ -131,14 +143,34 @@ function diasRestantesDeCarencia(desde: string, graceDoTenant: number | null | u
  *    definitivo, é higiene: claim sem dono pendurado numa linha já resolvida é o tipo de
  *    resíduo que faz a invariante de claim órfão mentir.
  */
-async function fechar(id: string, nota?: string, definitivo = true): Promise<void> {
-  await supabaseAdmin.from("asaas_webhook_events")
+async function fechar(ev: EventRow, nota?: string, definitivo = true): Promise<void> {
+  const { data, error } = await supabaseAdmin.from("asaas_webhook_events")
     .update({
       processed_at: definitivo ? new Date().toISOString() : null,
       claimed_at:   null,
       error:        nota ?? null,
     })
-    .eq("id", id)
+    .eq("id", ev.id)
+    // 🔴 SÓ ESCREVE SE AINDA FOR O DONO (revisão 11/08). Sem esta condição, um processo
+    //    lento que passou dos 15 min da lease escreve por cima de quem já concluiu o
+    //    evento — e no caminho `definitivo=false` ele RESSUSCITA um evento resolvido,
+    //    devolvendo-o pra fila por até 7 dias e duplicando linhas na auditoria de
+    //    cobrança. É a mesma regra que o livro de execuções já aplica; ela é mais
+    //    necessária aqui, porque aqui o assunto é pagamento.
+    .eq("claimed_at", ev.claimed_at)
+    .select("id")
+
+  ev.fechado = true
+
+  if (error) {
+    console.error(JSON.stringify({ src: "asaas-handler", kind: "fechamento-falhou", event: ev.id, msg: error.message }))
+    return
+  }
+  if (!data || data.length === 0) {
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "PERDI-A-REIVINDICACAO-outro-processo-assumiu", event: ev.id,
+    }))
+  }
 }
 
 /**
@@ -171,7 +203,7 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
     // Livre, OU reivindicado por alguém que já morreu (lease vencida). Sem o segundo
     // ramo, um processo que cai no meio prenderia o evento para sempre.
     .or(`claimed_at.is.null,claimed_at.lt.${limite}`)
-    .select("id, event_type, payment_id, payload, processed_at")
+    .select("id, event_type, payment_id, payload, processed_at, claimed_at")
     .maybeSingle()
 
   if (error) { console.error("[asaas-handler] claim falhou:", eventId, error.message); return }
@@ -180,6 +212,28 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
   if (!data) return
   const ev = data as EventRow
 
+  // 🔴 O `finally` É A REDE DE TODAS AS SAÍDAS (revisão 11/08). Dois `return` de falha
+  //    transitória saíam sem soltar a reivindicação — e qualquer EXCEÇÃO entre o claim e
+  //    o `fechar` fazia o mesmo. Nesses casos o evento ficava preso os 15 min inteiros da
+  //    lease, enquanto todo caminho que chama `fechar(..., false)` libera na hora.
+  //    Não é perda de dado; é latência escondida numa retentativa de PAGAMENTO, e uma
+  //    invariante ("claim órfão = 0") que passa a ter falso-positivo legítimo.
+  // 🔑 Corrigir os dois `return` na mão deixaria a exceção de fora — que é o caso mais
+  //    provável dos três. Uma rede só, no lugar certo.
+  try {
+    await despachar(ev)
+  } finally {
+    if (!ev.fechado) {
+      await supabaseAdmin.from("asaas_webhook_events")
+        .update({ claimed_at: null })
+        .eq("id", ev.id)
+        .eq("claimed_at", ev.claimed_at)   // só solta a MINHA reivindicação
+    }
+  }
+}
+
+/** O corpo do processamento. Extraído pra o `finally` acima poder envolvê-lo. */
+async function despachar(ev: EventRow): Promise<void> {
   // Cobre os dois envelopes (ver o comentário em `EventRow.payload`).
   const customerId = ev.payload?.payment?.customer ?? ev.payload?.subscription?.customer ?? null
 
@@ -188,7 +242,7 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
   // compartilhe a mesma conta (medido no sandbox: havia um webhook de outro sistema).
   // Sem este filtro, o Kora daria baixa em fatura alheia. Evento sem dono nosso é
   // REGISTRADO (pra diagnóstico) e nunca processado.
-  if (!customerId) { await fechar(ev.id, "sem customer no payload"); return }
+  if (!customerId) { await fechar(ev, "sem customer no payload"); return }
 
   const { data: tenantRow, error: lookupErr } = await supabaseAdmin
     .from("tenants")
@@ -205,13 +259,13 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
   //    pendente, nunca escolher um dos dois no escuro.
   if (lookupErr) {
     console.error("[asaas-handler] lookup do tenant falhou:", ev.id, lookupErr.message)
-    await fechar(ev.id, `lookup do tenant falhou: ${lookupErr.message}`, false)
+    await fechar(ev, `lookup do tenant falhou: ${lookupErr.message}`, false)
     return
   }
 
   if (!tenantRow) {
     console.log(JSON.stringify({ src: "asaas-handler", kind: "nao-e-nosso", event: ev.event_type, customer: customerId }))
-    await fechar(ev.id, "customer não pertence a nenhum tenant")
+    await fechar(ev, "customer não pertence a nenhum tenant")
     return
   }
   const tenant = tenantRow as { id: string; lifecycle_state: string | null; subscription_status: string | null; billing_mode: string | null }
@@ -219,7 +273,7 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
   // ⚠️ Cliente `manual` (ativado à mão) NUNCA é movido pela automação — §2 do design.
   //    Se ele tem customer no Asaas por algum motivo, o evento é registrado e ignorado.
   if (tenant.billing_mode !== "gateway") {
-    await fechar(ev.id, `tenant em billing_mode=${tenant.billing_mode} — automação não atua`)
+    await fechar(ev, `tenant em billing_mode=${tenant.billing_mode} — automação não atua`)
     return
   }
 
@@ -241,7 +295,7 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
         valorCents: emCentavos(ev.payload?.payment?.value),
       })
     }
-    await fechar(ev.id)
+    await fechar(ev)
     return
   }
 
@@ -258,7 +312,7 @@ export async function processAsaasEvent(eventId: string): Promise<void> {
 
   // Evento que não mapeamos: registra e segue. Não inventa comportamento.
   console.log(JSON.stringify({ src: "asaas-handler", kind: "nao-mapeado", event: tipo, tenant: tenant.id }))
-  await fechar(ev.id, "evento não mapeado")
+  await fechar(ev, "evento não mapeado")
 }
 
 /**
@@ -282,7 +336,7 @@ async function conferirValor(
   ev: EventRow,
 ): Promise<void> {
   const subId = ev.payload?.subscription?.id ?? null
-  if (!subId) { await fechar(ev.id, "sem id de assinatura no payload"); return }
+  if (!subId) { await fechar(ev, "sem id de assinatura no payload"); return }
 
   try {
     const sub = await asaas.get<{ value?: number }>(`/subscriptions/${subId}`)
@@ -301,13 +355,13 @@ async function conferirValor(
         tenant: tenant.id, subscription: subId, plano: plano?.name ?? null,
         gateway_cents: noGateway, kora_cents: naKora,
         nota: "diferenca esperada se houver excedente do ciclo anterior; investigar se nao houver" }))
-      await fechar(ev.id, `valor divergente: gateway=${noGateway} kora=${naKora}`)
+      await fechar(ev, `valor divergente: gateway=${noGateway} kora=${naKora}`)
       return
     }
-    await fechar(ev.id)
+    await fechar(ev)
   } catch (e) {
     console.error("[asaas-handler] não conferiu o valor:", subId, (e as Error).message)
-    await fechar(ev.id, "não foi possível conferir o valor no gateway")
+    await fechar(ev, "não foi possível conferir o valor no gateway")
   }
 }
 
@@ -362,7 +416,7 @@ async function encerrar(
 
   // ⚠️ Falha de leitura NÃO é "não tem assinatura": fechar aqui aplicaria o encerramento no
   //    escuro. Deixa pendente pro reconcile (ver `fechar(..., false)`).
-  if (atualErr) { await fechar(ev.id, `leitura da assinatura atual falhou: ${atualErr.message}`, false); return }
+  if (atualErr) { await fechar(ev, `leitura da assinatura atual falhou: ${atualErr.message}`, false); return }
 
   const linha = atualRow as { asaas_subscription_id?: string | null; subscription_ends_at?: string | null } | null
   const bruto = linha?.asaas_subscription_id ?? null
@@ -374,13 +428,13 @@ async function encerrar(
     // (a) Reserva `pending:` do claim atômico — ativação acontecendo AGORA. Encostar aqui
     //     apagaria a vaga de quem está pagando neste segundo.
     if (bruto?.startsWith("pending:")) {
-      await fechar(ev.id, "ativação em andamento — encerramento ignorado")
+      await fechar(ev, "ativação em andamento — encerramento ignorado")
       return
     }
     // (b) Já encerrado antes (entrega duplicada, ou o `cancelSubscriptionForTenant` já
     //     carimbou). Nada a fazer.
     if (linha?.subscription_ends_at) {
-      await fechar(ev.id, "encerramento já registrado")
+      await fechar(ev, "encerramento já registrado")
       return
     }
     // (c) 🔴 O CASO QUE EU ENGOLIA. `cancelSubscriptionForTenant` (suspend/deactivate)
@@ -395,7 +449,7 @@ async function encerrar(
     const fim = await calcularFimDoCiclo(tenant.id, ev)
     const { error: cErr } = await supabaseAdmin.from("tenants")
       .update({ subscription_ends_at: fim }).eq("id", tenant.id)
-    await fechar(ev.id, cErr ? `falha ao carimbar fim de ciclo: ${cErr.message}` : undefined, !cErr)
+    await fechar(ev, cErr ? `falha ao carimbar fim de ciclo: ${cErr.message}` : undefined, !cErr)
     return
   }
 
@@ -404,14 +458,14 @@ async function encerrar(
   if (!idDoEvento) {
     console.error(JSON.stringify({ src: "asaas-handler", kind: "encerramento-sem-id-no-payload",
       tenant: tenant.id, vigente: atual }))
-    await fechar(ev.id, "evento de encerramento sem id de assinatura — não aplicado")
+    await fechar(ev, "evento de encerramento sem id de assinatura — não aplicado")
     return
   }
 
   if (idDoEvento !== atual) {
     console.log(JSON.stringify({ src: "asaas-handler", kind: "assinatura-obsoleta-ignorada",
       tenant: tenant.id, evento: idDoEvento, vigente: atual }))
-    await fechar(ev.id, "evento de assinatura obsoleta — não é a vigente")
+    await fechar(ev, "evento de assinatura obsoleta — não é a vigente")
     return
   }
 
@@ -446,12 +500,12 @@ async function encerrar(
 
   // ⚠️ Erro de BANCO é transitório: não fecha o evento (P0-4). Fechar aqui perderia o
   //    encerramento para sempre, e o cliente seguiria "ativo" com a assinatura morta.
-  if (error) { await fechar(ev.id, `falha ao encerrar: ${error.message}`, false); return }
+  if (error) { await fechar(ev, `falha ao encerrar: ${error.message}`, false); return }
 
   if (!aplicadas || aplicadas.length === 0) {
     console.warn(JSON.stringify({ src: "asaas-handler", kind: "encerramento-nao-aplicado-vinculo-mudou",
       tenant: tenant.id, esperada: atual }))
-    await fechar(ev.id, "vínculo mudou durante o encerramento — não aplicado")
+    await fechar(ev, "vínculo mudou durante o encerramento — não aplicado")
     return
   }
 
@@ -469,7 +523,7 @@ async function encerrar(
 
   console.error(JSON.stringify({ src: "asaas-handler", kind: "ASSINATURA-ENCERRADA",
     motivo: ev.event_type, tenant: tenant.id, acesso_ate: fimDoCiclo }))
-  await fechar(ev.id)
+  await fechar(ev)
 }
 
 /**
@@ -822,7 +876,7 @@ async function liberar(
   //    pagamento real por causa de um timeout — e o dinheiro já entrou.
   // ⚠️ Já `pagamento inexistente` ou status que não confirma são FECHADOS com nota: não é
   //    transitório, é evento que não deveria liberar nada.
-  if (!ev.payment_id) { await fechar(ev.id, "sem payment_id — não libera"); return }
+  if (!ev.payment_id) { await fechar(ev, "sem payment_id — não libera"); return }
 
   // 🔴 `value` ENTROU AQUI (achado H-01 do pentest de 08/08). A resposta autoritativa do
   //    gateway estava sendo buscada e o campo do VALOR não era nem lido — a baixa usava
@@ -841,7 +895,7 @@ async function liberar(
         src: "asaas-handler", kind: "pagamento-inexistente-nao-libera",
         tenant: tenant.id, payment: ev.payment_id,
       }))
-      await fechar(ev.id, "pagamento não existe no gateway")
+      await fechar(ev, "pagamento não existe no gateway")
       return
     }
     // Qualquer outra falha é tratada como transitória: NÃO fecha, pra ser reprocessado.
@@ -868,7 +922,7 @@ async function liberar(
   //    um blip de banco fazia `nossoCustomer`/`nossa` virarem `null`, as duas checagens
   //    anti-forja eram PULADAS, e o pagamento liberava o plano sem corroboração nenhuma.
   //    Fail-closed: não sei de quem é o pagamento ⇒ não libero, deixo pendente.
-  if (donoErr) { await fechar(ev.id, `leitura do tenant falhou: ${donoErr.message}`, false); return }
+  if (donoErr) { await fechar(ev, `leitura do tenant falhou: ${donoErr.message}`, false); return }
 
   const dono = donoRow as {
     asaas_customer_id?: string | null; asaas_subscription_id?: string | null
@@ -876,13 +930,13 @@ async function liberar(
   } | null
   const nossoCustomer = dono?.asaas_customer_id ?? null
   if (nossoCustomer && pagamento?.customer && pagamento.customer !== nossoCustomer) {
-    await fechar(ev.id, "pagamento é de outro cliente do gateway")
+    await fechar(ev, "pagamento é de outro cliente do gateway")
     return
   }
 
   const status = pagamento?.status ?? ""
   if (!["CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"].includes(status)) {
-    await fechar(ev.id, `gateway diz status=${status} — não libera`)
+    await fechar(ev, `gateway diz status=${status} — não libera`)
     return
   }
 
@@ -930,7 +984,7 @@ async function liberar(
         tenant: tenant.id, payment: ev.payment_id, esperada: nossa,
         veio: pagamento?.subscription ?? null, pagoCents, pisoDoPlano,
       }))
-      await fechar(ev.id, "pagamento não pertence à assinatura deste cliente")
+      await fechar(ev, "pagamento não pertence à assinatura deste cliente")
       return
     }
 
@@ -966,7 +1020,7 @@ async function liberar(
     console.warn(JSON.stringify({ src: "asaas-handler", kind: "liberacao-obsoleta-ignorada",
       tenant: tenant.id, payment: ev.payment_id }))
     const baixaTardia = await darBaixaNaFatura(tenant.id, ev, pagamento?.value)
-    await fechar(ev.id, baixaTardia?.error ?? "assinatura já encerrada — liberação não reaplicada",
+    await fechar(ev, baixaTardia?.error ?? "assinatura já encerrada — liberação não reaplicada",
       !baixaTardia?.error)
     return
   }
@@ -1013,7 +1067,7 @@ async function liberar(
   }
 
   const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenant.id)
-  if (error) { await fechar(ev.id, `falha ao liberar: ${error.message}`, false); return }
+  if (error) { await fechar(ev, `falha ao liberar: ${error.message}`, false); return }
 
   // 🔴 APLICA O PLANO — elo que faltava (2026-08-05). `applyPlan` só era chamado pelo god
   //    mode e pelo signup: o cliente pagava, o `subscription_status` virava `active`, e os
@@ -1099,10 +1153,10 @@ async function liberar(
     extra:    { valorCents: emCentavos(pagamento?.value), evento: ev.event_type, pendencia },
   })
 
-  if (pendencia) { await fechar(ev.id, pendencia, false); return }
+  if (pendencia) { await fechar(ev, pendencia, false); return }
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "liberado", tenant: tenant.id, event: ev.event_type }))
-  await fechar(ev.id)
+  await fechar(ev)
 }
 
 /**
@@ -1121,7 +1175,7 @@ async function restringir(
   ev: EventRow,
   pedeOlhoHumano: boolean,
 ): Promise<void> {
-  if (!ev.payment_id) { await fechar(ev.id, "sem payment_id para confirmar"); return }
+  if (!ev.payment_id) { await fechar(ev, "sem payment_id para confirmar"); return }
 
   // ⚠️ Sai do `try` pra ser usado no aviso lá embaixo. Vem do GATEWAY, não do payload: o
   //    corpo da requisição é forjável e este é um e-mail que afirma um valor devido.
@@ -1155,7 +1209,7 @@ async function restringir(
     // ⚠️ Falha de leitura NÃO pode virar "checagem dispensada". Descartar o `error` aqui
     //    faria um blip de banco DESLIGAR as duas guardas abaixo e punir mesmo assim — e
     //    este é o caminho que TIRA produto de quem paga. Sem evidência, não pune.
-    if (donoErr) { await fechar(ev.id, `leitura do tenant falhou: ${donoErr.message}`, false); return }
+    if (donoErr) { await fechar(ev, `leitura do tenant falhou: ${donoErr.message}`, false); return }
 
     const dono = donoRow as {
       asaas_customer_id?: string | null; asaas_subscription_id?: string | null
@@ -1168,7 +1222,7 @@ async function restringir(
     if (pag?.customer && dono?.asaas_customer_id && pag.customer !== dono.asaas_customer_id) {
       console.error(JSON.stringify({ src: "asaas-handler", kind: "restringir-customer-divergente",
         tenant: tenant.id, doGateway: pag.customer, nosso: dono.asaas_customer_id }))
-      await fechar(ev.id, "customer do pagamento não é o do tenant — não restringe")
+      await fechar(ev, "customer do pagamento não é o do tenant — não restringe")
       return
     }
 
@@ -1176,7 +1230,7 @@ async function restringir(
     if (pag?.subscription && nossa && pag.subscription !== nossa) {
       console.error(JSON.stringify({ src: "asaas-handler", kind: "restringir-assinatura-divergente",
         tenant: tenant.id, doGateway: pag.subscription, nossa }))
-      await fechar(ev.id, "pagamento é de outra assinatura — não restringe")
+      await fechar(ev, "pagamento é de outra assinatura — não restringe")
       return
     }
 
@@ -1184,7 +1238,7 @@ async function restringir(
     // significaria evento atrasado chegando depois do pagamento — nesse caso, não toca.
     const ruim = ["OVERDUE", "REFUNDED", "CHARGEBACK_REQUESTED", "CHARGEBACK_DISPUTE", "REFUND_IN_PROGRESS"]
     if (!ruim.some((s) => status.includes(s))) {
-      await fechar(ev.id, `gateway diz status=${status} — não restringe`)
+      await fechar(ev, `gateway diz status=${status} — não restringe`)
       return
     }
   } catch (e) {
@@ -1219,7 +1273,7 @@ async function restringir(
   if ((estadoAtual?.subscription_status ?? "") === "canceled") {
     console.warn(JSON.stringify({ src: "asaas-handler", kind: "restricao-obsoleta-ignorada",
       tenant: tenant.id, payment: ev.payment_id }))
-    await fechar(ev.id, "assinatura já encerrada — restrição não reaplicada")
+    await fechar(ev, "assinatura já encerrada — restrição não reaplicada")
     return
   }
 
@@ -1230,7 +1284,7 @@ async function restringir(
 
   const { error } = await supabaseAdmin.from("tenants")
     .update({ subscription_status: "past_due", past_due_since: carimbo }).eq("id", tenant.id)
-  if (error) { await fechar(ev.id, `falha ao restringir: ${error.message}`, false); return }
+  if (error) { await fechar(ev, `falha ao restringir: ${error.message}`, false); return }
 
   // Estorno e chargeback não são inadimplência comum — o dinheiro VOLTOU, e isso costuma
   // ter uma história atrás. Grita alto pra alguém olhar.
@@ -1276,5 +1330,5 @@ async function restringir(
   })
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "restringido", tenant: tenant.id, event: ev.event_type }))
-  await fechar(ev.id)
+  await fechar(ev)
 }

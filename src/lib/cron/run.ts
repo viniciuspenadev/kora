@@ -23,6 +23,17 @@ import { redigirTexto, redigirObjeto } from "@/lib/redact-text"
 //    (job sem linha = mudo = alerta). A única exceção é a trava, que é uma decisão
 //    deliberada de NÃO trabalhar.
 
+/**
+ * Idade a partir da qual uma corrida `running` é considerada abandonada.
+ *
+ * ⚠️ Generoso de propósito: mais que o dobro da pior execução plausível da frota (a
+ *    reconciliação, com até 200 tenants × chamada ao gateway). Curto demais mataria
+ *    corrida viva e criaria a sobreposição que a trava existe pra impedir; longo demais
+ *    devolve a pane permanente. Meia hora limita o estrago a um ciclo nas varreduras de
+ *    5 e 15 min, que são as que mexem em dinheiro.
+ */
+const REAPER_MS = 30 * 60_000
+
 /** O que o trabalho devolve. `partial` = fez o que deu e sobrou (F3). */
 export type ResultadoDoJob = {
   status?:  "ok" | "partial" | "failed"
@@ -115,6 +126,36 @@ export async function executarJob(
  *    buraco como "mudo".
  */
 async function abrir(job: string, travar: boolean): Promise<string | null | "ocupado"> {
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🔴 REAPER — sem ele, a trava transforma queda passageira em pane PERMANENTE
+  // ══════════════════════════════════════════════════════════════════════════
+  // Achado da revisão adversarial (11/08), e ele derruba o argumento que eu tinha
+  // escrito no design ("reaper precisa de heartbeat, fica pra F3"):
+  //
+  //   Antes da trava, container morto no meio de um job era inconsequente — o tick
+  //   seguinte rodava. AGORA a linha `running` órfã bloqueia o job **para sempre**. Um
+  //   deploy no minuto errado, um OOM, ou um simples blip no UPDATE de fechamento
+  //   (`fechar` falha ⇒ a rota ainda responde 200) desligam o faturamento em definitivo.
+  //   Eu teria entregado uma peça que TROCA silêncio por pane.
+  //
+  // 🔑 E o argumento do heartbeat não se aplica a este caso: heartbeat é necessário pra
+  //    matar corrida **lenta** sem matar a viva. Aqui a gente mata só o que passou de
+  //    MEIA HORA — mais que o dobro da pior execução plausível da frota. Não precisa
+  //    saber se ela está viva; nessa idade, ou morreu, ou já quebrou tudo que ia quebrar.
+  if (travar) {
+    const limite = new Date(Date.now() - REAPER_MS).toISOString()
+    const { data: mortas } = await supabaseAdmin
+      .from("cron_runs")
+      .update({ status: "timeout", finished_at: new Date().toISOString(), error: "sem sinal — corrida abandonada" })
+      .eq("job", job)
+      .eq("status", "running")
+      .lt("started_at", limite)
+      .select("id")
+    if (mortas && mortas.length > 0) {
+      console.error(JSON.stringify({ src: "cron", kind: "corrida-abandonada-derrubada", job, n: mortas.length }))
+    }
+  }
+
   const { data, error } = await supabaseAdmin
     .from("cron_runs")
     .insert({ job, exclusiva: travar, meta: { build: readBuildId() } })

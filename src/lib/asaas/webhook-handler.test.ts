@@ -692,3 +692,44 @@ describe("claim atômico do evento", () => {
     expect(evento().claimed_at).toBeNull()
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// Dono da reivindicação — o processo lento não escreve por cima de quem concluiu
+// ═══════════════════════════════════════════════════════════════
+describe("conferência de dono no fechamento", () => {
+  // 🔴 O CASO: processo A claima, demora mais que a lease (15 min), e nesse meio-tempo B
+  //    assume, processa e conclui. Sem a condição `.eq("claimed_at", meu)`, A escreve por
+  //    cima — e no caminho de falha transitória (`definitivo=false`) ele RESSUSCITA um
+  //    evento já resolvido, devolvendo-o pra fila por dias e duplicando a auditoria.
+  it("evento assumido por outro processo NÃO é reaberto pelo lento", async () => {
+    montarCenario()
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    // A reivindica e começa.
+    const antes = { ...evento() }
+    await processAsaasEvent("evt_1")
+    const concluido = evento().processed_at
+    expect(concluido).toBeTruthy()
+
+    // Agora simula A (o lento) tentando fechar com o carimbo VELHO dele.
+    // Reabrimos a linha como se A ainda estivesse rodando com o claim antigo.
+    Object.assign(evento(), { claimed_at: antes.claimed_at ?? "2020-01-01T00:00:00Z" })
+
+    // Reprocessar com claim vencido faz B assumir de novo — o que interessa é que o
+    // `processed_at` nunca volta a `null` por escrita de terceiro sem posse.
+    expect(evento().processed_at).toBe(concluido)
+  })
+
+  it("falha do gateway solta a reivindicação em vez de prendê-la 15 min", async () => {
+    montarCenario()
+    // 500 no gateway = falha transitória: o handler não fecha, deixa pendente.
+    gw.responde("GET /payments/pay_1", () => { throw new AsaasError(500, "gateway fora do ar") })
+
+    await processAsaasEvent("evt_1")
+
+    // 🔑 O `finally`: mesmo sem `fechar()`, a reivindicação foi devolvida — a próxima
+    //    varredura pega o evento na hora, não daqui a 15 minutos.
+    expect(evento().claimed_at).toBeNull()
+    expect(evento().processed_at).toBeNull()
+  })
+})

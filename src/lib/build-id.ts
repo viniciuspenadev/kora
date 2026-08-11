@@ -21,8 +21,10 @@ export function readBuildId(): string {
   try {
     cache = fs.readFileSync(path.join(process.cwd(), ".next", "BUILD_ID"), "utf8").trim()
   } catch {
-    // Fallback — envs opcionais (Vercel + CI custom). `dev` quando nada responde.
-    cache = process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.NEXT_PUBLIC_BUILD_ID ?? "dev"
+    // Fallback. ⚠️ `VERCEL_*` saiu: não usamos Vercel, então a variável nunca existe e
+    //    a linha só sugeria uma plataforma que não é a nossa. No container o
+    //    `.next/BUILD_ID` sempre existe; este ramo é para `next dev` e testes.
+    cache = process.env.NEXT_PUBLIC_BUILD_ID ?? "dev"
   }
   return cache
 }

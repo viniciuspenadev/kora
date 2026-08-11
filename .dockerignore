@@ -31,6 +31,12 @@ yarn-error.log*
 # Coverage / testes
 coverage
 .nyc_output
+# ⚠️ Os testes e os dublês eram COPIADOS pra imagem (o `COPY . .` do builder) e ficavam
+#    lá sem nunca executar — peso morto e superfície desnecessária num container de
+#    produção. Nenhuma rota os importa, então excluir não muda o build.
+**/*.test.ts
+**/*.test.tsx
+src/test
 
 # Docs internos (não precisam ir pro runtime)
 *.md

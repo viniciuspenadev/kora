@@ -8,7 +8,7 @@ import { readBuildId } from "@/lib/build-id"
  * no mount; se mudou, mostra banner "Nova versão disponível".
  *
  * Fonte: `.next/BUILD_ID` — arquivo que o Next.js gera automaticamente a cada
- * `next build`. Hash único por build. Funciona em qualquer host (Vercel,
+ * `next build`. Hash único por build. Funciona em qualquer host (
  * EasyPanel, Docker, VPS) sem env var nem CI/CD especial.
  *
  * Em dev (`next dev`), BUILD_ID é a string "development" (estática) → não

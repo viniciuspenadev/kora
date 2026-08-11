@@ -15,7 +15,7 @@ import { decryptSecret } from "@/lib/crypto/secrets"
  * Salva tudo em colunas dedicadas (last_connection_state, webhook_url_matches,
  * last_connection_check_at). NÃO insere nada em chat_messages — silencioso.
  *
- * Autenticação: Bearer CRON_SECRET (Vercel envia automaticamente).
+ * Autenticação: Bearer CRON_SECRET, enviado pelo pg_cron (lido do Vault).
  */
 
 const TIMEOUT_MS = 8_000

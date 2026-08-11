@@ -26,7 +26,7 @@ export async function POST(req: Request): Promise<Response> {
       try { windows = (await runWindowExpirySweep()).swept } catch (e) {
         console.error("[atendimento/cron] window sweep falhou:", e instanceof Error ? e.message : e)
       }
-      return { processed: r.swept + windows, meta: { ...r, windows_expired: windows } }
+      return { processed: r.swept + windows, meta: { tenants: r.tenants, swept: r.swept, windows_expired: windows } }
     })
     return NextResponse.json(saida.pulado ? { pulado: true } : saida.resultado?.meta)
   } catch (e) {

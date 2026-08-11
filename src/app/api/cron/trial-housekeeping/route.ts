@@ -81,6 +81,10 @@ export async function GET(req: NextRequest) {
     const storage = await reconcileStorage()
 
     return {
+      // 🔴 Reconciliação quebrada ⇒ `partial` (revisão 11/08). O `catch` acima protege as
+      //    outras tarefas do dia — mas fechar `ok` esconderia que a única varredura que
+      //    destrava cliente pagante não rodou.
+      status: ("erro" in billing ? "partial" : "ok") as "partial" | "ok",
       processed: result.suspended + result.encerradosPorFalta,
       meta: { ...result, storage, billing },
       // 🔴 O QUE NÃO CABE AQUI: devolver `billing`/`storage` inteiros na resposta HTTP

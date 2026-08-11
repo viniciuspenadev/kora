@@ -528,7 +528,7 @@ async function handleMessageUpsert(
     // CTWA — registra atribuição no contato pra relatórios/segmentação futura.
     // Só guarda na 1ª vez (first-touch attribution). Se já existir, mantém.
     if (externalAdReply && contact) {
-      // Log estruturado pra diagnóstico (Vercel/EasyPanel logs)
+      // Log estruturado pra diagnóstico (log do container no EasyPanel)
       const adInfo = externalAdReply as Record<string, unknown>
       console.log(JSON.stringify({
         event:       "ctwa_captured",

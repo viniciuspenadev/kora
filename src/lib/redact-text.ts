@@ -11,16 +11,37 @@
 //    `JOIN` nele. Uma coluna de erro numa tabela fica **consultável, correlacionável e
 //    retida** — no mesmo banco de tudo. Persistir `e.message` cru de jobs que falam com
 //    Asaas, Meta, Evolution e Resend seria criar um depósito pesquisável de nome de
-//    cliente, e-mail, CPF e token que veio ecoado de fora. O pentest de 10/08 já apontou
-//    "logs registram motivos bancários crus" (M-09); isto existe pra não institucionalizar
-//    o mesmo defeito com um índice em cima.
+//    cliente, e-mail, CPF e token que veio ecoado de fora.
 //
-// 🔑 O QUE FICA É A FORMA: status HTTP, código de erro, a frase técnica. O que sai é
-//    identidade. Erro que perde o CPF continua dizendo o que quebrou; erro que guarda o
-//    CPF vira dado pessoal sob retenção que ninguém declarou.
+// ⚠️ FRONTEIRA HONESTA (auditoria 11/08): isto pega **padrão**, não semântica. Nome
+//    próprio e endereço passam — regex não sabe que "Joao da Silva" é uma pessoa. A
+//    proteção desses casos não é este arquivo; é a coluna ser service_role-only. Quem
+//    escreve `meta` continua responsável por não colocar identidade lá.
 
 /** Teto de tamanho: mensagem de erro não é stack trace nem corpo de resposta. */
 const MAX = 500
+
+/** Marcador interno pra proteger UUID das regras numéricas. NUL não existe em texto real. */
+const NUL = "\u0000"
+
+/**
+ * 🔴 O UUID É PROTEGIDO ANTES DE TUDO — e isto nasceu de um bug real (auditoria 11/08).
+ *
+ *    A regra do cartão (13 a 19 dígitos com hífen ou espaço no meio) tratava o hífen do
+ *    UUID como separador e comia a cauda dele:
+ *      `tenant 0d907fdd-1111-2222-3333-444455556666 falhou`
+ *      → `tenant 0d907fdd-1111-2222-[cartao]falhou`   (e engolia o espaço seguinte)
+ *
+ *    Não vazava nada — **destruía** o único dado que serve pra investigar: qual tenant,
+ *    qual fatura, qual evento. Redator que apaga a chave de correlação transforma o livro
+ *    em "algo deu errado em algum lugar".
+ *
+ * ⚠️ E o teste que eu tinha escrito para essa exata invariante PASSAVA, porque a amostra
+ *    que escolhi tinha letras na cauda. Dispara só quando a cauda hifenizada tem 13+
+ *    dígitos — algo como 1 em 300 UUIDs. Amostra feliz é como bug sobrevive a um teste
+ *    que existe pra pegá-lo.
+ */
+const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
 
 /**
  * ⚠️ ORDEM IMPORTA. Os padrões específicos (token, e-mail, documento) vêm ANTES dos
@@ -32,15 +53,23 @@ const REGRAS: Array<[RegExp, string]> = [
   [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/g, "[jwt]"],
   [/\b(?:sbp|sk|pk|rk|whsec)_[A-Za-z0-9]{8,}/gi,                   "[credencial]"],
   [/\bBearer\s+\S+/gi,                                             "Bearer [credencial]"],
-  // Corrida longa SEM hífen: token/hash. O UUID tem hífens e sobrevive — e ele é útil
-  // pra investigar (é id de tenant, de fatura, de evento).
+  // Corrida longa SEM hífen: token/hash. O UUID já saiu de cena acima.
   [/\b[A-Za-z0-9]{32,}\b/g,                                        "[opaco]"],
 
   // ── Identidade ──────────────────────────────────────────────────────────
   [/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g,                                "[email]"],
   [/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g,                    "[cnpj]"],
-  [/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g,                            "[cpf]"],
+
+  // 🔴 O FORMATO LOCAL VEM ANTES DO CPF (auditoria 11/08). A regra só existia com o `55`
+  //    na frente — e mensagem montada por gente escreve `(11) 98765-4321`, que é o
+  //    formato que o brasileiro digita. Passava inteiro para uma coluna consultável.
+  [/\(\d{2}\)\s?9?\d{4}[-\s]?\d{4}\b/g,                            "[telefone]"],
+  [/\b\d{2}\s9?\d{4}[-\s]\d{4}\b/g,                                "[telefone]"],
   [/\+?55\s?\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}\b/g,                  "[telefone]"],
+
+  // ⚠️ Depois dos telefones: celular com DDD sem pontuação tem 11 dígitos, igual ao CPF.
+  //    Fica redigido dos dois jeitos; a ordem só decide o rótulo.
+  [/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g,                            "[cpf]"],
 
   // ── Cartão ──────────────────────────────────────────────────────────────
   // 🔒 Nunca deve chegar aqui (o número não sai do formulário), mas custo zero e o dia
@@ -63,7 +92,16 @@ export function redigirTexto(bruto: unknown): string | null {
   // Uma linha só: stack trace não acrescenta nada aqui e multiplica a chance de vazar.
   s = s.split("\n")[0]
 
+  // 🔑 Tira os UUIDs do alcance das regras e devolve no fim (ver o comentário do `UUID`).
+  const guardados: string[] = []
+  s = s.replace(UUID, (m) => {
+    guardados.push(m)
+    return `${NUL}${guardados.length - 1}${NUL}`
+  })
+
   for (const [re, por] of REGRAS) s = s.replace(re, por)
+
+  s = s.replace(new RegExp(`${NUL}(\\d+)${NUL}`, "g"), (_, i: string) => guardados[Number(i)] ?? "")
 
   s = s.trim()
   if (s.length > MAX) s = `${s.slice(0, MAX)}…`
@@ -74,6 +112,11 @@ export function redigirTexto(bruto: unknown): string | null {
  * Passa o redator por todo valor de texto de um objeto (recursivo) e limita o tamanho
  * total. Para o `meta` do livro de execuções: mesmo com a regra escrita de "forma, nunca
  * conteúdo", quem escreve o próximo job não vai ler a regra.
+ *
+ * 🔴 AS CHAVES TAMBÉM SÃO REDIGIDAS (auditoria 11/08). Antes só os valores passavam pelo
+ *    redator — e um `{ porContato: { "joao@x.com": 3 } }` vazaria o e-mail **na chave**,
+ *    em claro. Agrupar contador por identificador é a coisa mais natural do mundo de se
+ *    fazer, e ninguém pensaria nisso como vazamento.
  */
 export function redigirObjeto(v: unknown, profundidade = 0): unknown {
   if (profundidade > 6) return "[fundo]"
@@ -83,7 +126,7 @@ export function redigirObjeto(v: unknown, profundidade = 0): unknown {
     return Object.fromEntries(
       Object.entries(v as Record<string, unknown>)
         .slice(0, 50)
-        .map(([k, x]) => [k, redigirObjeto(x, profundidade + 1)]),
+        .map(([k, x]) => [redigirTexto(k) ?? k, redigirObjeto(x, profundidade + 1)]),
     )
   }
   return v

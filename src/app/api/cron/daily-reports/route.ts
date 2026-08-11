@@ -6,14 +6,13 @@ import { executarJob } from "@/lib/cron/run"
 /**
  * GET /api/cron/daily-reports
  *
- * Cron diário às 18h BRT. Autentica via Bearer CRON_SECRET (Vercel envia auto;
+ * Cron diário às 18h BRT. Autentica via Bearer CRON_SECRET, enviado pelo pg_cron
  * em EasyPanel/outros hosts, configurar o cron externamente passando header).
  *
  * Idempotente: usa tenant_config.daily_report_last_sent_at pra não duplicar.
  *
- * Schedule no vercel.json:
- *   { "path": "/api/cron/daily-reports", "schedule": "0 21 * * *" }
- *   (21h UTC = 18h BRT)
+ * Agendamento REAL: job `daily-reports` no pg_cron do Supabase, "0 21 * * *".
+ * ⚠️ Não existe `vercel.json` aqui — rodamos Node standalone em container.
  */
 
 // ⚠️ `maxDuration` saiu: é diretiva da Vercel e inerte no nosso runtime standalone.

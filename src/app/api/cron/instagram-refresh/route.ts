@@ -17,13 +17,12 @@ import { runInstagramTokenRefresh, reconcileStaleIgClaims } from "@/lib/instagra
  *
  * Autentica via CRON_SECRET.
  *
- * ⚠️ Agendamento é **pg_cron no Supabase** (`net.http_get` + header Authorization), não
- * Vercel. Job `instagram-token-refresh`, "20 8 * * *" (8h20 UTC ≈ 5h20 BRT — depois do
+ * ⚠️ Agendamento é **pg_cron no Supabase** (`net.http_get` + header Authorization).
+ * Job `instagram-token-refresh`, "20 8 * * *" (8h20 UTC ≈ 5h20 BRT — depois do
  * trial-housekeeping). Migration: 20260728_cron_instagram_refresh.sql.
  */
 
 export const dynamic = "force-dynamic"
-export const maxDuration = 60
 
 export async function GET(req: NextRequest) {
   const denied = requireCronSecret(req)

@@ -110,3 +110,40 @@ describe("objeto (o `meta` do livro de execuções)", () => {
     expect(r.ms).toBe(1234)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// Os buracos que a auditoria de 11/08 achou — e que meus testes NÃO pegaram
+// ═══════════════════════════════════════════════════════════════
+describe("regressões da auditoria", () => {
+  // 🔴 O teste "o UUID fica" já existia e PASSAVA — porque a amostra que escolhi tinha
+  //    letras na cauda. Com cauda numérica, a regra do cartão comia o fim do UUID E o
+  //    espaço seguinte. Amostra feliz é como bug sobrevive ao teste feito pra pegá-lo.
+  it("UUID de cauda NUMÉRICA sobrevive inteiro (antes virava [cartao])", () => {
+    const id = "0d907fdd-1111-2222-3333-444455556666"
+    const s = redigirTexto(`tenant ${id} falhou HTTP 429`)!
+    expect(s).toContain(id)
+    expect(s).not.toContain("[cartao]")
+    expect(s).toContain("falhou")          // o espaço seguinte não foi engolido
+  })
+
+  it("dois UUIDs na mesma frase voltam nos lugares certos", () => {
+    const a = "0d907fdd-1111-2222-3333-444455556666"
+    const b = "f6b1f665-98d0-4b2b-8c66-e92c3b8b29c2"
+    const s = redigirTexto(`tenant ${a} fatura ${b}`)!
+    expect(s).toBe(`tenant ${a} fatura ${b}`)
+  })
+
+  // 🔴 A regra de telefone exigia o `55`. Mensagem escrita por gente usa o formato local.
+  it("telefone em formato BRASILEIRO é redigido", () => {
+    expect(redigirTexto("phone (11) 98765-4321 nao registrado")).toContain("[telefone]")
+    expect(redigirTexto("envio para 11 98765-4321 falhou")).toContain("[telefone]")
+    expect(redigirTexto("phone (11) 98765-4321")).not.toContain("98765")
+  })
+
+  // 🔴 Só os VALORES passavam pelo redator. Agrupar contador por identificador é natural.
+  it("e-mail na CHAVE de um objeto não vaza", () => {
+    const r = redigirObjeto({ porContato: { "joao@empresa.com": 3 } }) as Record<string, Record<string, number>>
+    expect(JSON.stringify(r)).not.toContain("joao@empresa.com")
+    expect(JSON.stringify(r)).toContain("[email]")
+  })
+})

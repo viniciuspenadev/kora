@@ -32,7 +32,6 @@ import { reconcileAsaas } from "@/lib/asaas/reconcile"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-export const maxDuration = 60
 
 export async function GET(req: NextRequest) {
   const negado = requireCronSecret(req)
@@ -50,7 +49,10 @@ export async function GET(req: NextRequest) {
       return {
         processed: r.reprocessados + r.liberados,
         failed:    r.erros,
-        meta:      { ...r },
+        meta:      {
+          reprocessados: r.reprocessados, liberados: r.liberados, erros: r.erros,
+          reservasLimpas: r.reservasLimpas, cobrancasEncerradas: r.cobrancasEncerradas,
+        },
       }
     })
 

@@ -53,7 +53,12 @@ async function retomar() {
   //    estado do run (persistente). Deixar `waiting` é reversível — o próximo tick retoma.
   if (degraded) {
     console.error("[studio/cron] status dos tenants indisponível — retomada abortada")
-    return { processed: 0, meta: { checked: 0, resumed: 0, degraded: true } }
+    // 🔴 `partial`, NÃO `ok` (revisão 11/08). Sem `status`, o invólucro assume `ok` — e
+    //    aí uma falha persistente de `filterServiceableTenants` gravaria 1.440 corridas
+    //    "em dia" por dia enquanto NENHUM fluxo de Studio retoma, para nenhum cliente.
+    //    "ok" sobre trabalho que não aconteceu é a definição exata do problema que o
+    //    livro veio resolver.
+    return { status: "partial" as const, processed: 0, meta: { checked: 0, resumed: 0, degraded: true } }
   }
 
   let resumed = 0

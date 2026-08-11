@@ -18,7 +18,7 @@ import { getViewerScope, canViewConversation } from "@/lib/visibility"
  *
  * Padrão: Notion, Linear, apps com dado privado.
  *
- * Performance: 1 hop extra via Vercel (~50ms). Bandwidth cost trivial pra
+ * Performance: 1 hop extra pelo nosso servidor (~50ms). Bandwidth cost trivial pra
  * nosso volume — plano Pro tem 1TB/mês.
  */
 
@@ -37,7 +37,7 @@ interface LogEntry {
 }
 
 function logMedia(entry: LogEntry) {
-  // Estruturado em JSON pra Vercel logs serem parseáveis
+  // Estruturado em JSON pra o log do container ser parseável
   // (futuro: enviar pra Logflare/Datadog/etc)
   console.log(JSON.stringify(entry))
 }

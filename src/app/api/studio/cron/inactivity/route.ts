@@ -13,7 +13,6 @@ import { executarJob } from "@/lib/cron/run"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-export const maxDuration = 60
 
 export async function POST(req: Request): Promise<Response> {
   const negado = requireCronSecret(req)
@@ -22,7 +21,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const saida = await executarJob({ job: "studio-inactivity-tick" }, async () => {
       const r = await runInactivityTick()
-      return { processed: r.fired ?? 0, meta: { ...r } }
+      return { processed: r.fired, meta: { flows: r.flows, fired: r.fired } }
     })
     return NextResponse.json(saida.pulado ? { pulado: true } : saida.resultado?.meta)
   } catch (e) {

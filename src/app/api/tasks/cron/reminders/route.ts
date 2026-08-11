@@ -18,7 +18,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const saida = await executarJob({ job: "crm-task-reminders-sweep" }, async () => {
       const r = await runTaskReminderSweep()
-      return { processed: r.notified ?? 0, meta: { ...r } }
+      return { processed: r.notified, meta: { notified: r.notified, skipped: r.skipped } }
     })
     return NextResponse.json(saida.pulado ? { pulado: true } : saida.resultado?.meta)
   } catch (e) {
