@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Kora Companion",
+  "version": "0.1.0",
+  "description": "CRM, Agenda e Automação do Kora sobre o WhatsApp Web.",
+  "icons": {
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "permissions": ["storage"],
+  "host_permissions": ["https://web.whatsapp.com/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_icon": { "16": "assets/icon16.png", "32": "assets/icon32.png" },
+    "default_popup": "popup.html",
+    "default_title": "Kora Companion"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["sidebar.html", "sidebar.css", "sidebar.js", "assets/*"],
+      "matches": ["https://web.whatsapp.com/*"]
+    }
+  ]
+}
