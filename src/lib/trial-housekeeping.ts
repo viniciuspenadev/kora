@@ -165,6 +165,9 @@ export async function runTrialHousekeeping(): Promise<{
         subscription_ended_reason: (t as { subscription_ended_reason?: string | null }).subscription_ended_reason
           ?? "pedido_do_cliente",
         past_due_since:            null,
+        // 🔑 Mesma regra do `liberar` e do god mode: a causa do atraso não sobrevive ao
+        //    estado que ela explicava. Quarto (e último) escritor de `subscription_status`.
+        past_due_reason:           null,
         asaas_card_token:          null,
         card_brand:                null,
         card_last4:                null,

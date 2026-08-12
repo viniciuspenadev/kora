@@ -40,7 +40,7 @@ export default async function FinanceiroPage() {
     // ⚠️ `trial_ended` entra junto: é paywall também, por outro motivo, e sai da lista
     //    pelo mesmo caminho (assinando).
     supabaseAdmin.from("tenants")
-      .select("id, name, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, asaas_subscription_id, billing_mode")
+      .select("id, name, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason, asaas_subscription_id, billing_mode")
       .eq("active", true)
       .or("subscription_status.in.(past_due,canceled),lifecycle_state.eq.trial_ended"),
   ])
@@ -79,11 +79,12 @@ export default async function FinanceiroPage() {
       const r = t as unknown as {
         id: string; name: string; lifecycle_state: string | null; subscription_status: string | null
         past_due_since: string | null; past_due_grace_days: number | null
+        past_due_reason: string | null
         asaas_subscription_id: string | null; billing_mode: string | null
       }
       const motivo = motivoDoPaywall(
         r.lifecycle_state, r.subscription_status, r.past_due_since, r.past_due_grace_days,
-        settings.pastDueGraceDays,
+        settings.pastDueGraceDays, r.past_due_reason,
       )
       if (!motivo) return null
       const dias = r.past_due_since

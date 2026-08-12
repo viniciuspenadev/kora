@@ -175,6 +175,13 @@ export async function updateTenantBilling(
       // `active` ou `canceled`: o atraso deixou de existir como relógio. Deixar o carimbo
       // pra trás é a "invariante 2" da migration — e ele voltaria a morder no próximo atraso.
       updates.past_due_since = null
+      // 🔑 A CAUSA CAI JUNTO COM O RELÓGIO (12/08). `restringir` passou a gravar
+      //    `past_due_reason`, e este é o TERCEIRO escritor de status — se ele deixasse a
+      //    causa pra trás, um tenant reativado à mão carregaria `past_due_reason='estorno'`
+      //    e o R2 derivaria CARÊNCIA ZERO no próximo atraso banal dele.
+      // ⚠️ E é pré-condição do CHECK `past_due_reason ⇒ status='past_due'`: sem esta linha a
+      //    migration daquele CHECK falharia no primeiro tenant que o operador reativasse.
+      updates.past_due_reason = null
     }
     // 🔴 O `else` VIROU `else if` POR CAUSA DE UM PAYWALL INSTANTÂNEO QUE EU IA CRIAR
     //    (11/08). Quando o cancelamento é AGENDADO, o bloco acima remove

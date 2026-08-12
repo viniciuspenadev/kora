@@ -137,7 +137,7 @@ export async function generateInvoiceForTenant(
   const { data: tenant, error: tenantErr } = await supabaseAdmin
     // As 4 colunas extras alimentam a guarda de paywall logo abaixo — a linha já era lida.
     .from("tenants")
-    .select("id, plan_id, billing_day, lifecycle_state, subscription_status, past_due_since, past_due_grace_days")
+    .select("id, plan_id, billing_day, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason")
     .eq("id", tenantId).maybeSingle()
   // 🔴 "NÃO ACHEI" ≠ "NÃO CONSEGUI PROCURAR" (F1, 11/08). O `error` era descartado, então
   //    uma oscilação do banco devolvia `data: null` e a função respondia **"Tenant não
@@ -190,7 +190,7 @@ export async function generateInvoiceForTenant(
   const emPaywall = isTenantInPaywall(
     tenant.lifecycle_state, tenant.subscription_status,
     tenant.past_due_since, tenant.past_due_grace_days,
-    (await getPlatformSettings()).pastDueGraceDays,
+    (await getPlatformSettings()).pastDueGraceDays, tenant.past_due_reason,
   )
   // 🔑 `dinheiroJaEntrou` desarma a guarda — e SÓ ela. Ver o porquê no docblock da função:
   //    período pago é período servido, e quem sabe disso é o caminho do pagamento, não a

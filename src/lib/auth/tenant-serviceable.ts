@@ -68,6 +68,7 @@ export interface TenantStatusRow {
   /** Só no caminho de UMA linha (`checkTenantStatus`); o lote não pergunta pelo paywall. */
   past_due_since?:      string | null
   past_due_grace_days?: number | null
+  past_due_reason?: string | null
 }
 
 function serviceableFromRow(row: TenantStatusRow | null | undefined): boolean {
@@ -140,7 +141,7 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
     .from("tenants")
     // ⚠️ As 2 colunas do relógio viajam nesta MESMA consulta, que já é memoizada por
     //    request. Uma segunda consulta pro paywall pagaria o dobro em todo webhook e cron.
-    .select("active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days")
+    .select("active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason")
     .eq("id", tenantId)
     .maybeSingle()
 
@@ -164,7 +165,7 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
     canSpend: canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
     inPaywall: isTenantInPaywall(
       row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
-      (await getPlatformSettings()).pastDueGraceDays,
+      (await getPlatformSettings()).pastDueGraceDays, row.past_due_reason,
     ),
   }
 })

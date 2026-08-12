@@ -170,7 +170,7 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
       const { pastDueGraceDays } = await getPlatformSettings()
       barradoPorAtraso = linhas.some((t) => t.active === true && motivoDoPaywall(
         t.lifecycle_state, t.subscription_status, t.past_due_since, t.past_due_grace_days,
-        pastDueGraceDays,
+        pastDueGraceDays, t.past_due_reason,
       ) === "past_due")
       const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
       const okIds = new Set(

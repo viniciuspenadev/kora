@@ -257,6 +257,7 @@ interface TenantBillingRow {
   /** O relógio do atraso — é o que separa o degrau 2 do 3. */
   past_due_since:      string | null
   past_due_grace_days: number | null
+  past_due_reason:     string | null
 }
 interface InvoiceRow {
   id:          string
@@ -289,7 +290,7 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
   const [tenantRes, perfilRes, modRes, invRes] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id, past_due_since, past_due_grace_days")
+      .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id, past_due_since, past_due_grace_days, past_due_reason")
       .eq("id", tenantId)
       .maybeSingle(),
     // Mesmos 5 campos que `getTitularParaCobranca` exige — se divergirem, a tela promete
@@ -396,7 +397,7 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
   // Calculado UMA vez: o degrau usa, e o "próximo fechamento" também (ver o fim da função).
   const motivo = motivoDoPaywall(
     row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
-    (await getPlatformSettings()).pastDueGraceDays,
+    (await getPlatformSettings()).pastDueGraceDays, row.past_due_reason,
   )
 
   const canAccess = row.active === true && !isTenantBlockedForAccess(row.lifecycle_state)

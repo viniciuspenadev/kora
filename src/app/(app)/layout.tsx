@@ -47,7 +47,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       .from("tenants")
       // ⚠️ As 3 colunas do paywall (`subscription_status`, `past_due_since`,
       //    `past_due_grace_days`) viajam de graça nesta linha, que já era lida.
-      .select("name, plan, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, billing_mode, created_at, onboarding_profile_at, onboarding_skipped_at")
+      .select("name, plan, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason, billing_mode, created_at, onboarding_profile_at, onboarding_skipped_at")
       .eq("id", session.user.tenantId)
       .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
@@ -101,10 +101,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const tp = tenant as {
     lifecycle_state: string | null; subscription_status: string | null
     past_due_since: string | null;  past_due_grace_days: number | null
+    past_due_reason: string | null
   }
   const motivo = motivoDoPaywall(
     tp.lifecycle_state, tp.subscription_status, tp.past_due_since, tp.past_due_grace_days,
-    (await getPlatformSettings()).pastDueGraceDays,
+    (await getPlatformSettings()).pastDueGraceDays, tp.past_due_reason,
   )
   if (motivo) {
     // 🔑 O texto muda com o motivo; o comportamento não. Uma pessoa que atrasou a fatura

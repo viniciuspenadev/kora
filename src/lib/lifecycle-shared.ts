@@ -134,7 +134,7 @@ const PAPEIS_QUE_PAGAM: ReadonlySet<string> = new Set(["owner", "admin"])
  * 🔑 Uma constante: coluna nova entra aqui e os 6 passam a lê-la juntos.
  */
 export const COLUNAS_DE_ACESSO =
-  "id, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days"
+  "id, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason"
 
 /** O que os gates de acesso leem da linha do tenant. Espelha `COLUNAS_DE_ACESSO`. */
 export interface AcessoDoTenant {
@@ -142,6 +142,8 @@ export interface AcessoDoTenant {
   subscription_status:  string | null
   past_due_since:       string | null
   past_due_grace_days:  number | null
+  /** POR QUE está em atraso — e é daqui que sai a carência zero. Ver `carenciaEfetiva`. */
+  past_due_reason:      string | null
 }
 
 /**
@@ -172,7 +174,10 @@ export function isTenantBlockedForAccessAs(
   //    pra quem não decide pagamento. Owner e admin entram justamente pra resolver.
   if (motivoDoPaywall(
     tenant.lifecycle_state, tenant.subscription_status,
-    tenant.past_due_since, tenant.past_due_grace_days, padraoGlobal, now,
+    tenant.past_due_since, tenant.past_due_grace_days, padraoGlobal,
+    // 🔑 Aqui a causa vem da LINHA, não de um parâmetro solto — é o padrão que o docblock
+    //    desta função defende, e o motivo de `COLUNAS_DE_ACESSO` ter ganhado a coluna.
+    tenant.past_due_reason, now,
   )) {
     return !PAPEIS_QUE_PAGAM.has(role ?? "")
   }
@@ -395,22 +400,53 @@ export function isTenantBlockedForSpend(
  * ⚠️ Não sabe nada de acesso nem de gasto: só responde sobre o RELÓGIO. Quem combina isso
  *    com estado é `isTenantInPaywall`.
  */
+/**
+ * Quantos dias de carência ESTE atraso tem, de verdade.
+ *
+ * 🔑 A REGRA QUE O R2 INSTITUI: **estorno não é inadimplência.** Inadimplência é falha
+ *    mecânica — cartão vencido, limite, banco fora — e a carência existe pra absorver isso.
+ *    Estorno e chargeback são reversão deliberada: o dinheiro que sustentava o acesso
+ *    VOLTOU. Dar a eles o prazo que existe pra falha mecânica é dar carência a quem desfez
+ *    o pagamento.
+ *
+ * ⚠️ ZERO IGNORA TENANT E GLOBAL, de propósito. Não é "o menor dos três": é uma regra de
+ *    natureza diferente, e um operador que configurou 30 dias de carência comercial para um
+ *    cliente grande não quis dizer "30 dias mesmo se ele estornar". A carência configurada
+ *    responde *"quanto tempo dou pra consertar o cartão?"*; esta pergunta é outra.
+ * ⚠️ Causa DESCONHECIDA (`null`) cai no caminho normal. É o que os atrasos anteriores ao R1
+ *    têm, e presumir estorno neles cortaria cliente por falta de dado — o erro cai pro lado
+ *    de quem paga.
+ */
+export function carenciaEfetiva(
+  causa:        string | null | undefined,
+  graceDoTenant: number | null | undefined,
+  padraoGlobal: number,
+): number {
+  if (causa === "estorno" || causa === "chargeback") return 0
+  if (typeof graceDoTenant === "number" && graceDoTenant >= 0) return graceDoTenant
+  // ⚠️ `padraoGlobal` vem do banco — NaN/negativo não pode virar carência infinita.
+  return Number.isFinite(padraoGlobal) && padraoGlobal >= 0 ? padraoGlobal : PAST_DUE_GRACE_DAYS
+}
+
 export function passouDaCarencia(
   pastDueSince: string | null | undefined,
   graceDays:    number | null | undefined,
   padraoGlobal: number,
+  /**
+   * A CAUSA do atraso (`tenants.past_due_reason`). `estorno`/`chargeback` ⇒ carência zero.
+   *
+   * ⚠️ Posição ANTES do `now` e tipo `string` de propósito: em 12/08 inserir um `number`
+   *    antes do `now` fez chamadas existentes entregarem o relógio como se fosse a carência,
+   *    e o `tsc` não viu (ambos eram `number`). Com um tipo diferente, qualquer chamada
+   *    desalinhada **não compila** — a mesma lição, aplicada na hora de repetir o padrão.
+   */
+  causa:        string | null | undefined,
   now:          number = Date.now(),
 ): boolean {
   if (!pastDueSince) return true
   const inicio = new Date(pastDueSince).getTime()
   if (!Number.isFinite(inicio)) return true
-  const dias = typeof graceDays === "number" && graceDays >= 0
-    ? graceDays
-    // ⚠️ `padraoGlobal` também é checado: um valor corrompido (NaN, negativo) vindo do banco
-    //    não pode virar `now - inicio >= NaN` (sempre false ⇒ carência infinita). Sem esta
-    //    linha, uma coluna estragada daria produto de graça em silêncio, para todo mundo.
-    : (Number.isFinite(padraoGlobal) && padraoGlobal >= 0 ? padraoGlobal : PAST_DUE_GRACE_DAYS)
-  return now - inicio >= dias * 86_400_000
+  return now - inicio >= carenciaEfetiva(causa, graceDays, padraoGlobal) * 86_400_000
 }
 
 /**
@@ -439,9 +475,11 @@ export function isTenantInPaywall(
   graceDays:          number | null | undefined,
   /** Carência padrão da plataforma — obrigatória. Ver `motivoDoPaywall`. */
   padraoGlobal:       number,
+  /** A causa do atraso. Ver `carenciaEfetiva`. */
+  causa:              string | null | undefined,
   now:                number = Date.now(),
 ): boolean {
-  return motivoDoPaywall(lifecycleState, subscriptionStatus, pastDueSince, graceDays, padraoGlobal, now) !== null
+  return motivoDoPaywall(lifecycleState, subscriptionStatus, pastDueSince, graceDays, padraoGlobal, causa, now) !== null
 }
 
 /**
@@ -474,6 +512,8 @@ export function motivoDoPaywall(
    *    "quem esquecer" não pode virar "quem libera".
    */
   padraoGlobal:       number,
+  /** A causa do atraso. Ver `carenciaEfetiva` — é ela que zera a carência do estorno. */
+  causa:              string | null | undefined,
   now:                number = Date.now(),
 ): MotivoPaywall | null {
   if (normalizeState(lifecycleState ?? null) === "trial_ended") return "trial_ended"
@@ -493,7 +533,7 @@ export function motivoDoPaywall(
   if (sub === "canceled") return "canceled"
 
   if (sub !== "past_due") return null
-  return passouDaCarencia(pastDueSince, graceDays, padraoGlobal, now) ? "past_due" : null
+  return passouDaCarencia(pastDueSince, graceDays, padraoGlobal, causa, now) ? "past_due" : null
 }
 
 export const STATE_META: Record<LifecycleState, { label: string; badge: string; dot: string; hint: string }> = {
