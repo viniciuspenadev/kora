@@ -6,6 +6,7 @@ import { getClientIp } from "@/lib/rate-limit"
 import { readDeviceKey } from "@/lib/auth/device"
 import { redeemLoginTicket } from "@/lib/auth/login-core"
 import { isTenantBlockedForAccessAs, COLUNAS_DE_ACESSO, type AcessoDoTenant } from "@/lib/lifecycle-shared"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import { randomUUID } from "crypto"
 
 /** Os papéis que a sessão promete. "" = sem papel (não passa em gate nenhum). */
@@ -74,9 +75,14 @@ async function revalidateAccess(
     //    paywall (degrau 3) e aí o corte é por PAPEL, não por tenant.
     // ⚠️ Ciente do papel: owner/admin seguem dentro (pra pagar) e o atendente cai no
     //    próximo re-check de 5 min. `membership.role` já está carregado aqui.
+    // ⚠️ A carência padrão vem do banco (`platform_settings`), com cache de PROCESSO de 60s
+    //    — este é o caminho mais quente do produto e não pode ganhar uma consulta por
+    //    requisição. Falhou a leitura? O helper devolve a constante de emergência; ele nunca
+    //    lança, porque uma exceção aqui derrubaria a sessão de todo mundo de uma vez.
+    const { pastDueGraceDays } = await getPlatformSettings()
     const tenantBlocked = !ten.error && !!tenant &&
       (tenant.active === false ||
-        isTenantBlockedForAccessAs(tenant, membership?.role))
+        isTenantBlockedForAccessAs(tenant, membership?.role, pastDueGraceDays))
 
     if (!isPlatformAdmin && (!membershipActive || tenantBlocked)) return { status: "revoked" }
     return { status: "ok", role: membershipActive ? membership!.role : "", isPlatformAdmin }

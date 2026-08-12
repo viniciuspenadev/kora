@@ -163,6 +163,8 @@ export interface AcessoDoTenant {
 export function isTenantBlockedForAccessAs(
   tenant: AcessoDoTenant,
   role: string | null | undefined,
+  /** Carência padrão da plataforma — obrigatória. Ver `motivoDoPaywall`. */
+  padraoGlobal: number,
   now: number = Date.now(),
 ): boolean {
   if (isTenantBlockedForAccess(tenant.lifecycle_state)) return true
@@ -170,7 +172,7 @@ export function isTenantBlockedForAccessAs(
   //    pra quem não decide pagamento. Owner e admin entram justamente pra resolver.
   if (motivoDoPaywall(
     tenant.lifecycle_state, tenant.subscription_status,
-    tenant.past_due_since, tenant.past_due_grace_days, now,
+    tenant.past_due_since, tenant.past_due_grace_days, padraoGlobal, now,
   )) {
     return !PAPEIS_QUE_PAGAM.has(role ?? "")
   }
@@ -188,9 +190,15 @@ export const SPEND_BLOCKED_LIFECYCLE: ReadonlySet<string> = new Set<LifecycleSta
 
 /**
  * Dias que o cliente tem, depois do teste vencer, antes de a conta ser suspensa de vez.
- * Decisão do dono (2026-08-05): **2 dias**, o mesmo número do próprio teste.
+ *
+ * 🔴 ISTO NÃO É MAIS O PADRÃO (12/08). O padrão vive em
+ *    `platform_settings.trial_ended_grace_days`, editável no god mode. Esta constante é o
+ *    **piso de quando não sabemos** — o valor usado quando a consulta ao banco falha.
+ *    Quem for mexer: o critério deixou de ser "qual prazo a gente quer dar" e passou a ser
+ *    "qual prazo erra menos com o banco fora". Ver `platform-settings.ts`.
+ * ⚠️ Decisão do dono 12/08: **1 dia** (24h após o encerramento do teste). Era 2.
  */
-export const TRIAL_ENDED_GRACE_DAYS = 2
+export const TRIAL_ENDED_GRACE_DAYS = 1
 
 /** Vocabulário de `tenants.subscription_status` (20260531_billing.sql:7). */
 export type SubscriptionStatus = "active" | "past_due" | "canceled"
@@ -245,10 +253,17 @@ export type SubscriptionStatus = "active" | "past_due" | "canceled"
  *    `past_due`, com carência 2 ou 200 (`isTenantBlockedForSpend` não olha relógio). O que
  *    ela governa é só a distância entre "parou de gastar" e "o produto fechou".
  *
- * 🔧 Ajustável por tenant em `tenants.past_due_grace_days` (god mode → Cobrança). `null`
- *    cai aqui; `0` corta junto com o degrau 2, sem espera.
+ * 🔧 Ajustável por tenant em `tenants.past_due_grace_days` (god mode → Cobrança). `0` corta
+ *    junto com o degrau 2, sem espera.
+ *
+ * 🔴 ISTO NÃO É MAIS O PADRÃO (12/08) — mesma mudança de papel do `TRIAL_ENDED_GRACE_DAYS`
+ *    acima. `null` no tenant cai em `platform_settings.past_due_grace_days` (god mode), e
+ *    só quando ESSE não pode ser lido é que se cai aqui.
+ * ⚠️ Por isso ela não pode ser `0`: um blip de banco mandaria a base inteira pro paywall no
+ *    mesmo segundo. Nem alta demais, que daria dias de produto de graça no mesmo blip.
+ * ⚠️ Decisão do dono 12/08: **1 dia**. Era 2.
  */
-export const PAST_DUE_GRACE_DAYS = 2
+export const PAST_DUE_GRACE_DAYS = 1
 
 /**
  * Status de assinatura que NEGAM acesso/serviço.
@@ -383,12 +398,18 @@ export function isTenantBlockedForSpend(
 export function passouDaCarencia(
   pastDueSince: string | null | undefined,
   graceDays:    number | null | undefined,
+  padraoGlobal: number,
   now:          number = Date.now(),
 ): boolean {
   if (!pastDueSince) return true
   const inicio = new Date(pastDueSince).getTime()
   if (!Number.isFinite(inicio)) return true
-  const dias = typeof graceDays === "number" && graceDays >= 0 ? graceDays : PAST_DUE_GRACE_DAYS
+  const dias = typeof graceDays === "number" && graceDays >= 0
+    ? graceDays
+    // ⚠️ `padraoGlobal` também é checado: um valor corrompido (NaN, negativo) vindo do banco
+    //    não pode virar `now - inicio >= NaN` (sempre false ⇒ carência infinita). Sem esta
+    //    linha, uma coluna estragada daria produto de graça em silêncio, para todo mundo.
+    : (Number.isFinite(padraoGlobal) && padraoGlobal >= 0 ? padraoGlobal : PAST_DUE_GRACE_DAYS)
   return now - inicio >= dias * 86_400_000
 }
 
@@ -416,9 +437,11 @@ export function isTenantInPaywall(
   subscriptionStatus: string | null | undefined,
   pastDueSince:       string | null | undefined,
   graceDays:          number | null | undefined,
+  /** Carência padrão da plataforma — obrigatória. Ver `motivoDoPaywall`. */
+  padraoGlobal:       number,
   now:                number = Date.now(),
 ): boolean {
-  return motivoDoPaywall(lifecycleState, subscriptionStatus, pastDueSince, graceDays, now) !== null
+  return motivoDoPaywall(lifecycleState, subscriptionStatus, pastDueSince, graceDays, padraoGlobal, now) !== null
 }
 
 /**
@@ -438,6 +461,19 @@ export function motivoDoPaywall(
   subscriptionStatus: string | null | undefined,
   pastDueSince:       string | null | undefined,
   graceDays:          number | null | undefined,
+  /**
+   * Carência PADRÃO da plataforma (`platform_settings.past_due_grace_days`), usada quando o
+   * tenant não tem valor próprio.
+   *
+   * 🔴 OBRIGATÓRIO, SEM VALOR PADRÃO — e isso é a decisão de desenho, não um descuido.
+   *    Com um default aqui, um call site esquecido passaria a decidir acesso pela constante
+   *    de emergência **em silêncio**: nenhum erro, nenhum log, e a única evidência seria um
+   *    cliente cortado com o prazo errado. Sendo obrigatório, o `tsc` obriga a visitar os
+   *    ~12 lugares que chamam esta cadeia — e visitar todos foi justamente o ponto.
+   *    É a mesma lição de `isTenantBlockedForAccessAs` receber a LINHA e não campos soltos:
+   *    "quem esquecer" não pode virar "quem libera".
+   */
+  padraoGlobal:       number,
   now:                number = Date.now(),
 ): MotivoPaywall | null {
   if (normalizeState(lifecycleState ?? null) === "trial_ended") return "trial_ended"
@@ -457,7 +493,7 @@ export function motivoDoPaywall(
   if (sub === "canceled") return "canceled"
 
   if (sub !== "past_due") return null
-  return passouDaCarencia(pastDueSince, graceDays, now) ? "past_due" : null
+  return passouDaCarencia(pastDueSince, graceDays, padraoGlobal, now) ? "past_due" : null
 }
 
 export const STATE_META: Record<LifecycleState, { label: string; badge: string; dot: string; hint: string }> = {

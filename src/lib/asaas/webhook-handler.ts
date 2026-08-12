@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { fimDoCicloPago } from "@/lib/billing/paid-cycle"
 import { applyPlan } from "@/lib/plans"
 import { generateInvoiceForTenant } from "@/lib/billing"
 import { normalizeState, PAST_DUE_GRACE_DAYS } from "@/lib/lifecycle-shared"
@@ -581,32 +582,24 @@ async function calcularFimDoCiclo(tenantId: string, ev: EventRow): Promise<strin
   //    `processAsaasEvent` solta a reivindicação em qualquer saída, o evento continua
   //    não-processado, e o `reconcile-billing` retenta em 15 min. Melhor adiar o
   //    encerramento por minutos do que decidi-lo com uma data inventada.
-  const { data: ultima, error: erroUltima } = await supabaseAdmin
-    .from("invoices")
-    .select("period_end")
-    .eq("tenant_id", tenantId)
-    .eq("status", "paid")
-    // 🔑 SÓ O CICLO (§9.5 do livro-caixa, 11/08). Esta consulta responde "até quando o
-    //    cliente já pagou" e vira a data de encerramento do acesso dele. A fatura AVULSA
-    //    carrega `period_start = period_end = dia da cobrança` — um período de UM dia, que
-    //    não representa ciclo nenhum. Sem este filtro, uma avulsa paga hoje seria a "última
-    //    paga" e o acesso seria encerrado HOJE, mesmo com a mensalidade em dia até o fim do
-    //    mês. É a mesma classe do corte imediato que a F1 fechou, entrando por outra porta.
-    .eq("kind", "recorrente")
-    .order("period_end", { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle()
+  // A consulta (e o filtro `kind='recorrente'`) mora em `billing/paid-cycle` desde 11/08 —
+  // era a mesma pergunta em três arquivos. A POLÍTICA continua aqui, que é o certo.
+  const pago = await fimDoCicloPago(tenantId)
 
-  if (erroUltima) {
+  // 🔴 "NÃO SEI" ADIA, NÃO CORTA (F1, 11/08). O fail-closed lá embaixo ("sem evidência de
+  //    ciclo pago ⇒ corte imediato") é deliberado e só pode valer sobre CONHECIMENTO; com o
+  //    erro tratado como ausência, um blip de segundos no banco encerrava na hora quem tinha
+  //    fatura paga.
+  // 🔑 LANÇAR usa máquina que já existe: o `finally` de `processAsaasEvent` solta a
+  //    reivindicação, o evento segue não-processado e o `reconcile-billing` retenta em 15
+  //    min. Adiar o encerramento por minutos é melhor que decidi-lo com data inventada.
+  if (pago === undefined) {
     console.error(JSON.stringify({
-      src: "asaas-handler", kind: "fim-de-ciclo-indisponivel-encerramento-adiado",
-      tenant: tenantId, msg: erroUltima.message,
+      src: "asaas-handler", kind: "fim-de-ciclo-indisponivel-encerramento-adiado", tenant: tenantId,
     }))
-    throw new Error(`fim de ciclo indisponível para ${tenantId}: ${erroUltima.message}`)
+    throw new Error(`fim de ciclo indisponível para ${tenantId}`)
   }
-
-  const periodEnd = (ultima as { period_end?: string } | null)?.period_end
-  if (periodEnd) return new Date(`${periodEnd}T23:59:59Z`).toISOString()
+  if (pago) return pago
 
   const subId = ev.payload?.subscription?.id
   if (subId) {

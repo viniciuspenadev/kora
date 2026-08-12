@@ -4,7 +4,7 @@ import { isMobilePhoneBR } from "@/lib/masks"
 import { asaas, AsaasError, mensagemSeguraDoGateway } from "./client"
 import { ensureAsaasCustomer } from "./customers"
 import { abaixoDoMinimoDoCartao, assinaturaRealId, novaReservaDeClaim } from "@/lib/billing/gateway-limits"
-import { encryptSecret } from "@/lib/crypto/secrets"
+import { encryptSecret, decryptSecret } from "@/lib/crypto/secrets"
 import { detectarBandeira, normalizarBandeira, ultimos4, type Bandeira } from "@/lib/billing/card-brand"
 
 // ═══════════════════════════════════════════════════════════════
@@ -888,8 +888,24 @@ export async function updateSubscriptionCard(
  *    sucesso — a assinatura já não existe, que é o estado desejado.
  * ⚠️ Limpa a coluna localmente em qualquer sucesso, pra recontratação futura funcionar.
  */
+/**
+ * @param opts.manterCartaoAteOFim — NÃO apaga o cartão agora; ele morre quando o ciclo
+ *   pago fecha (bloco 1.b do housekeeping). **Só o cancelamento pedido pelo CLIENTE usa.**
+ *
+ * 🔑 POR QUE A EXCEÇÃO EXISTE (11/08). A regra "o token morre com a assinatura" está certa
+ *    e continua sendo o padrão: credencial de cobrança sem nada a cobrar é resíduo. Mas ela
+ *    não descreve ESTE caso — no cancelamento a pedido do cliente, a relação **não acabou**:
+ *    ele segue cliente, com acesso, até o fim do período que pagou. O cartão dele é meio de
+ *    pagamento de um contrato VIVO, não sobra de um contrato morto.
+ * ⚠️ O efeito prático de apagar cedo: quem cancela por engano às 9h e se arrepende às 9h05
+ *    precisa digitar o cartão de novo — sendo que continua cliente por mais 30 dias. A
+ *    porta de volta fica mais cara que a de saída, que é o desenho errado.
+ * 🔒 O resíduo continua não existindo: o cartão é apagado quando o ciclo fecha, que é o
+ *    instante em que a relação de fato termina. Só muda QUANDO, não SE.
+ */
 export async function cancelSubscriptionForTenant(
   tenantId: string,
+  opts?: { manterCartaoAteOFim?: boolean },
 ): Promise<{ ok: true } | { error: string }> {
   // 🔴 O `error` NÃO PODE SER DESCARTADO AQUI (C-03 do pentest 10/08, F1 em 11/08).
   //    Antes: `const { data } = …`. Num timeout do PostgREST, `data` vem null, a função
@@ -953,8 +969,16 @@ export async function cancelSubscriptionForTenant(
   // 🔴 A LIMPEZA LOCAL PRECISA SER CONFIRMADA (C-03, terceira perna). Antes o retorno era
   //    ignorado e a função devolvia `ok` de qualquer jeito — deixando id/token/rótulo
   //    residuais que BLOQUEIAM nova contratação, com o sistema achando que deu tudo certo.
+  // ⚠️ `manterCartaoAteOFim` (11/08): o vínculo da assinatura SEMPRE cai — ela morreu no
+  //    gateway e deixar o id seria mentir. O que a exceção preserva é só o CARTÃO, e só
+  //    para o cancelamento a pedido do cliente (ver o docblock). Quem apaga nesse caminho é
+  //    o bloco 1.b, quando a data passa e a relação de fato acaba.
+  const limpeza = opts?.manterCartaoAteOFim
+    ? { asaas_subscription_id: null }
+    : { asaas_subscription_id: null, asaas_card_token: null, card_brand: null, card_last4: null }
+
   const { error: erroLimpeza } = await supabaseAdmin.from("tenants")
-    .update({ asaas_subscription_id: null, asaas_card_token: null, card_brand: null, card_last4: null })
+    .update(limpeza)
     .eq("id", tenantId)
 
   if (erroLimpeza) {
@@ -1031,4 +1055,192 @@ export async function atualizarValorDaAssinatura(
   console.log(JSON.stringify({ src: "asaas", kind: "valor-da-assinatura-atualizado",
     tenant: tenantId, subscription: id, valorCents }))
   return { ok: true, aplicado: true }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Retomar — desfazer o cancelamento antes que o ciclo pago acabe
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔑 A JANELA QUE ESTA FUNÇÃO OCUPA. Entre o clique em "cancelar" e o fim do período pago o
+//    cliente **continua cliente**: acesso inteiro, cartão guardado, nada cortado. A única
+//    coisa que morreu foi a recorrência no gateway. Retomar é recriá-la — e nada além disso.
+//
+// 🔴 ELA NÃO COBRA NADA. `nextDueDate` é o dia SEGUINTE ao fim do ciclo já pago, ou seja o
+//    mesmo dia em que a cobrança cairia se ele nunca tivesse cancelado. É a diferença que
+//    separa isto de `createSubscriptionForTenant`, que cobra HOJE por decisão do dono
+//    (06/08): lá o cliente está comprando acesso que ainda não tem; aqui ele já pagou o
+//    período em curso, e cobrar de novo agora seria cobrar duas vezes o mesmo mês.
+//
+// 🔒 O CARTÃO NÃO PASSA POR AQUI. Usa o `creditCardToken` que já estava guardado cifrado —
+//    esta é a **primeira leitura desse token em todo o código**; até 11/08 ele era escrito
+//    em quatro lugares e nunca lido. Nenhum dado de cartão entra nesta função: as três
+//    regras de PCI do topo do arquivo continuam valendo sem esforço, porque não há PAN.
+//
+// ⚠️ O claim atômico é o MESMO de `createSubscriptionForTenant` e pelo mesmo motivo: duas
+//    abas retomando ao mesmo tempo criariam duas assinaturas mensais, e a segunda
+//    sobrescreveria o id da primeira — que cobraria para sempre, invisível. Aqui o dano
+//    demora um mês a aparecer (nada é debitado hoje), o que o torna MAIS perigoso, não menos.
+export async function resumeSubscriptionForTenant(
+  tenantId: string,
+  remoteIp: string,
+): Promise<{ id: string } | { error: string }> {
+  const { data: row, error: tErr } = await supabaseAdmin
+    .from("tenants")
+    .select("asaas_subscription_id, subscription_ends_at, asaas_card_token, billing_mode, plan_id")
+    .eq("id", tenantId)
+    .maybeSingle()
+
+  if (tErr) return { error: "Não foi possível ler o cliente." }
+  if (!row) return { error: "Cliente não encontrado." }
+
+  const t = row as unknown as {
+    asaas_subscription_id: string | null; subscription_ends_at: string | null
+    asaas_card_token: string | null; billing_mode: string | null; plan_id: string | null
+  }
+
+  // Já tem recorrência viva: idempotente. Clicar duas vezes não cria a segunda.
+  const jaExiste = assinaturaRealId(t.asaas_subscription_id)
+  if (jaExiste) return { id: jaExiste }
+
+  if (t.billing_mode !== "gateway") {
+    return { error: "A cobrança desta conta é combinada com a nossa equipe. Fale com a gente." }
+  }
+
+  // 🔴 SEM DATA FUTURA NÃO HÁ O QUE RETOMAR. Ou o cancelamento não existe, ou o ciclo já
+  //    fechou — e nesse caso a varredura 1.b já apagou o cartão e virou o estado. Retomar
+  //    ali seria contratar de novo, com data e cobrança novas: é o fluxo de escolher plano,
+  //    não este. Colapsar os dois daria ao cliente um mês de graça a cada cancelamento.
+  const fim = t.subscription_ends_at ? new Date(t.subscription_ends_at) : null
+  if (!fim || Number.isNaN(fim.getTime()) || fim.getTime() <= Date.now()) {
+    return { error: "Não há cancelamento em andamento para retomar." }
+  }
+
+  // ⚠️ Sem cartão guardado não dá pra recriar em silêncio: o gateway pediria o cartão e a
+  //    tela prometeu um clique. Quem chama trata isto mandando pro fluxo com cartão.
+  const tokenSalvo = decryptSecret(t.asaas_card_token)
+  if (!tokenSalvo) return { error: "Não encontramos um cartão salvo. Informe o cartão para retomar." }
+
+  const { data: planoRow, error: erroPlano } = await supabaseAdmin
+    .from("plans").select("id, name, price_cents").eq("id", t.plan_id ?? "").eq("active", true).maybeSingle()
+  // 🔴 "A consulta falhou" ≠ "o plano saiu do ar" (catraca do `check-money-io`). Colapsar os
+  //    dois mandaria escolher plano de novo quem só pegou um blip de rede — e o preço dele
+  //    está certo, guardado, esperando.
+  if (erroPlano) return { error: "Não foi possível ler seu plano agora. Tente de novo em instantes." }
+  const plano = planoRow as { id: string; name: string; price_cents: number } | null
+  // ⚠️ Plano desativado depois da contratação: recriar cobraria um preço que saiu da
+  //    prateleira. Manda escolher de novo em vez de perpetuar a tabela velha.
+  if (!plano) return { error: "Seu plano não está mais disponível. Escolha um plano para continuar." }
+
+  const valorCents = plano.price_cents ?? 0
+  // Mesmos dois pisos do caminho de criação, pelo mesmo motivo: o motor não delega a
+  // validação de valor ao gateway, e assinatura de R$ 0 cobra zero para sempre parecendo ok.
+  if (abaixoDoMinimoDoCartao(valorCents)) return { error: "Este plano está indisponível para cobrança no cartão. Fale com a gente." }
+  if (valorCents <= 0) return { error: "O plano desta conta está com preço zero. Fale com a gente antes de retomar." }
+
+  // 🔑 A DATA: o dia seguinte ao fim do ciclo pago — exatamente onde a próxima cobrança
+  //    cairia se ele nunca tivesse cancelado. Fatia em UTC porque é assim que a data foi
+  //    carimbada (`period_end` + `T23:59:59Z`), então a fatia devolve o mesmo dia civil.
+  const proximo = new Date(fim.getTime() + 24 * 60 * 60 * 1000)
+  const nextDueDate = proximo.toISOString().slice(0, 10)
+
+  // ── Claim atômico (idêntico ao da criação; ver o racional lá) ───────────────
+  const reserva = novaReservaDeClaim()
+  const { data: claimed, error: erroClaim } = await supabaseAdmin
+    .from("tenants")
+    .update({ asaas_subscription_id: reserva })
+    .eq("id", tenantId)
+    .is("asaas_subscription_id", null)
+    .select("id")
+
+  // 🔴 FALHA DE ESCRITA ≠ CORRIDA PERDIDA (catraca do `check-money-io`). As duas produzem
+  //    `claimed` vazio e as duas devem parar aqui — mas a frase precisa ser diferente:
+  //    "aguarde alguns segundos" manda esperar por uma operação que não existe, e a pessoa
+  //    fica recarregando enquanto o problema é do banco.
+  if (erroClaim) {
+    console.error("[asaas] claim da retomada falhou:", tenantId, erroClaim.message)
+    return { error: "Não foi possível iniciar a retomada agora. Tente de novo em instantes." }
+  }
+  if (!claimed || claimed.length === 0) {
+    return { error: "Já existe uma operação em andamento para esta conta. Aguarde alguns segundos." }
+  }
+  const soltarReserva = async () => {
+    await supabaseAdmin.from("tenants")
+      .update({ asaas_subscription_id: null })
+      .eq("id", tenantId)
+      .eq("asaas_subscription_id", reserva)
+  }
+
+  const cust = await ensureAsaasCustomer(tenantId)
+  if ("error" in cust) { await soltarReserva(); return cust }
+
+  try {
+    const sub = await asaas.post<{ id?: string }>("/subscriptions", {
+      customer:          cust.id,
+      billingType:       "CREDIT_CARD",
+      value:             valorCents / 100,
+      nextDueDate,
+      cycle:             "MONTHLY",
+      description:       `Kora — plano ${plano.name}`.trim(),
+      externalReference: tenantId,
+      creditCardToken:   tokenSalvo,
+      remoteIp,
+    })
+    if (!sub?.id) { await soltarReserva(); return { error: "O gateway não devolveu o id da assinatura." } }
+
+    // 🔴 `subscription_ends_at` E `subscription_ended_reason` CAEM JUNTOS. A data é o que
+    //    faz a varredura 1.b encerrar o cliente quando ela passar — deixá-la aqui derrubaria,
+    //    no dia do vencimento, um cliente que voltou a pagar. E o motivo sozinho mentiria no
+    //    god mode ("cancelou a pedido") sobre uma assinatura viva.
+    // ⚠️ `billing_day` NÃO é reescrito: o ciclo não mudou de âncora, a recorrência volta pro
+    //    mesmo dia. Recalcular aqui só criaria oportunidade de drift (o teto em 28) sem
+    //    nenhum ganho.
+    const { error: upErr } = await supabaseAdmin
+      .from("tenants")
+      .update({
+        asaas_subscription_id:     sub.id,
+        subscription_ends_at:      null,
+        subscription_ended_reason: null,
+      })
+      .eq("id", tenantId)
+
+    if (upErr) {
+      // Mesma regra da criação: NÃO solta a vaga — a assinatura existe lá fora. Soltar
+      // deixaria o cliente retomar de novo e ficar com duas cobranças mensais.
+      console.error("[asaas] assinatura retomada mas NÃO vinculada:", tenantId, sub.id, upErr.message)
+      return { error: `Assinatura recriada no gateway (${sub.id}) mas não vinculada. Contate o suporte.` }
+    }
+
+    console.log(JSON.stringify({ src: "asaas", kind: "assinatura-retomada",
+      tenant: tenantId, subscription: sub.id, proximaCobranca: nextDueDate }))
+    return { id: sub.id }
+  } catch (e) {
+    console.error("[asaas] retomada de assinatura falhou:", tenantId, (e as Error).message)
+
+    // 🔴 Timeout ≠ "não criou" — a mesma rede da criação, e aqui ela importa MAIS: como nada
+    //    é debitado hoje, uma segunda assinatura criada por engano fica um mês inteira
+    //    invisível antes de cobrar em dobro.
+    if (e instanceof AsaasError && e.status === 0) {
+      const existente = await procurarAssinaturaNoGateway(tenantId)
+      if (existente) {
+        const { error: upErr } = await supabaseAdmin
+          .from("tenants")
+          .update({ asaas_subscription_id: existente, subscription_ends_at: null, subscription_ended_reason: null })
+          .eq("id", tenantId)
+        if (!upErr) {
+          console.error(JSON.stringify({ src: "asaas", kind: "retomada-recuperada-pos-timeout",
+            tenant: tenantId, subscription: existente }))
+          return { id: existente }
+        }
+        console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, upErr.message)
+        return { error: `Assinatura recriada no gateway (${existente}) mas não vinculada. Contate o suporte.` }
+      }
+      // "Não sei" mantém a vaga presa: reparável à mão, ao contrário de cobrar duas vezes.
+      if (existente === undefined) {
+        return { error: "Não recebemos a confirmação do gateway. Aguarde um minuto e recarregue esta tela antes de tentar de novo." }
+      }
+    }
+
+    await soltarReserva()
+    return { error: mensagemSeguraDoGateway(e, "Não foi possível retomar a assinatura.") }
+  }
 }

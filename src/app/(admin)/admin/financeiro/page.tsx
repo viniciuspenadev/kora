@@ -1,8 +1,11 @@
 import Link from "next/link"
 import { supabaseAdmin } from "@/lib/supabase"
-import { Wallet, TrendingUp, FileText, AlertTriangle, Receipt, ChevronRight, Building2 } from "lucide-react"
+import { Wallet, TrendingUp, FileText, AlertTriangle, Receipt, ChevronRight, Building2, Lock } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
 import { computeBillingSummary } from "@/lib/billing"
+import { getPlatformSettings } from "@/lib/platform-settings"
+import { motivoDoPaywall } from "@/lib/lifecycle-shared"
+import { RegrasClient } from "./regras-client"
 
 const BRL = (c: number) => (c / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 const fmtDate = (s: string | null) => s ? new Date(s + (s.length === 10 ? "T12:00:00" : "")).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }) : "—"
@@ -25,10 +28,21 @@ export default async function FinanceiroPage() {
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
   const today = now.toISOString().slice(0, 10)
 
-  const [summary, { data: openOrPaid }, { data: recentInvoices }] = await Promise.all([
+  const [summary, { data: openOrPaid }, { data: recentInvoices }, settings, { data: candidatos, error: erroCandidatos }] = await Promise.all([
     computeBillingSummary(),
     supabaseAdmin.from("invoices").select("status, total_cents, paid_cents, due_date, paid_at").neq("status", "void"),
     supabaseAdmin.from("invoices").select("id, tenant_id, status, total_cents, period_start, period_end, due_date, tenants ( name, slug )").order("created_at", { ascending: false }).limit(30),
+    getPlatformSettings(),
+    // 🔑 A consulta traz os CANDIDATOS (estado + relógio); quem DECIDE é o
+    //    `motivoDoPaywall` abaixo — a mesma função dos gates de acesso. Filtrar "quem está
+    //    no paywall" direto no PostgREST exigiria reescrever a regra em SQL, e duas cópias
+    //    da regra que fecha o produto é exatamente como elas divergem.
+    // ⚠️ `trial_ended` entra junto: é paywall também, por outro motivo, e sai da lista
+    //    pelo mesmo caminho (assinando).
+    supabaseAdmin.from("tenants")
+      .select("id, name, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, asaas_subscription_id, billing_mode")
+      .eq("active", true)
+      .or("subscription_status.in.(past_due,canceled),lifecycle_state.eq.trial_ended"),
   ])
 
   const { mrr_cents: mrr, billed, noPlan, byPlan: mrrPlanList } = summary
@@ -56,6 +70,30 @@ export default async function FinanceiroPage() {
       if (inv.due_date && inv.due_date < today) { overdueSum += saldo; overdueCount++ }
     }
   }
+
+  // ⚠️ Erro de leitura NÃO vira lista vazia. "Ninguém preso no paywall" é exatamente o que
+  //    um operador quer ver, então uma falha silenciosa aqui seria lida como boa notícia — e
+  //    esta lista existe justamente porque, sem ela, ninguém encerra ninguém.
+  const presos = erroCandidatos ? null : (candidatos ?? [])
+    .map((t) => {
+      const r = t as unknown as {
+        id: string; name: string; lifecycle_state: string | null; subscription_status: string | null
+        past_due_since: string | null; past_due_grace_days: number | null
+        asaas_subscription_id: string | null; billing_mode: string | null
+      }
+      const motivo = motivoDoPaywall(
+        r.lifecycle_state, r.subscription_status, r.past_due_since, r.past_due_grace_days,
+        settings.pastDueGraceDays,
+      )
+      if (!motivo) return null
+      const dias = r.past_due_since
+        ? Math.floor((Date.now() - new Date(r.past_due_since).getTime()) / 86_400_000)
+        : null
+      return { ...r, motivo, dias }
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    // Mais tempo preso primeiro: é a fila de quem precisa de decisão humana.
+    .sort((a, b) => (b.dias ?? -1) - (a.dias ?? -1))
 
   return (
     <div className="min-h-full">
@@ -90,6 +128,62 @@ export default async function FinanceiroPage() {
             <ChevronRight className="size-4 shrink-0" />
           </Link>
         )}
+
+        {/* ── PRESOS NO PAYWALL ─────────────────────────────────────────
+            🔴 ESTA LISTA VIROU REQUISITO EM 12/08, e não é conforto. Naquele dia o
+               encerramento automático por falta de pagamento foi REMOVIDO (o dono decidiu
+               que a máquina não encerra relação comercial — só o cliente ou o operador). A
+               consequência direta: quem entra no paywall fica lá **indefinidamente**, com a
+               assinatura ainda VIVA no gateway. Se o cartão voltar a funcionar meses
+               depois, ele é debitado por um produto que não usa, contesta, e a gente perde
+               o dinheiro E a taxa.
+            🔑 O antídoto não é ressuscitar a automação — é o operador CONSEGUIR VER. Sem
+               esta lista, "só o humano encerra" vira "ninguém encerra", que é pior que a
+               automação que foi tirada. */}
+        {presos === null ? (
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-900">
+            <AlertTriangle className="size-4 shrink-0" />
+            <span>Não foi possível ler quem está no paywall. <strong>Isto não significa que a lista está vazia</strong> — recarregue.</span>
+          </div>
+        ) : presos.length > 0 && (
+          <SectionCard
+            title={<span className="flex items-center gap-2"><Lock className="size-3.5 text-red-600" /> Presos no paywall ({presos.length})</span>}
+            description="Produto fechado e nada é encerrado automaticamente — a assinatura segue viva no gateway até alguém decidir."
+            flush
+          >
+            <div className="divide-y divide-slate-100">
+              {presos.map((t) => (
+                <Link key={t.id} href={`/admin/tenants/${t.id}/cobranca`} className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50/60">
+                  <div className="size-8 rounded-lg bg-red-50 border border-red-100 flex items-center justify-center shrink-0">
+                    <span className="text-xs font-bold text-red-600">{t.name?.[0]?.toUpperCase() ?? "?"}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-slate-900 truncate">{t.name}</p>
+                    <p className="text-[11px] text-slate-400">
+                      {t.motivo === "trial_ended" ? "teste encerrado"
+                        : t.motivo === "canceled" ? "assinatura cancelada"
+                        : "fatura não paga"}
+                      {t.dias !== null && ` \u00b7 h\u00e1 ${t.dias} ${t.dias === 1 ? "dia" : "dias"}`}
+                      {/* 🔑 O dado que decide a ação do operador: assinatura viva num
+                          tenant fechado é dinheiro que ainda pode ser debitado sem entrega. */}
+                      {t.asaas_subscription_id && " \u00b7 assinatura ATIVA no gateway"}
+                    </p>
+                  </div>
+                  {t.billing_mode !== "gateway" && (
+                    <span className="text-[10px] font-semibold px-2 h-5 inline-flex items-center rounded-md border text-slate-500 bg-slate-100 border-slate-200">manual</span>
+                  )}
+                  <ChevronRight className="size-4 shrink-0 text-slate-300" />
+                </Link>
+              ))}
+            </div>
+          </SectionCard>
+        )}
+
+        <RegrasClient
+          pastDue={settings.pastDueGraceDays}
+          trialEnded={settings.trialEndedGraceDays}
+          doBanco={settings.doBanco}
+        />
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
           {/* Faturas recentes */}

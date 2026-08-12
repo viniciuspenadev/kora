@@ -124,8 +124,4 @@ export interface AssinaturaResumo {
   cicloDia:        number | null
   formaPagamento:  string
   emailCobranca:   string
-  /** "Preciso de mais alguns dias" já usado neste ciclo? (1×/ciclo) */
-  adiamentoUsado:  boolean
-  /** Data até onde o adiamento levaria (pré-calculada pelo server). */
-  adiamentoAte:    string | null
 }

@@ -6,6 +6,8 @@ import { ChevronRight, Home, Menu } from "lucide-react"
 import { useAppShell } from "@/components/app/app-shell-context"
 import { NotificationBell } from "@/components/app/notification-bell"
 import { AccountMenu } from "@/components/app/account-menu"
+import { BillingPill } from "@/components/billing"
+import type { BillingStanding } from "@/components/billing"
 
 const ROUTE_LABELS: Record<string, string> = {
   "/inbox":         "Inbox",
@@ -22,10 +24,18 @@ function getLabel(pathname: string): string {
 }
 
 export function Topbar({
-  userName, userRole, userId, supabaseToken,
+  userName, userRole, userId, supabaseToken, standing,
 }: {
   userName: string; userRole: string
   userId: string; supabaseToken: string
+  /**
+   * Estado de cobrança do tenant. `null` = não sabemos (leitura falhou) ⇒ nada é exibido.
+   *
+   * ⚠️ Vem por PROP do layout, e não de um fetch daqui: o layout já calcula o standing pra
+   *    decidir a faixa, e um segundo consumidor buscando por conta faria a barra e a faixa
+   *    discordarem por alguns segundos — na tela que diz se o cliente está em dia.
+   */
+  standing?: BillingStanding | null
 }) {
   const pathname = usePathname()
   const label    = getLabel(pathname)
@@ -55,6 +65,9 @@ export function Topbar({
       </div>
 
       <div className="flex items-center gap-2.5">
+        {/* 🔑 ANTES do sino, de propósito: cobrança não é notificação — ela não some ao
+            ser lida, e não deve disputar o contador de não-lidas. Ver `billing-pill`. */}
+        {standing && <BillingPill standing={standing} />}
         <NotificationBell userId={userId} supabaseToken={supabaseToken} />
         <AccountMenu userName={userName} userRole={userRole} userId={userId} />
       </div>

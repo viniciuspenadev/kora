@@ -1,16 +1,18 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { ArrowRight, Check, CreditCard, Download, MessageCircle, Pause, Receipt } from "lucide-react"
+import { ArrowRight, CalendarClock, Check, CreditCard, Download, Loader2, MessageCircle, Pause, Receipt, XCircle } from "lucide-react"
+import { retomarAssinatura } from "@/lib/actions/subscription"
 import { SectionCard } from "@/components/ui/section-card"
 import { linkSuporte } from "@/lib/support"
 import { brl, dataCurta, dataLonga, num } from "./format"
 import type { AssinaturaMock } from "./mock"
 import { StandingHero } from "./components/standing-hero"
 import { PagarModal } from "./components/pagar-modal"
-import { MaisDiasModal } from "./components/mais-dias-modal"
+import { CancelarModal } from "./components/cancelar-modal"
 import { CaberNoPlanoModal } from "./components/caber-no-plano-modal"
 import { BloqueioTotal } from "./components/bloqueio-total"
 import { CartaoModal } from "./components/cartao-modal"
@@ -56,15 +58,29 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
    */
   preview?: boolean
 }) {
-  const { standing, incluso, cobranca, temAssinatura, cartao, resumo, conta, medidas, faturaAberta } = mock
+  const { standing, incluso, cobranca, temAssinatura, cartao, cancelamento, resumo, conta, medidas, faturaAberta } = mock
+  const router = useRouter()
+  const [retomando, iniciarRetomada] = useTransition()
+
+  // ⚠️ `router.refresh()` e não estado local: retomar muda o cartão exibido, o botão de
+  //    trocar cartão, a data da próxima cobrança e a faixa inteira. Espelhar isso à mão no
+  //    cliente criaria uma segunda verdade que diverge da do servidor no primeiro detalhe
+  //    esquecido — e a tela que ela desenharia é justamente a de dinheiro.
+  function retomar() {
+    iniciarRetomada(async () => {
+      const r = await retomarAssinatura()
+      if (r.error) { toast.error(r.error); return }
+      toast.success("Assinatura retomada. Sua próxima cobrança volta na data de sempre.")
+      router.refresh()
+    })
+  }
   // ⚠️ `temAssinatura` gateia a abertura automática: sem assinatura não há cartão pra
   //    trocar, e abrir o modal mesmo assim pediria o dado mais sensível do produto sem
   //    destino nenhum. Quem não tem, contrata.
-  const [modal, setModal] = useState<null | "pagar" | "dias" | "plano" | "cartao">(
+  const [modal, setModal] = useState<null | "pagar" | "plano" | "cartao" | "cancelar">(
     abrirCartao && temAssinatura && !preview ? "cartao" : null,
   )
   const [bloqueio, setBloqueio] = useState(standing.degrau === "readonly")
-  const [adiado, setAdiado]     = useState(false)
 
   // 🔴 ISTO ERA UM `toast` COM `TODO` (M-04.5 do pentest de 08/08). O botão dizia
   //    *"estamos preparando seu arquivo — você recebe o link por e-mail"* e **nada era
@@ -93,12 +109,11 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
           standing={standing}
           conta={conta}
           cobranca={cobranca}
+          cancelamento={cancelamento}
           planoNome={resumo.planoNome}
           formaPagamento={resumo.formaPagamento}
           cicloDia={resumo.cicloDia}
-          adiamentoUsado={resumo.adiamentoUsado || adiado}
           onPagar={() => setModal("pagar")}
-          onMaisDias={() => setModal("dias")}
           onExportar={exportar}
         />
 
@@ -186,6 +201,51 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
 
           {/* ── Rail direito: UM painel, seções por divisória ── */}
           <aside className="bg-white rounded-xl border border-slate-200 shadow-card divide-y divide-slate-100">
+            {/* ── CANCELAMENTO EM ANDAMENTO (11/08) ────────────────────────
+                🔴 A TELA NÃO DIZIA NADA. Depois de cancelar, recarregar mostrava a mesma
+                   página de sempre — nenhuma menção ao pedido, nenhuma data. A única prova
+                   era um toast que some. Numa tela de dinheiro, estado sem vestígio é o
+                   que produz o "cancelei e continuaram cobrando" (mesmo sem cobrança).
+                🔑 PRIMEIRA SEÇÃO DO RAIL, de propósito: é o fato mais consequente da conta
+                   agora, e a pergunta que ele traz ("até quando eu tenho?") é respondida
+                   pela data, que é o herói desta caixa.
+                ⚠️ Âmbar, não vermelho: nada está quebrado nem atrasado — ele está em dia,
+                   com tudo funcionando, até uma data. Vermelho aqui seria alarme falso. */}
+            {cancelamento && !preview && (
+              <div className="px-5 py-4 bg-amber-50/60">
+                <div className="flex items-start gap-2.5">
+                  <CalendarClock className="size-4 mt-0.5 shrink-0 text-amber-600" strokeWidth={2.25} />
+                  <div className="min-w-0">
+                    <h2 className="text-sm font-semibold text-slate-900">Assinatura cancelada</h2>
+                    <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                      Não haverá nova cobrança. Você continua com tudo até{" "}
+                      <span className="font-semibold text-slate-900">
+                        {dataLonga(cancelamento.ateQuando.slice(0, 10))}
+                      </span>.
+                    </p>
+                  </div>
+                </div>
+                {/* 🔑 SAIR E VOLTAR CUSTAM O MESMO. O cartão dele continua guardado até a
+                    data (é por isso que o `manterCartaoAteOFim` existe), então voltar atrás
+                    é um clique — não digitar cartão de novo. E não cobra nada: a
+                    recorrência volta pro dia em que cairia se ele nunca tivesse cancelado. */}
+                <button
+                  type="button"
+                  onClick={retomar}
+                  disabled={retomando}
+                  className="w-full mt-3 h-9 inline-flex items-center justify-center gap-1.5 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {retomando && <Loader2 className="size-3.5 animate-spin" />}
+                  Retomar assinatura
+                </button>
+                <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                  {cartao
+                    ? `Voltamos a cobrar no cartão ···· ${cartao.ultimos4}, só na próxima data do seu ciclo. Nada é cobrado agora.`
+                    : "A cobrança volta só na próxima data do seu ciclo. Nada é cobrado agora."}
+                </p>
+              </div>
+            )}
+
             <div className="px-5 py-4">
               <h2 className="text-sm font-semibold text-slate-900">
                 {conta.fechaEm ? `Sua conta de ${dataLonga(conta.fechaEm).split(" de ")[1]}` : "Sua conta do mês"}
@@ -306,12 +366,49 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
               >
                 <MessageCircle className="size-3.5" /> Falar sobre a cobrança
               </a>
+
+              {/* ── A PORTA DE SAÍDA (11/08) ─────────────────────────────────
+                  🔴 Ela não existia. Pra cancelar, a pessoa entrava no painel do gateway
+                     ou ligava — e saída escondida não retém cliente, empurra pro
+                     chargeback: ele perde tempo, nós perdemos o dinheiro E a taxa.
+                  🔑 DISCRETA, MAS PRESENTE. Não é botão vermelho gritando (seria hostil
+                     com quem só foi ver o cartão), nem link escondido (seria a armadilha
+                     que gera a disputa). Mesmo peso de "Solicitar meus dados" — ação de
+                     conta, ao lado das outras, achável por quem procura.
+                  ⚠️ Só com assinatura de verdade: quem é faturado à mão fala com a gente. */}
+              {temAssinatura && !preview && (
+                <button
+                  type="button"
+                  onClick={() => setModal("cancelar")}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-red-600 mt-3 transition-colors"
+                >
+                  <XCircle className="size-3.5" /> Cancelar assinatura
+                </button>
+              )}
             </div>
           </aside>
         </div>
       </div>
 
       {/* ── Modais ── */}
+      <CancelarModal
+        open={modal === "cancelar"}
+        onClose={() => setModal(null)}
+        planoNome={conta.planoLabel}
+        cicloFechaEm={conta.fechaEm}
+        onCancelado={(ate) => {
+          toast.success(
+            ate
+              ? `Assinatura cancelada. Seu acesso continua até ${dataLonga(ate.slice(0, 10))}.`
+              : "Assinatura cancelada.",
+          )
+          // ⚠️ Sem isto o toast some e a tela fica IDÊNTICA à de antes do cancelamento —
+          //    o mesmo buraco que a faixa do rail veio tapar. O refresh é o que faz a
+          //    faixa (e o botão de retomar) aparecerem no mesmo segundo.
+          router.refresh()
+        }}
+      />
+
       {modal === "pagar" && faturaAberta && (
         <PagarModal
           totalCents={faturaAberta.totalCents}
@@ -319,16 +416,6 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
           referencia={faturaAberta.referencia}
           pixCopiaECola={faturaAberta.pixCopiaECola}
           onClose={() => setModal(null)}
-        />
-      )}
-
-      {modal === "dias" && resumo.adiamentoAte && (
-        <MaisDiasModal
-          novaData={resumo.adiamentoAte}
-          jaUsou={resumo.adiamentoUsado || adiado}
-          temPausado={standing.paused.length > 0}
-          onClose={() => setModal(null)}
-          onConfirmar={() => setAdiado(true)}
         />
       )}
 

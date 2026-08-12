@@ -11,7 +11,7 @@ export default async function TenantBillingPage({ params }: { params: Promise<{ 
 
   const { data: tenant } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, plan_id, billing_day, subscription_status, past_due_since, past_due_grace_days")
+    .select("id, name, plan_id, billing_day, subscription_status, subscription_ends_at, past_due_since, past_due_grace_days")
     .eq("id", id)
     .maybeSingle()
 
@@ -40,6 +40,7 @@ export default async function TenantBillingPage({ params }: { params: Promise<{ 
       subscriptionStatus={tenant.subscription_status ?? "active"}
       graceDays={tenant.past_due_grace_days ?? null}
       pastDueSince={tenant.past_due_since ?? null}
+      subscriptionEndsAt={tenant.subscription_ends_at ?? null}
       activeUsers={activeUsers ?? 0}
       charges={(charges ?? []) as TenantCharge[]}
       invoices={(invoices ?? []) as InvoiceWithItems[]}

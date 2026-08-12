@@ -24,6 +24,23 @@ export const BILLING_HREF = "/configuracoes/assinatura"
 /** Rótulo ÚNICO do CTA. Constante, não prop — ver `pay-now.tsx`. */
 export const PAY_LABEL = "Pagar agora"
 
+/**
+ * Os degraus em que a FAIXA do topo (C1) aparece — nos demais quem avisa é a pílula (C7).
+ *
+ * 🔑 Régua única, lida pelas DUAS superfícies: com uma lista em cada lado, um degrau novo
+ *    apareceria nas duas de uma vez ou em nenhuma. O critério é *o produto parou?* — onde
+ *    ele ainda funciona, chip basta; onde parou, o aviso é a instrução do que fazer.
+ *
+ * 🔴 ELA MORA AQUI, E NÃO NA PÍLULA, POR UMA RAZÃO DE FRONTEIRA (erro em runtime, 11/08).
+ *    `billing-pill.tsx` é `"use client"`, e o que um Server Component importa de um módulo
+ *    client **não é o valor** — é um stub de referência. O layout quebrou com
+ *    `DEGRAUS_DE_FAIXA.has is not a function`. ⚠️ Nem o `tsc` nem o `build` pegam isso: os
+ *    tipos batem perfeitamente, a troca acontece só na montagem do bundle. Regra pra este
+ *    projeto: **constante compartilhada entre servidor e cliente nunca sai de um módulo
+ *    `"use client"`** — sai de um módulo neutro, como este.
+ */
+export const DEGRAUS_DE_FAIXA: ReadonlySet<string> = new Set(["trial_ended", "paywall", "readonly"])
+
 const MESES = [
   "janeiro", "fevereiro", "março", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",

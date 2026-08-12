@@ -71,6 +71,8 @@ export interface AssinaturaMock {
   temAssinatura: boolean
   /** Bandeira + 4 últimos do cartão em uso. `null` = não sabemos (assinatura antiga). */
   cartao: { bandeira: Bandeira | null; ultimos4: string } | null
+  /** Cancelamento pedido e ainda não consumado. Ver `subscription-view`. */
+  cancelamento: { ateQuando: string } | null
   resumo:       AssinaturaResumo
   conta:        ContaDoMes
   medidas:      LinhaMedida[]
@@ -226,8 +228,6 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
   const resumo: AssinaturaResumo = {
     planoNome: "Pro", planoCents: 44990, cicloDia: 6,
     formaPagamento: "Pix automático", emailCobranca: "financeiro@empresa.com.br",
-    adiamentoUsado: false,
-    adiamentoAte: faturaAberta ? emDias(-atraso + 12, hoje) : null,
   }
 
   // ⚠️ A prévia (`?degrau=`) usa os mesmos rótulos do mock — ela existe pra revisar os
@@ -245,6 +245,9 @@ export function buildMock(degrau: BillingDegrau = "ok"): AssinaturaMock {
   return {
     standing, incluso: TUDO, cobranca: null, temAssinatura: true,
     cartao: { bandeira: "mastercard", ultimos4: "4242" },
+    // A prévia não simula cancelamento: os 5 degraus da escada são sobre COBRANÇA, e a
+    // janela de cancelamento é ortogonal a eles (existe em qualquer degrau).
+    cancelamento: null,
     resumo, conta, medidas, discretas, faturaAberta, faturas,
   }
 }

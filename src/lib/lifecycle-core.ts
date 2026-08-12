@@ -138,6 +138,31 @@ export async function transitionLifecycleCore(
         src: "lifecycle", kind: "assinatura-NAO-cancelada", tenant: tenantId, action,
       }))
     }
+
+    // 🧾 E ANULA A FATURA NÃO SERVIDA (12/08). Este bloco herdou a responsabilidade do
+    //    encerramento automático por falta de pagamento, que foi removido do housekeeping no
+    //    mesmo dia — sem isto a regra do pré-pago ficaria **sem executor nenhum**.
+    //
+    // 🔑 A REGRA: em pré-pago a fatura aberta não é dívida, é uma OFERTA. Ela cobre o período
+    //    à frente, e a partir daqui esse período não vai ser entregue — a conta acabou de ser
+    //    suspensa. Mantê-la aberta sujaria o livro para sempre com um valor que ninguém
+    //    pretende cobrar, e ainda apareceria como "em aberto" na tela do cliente.
+    // ⚠️ `void_reason: "nao_servido"` e não um void mudo: sem o motivo, isto ficaria
+    //    indistinguível de um erro nosso de faturamento na hora de auditar o livro.
+    // ⚠️ Best-effort como o resto da cascata, e pelo mesmo motivo: o acesso já caiu, e
+    //    segurar a transição por causa do livro seria trocar um problema por outro maior.
+    // ⚠️ Só `open/overdue/partial`. Fatura `paid` é história e não se reescreve; `void` já
+    //    está no destino.
+    const { error: erroVoid } = await supabaseAdmin.from("invoices")
+      .update({ status: "void", void_reason: "nao_servido", updated_at: new Date().toISOString() })
+      .eq("tenant_id", tenantId)
+      .in("status", ["open", "overdue", "partial"])
+    if (erroVoid) {
+      console.error(JSON.stringify({
+        src: "lifecycle", kind: "FATURA-NAO-ANULADA-CONFERIR", tenant: tenantId, action,
+        msg: erroVoid.message,
+      }))
+    }
   }
 
   await logAudit({

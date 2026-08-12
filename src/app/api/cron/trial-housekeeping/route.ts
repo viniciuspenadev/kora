@@ -98,7 +98,10 @@ export async function GET(req: NextRequest) {
       //    outras tarefas do dia — mas fechar `ok` esconderia que a única varredura que
       //    destrava cliente pagante não rodou.
       status: (erroHousekeeping || "erro" in billing ? "partial" : "ok") as "partial" | "ok",
-      processed: result ? result.suspended + result.encerradosPorFalta : 0,
+      // ⚠️ Era `suspended + encerradosPorFalta`. O segundo termo deixou de existir em 12/08
+      //    junto com o encerramento automático — e mantê-lo somando zero para sempre seria o
+      //    livro de execuções afirmando que uma varredura roda quando ela não existe mais.
+      processed: result ? result.suspended : 0,
       meta: {
         ...(result ?? {}),
         storage,

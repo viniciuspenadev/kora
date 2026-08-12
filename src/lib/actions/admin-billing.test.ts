@@ -29,7 +29,11 @@ vi.mock("@/lib/billing", () => ({ generateInvoiceForTenant: async () => ({}) }))
 // 🔒 "Cancelada" no god mode agora CANCELA no gateway antes de escrever (QA 09/08). O dublê
 //    deixa o desfecho programável, porque a regra nova é justamente: falhou lá ⇒ não escreve.
 const cancelarMock = vi.fn(async () => ({ ok: true } as { ok: true } | { error: string }))
-vi.mock("@/lib/asaas/subscriptions", () => ({ cancelSubscriptionForTenant: () => cancelarMock() }))
+vi.mock("@/lib/asaas/subscriptions", () => ({
+  cancelSubscriptionForTenant: (_t: string, o?: { manterCartaoAteOFim?: boolean }) => { opcoesDoCancelamento = o; return cancelarMock() },
+}))
+/** As opções com que o motor foi chamado — prova que o cartão sobrevive só quando deve. */
+let opcoesDoCancelamento: { manterCartaoAteOFim?: boolean } | undefined
 
 /** A linha do tenant como o banco a devolveria, e o patch que a action tentou escrever. */
 let linha: Record<string, unknown> = {}
@@ -38,10 +42,36 @@ let patch: Record<string, unknown> | null = null
 /** O que foi para a trilha de auditoria — é o que prova que a ação deixou rastro. */
 let auditado: Record<string, unknown>[] = []
 
+/**
+ * Fim do ciclo PAGO, como `invoices` responderia.
+ * `null` = não há mensalidade paga · string = `period_end` · `"erro"` = a consulta falhou.
+ */
+let cicloPago: string | null | "erro" = null
+
+// ⚠️ O dublê VIROU ENCADEÁVEL (11/08). O antigo tinha exatamente dois `.eq()` fixos, e a
+//    consulta do ciclo pago usa três + `order` + `limit` — ele quebrava com "eq is not a
+//    function" em cinco testes. Dublê que espelha a FORMA da chamada (e não a chamada
+//    exata de ontem) para de reprovar por refatoração e volta a reprovar só por regressão.
+function consulta(tabela: string) {
+  const resposta = async () => {
+    if (tabela === "invoices") {
+      if (cicloPago === "erro") return { data: null, error: { message: "conexão caiu" } }
+      return { data: cicloPago ? { period_end: cicloPago } : null, error: null }
+    }
+    return { data: linha, error: null }
+  }
+  const chain: Record<string, unknown> = {
+    eq: () => chain, order: () => chain, limit: () => chain, in: () => chain, not: () => chain,
+    maybeSingle: resposta,
+    then: (r: (v: unknown) => unknown) => resposta().then(r),
+  }
+  return chain
+}
+
 vi.mock("@/lib/supabase", () => ({
   supabaseAdmin: {
     from: (tabela: string) => ({
-      select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: linha, error: null }) }), maybeSingle: async () => ({ data: linha, error: null }) }) }),
+      select: () => consulta(tabela),
       update: (p: Record<string, unknown>) => { patch = p; return { eq: () => ({ eq: async () => ({ error: null }) }), then: (r: (v: unknown) => unknown) => r({ error: null }) } },
       // 🔑 `insert` existe pra a TRILHA ser exercitada. Sem ele o `logAudit` falhava em
       //    silêncio (fire-and-forget, por desenho) e os testes passavam sem provar nada
@@ -60,10 +90,12 @@ const TENANT = "11111111-1111-1111-1111-111111111111"
 
 beforeEach(() => {
   linha = { subscription_status: "active", past_due_since: null }
+  cicloPago = null
   patch = null
   auditado = []
   cancelarMock.mockClear()
   cancelarMock.mockResolvedValue({ ok: true })
+  opcoesDoCancelamento = undefined
 })
 
 // ── A trilha ────────────────────────────────────────────────────────────────
@@ -187,6 +219,90 @@ describe("carimbo do atraso pela mão do operador", () => {
     linha = { subscription_status: "canceled", past_due_since: null }
     await updateTenantBilling(TENANT, { subscription_status: "canceled" })
     expect(cancelarMock).not.toHaveBeenCalled()
+  })
+
+  // ═══════════════════════════════════════════════════════════════
+  // O ciclo pago vale no god mode também (11/08)
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // 🔴 A INCONSISTÊNCIA QUE ESTES TESTES TRANCAM. Cliente que cancelava sozinho usava até o
+  //    fim do que pagou; o MESMO cancelamento feito pelo operador cortava na hora. Duas
+  //    portas, dois desfechos, pro mesmo pedido — e a diferença só aparecia pro cliente,
+  //    que perdia dias comprados sem ninguém do lado de cá perceber.
+  describe("cancelar respeitando o ciclo pago", () => {
+    /** Uma mensalidade paga cobrindo até bem depois de hoje. */
+    const daquiA30 = () => new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10)
+
+    it("com ciclo pago no futuro, o status NÃO vira 'canceled' agora", async () => {
+      cicloPago = daquiA30()
+
+      const r = await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+
+      expect(r.error).toBeUndefined()
+      // 🔑 O ponto inteiro: `canceled` = paywall imediato. Escrevê-lo aqui fecharia o
+      //    produto de quem está com a mensalidade em dia. Quem vira o estado é o
+      //    housekeeping, quando a data chegar.
+      expect(patch).not.toHaveProperty("subscription_status")
+      expect(patch!.subscription_ended_reason).toBe("decisao_interna")
+      expect(String(patch!.subscription_ends_at).slice(0, 10)).toBe(daquiA30())
+      // A cobrança, essa sim, para agora.
+      expect(cancelarMock).toHaveBeenCalledTimes(1)
+    })
+
+    it("a tela é informada do agendamento — senão o operador acha que o save falhou", async () => {
+      cicloPago = daquiA30()
+      const r = await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+      expect(r.agendadoPara).toBeTruthy()
+    })
+
+    it("o cartão SOBREVIVE até a data (é o que permite retomar num clique)", async () => {
+      cicloPago = daquiA30()
+      await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+      expect(opcoesDoCancelamento?.manterCartaoAteOFim).toBe(true)
+    })
+
+    // 🔴 O PAYWALL INSTANTÂNEO QUE A PRÓPRIA CORREÇÃO IA CRIAR. Agendado + tenant já
+    //    `past_due` (atrasou e ligou pedindo pra cancelar): o status fica `past_due`, e
+    //    limpar `past_due_since` faria `passouDaCarencia` — fail-closed pela data —
+    //    responder "já passou" ⇒ paywall no mesmo segundo. A mudança feita pra PRESERVAR o
+    //    acesso o cortaria, pela porta do lado.
+    it("agendado NÃO apaga o relógio do atraso de quem continua 'past_due'", async () => {
+      const velho = "2026-08-01T09:00:00.000Z"
+      linha = { subscription_status: "past_due", past_due_since: velho }
+      cicloPago = daquiA30()
+
+      await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+
+      expect(patch).not.toHaveProperty("past_due_since")
+    })
+
+    it("sem ciclo pago, corta na hora e o cartão morre junto (comportamento de sempre)", async () => {
+      cicloPago = null
+
+      const r = await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+
+      expect(patch!.subscription_status).toBe("canceled")
+      expect(patch!.subscription_ends_at).toBeTruthy()
+      expect(opcoesDoCancelamento?.manterCartaoAteOFim).toBe(false)
+      expect(r.agendadoPara).toBeUndefined()
+    })
+
+    it("ciclo pago JÁ VENCIDO não segura nada — é histórico, não direito", async () => {
+      cicloPago = "2020-01-01"
+      await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+      expect(patch!.subscription_status).toBe("canceled")
+    })
+
+    // 🔒 "Não sei" nunca decide corte — mesma regra das outras duas portas de cancelamento.
+    it("consulta do ciclo FALHOU ⇒ nada é escrito e o gateway nem é chamado", async () => {
+      cicloPago = "erro"
+
+      const r = await updateTenantBilling(TENANT, { subscription_status: "canceled" })
+
+      expect(r.error).toBeTruthy()
+      expect(patch).toBeNull()
+      expect(cancelarMock).not.toHaveBeenCalled()
+    })
   })
 
   it("status inválido é recusado e não escreve nada", async () => {

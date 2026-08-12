@@ -38,11 +38,31 @@ export function fraseDoDegrau(
   conta: ContaDoMes,
   /** Verdade do gateway (valor e data reais). `null` ⇒ usa a projeção local. */
   cobranca?: { valorCents: number; proximaEm: string | null } | null,
+  /** Cancelamento pedido e ainda não consumado. Ver `subscription-view.cancelamento`. */
+  cancelamento?: { ateQuando: string } | null,
 ): {
   tom: Tom; lead: string; tail: React.ReactNode
 } {
   const forte = (t: string) => <span className="font-bold text-slate-900">{t}</span>
   const inv   = standing.invoice
+
+  // 🔴 CANCELAMENTO VEM ANTES DO DEGRAU — senão o hero MENTE (achado ao revisar 11/08).
+  //    Quem cancela segue `ok` no `standing` (é isso que mantém o acesso até a data), e o
+  //    ramo `ok` anuncia *"sua próxima fatura de R$ 149,90 fecha em 11 de setembro"*.
+  //    Não existe próxima fatura: a assinatura morreu no gateway no instante do clique.
+  //    Prometer uma cobrança que não vai acontecer, na tela de cobrança, é o pior lugar
+  //    possível pra a plataforma discordar de si mesma.
+  // ⚠️ Só o degrau `ok` é interceptado. Em `grace`/`restricted` a frase fala de uma fatura
+  //    vencida que CONTINUA verdadeira, e ela é a informação mais urgente das duas — a
+  //    janela do cancelamento é contada pela faixa do rail, ao lado.
+  if (cancelamento && standing.degrau === "ok") {
+    return {
+      // Âmbar, não vermelho: nada parou. Ele está com tudo, em dia, até uma data.
+      tom: "atencao",
+      lead: "Sua assinatura está cancelada.",
+      tail: <>Não haverá nova cobrança. Você continua com tudo até {forte(dataLonga(cancelamento.ateQuando.slice(0, 10)))} — e pode retomar antes disso.</>,
+    }
+  }
 
   switch (standing.degrau) {
     case "trial": {
@@ -145,21 +165,20 @@ export function fraseDoDegrau(
 }
 
 export function StandingHero({
-  standing, conta, cobranca, planoNome, formaPagamento, cicloDia,
-  onPagar, onMaisDias, adiamentoUsado, onExportar,
+  standing, conta, cobranca, cancelamento, planoNome, formaPagamento, cicloDia,
+  onPagar, onExportar,
 }: {
   standing:        BillingStanding
   cobranca?:       { valorCents: number; proximaEm: string | null } | null
+  cancelamento?:   { ateQuando: string } | null
   conta:           ContaDoMes
   planoNome:       string
   formaPagamento:  string
   cicloDia:        number | null
   onPagar:         () => void
-  onMaisDias:      () => void
-  adiamentoUsado:  boolean
   onExportar:      () => void
 }) {
-  const { tom, lead, tail } = fraseDoDegrau(standing, conta, cobranca)
+  const { tom, lead, tail } = fraseDoDegrau(standing, conta, cobranca, cancelamento)
   const t     = TOM[tom]
   const inv   = standing.invoice
   const fim   = standing.degrau === "terminated"
@@ -179,7 +198,11 @@ export function StandingHero({
             <span className="text-slate-300">·</span>
             <span className="inline-flex items-center gap-1"><CreditCard className="size-3" /> {formaPagamento}</span>
             <span className="text-slate-300">·</span>
-            <span className="inline-flex items-center gap-1"><CalendarClock className="size-3" /> {cicloDia ? `cobrança todo dia ${cicloDia}` : "cobrança a definir"}</span>
+            {/* ⚠️ "cobrança todo dia 11" também é falso durante o cancelamento — mesmo
+                defeito da frase, um degrau abaixo de importância. */}
+            <span className="inline-flex items-center gap-1"><CalendarClock className="size-3" /> {
+              cancelamento ? "cobrança encerrada" : cicloDia ? `cobrança todo dia ${cicloDia}` : "cobrança a definir"
+            }</span>
           </p>
         </div>
 
@@ -209,14 +232,14 @@ export function StandingHero({
             </button>
           )}
 
-          {/* Recurso de PRODUTO, não exceção de suporte: fica ao lado do pagar,
-              com a mesma dignidade visual de um botão de verdade. */}
-          {inv && !fim && (
-            <button type="button" onClick={onMaisDias} disabled={adiamentoUsado} title={adiamentoUsado ? "Você já usou este ciclo" : undefined} className={BTN_WHITE_LG}>
-              Preciso de mais alguns dias
-            </button>
-          )}
-
+          {/* 🗑️ "Preciso de mais alguns dias" foi REMOVIDO em 11/08 (dono). Ele era um
+              clique morto: o modal só renderizava com `resumo.adiamentoAte`, que o loader
+              real sempre devolvia `null`, e o `onConfirmar` era `setAdiado(true)` — estado
+              local, nada persistido, carência intocada. Numa tela de cobrança, oferecer
+              adiamento a quem está atrasado e não fazer nada é pior que não oferecer.
+              ⚠️ E ele contradizia a direção nova: a carência passa a ser configuração do
+                 tenant (podendo ser ZERO), decidida por quem vende — não algo que o
+                 cliente estica sozinho pela tela. */}
           {fim && (
             <button type="button" onClick={onExportar} className={BTN_PRIMARY_LG}>
               <Download className="size-4" /> Baixar meus dados

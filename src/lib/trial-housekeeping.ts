@@ -1,9 +1,9 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import { transitionLifecycleCore } from "@/lib/lifecycle-core"
-import { TRIAL_ENDED_GRACE_DAYS, passouDaCarencia } from "@/lib/lifecycle-shared"
+import { TRIAL_ENDED_GRACE_DAYS } from "@/lib/lifecycle-shared"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
-import { cancelSubscriptionForTenant } from "@/lib/asaas/subscriptions"
 
 /**
  * Housekeeping diário do trial (chamado pelo cron /api/cron/trial-housekeeping):
@@ -17,8 +17,6 @@ import { cancelSubscriptionForTenant } from "@/lib/asaas/subscriptions"
  */
 export async function runTrialHousekeeping(): Promise<{
   suspended: number; purged: number; outboxPurged: number
-  /** Quantos passaram da carência e tiveram a cobrança encerrada (pré-pago). */
-  encerradosPorFalta: number
 }> {
   const nowIso = new Date().toISOString()
 
@@ -72,7 +70,13 @@ export async function runTrialHousekeeping(): Promise<{
   //    em que o teste venceu, e `end_trial` **não o limpa** justamente pra servir de
   //    carimbo aqui. (Quem paga tem o campo zerado pelo webhook, então some deste filtro.)
   // ⚠️ Sem esta varredura, `trial_ended` seria acesso vitalício a um produto travado.
-  const limite = new Date(Date.now() - TRIAL_ENDED_GRACE_DAYS * 86_400_000).toISOString()
+  // ⚠️ O prazo vem do banco desde 12/08 (`platform_settings.trial_ended_grace_days`); a
+  //    constante importada é só o piso de quando a leitura falha. Ver `platform-settings.ts`.
+  const { trialEndedGraceDays } = await getPlatformSettings()
+  const diasTeste = Number.isFinite(trialEndedGraceDays) && trialEndedGraceDays >= 0
+    ? trialEndedGraceDays
+    : TRIAL_ENDED_GRACE_DAYS
+  const limite = new Date(Date.now() - diasTeste * 86_400_000).toISOString()
   const { data: semPagar, error: spErr } = await supabaseAdmin
     .from("tenants")
     .select("id")
@@ -102,12 +106,21 @@ export async function runTrialHousekeeping(): Promise<{
   //    nada tenha sido cortado.
   // ⚠️ Só mexe em `subscription_status` (dinheiro), nunca no `lifecycle_state` (a relação).
   //    Encerrar cliente continua sendo decisão do god mode — gateway não desliga ninguém.
+  // 🔴 `asaas_subscription_id is null` — a guarda que o "retomar assinatura" EXIGE, posta
+  //    antes dele existir. `subscription_ends_at` é carimbo histórico e **de propósito nunca
+  //    é limpo** (ver o comentário do bloco abaixo). Quem cancela e volta atrás fica com a
+  //    data antiga gravada e uma assinatura NOVA no gateway — e sem esta linha, no dia em
+  //    que a data velha passasse, este bloco encerraria um cliente **pagante** e apagaria o
+  //    cartão dele. Sem assinatura viva no gateway, não há o que este bloco possa quebrar.
+  // ⚠️ Medido em prod (11/08) antes de entrar: ZERO tenants com `subscription_ends_at`
+  //    carimbado — hoje o filtro não muda nada; ele existe pro amanhã.
   const { data: vencidos, error: vErr } = await supabaseAdmin
     .from("tenants")
-    .select("id")
+    .select("id, subscription_ended_reason")
     .not("subscription_ends_at", "is", null)
     .lt("subscription_ends_at", nowIso)
     .neq("subscription_status", "canceled")
+    .is("asaas_subscription_id", null)
   if (vErr) console.error("[housekeeping] leitura de cancelamentos vencidos falhou:", vErr.message)
 
   let encerrados = 0
@@ -128,10 +141,32 @@ export async function runTrialHousekeeping(): Promise<{
       // 🔑 `subscription_ended_reason` entra junto: este é o caminho de quem cancelou por
       //    vontade própria, e sem ele a invariante 4 da migration devolve linha no primeiro
       //    cancelamento normal — apagando a distinção que a coluna veio criar.
+      // 🔴 …MAS SÓ SE AINDA NÃO HOUVER MOTIVO (11/08). Desde que o god mode passou a AGENDAR
+      //    o cancelamento em vez de cortar na hora, ele carimba `decisao_interna` no ato e
+      //    quem fecha o estado é este bloco, dias depois — sobrescrever aqui reescreveria a
+      //    história como "pedido do cliente" e apagaria o fato de que a Kora cancelou. Numa
+      //    disputa é exatamente esta linha que alguém vai ler. Achado ao conferir o CHECK do
+      //    vocabulário no banco de produção, não pelo compilador: os dois valores são
+      //    válidos, então nada reclamaria.
+      // 🔒 AQUI O CARTÃO MORRE — e é aqui que ele sempre deveria ter morrido no cancelamento
+      //    a pedido do cliente. A regra "credencial não sobrevive ao seu propósito" continua
+      //    valendo; o que mudou (11/08) é QUANDO o propósito acaba: não no clique em
+      //    "cancelar", e sim agora, quando o período pago fecha e a relação de fato termina.
+      //    Até este instante ele era cliente com acesso, e o cartão era meio de pagamento de
+      //    um contrato vivo — o que permite desfazer o cancelamento com um clique.
+      // ⚠️ Os três juntos, sempre: rótulo sem credencial mente na tela ("mastercard ••8003"
+      //    num cartão que não existe mais), credencial sem assinatura é resíduo.
+      // 🔑 Idempotente e inofensivo pros outros caminhos: quem chegou aqui pelo padrão já
+      //    veio com os três nulos, e a guarda `asaas_subscription_id is null` garante que
+      //    nenhum cliente com assinatura viva cai neste laço.
       .update({
         subscription_status:       "canceled",
-        subscription_ended_reason: "pedido_do_cliente",
+        subscription_ended_reason: (t as { subscription_ended_reason?: string | null }).subscription_ended_reason
+          ?? "pedido_do_cliente",
         past_due_since:            null,
+        asaas_card_token:          null,
+        card_brand:                null,
+        card_last4:                null,
       })
       .eq("id", (t as { id: string }).id)
     if (error) console.error("[housekeeping] falha ao encerrar assinatura:", (t as { id: string }).id, error.message)
@@ -179,94 +214,32 @@ export async function runTrialHousekeeping(): Promise<{
     .from("email_outbox").delete().lt("created_at", cutoff).select("id")
   const outboxPurged = oldMail?.length ?? 0
 
-  // ── 4 · PRÉ-PAGO: passou da carência ⇒ a relação de cobrança ENCERRA ──────
+  // ── 4 · REMOVIDO: a máquina não encerra mais relação comercial ────────────
   //
-  // 🔴 O PROBLEMA QUE ISTO FECHA (achado do dono, 08/08): quem entrava no paywall
-  //    continuava com a assinatura viva no Asaas **e** ganhando fatura nova todo mês. Três
-  //    meses parado = três faturas de um período que ele não usou, mais uma recorrência
-  //    que ninguém pediu. Dívida acumulando dos dois lados, para alguém que não está
-  //    recebendo nada. A regra do produto é pagamento **antecipado**: pendência não pode
-  //    sequer existir.
+  // 🔴 AQUI MORAVA O ENCERRAMENTO AUTOMÁTICO POR FALTA DE PAGAMENTO, retirado em 12/08 por
+  //    decisão do dono. Ele cancelava a assinatura no gateway, anulava a fatura em aberto e
+  //    marcava `canceled` assim que a carência passava — no MESMO relógio do paywall, ou
+  //    seja, os dois efeitos caíam juntos.
   //
-  // 🔑 O PAYWALL É UM ESTADO DERIVADO, não um evento — ninguém "entra" nele, ele é
-  //    calculado na leitura. Por isso o desligamento precisa de varredura: é aqui que o
-  //    relógio vira consequência.
+  // 🔑 A REGRA NOVA, e ela é de produto, não de código: **o automático termina no paywall.**
+  //    Fechar o acesso é reversível — o cliente paga e volta no mesmo segundo. Encerrar a
+  //    cobrança não é: cancela no gateway, apaga o cartão, e voltar significa recontratar do
+  //    zero. Decisão irreversível sobre uma relação comercial passa a exigir gente:
+  //      • o CLIENTE, cancelando (`cancelarAssinatura`, com o ciclo pago respeitado); ou
+  //      • o OPERADOR, suspendendo/desativando no god mode — que já cancela a assinatura
+  //        junto, na cascata de `transitionLifecycleCore`.
   //
-  // 🔑 E `canceled` passa a ser o terminal ÚNICO do paywall — tenha ele cancelado ou
-  //    simplesmente parado de pagar. O que distingue os dois é `subscription_ended_reason`,
-  //    porque colapsar "ele saiu" e "ele não pagou" apagaria a informação mais valiosa que
-  //    a saída de um cliente produz.
+  // ⚠️ A CONSEQUÊNCIA QUE ISTO CRIA, e está registrada de propósito: sem esta varredura, a
+  //    assinatura de quem está no paywall **continua viva no Asaas**. Se o cartão voltar a
+  //    funcionar meses depois, o gateway cobra — e o cliente que se considerava fora pode
+  //    ser debitado por um produto que não usa, virando contestação. O antídoto não é
+  //    ressuscitar a automação: é o operador CONSEGUIR VER quem está preso no paywall.
+  //    É por isso que a lista de paywall no god mode deixou de ser conforto e virou
+  //    requisito — sem ela, "só o humano encerra" vira "ninguém encerra".
   //
-  // ⚠️ NÃO mexe em `lifecycle_state`. Encerrar a relação segue sendo decisão humana
-  //    (degraus 4 e 5). Isto encerra a COBRANÇA, que é outra alavanca.
-  let encerradosPorFalta = 0
-  const { data: atrasados, error: atrErr } = await supabaseAdmin
-    .from("tenants")
-    .select("id, past_due_since, past_due_grace_days, asaas_subscription_id")
-    .eq("subscription_status", "past_due")
-    .eq("billing_mode", "gateway")
-  if (atrErr) console.error("[housekeeping] leitura de atrasados falhou:", atrErr.message)
-
-  for (const row of (atrasados ?? []) as Array<{
-    id: string; past_due_since: string | null; past_due_grace_days: number | null
-    asaas_subscription_id: string | null
-  }>) {
-    // ⚠️ O filtro fino é em TS porque a carência é POR TENANT — não dá pra expressar
-    //    `now - past_due_since >= past_due_grace_days` num filtro do PostgREST. São poucas
-    //    linhas (só quem está atrasado) e existe índice parcial em `past_due_since`.
-    if (!passouDaCarencia(row.past_due_since, row.past_due_grace_days)) continue
-
-    // 1º desliga a cobrança. Se falhar, NÃO marca `canceled` — senão o cliente fica
-    // "encerrado" no nosso livro e debitado no cartão, que é o pior estado possível.
-    // ⚠️ A varredura de cobrança órfã do `reconcile` é a segunda rede, para o caso de
-    //    isto falhar depois de a marcação já ter acontecido numa rodada anterior.
-    if (assinaturaRealId(row.asaas_subscription_id)) {
-      const c = await cancelSubscriptionForTenant(row.id)
-      if ("error" in c) {
-        console.error(JSON.stringify({ src: "housekeeping", kind: "PAYWALL-NAO-DESLIGOU-COBRANCA",
-          tenant: row.id }))
-        continue
-      }
-    }
-
-    const { error: upErr } = await supabaseAdmin.from("tenants")
-      .update({
-        subscription_status:       "canceled",
-        subscription_ended_reason: "falta_de_pagamento",
-        // O relógio do atraso cumpriu o papel dele; deixá-lo aqui viraria carimbo órfão.
-        past_due_since:            null,
-        // 🔴 SEM ESTE CARIMBO O ENCERRAMENTO É REVERSÍVEL POR ACIDENTE (achado do QA,
-        //    09/08). A guarda que impede um evento antigo de ressuscitar a assinatura é
-        //    `jaEncerrado = !!subscription_ends_at && !nossa` (webhook-handler): ela EXIGE
-        //    a data. Sem ela, um `PAYMENT_CONFIRMED` pendente — e o reconcile retenta por
-        //    **7 dias, exatamente o tamanho da carência padrão** — reescrevia
-        //    `subscription_status: "active"` num tenant sem assinatura e sem cartão.
-        //    Ninguém mais olharia pra ele: não está em `past_due`, não tem `ends_at`, não
-        //    está `suspended`. Produto inteiro, de graça, para sempre.
-        // ⚠️ `now` e não uma data futura: ele NÃO pagou este período. O acesso acaba agora.
-        subscription_ends_at:      new Date().toISOString(),
-      })
-      .eq("id", row.id)
-      .eq("subscription_status", "past_due")   // guarda de concorrência
-    if (upErr) { console.error("[housekeeping] falha ao encerrar por falta de pagamento:", row.id, upErr.message); continue }
-
-    // 🔑 A FATURA ABERTA NÃO É DÍVIDA — É UMA OFERTA QUE EXPIROU. Ela cobre o período
-    //    **à frente** (`currentPeriod` começa hoje), e esse período não vai ser entregue.
-    //    Mantê-la aberta sujaria o livro para sempre com um valor que não se pretende
-    //    cobrar; anular sem dizer por quê apagaria a diferença entre isso e um erro nosso.
-    const { error: vErr } = await supabaseAdmin.from("invoices")
-      .update({ status: "void", void_reason: "nao_servido", updated_at: new Date().toISOString() })
-      .eq("tenant_id", row.id)
-      .in("status", ["open", "overdue", "partial"])
-    if (vErr) console.error("[housekeeping] faturas não anuladas:", row.id, vErr.message)
-
-    encerradosPorFalta++
-    console.warn(JSON.stringify({ src: "housekeeping", kind: "cobranca-encerrada-por-falta-de-pagamento",
-      tenant: row.id }))
-  }
-  if (encerradosPorFalta > 0) {
-    console.log(JSON.stringify({ src: "housekeeping", kind: "paywall-encerrou-cobranca", n: encerradosPorFalta }))
-  }
+  // ⚠️ O void da fatura não servida foi junto e ganhou dono novo: o caminho de SUSPENSÃO
+  //    (`lifecycle-core`), que é onde a relação de fato acaba. Sem isso a regra do pré-pago
+  //    ("período não servido não gera cobrança") ficaria sem executor nenhum.
 
   // 🔴 O RESTO DO DIA FOI FEITO, MAS A RODADA NÃO PODE SER CHAMADA DE SUCESSO (F1, 11/08).
   //    Ver o bloco 1: sem isto, "não consegui ler os testes vencidos" ficava indistinguível
@@ -274,5 +247,5 @@ export async function runTrialHousekeeping(): Promise<{
   // ⚠️ No fim, de propósito: tudo o que não dependia dessa leitura já rodou.
   if (expiredErr) throw new Error(`leitura de trials vencidos falhou: ${expiredErr.message}`)
 
-  return { suspended, purged, outboxPurged, encerradosPorFalta }
+  return { suspended, purged, outboxPurged }
 }

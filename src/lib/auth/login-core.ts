@@ -2,6 +2,7 @@ import "server-only"
 import { createHash, randomBytes } from "crypto"
 import bcrypt from "bcryptjs"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import {
   isTenantBlockedForAccessAs, motivoDoPaywall,
   COLUNAS_DE_ACESSO, type AcessoDoTenant,
@@ -69,9 +70,10 @@ export async function firstAccessibleTenantId(userId: string): Promise<string | 
       .select(COLUNAS_DE_ACESSO)
       .in("id", accessible)
     if (!error && tens) {
+      const { pastDueGraceDays } = await getPlatformSettings()
       const okIds = new Set(
         (tens as unknown as LinhaDeAcesso[])
-          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papelDe.get(t.id)))
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papelDe.get(t.id), pastDueGraceDays))
           .map((t) => t.id),
       )
       const filtered = accessible.filter((id) => okIds.has(id))
@@ -163,13 +165,17 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
       //    senha, não resolve, e liga pro dono dizendo que perdeu a conta. É exatamente o
       //    defeito que o `trial_ended` veio consertar — e este é o caminho que vai
       //    acontecer com MUITO mais gente.
+      // Uma leitura só, usada pelas DUAS decisões abaixo: o motivo da mensagem e o filtro
+      // de tenants acessíveis. Duas leituras poderiam divergir dentro do mesmo login.
+      const { pastDueGraceDays } = await getPlatformSettings()
       barradoPorAtraso = linhas.some((t) => t.active === true && motivoDoPaywall(
         t.lifecycle_state, t.subscription_status, t.past_due_since, t.past_due_grace_days,
+        pastDueGraceDays,
       ) === "past_due")
       const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
       const okIds = new Set(
         linhas
-          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papeis.get(t.id)))
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papeis.get(t.id), pastDueGraceDays))
           .map((t) => t.id),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
@@ -306,8 +312,9 @@ export async function redeemLoginTicket(
     if (!prof) return null
 
     const linha = ten.data as LinhaDeAcesso | null
+    const { pastDueGraceDays } = await getPlatformSettings()
     const tenantBlocked = !!linha &&
-      (linha.active === false || isTenantBlockedForAccessAs(linha, tu.data?.role as string | undefined))
+      (linha.active === false || isTenantBlockedForAccessAs(linha, tu.data?.role as string | undefined, pastDueGraceDays))
     const role = tu.data?.active === true && !tenantBlocked ? (tu.data.role as string) : ""
     const isPlatformAdmin = !!pa
     if (!role && !isPlatformAdmin) return null   // revogado na janela do ticket

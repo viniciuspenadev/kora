@@ -7,7 +7,8 @@ import { rateLimit, getClientIpFromHeaders } from "@/lib/rate-limit"
 import { logAudit } from "@/lib/audit"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
-import { createSubscriptionForTenant, updateSubscriptionCard, regularizarComCartao, acharCobrancaEmAberto } from "@/lib/asaas/subscriptions"
+import { fimDoCicloPago } from "@/lib/billing/paid-cycle"
+import { createSubscriptionForTenant, updateSubscriptionCard, regularizarComCartao, acharCobrancaEmAberto, cancelSubscriptionForTenant, resumeSubscriptionForTenant } from "@/lib/asaas/subscriptions"
 import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
 import { abaixoDoMinimoDoCartao, assinaturaRealId } from "@/lib/billing/gateway-limits"
 
@@ -508,4 +509,152 @@ export async function regularizarAssinatura(input: {
 
   revalidatePath("/configuracoes/assinatura")
   return r
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CANCELAR A ASSINATURA — pelo próprio cliente
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 🔴 ATÉ 11/08 NÃO EXISTIA CAMINHO DE SAÍDA NO PRODUTO. Para cancelar, a pessoa tinha
+//    que entrar no painel do Asaas ou falar com a gente. Prender a saída não retém
+//    cliente — gera chargeback, que é o pior desfecho para os dois lados: ele perde
+//    tempo, nós perdemos o dinheiro E a taxa, e a relação acaba mal.
+//
+// 🔑 A REGRA, E ELA É A DO PRÉ-PAGO: cancelar **não** tira o que já foi pago. O acesso
+//    segue inteiro até o fim do ciclo que ele comprou; só depois o produto fecha. Quem
+//    vira o estado é a varredura diária (bloco 1.b), quando a data passa — aqui só se
+//    carimba ATÉ QUANDO ele tem direito.
+//
+// ⚠️ ORDEM DELIBERADA: cancela no gateway PRIMEIRO. Se falhar, nada é escrito e o cliente
+//    vê o erro — o oposto (marcar cancelado local e falhar lá fora) deixaria o cartão
+//    sendo debitado por um produto que já anunciamos como encerrado, que é exatamente o
+//    C-03 do pentest.
+export async function cancelarAssinatura(): Promise<{ ok?: true; ateQuando?: string; error?: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Sessão expirada. Entre de novo." }
+  if (!["owner", "admin"].includes(session.user.role)) {
+    return { error: "Apenas o responsável pela conta pode cancelar a assinatura." }
+  }
+  const tenantId = session.user.tenantId
+
+  const { data: t, error: erroLeitura } = await supabaseAdmin
+    .from("tenants")
+    .select("asaas_subscription_id, subscription_ends_at, billing_mode")
+    .eq("id", tenantId)
+    .maybeSingle()
+
+  // Falha de leitura NÃO é "não tem assinatura" — a lição da F1, aplicada aqui.
+  if (erroLeitura) {
+    console.error(JSON.stringify({
+      src: "assinatura", kind: "cancelamento-abortado-leitura-falhou", tenant: tenantId, msg: erroLeitura.message,
+    }))
+    return { error: "Não conseguimos consultar sua assinatura agora. Nada foi alterado — tente de novo." }
+  }
+  const row = t as { asaas_subscription_id?: string | null; subscription_ends_at?: string | null; billing_mode?: string | null } | null
+
+  if (row?.billing_mode !== "gateway") {
+    return { error: "A cobrança desta conta é combinada com a nossa equipe. Fale com a gente para encerrar." }
+  }
+  // Já cancelado: idempotente, devolve a data em vez de erro — clicar duas vezes não pune.
+  if (row?.subscription_ends_at) return { ok: true, ateQuando: row.subscription_ends_at }
+  if (!assinaturaRealId(row?.asaas_subscription_id)) {
+    return { error: "Não há assinatura ativa para cancelar." }
+  }
+
+  // ── ATÉ QUANDO ELE TEM DIREITO ────────────────────────────────────────────
+  // Fim do período da última mensalidade PAGA — o que ele comprou e ainda não consumiu.
+  // A consulta é a mesma dos outros dois caminhos de cancelamento (`billing/paid-cycle`);
+  // o que muda é a política, e a desta porta é a mais conservadora das três.
+  const ateQuando = await fimDoCicloPago(tenantId)
+
+  if (ateQuando === undefined) {
+    return { error: "Não conseguimos calcular até quando seu acesso vale. Nada foi alterado — tente de novo." }
+  }
+  // 🔴 SEM CICLO PAGO CONHECIDO, NÃO CANCELA SOZINHO. O caminho equivalente no webhook
+  //    tem um fallback de "corte imediato", e aqui isso seria pior: o cliente clicaria
+  //    em cancelar esperando usar até o fim e perderia o acesso NA HORA. Preferimos
+  //    mandar falar com a gente a tirar dias que ele pagou.
+  if (ateQuando === null) {
+    console.error(JSON.stringify({
+      src: "assinatura", kind: "cancelamento-sem-ciclo-pago-conhecido", tenant: tenantId,
+    }))
+    return { error: "Não conseguimos identificar seu ciclo pago. Fale com a gente para encerrar sem perder dias." }
+  }
+
+  // 1º o gateway. Falhou aqui, nada muda.
+  // ⚠️ `manterCartaoAteOFim`: ele segue cliente até a data — o cartão dele é meio de
+  //    pagamento de um contrato VIVO, não resíduo. É o que torna "retomar" um clique em vez
+  //    de digitar o cartão de novo. Some quando o ciclo fecha (bloco 1.b).
+  const c = await cancelSubscriptionForTenant(tenantId, { manterCartaoAteOFim: true })
+  if ("error" in c) return { error: `Não foi possível cancelar a cobrança agora. Nada foi alterado. (${c.error})` }
+
+  // 2º o carimbo. O `subscription_status` NÃO muda: ele segue cliente pago até a data.
+  const { error: erroCarimbo } = await supabaseAdmin
+    .from("tenants")
+    .update({ subscription_ends_at: ateQuando, subscription_ended_reason: "pedido_do_cliente" })
+    .eq("id", tenantId)
+
+  if (erroCarimbo) {
+    // A cobrança JÁ parou — o cliente não será debitado. O que faltou foi registrar até
+    // quando ele tem acesso; o webhook `SUBSCRIPTION_DELETED` carimba como rede.
+    console.error(JSON.stringify({
+      src: "assinatura", kind: "cancelou-no-gateway-mas-nao-carimbou-CONFERIR",
+      tenant: tenantId, ateQuando, msg: erroCarimbo.message,
+    }))
+    return { error: "Sua cobrança foi cancelada, mas houve um erro ao registrar a data. Fale com a gente." }
+  }
+
+  await logAudit({
+    tenantId,
+    actorId:     session.user.id ?? null,
+    actorEmail:  session.user.email ?? null,
+    action:      "billing.assinatura_cancelada_pelo_cliente",
+    targetType:  "tenant",
+    targetId:    tenantId,
+    after:       { subscription_ends_at: ateQuando, subscription_ended_reason: "pedido_do_cliente" },
+  })
+
+  revalidatePath("/configuracoes/assinatura")
+  return { ok: true, ateQuando }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Retomar assinatura — a porta de volta, e ela é de um clique
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔑 SAIR E VOLTAR TÊM QUE CUSTAR O MESMO (decisão do dono, 11/08). Cancelar era um clique;
+//    voltar atrás, antes disso, exigia digitar o cartão de novo — mesmo o cliente seguindo
+//    cliente, com acesso, até o fim do ciclo. Porta de volta mais cara que a de saída é
+//    desenho errado: quem cancelou por engano às 9h e se arrependeu às 9h05 não deveria
+//    reabrir a carteira. É o que o `manterCartaoAteOFim` do cancelamento veio permitir.
+//
+// ⚠️ NÃO COBRA NADA. Toda a mecânica está em `resumeSubscriptionForTenant`: a recorrência
+//    volta pro dia em que cairia se ele nunca tivesse cancelado. Por isso esta action **não
+//    tem teto anti card-testing** como a de contratar — não há cartão digitado, não há
+//    resposta de aprovação/recusa pra ler, logo não há oráculo. O que protege da repetição
+//    é o claim atômico + a idempotência, no motor.
+export async function retomarAssinatura(): Promise<{ ok?: true; error?: string }> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Sessão expirada. Entre de novo." }
+  // Mesmo portão do cancelamento: quem pode encerrar a cobrança pode restabelecê-la.
+  if (!["owner", "admin"].includes(session.user.role)) {
+    return { error: "Apenas o responsável pela conta pode retomar a assinatura." }
+  }
+  const tenantId = session.user.tenantId
+
+  const r = await resumeSubscriptionForTenant(tenantId, getClientIpFromHeaders(await headers()))
+  if ("error" in r) return { error: r.error }
+
+  await logAudit({
+    tenantId,
+    actorId:     session.user.id ?? null,
+    actorEmail:  session.user.email ?? null,
+    action:      "billing.assinatura_retomada_pelo_cliente",
+    targetType:  "tenant",
+    targetId:    tenantId,
+    after:       { asaas_subscription_id: r.id, subscription_ends_at: null, subscription_ended_reason: null },
+  })
+
+  revalidatePath("/configuracoes/assinatura")
+  return { ok: true }
 }

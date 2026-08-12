@@ -1,6 +1,7 @@
 import "server-only"
 import { createHash, randomBytes } from "crypto"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import { rateLimit } from "@/lib/rate-limit"
 import { verifyPassword } from "@/lib/auth/login-core"
 import { isTenantBlockedForAccessAs, COLUNAS_DE_ACESSO, type AcessoDoTenant } from "@/lib/lifecycle-shared"
@@ -136,9 +137,10 @@ async function issueDeviceToken(input: {
       //    atendente perde a extensão junto com o app. Deixá-lo entrar pelo Companion seria
       //    uma porta lateral pro mesmo produto que o navegador já recusa.
       const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
+      const { pastDueGraceDays } = await getPlatformSettings()
       const okIds = new Map(
         (tens as unknown as LinhaDeAcessoExt[])
-          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papeis.get(t.id)))
+          .filter((t) => t.active === true && !isTenantBlockedForAccessAs(t, papeis.get(t.id), pastDueGraceDays))
           .map((t) => [t.id, t]),
       )
       accessible = accessible.filter((m) => okIds.has(m.tenant_id))
@@ -346,8 +348,9 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
   ])
 
   // Gates fail-closed — a ORDEM importa pra mensagem certa chegar na sidebar.
+  const { pastDueGraceDays } = await getPlatformSettings()
   if (!tenant || tenant.active === false ||
-      isTenantBlockedForAccessAs(tenant as unknown as LinhaDeAcessoExt, tu?.role as string | undefined))
+      isTenantBlockedForAccessAs(tenant as unknown as LinhaDeAcessoExt, tu?.role as string | undefined, pastDueGraceDays))
     throw new ExtError(403, "Conta indisponível.", "tenant_blocked")
   if (tenant.companion_enabled === false)
     throw new ExtError(403, "A extensão está desativada nesta conta.", "companion_disabled")

@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { generateInvoiceForTenant } from "@/lib/billing"
 import { cancelSubscriptionForTenant } from "@/lib/asaas/subscriptions"
+import { fimDoCicloPago } from "@/lib/billing/paid-cycle"
 import { auditarCobranca } from "@/lib/billing/audit"
 
 /**
@@ -40,11 +41,17 @@ const SUB_STATUS = new Set(["active", "past_due", "canceled"])
 export async function updateTenantBilling(
   tenantId: string,
   opts: { billing_day?: number | null; subscription_status?: string; past_due_grace_days?: number | null },
-): Promise<{ error?: string }> {
+  // 🔑 `agendadoPara` não é enfeite: quando o cancelamento é AGENDADO, o status no banco
+  //    **não muda agora** — e sem devolver isso a tela mostraria "Assinatura salva" com o
+  //    seletor de volta em "Inadimplente", o que qualquer operador lê como falha do save.
+  //    A ação tem que contar o que ela fez quando o que ela fez difere do que foi pedido.
+): Promise<{ error?: string; agendadoPara?: string }> {
   const session = await requirePlatformAdmin()
 
   /** Estado ANTES — usado pelo carimbo da carência e pela trilha de auditoria. */
   let antes: { subscription_status?: string | null; past_due_since?: string | null } | null = null
+  /** Cancelamento agendado pro fim do ciclo pago — o que a tela precisa contar ao operador. */
+  let agendadoPara: string | undefined
 
   const updates: Record<string, unknown> = { }
   if ("billing_day" in opts) {
@@ -114,15 +121,49 @@ export async function updateTenantBilling(
     //    exatamente o estado que este bloco existe pra impedir. O operador vê o erro e
     //    tenta de novo — melhor que um sucesso que mente.
     if (opts.subscription_status === "canceled" && (antes?.subscription_status ?? "") !== "canceled") {
-      const c = await cancelSubscriptionForTenant(tenantId)
+      // ── O CICLO PAGO VALE AQUI TAMBÉM (11/08) ──────────────────────────────
+      //
+      // 🔴 A INCONSISTÊNCIA QUE ISTO FECHA. Cliente que cancelava sozinho usava até o fim
+      //    do que pagou; o MESMO cancelamento feito pelo operador carimbava `ends_at = now`
+      //    e cortava na hora — mandando pro paywall alguém com a mensalidade em dia. Duas
+      //    portas, dois desfechos, para um cliente que fez a mesma coisa (na maioria das
+      //    vezes ele ligou pedindo pra cancelar e o operador executou por ele).
+      // 🔑 A regra do pré-pago não muda por causa de QUEM clicou: período pago é do cliente.
+      // ⚠️ Isto NÃO é a porta de emergência. Cortar acesso AGORA (fraude, abuso) é
+      //    `suspend`/`deactivate` no lifecycle — que já cancela a assinatura e fecha o
+      //    produto no mesmo ato. Este seletor é sobre COBRANÇA, não sobre punição.
+      const ate = await fimDoCicloPago(tenantId)
+      // "Não sei" não decide corte. Mesma regra das outras duas portas.
+      if (ate === undefined) {
+        return { error: "Não foi possível ler o ciclo pago deste cliente. Nada foi alterado — tente de novo." }
+      }
+
+      const aindaTemCicloPago = !!ate && new Date(ate).getTime() > Date.now()
+
+      // 🔒 `manterCartaoAteOFim` só quando há ciclo a cumprir: enquanto o cliente tem acesso
+      //    pago, o cartão é meio de pagamento de contrato vivo (e permite retomar num
+      //    clique). Sem ciclo, ele é resíduo e morre agora, como sempre foi.
+      const c = await cancelSubscriptionForTenant(tenantId, { manterCartaoAteOFim: aindaTemCicloPago })
       if ("error" in c) {
         return { error: `Não foi possível cancelar a assinatura no gateway — nada foi alterado. (${c.error})` }
       }
       updates.subscription_ended_reason = "decisao_interna"
-      // 🔑 O carimbo é o que impede um evento atrasado de ressuscitar a assinatura
-      //    (guarda `jaEncerrado` no webhook). Sem ele, o cancelamento é reversível por
-      //    acidente — foi o crítico 2 do QA, pela porta do housekeeping.
-      updates.subscription_ends_at = new Date().toISOString()
+
+      if (aindaTemCicloPago) {
+        // 🔴 O STATUS **NÃO** VIRA `canceled` AGORA — e é isso que respeita o ciclo. Em
+        //    `canceled` o cliente cai no paywall no mesmo segundo (degrau 3), ou seja o
+        //    produto fecharia apesar de pago. Quem vira o estado é a varredura 1.b do
+        //    housekeeping, quando a data passar — exatamente como no cancelamento pedido
+        //    pelo cliente. A cobrança, essa sim, já parou: a assinatura morreu no gateway.
+        delete updates.subscription_status
+        updates.subscription_ends_at = ate
+        agendadoPara = ate
+      } else {
+        // 🔑 O carimbo é o que impede um evento atrasado de ressuscitar a assinatura
+        //    (guarda `jaEncerrado` no webhook). Sem ele, o cancelamento é reversível por
+        //    acidente — foi o crítico 2 do QA, pela porta do housekeeping.
+        updates.subscription_ends_at = new Date().toISOString()
+      }
     }
 
     if (opts.subscription_status === "past_due") {
@@ -130,11 +171,19 @@ export async function updateTenantBilling(
       updates.past_due_since = jaEstava && antes?.past_due_since
         ? antes.past_due_since
         : new Date().toISOString()
-    } else {
+    } else if ("subscription_status" in updates) {
       // `active` ou `canceled`: o atraso deixou de existir como relógio. Deixar o carimbo
       // pra trás é a "invariante 2" da migration — e ele voltaria a morder no próximo atraso.
       updates.past_due_since = null
     }
+    // 🔴 O `else` VIROU `else if` POR CAUSA DE UM PAYWALL INSTANTÂNEO QUE EU IA CRIAR
+    //    (11/08). Quando o cancelamento é AGENDADO, o bloco acima remove
+    //    `updates.subscription_status` — o cliente continua no estado que tinha. Se esse
+    //    estado for `past_due` (caso real: atrasou e ligou pedindo pra cancelar), limpar o
+    //    `past_due_since` aqui seria fatal: `passouDaCarencia` é **fail-closed pela data**
+    //    e, sem carimbo, responde "já passou" ⇒ paywall no mesmo segundo. Ou seja, a
+    //    mudança feita pra PRESERVAR o ciclo pago cortaria o acesso na hora, pela porta do
+    //    lado. O relógio da carência só se apaga junto com a troca de status que o encerra.
   }
   if (Object.keys(updates).length === 0) return {}
 
@@ -156,7 +205,7 @@ export async function updateTenantBilling(
   })
 
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
-  return {}
+  return agendadoPara ? { agendadoPara } : {}
 }
 
 // ── Cobranças (add-ons + avulsas) ───────────────────────────────

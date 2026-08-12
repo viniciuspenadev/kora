@@ -55,6 +55,16 @@ for (const alvo of ALVOS) {
     for (const m of src.matchAll(DESESTRUTURA_AWAIT)) {
       const dentro = m[1]
       if (/\berror\b/.test(dentro)) continue
+      // 🔴 FALSO POSITIVO REAL, corrigido em 12/08. A janela de 400 chars abaixo olha o
+      //    texto DEPOIS do match e às vezes alcança a query SEGUINTE — então um `await`
+      //    inocente era acusado por causa do `supabaseAdmin` do vizinho. Aqui se olha o que
+      //    está sendo aguardado NESTA sentença, que é a pergunta certa.
+      // ⚠️ A lista é de chamadas cujo contrato é **nunca falhar**: elas tratam o erro por
+      //    dentro e degradam pra um valor utilizável, então não existe `error` a capturar.
+      //    Entrar aqui exige esse contrato escrito no docblock da função — não basta "não
+      //    achei que fosse falhar". Hoje: `getPlatformSettings` (platform-settings.ts).
+      const aguardado = src.slice(m.index + m[0].length, m.index + m[0].length + 80)
+      if (/^\s*getPlatformSettings\s*\(/.test(aguardado)) continue
       // `await` de coisa que não é query (Promise.all, import, fetch…) não interessa:
       // só acusa quando a mesma sentença fala com o banco.
       const trecho = src.slice(m.index, m.index + 400)

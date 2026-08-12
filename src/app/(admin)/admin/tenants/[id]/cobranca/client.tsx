@@ -1,9 +1,10 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import {
   CreditCard, Calendar, Users, Boxes, Plus, Trash2, Power, FileText,
-  CheckCircle2, AlertCircle, Loader2, Receipt, Ban, Download,
+  CheckCircle2, AlertCircle, Loader2, Receipt, Ban, Download, CalendarClock,
 } from "lucide-react"
 import { assignPlanToTenant, type Plan } from "@/lib/actions/admin-plans"
 import {
@@ -48,12 +49,20 @@ interface Props {
   graceDays:          number | null
   /** Quando o atraso começou. Carimbado pelo webhook ou por esta tela; `null` = não está atrasado. */
   pastDueSince:       string | null
+  /**
+   * Cancelamento carimbado — o acesso vai até aqui. `null` = não há.
+   *
+   * ⚠️ Data no FUTURO = cancelamento AGENDADO (a cobrança já parou, o produto ainda vale).
+   *    Data no passado = histórico de um encerramento que já aconteceu; não é estado atual.
+   */
+  subscriptionEndsAt: string | null
   activeUsers:        number
   charges:            TenantCharge[]
   invoices:           InvoiceWithItems[]
 }
 
 export function CobrancaClient(p: Props) {
+  const router                = useRouter()
   const [planId, setPlanId]   = useState(p.currentPlan?.id ?? "")
   const [day, setDay]         = useState(p.billingDay != null ? String(p.billingDay) : "")
   const [status, setStatus]   = useState(p.subscriptionStatus)
@@ -63,6 +72,9 @@ export function CobrancaClient(p: Props) {
   const [err, setErr]         = useState<string | null>(null)
   const [ok, setOk]           = useState<string | null>(null)
   const [pending, startT]     = useTransition()
+
+  // Cancelamento agendado = data carimbada AINDA no futuro. Ver a faixa abaixo.
+  const agendado = !!p.subscriptionEndsAt && new Date(p.subscriptionEndsAt).getTime() > Date.now()
 
   const overageUsers = p.currentPlan ? Math.max(0, p.activeUsers - p.currentPlan.user_quota) : 0
   const overageCents = p.currentPlan ? overageUsers * p.currentPlan.extra_user_price_cents : 0
@@ -88,7 +100,20 @@ export function CobrancaClient(p: Props) {
         //    escolheu. Mesmo cuidado do lado do servidor.
         past_due_grace_days: grace.trim() === "" ? null : parseInt(grace, 10),
       })
+      // 🔑 CANCELAMENTO AGENDADO CONTA O QUE FEZ. Aqui o status no banco NÃO virou
+      //    "Cancelada" — ele vira sozinho quando o ciclo pago fechar. Sem esta mensagem (e
+      //    sem devolver o seletor ao valor real), o operador leria "Assinatura salva" com o
+      //    campo de volta no estado anterior e concluiria que o save falhou — e clicaria de
+      //    novo, e de novo.
+      if (r2.agendadoPara) {
+        setStatus(p.subscriptionStatus)
+        setErr(null)
+        setOk(`Cobrança cancelada no gateway. O acesso vai até ${fmtDate(r2.agendadoPara)} — o status vira "Cancelada" sozinho naquele dia.`)
+        router.refresh()
+        return
+      }
       flash(r2, "Assinatura salva.")
+      router.refresh()
     })
   }
 
@@ -129,6 +154,24 @@ export function CobrancaClient(p: Props) {
                 </select>
               </div>
             </div>
+
+            {/* ── CANCELAMENTO AGENDADO ────────────────────────────────────────
+                🔑 O estado mais fácil de ler errado desta tela: o cliente está "Ativa" ou
+                   "Inadimplente" no seletor E já não é cobrado. Sem esta linha, o operador
+                   vê "Ativa", conclui que a cobrança segue de pé, e responde ao cliente o
+                   contrário do que o sistema vai fazer.
+                ⚠️ Só data no FUTURO. Passada é histórico de encerramento consumado — o
+                   status já é "Cancelada" e repetir isso aqui não informa nada. */}
+            {agendado && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                <CalendarClock className="size-3.5 shrink-0 mt-0.5 text-amber-600" />
+                <p className="text-[11px] text-amber-900 leading-relaxed">
+                  <b>Cancelamento agendado.</b> A cobrança já parou no gateway; o acesso vale até{" "}
+                  <b>{fmtDate(p.subscriptionEndsAt)}</b>, quando o status vira &quot;Cancelada&quot; sozinho.
+                  O cliente ainda pode retomar sozinho até lá.
+                </p>
+              </div>
+            )}
 
             {/* ── Carência (degrau 2 → 3) ─────────────────────────────────────
                 🔑 Este campo É a decisão comercial do dono, exposta. O padrão do sistema

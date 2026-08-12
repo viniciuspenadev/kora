@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import { isTenantInPaywall } from "@/lib/lifecycle-shared"
 import { atualizarValorDaAssinatura } from "@/lib/asaas/subscriptions"
 
@@ -189,6 +190,7 @@ export async function generateInvoiceForTenant(
   const emPaywall = isTenantInPaywall(
     tenant.lifecycle_state, tenant.subscription_status,
     tenant.past_due_since, tenant.past_due_grace_days,
+    (await getPlatformSettings()).pastDueGraceDays,
   )
   // 🔑 `dinheiroJaEntrou` desarma a guarda — e SÓ ela. Ver o porquê no docblock da função:
   //    período pago é período servido, e quem sabe disso é o caminho do pagamento, não a

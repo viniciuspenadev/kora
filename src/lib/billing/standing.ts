@@ -3,6 +3,7 @@ import { cache } from "react"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { podeCobrar } from "@/lib/billing/fiscal-profile"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import {
   isTenantBlockedForAccess,
   isTenantBlockedForSpend,
@@ -395,6 +396,7 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
   // Calculado UMA vez: o degrau usa, e o "próximo fechamento" também (ver o fim da função).
   const motivo = motivoDoPaywall(
     row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
+    (await getPlatformSettings()).pastDueGraceDays,
   )
 
   const canAccess = row.active === true && !isTenantBlockedForAccess(row.lifecycle_state)

@@ -144,9 +144,65 @@ export function buildBillingCardFailedEmail(ctx: CobrancaEmailContext) {
 export function buildBillingOverdueEmail(ctx: CobrancaEmailContext) {
   const link  = getAppBaseUrl() + "/configuracoes/assinatura?cartao=1"
   const valor = comValor(ctx.valorCents, (v) => v)
-  const prazo = typeof ctx.diasCarencia === "number" && ctx.diasCarencia > 0
-    ? "Você tem " + ctx.diasCarencia + (ctx.diasCarencia === 1 ? " dia" : " dias")
+  // 🔴 DUAS VERSÕES, PORQUE COM CARÊNCIA ZERO A ÚNICA QUE EXISTIA MENTIA (12/08).
+  //
+  //    A carência deixou de ser fixa e virou configuração (`platform_settings`, ajustável
+  //    por tenant) — e **zero é valor válido**: significa "fecha junto, sem espera". Nesse
+  //    caso este e-mail sai no mesmo instante em que o produto fecha, e o texto de sempre
+  //    afirma, em negrito verde, que *"seu atendimento no WhatsApp continua funcionando"*.
+  //    Não continua: no paywall o envio é recusado no servidor e a equipe perde o login.
+  //    Prometer no e-mail o oposto do que o app faz é como se ganha um ticket de suporte e
+  //    se perde a confiança de quem estava quase pagando.
+  //
+  // 🔑 A régua é `diasCarencia`, que já chega calculado por quem dispara. `> 0` = ainda há
+  //    janela (o texto de sempre); `0`/ausente = já fechou, e aí o assunto do e-mail deixa
+  //    de ser um documento em aberto e passa a ser o acesso pausado e como voltar.
+  // ⚠️ Nas duas versões o que CONTINUA vem antes do que parou (§2 do access-revocation): o
+  //    pânico de quem lê isso é "perdi meu histórico". Só muda a LISTA — no paywall o
+  //    atendimento saiu dela, e o acesso da equipe também.
+  //
+  // 🔴 SÃO TRÊS ESTADOS, NÃO DOIS — e colapsar dois deles foi meu erro na primeira versão,
+  //    pego por um teste que já existia. `undefined` NÃO é zero: zero é *"eu sei, e não há
+  //    janela"*; `undefined` é *"quem disparou não informou"*. Tratar o segundo como o
+  //    primeiro faz o e-mail anunciar **acesso pausado para quem não está pausado** — alarme
+  //    falso no canal de cobrança, que é onde ele custa mais caro. Não saber degrada pro
+  //    texto neutro, como sempre foi.
+  const dias = typeof ctx.diasCarencia === "number" ? ctx.diasCarencia : null
+
+  if (dias === 0) {
+    return {
+      subject: "Acesso pausado — fatura em aberto" + (valor ? " (" + valor + ")" : ""),
+      text: "A fatura" + (valor ? " de " + valor : " da sua assinatura")
+          + (ctx.quando ? " (venceu em " + ctx.quando + ")" : "")
+          + " não foi paga, e o acesso da sua conta está pausado."
+          + "\n\nCONTINUA: seus dados, conversas e histórico estão intactos, e a exportação"
+          + " segue liberada. Como responsável, você continua entrando para regularizar."
+          + "\nPAUSADO: atendimento no WhatsApp, campanhas, inteligência artificial,"
+          + " automações e o acesso da sua equipe."
+          + "\n\nAssim que o pagamento entrar, tudo volta — nada precisa ser reconfigurado."
+          + "\n\nRegularizar: " + link + "\n\n—\nKora",
+      html: casca({
+        headline: "Seu acesso está pausado",
+        accent:   "#b91c1c",
+        corpo:    p("A fatura " + (valor ? "de <strong>" + valor + "</strong>" : "da sua assinatura")
+                  + (ctx.quando ? " venceu em " + escapeHtml(ctx.quando) : "")
+                  + " e não foi paga, então o acesso da sua conta foi pausado.")
+                + p('<strong style="color:#047857;">Continua:</strong> seus dados, conversas e '
+                  + "histórico estão intactos, a exportação segue liberada, e você — como "
+                  + "responsável — continua entrando para regularizar.")
+                + p('<strong style="color:#b91c1c;">Pausado:</strong> atendimento no WhatsApp, '
+                  + "campanhas, inteligência artificial, automações e o acesso da sua equipe.")
+                + p("Assim que o pagamento entrar, tudo volta — nada precisa ser reconfigurado."),
+        cta:      { label: "Regularizar agora", href: link },
+      }),
+    }
+  }
+
+  const prazo = dias !== null && dias > 0
+    ? "Você tem " + dias + (dias === 1 ? " dia" : " dias")
       + " para regularizar antes que o acesso seja interrompido."
+    // `null` = o disparo não informou o prazo. Nada de inventar um número, e nada de
+    // afirmar que o acesso caiu: só o convite a regularizar.
     : "Regularize para voltar ao normal."
   return {
     subject: "Fatura em aberto" + (valor ? " — " + valor : ""),

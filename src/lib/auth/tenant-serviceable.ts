@@ -1,6 +1,7 @@
 import "server-only"
 import { cache } from "react"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import {
   isTenantBlockedForAccess, isTenantBlockedForSpend, isTenantInPaywall,
   SPEND_BLOCKED_LIFECYCLE, normalizeState,
@@ -163,6 +164,7 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
     canSpend: canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
     inPaywall: isTenantInPaywall(
       row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
+      (await getPlatformSettings()).pastDueGraceDays,
     ),
   }
 })

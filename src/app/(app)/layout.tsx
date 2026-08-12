@@ -2,6 +2,7 @@ import { auth } from "@/auth"
 import { redirect } from "next/navigation"
 import { cookies, headers } from "next/headers"
 import { supabaseAdmin } from "@/lib/supabase"
+import { getPlatformSettings } from "@/lib/platform-settings"
 import { motivoDoPaywall } from "@/lib/lifecycle-shared"
 import { Sidebar } from "@/components/app/sidebar"
 import { MobileSidebar } from "@/components/app/mobile-sidebar"
@@ -17,7 +18,7 @@ import { getViewerScope } from "@/lib/visibility"
 import { getSelfPause } from "@/lib/actions/auto-assign"
 import { getBillingStanding } from "@/lib/billing/standing"
 import { linkSuporte } from "@/lib/support"
-import { BillingBanner } from "@/components/billing"
+import { BillingBanner, DEGRAUS_DE_FAIXA } from "@/components/billing"
 
 /**
  * Quando o wizard de boas-vindas entrou no ar.
@@ -103,6 +104,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
   const motivo = motivoDoPaywall(
     tp.lifecycle_state, tp.subscription_status, tp.past_due_since, tp.past_due_grace_days,
+    (await getPlatformSettings()).pastDueGraceDays,
   )
   if (motivo) {
     // 🔑 O texto muda com o motivo; o comportamento não. Uma pessoa que atrasou a fatura
@@ -287,6 +289,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             userRole={session.user.role}
             userId={session.user.id}
             supabaseToken={session.user.supabaseToken}
+            standing={standing}
           />
           {/* Conteúdo = painel CLARO encaixado na moldura escura, com o canto
               arredondado no encontro sidebar × topo (só md+; mobile é full-bleed). */}
@@ -304,7 +307,22 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 explicação em lugar nenhum — só se navegasse até a assinatura por conta.
                 ⚠️ Ele se auto-silencia no degrau `ok` (contrato do componente), então não
                 polui a tela de quem está em dia. */}
-            {standing && (
+            {/* 🔑 A FAIXA FICOU SÓ PARA QUANDO O PRODUTO PAROU (dono, 11/08). Nos degraus em
+                que ele ainda funciona — teste, carência, restrição — quem avisa agora é a
+                **pílula ao lado do sino** (C7), que é o mesmo aviso ocupando o espaço de um
+                botão em vez de uma tira inteira em toda navegação. Ali a faixa era, além de
+                grande, redundante: a tela por baixo já dizia o mesmo por dentro (o fluxo
+                marcado "pausado pela fatura", o botão travado com o motivo, o card da
+                campanha em espera).
+                ⚠️ Onde o produto PAROU (`trial_ended`, `paywall`, `readonly`) ela continua:
+                   ali o aviso não é aviso, é a instrução do que fazer pra destravar — e
+                   isso não cabe num chip que só aparece no hover.
+                ⚠️ A régua é `DEGRAUS_DE_FAIXA`, em `billing/format.ts`: as duas superfícies
+                   leem a MESMA constante, senão um degrau novo apareceria nas duas de uma
+                   vez (ou em nenhuma). Ela mora num módulo NEUTRO de propósito — exportada
+                   da pílula (que é `"use client"`) ela chegava aqui como stub e quebrava em
+                   runtime, sem `tsc` nem `build` reclamarem. */}
+            {standing && DEGRAUS_DE_FAIXA.has(standing.degrau) && (
               <BillingBanner
                 standing={standing}
                 selfServiceBilling={(tenant as { billing_mode?: string | null }).billing_mode === "gateway"}
