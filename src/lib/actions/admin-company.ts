@@ -68,7 +68,14 @@ export async function upsertIssuer(input: Record<string, string | null>): Promis
   await requirePlatformAdmin()
   const { error } = await supabaseAdmin
     .from("billing_issuer")
-    .upsert({ id: true, ...clean(input), updated_at: new Date().toISOString() }, { onConflict: "id" })
+    // 🔴 `id` DEPOIS do spread (12/08). Antes ele vinha primeiro, e um `id` vindo no `input`
+    //    o sobrescreveria — o alvo do upsert deixaria de ser o singleton. Hoje só não quebra
+    //    porque a coluna é `boolean` e o Postgres recusa a string: a defesa é do BANCO, não
+    //    do código, e defesa que depende do tipo da coluna evapora no dia em que alguém
+    //    mudar a coluna. Mesma ordem que o vizinho `upsertTenantBillingProfile` já usa pro
+    //    `tenant_id` — a regra da skill `database-rules` §2 é essa: o campo que DEFINE o
+    //    alvo vem por último, sempre.
+    .upsert({ ...clean(input), id: true, updated_at: new Date().toISOString() }, { onConflict: "id" })
   if (error) return { error: error.message }
   revalidatePath("/admin/financeiro/emissor")
   return {}

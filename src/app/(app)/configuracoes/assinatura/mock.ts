@@ -72,7 +72,7 @@ export interface AssinaturaMock {
   /** Bandeira + 4 últimos do cartão em uso. `null` = não sabemos (assinatura antiga). */
   cartao: { bandeira: Bandeira | null; ultimos4: string } | null
   /** Cancelamento pedido e ainda não consumado. Ver `subscription-view`. */
-  cancelamento: { ateQuando: string } | null
+  cancelamento: { ateQuando: string; podeRetomar: boolean } | null
   resumo:       AssinaturaResumo
   conta:        ContaDoMes
   medidas:      LinhaMedida[]

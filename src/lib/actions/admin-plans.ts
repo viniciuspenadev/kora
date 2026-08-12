@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
 import { applyPlan } from "@/lib/plans"
 import { LIMIT_META, type LimitResource } from "@/lib/limits-shared"
+import { logAudit } from "@/lib/audit"
 
 const LIMIT_KEYS = Object.keys(LIMIT_META) as LimitResource[]
 
@@ -33,6 +34,43 @@ async function requirePlatformAdmin() {
   const session = await auth()
   if (!session?.user?.isPlatformAdmin) throw new Error("Acesso restrito a platform admin")
   return session
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 🔴 O CATÁLOGO NÃO TINHA TRILHA (achado do mapeamento, 12/08)
+// ═══════════════════════════════════════════════════════════════
+// Este arquivo governa a ação de MAIOR alcance financeiro do produto e era o único módulo de
+// cobrança sem uma linha de auditoria. `generateInvoiceForTenant` lê `plans` **ao vivo**
+// (billing.ts) — então mudar `price_cents` aqui muda a próxima fatura de **todos os tenants
+// daquele plano**, de uma vez. Um operador alterava o preço de N clientes e não sobrava
+// registro de quem, quando, nem de qual valor para qual.
+//
+// 🔑 Contraria frontalmente a diretriz de 08/08 ("auditar TUDO é papel do sistema"), e a
+//    justificativa "o operador confere no painel" já foi recusada lá: trilha ≠ conferência.
+//
+// ⚠️ `tenantId: null` de propósito nas ações de catálogo: o alvo é o PLANO, que é da
+//    plataforma. Carimbar um tenant qualquer faria a trilha dele mentir sobre uma mudança
+//    que não foi dele — mesma regra de `platform.settings_alterado`.
+// ⚠️ Auditar é best-effort e vem DEPOIS da escrita: `logAudit` não lança (audit.ts), e
+//    segurar a operação por causa do registro seria trocar um problema por outro maior.
+async function auditarCatalogo(
+  session: Awaited<ReturnType<typeof requirePlatformAdmin>>,
+  acao: string,
+  alvoId: string | null,
+  antes: unknown,
+  depois: unknown,
+  tenantId: string | null = null,
+): Promise<void> {
+  await logAudit({
+    tenantId,
+    actorId:    session.user.id ?? null,
+    actorEmail: session.user.email ?? null,
+    action:     acao,
+    targetType: tenantId ? "tenant" : "plan",
+    targetId:   alvoId,
+    before:     (antes as Record<string, unknown> | null) ?? null,
+    after:      (depois as Record<string, unknown> | null) ?? null,
+  })
 }
 
 export interface Plan {
@@ -143,7 +181,7 @@ export async function listPlans(): Promise<Plan[]> {
 }
 
 export async function createPlan(input: PlanInput): Promise<{ error?: string; id?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
   const err = validate(input)
   if (err) return { error: err }
 
@@ -154,6 +192,12 @@ export async function createPlan(input: PlanInput): Promise<{ error?: string; id
     .single()
 
   if (error) return { error: error.message }
+
+  await auditarCatalogo(session, "platform.plano_criado", data.id, null, {
+    name: input.name, price_cents: input.price_cents, user_quota: input.user_quota,
+    extra_user_price_cents: input.extra_user_price_cents, active: input.active,
+  })
+
   revalidatePath("/admin/planos")
   return { id: data.id }
 }
@@ -175,7 +219,7 @@ export async function createPlan(input: PlanInput): Promise<{ error?: string; id
  *    desempate por preço e id (ver `getSignupTrialPlan`), então não vira ordem instável.
  */
 export async function duplicatePlan(id: string): Promise<{ error?: string; id?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
 
   const { data: origem, error: readErr } = await supabaseAdmin
     .from("plans")
@@ -203,14 +247,34 @@ export async function duplicatePlan(id: string): Promise<{ error?: string; id?: 
     .single()
 
   if (error) return { error: error.message }
+
+  // ⚠️ A cópia nasce `active:false`, então ela ainda não cobra ninguém — mas o registro
+  //    existe pra a linha do tempo do catálogo não ter buracos: plano que aparece do nada
+  //    é o tipo de coisa que ninguém consegue explicar seis meses depois.
+  await auditarCatalogo(session, "platform.plano_duplicado", data.id, { origem: id }, {
+    name: `${String(o.name ?? "Plano")} (cópia)`.slice(0, 120), price_cents: o.price_cents, active: false,
+  })
+
   revalidatePath("/admin/planos")
   return { id: data.id }
 }
 
 export async function updatePlan(id: string, input: PlanInput): Promise<{ error?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
   const err = validate(input)
   if (err) return { error: err }
+
+  // 🔑 O ESTADO ANTERIOR É O QUE DÁ SENTIDO À TRILHA. "Mudou para R$ 199,90" não responde a
+  //    pergunta que se faz depois — "mudou de QUANTO para quanto?" —, e é justamente o
+  //    delta que importa quando N clientes foram reprecificados de uma vez.
+  // ⚠️ Falha de leitura NÃO aborta: diferente de `updateTenantBilling`, aqui o "antes" é
+  //    testemunha, não pré-condição de decisão — nenhuma regra depende dele. Registrar sem o
+  //    antes é pior que registrar nada? Não: continua dizendo quem, quando e para quanto.
+  const { data: antesRow } = await supabaseAdmin
+    .from("plans")
+    .select("name, price_cents, user_quota, extra_user_price_cents, active, trial_days")
+    .eq("id", id)
+    .maybeSingle()
 
   const { error } = await supabaseAdmin
     .from("plans")
@@ -218,6 +282,14 @@ export async function updatePlan(id: string, input: PlanInput): Promise<{ error?
     .eq("id", id)
 
   if (error) return { error: error.message }
+
+  // ⚠️ `price_cents` no `after` é o que a próxima fatura de TODO tenant deste plano vai usar.
+  await auditarCatalogo(session, "platform.plano_alterado", id, antesRow ?? null, {
+    name: input.name, price_cents: input.price_cents, user_quota: input.user_quota,
+    extra_user_price_cents: input.extra_user_price_cents, active: input.active,
+    trial_days: input.trial_days,
+  })
+
   revalidatePath("/admin/planos")
   return {}
 }
@@ -227,7 +299,7 @@ export async function updatePlan(id: string, input: PlanInput): Promise<{ error?
  * nesse caso, sugere arquivar (active=false).
  */
 export async function deletePlan(id: string): Promise<{ error?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
 
   const { count } = await supabaseAdmin
     .from("tenants")
@@ -238,8 +310,16 @@ export async function deletePlan(id: string): Promise<{ error?: string }> {
     return { error: `${count} tenant(s) usam este plano. Reatribua-os ou arquive o plano em vez de excluir.` }
   }
 
+  // 🔑 Lê ANTES de apagar — depois do delete não há o que registrar, e "plano X foi
+  //    excluído" sem dizer o que ele era não responde nada. É a última chance.
+  const { data: antesRow } = await supabaseAdmin
+    .from("plans").select("name, price_cents, user_quota, active").eq("id", id).maybeSingle()
+
   const { error } = await supabaseAdmin.from("plans").delete().eq("id", id)
   if (error) return { error: error.message }
+
+  await auditarCatalogo(session, "platform.plano_excluido", id, antesRow ?? null, null)
+
   revalidatePath("/admin/planos")
   return {}
 }
@@ -305,7 +385,13 @@ export async function reorderPlans(ids: string[]): Promise<{ error?: string }> {
  * fino fica na aba Módulos.
  */
 export async function assignPlanToTenant(tenantId: string, planId: string | null): Promise<{ error?: string }> {
-  await requirePlatformAdmin()
+  const session = await requirePlatformAdmin()
+
+  // 🔑 O plano ANTERIOR deste tenant, lido antes de qualquer escrita — os dois ramos abaixo
+  //    o alteram, e sem ele a trilha não sabe dizer de onde o cliente veio.
+  const { data: planoAntes } = await supabaseAdmin
+    .from("tenants").select("plan_id").eq("id", tenantId).maybeSingle()
+  const planoAnterior = (planoAntes as { plan_id?: string | null } | null)?.plan_id ?? null
 
   if (!planId) {
     // 🔴 "REMOVER PLANO" ERA UM UPGRADE GRÁTIS (auditoria 05/08/2026). O update mexia SÓ em
@@ -344,6 +430,20 @@ export async function assignPlanToTenant(tenantId: string, planId: string | null
     const r = await applyPlan(tenantId, planId)
     if (!r.ok) return { error: r.error }
   }
+
+  // ⚠️ Aqui o alvo É um tenant (diferente das ações de catálogo), então a trilha vai pra ELE:
+  //    trocar o plano de um cliente muda o que ele paga e o que ele recebe, e é na linha do
+  //    tempo dele que essa pergunta é feita depois.
+  // 🔑 `planId: null` é o caso mais consequente — a auditoria de 05/08 mostrou que "remover
+  //    plano" já foi um upgrade grátis com isenção permanente. Registrar isso não é opcional.
+  await auditarCatalogo(
+    session,
+    planId ? "platform.plano_atribuido" : "platform.plano_removido",
+    tenantId,
+    { plan_id: planoAnterior },
+    { plan_id: planId },
+    tenantId,
+  )
 
   revalidatePath(`/admin/tenants/${tenantId}`)
   revalidatePath(`/admin/tenants/${tenantId}/modulos`)

@@ -430,6 +430,19 @@ export async function getCobrancaEmAberto(): Promise<
   if (!session?.user?.tenantId) return null
   if (!["owner", "admin"].includes(session.user.role)) return null
 
+  // 🔒 TETO — era a ÚNICA porta de cobrança do cliente sem balde (achado do mapeamento,
+  //    12/08). Cada invocação dispara **2× `GET /payments`** no Asaas (`acharCobrancaEmAberto`
+  //    lista as cobranças do customer e depois confere cada uma contra a nossa assinatura),
+  //    e qualquer owner/admin podia chamar em laço.
+  // ⚠️ Não é oráculo de cartão — não há PAN aqui. É consumo de cota do gateway, e o risco é
+  //    o mesmo do resto: conta merchant limitada derruba a cobrança de TODOS os clientes.
+  // ⚠️ Balde generoso (60/h): esta função alimenta a tela e roda a cada visita à assinatura
+  //    de quem está com fatura em aberto. Apertar aqui quebraria o uso normal de quem está
+  //    justamente tentando pagar — que é o oposto do que a gente quer.
+  if (!rateLimit(`cobranca:tenant:${session.user.tenantId}`, 60, 60 * 60_000).ok) {
+    return null
+  }
+
   const c = await acharCobrancaEmAberto(session.user.tenantId)
   // ⚠️ `undefined` (gateway fora) e `null` (nada em aberto) colapsam em `null` aqui de
   //    propósito: a tela não deve inventar um valor a pagar quando não sabe. Ela cai no
@@ -581,6 +594,20 @@ export async function cancelarAssinatura(): Promise<{ ok?: true; ateQuando?: str
     return { error: "Não conseguimos identificar seu ciclo pago. Fale com a gente para encerrar sem perder dias." }
   }
 
+  // 🔒 TETO — o PAR cancelar↔retomar é um laço estável (achado do red team, 12/08).
+  //    `cancelar` exige `subscription_ends_at IS NULL` e `retomar` o zera de volta, então
+  //    alternar os dois em série roda indefinidamente. Cada volta = `DELETE /subscriptions`
+  //    + `GET /customers` + `POST /subscriptions` no Asaas, mais os webhooks que voltam
+  //    virando linha em `asaas_webhook_events` e 2 linhas de auditoria.
+  // ⚠️ Rajada de criação/exclusão de assinatura é padrão clássico de fraud-monitoring de
+  //    adquirente — o risco é a conta merchant ser limitada, e aí a cobrança de TODOS os
+  //    clientes para. O claim atômico serializa concorrência, não CADÊNCIA; é outra coisa.
+  // ⚠️ Mesmo balde da retomada, de propósito: é o PAR que precisa ser freado, não cada
+  //    metade dele. Baldes separados deixariam o laço rodar no dobro da cadência.
+  if (!rateLimit(`retomar:tenant:${tenantId}`, 5, 60 * 60_000).ok) {
+    return { error: "Muitas alterações de assinatura nesta conta. Aguarde alguns minutos e tente de novo." }
+  }
+
   // 1º o gateway. Falhou aqui, nada muda.
   // ⚠️ `manterCartaoAteOFim`: ele segue cliente até a data — o cartão dele é meio de
   //    pagamento de um contrato VIVO, não resíduo. É o que torna "retomar" um clique em vez
@@ -596,7 +623,13 @@ export async function cancelarAssinatura(): Promise<{ ok?: true; ateQuando?: str
 
   if (erroCarimbo) {
     // A cobrança JÁ parou — o cliente não será debitado. O que faltou foi registrar até
-    // quando ele tem acesso; o webhook `SUBSCRIPTION_DELETED` carimba como rede.
+    // quando ele tem acesso.
+    // ⚠️ A REDE É PARCIAL, e dizer isso importa (texto corrigido em 12/08 — o comentário
+    //    antigo prometia que "o webhook carimba como rede", e o revisor seguinte acreditaria).
+    //    O `SUBSCRIPTION_DELETED` carimba a DATA, mas não o MOTIVO — ele não tem como saber
+    //    se o cancelamento foi do cliente ou nosso. Sem motivo, a allow-list da retomada
+    //    recusa: este cliente perde o "Retomar" de um clique e cai no suporte. Por isso a
+    //    mensagem devolvida manda falar com a gente, e não "tente de novo".
     console.error(JSON.stringify({
       src: "assinatura", kind: "cancelou-no-gateway-mas-nao-carimbou-CONFERIR",
       tenant: tenantId, ateQuando, msg: erroCarimbo.message,
@@ -641,6 +674,21 @@ export async function retomarAssinatura(): Promise<{ ok?: true; error?: string }
     return { error: "Apenas o responsável pela conta pode retomar a assinatura." }
   }
   const tenantId = session.user.tenantId
+
+  // 🔒 TETO, mesmo sem cartão digitado (auto-auditoria 12/08). O comentário acima explica
+  //    por que aqui não há oráculo de card-testing — e isso continua verdade. Mas cada
+  //    tentativa **cria uma assinatura no gateway**, e o caminho de erro solta a reserva do
+  //    claim de propósito (senão o cliente ficaria travado). Ou seja: sem teto, um laço de
+  //    chamadas vira rajada de `POST /subscriptions` na nossa conta merchant.
+  // ⚠️ O risco real não é o custo — é o Asaas limitar ou bloquear a conta por abuso, e aí a
+  //    cobrança de **todos** os clientes para. É o mesmo raciocínio do anti card-testing,
+  //    por uma porta diferente.
+  // ⚠️ Balde próprio (`retomar:`), não o `card:`: compartilhar faria uma retomada consumir
+  //    a cota de quem está tentando pagar — punindo o caminho que a gente mais quer que
+  //    funcione. 5/hora é folga enorme pra um clique que só pode dar certo uma vez.
+  if (!rateLimit(`retomar:tenant:${tenantId}`, 5, 60 * 60_000).ok) {
+    return { error: "Muitas tentativas de retomada nesta conta. Aguarde alguns minutos e tente de novo." }
+  }
 
   const r = await resumeSubscriptionForTenant(tenantId, getClientIpFromHeaders(await headers()))
   if ("error" in r) return { error: r.error }

@@ -482,9 +482,25 @@ async function encerrar(
     //     evento carimbava a data; a guarda tirou isso sem repor.
     console.warn(JSON.stringify({ src: "asaas-handler", kind: "encerramento-sem-vinculo-local",
       tenant: tenant.id, evento: idDoEvento }))
+    // ⚠️ ESTA REDE CARIMBA A DATA, MAS NÃO O MOTIVO — e não tem como (12/08, red team).
+    //    O evento diz que a assinatura sumiu do gateway; ele **não** diz por quê. Chegar
+    //    aqui pode ser cancelamento do cliente, suspensão do operador, encerramento por
+    //    inadimplência ou faxina do reconcile — quatro histórias diferentes, e inventar uma
+    //    delas seria pior que deixar em branco: `subscription_ended_reason` é o que separa
+    //    "ele saiu" de "nós encerramos", e é lido pelo god mode e pela trava de retomada.
+    // 🔴 CONSEQUÊNCIA CONHECIDA, e ela é aceita: com o motivo `NULL`, a allow-list de
+    //    `resumeSubscriptionForTenant` RECUSA a retomada. O cliente que cancelou e caiu
+    //    nesta rede (só acontece se a NOSSA gravação falhar) perde o "Retomar" de um clique
+    //    e precisa falar com a gente. Falha pro lado seguro — nada abre sozinho —, mas é um
+    //    degrau a menos de serviço, e por isso grita aqui em vez de passar mudo.
     const fim = await calcularFimDoCiclo(tenant.id, ev)
     const { error: cErr } = await supabaseAdmin.from("tenants")
       .update({ subscription_ends_at: fim }).eq("id", tenant.id)
+    if (!cErr) {
+      console.warn(JSON.stringify({ src: "asaas-handler", kind: "encerramento-sem-motivo-conhecido",
+        tenant: tenant.id, ate: fim,
+        nota: "retomada pelo cliente fica bloqueada até alguém definir o motivo" }))
+    }
     await fechar(ev, cErr ? `falha ao carimbar fim de ciclo: ${cErr.message}` : undefined, !cErr)
     return
   }

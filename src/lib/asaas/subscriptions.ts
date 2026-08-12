@@ -142,7 +142,7 @@ export async function createSubscriptionForTenant(
   const [{ data: row, error: tErr }, { data: planoRow }] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("id, name, billing_day, trial_ends_at, asaas_subscription_id, billing_mode")
+      .select("id, name, billing_day, trial_ends_at, asaas_subscription_id, billing_mode, subscription_ends_at, subscription_ended_reason")
       .eq("id", tenantId)
       .maybeSingle(),
     // ⚠️ Terceira revalidação do plano (tela → action → aqui). Não é paranoia repetida: este
@@ -162,6 +162,7 @@ export async function createSubscriptionForTenant(
   const t = row as unknown as {
     name: string; billing_day: number | null; trial_ends_at: string | null
     asaas_subscription_id: string | null; billing_mode: string | null
+    subscription_ends_at: string | null; subscription_ended_reason: string | null
   }
   const plano = planoRow as { id: string; name: string; price_cents: number } | null
   if (!plano) return { error: "Plano indisponível. Escolha um plano antes de ativar." }
@@ -173,6 +174,34 @@ export async function createSubscriptionForTenant(
   //    action responder `{ok:true}` e a tela anunciar COMPRA FEITA sem assinatura nenhuma.
   const jaExiste = assinaturaRealId(t.asaas_subscription_id)
   if (jaExiste) return { id: jaExiste }
+
+  // 🔴 CANCELAMENTO PENDENTE FECHA **ESTA** PORTA TAMBÉM (12/08, achado do red team).
+  //
+  //    A trava de retomada foi posta em `resumeSubscriptionForTenant` e a tela passou a
+  //    esconder o botão — mas contratar é a porta VIZINHA, e ela não olhava nada disso.
+  //    O cancelamento agendado do god mode deixa o tenant FORA do paywall (o status não
+  //    muda), então ele navegava até Planos, escolhia um, pagava, e o `.update()` lá embaixo
+  //    limpava `subscription_ends_at` — **desfazendo a decisão da plataforma, com dinheiro
+  //    saindo do cartão dele**. Fechar uma porta e deixar a irmã aberta é pior que não ter
+  //    fechado: dá a sensação de resolvido.
+  //
+  // 🔑 A régua é a MESMA da retomada (allow-list por motivo), e por isso mora ao lado dela.
+  //    Só que aqui até o cancelamento do PRÓPRIO cliente barra — por outro motivo: ele ainda
+  //    tem ciclo pago em curso, e contratar agora **cobraria hoje** um período que ele já
+  //    comprou. O caminho certo pra ele é "Retomar", que não cobra nada.
+  // ⚠️ Só carimbo NO FUTURO. `subscription_ends_at` é histórico e nunca é limpo — usar a
+  //    coluna sem olhar a data trancaria para sempre quem já foi encerrado e quer voltar,
+  //    que é exatamente o cliente que a gente mais quer de volta.
+  const fimPendente = t.subscription_ends_at ? new Date(t.subscription_ends_at) : null
+  if (fimPendente && !Number.isNaN(fimPendente.getTime()) && fimPendente.getTime() > Date.now()) {
+    console.warn(JSON.stringify({ src: "asaas", kind: "contratacao-recusada-cancelamento-pendente",
+      tenant: tenantId, motivo: t.subscription_ended_reason, ate: t.subscription_ends_at }))
+    return {
+      error: t.subscription_ended_reason === "pedido_do_cliente"
+        ? 'Sua assinatura está cancelada mas ainda vale até o fim do ciclo pago. Use "Retomar assinatura" — assim você não paga de novo pelo mesmo período.'
+        : "Esta conta tem um cancelamento em andamento. Fale com a gente para reativar.",
+    }
+  }
 
   // 🔴 CLAIM ATÔMICO (05/08). O `if` acima é *check-then-act* e a janela até a criação no
   //    gateway tem DUAS chamadas HTTP (tokenizar + criar). Duas requisições concorrentes —
@@ -342,7 +371,20 @@ export async function createSubscriptionForTenant(
     //    "contratou". Gravar antes (no clique do catálogo) foi o bug de 05/08: rotulava
     //    como cliente do PLANO III quem estava em Trial e só tinha olhado o preço.
     //    Aqui a afirmação é verdadeira: existe assinatura no gateway, com valor e cartão.
-    const { error: upErr } = await supabaseAdmin
+    // 🔴 CAS — C-04 do pentest, reaberto pelo red team em 12/08. O `.update()` abaixo
+    //    sobrescrevia CEGAMENTE o estado lido no topo da função: um cancelamento que
+    //    aterrissasse entre o claim e esta linha (operador no god mode, webhook
+    //    `SUBSCRIPTION_DELETED`, ou o próprio `cancelarAssinatura`) era **apagado** pela
+    //    assinatura que nasce. Estado terminal: `canceled` com assinatura VIVA no gateway —
+    //    cobrando um cliente com o produto fechado, e sem nenhuma varredura que alcance isso.
+    //
+    // 🔑 COMPARA COM O QUE FOI LIDO, e não com `null` fixo. Quem já foi encerrado no passado
+    //    tem `subscription_ends_at` preenchido **de propósito** (é histórico e nunca é
+    //    limpo); um `.is(null)` cru recusaria a recontratação de todo cliente que um dia
+    //    saiu — justamente quem a gente mais quer de volta. A guarda de cancelamento
+    //    PENDENTE lá em cima já barrou as datas futuras; aqui só se checa que nada MUDOU.
+    const fimLidoNoInicio = t.subscription_ends_at
+    let escrita = supabaseAdmin
       .from("tenants")
       .update({
         asaas_subscription_id: sub.id,
@@ -362,17 +404,39 @@ export async function createSubscriptionForTenant(
         // 🔑 Recontratação: sem limpar, a varredura 1.b do housekeeping marcaria `canceled`
         //    na data antiga — derrubando quem acabou de pagar de novo.
         subscription_ends_at: null,
+        // 🔑 O MOTIVO CAI JUNTO COM A DATA (12/08). Limpar só a data deixava
+        //    `subscription_ended_reason` órfão sobre uma assinatura VIVA — o god mode leria
+        //    "cancelou a pedido" de um cliente pagante. A retomada já limpava os dois; a
+        //    criação limpava um só, e é dessa assimetria que nasce a mentira.
+        subscription_ended_reason: null,
       })
       .eq("id", tenantId)
 
+    escrita = fimLidoNoInicio
+      ? escrita.eq("subscription_ends_at", fimLidoNoInicio)
+      : escrita.is("subscription_ends_at", null)
+
+    // ⚠️ `.select()` é OBRIGATÓRIO com CAS: no PostgREST um UPDATE que casa ZERO linhas
+    //    **não devolve erro**. Sem ele, perder a corrida seria indistinguível de vencer — e
+    //    a função anunciaria sucesso sobre uma gravação que não aconteceu. É o mesmo defeito
+    //    que a auditoria de 11/08 apelidou de "o perdedor loga que ganhou".
+    const { data: aplicadas, error: upErr } = await escrita.select("id")
+
     // ⚠️ Criada lá e não gravada aqui = assinatura cobrando sem a Kora saber. Devolve o id
     //    na mensagem pra recuperação manual ser possível — sem ele, ninguém acha.
-    if (upErr) {
+    if (upErr || !aplicadas || aplicadas.length === 0) {
+      // 🔴 Zero linhas = o estado MUDOU no meio do voo (cancelamento aterrissou). A
+      //    assinatura existe no gateway e o vínculo não foi gravado: é o mesmo desfecho de
+      //    uma falha de escrita, e recebe o mesmo tratamento — trava a vaga e grita com o id.
+      if (!upErr) {
+        console.error(JSON.stringify({ src: "asaas", kind: "VINCULO-PERDEU-A-CORRIDA-CONFERIR",
+          tenant: tenantId, subscription: sub.id, fimLidoNoInicio }))
+      }
       // ⚠️ NÃO solta a reserva aqui, de propósito: a assinatura EXISTE no gateway. Liberar
       //    a vaga deixaria o cliente tentar de novo e criar uma SEGUNDA cobrança mensal —
       //    o dano exato que o claim veio impedir. Fica travado até alguém vincular à mão,
       //    que é o mal menor e tem o id na mensagem.
-      console.error("[asaas] assinatura criada mas NÃO vinculada:", tenantId, sub.id, upErr.message)
+      console.error("[asaas] assinatura criada mas NÃO vinculada:", tenantId, sub.id, upErr?.message ?? "corrida perdida")
       return { error: `Assinatura criada no gateway (${sub.id}) mas não vinculada. Contate o suporte.` }
     }
 
@@ -1086,7 +1150,7 @@ export async function resumeSubscriptionForTenant(
 ): Promise<{ id: string } | { error: string }> {
   const { data: row, error: tErr } = await supabaseAdmin
     .from("tenants")
-    .select("asaas_subscription_id, subscription_ends_at, asaas_card_token, billing_mode, plan_id")
+    .select("asaas_subscription_id, subscription_ends_at, subscription_ended_reason, asaas_card_token, billing_mode, plan_id")
     .eq("id", tenantId)
     .maybeSingle()
 
@@ -1095,6 +1159,7 @@ export async function resumeSubscriptionForTenant(
 
   const t = row as unknown as {
     asaas_subscription_id: string | null; subscription_ends_at: string | null
+    subscription_ended_reason: string | null
     asaas_card_token: string | null; billing_mode: string | null; plan_id: string | null
   }
 
@@ -1113,6 +1178,30 @@ export async function resumeSubscriptionForTenant(
   const fim = t.subscription_ends_at ? new Date(t.subscription_ends_at) : null
   if (!fim || Number.isNaN(fim.getTime()) || fim.getTime() <= Date.now()) {
     return { error: "Não há cancelamento em andamento para retomar." }
+  }
+
+  // 🔴 SÓ SE DESFAZ O QUE O PRÓPRIO CLIENTE FEZ (furo fechado em 12/08 — e eu o abri em
+  //    11/08, na mesma sessão em que escrevi esta função).
+  //
+  //    O cancelamento AGENDADO do god mode (`decisao_interna`) deixa exatamente o estado que
+  //    esta função aceitava: sem assinatura viva, com `subscription_ends_at` no futuro e com
+  //    o cartão preservado. Resultado: o owner do tenant clicava em "Retomar" e **desfazia a
+  //    decisão de um platform admin** — um papel de dentro do cliente revertendo um ato da
+  //    plataforma. Inversão de privilégio, entrando pela porta que veio pra ser gentil.
+  //
+  // 🔑 ALLOW-LIST, não deny-list, e a diferença importa: com `!== "decisao_interna"` um
+  //    motivo NOVO nasceria reversível pelo cliente sem ninguém decidir isso. Assim, motivo
+  //    novo nasce **fechado** e só abre se alguém escrever aqui. É a mesma lição do PUT de
+  //    valor (11/08), onde a deny-list transformava um desconto de um mês na mensalidade
+  //    permanente.
+  // ⚠️ `falta_de_pagamento` também fica de fora: quem foi encerrado por não pagar não
+  //    "retoma" — ele regulariza e contrata de novo, pelo caminho que cobra.
+  if (t.subscription_ended_reason !== "pedido_do_cliente") {
+    console.warn(JSON.stringify({
+      src: "asaas", kind: "retomada-recusada-motivo-nao-e-do-cliente",
+      tenant: tenantId, motivo: t.subscription_ended_reason,
+    }))
+    return { error: "Este cancelamento precisa ser tratado com a nossa equipe. Fale com a gente para reativar." }
   }
 
   // ⚠️ Sem cartão guardado não dá pra recriar em silêncio: o gateway pediria o cartão e a

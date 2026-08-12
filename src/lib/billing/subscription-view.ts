@@ -99,7 +99,17 @@ export interface AssinaturaView {
    *    estado, o cartão já foi apagado, e oferecer "retomar" ali prometeria um clique que
    *    o motor recusa.
    */
-  cancelamento: { ateQuando: string } | null
+  cancelamento: {
+    ateQuando: string
+    /**
+     * O cliente pode desfazer sozinho? `false` = o cancelamento foi decisão NOSSA.
+     *
+     * 🔴 Sem este campo a tela oferecia "Retomar assinatura" para um cancelamento feito
+     *    pelo god mode — e o motor (com razão) recusa. Botão que existe pra dar erro é pior
+     *    que botão ausente: ele promete uma saída e devolve uma parede.
+     */
+    podeRetomar: boolean
+  } | null
   /** Módulos que a conta REALMENTE tem ligados, pelo nome do catálogo. */
   incluso:   string[]
   resumo:    AssinaturaResumoData
@@ -128,7 +138,7 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     getBillingStanding(tenantId),
     listAllLimits(tenantId),
     supabaseAdmin.from("tenants")
-      .select("billing_day, plan_id, asaas_subscription_id, subscription_ends_at, card_brand, card_last4, plans:plan_id ( name, price_cents, user_quota, extra_user_price_cents )")
+      .select("billing_day, plan_id, asaas_subscription_id, subscription_ends_at, subscription_ended_reason, card_brand, card_last4, plans:plan_id ( name, price_cents, user_quota, extra_user_price_cents )")
       .eq("id", tenantId).maybeSingle(),
     supabaseAdmin.from("tenant_billing_profile")
       .select("billing_email").eq("tenant_id", tenantId).maybeSingle(),
@@ -167,6 +177,7 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     billing_day: number | null
     asaas_subscription_id?: string | null
     subscription_ends_at?: string | null
+    subscription_ended_reason?: string | null
     card_brand?: string | null
     card_last4?: string | null
     plans: { name: string; price_cents: number; user_quota: number | null; extra_user_price_cents: number | null } | null
@@ -176,7 +187,13 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
   // Cancelamento pedido e ainda não consumado — ver o campo na interface acima.
   const fimMarcado = t?.subscription_ends_at ? new Date(t.subscription_ends_at) : null
   const cancelamento = fimMarcado && !Number.isNaN(fimMarcado.getTime()) && fimMarcado.getTime() > Date.now()
-    ? { ateQuando: t!.subscription_ends_at as string }
+    ? {
+        ateQuando: t!.subscription_ends_at as string,
+        // ⚠️ Allow-list, espelhando o motor (`resumeSubscriptionForTenant`). Só o que o
+        //    próprio cliente pediu é desfeito por ele. Motivo novo nasce **fechado** nas
+        //    duas pontas — se divergirem, uma das duas mente na cara do cliente.
+        podeRetomar: t!.subscription_ended_reason === "pedido_do_cliente",
+      }
     : null
 
   // ⚠️ O rótulo do cartão só existe se houver ASSINATURA de verdade. Rótulo órfão (que a

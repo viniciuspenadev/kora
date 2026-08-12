@@ -229,20 +229,41 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
                     data (é por isso que o `manterCartaoAteOFim` existe), então voltar atrás
                     é um clique — não digitar cartão de novo. E não cobra nada: a
                     recorrência volta pro dia em que cairia se ele nunca tivesse cancelado. */}
-                <button
-                  type="button"
-                  onClick={retomar}
-                  disabled={retomando}
-                  className="w-full mt-3 h-9 inline-flex items-center justify-center gap-1.5 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-50"
-                >
-                  {retomando && <Loader2 className="size-3.5 animate-spin" />}
-                  Retomar assinatura
-                </button>
-                <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
-                  {cartao
-                    ? `Voltamos a cobrar no cartão ···· ${cartao.ultimos4}, só na próxima data do seu ciclo. Nada é cobrado agora.`
-                    : "A cobrança volta só na próxima data do seu ciclo. Nada é cobrado agora."}
-                </p>
+                {/* 🔴 O BOTÃO SÓ APARECE PRA QUEM PODE USÁ-LO (furo fechado em 12/08). Quando o
+                    cancelamento foi decisão NOSSA (god mode), o motor recusa a retomada — e
+                    até aqui a tela oferecia o botão mesmo assim. Botão que existe pra dar
+                    erro é pior que botão ausente: promete uma saída e devolve uma parede.
+                    ⚠️ A régua é a MESMA do motor (`subscription_ended_reason === 'pedido_do_cliente'`,
+                       resolvida em `subscription-view`). Se as duas divergirem, uma delas
+                       mente na cara do cliente. */}
+                {cancelamento.podeRetomar ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={retomar}
+                      disabled={retomando}
+                      className="w-full mt-3 h-9 inline-flex items-center justify-center gap-1.5 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {retomando && <Loader2 className="size-3.5 animate-spin" />}
+                      Retomar assinatura
+                    </button>
+                    <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                      {cartao
+                        ? `Voltamos a cobrar no cartão ···· ${cartao.ultimos4}, só na próxima data do seu ciclo. Nada é cobrado agora.`
+                        : "A cobrança volta só na próxima data do seu ciclo. Nada é cobrado agora."}
+                    </p>
+                  </>
+                ) : (
+                  /* ⚠️ Não diz "você não pode" — diz o caminho que existe. O cliente não tem
+                     como saber (nem precisa) que a decisão partiu da nossa operação. */
+                  <a
+                    href={linkSuporte("Olá! Gostaria de reativar a assinatura da minha conta Kora.")}
+                    target="_blank" rel="noopener noreferrer"
+                    className="w-full mt-3 h-9 inline-flex items-center justify-center gap-1.5 text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg transition-colors"
+                  >
+                    <MessageCircle className="size-3.5" /> Falar sobre a reativação
+                  </a>
+                )}
               </div>
             )}
 
