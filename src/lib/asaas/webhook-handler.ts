@@ -25,10 +25,71 @@ const LIBERA = new Set(["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"])
 /** Eventos que RESTRINGEM (degrau 3) — todos passam por confirmação, ver `restringir`. */
 const RESTRINGE = new Set(["PAYMENT_OVERDUE"])
 
-/** Eventos que restringem E pedem olho humano (dinheiro voltou / foi contestado). */
-const ALERTA = new Set([
-  "PAYMENT_REFUNDED", "PAYMENT_PARTIALLY_REFUNDED",
-  "PAYMENT_CHARGEBACK_REQUESTED", "PAYMENT_CHARGEBACK_DISPUTE",
+// ═══════════════════════════════════════════════════════════════
+// O dinheiro voltou — e "voltou" tem quatro significados diferentes
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔴 ATÉ 12/08 OS QUATRO ERAM UM SÓ. `ALERTA` juntava estorno total, estorno parcial,
+//    chargeback e disputa, e os quatro faziam exatamente a mesma coisa: `past_due` +
+//    carimbo + um `console.error` que ninguém lê. A fatura não era tocada — continuava
+//    `paid`, com `paid_cents` cheio, depois de o dinheiro ter voltado.
+//
+// 🔑 A REGRA-MÃE DA SEPARAÇÃO: **estorno não é inadimplência.** Inadimplência é falha
+//    mecânica (cartão vencido, limite, banco fora) e por isso tem carência. Estorno é
+//    reversão deliberada — o dinheiro que sustentava o acesso VOLTOU. Tratar os dois com o
+//    mesmo relógio dá carência a quem desfez o pagamento.
+//
+// ⚠️ E o PARCIAL não automatiza nada, por observação do dono: *"o estorno nunca é parcial
+//    quando o cliente entra no cartão pedindo o cancelamento"* — quem contesta na operadora
+//    contesta o valor inteiro. Logo, parcial é quase sempre NOSSO (ajuste, cortesia). De um
+//    valor parcial não se deriva consequência, e automatizar sobre um dado que não decide é
+//    inventar decisão.
+
+/** Estorno TOTAL — o dinheiro do período voltou inteiro. Paywall imediato + fatura anulada. */
+const ESTORNO_TOTAL = new Set(["PAYMENT_REFUNDED"])
+
+/**
+ * Chargeback — contestação na operadora. Paywall imediato **e bloqueia recontratação**.
+ *
+ * 🔑 O bloqueio NÃO é castigo ao cliente: é proteção da conta merchant. Índice alto de
+ *    contestação derruba a conta na adquirente, e aí a cobrança de TODOS os clientes para.
+ * ⚠️ `DISPUTE` NÃO entra aqui: ele é a disputa se abrindo, não o dinheiro saindo. Quem já
+ *    foi restringido pelo `REQUESTED` continua restringido; quem não foi, não é.
+ */
+const CHARGEBACK = new Set(["PAYMENT_CHARGEBACK_REQUESTED"])
+
+/**
+ * Só pedem OLHO HUMANO — não movem estado nenhum.
+ *
+ * ⚠️ `PARTIALLY_REFUNDED` está aqui, e não no estorno, pelo motivo do topo. `DISPUTE` idem:
+ *    saber que a disputa abriu é informação, não consequência.
+ */
+const SO_ALERTA = new Set(["PAYMENT_PARTIALLY_REFUNDED", "PAYMENT_CHARGEBACK_DISPUTE"])
+
+/**
+ * 🔑 GANHAMOS A DISPUTA — e até 12/08 isto **não fazia absolutamente nada**.
+ *
+ * `PAYMENT_AWAITING_CHARGEBACK_REVERSAL` é *"disputa vencida, aguardando repasse"*
+ * (verificado na doc do Asaas). Sem mapeá-lo, o cliente ficava no paywall e bloqueado
+ * **para sempre**, mesmo depois de a gente vencer.
+ *
+ * ⚠️ Restaura ANTES de o dinheiro cair, de propósito: a disputa já foi decidida a nosso
+ *    favor, e manter fechado quem a gente acabou de reconhecer que estava certo seria punir
+ *    duas vezes. O repasse entra depois pelo `RECEIVED`, que já sabe liberar.
+ */
+const REVERSAO = new Set(["PAYMENT_AWAITING_CHARGEBACK_REVERSAL"])
+
+/**
+ * O gateway RECUSOU um estorno que nós pedimos.
+ *
+ * 🔑 Sem ele, a marca de intenção (`billing_refund_intents`) mentiria para sempre: o webhook
+ *    seguinte a encontraria e trataria como "foi nosso" um estorno que nunca aconteceu.
+ */
+const ESTORNO_NEGADO = new Set(["PAYMENT_REFUND_DENIED"])
+
+/** Todos os que entram na MESA de tratamento. Mesma lista do índice parcial e do cron 16. */
+const MESA = new Set([
+  ...ESTORNO_TOTAL, ...CHARGEBACK, ...SO_ALERTA, ...REVERSAO, ...ESTORNO_NEGADO,
 ])
 
 /**
@@ -43,6 +104,7 @@ const SILENCIOSOS = new Set([
   "PAYMENT_CREATED", "PAYMENT_UPDATED", "PAYMENT_AUTHORIZED",
   "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED",
   "PAYMENT_AWAITING_RISK_ANALYSIS", "PAYMENT_APPROVED_BY_RISK_ANALYSIS",
+  "PAYMENT_REPROVED_BY_RISK_ANALYSIS",
   "PAYMENT_BANK_SLIP_VIEWED", "PAYMENT_CHECKOUT_VIEWED",
 ])
 
@@ -56,6 +118,31 @@ const SILENCIOSOS = new Set([
  * entra no de ninguém.
  */
 const ENCERRA = new Set(["SUBSCRIPTION_DELETED", "SUBSCRIPTION_INACTIVATED"])
+
+/**
+ * Eventos que o Asaas emite e que **não se aplicam a este produto** — declarados de propósito.
+ *
+ * 🔑 O GANHO NÃO SÃO ELES: é o que o DESCONHECIDO passa a significar. Até 12/08 o `default`
+ *    do despacho era saco de gato — caía nele tanto o evento de split que nunca vamos usar
+ *    quanto um evento **novo** que o gateway passou a emitir. Com os 29 declarados,
+ *    "não mapeado" deixa de ser rotina e vira anomalia de verdade: *o Asaas mandou algo que
+ *    não existia quando escrevemos isto*. Log que dispara todo dia não é sinal.
+ *
+ * ⚠️ Conjunto PRÓPRIO, e não `SILENCIOSOS`: os dois não agem, mas dizem coisas diferentes.
+ *    Silencioso é "faz parte do fluxo normal e não move estado"; inerte é "não se aplica ao
+ *    nosso produto hoje". No dia em que a Kora emitir boleto ou usar split, é esta lista que
+ *    alguém abre — e ela já explica por que cada um estava aqui.
+ */
+const INERTES = new Set([
+  "PAYMENT_REFUND_IN_PROGRESS",        // precede o REFUNDED, que é quem decide
+  "PAYMENT_ANTICIPATED",               // antecipação de recebível: assunto nosso com o Asaas
+  "PAYMENT_DELETED", "PAYMENT_RESTORED", // não removemos cobrança por código — se vier, foi mão humana
+  "PAYMENT_RECEIVED_IN_CASH_UNDONE",   // não recebemos em dinheiro
+  "PAYMENT_DUNNING_RECEIVED", "PAYMENT_DUNNING_REQUESTED", // não usamos negativação
+  "PAYMENT_BANK_SLIP_CANCELLED",       // não emitimos boleto (só cartão)
+  "PAYMENT_SPLIT_CANCELLED", "PAYMENT_SPLIT_DIVERGENCE_BLOCK",
+  "PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED", // não usamos split
+])
 
 /**
  * 🔎 `SUBSCRIPTION_UPDATED` NÃO é silencioso — vira detector de divergência.
@@ -311,7 +398,10 @@ async function despachar(ev: EventRow): Promise<void> {
   //    várias vezes e cada retentativa gera outro evento destes. A chave de idempotência é
   //    o pagamento, então as retentativas não viram quatro e-mails iguais.
   if (SILENCIOSOS.has(tipo)) {
-    if (tipo === "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED" && ev.payment_id) {
+    // 🔑 `REPROVED_BY_RISK_ANALYSIS` entrou junto do recusado em 12/08. Os dois significam a
+    //    mesma coisa pro cliente — *o pagamento não passou* — e só um mandava e-mail. Quem
+    //    era reprovado no antifraude não recebia aviso nenhum.
+    if ((tipo === "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED" || tipo === "PAYMENT_REPROVED_BY_RISK_ANALYSIS") && ev.payment_id) {
       await avisarCobranca({
         tenantId:   tenant.id,
         aviso:      "cartao_recusado",
@@ -325,8 +415,37 @@ async function despachar(ev: EventRow): Promise<void> {
 
   if (LIBERA.has(tipo)) { await liberar(tenant, ev); return }
 
-  if (RESTRINGE.has(tipo) || ALERTA.has(tipo)) {
-    await restringir(tenant, ev, ALERTA.has(tipo))
+  // ── Atraso comum: o gateway desistiu do cartão. TEM carência. ─────────────
+  if (RESTRINGE.has(tipo)) { await restringir(tenant, ev, "vencimento"); return }
+
+  // ── O dinheiro voltou. NÃO tem carência: não é falha mecânica, é reversão. ─
+  if (ESTORNO_TOTAL.has(tipo)) { await restringir(tenant, ev, "estorno");     return }
+  if (CHARGEBACK.has(tipo))    { await restringir(tenant, ev, "chargeback");  return }
+
+  // ── Só pede olho humano: entra na mesa e NÃO move estado nenhum. ──────────
+  // ⚠️ Parcial e disputa. Ver o comentário do conjunto: de um valor parcial não se deriva
+  //    consequência, e a disputa abrindo é informação, não efeito.
+  if (SO_ALERTA.has(tipo)) {
+    console.warn(JSON.stringify({ src: "asaas-handler", kind: "MESA-PEDE-DECISAO",
+      motivo: tipo, tenant: tenant.id, payment: ev.payment_id }))
+    await fechar(ev)
+    return
+  }
+
+  // ── Ganhamos a disputa / o gateway negou nosso estorno. ───────────────────
+  // ⚠️ Os dois ainda não têm motor (R1 continua): entram na mesa e ficam visíveis, que já é
+  //    infinitamente melhor que o comportamento anterior — cair no "não mapeado" e sumir.
+  if (REVERSAO.has(tipo) || ESTORNO_NEGADO.has(tipo)) {
+    console.warn(JSON.stringify({ src: "asaas-handler", kind: "MESA-PEDE-DECISAO",
+      motivo: tipo, tenant: tenant.id, payment: ev.payment_id }))
+    await fechar(ev)
+    return
+  }
+
+  // ── Não se aplica ao nosso produto. Declarado, não esquecido. ─────────────
+  if (INERTES.has(tipo)) {
+    console.log(JSON.stringify({ src: "asaas-handler", kind: "inerte", event: tipo, tenant: tenant.id }))
+    await fechar(ev)
     return
   }
 
@@ -334,8 +453,12 @@ async function despachar(ev: EventRow): Promise<void> {
 
   if (CONFERE_VALOR.has(tipo)) { await conferirValor(tenant, ev); return }
 
-  // Evento que não mapeamos: registra e segue. Não inventa comportamento.
-  console.log(JSON.stringify({ src: "asaas-handler", kind: "nao-mapeado", event: tipo, tenant: tenant.id }))
+  // 🔴 AGORA ISTO É ANOMALIA, NÃO ROTINA (12/08). Com os 29 eventos do webhook de cobrança
+  //    declarados — agindo, silenciosos ou inertes —, chegar aqui significa **o Asaas passou
+  //    a emitir algo que não existia quando escrevemos isto**. Por isso virou `console.error`:
+  //    antes era `log` porque disparava todo dia, e log que dispara todo dia não é sinal.
+  console.error(JSON.stringify({ src: "asaas-handler", kind: "EVENTO-DESCONHECIDO-DO-GATEWAY",
+    event: tipo, tenant: tenant.id }))
   await fechar(ev, "evento não mapeado")
 }
 
@@ -527,6 +650,22 @@ async function encerrar(
     .update({
       // ⚠️ `subscription_status` fica como está. Ele ainda é cliente pago até a data.
       subscription_ends_at:  fimDoCiclo,
+      // 🔑 O MOTIVO É INFERÍVEL AQUI, e deixá-lo NULL criou uma regressão de verdade (12/08).
+      //
+      //    Chegar neste ramo significa: o gateway avisou que a assinatura sumiu **e o nosso
+      //    vínculo local ainda estava vivo**. O caminho do CLIENTE nula o vínculo ANTES de
+      //    falar com o gateway (`cancelSubscriptionForTenant`), então não foi ele. Sobra mão
+      //    humana no painel do Asaas — que é exatamente `decisao_interna`.
+      //
+      // 🔴 SEM ISTO O CLIENTE FICAVA SEM SAÍDA. Com motivo NULL, a allow-list da retomada
+      //    recusa **e** a guarda de contratação recusa: ele não retoma, não contrata, e a
+      //    tela não sabe explicar por quê. Duas portas fechadas por falta de um dado que
+      //    estava ali o tempo todo.
+      // ⚠️ ESCOPADO A `SUBSCRIPTION_DELETED`. `SUBSCRIPTION_INACTIVATED` cai no mesmo
+      //    `encerrar()` e é coisa oposta: deletar é ato explícito de alguém; inativar é o
+      //    GATEWAY desistindo sozinho. Carimbar `decisao_interna` nos dois rotularia como
+      //    decisão da Kora algo que o Asaas fez — mentira na trilha, que é pior que o vazio.
+      ...(ev.event_type === "SUBSCRIPTION_DELETED" ? { subscription_ended_reason: "decisao_interna" } : {}),
       asaas_subscription_id: null,
       // 🔒 O CARTÃO MORRE COM A ASSINATURA — E ESTE ERA O TERCEIRO CAMINHO DE REVOGAÇÃO,
       //    o único que não limpava nada (achado das duas revisões, 07/08). Quem cancelasse
@@ -977,6 +1116,23 @@ async function darBaixaNaFatura(
       // 🔑 O ELO QUE FALTAVA. Daqui pra frente a fatura sabe qual pagamento a quitou —
       //    e a idempotência lá em cima passa a ter em que se apoiar.
       gateway_ref: ev.payment_id,
+      // 🔴 A MESMA VERDADE, NA COLUNA QUE TEM A TRAVA (achado do engenheiro de dados, 12/08).
+      //
+      //    A M1 criou `gateway_charge_id` + o índice único parcial `uq_invoices_gateway_charge`
+      //    pra tornar o elo fatura↔cobrança uma IDENTIDADE. Só que nenhum código passou a
+      //    escrever a coluna — a única menção dela no repositório grava `null` (o void). O
+      //    backfill da M1 preencheu uma vez, a fatura foi substituída, e a coluna **regrediu
+      //    pra NULL no primeiro ciclo real**. Medido: índice único protegendo ZERO linhas.
+      //
+      // ⚠️ O efeito não é cosmético: a cadeia de resolução do livro-caixa
+      //    (`vincular_pagamentos_pendentes`) casa por `gateway_charge_id` no ramo mais forte
+      //    — o único que é identidade e não palpite. Com a coluna vazia, aquele ramo nunca
+      //    casa e o C-02 fica dependendo só do palpite por período.
+      // ⚠️ DUAS COLUNAS PARA O MESMO FATO é dívida, e está declarada: `gateway_ref` tem os
+      //    leitores, `gateway_charge_id` tem a trava. Escrever as duas no MESMO update é o
+      //    que impede elas de divergirem enquanto a consolidação não acontece — e a
+      //    consolidação (uma só, com o índice em cima dela) é item próprio do R1.
+      gateway_charge_id: ev.payment_id,
     })
     .eq("id", (alvo as { id: string }).id)
     .neq("status", "paid")
@@ -1202,6 +1358,18 @@ async function liberar(
     //    cliente que acabou de entrar no primeiro dia de carência. `restringir` também
     //    sobrescreve carimbo velho, mas as duas guardas juntas é que fecham o caso.
     past_due_since: null,
+    // 🔑 A CAUSA CAI JUNTO COM O RELÓGIO (12/08). Comecei a gravar `past_due_reason` em
+    //    `restringir` e quase deixei `liberar` sem limpá-la — o mesmo defeito do carimbo
+    //    órfão descrito acima, uma coluna ao lado.
+    // ⚠️ Por que importa: quem foi restringido por ESTORNO e depois regularizou ficaria
+    //    `active` carregando `past_due_reason='estorno'`. Hoje é inerte (nada lê a coluna
+    //    fora do ramo `past_due`, e o próximo `restringir` sobrescreve) — mas o R2 vai
+    //    derivar CARÊNCIA ZERO desse valor, e aí um atraso banal futuro cortaria o cliente
+    //    na hora, sem carência, por causa de um resíduo de meses atrás.
+    // 🔑 E é isto que torna aplicável o CHECK `past_due_reason ⇒ status='past_due'` que a
+    //    revalidação pediu: sem esta linha, a migration dele falharia na primeira conta que
+    //    pagou depois de um estorno.
+    past_due_reason: null,
   }
 
   // ⚠️ Fim do trial: quem pagou sai de `trialing` e vira cliente. Sem isto, ele ficaria
@@ -1375,8 +1543,21 @@ async function liberar(
 async function restringir(
   tenant: { id: string; subscription_status: string | null },
   ev: EventRow,
-  pedeOlhoHumano: boolean,
+  /**
+   * POR QUE este tenant está sendo restringido — e é daqui que a carência deriva.
+   *
+   * 🔑 Substituiu o `pedeOlhoHumano: boolean` em 12/08. O booleano só sabia dizer "alguém
+   *    precisa olhar"; a causa diz *o que aconteceu*, e com ela três coisas passam a
+   *    derivar do mesmo dado: a carência (`estorno`/`chargeback` ⇒ ZERO — reversão
+   *    deliberada não ganha o prazo que existe pra falha mecânica), o texto que a tela
+   *    mostra, e o filtro da mesa. Ver `tenants.past_due_reason`.
+   * ⚠️ Também é o que separa o e-mail: `vencimento` dispara o aviso de fatura vencida;
+   *    os outros dois não — mandar "sua fatura está em aberto" pra quem acabou de contestar
+   *    a cobrança no cartão responde outra pergunta, e essa conversa pede gente.
+   */
+  causa: "vencimento" | "estorno" | "chargeback",
 ): Promise<void> {
+  const pedeOlhoHumano = causa !== "vencimento"
   if (!ev.payment_id) { await fechar(ev, "sem payment_id para confirmar"); return }
 
   // ⚠️ Sai do `try` pra ser usado no aviso lá embaixo. Vem do GATEWAY, não do payload: o
@@ -1485,7 +1666,15 @@ async function restringir(
     : new Date().toISOString()
 
   const { error } = await supabaseAdmin.from("tenants")
-    .update({ subscription_status: "past_due", past_due_since: carimbo }).eq("id", tenant.id)
+    // 🔑 A CAUSA ENTRA JUNTO (12/08). Sem ela, `past_due_reason` nasceria NULL e o R2 trataria
+    //    todo estorno como atraso comum — dando ao cliente que desfez o pagamento a mesma
+    //    carência de quem teve o cartão recusado. A coluna existe desde a R0 justamente pra
+    //    esta linha.
+    // ⚠️ Escrita no MESMO update do status e do carimbo: são três faces do mesmo fato, e
+    //    separá-las criaria um instante em que o tenant está `past_due` sem causa — o estado
+    //    ambíguo que a revalidação pediu pra não existir.
+    .update({ subscription_status: "past_due", past_due_since: carimbo, past_due_reason: causa })
+    .eq("id", tenant.id)
   if (error) { await fechar(ev, `falha ao restringir: ${error.message}`, false); return }
 
   // Estorno e chargeback não são inadimplência comum — o dinheiro VOLTOU, e isso costuma
@@ -1514,6 +1703,51 @@ async function restringir(
     })
   }
 
+  // ── O QUE SÓ O ESTORNO E O CHARGEBACK FAZEM ──────────────────────────────
+  //
+  // 🔴 A FATURA CONTINUAVA DIZENDO `paid` DEPOIS DE O DINHEIRO VOLTAR. Medido em produção
+  //    (12/08): o `PAYMENT_REFUNDED` do tenant de teste fechou como sucesso, e a fatura
+  //    seguiu `paid` com `paid_cents` cheio. O livro afirmava que o dinheiro entrou.
+  // 🔑 E o estrago passava longe do livro: `fimDoCicloPago` lê exatamente essa fatura, então
+  //    o cancelamento — do cliente E do god mode — calculava "ciclo pago até 10/09" sobre
+  //    dinheiro devolvido. O operador clicava em "Cancelada" achando que cortou, e o sistema
+  //    adiava o corte por um mês **e preservava o cartão** de quem tinha acabado de tomar o
+  //    dinheiro de volta.
+  // ⚠️ `void` + motivo, nunca void mudo: sem `estornada`, isto fica indistinguível de um erro
+  //    nosso de faturamento na hora de auditar o livro.
+  // ⚠️ Só `open/overdue/partial/paid` — e `paid` entra aqui de propósito, ao contrário das
+  //    outras varreduras: é justamente a fatura paga que o estorno desmente.
+  if (causa === "estorno" || causa === "chargeback") {
+    const { error: erroVoid } = await supabaseAdmin.from("invoices")
+      .update({ status: "void", void_reason: "estornada", updated_at: new Date().toISOString() })
+      .eq("tenant_id", tenant.id)
+      .eq("gateway_ref", ev.payment_id)
+      .in("status", ["open", "overdue", "partial", "paid"])
+    if (erroVoid) {
+      console.error(JSON.stringify({ src: "asaas-handler", kind: "FATURA-NAO-ANULADA-NO-ESTORNO",
+        tenant: tenant.id, payment: ev.payment_id, msg: erroVoid.message }))
+    }
+  }
+
+  // 🔒 CHARGEBACK BLOQUEIA RECONTRATAÇÃO — e o bloqueio NÃO é castigo ao cliente.
+  //    Índice alto de contestação derruba a conta na adquirente, e aí a cobrança de TODOS
+  //    os clientes para. Deixar quem já contestou comprar de novo com o mesmo cartão é
+  //    apostar a operação inteira num cliente só.
+  // ⚠️ Estorno NÃO bloqueia, de propósito: pode ter sido nosso, ou acordo. Punir na dúvida
+  //    castiga o caso honesto — a assimetria é a decisão do dono de 12/08.
+  // ⚠️ Data e motivo juntos: o CHECK de coerência da R0 recusa um sem o outro, e é o que
+  //    impede um bloqueio que ninguém consegue explicar depois.
+  if (causa === "chargeback") {
+    const { error: erroBloqueio } = await supabaseAdmin.from("tenants")
+      .update({ rehire_blocked_at: new Date().toISOString(), rehire_blocked_reason: "chargeback" })
+      .eq("id", tenant.id)
+      .is("rehire_blocked_at", null)   // não reescreve um bloqueio anterior — o 1º é que conta
+    if (erroBloqueio) {
+      console.error(JSON.stringify({ src: "asaas-handler", kind: "RECONTRATACAO-NAO-BLOQUEADA",
+        tenant: tenant.id, payment: ev.payment_id, msg: erroBloqueio.message }))
+    }
+  }
+
   // 🔑 O registro mais importante da trilha: é este que corta campanhas, IA e automações,
   //    e (passada a carência) o acesso da equipe. Guarda o CARIMBO, porque é dele que
   //    depende quando o produto fecha — numa disputa, é a linha que responde "desde quando".
@@ -1523,11 +1757,20 @@ async function restringir(
     origem:   "webhook",
     alvo:     { tipo: "payment", id: ev.payment_id },
     antes:    { subscription_status: estadoAtual?.subscription_status ?? null, past_due_since: estadoAtual?.past_due_since ?? null },
-    depois:   { subscription_status: "past_due", past_due_since: carimbo },
+    depois:   { subscription_status: "past_due", past_due_since: carimbo, past_due_reason: causa },
     extra:    {
       evento: ev.event_type, valorCents: emCentavos(cobranca.value),
       vencimento: cobranca.dueDate ?? null, pedeOlhoHumano,
       carenciaDias: estadoAtual?.past_due_grace_days ?? null,
+      // 🔑 A trilha registra a CAUSA e os efeitos que só ela dispara. Numa disputa, "foi
+      //    restringido" não responde nada; "foi restringido por estorno, a fatura foi
+      //    anulada e a recontratação bloqueada" responde tudo.
+      causa,
+      faturaAnulada:            causa !== "vencimento",
+      recontratacaoBloqueada:   causa === "chargeback",
+      // ⚠️ Estorno e chargeback ignoram a carência configurada — o número acima existe pra
+      //    a leitura não concluir que ele foi aplicado.
+      carenciaIgnorada:         causa !== "vencimento",
     },
   })
 

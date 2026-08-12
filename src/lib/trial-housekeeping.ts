@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getPlatformSettings } from "@/lib/platform-settings"
+import { auditarCobranca } from "@/lib/billing/audit"
 import { transitionLifecycleCore } from "@/lib/lifecycle-core"
 import { TRIAL_ENDED_GRACE_DAYS } from "@/lib/lifecycle-shared"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
@@ -180,6 +181,29 @@ export async function runTrialHousekeeping(): Promise<{
         .eq("tenant_id", (t as { id: string }).id)
         .in("status", ["open", "overdue", "partial"])
       if (anErr) console.error("[housekeeping] faturas não anuladas no cancelamento:", (t as { id: string }).id, anErr.message)
+
+      // 🔴 ESTE BLOCO ERA MUDO (auditoria de comportamento, 12/08). Ele encerra a assinatura
+      //    de alguém, **apaga o cartão dele** (token, bandeira e 4 últimos) e anula faturas —
+      //    sozinho, todo dia, sem uma linha de trilha. O log do cron dizia QUANTOS foram
+      //    encerrados, nunca QUEM. No dia em que um cliente disser "vocês cancelaram minha
+      //    conta e apagaram meu cartão", não havia o que responder.
+      // 🔑 `origem: "cron"` é o ponto da diretriz de 08/08: o que a MÁQUINA faz sozinha é
+      //    justamente o que ninguém consegue reconstruir de memória depois.
+      // ⚠️ O vocabulário já reservava `billing.ciclo_encerrado` desde 08/08 e **nenhum
+      //    chamador existia** — peça pronta ≠ peça ligada.
+      const motivoAnterior = (t as { subscription_ended_reason?: string | null }).subscription_ended_reason ?? null
+      await auditarCobranca({
+        tenantId: (t as { id: string }).id,
+        acao:     "billing.ciclo_encerrado",
+        origem:   "cron",
+        antes:    { subscription_ended_reason: motivoAnterior },
+        depois:   {
+          subscription_status:       "canceled",
+          subscription_ended_reason: motivoAnterior ?? "pedido_do_cliente",
+          cartao: "removido",
+        },
+      })
+
       encerrados++
     }
   }

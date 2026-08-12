@@ -123,6 +123,64 @@ function rotuloDoGateway(tok: RespostaTokenize, numero: string): { bandeira: Ban
  * ⚠️ O cron de trial já sabe pular quem tem `asaas_subscription_id` — sem isso, ele
  *    suspenderia às 05h05 BRT um cliente que o Asaas cobraria no mesmo dia.
  */
+/**
+ * Grava o VÍNCULO da assinatura (id do gateway + o que vier junto) desfazendo o carimbo de
+ * cancelamento — **com CAS**, sempre.
+ *
+ * 🔴 POR QUE ELE EXISTE (revalidação de 12/08). Cinco lugares diferentes escreviam
+ *    `subscription_ends_at: null`, e a correção do C-04 foi aplicada em UM deles. Os outros
+ *    quatro continuavam sobrescrevendo cegamente um cancelamento que aterrissasse no meio do
+ *    voo — inclusive o ramo de timeout **30 linhas abaixo** do que foi corrigido, e a faxina
+ *    do reconcile, que desfazia a decisão da plataforma 15 minutos depois.
+ *
+ * 🔑 A REGRA QUE ESTE HELPER TRANCA: *todo caminho que ressuscita uma assinatura precisa da
+ *    mesma pré-condição.* Enquanto a trava morava solta em cada `.update()`, o quinto ponto
+ *    nascia sem ela — e nasceu, três vezes, no mesmo dia.
+ *
+ * @param fimEsperado  o `subscription_ends_at` LIDO no início da operação. O UPDATE só casa
+ *   se nada mudou desde então. **Não** é `null` fixo: quem já foi encerrado no passado tem a
+ *   data preenchida de propósito (é histórico e nunca é limpo), e um `.is(null)` cru
+ *   recusaria a recontratação de todo cliente que um dia saiu.
+ * @param vinculoEsperado  opcional: o `asaas_subscription_id` que ainda tem que estar lá
+ *   (a reserva `pending:` que a varredura leu). Entra como CONDIÇÃO do mesmo UPDATE em vez
+ *   de virar um `SELECT` antes — que seria check-then-act, com janela entre a conferência e
+ *   a escrita. Uma trava só, atômica, é sempre melhor que duas em sequência.
+ *
+ * ⚠️ `subscription_ended_reason` cai JUNTO com a data. Limpar só uma deixa o motivo órfão
+ *    sobre uma assinatura viva — o god mode leria "cancelou a pedido" de um cliente pagante.
+ * ⚠️ `.select()` é obrigatório: no PostgREST um UPDATE que casa ZERO linhas **não devolve
+ *    erro**, e sem ele perder a corrida seria indistinguível de vencer.
+ */
+export async function vincularAssinatura(
+  tenantId: string,
+  patch: Record<string, unknown>,
+  fimEsperado: string | null,
+  vinculoEsperado?: string,
+): Promise<{ ok: true } | { error: string; corridaPerdida: boolean }> {
+  let q = supabaseAdmin
+    .from("tenants")
+    .update({ ...patch, subscription_ends_at: null, subscription_ended_reason: null })
+    .eq("id", tenantId)
+
+  q = fimEsperado
+    ? q.eq("subscription_ends_at", fimEsperado)
+    : q.is("subscription_ends_at", null)
+
+  if (vinculoEsperado) q = q.eq("asaas_subscription_id", vinculoEsperado)
+
+  const { data, error } = await q.select("id")
+
+  if (error) return { error: error.message, corridaPerdida: false }
+  if (!data || data.length === 0) {
+    // 🔴 Zero linhas = o estado MUDOU no meio do voo (cancelamento aterrissou). Quem chama
+    //    decide o desfecho, mas nunca pode tratar isto como sucesso.
+    console.error(JSON.stringify({ src: "asaas", kind: "VINCULO-PERDEU-A-CORRIDA-CONFERIR",
+      tenant: tenantId, fimEsperado }))
+    return { error: "estado da assinatura mudou durante a operação", corridaPerdida: true }
+  }
+  return { ok: true }
+}
+
 export async function createSubscriptionForTenant(
   tenantId: string,
   /**
@@ -142,7 +200,7 @@ export async function createSubscriptionForTenant(
   const [{ data: row, error: tErr }, { data: planoRow }] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("id, name, billing_day, trial_ends_at, asaas_subscription_id, billing_mode, subscription_ends_at, subscription_ended_reason")
+      .select("id, name, billing_day, trial_ends_at, asaas_subscription_id, billing_mode, subscription_ends_at, subscription_ended_reason, rehire_blocked_at, rehire_blocked_reason")
       .eq("id", tenantId)
       .maybeSingle(),
     // ⚠️ Terceira revalidação do plano (tela → action → aqui). Não é paranoia repetida: este
@@ -163,6 +221,7 @@ export async function createSubscriptionForTenant(
     name: string; billing_day: number | null; trial_ends_at: string | null
     asaas_subscription_id: string | null; billing_mode: string | null
     subscription_ends_at: string | null; subscription_ended_reason: string | null
+    rehire_blocked_at: string | null; rehire_blocked_reason: string | null
   }
   const plano = planoRow as { id: string; name: string; price_cents: number } | null
   if (!plano) return { error: "Plano indisponível. Escolha um plano antes de ativar." }
@@ -174,6 +233,22 @@ export async function createSubscriptionForTenant(
   //    action responder `{ok:true}` e a tela anunciar COMPRA FEITA sem assinatura nenhuma.
   const jaExiste = assinaturaRealId(t.asaas_subscription_id)
   if (jaExiste) return { id: jaExiste }
+
+  // 🔒 RECONTRATAÇÃO BLOQUEADA — a trava do chargeback, imposta no MOTOR.
+  //
+  // 🔑 Ela não é castigo ao cliente: é proteção da conta merchant. Índice alto de
+  //    contestação derruba a conta na adquirente, e aí a cobrança de TODOS os clientes
+  //    para. Deixar quem já contestou comprar de novo com o mesmo cartão é apostar a
+  //    operação inteira num cliente só.
+  // ⚠️ AQUI e não só na vitrine: a vitrine é UI, e toda função exportada de `"use server"`
+  //    é chamável por RSC. Um bloqueio que só existe na tela não é bloqueio — é sugestão.
+  // ⚠️ A mensagem não acusa e não explica o motivo. Quem lê pode ser um sócio que não sabe
+  //    o que o outro fez na operadora; e detalhar a régua antifraude ensina a contorná-la.
+  if (t.rehire_blocked_at) {
+    console.warn(JSON.stringify({ src: "asaas", kind: "contratacao-recusada-recontratacao-bloqueada",
+      tenant: tenantId, motivo: t.rehire_blocked_reason, desde: t.rehire_blocked_at }))
+    return { error: "Não conseguimos ativar a assinatura desta conta por aqui. Fale com a gente para reativar." }
+  }
 
   // 🔴 CANCELAMENTO PENDENTE FECHA **ESTA** PORTA TAMBÉM (12/08, achado do red team).
   //
@@ -371,22 +446,10 @@ export async function createSubscriptionForTenant(
     //    "contratou". Gravar antes (no clique do catálogo) foi o bug de 05/08: rotulava
     //    como cliente do PLANO III quem estava em Trial e só tinha olhado o preço.
     //    Aqui a afirmação é verdadeira: existe assinatura no gateway, com valor e cartão.
-    // 🔴 CAS — C-04 do pentest, reaberto pelo red team em 12/08. O `.update()` abaixo
-    //    sobrescrevia CEGAMENTE o estado lido no topo da função: um cancelamento que
-    //    aterrissasse entre o claim e esta linha (operador no god mode, webhook
-    //    `SUBSCRIPTION_DELETED`, ou o próprio `cancelarAssinatura`) era **apagado** pela
-    //    assinatura que nasce. Estado terminal: `canceled` com assinatura VIVA no gateway —
-    //    cobrando um cliente com o produto fechado, e sem nenhuma varredura que alcance isso.
-    //
-    // 🔑 COMPARA COM O QUE FOI LIDO, e não com `null` fixo. Quem já foi encerrado no passado
-    //    tem `subscription_ends_at` preenchido **de propósito** (é histórico e nunca é
-    //    limpo); um `.is(null)` cru recusaria a recontratação de todo cliente que um dia
-    //    saiu — justamente quem a gente mais quer de volta. A guarda de cancelamento
-    //    PENDENTE lá em cima já barrou as datas futuras; aqui só se checa que nada MUDOU.
+    // 🔑 O CAS mora no helper `vincularAssinatura` desde 12/08 — antes ele estava solto aqui
+    //    e os outros QUATRO pontos que ressuscitam assinatura ficaram sem. Ver o docblock.
     const fimLidoNoInicio = t.subscription_ends_at
-    let escrita = supabaseAdmin
-      .from("tenants")
-      .update({
+    const vinculo = await vincularAssinatura(tenantId, {
         asaas_subscription_id: sub.id,
         billing_day: diaDaCobranca,
         plan_id: plano.id,
@@ -401,42 +464,16 @@ export async function createSubscriptionForTenant(
         //    ("Mastercard ···· 4242" pra uma assinatura que não existe mais).
         card_brand: rotulo.bandeira,
         card_last4: rotulo.ultimos4,
-        // 🔑 Recontratação: sem limpar, a varredura 1.b do housekeeping marcaria `canceled`
-        //    na data antiga — derrubando quem acabou de pagar de novo.
-        subscription_ends_at: null,
-        // 🔑 O MOTIVO CAI JUNTO COM A DATA (12/08). Limpar só a data deixava
-        //    `subscription_ended_reason` órfão sobre uma assinatura VIVA — o god mode leria
-        //    "cancelou a pedido" de um cliente pagante. A retomada já limpava os dois; a
-        //    criação limpava um só, e é dessa assimetria que nasce a mentira.
-        subscription_ended_reason: null,
-      })
-      .eq("id", tenantId)
-
-    escrita = fimLidoNoInicio
-      ? escrita.eq("subscription_ends_at", fimLidoNoInicio)
-      : escrita.is("subscription_ends_at", null)
-
-    // ⚠️ `.select()` é OBRIGATÓRIO com CAS: no PostgREST um UPDATE que casa ZERO linhas
-    //    **não devolve erro**. Sem ele, perder a corrida seria indistinguível de vencer — e
-    //    a função anunciaria sucesso sobre uma gravação que não aconteceu. É o mesmo defeito
-    //    que a auditoria de 11/08 apelidou de "o perdedor loga que ganhou".
-    const { data: aplicadas, error: upErr } = await escrita.select("id")
+    }, fimLidoNoInicio)
 
     // ⚠️ Criada lá e não gravada aqui = assinatura cobrando sem a Kora saber. Devolve o id
     //    na mensagem pra recuperação manual ser possível — sem ele, ninguém acha.
-    if (upErr || !aplicadas || aplicadas.length === 0) {
-      // 🔴 Zero linhas = o estado MUDOU no meio do voo (cancelamento aterrissou). A
-      //    assinatura existe no gateway e o vínculo não foi gravado: é o mesmo desfecho de
-      //    uma falha de escrita, e recebe o mesmo tratamento — trava a vaga e grita com o id.
-      if (!upErr) {
-        console.error(JSON.stringify({ src: "asaas", kind: "VINCULO-PERDEU-A-CORRIDA-CONFERIR",
-          tenant: tenantId, subscription: sub.id, fimLidoNoInicio }))
-      }
+    if ("error" in vinculo) {
       // ⚠️ NÃO solta a reserva aqui, de propósito: a assinatura EXISTE no gateway. Liberar
       //    a vaga deixaria o cliente tentar de novo e criar uma SEGUNDA cobrança mensal —
       //    o dano exato que o claim veio impedir. Fica travado até alguém vincular à mão,
       //    que é o mal menor e tem o id na mensagem.
-      console.error("[asaas] assinatura criada mas NÃO vinculada:", tenantId, sub.id, upErr?.message ?? "corrida perdida")
+      console.error("[asaas] assinatura criada mas NÃO vinculada:", tenantId, sub.id, vinculo.error)
       return { error: `Assinatura criada no gateway (${sub.id}) mas não vinculada. Contate o suporte.` }
     }
 
@@ -455,9 +492,12 @@ export async function createSubscriptionForTenant(
 
       // Existe: vincula em vez de liberar. O dinheiro saiu; a linha do banco tem que refletir.
       if (existente) {
-        const { error: upErr } = await supabaseAdmin
-          .from("tenants")
-          .update({
+        // 🔴 ESTE RAMO FICOU SEM O CAS quando o caminho feliz ganhou o dele (F2 da
+        //    revalidação de 12/08) — e é o MESMO defeito que este arquivo já documenta em
+        //    outro lugar: "a correção do P0-1 tinha sido feita pela metade neste caminho".
+        //    Duas vezes o irmão de baixo ficou pra trás; agora os dois chamam o mesmo helper,
+        //    e não existe mais "o outro lugar" pra esquecer.
+        const vinculo = await vincularAssinatura(tenantId, {
             asaas_subscription_id: existente,
             billing_day:           Math.min(28, Number(nextDueDate.slice(8, 10)) || 1),
             plan_id:               plano.id,
@@ -467,15 +507,13 @@ export async function createSubscriptionForTenant(
             asaas_card_token:      tokenCifrado,
             card_brand:            rotulo.bandeira,
             card_last4:            rotulo.ultimos4,
-            subscription_ends_at:  null,
-          })
-          .eq("id", tenantId)
-        if (!upErr) {
+        }, t.subscription_ends_at)
+        if (!("error" in vinculo)) {
           console.error(JSON.stringify({ src: "asaas", kind: "assinatura-recuperada-pos-timeout",
             tenant: tenantId, subscription: existente }))
           return { id: existente }
         }
-        console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, upErr.message)
+        console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, vinculo.error)
         return { error: `Assinatura criada no gateway (${existente}) mas não vinculada. Contate o suporte.` }
       }
 
@@ -1283,19 +1321,19 @@ export async function resumeSubscriptionForTenant(
     // ⚠️ `billing_day` NÃO é reescrito: o ciclo não mudou de âncora, a recorrência volta pro
     //    mesmo dia. Recalcular aqui só criaria oportunidade de drift (o teto em 28) sem
     //    nenhum ganho.
-    const { error: upErr } = await supabaseAdmin
-      .from("tenants")
-      .update({
-        asaas_subscription_id:     sub.id,
-        subscription_ends_at:      null,
-        subscription_ended_reason: null,
-      })
-      .eq("id", tenantId)
+    // 🔴 CAS AQUI TAMBÉM (F4 da revalidação, 12/08). A allow-list de motivo é checada lá em
+    //    cima, ANTES de duas chamadas HTTP ao gateway — é check-then-act sobre uma janela de
+    //    segundos. Se um operador converter o cancelamento em `decisao_interna` nesse
+    //    intervalo, uma escrita cega aqui reverteria a decisão dele: exatamente a inversão
+    //    de privilégio que a allow-list veio fechar, um degrau abaixo.
+    const vinculo = await vincularAssinatura(
+      tenantId, { asaas_subscription_id: sub.id }, t.subscription_ends_at,
+    )
 
-    if (upErr) {
+    if ("error" in vinculo) {
       // Mesma regra da criação: NÃO solta a vaga — a assinatura existe lá fora. Soltar
       // deixaria o cliente retomar de novo e ficar com duas cobranças mensais.
-      console.error("[asaas] assinatura retomada mas NÃO vinculada:", tenantId, sub.id, upErr.message)
+      console.error("[asaas] assinatura retomada mas NÃO vinculada:", tenantId, sub.id, vinculo.error)
       return { error: `Assinatura recriada no gateway (${sub.id}) mas não vinculada. Contate o suporte.` }
     }
 
@@ -1311,16 +1349,15 @@ export async function resumeSubscriptionForTenant(
     if (e instanceof AsaasError && e.status === 0) {
       const existente = await procurarAssinaturaNoGateway(tenantId)
       if (existente) {
-        const { error: upErr } = await supabaseAdmin
-          .from("tenants")
-          .update({ asaas_subscription_id: existente, subscription_ends_at: null, subscription_ended_reason: null })
-          .eq("id", tenantId)
-        if (!upErr) {
+        const vinculo = await vincularAssinatura(
+          tenantId, { asaas_subscription_id: existente }, t.subscription_ends_at,
+        )
+        if (!("error" in vinculo)) {
           console.error(JSON.stringify({ src: "asaas", kind: "retomada-recuperada-pos-timeout",
             tenant: tenantId, subscription: existente }))
           return { id: existente }
         }
-        console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, upErr.message)
+        console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, vinculo.error)
         return { error: `Assinatura recriada no gateway (${existente}) mas não vinculada. Contate o suporte.` }
       }
       // "Não sei" mantém a vaga presa: reparável à mão, ao contrário de cobrar duas vezes.

@@ -1,6 +1,14 @@
 import { supabaseAdmin } from "@/lib/supabase"
-import { FileText, AlertTriangle, CheckCircle2, Boxes, Gauge } from "lucide-react"
+import { FileText, AlertTriangle, CheckCircle2, Boxes, Gauge, Wallet } from "lucide-react"
 
+// 🔑 ESTA É A ÚNICA TELA QUE LÊ A TRILHA DE VERDADE (medido em 12/08). A timeline rica de
+//    `/admin/financeiro/auditoria` é **preview** — ela tem rótulo pra tudo e não consulta o
+//    banco. Então é aqui que qualquer ação auditada aparece pra um humano, e ação que falta
+//    neste mapa cai no fallback `?? a.action` e é exibida como slug cru
+//    ("billing.ciclo_encerrado"). Não some — fica ilegível, que é a versão barata do mesmo
+//    problema do badge `partial` de 09/08.
+// ⚠️ Ação nova auditada ⇒ linha nova AQUI, na mesma resposta. É o que separa "registrado"
+//    de "consultável", e a diretriz de 08/08 cobra o segundo.
 const ACTION_LABEL: Record<string, string> = {
   "contact.delete_personal_data": "Apagou dados (LGPD)",
   "contact.export_personal_data": "Exportou dados (LGPD)",
@@ -9,6 +17,27 @@ const ACTION_LABEL: Record<string, string> = {
   "module.clear_override":        "Limpou override de módulo",
   "limit.set":                    "Setou limite",
   "limit.clear_override":         "Limpou override de limite",
+  // ── cobrança: o que a MÁQUINA fez sozinha ────────────────────────────────
+  "billing.liberado":             "Pagamento confirmado — acesso devolvido",
+  "billing.restringido":          "Fatura vencida — campanhas, IA e automações pausadas",
+  "billing.assinatura_encerrada": "Assinatura encerrada no gateway",
+  "billing.ciclo_encerrado":      "Ciclo pago terminou — acesso encerrado e cartão removido",
+  "billing.vinculo_reconciliado": "Vínculo de assinatura reconciliado (cron)",
+  // ── cobrança: o que o CLIENTE fez ────────────────────────────────────────
+  "billing.assinatura_cancelada_pelo_cliente": "Cliente cancelou a assinatura",
+  "billing.assinatura_retomada_pelo_cliente":  "Cliente retomou a assinatura",
+  "billing.plan_selected":        "Cliente escolheu um plano",
+  "billing.card_updated":         "Cliente atualizou o cartão",
+  "billing.regularized":          "Cliente regularizou o pagamento",
+  // ── cobrança: o que o OPERADOR fez ───────────────────────────────────────
+  "billing.status_alterado":      "Alterou status/carência da assinatura",
+  "billing.fatura_baixada":       "Marcou fatura como paga",
+  "billing.fatura_anulada":       "Anulou fatura",
+  "billing.cobranca_criada":      "Adicionou cobrança",
+  "billing.cobranca_removida":    "Removeu cobrança",
+  // ── catálogo e plataforma (auditados desde 12/08) ────────────────────────
+  "platform.plano_atribuido":     "Atribuiu plano ao cliente",
+  "platform.plano_removido":      "Removeu o plano do cliente",
 }
 
 function ActionIcon({ action }: { action: string }) {
@@ -19,6 +48,16 @@ function ActionIcon({ action }: { action: string }) {
   if (action.startsWith("module.disable")) return <AlertTriangle className={`${cls} text-amber-600`} />
   if (action.startsWith("module."))        return <Boxes className={`${cls} text-primary-600`} />
   if (action.startsWith("limit."))         return <Gauge className={`${cls} text-primary-600`} />
+  // ⚠️ Cobrança tem cor por CONSEQUÊNCIA, não por origem: o que devolve acesso é verde, o
+  //    que tira é âmbar. Quem varre esta lista procurando "o que aconteceu com o cliente"
+  //    lê a cor antes do texto.
+  if (action === "billing.liberado" || action === "billing.assinatura_retomada_pelo_cliente")
+    return <CheckCircle2 className={`${cls} text-emerald-600`} />
+  if (action === "billing.restringido" || action === "billing.ciclo_encerrado"
+      || action === "billing.assinatura_encerrada")
+    return <AlertTriangle className={`${cls} text-amber-600`} />
+  if (action.startsWith("billing.") || action.startsWith("platform."))
+    return <Wallet className={`${cls} text-primary-600`} />
   return <FileText className={`${cls} text-slate-500`} />
 }
 

@@ -3,7 +3,8 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { asaas } from "./client"
 import { RESERVA_TTL_MS, idadeDaReservaMs, assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { processAsaasEvent } from "./webhook-handler"
-import { procurarAssinaturaNoGateway, cancelSubscriptionForTenant } from "./subscriptions"
+import { procurarAssinaturaNoGateway, cancelSubscriptionForTenant, vincularAssinatura } from "./subscriptions"
+import { auditarCobranca } from "@/lib/billing/audit"
 import { executarJob } from "@/lib/cron/run"
 
 // ═══════════════════════════════════════════════════════════════
@@ -96,12 +97,12 @@ async function reconciliar(): Promise<ReconcileResult> {
   const { data: orfas } = await supabaseAdmin
     .from("tenants")
     // `plan_id` entrou pra o log de adoção órfã dizer se ele ficou faltando (H-13).
-    .select("id, asaas_subscription_id, plan_id")
+    .select("id, asaas_subscription_id, plan_id, subscription_ends_at, subscription_ended_reason")
     .like("asaas_subscription_id", "pending:%")
     .order("id")
     .limit(100)
 
-  for (const t of (orfas ?? []) as { id: string; asaas_subscription_id: string; plan_id: string | null }[]) {
+  for (const t of (orfas ?? []) as { id: string; asaas_subscription_id: string; plan_id: string | null; subscription_ends_at: string | null; subscription_ended_reason: string | null }[]) {
     const idade = idadeDaReservaMs(t.asaas_subscription_id)
     // `null` = formato legado sem timestamp ⇒ não mexe (fail-safe: reserva presa é
     // reparável à mão; apagar a de quem está pagando agora cria cobrança em dobro).
@@ -129,10 +130,32 @@ async function reconciliar(): Promise<ReconcileResult> {
       //    que morreu e nunca foram persistidos. Não existe de onde tirar — inventar seria
       //    gravar mentira sobre qual cartão cobra. Fica nulo (a tela diz "A definir", e o
       //    cliente recadastra) e o log lista o que ficou faltando.
+      // 🔴 A FAXINA DESFAZIA CANCELAMENTO DA PLATAFORMA (F1 da revalidação, 12/08). Este
+      //    bloco adotava a assinatura e zerava `subscription_ends_at` **sem olhar nada** —
+      //    então o CAS que a criação ganhou hoje era desfeito aqui, 15 minutos depois, pela
+      //    porta do auto-reparo: o operador agendava o cancelamento no god mode, a corrida
+      //    travava a reserva `pending:` (comportamento correto), e a próxima rodada do cron
+      //    ressuscitava tudo, deixando `subscription_ended_reason` órfão sobre assinatura
+      //    viva e cobrando um cliente que a plataforma decidiu encerrar.
+      //
+      // 🔑 CANCELAMENTO PENDENTE VENCE A FAXINA. Este bloco existe pra consertar reserva
+      //    presa, não pra decidir sobre ato humano. Havendo carimbo no futuro, ele para e
+      //    grita: a reserva continua presa (reparável à mão) e ninguém é cobrado por
+      //    engano — o mal menor, e o mesmo critério do resto do arquivo.
+      const fimPendente = t.subscription_ends_at ? new Date(t.subscription_ends_at) : null
+      if (fimPendente && !Number.isNaN(fimPendente.getTime()) && fimPendente.getTime() > Date.now()) {
+        out.erros++
+        console.error(JSON.stringify({
+          src: "reconcile", kind: "ADOCAO-BARRADA-CANCELAMENTO-PENDENTE",
+          tenant: t.id, assinatura: existente, ate: t.subscription_ends_at,
+          motivo: t.subscription_ended_reason,
+          nota: "assinatura VIVA no gateway de um tenant com cancelamento agendado — precisa de decisão humana",
+        }))
+        continue
+      }
+
       const patch: Record<string, unknown> = {
         asaas_subscription_id: existente,
-        // O carimbo de encerramento não pode sobreviver a uma assinatura viva.
-        subscription_ends_at:  null,
       }
       let diaDoGateway: number | null = null
       try {
@@ -154,13 +177,32 @@ async function reconciliar(): Promise<ReconcileResult> {
           tenant: t.id, subscription: existente, msg: (e as Error).message }))
       }
 
-      const { error } = await supabaseAdmin
-        .from("tenants")
-        .update(patch)
-        .eq("id", t.id)
-        .eq("asaas_subscription_id", t.asaas_subscription_id)
-      if (error) { out.erros++; continue }
+      // 🔑 Mesmo helper da criação e da retomada — o CAS de `subscription_ends_at` e a
+      //    limpeza conjunta do motivo moram lá dentro, então nenhum caminho pode esquecer.
+      // 🔑 A guarda de POSSE ("a reserva que eu li ainda está lá") vai como 4º argumento, ou
+      //    seja **dentro do mesmo UPDATE**. Escrevi ela primeiro como um SELECT separado — e
+      //    a catraca de `error` descartado me fez olhar de novo: aquilo era check-then-act,
+      //    com janela entre conferir e escrever, numa função que existe justamente pra fechar
+      //    janelas. Uma trava atômica vale mais que duas em sequência.
+      const vinculo = await vincularAssinatura(
+        t.id, patch, t.subscription_ends_at, t.asaas_subscription_id,
+      )
+      if ("error" in vinculo) { out.erros++; continue }
       out.reservasLimpas++
+
+      // 🔴 A MÁQUINA ACABOU DE DECIDIR COM QUEM E QUANDO ESTE CLIENTE É COBRADO — adotou uma
+      //    assinatura órfã e possivelmente reescreveu o `billing_day`. Até 12/08 isso só
+      //    existia em `console.error`, que ninguém consulta seis meses depois numa disputa.
+      // ⚠️ `antes` guarda a reserva `pending:` que estava presa: é ela que explica por que a
+      //    adoção foi necessária — sem ela a linha parece uma troca arbitrária de id.
+      await auditarCobranca({
+        tenantId: t.id,
+        acao:     "billing.vinculo_reconciliado",
+        origem:   "cron",
+        alvo:     { tipo: "subscription", id: existente },
+        antes:    { asaas_subscription_id: t.asaas_subscription_id },
+        depois:   { asaas_subscription_id: existente, billing_day: diaDoGateway },
+      })
 
       // ⚠️ `console.error` e não `log`: adoção órfã é sempre um tenant que precisa de olho
       //    humano. A linha diz exatamente o que ficou faltando pra alguém completar.

@@ -38,8 +38,18 @@ export type AcaoDeCobranca =
   | "billing.restringido"         // venceu ⇒ degrau 2
   | "billing.assinatura_encerrada" // cancelada no gateway ⇒ carimba até quando vale
   // ── o relógio virou (cron) ────────────────────────────────────────────────
-  | "billing.paywall_encerrou"    // passou da carência ⇒ desliga a cobrança
+  // ⚠️ `paywall_encerrou` NUNCA foi emitido e não será: o bloco 4 do housekeeping (o
+  //    encerramento automático por falta de pagamento) foi REMOVIDO em 12/08 — a máquina
+  //    deixou de encerrar relação comercial. Fica no vocabulário porque descreve um fato
+  //    que pode voltar a existir se a decisão mudar; some no dia em que isso for descartado
+  //    de vez. Registrado aqui pra ninguém procurar linhas que não existem.
+  | "billing.paywall_encerrou"    // (inerte desde 12/08)
   | "billing.ciclo_encerrado"     // o ciclo pago do cancelamento acabou
+  // ── a máquina consertando a si mesma (reconcile) ──────────────────────────
+  // 🔑 O reconcile ADOTA assinatura órfã e reescreve `asaas_subscription_id`/`billing_day`.
+  //    É a máquina mudando com QUEM e QUANDO o cliente é cobrado, sem ninguém por perto —
+  //    exatamente o tipo de mudança que precisa de testemunha.
+  | "billing.vinculo_reconciliado"
   // ── a mão do operador (god mode) ──────────────────────────────────────────
   | "billing.status_alterado"     // mexeu em subscription_status / carência / dia
   | "billing.fatura_baixada"      // marcou paga à mão

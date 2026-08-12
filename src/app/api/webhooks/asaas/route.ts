@@ -60,6 +60,36 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
+/**
+ * Remove a CREDENCIAL de cartão do payload antes de ele virar linha no banco.
+ *
+ * 🔴 O PROJETO CIFRAVA O TOKEN NUMA TABELA E O GUARDAVA EM CLARO NA OUTRA (achado do
+ *    engenheiro de dados, 12/08). `tenants.asaas_card_token` é `enc:v1:…`; o mesmo token
+ *    chegava limpo em `payload.payment.creditCard.creditCardToken` — medido: **9 de 18
+ *    eventos** carregavam credencial, 4 tokens distintos. E esse token não é rótulo: é o que
+ *    se replaya num `POST /payments` pra debitar o cartão.
+ *
+ * 🔑 Não é vazamento externo — `asaas_webhook_events` tem RLS on, 0 policies e 0 grants, e
+ *    o token do browser bate em 42501. O que isso derrubava era a garantia de **cifra em
+ *    repouso**: um dump de backup, um vazamento de `service_role` ou um log que serialize o
+ *    payload entregariam a credencial viva.
+ *
+ * ⚠️ `creditCardBrand` e `creditCardNumber` (mascarado pelo gateway) FICAM: são rótulo — o
+ *    mesmo dado que o cliente lê na fatura do banco dele — e é com eles que se reconstrói
+ *    "qual cartão" numa conciliação. A regra do arquivo de assinaturas vale aqui igual:
+ *    rótulo ≠ credencial.
+ * ⚠️ Cópia rasa por nível, sem `structuredClone`: o payload é JSON puro vindo do `req.json()`
+ *    e só o ramo `payment.creditCard` é reescrito — o resto segue por referência, intacto.
+ */
+function semCredencial(body: Record<string, unknown>): Record<string, unknown> {
+  const pg = body.payment as Record<string, unknown> | undefined
+  const cc = pg?.creditCard as Record<string, unknown> | undefined
+  if (!cc || !("creditCardToken" in cc)) return body
+
+  const { creditCardToken: _descartado, ...rotulo } = cc
+  return { ...body, payment: { ...pg, creditCard: rotulo } }
+}
+
   const payment = (body.payment ?? {}) as { id?: string; customer?: string }
 
   // ── Regra 2 · idempotência REAL, antes de qualquer efeito ───────────────
@@ -71,7 +101,7 @@ export async function POST(req: NextRequest) {
     id:         eventId,
     event_type: event,
     payment_id: typeof payment.id === "string" ? payment.id : null,
-    payload:    body,
+    payload:    semCredencial(body),
   })
 
   if (insErr) {

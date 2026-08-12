@@ -285,3 +285,46 @@ describe("contratar não desfaz cancelamento pendente", () => {
     expect(tenant().subscription_ended_reason).toBeNull()
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// O bloqueio de recontratação do chargeback — imposto no MOTOR
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔑 Ele protege a conta merchant, não pune o cliente: índice alto de contestação derruba a
+//    conta na adquirente e para a cobrança de TODOS. Por isso a trava vive aqui e não só na
+//    vitrine — toda função exportada de `"use server"` é chamável por RSC, e bloqueio que só
+//    existe na tela é sugestão.
+describe("chargeback bloqueia recontratação", () => {
+  it("🔒 tenant bloqueado NÃO contrata — e o gateway nem é tocado", async () => {
+    const t = tenant()
+    t.rehire_blocked_at     = new Date().toISOString()
+    t.rehire_blocked_reason = "chargeback"
+
+    const r = await criar()
+
+    expect("error" in r).toBe(true)
+    // Nada de tokenizar cartão nem criar assinatura: para antes de qualquer chamada.
+    expect(gw.chamadas).toHaveLength(0)
+  })
+
+  it("a mensagem não acusa nem explica o motivo", async () => {
+    const t = tenant()
+    t.rehire_blocked_at     = new Date().toISOString()
+    t.rehire_blocked_reason = "chargeback"
+
+    const r = await criar()
+
+    // ⚠️ Quem lê pode ser um sócio que não sabe o que o outro fez na operadora — e detalhar
+    //    a régua antifraude ensina a contorná-la.
+    const msg = "error" in r ? r.error : ""
+    expect(msg).not.toMatch(/chargeback|contesta|fraude|estorno/i)
+    expect(msg).toMatch(/fale com a gente/i)
+  })
+
+  it("sem bloqueio, contrata normalmente — a trava não vaza pro caminho comum", async () => {
+    gw.responde("POST /subscriptions", { id: "sub_ok" })
+
+    const r = await criar()
+
+    expect(r).toEqual({ id: "sub_ok" })
+  })
+})
