@@ -153,8 +153,21 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     // ⚠️ Consulta mora AQUI, no carregador da tela, e não em `getBillingStanding`: aquele
     //    roda no banner de TODA página do app, e ninguém precisa da lista de módulos pra
     //    desenhar um aviso.
+    // 🔴 `active` NÃO EXISTE EM `module_catalog` — e o card sumiu por meses por causa disso
+    //    (12/08). As colunas reais são `slug, category, name, description, is_core,
+    //    default_on, position, parent_slug`. O PostgREST devolvia **42703**, o `data` vinha
+    //    `null`, o `?? []` transformava o erro em lista vazia, e o card "O que está incluso"
+    //    desaparecia inteiro — sem erro na tela e sem log.
+    // ⚠️ É O MESMO DEFEITO DE 05/08 POR OUTRA PORTA. Lá a lista vinha da fonte errada; aqui
+    //    vem da fonte certa com uma coluna inventada. O sintoma é idêntico: cliente pagante
+    //    com um título e nada embaixo, na tela que existe pra justificar a mensalidade.
+    //    Medido no Moises Pena: **7 módulos ligados, zero exibidos**.
+    // 🔑 O `active` foi assumido por analogia com `plans.active`, que existe — mas em outra
+    //    tabela. Aqui não há esse conceito: quem decide se o módulo vale pro tenant é
+    //    `tenant_modules.enabled`, e a consulta JÁ filtra por ele. Era uma segunda trava que
+    //    nunca existiu.
     supabaseAdmin.from("tenant_modules")
-      .select("module_slug, module_catalog!inner ( name, active )")
+      .select("module_slug, module_catalog!inner ( name )")
       .eq("tenant_id", tenantId).eq("enabled", true),
   ])
 
@@ -164,12 +177,27 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     (tenantRow.data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id,
   )
 
+  // 🔴 O `error` DESCARTADO É O QUE FEZ ISSO PASSAR. Sem capturá-lo, "a consulta falhou" e
+  //    "este cliente não tem módulo nenhum" ficam indistinguíveis — e a segunda é uma frase
+  //    plausível, então ninguém desconfia. Foi assim que uma coluna inexistente sobreviveu
+  //    em produção: o card sumia e a tela não reclamava.
+  // ⚠️ NÃO derruba a página: a lista de módulos é contexto, não o assunto da tela. Ela grita
+  //    no log e degrada pra vazio — o mesmo princípio de "execução para, leitura degrada".
+  //    O que não pode é degradar em SILÊNCIO.
+  if (modulos.error) {
+    console.error(JSON.stringify({
+      src: "subscription-view", kind: "MODULOS-INCLUSOS-NAO-LIDOS",
+      tenant: tenantId, msg: modulos.error.message,
+      nota: "o card 'O que está incluso' vai aparecer vazio — isto NÃO significa que o cliente não tem módulos",
+    }))
+  }
+
   // Nome do catálogo, ordenado — a ordem do banco não significa nada pro cliente.
   const incluso = ((modulos.data ?? []) as unknown as {
-    module_catalog: { name: string; active: boolean } | { name: string; active: boolean }[] | null
+    module_catalog: { name: string } | { name: string }[] | null
   }[])
     .map((m) => (Array.isArray(m.module_catalog) ? m.module_catalog[0] : m.module_catalog))
-    .filter((c): c is { name: string; active: boolean } => !!c && c.active)
+    .filter((c): c is { name: string } => !!c?.name)
     .map((c) => c.name)
     .sort((a, b) => a.localeCompare(b, "pt-BR"))
 
