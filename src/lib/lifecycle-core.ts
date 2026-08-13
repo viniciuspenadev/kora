@@ -2,6 +2,7 @@ import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { logAudit } from "@/lib/audit"
 import { revokeTenantAccess, type RevokeTenantAccessResult } from "@/lib/auth/revoke-tenant-access"
+import { pausarCanaisDoTenant, canaisDerrubados, type ResultadoPausa } from "@/lib/channels/pause"
 import { TRANSITIONS, normalizeState, type LifecycleAction, type LifecycleState } from "@/lib/lifecycle-shared"
 import { cancelSubscriptionForTenant } from "@/lib/asaas/subscriptions"
 
@@ -121,8 +122,29 @@ export async function transitionLifecycleCore(
   //    emergência (conta comprometida) é que liga essa parte.
   const REVOKING: ReadonlySet<LifecycleAction> = new Set(["suspend", "deactivate", "reject"])
   let revoked: RevokeTenantAccessResult | null = null
+  let canais:  ResultadoPausa | null = null
   if (REVOKING.has(action)) {
     revoked = await revokeTenantAccess(tenantId)
+
+    // 📡 E PAUSA O CANAL (12/08). A cascata cortava tudo que dá ACESSO e tudo que gera
+    //    COBRANÇA — e deixava o FIO LIGADO. Medido em produção no mesmo dia: *Bernardo
+    //    Concept*, `suspended` + `active=false`, com a instância baileys **conectada**.
+    //    Clientes finais mandavam mensagem para um número que atendia, o webhook descartava
+    //    por `canAccess`, e a mensagem sumia — o remetente via "entregue" e ninguém era
+    //    avisado. A instância seguia custando na Evolution.
+    // 🔑 Suspender é dizer "não presto mais serviço". Enquanto o canal responde, o produto
+    //    ainda está prometendo atendimento em nome de alguém que não tem mais atendimento —
+    //    e quem paga essa conta é o cliente FINAL, que não deve nada.
+    // ⚠️ Best-effort, como o resto da cascata e pelo mesmo motivo. Falha vai pra trilha, não
+    //    pro retorno: o estado já foi escrito e devolver erro faria a UI dizer "não consegui
+    //    suspender" sobre algo já feito.
+    canais = await pausarCanaisDoTenant(tenantId, action === "suspend" ? "suspensao" : "encerramento")
+    if (canais.falhas.length || canais.pendentes.length) {
+      console.error(JSON.stringify({
+        src: "lifecycle", kind: "CANAL-NAO-PAUSADO-CONFERIR", tenant: tenantId, action,
+        falhas: canais.falhas, pendentes: canais.pendentes,
+      }))
+    }
 
     // 💳 E CANCELA A COBRANÇA (05/08/2026). A cascata revogava sessão, token e push — tudo
     //    que dá ACESSO — e deixava a assinatura recorrente viva no gateway. O cliente
@@ -165,6 +187,26 @@ export async function transitionLifecycleCore(
     }
   }
 
+  // ── O caminho de VOLTA (12/08) ─────────────────────────────────────────────
+  // 🔴 CONSERTA UMA REGRESSÃO QUE A PAUSA CRIOU. Sem isto: suspende → canal derrubado →
+  //    reativa → conta ativa, tela dizendo "tudo certo", e **nenhuma mensagem chegando**.
+  //    Um silêncio trocado por outro.
+  // 🔑 NÃO religa sozinho, de propósito: `status='disconnected'` não diz QUEM desligou, e
+  //    religar sem distinguir faria a Kora se re-autorizar na conta de quem pediu pra sair.
+  //    A volta automática espera o motivo carimbado (item 3 do desenho). Até lá, avisa.
+  const VOLTANDO: ReadonlySet<LifecycleAction> = new Set(["reactivate", "approve", "activate", "start_trial", "extend"])
+  let canaisFora: Awaited<ReturnType<typeof canaisDerrubados>> | null = null
+  if (VOLTANDO.has(action)) {
+    canaisFora = await canaisDerrubados(tenantId)
+    if (canaisFora.length) {
+      console.warn(JSON.stringify({
+        src: "lifecycle", kind: "CANAL-FORA-APOS-REATIVACAO", tenant: tenantId, action,
+        canais: canaisFora,
+        nota: "a conta voltou mas o canal está desconectado — precisa reconectar em Integrações",
+      }))
+    }
+  }
+
   await logAudit({
     tenantId,
     actorId:    opts?.actorId ?? null,
@@ -185,6 +227,20 @@ export async function transitionLifecycleCore(
             errors:              revoked.errors.length ? revoked.errors : null,
           }
         : null,
+      // 📡 O canal entra na trilha pelo mesmo motivo que a contagem de sessões entrou:
+      //    "suspendi" e "o canal parou de receber" são afirmações diferentes, e sem isto
+      //    só a primeira seria demonstrável. `pendentes` fica visível de propósito — um
+      //    canal que ninguém sabe pausar não pode desaparecer do registro.
+      canais: canais
+        ? {
+            pausados:  canais.pausados,
+            falhas:    canais.falhas.length    ? canais.falhas    : null,
+            pendentes: canais.pendentes.length ? canais.pendentes : null,
+          }
+        : null,
+      // Na volta: quais canais seguem fora. Sem isto, "reativei" e "o cliente voltou a
+      // receber" ficariam indistinguíveis na trilha — e são coisas diferentes.
+      canais_fora: canaisFora?.length ? canaisFora : null,
     },
   })
 

@@ -3,7 +3,7 @@ import { cache } from "react"
 import { supabaseAdmin } from "@/lib/supabase"
 import { listAllLimits, getStorageBreakdown } from "@/lib/limits"
 import { LIMIT_META, type LimitInfo, type LimitResource } from "@/lib/limits-shared"
-import { getBillingStanding, type BillingStanding } from "@/lib/billing/standing"
+import { getBillingStanding, PAUSADO_POR_MODULO, type BillingStanding } from "@/lib/billing/standing"
 import { getCobrancaDoGateway } from "@/lib/asaas/subscription-info"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { normalizarBandeira, rotuloDoCartao, type Bandeira } from "@/lib/billing/card-brand"
@@ -192,10 +192,27 @@ export const getAssinaturaView = cache(async (tenantId: string): Promise<Assinat
     }))
   }
 
+  // 🔴 O MESMO MÓDULO APARECIA DUAS VEZES, COM NOMES DIFERENTES (achado no teste ao vivo,
+  //    12/08). `incluso` usa o nome do CATÁLOGO; `paused` usa um rótulo próprio que agrupa
+  //    módulos por CONSEQUÊNCIA. Os dois vocabulários nunca foram conciliados, então o
+  //    cliente via "Widget do site ✓" e "Chat do site — PAUSADO" (o mesmo `widget_site`), e
+  //    "Kora Studio ✓" com "Automações e respostas automáticas — PAUSADO" (o mesmo
+  //    `ai_studio`). Sem como saber que são a mesma coisa.
+  // ⚠️ Só ficou visível agora porque a lista verde estava QUEBRADA até hoje (a coluna
+  //    `active` inexistente). Consertar um bug acendeu a luz em cima do outro.
+  // 🔑 A correção é por CONSTRUÇÃO, não por renomear um dos lados: um módulo pertence a UM
+  //    grupo. Quem está pausado sai do incluso — e é o slug que decide, não o nome, porque
+  //    os nomes é que divergem.
+  const slugsPausados = new Set(
+    PAUSADO_POR_MODULO.filter((p) => standing.paused.includes(p.label)).flatMap((p) => p.modulos),
+  )
+
   // Nome do catálogo, ordenado — a ordem do banco não significa nada pro cliente.
   const incluso = ((modulos.data ?? []) as unknown as {
+    module_slug: string
     module_catalog: { name: string } | { name: string }[] | null
   }[])
+    .filter((m) => !slugsPausados.has(m.module_slug))
     .map((m) => (Array.isArray(m.module_catalog) ? m.module_catalog[0] : m.module_catalog))
     .filter((c): c is { name: string } => !!c?.name)
     .map((c) => c.name)

@@ -140,7 +140,7 @@ export interface BillingStanding {
  *    cobre boas-vindas, palavra-chave e fluxos do Studio — quem tem qualquer um deles
  *    perde automação de verdade.
  */
-const PAUSADO_POR_MODULO: { label: string; modulos: string[] }[] = [
+export const PAUSADO_POR_MODULO: { label: string; modulos: string[] }[] = [
   { label: "Campanhas",                          modulos: ["broadcasts"] },
   { label: "Inteligência artificial",            modulos: ["ai"] },
   { label: "Automações e respostas automáticas", modulos: ["welcome_message", "keyword_triggers", "ai_studio"] },

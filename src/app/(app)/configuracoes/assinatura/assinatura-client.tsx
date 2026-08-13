@@ -4,7 +4,7 @@ import { useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { ArrowRight, CalendarClock, Check, CreditCard, Download, Loader2, MessageCircle, Pause, Receipt, XCircle } from "lucide-react"
+import { ArrowRight, CalendarClock, CreditCard, Download, Loader2, MessageCircle, Receipt, XCircle } from "lucide-react"
 import { retomarAssinatura } from "@/lib/actions/subscription"
 import { SectionCard } from "@/components/ui/section-card"
 import { linkSuporte } from "@/lib/support"
@@ -44,6 +44,39 @@ import { BandeiraLogo } from "@/components/billing/bandeira-logo"
 //
 // • O RAIL DIREITO É UM PAINEL CONTÍNUO com divisórias, não três cartões
 //   flutuando. Cara de extrato, que é o que ele é.
+
+// ═══════════════════════════════════════════════════════════════
+// O que cada pausa significa, em linguagem de resultado
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔑 A DÚVIDA REAL NÃO É "o que é esse módulo" — é *"o que eu perdi, e o que eu NÃO
+//    perdi?"*. Quem comprou Kanban sabe o que é Kanban; quem vê "Automações — pausado"
+//    quer saber se o WhatsApp dele ainda recebe mensagem e se as campanhas agendadas
+//    sumiram. Por isso a explicação vive nos PAUSADOS e não nos ativos.
+//
+// ⚠️ Sem tooltip e sem ícone de "i", de propósito: hover não existe no toque, e esta tela
+//    é aberta no celular por dono de PME. Texto curto embaixo do nome responde sem exigir
+//    interação nenhuma.
+// ⚠️ Cada frase diz o que parou E o que continua — a regra do projeto: um aviso que só
+//    enumera perdas lê como punição; dizer o que segue de pé lê como estado.
+// 🔑 As chaves são os RÓTULOS de `PAUSADO_POR_MODULO` (standing.ts), não slugs. Rótulo
+//    novo lá ⇒ frase nova aqui; sem ela o item aparece só com o nome, que degrada bem.
+const O_QUE_PAROU: Record<string, string> = {
+  "Campanhas":
+    "Nenhum disparo sai enquanto isso. As campanhas agendadas não são perdidas — ficam na fila e saem quando voltar.",
+  "Inteligência artificial":
+    "O agente para de responder sozinho. As conversas continuam chegando normalmente e podem ser respondidas à mão.",
+  "Automações e respostas automáticas":
+    "Boas-vindas, gatilhos por palavra-chave e fluxos do Studio param. Nada é apagado — os fluxos ficam como estão.",
+  "Lembretes da agenda":
+    "Os agendamentos continuam no calendário; só o lembrete automático deixa de ser enviado.",
+  "Chat do site":
+    "O widget deixa de aparecer no seu site. Quem já conversou continua no histórico.",
+  "Atendimento pelo WhatsApp":
+    "Não é possível enviar mensagem pela plataforma. As mensagens que chegam continuam sendo recebidas e guardadas.",
+  "Acesso da sua equipe":
+    "Só quem responde pela conta entra. Nenhum usuário é removido — o acesso volta junto com o pagamento.",
+}
 
 export function AssinaturaClient({ mock, abrirCartao = false, preview = false }: {
   mock: AssinaturaMock
@@ -132,29 +165,54 @@ export function AssinaturaClient({ mock, abrirCartao = false, preview = false }:
               title="O que está incluso"
               description="O que sua assinatura te deixa fazer hoje"
             >
+              {/* ── ATIVOS ─────────────────────────────────────────────────
+                  🔑 Bolinha em vez de ícone + rótulo (pedido do dono, 12/08). O estado é
+                     binário — está no ar ou não está — e binário se lê pela COR, num
+                     piscar. O check verde e o badge "PAUSADO" diziam a mesma coisa duas
+                     vezes, e o riscado ainda fazia o nome pausado ficar mais difícil de
+                     ler justo pra quem quer saber o que perdeu.
+                  ⚠️ A cor nunca vai sozinha: o item pausado carrega uma linha dizendo o que
+                     parou. Cor é atalho pra quem varre; texto é a resposta pra quem para. */}
               <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
                 {incluso.map((item) => (
-                  <li key={item} className="flex items-center gap-2 py-0.5">
-                    <Check className="size-4 text-emerald-600 shrink-0" strokeWidth={2.5} />
+                  <li key={item} className="flex items-center gap-2.5 py-0.5">
+                    <span className="size-2 rounded-full bg-emerald-500 shrink-0" />
                     <span className="text-sm text-slate-700">{item}</span>
-                  </li>
-                ))}
-                {standing.paused.map((item) => (
-                  <li key={item} className="flex items-center gap-2 py-0.5">
-                    <Pause className="size-4 text-red-500 shrink-0" strokeWidth={2.5} />
-                    <span className="text-sm text-slate-400 line-through decoration-slate-300">{item}</span>
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-red-700 bg-red-50 border border-red-100 rounded px-1.5 py-px">
-                      pausado
-                    </span>
                   </li>
                 ))}
               </ul>
 
+              {/* ── PAUSADOS ───────────────────────────────────────────────
+                  🔑 Bloco PRÓPRIO, separado por filete. É por construção que a duplicata
+                     morre: um módulo está aqui OU acima, nunca nos dois. E a separação
+                     responde a pergunta certa — quem chega nesta tela em atraso quer saber
+                     "o que eu perdi", não "o que eu tenho".
+                  ⚠️ Cada item diz o que parou E o que continua. É a regra do projeto: um
+                     aviso que só enumera perdas lê como punição; dizer o que segue de pé lê
+                     como estado. */}
               {standing.paused.length > 0 && (
-                <p className="text-xs text-slate-500 mt-4 pt-3.5 border-t border-slate-100 leading-relaxed">
-                  Volta sozinho assim que o pagamento cair — nada precisa ser reconfigurado, e as
-                  campanhas agendadas seguem na fila.
-                </p>
+                <div className="mt-4 pt-3.5 border-t border-slate-100">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2.5">
+                    Pausado agora
+                  </p>
+                  <ul className="space-y-2.5">
+                    {standing.paused.map((item) => (
+                      <li key={item} className="flex items-start gap-2.5">
+                        <span className="size-2 rounded-full bg-red-500 shrink-0 mt-1.5" />
+                        <div className="min-w-0">
+                          <p className="text-sm text-slate-700">{item}</p>
+                          {O_QUE_PAROU[item] && (
+                            <p className="text-xs text-slate-400 leading-relaxed mt-0.5">{O_QUE_PAROU[item]}</p>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-slate-500 mt-3.5 pt-3 border-t border-slate-100 leading-relaxed">
+                    Volta sozinho assim que o pagamento cair — nada precisa ser reconfigurado, e as
+                    campanhas agendadas seguem na fila.
+                  </p>
+                </div>
               )}
             </SectionCard>
             )}
