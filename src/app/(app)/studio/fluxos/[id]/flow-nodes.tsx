@@ -10,11 +10,12 @@
 import { createContext, useContext, useMemo, useState } from "react"
 import { Handle, Position, useNodeId, useStore, type NodeProps } from "@xyflow/react"
 import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
-import type { FlowGraph } from "@/lib/ai-v2/flow/types"
+import type { FlowGraph, MessageNodeConfig, RichMessage } from "@/lib/ai-v2/flow/types"
+import { baloesDe, baloesBotoes } from "@/lib/ai-v2/flow/message-balloons"
 import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, UserPlus, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck, Link2 } from "lucide-react"
 import { PlatformIcon } from "@/components/ui/platform-icon"
 import { SourceLogo } from "@/components/chat/source-logo"
-import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig, RichMessage } from "@/lib/ai-v2/flow/types"
+import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
 
 const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
 const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
@@ -348,25 +349,74 @@ function IgCommentStartCard({ t, kw, selected }: { t: TriggerSummary; kw: string
   )
 }
 
+/** O FILHO: um balão do nó Mensagem visto de fora — uma linha, truncada, sempre igual. */
+function BalloonRow({ n, msg }: { n: number; msg: RichMessage }) {
+  const linha = (msg.text ?? "").trim().split(/\r?\n/).find(Boolean) ?? ""
+  const vazio = !linha && !msg.media?.path
+  return (
+    <div className={`flex items-center gap-1.5 rounded-lg rounded-tl-[3px] px-2 py-1 text-[10.5px] leading-snug ${
+      vazio
+        ? "border border-dashed border-slate-200 bg-slate-50/60 text-slate-400 italic"
+        : "bg-primary-50 text-slate-700 ring-1 ring-inset ring-primary-100"}`}>
+      <span className="shrink-0 w-3 text-[9px] font-bold tabular-nums text-slate-400">{n}</span>
+      {msg.media?.path && <ImageIcon className="size-2.5 shrink-0 text-slate-400" />}
+      <span className="truncate">{linha || (msg.media?.path ? "imagem" : "vazio")}</span>
+    </div>
+  )
+}
+
 function MessageNode(p: NodeProps) {
-  const cfg  = cfgOf(p)
-  const rich = cfg.rich as RichMessage | undefined
-  const text = String(rich?.text ?? cfg.text ?? "")
-  const btns = rich?.buttons ?? []
+  const conf = cfgOf(p) as unknown as MessageNodeConfig
+  /**
+   * 🔴 O CARD LÊ OS BALÕES, E ISSO É CORREÇÃO, NÃO ENFEITE (2026-08-17).
+   *
+   *    Ele lia `cfg.rich` — que o compositor grava como o PRIMEIRO balão (compat de
+   *    deploy). Os botões, por regra, moram no ÚLTIMO. Com 2+ balões o card desenharia
+   *    ZERO botões e, com eles, zero `BranchHandle`: as saídas sumiriam do desenho
+   *    enquanto as arestas continuavam válidas no dado — linha apontando pra um ponto
+   *    que não existe na tela.
+   *
+   * ⚠️ `baloesDe` devolve vazio pro nó legado de texto puro (ele tem caminho próprio);
+   *    por isso o texto cai pro `cfg.text`, como sempre foi.
+   */
+  const baloes  = baloesDe(conf)
+  const text    = String(baloes[0]?.text ?? conf.text ?? "")
+  const btns    = baloesBotoes(conf) ?? []
   // Só botão de RESPOSTA vira saída. O de link aparece (a pessoa configurou, precisa ver)
   // mas SEM handle — dele não sai linha porque o toque vai pro navegador e nunca volta.
   const replies = btns.filter((b) => b.kind === "reply")
+  const temImg  = baloes.some((b) => b.media?.path)
 
   return (
     <>
       <TargetHandle />
       <Card icon={MessageSquare} accent="bg-sky-100 text-sky-700" title="Mensagem" selected={p.selected}>
-        {rich?.media?.path && (
-          <div className="mb-1 flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-[10px] text-slate-500">
-            <ImageIcon className="size-3" /> imagem
+        {/**
+          * MÃE E FILHOS (pedido do owner, 2026-08-17). Com 2+ balões o card mostra a
+          * SEQUÊNCIA — cada um uma linha truncada, todos com o MESMO tratamento.
+          *
+          * ⚠️ A 1ª versão dava `Bubble` cheio (4 linhas) pro primeiro e um tracinho cinza
+          *    pros outros: lia como um herói com sobras, não como uma sequência. E o card
+          *    de canvas é um ÍNDICE do que tem dentro, não o editor — texto inteiro aqui
+          *    faz o nó crescer e o desenho perder a leitura.
+          */}
+        {baloes.length > 1 ? (
+          <div className="space-y-1">
+            <p className="text-[9.5px] font-semibold uppercase tracking-wider text-slate-400">
+              {baloes.length} mensagens
+            </p>
+            {baloes.map((b, i) => <BalloonRow key={i} n={i + 1} msg={b} />)}
           </div>
+        ) : (
+          <>
+            {temImg && (
+              <div className="mb-1 flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-[10px] text-slate-500">
+                <ImageIcon className="size-3" /> imagem
+              </div>
+            )}
+            <Bubble text={text} placeholder="escreva a mensagem…" />
+          </>
         )}
-        <Bubble text={text} placeholder="escreva a mensagem…" />
         {btns.length > 0 && (
           <div className="mt-1.5 space-y-1">
             {btns.map((b) => (

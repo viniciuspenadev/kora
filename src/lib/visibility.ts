@@ -1,6 +1,7 @@
 import "server-only"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
+import { reachesDepartment } from "@/lib/scope/department"
 
 /**
  * Fonte ÚNICA da regra de visibilidade de conversa do sistema.
@@ -368,6 +369,40 @@ export function memberSeesUnassigned(
   if (!memberAttendsNumber(m, conv.instance_id)) return false
   if (m.see_pool !== false) return true                                 // pool (default true)
   return !!m.department_id && conv.department_id === m.department_id    // fila do setor
+}
+
+/**
+ * ROTEAMENTO (≠ visibilidade): este membro pode RECEBER uma conversa deste setor?
+ *
+ * 🔴 Pergunta DIFERENTE da de `memberSeesUnassigned`, e a diferença é o `see_pool`.
+ *    Aquele responde "quem DESCOBRE o não-atribuído" e exige fila geral ligada. Quem
+ *    tem `see_pool=false` responde NÃO lá — e é exatamente quem, por desenho do produto,
+ *    depende da distribuição pra receber trabalho ("recebe via Distribuição/auto-assign
+ *    ou atribuição manual", CLAUDE.md). Usar o helper de visibilidade aqui excluiria do
+ *    rodízio justamente quem mais precisa dele. Por isso o predicado é próprio — mas mora
+ *    AQUI, coladinho na família, pra quem mudar a regra de setor ver os dois juntos.
+ *
+ * Sem setor na conversa (Triagem, que é como todo inbound nasce) → todo mundo serve.
+ * Com setor → pertence a ele, supervisiona ele, ou tem alcance amplo (admin/view_all).
+ *
+ * ⚠️ NÃO decide número: o gate de `instance_ids` continua explícito no chamador, porque
+ *    ali ele vale INCLUSIVE pra admin (rodízio é escala operacional, não visibilidade) —
+ *    divergência consciente e antiga do auto-assign.
+ *
+ * 🔴 A REGRA em si mora em `@/lib/scope/department` (puro, sem `server-only`), porque o
+ *    roteador (`lib/routing`) precisa dela e precisa ficar puro. Esta função é só o
+ *    adaptador do formato snake_case desta casa. Mudou a regra? Muda LÁ, uma vez.
+ */
+export function memberServesDepartment(
+  m: FanoutMemberRow,
+  departmentId: string | null | undefined,
+): boolean {
+  return reachesDepartment({
+    role:                  m.role,
+    viewAll:               m.view_all ?? null,
+    departmentId:          m.department_id ?? null,
+    supervisesDepartments: m.supervises_departments ?? null,
+  }, departmentId)
 }
 
 export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {

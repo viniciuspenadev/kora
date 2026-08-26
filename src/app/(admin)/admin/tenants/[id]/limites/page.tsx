@@ -8,7 +8,7 @@ export default async function TenantLimitsPage({ params }: { params: Promise<{ i
 
   const { data: tenant } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, plan")
+    .select("id, name, plan, plan_id, plans(name)")
     .eq("id", id)
     .maybeSingle()
 
@@ -27,11 +27,17 @@ export default async function TenantLimitsPage({ params }: { params: Promise<{ i
     overrideMap[o.resource] = { reason: o.reason, expires_at: o.expires_at, set_at: o.set_at }
   }
 
+  const planRelation = (tenant as unknown as {
+    plans?: { name: string } | { name: string }[] | null
+  }).plans
+  const canonicalPlanName = Array.isArray(planRelation) ? planRelation[0]?.name : planRelation?.name
+  const tenantPlan = tenant.plan_id ? (canonicalPlanName ?? "Plano indisponível") : tenant.plan
+
   return (
     <LimitsClient
       tenantId={tenant.id}
       tenantName={tenant.name}
-      tenantPlan={tenant.plan}
+      tenantPlan={tenantPlan}
       limits={limits}
       overrides={overrideMap}
     />

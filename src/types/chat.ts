@@ -117,6 +117,17 @@ export interface ChatConversation {
   won_at:                string | null
   lost_at:               string | null
   participants:          string[]
+
+  // Follow-up de atendimento (docs/atendimento-followup-design.md) — a PROMESSA de
+  // voltar a falar com o cliente. `follow_up_at` nulo = não há promessa.
+  // Opcionais: a linha vem de `select("*")`, e antes da migration F0 as colunas
+  // simplesmente não existem no retorno.
+  follow_up_at?:         string | null
+  follow_up_by?:         string | null
+  follow_up_note?:       string | null
+  follow_up_set_at?:     string | null
+  follow_up_fired_at?:   string | null
+
   // Grupos WhatsApp
   is_group:              boolean
   group_jid:             string | null

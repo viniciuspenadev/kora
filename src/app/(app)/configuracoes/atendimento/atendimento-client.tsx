@@ -144,7 +144,7 @@ export function AtendimentoClient(props: Props) {
                     ))}
                   </div>
                 </FormRow>
-                <FormRow label="Limite diário por atendente" hint="Evita sobrecarga. Vazio = ilimitado. Todos no cap → vai pra fila geral.">
+                <FormRow label="Atribuições automáticas por dia, por atendente" hint="Quantas conversas o sistema entrega a cada pessoa por dia. Não conta o que ela pegou na mão. Vazio = ilimitado. Todos no limite → vai pra fila geral.">
                   <div className="flex items-center gap-2">
                     <input type="number" value={config.max_per_day ?? ""} min={1} max={9999} placeholder="sem limite"
                       onChange={(e) => { const v = e.target.value.trim(); patch({ max_per_day: v === "" ? null : Math.max(1, Math.min(9999, Number(v) || 0)) }) }}

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { checkTenantStatus, gastoBloqueado } from "@/lib/auth/tenant-serviceable"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
+import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { decryptSecret } from "@/lib/crypto/secrets"
@@ -242,16 +243,12 @@ function igAdReply(ref: IgMessaging["referral"] | null): ExternalAdReply | null 
   }
 }
 
-/** Bump da conversa pós-inbound (abre janela 24h + sobe no inbox). */
-async function bumpConv(convId: string, preview: string): Promise<void> {
-  const { data: cc } = await supabaseAdmin.from("chat_conversations").select("unread_count, status").eq("id", convId).single()
-  const wasResolved = (cc?.status as string) === "resolved"
-  const now = new Date().toISOString()
-  await supabaseAdmin.from("chat_conversations").update({
-    last_message_at: now, last_inbound_at: now, last_message_preview: preview, last_message_dir: "in",
-    unread_count: ((cc?.unread_count as number) ?? 0) + 1, status: wasResolved ? "open" : (cc?.status as string), updated_at: now,
-    ...(wasResolved ? { resolved_at: null } : {}),
-  }).eq("id", convId)
+/** Bump da conversa pós-inbound (abre janela 24h + sobe no inbox).
+ *  Fonte única em @/lib/channels/inbound-bump — o contador de não-lidas é
+ *  incrementado pelo Postgres (antes daqui saía um lê-soma-grava que perdia
+ *  não-lida em rajada). Ganhou `tenantId`: o UPDATE agora é dupla-chave. */
+async function bumpConv(tenantId: string, convId: string, preview: string): Promise<void> {
+  await bumpConversationInbound({ tenantId, conversationId: convId, preview })
 }
 
 /** Preview da mensagem citada (resolve pelo mid já gravado) — paridade c/ meta-inbound. */
@@ -399,7 +396,7 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   })
   if (error) { if (error.code !== "23505") log("dm-insert-err", { err: error.message }); return }
 
-  await bumpConv(ctx.convId, preview)
+  await bumpConv(ctx.tenantId, ctx.convId, preview)
   log("dm-ok", { tenantId: ctx.tenantId, convId: ctx.convId, kind: dec.contentType })
 
   // 🔴 F0 — a chamada que faltava. Até 2026-07-28 o ingestor do Instagram gravava a
@@ -472,7 +469,7 @@ async function handleReaction(igAccountId: string | null, m: IgMessaging): Promi
     content_type: "reaction", content: emoji, whatsapp_msg_id: null, status: "delivered", is_private_note: false,
     metadata: { channel: "instagram", reacted_to_id: m.reaction.mid ?? null, ig_account_id: igAccountId },
   })
-  await bumpConv(ctx.convId, `Reagiu ${emoji}`)
+  await bumpConv(ctx.tenantId, ctx.convId, `Reagiu ${emoji}`)
   log("reaction", { convId: ctx.convId, emoji })
 }
 

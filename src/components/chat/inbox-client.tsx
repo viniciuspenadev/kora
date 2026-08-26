@@ -96,7 +96,7 @@ function sortByLastMessage(a: ChatConversation, b: ChatConversation): number {
 }
 
 interface ActiveFilters {
-  statusFilter: string; pipelineFilter: string; agentFilter: string; departmentFilter: string; tagFilter: string
+  statusFilter: string; channelFilter: "" | "whatsapp" | "instagram" | "site"; pipelineFilter: string; agentFilter: string; departmentFilter: string; tagFilter: string
   staleOnly: boolean; fromAd: boolean; archivedOnly: boolean; searchDebounced: string
 }
 
@@ -106,7 +106,11 @@ interface ActiveFilters {
 function matchesActiveFilters(conv: ChatConversation, f: ActiveFilters): boolean {
   if (f.searchDebounced || f.tagFilter) return false            // resolve no server → poll
   if (f.archivedOnly || conv.archived_at) return false          // conv nova nunca é arquivada
+  // Aba Follow-up: conversa recém-criada nunca tem promessa (ela é sempre manual),
+  // então nada entra por aqui — e o `status` não vale como filtro nessa aba.
+  if (f.statusFilter === "followup") return false
   if (f.statusFilter && f.statusFilter !== "all" && conv.status !== f.statusFilter) return false
+  if (f.channelFilter && conv.channel !== f.channelFilter) return false
   if (f.pipelineFilter && conv.pipeline_id !== f.pipelineFilter) return false
   if (f.agentFilter && conv.assigned_to !== f.agentFilter) return false
   if (f.departmentFilter && conv.department_id !== f.departmentFilter) return false
@@ -156,6 +160,7 @@ export function InboxClient({
 
   // ── Filtros (server-side) ───────────────────────────────────
   const [statusFilter, setStatusFilter]     = useState(initialStatus)
+  const [channelFilter, setChannelFilter]   = useState<"" | "whatsapp" | "instagram" | "site">("")
   const [pipelineFilter, setPipelineFilter] = useState("")
   const [agentFilter, setAgentFilter]       = useState("")
   const [departmentFilter, setDepartmentFilter] = useState("")
@@ -197,7 +202,7 @@ export function InboxClient({
   // Snapshot dos filtros pro handler do Realtime (canal não re-subscreve a cada
   // mudança de filtro — lê daqui).
   const filtersRef = useRef<ActiveFilters>({
-    statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced,
+    statusFilter, channelFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced,
   })
   // Latest-ref da lista pro handler do Realtime checar membership sem closure stale.
   const conversationsRef = useRef(conversations)
@@ -222,7 +227,7 @@ export function InboxClient({
     activeIdRef.current = activeId
     replyTargetRef.current = replyTarget
     conversationsRef.current = conversations
-    filtersRef.current = { statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
+    filtersRef.current = { statusFilter, channelFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced }
   })
 
   /**
@@ -247,8 +252,12 @@ export function InboxClient({
   }, [searchInput])
 
   // ── Build filters object ────────────────────────────────────
+  // A aba "Follow-up" não é um status — é um recorte por PROMESSA, que vale em
+  // qualquer status. Por isso vira `followUpOnly` e libera o status no servidor.
   const buildFilters = useCallback((): ConversationFilters => ({
-    status:       statusFilter,
+    status:       statusFilter === "followup" ? "all" : statusFilter,
+    followUpOnly: statusFilter === "followup" || undefined,
+    channel:      channelFilter || undefined,
     pipelineId:   pipelineFilter || undefined,
     agentId:      agentFilter    || undefined,
     departmentId: departmentFilter || undefined,
@@ -257,7 +266,7 @@ export function InboxClient({
     fromAd:       fromAd    || undefined,
     archivedOnly: archivedOnly || undefined,
     search:       searchDebounced || undefined,
-  }), [statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced])
+  }), [statusFilter, channelFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced])
 
   // ── Fetch primeira página (chama em mudança de filtro) ──────
   const loadFirstPage = useCallback(async () => {
@@ -358,7 +367,7 @@ export function InboxClient({
       return
     }
     loadFirstPage()
-  }, [statusFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced, loadFirstPage])
+  }, [statusFilter, channelFilter, pipelineFilter, agentFilter, departmentFilter, tagFilter, staleOnly, fromAd, archivedOnly, searchDebounced, loadFirstPage])
 
   // ── Carregar últimas 20 msgs ao selecionar conv ─────────────
   const loadMessages = useCallback(async (convId: string) => {
@@ -935,6 +944,13 @@ export function InboxClient({
     })
   }, [activeId])
 
+  // Follow-up marcado/cancelado no painel — a linha da lista muda no ATO (o chip não
+  // espera o poll). O servidor já gravou; aqui é só espelhar.
+  const handleFollowUpChange = useCallback((patch: Partial<ChatConversation>) => {
+    if (!activeId) return
+    setConversations((prev) => prev.map((c) => c.id === activeId ? { ...c, ...patch } : c))
+  }, [activeId])
+
   const handleArchiveToggle = useCallback(() => {
     if (!activeId) return
     const conv = conversations.find((c) => c.id === activeId)
@@ -1106,6 +1122,8 @@ export function InboxClient({
             onArchive={handleArchiveFromMenu}
             statusFilter={statusFilter}
             onStatusChange={setStatusFilter}
+            channelFilter={channelFilter}
+            onChannelFilterChange={setChannelFilter}
             pipelines={pipelines}
             stages={stages}
             tags={tags}
@@ -1154,6 +1172,7 @@ export function InboxClient({
                   agents={agents}
                   departments={departments}
                   onStatusChange={handleStatusChange}
+                  onFollowUpChange={handleFollowUpChange}
                   onTransfer={handleTransfer}
                   hasMoreOlder={hasMoreOlder}
                   loadingOlder={loadingOlder}

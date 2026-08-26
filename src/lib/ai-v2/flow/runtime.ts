@@ -21,6 +21,7 @@ import { captureContactField } from "../capabilities/update-contact"
 import { runOutreach } from "./outreach"
 import { runAgentTurn, type AgentTurnResult } from "../agent"
 import { hasModule } from "@/lib/modules"
+import { baloesDe, baloesBotoes, baloesEsperam, temBaloesRicos } from "./message-balloons"
 import type { PersonaInput } from "../prompt"
 import { loadFlow } from "./triggers"
 import { logConversationEvent } from "@/lib/atendimento/events"
@@ -32,6 +33,7 @@ import { resolveConnectedSources } from "./data-sources"
 import { outcomeLabel } from "./describe"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
+  RichMessage,
   MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
   HttpNodeConfig, CollectNodeConfig, CollectField, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
   SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
@@ -418,11 +420,23 @@ function nowInZone(timezone: string): { weekday: number; hhmm: string } | null {
 // Sempre grava o frame ativo COMPLETO (flow + nó + pilha) — essencial pra
 // sub-fluxos: ao esperar/avançar dentro de um filho, o run precisa apontar
 // pro flow_id do filho com a pilha do(s) pai(s).
+/**
+ * 🔴 A GRAVAÇÃO DO ESTADO É CONFERIDA (2026-08-17). Antes o `await` ia sem olhar o
+ *    retorno: se a escrita falhasse, o motor seguia acreditando que salvou onde parou.
+ *    Consequência real de uma falha silenciosa aqui: a próxima mensagem do cliente
+ *    reexecuta o nó anterior (mensagem repetida) ou o run congela no lugar errado —
+ *    e não há uma linha em lugar nenhum explicando por quê, porque `studio_runs` é o
+ *    ledger da IA e fluxo determinístico nunca escreve lá.
+ *
+ * ⚠️ Loga e SEGUE, nunca lança: um `throw` aqui subiria até o guarda-chuva do turno e
+ *    mataria a execução inteira — trocaria "estado desatualizado" por "cliente sem
+ *    resposta nenhuma", que é estritamente pior. Registrar é o objetivo.
+ */
 async function persistRun(
   runId: string, flow: FlowRow, nodeId: string | null,
   variables: Record<string, unknown>, callStack: CallFrame[], status: FlowRunRow["status"],
 ): Promise<void> {
-  await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from("studio_flow_runs")
     .update({
       flow_id:         flow.id,
@@ -437,12 +451,20 @@ async function persistRun(
       updated_at:      new Date().toISOString(),
     })
     .eq("id", runId)
+  if (error) console.error("[studio/flow] estado NÃO gravado:", JSON.stringify({ runId, flowId: flow.id, nodeId, status, err: error.message }))
 }
-async function finishRun(runId: string): Promise<void> {
-  await supabaseAdmin
+/** Fim do fluxo. `reason` distingue "chegou ao fim do desenho" de "o motor cortou". */
+async function finishRun(runId: string, reason: string, variables?: Record<string, unknown>): Promise<void> {
+  const { error } = await supabaseAdmin
     .from("studio_flow_runs")
-    .update({ status: "done", updated_at: new Date().toISOString() })
+    .update({
+      status: "done",
+      // Família `__*` (estado interno do motor) no jsonb que já existe — zero migration.
+      ...(variables ? { variables: { ...variables, __ended_reason: reason, __ended_at: new Date().toISOString() } } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", runId)
+  if (error) console.error("[studio/flow] fim NÃO gravado:", JSON.stringify({ runId, reason, err: error.message }))
 }
 
 // Vínculo 'carteira' + IA-no-retorno: ao FIM REAL do fluxo (único ponto de término
@@ -582,7 +604,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
        *    legítimo — vai pra saída "Escreveu" (`else`), que o autor conectou.
        */
       const cfg    = node.config as unknown as MessageNodeConfig
-      const picked = resolveRichButton(cfg.rich, input.incomingText, input.optionId)
+      // Os botões moram no ÚLTIMO balão (regra dura — ver `baloesBotoes`). Um nó do
+      // formato antigo devolve o próprio `rich`, então a retomada segue idêntica.
+      const picked = resolveRichButton({ buttons: baloesBotoes(cfg) }, input.incomingText, input.optionId)
       variables[`message:${node.id}`] = picked?.id ?? "else"
       currentId = edgeTarget(graph, node.id, picked?.id ?? "else")
     } else if (node?.type === "collect") {
@@ -710,23 +734,38 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "message": {
         const cfg = node.config as unknown as MessageNodeConfig
-        const rich = cfg.rich
 
-        // Nó ANTIGO (só `text`) → caminho de sempre, byte a byte. O campo rico é aditivo.
-        if (!rich) {
+        // Nó ANTIGO (só `text`) → caminho de sempre, byte a byte. Os campos ricos são
+        // aditivos, e este ramo fica INTOCADO de propósito: mandar texto puro pelo
+        // caminho rico mudaria o respiro e o metadata da linha gravada.
+        if (!temBaloesRicos(cfg)) {
           const text = interpolate((cfg.text ?? "").trim(), variables)
           if (text) { await sendBotText(ctx, text, { studio_flow: true }); responded = true }
           currentId = edgeTarget(graph, node.id)
           break
         }
 
-        const sendable: typeof rich = { ...rich, text: interpolate((rich.text ?? "").trim(), variables) }
-        // ⚠️ Só o TEXTO interpola — rótulo de botão não. Rótulo tem 20 caracteres e um
-        //    nome longo seria cortado no meio pelo canal.
-        if (sendable.text || sendable.media?.path) {
-          await sendBotRich(ctx, sendable, { studio_flow: true })
-          responded = true
-        } else {
+        /**
+         * BALÕES — de 1 a 4 mensagens em sequência (2026-08-17). Um nó do compositor
+         * antigo (`rich`) devolve uma lista de UM, então ele passa por aqui e sai igual
+         * ao de antes: mesma chamada, mesmo respiro, mesmo metadata.
+         *
+         * ⚠️ Cada balão é uma mensagem inteira e independente — texto, imagem ou cartão.
+         *    O renderizador já sabe montar cada um; aqui só se repete a chamada.
+         */
+        const baloes = baloesDe(cfg)
+        for (let i = 0; i < baloes.length; i++) {
+          const b = baloes[i]
+          const sendable: RichMessage = { ...b, text: interpolate((b.text ?? "").trim(), variables) }
+          // ⚠️ Só o TEXTO interpola — rótulo de botão não. Rótulo tem 20 caracteres e um
+          //    nome longo seria cortado no meio pelo canal.
+          if (sendable.text || sendable.media?.path) {
+            // `balao`/`de` no metadata: sem isso, 3 linhas de bot seguidas no inbox são
+            // indistinguíveis de 3 nós Mensagem — e aí "por que mandou 3 vezes?" é
+            // indepurável. É a mesma disciplina do diagnóstico de empate do comment-to-DM.
+            await sendBotRich(ctx, sendable, { studio_flow: true, ...(baloes.length > 1 ? { balao: i + 1, de: baloes.length } : {}) })
+            responded = true
+          } else {
           /**
            * 🔴 NADA A ENVIAR — e antes isto era SILÊNCIO (achado numa execução real do
            *    owner, 2026-08-06: fluxo "parou no segundo nó").
@@ -740,9 +779,12 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
            *    fica como rede: fluxo publicado ANTES da recusa existir continua no ar, e
            *    "não entregou" tem que aparecer pra quem atende.
            */
-          await noteFlowSkip(ctx,
-            "⚠️ Nó Mensagem não enviou nada: o formato escolhido exige texto e ele está vazio. Abra o nó no Kora Studio e escreva a mensagem.",
-            { node: "message", node_id: node.id })
+            await noteFlowSkip(ctx,
+              baloes.length > 1
+                ? `⚠️ O balão ${i + 1} do nó Mensagem não enviou nada: o formato escolhido exige texto e ele está vazio. Abra o nó no Kora Studio e escreva a mensagem.`
+                : "⚠️ Nó Mensagem não enviou nada: o formato escolhido exige texto e ele está vazio. Abra o nó no Kora Studio e escreva a mensagem.",
+              { node: "message", node_id: node.id, ...(baloes.length > 1 ? { balao: i + 1 } : {}) })
+          }
         }
 
         /**
@@ -750,8 +792,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
          *    um botão de resposta já é dizer que espera. Botão de LINK não conta — o toque
          *    abre o navegador e nunca devolve evento, então esperar seria esperar o que não
          *    vem.
+         *
+         * ⚠️ Os botões são os do ÚLTIMO balão, sempre — ver `baloesBotoes`.
          */
-        const waits = (rich.buttons ?? []).some((b) => b.kind === "reply")
+        const waits = baloesEsperam(cfg)
         if (waits) {
           await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
           return { status: "responded", departmentId: null, error: null, agent: lastAgent }
@@ -768,6 +812,19 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
             caption: interpolate((cfg.caption ?? "").trim(), variables) || undefined,
           }, { studio_flow: true })
           responded = true
+        } else {
+          /**
+           * 🔴 ENDEREÇO VAZIO ERA SILÊNCIO — o MESMO defeito que o nó Mensagem já teve e
+           *    que o owner pegou numa execução real (06/08). O nó era pulado, o fluxo
+           *    seguia, e o cliente final simplesmente não recebia a mídia.
+           *
+           * ⚠️ Vazio aqui tem DOIS pais: campo em branco, ou `{{variável}}` que não
+           *    resolveu — o segundo é o caso traiçoeiro, porque na tela o nó parece
+           *    preenchido. Por isso a nota diz as duas coisas.
+           */
+          await noteFlowSkip(ctx,
+            "⚠️ Nó Enviar mídia não enviou nada: o endereço do arquivo está vazio (ou a variável usada nele não tinha valor). O fluxo seguiu sem a mídia.",
+            { node: "send_media", node_id: node.id, reason: "empty_url", raw_url: cfg.url ?? null })
         }
         currentId = edgeTarget(graph, node.id)
         break
@@ -842,7 +899,23 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // resume roteia pela saída "returned" deste nó (ver bloco RESUME). Overwrite a
         // cada wait → sempre aponta pro nó de espera atual.
         variables["__wait_node__"] = node.id
-        await supabaseAdmin
+        /**
+         * 🔴 A GRAVAÇÃO MAIS PERIGOSA DO MOTOR, E ERA A ÚNICA SEM CONFERÊNCIA.
+         *
+         *    Ela é o que faz o fluxo dormir E o que marca a hora de acordar. Se falhar,
+         *    o run não fica `waiting` e não ganha despertador — ou seja, **nunca mais
+         *    acorda** — e a linha logo abaixo devolve "respondi" como se estivesse tudo
+         *    certo. Fluxo mudo pra sempre, zero rastro.
+         *
+         *    É a mesma família do defeito da ficha de Persona (2026-08-17), num ponto
+         *    ainda mais escondido: lá o fluxo ao menos virava `done`; aqui ele fica
+         *    `active` no nó anterior, e `activeFlowRun` continua devolvendo ele —
+         *    então nenhum OUTRO fluxo consegue começar naquela conversa.
+         *
+         * ⚠️ Não lança (mesma disciplina de `persistRun`): derrubar o turno trocaria
+         *    "o fluxo não continua" por "o cliente não recebe nada".
+         */
+        const { error: sonoErr } = await supabaseAdmin
           .from("studio_flow_runs")
           .update({
             flow_id:         activeFlow.id,
@@ -855,6 +928,12 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
             updated_at:      new Date().toISOString(),
           })
           .eq("id", run.id)
+        if (sonoErr) {
+          console.error("[studio/flow] Esperar NÃO adormeceu:", JSON.stringify({ runId: run.id, flowId: activeFlow.id, nodeId: node.id, resumeAt, err: sonoErr.message }))
+          await noteFlowSkip(ctx,
+            "⚠️ O fluxo não conseguiu agendar a espera e não vai continuar sozinho. O atendimento segue normalmente na mão.",
+            { node: "wait", node_id: node.id, reason: "sleep_write_failed" })
+        }
         // Dorme: não continua o loop — o cron (resume_at) acorda o fluxo.
         return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: lastAgent }
       }
@@ -987,7 +1066,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         if (turn.sentMessage) responded = true
 
         if (turn.status === "routed") {
-          await finishRun(run.id)
+          await finishRun(run.id, "ai_routed", variables)
           await restoreReopenOwner(ctx)   // carteira: IA roteou/transferiu → devolve o dono (ou fila se ele saiu)
           return { status: "routed", departmentId: turn.departmentId, error: null, agent: turn }
         }
@@ -1007,7 +1086,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           const outs = (cfg.outcomes ?? []) as { id: string }[]
           if (outs.length > 0 && !(turn.outcome != null && outs.some((o) => o.id === turn.outcome))) {
             console.warn("[ai_agent] outcome não-casado — encerrando com segurança", { node: node.id, outcome: turn.outcome })
-            await finishRun(run.id)
+            await finishRun(run.id, "ai_outcome_unmatched", variables)
             await restoreReopenOwner(ctx)
             return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
           }
@@ -1114,7 +1193,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           collect_hint:     collectHint,
           byAI:             variables["__ai_touched"] === true,
         })
-        await finishRun(run.id)
+        await finishRun(run.id, "transfer", variables)
         // Plano B "manter IA": NÃO encaminhou de propósito — a IA segue na frente.
         // Conta como respondido (senão o hand-back do dispatch derrubaria a IA).
         if (r?.keptAI) return { status: "responded", departmentId: null, error: null, agent: lastAgent }
@@ -1137,7 +1216,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
             await logConversationEvent({ tenantId: ctx.tenantId, conversationId: ctx.conversationId, type: "resolved", actorKind: "ai" })
           } catch { /* evento é best-effort — nunca derruba o fluxo */ }
         }
-        await finishRun(run.id)
+        await finishRun(run.id, "resolved", variables)
         return done()
       }
       case "return":
@@ -1154,7 +1233,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
             break
           }
         }
-        await finishRun(run.id)
+        await finishRun(run.id, "end_node", variables)
         await restoreReopenOwner(ctx)   // fim real do fluxo (raiz) → devolve o dono da carteira
         return done()
       }
@@ -1167,8 +1246,32 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
     stepFrom = node.id
   }
 
-  // Fim implícito (sem próximo nó ou estourou hops).
-  await finishRun(run.id)
+  /**
+   * Fim implícito — e aqui moravam TRÊS desfechos muito diferentes com o mesmo nome
+   * (achado de 2026-08-17):
+   *
+   *   • `flow_end`      — o caminho desenhado acabou. Fim legítimo, o caso normal.
+   *   • `hop_limit`     — o disjuntor anti-ciclo cortou o fluxo NO MEIO. Quase sempre é
+   *                       uma ligação que volta pra trás e virou círculo; nesse caso o
+   *                       cliente final já recebeu a mesma mensagem várias vezes antes
+   *                       do corte. Reportar isso como "concluído" era a pior das três
+   *                       mentiras — some justamente o sintoma que precisa de conserto.
+   *   • `dangling_edge` — a aresta aponta pra um nó que não existe mais no desenho.
+   *
+   * O aviso vai pra conversa como nota interna (o mesmo recurso do nó Mensagem vazio)
+   * porque quem precisa saber é quem atende — não o log de um servidor que ninguém lê.
+   */
+  const motivoFim = !currentId ? "flow_end" : hops >= MAX_HOPS ? "hop_limit" : "dangling_edge"
+  if (motivoFim === "hop_limit") {
+    await noteFlowSkip(ctx,
+      `⚠️ O fluxo foi interrompido após ${MAX_HOPS} passos seguidos, sem chegar ao fim. Quase sempre isso é uma ligação que volta pra um nó anterior e virou um círculo. Abra o fluxo no Kora Studio e confira as ligações.`,
+      { node: "engine", reason: "hop_limit", hops, flow_id: activeFlow.id, node_id: currentId })
+  } else if (motivoFim === "dangling_edge") {
+    await noteFlowSkip(ctx,
+      "⚠️ O fluxo parou: uma ligação aponta pra um nó que não existe mais. Abra o fluxo no Kora Studio e refaça a ligação.",
+      { node: "engine", reason: "dangling_edge", flow_id: activeFlow.id, node_id: currentId })
+  }
+  await finishRun(run.id, motivoFim, variables)
   await restoreReopenOwner(ctx)   // fim real do fluxo → devolve o dono da carteira
   return done()
 }

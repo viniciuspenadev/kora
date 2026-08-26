@@ -1,9 +1,10 @@
-import { NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse, after } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { syncContactIdentities } from "@/lib/contacts/identity"
 
@@ -238,32 +239,28 @@ export async function POST(req: NextRequest) {
         : "Voltou pelo site"
       const oldMeta = (dedup.conversation.metadata ?? {}) as Record<string, unknown>
       const history = (oldMeta.site_leads_history as Array<unknown> | undefined) ?? []
-      await supabaseAdmin
-        .from("chat_conversations")
-        .update({
-          last_message_preview: newPreview,
-          last_message_at:      new Date().toISOString(),
-          last_message_dir:     "in",
-          unread_count:         ((dedup.conversation as { unread_count?: number }).unread_count ?? 0) + 1,
-          updated_at:           new Date().toISOString(),
-          metadata: {
-            ...oldMeta,
-            site_lead: {
-              page_url:  body.url ?? null,
-              referrer:  body.referrer ?? null,
-              utm:       pickUtm(body),
-              journey,
-              answers,
-            },
-            site_leads_history: [...history.slice(-9), {
-              at:       new Date().toISOString(),
-              page_url: body.url ?? null,
-              answers,
-            }],
+      // Sobe no inbox pela fonte única (@/lib/channels/inbound-bump) — mesma regra
+      // dos webhooks. O `metadata` vai como merge jsonb no banco (não sobrescreve
+      // chaves que outro caminho tenha escrito no intervalo).
+      await bumpConversationInbound({
+        tenantId:       tenant.id,
+        conversationId: dedup.conversation.id,
+        preview:        newPreview,
+        metadata: {
+          site_lead: {
+            page_url:  body.url ?? null,
+            referrer:  body.referrer ?? null,
+            utm:       pickUtm(body),
+            journey,
+            answers,
           },
-        })
-        .eq("id", dedup.conversation.id)
-        .eq("tenant_id", tenant.id)
+          site_leads_history: [...history.slice(-9), {
+            at:       new Date().toISOString(),
+            page_url: body.url ?? null,
+            answers,
+          }],
+        },
+      })
       conv = { id: dedup.conversation.id }
     } else {
       // Sem conversa reaproveitável — cria nova (channel='site', pool aberto)
@@ -324,9 +321,18 @@ export async function POST(req: NextRequest) {
       conv = created
 
       // Sprint 2.4 — Auto-assign apenas em conversa nova (NÃO em reusada/reaberta).
-      // Fire-and-forget: não bloqueia a resposta do lead.
-      assignNextAgent(tenant.id, conv.id)
-        .catch((err) => console.error("[/api/site/lead] auto-assign failed:", err))
+      // ⚠️ Dentro de `after()`, como nos webhooks. Antes era uma promise SOLTA (sem await,
+      //    fora do after): a rota seguia inserindo mensagens e respondia, e o runtime podia
+      //    encerrar o trabalho no meio — atribuição perdida em silêncio. `after()` é o que
+      //    segura o trabalho até terminar.
+      const convIdParaDistribuir = conv.id
+      after(async () => {
+        try {
+          await assignNextAgent(tenant.id, convIdParaDistribuir)
+        } catch (err) {
+          console.error("[/api/site/lead] auto-assign failed:", err)
+        }
+      })
     }
 
     // ── Insere mensagens do lead no chat ──────────────────────

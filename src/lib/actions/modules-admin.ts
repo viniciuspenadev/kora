@@ -54,12 +54,15 @@ export async function setTenantModule(
   if (!tenant) return { error: "Tenant não encontrado" }
 
   // Estado anterior (pra audit)
-  const { data: before } = await supabaseAdmin
+  const { data: before, error: beforeError } = await supabaseAdmin
     .from("tenant_modules")
-    .select("enabled, pro, reason, expires_at")
+    .select("enabled, pro, reason, expires_at, source")
     .eq("tenant_id", input.tenantId)
     .eq("module_slug", input.slug)
     .maybeSingle()
+  if (beforeError) {
+    return { error: `Não foi possível conferir o estado atual do módulo: ${beforeError.message}` }
+  }
 
   // Upsert
   const { error } = await supabaseAdmin
@@ -76,6 +79,9 @@ export async function setTenantModule(
       expires_at:  input.expiresAt || null,
       set_by:      session.user.id,
       set_at:      new Date().toISOString(),
+      // Qualquer decisão feita nesta action é override humano. Se a linha nasceu do
+      // plano, preservar `source=plan` permitiria que um downgrade apagasse a escolha.
+      source:      "manual",
     }, { onConflict: "tenant_id,module_slug" })
 
   if (error) return { error: error.message }
@@ -93,7 +99,7 @@ export async function setTenantModule(
     targetId:   input.slug,
     before:     before ?? { enabled: false, pro: false, reason: null, expires_at: null },
     after:      { enabled: input.enabled, pro: input.enabled ? (input.pro ?? before?.pro ?? false) : false,
-                  reason: input.reason ?? null, expires_at: input.expiresAt ?? null },
+                  reason: input.reason ?? null, expires_at: input.expiresAt ?? null, source: "manual" },
     metadata:   {
       module_name: catalog.name,
       tenant_name: tenant.name,
@@ -101,36 +107,5 @@ export async function setTenantModule(
   })
 
   revalidatePath(`/admin/tenants/${input.tenantId}/modulos`)
-  return { ok: true }
-}
-
-/**
- * Remove o registro de tenant_modules pra um módulo (deixa cair pro default = false).
- * Use quando quiser "limpar" o override sem desabilitar permanente.
- */
-export async function clearTenantModule(
-  tenantId: string,
-  slug: string,
-): Promise<{ ok: true } | { error: string }> {
-  const session = await requirePlatformAdmin()
-
-  const { error } = await supabaseAdmin
-    .from("tenant_modules")
-    .delete()
-    .eq("tenant_id", tenantId)
-    .eq("module_slug", slug)
-
-  if (error) return { error: error.message }
-
-  await logAudit({
-    tenantId,
-    actorId:    session.user.id,
-    actorEmail: session.user.email ?? null,
-    action:     "module.clear_override",
-    targetType: "module",
-    targetId:   slug,
-  })
-
-  revalidatePath(`/admin/tenants/${tenantId}/modulos`)
   return { ok: true }
 }

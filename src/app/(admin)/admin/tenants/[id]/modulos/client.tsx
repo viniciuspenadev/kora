@@ -7,7 +7,7 @@ import {
   AlertCircle, Loader2, X,
 } from "lucide-react"
 import { SectionCard } from "@/components/ui/section-card"
-import { setTenantModule, clearTenantModule } from "@/lib/actions/modules-admin"
+import { setTenantModule } from "@/lib/actions/modules-admin"
 import type { TenantModuleStatus } from "@/lib/modules"
 import { temNivelPro, MODULOS_COM_PRO } from "@/lib/modules-shared"
 

@@ -27,6 +27,7 @@ export async function runTrialHousekeeping(): Promise<{
   const { data: expired, error: expiredErr } = await supabaseAdmin
     .from("tenants")
     .select("id, asaas_subscription_id")
+    .eq("billing_mode", "gateway")
     .eq("lifecycle_state", "trialing")
     .lt("trial_ends_at", nowIso)
   // 🔴 A LISTA VAZIA DIZIA "NENHUM TESTE VENCEU" (F1 da refundação, 11/08). O `error` era
@@ -61,7 +62,10 @@ export async function runTrialHousekeeping(): Promise<{
     //    sem aviso, sem plano e sem botão. `trial_ended` mantém a porta de pagar aberta
     //    pra owner/admin, corta o gasto, e barra o atendente (que não resolve assinatura).
     //    Quem suspende de verdade é o bloco abaixo, depois da carência.
-    const r = await transitionLifecycleCore(t.id as string, "end_trial", { system: true })
+    const r = await transitionLifecycleCore(t.id as string, "end_trial", {
+      system: true,
+      expectedBillingMode: "gateway",
+    })
     if (!r.error) suspended++
   }
 
@@ -81,6 +85,7 @@ export async function runTrialHousekeeping(): Promise<{
   const { data: semPagar, error: spErr } = await supabaseAdmin
     .from("tenants")
     .select("id")
+    .eq("billing_mode", "gateway")
     .eq("lifecycle_state", "trial_ended")
     .lt("trial_ends_at", limite)
     // 🔴 MESMA GUARDA DO BLOCO 1, QUE FALTAVA AQUI (05/08). O bloco acima pula quem tem
@@ -94,7 +99,10 @@ export async function runTrialHousekeeping(): Promise<{
   if (spErr) console.error("[housekeeping] leitura de testes encerrados falhou:", spErr.message)
 
   for (const t of semPagar ?? []) {
-    const r = await transitionLifecycleCore((t as { id: string }).id, "suspend", { system: true })
+    const r = await transitionLifecycleCore((t as { id: string }).id, "suspend", {
+      system: true,
+      expectedBillingMode: "gateway",
+    })
     if (!r.error) suspended++
   }
 
@@ -117,7 +125,8 @@ export async function runTrialHousekeeping(): Promise<{
   //    carimbado — hoje o filtro não muda nada; ele existe pro amanhã.
   const { data: vencidos, error: vErr } = await supabaseAdmin
     .from("tenants")
-    .select("id, subscription_ended_reason")
+    .select("id, subscription_ended_reason, subscription_ends_at, subscription_status")
+    .eq("billing_mode", "gateway")
     .not("subscription_ends_at", "is", null)
     .lt("subscription_ends_at", nowIso)
     .neq("subscription_status", "canceled")
@@ -126,7 +135,7 @@ export async function runTrialHousekeeping(): Promise<{
 
   let encerrados = 0
   for (const t of vencidos ?? []) {
-    const { error } = await supabaseAdmin
+    const { data: encerrado, error } = await supabaseAdmin
       .from("tenants")
       // 🔴 `past_due_since: null` — este era o QUARTO escritor de `subscription_status` e
       //    o único que eu não cobri (M-02 do pentest de 08/08). Sem limpar aqui, um tenant
@@ -173,20 +182,24 @@ export async function runTrialHousekeeping(): Promise<{
         card_last4:                null,
       })
       .eq("id", (t as { id: string }).id)
+      .eq("billing_mode", "gateway")
+      .is("asaas_subscription_id", null)
+      .eq("subscription_ends_at", (t as { subscription_ends_at: string }).subscription_ends_at)
+      .eq("subscription_status", (t as { subscription_status: string }).subscription_status)
+      .select("id")
+      .maybeSingle()
     if (error) console.error("[housekeeping] falha ao encerrar assinatura:", (t as { id: string }).id, error.message)
-    // 🔑 SIMÉTRICO AO BLOCO 4 (achado do QA, 09/08): quem cancela com fatura aberta ficava
-    //    `canceled` — logo, no paywall, logo, sem gerar mais nada — **com uma cobrança de
-    //    um período que nunca será entregue**, para sempre. A regra do dono vale igual nos
-    //    dois caminhos: em pré-pago, período não servido não gera cobrança.
+    else if (!encerrado) {
+      console.warn("[housekeeping] encerramento ignorado: billing_mode mudou durante a varredura:", (t as { id: string }).id)
+    }
     else {
-      const { error: anErr } = await supabaseAdmin.from("invoices")
-        .update({ status: "void", void_reason: "nao_servido", updated_at: new Date().toISOString() })
-        .eq("tenant_id", (t as { id: string }).id)
-        .in("status", ["open", "overdue", "partial"])
-      if (anErr) console.error("[housekeeping] faturas não anuladas no cancelamento:", (t as { id: string }).id, anErr.message)
+      // Fatura não é anulada por varredura. O cron não conhece o ledger nem consegue
+      // provar que uma cobrança externa deixou de ser pagável; `partial`, em especial,
+      // contém dinheiro real. Mantém-se a linha visível para reconcile/RPC de anulação
+      // segura, em vez de transformar falta de evidência em `void` definitivo.
 
       // 🔴 ESTE BLOCO ERA MUDO (auditoria de comportamento, 12/08). Ele encerra a assinatura
-      //    de alguém, **apaga o cartão dele** (token, bandeira e 4 últimos) e anula faturas —
+      //    de alguém e **apaga o cartão dele** (token, bandeira e 4 últimos) —
       //    sozinho, todo dia, sem uma linha de trilha. O log do cron dizia QUANTOS foram
       //    encerrados, nunca QUEM. No dia em que um cliente disser "vocês cancelaram minha
       //    conta e apagaram meu cartão", não havia o que responder.

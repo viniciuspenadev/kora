@@ -7,7 +7,7 @@ import { revalidatePath } from "next/cache"
 import bcrypt from "bcryptjs"
 import { randomBytes } from "crypto"
 import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
-import { applyDefaultModules } from "@/lib/modules"
+import { applyPlan } from "@/lib/plans"
 import { validatePassword } from "@/lib/password"
 
 async function requireAdmin() {
@@ -28,15 +28,19 @@ const DEFAULT_STAGES = [
 export async function createTenant(formData: FormData): Promise<{ error?: string } | void> {
   const session = await requireAdmin()
 
+  const rawPlanId = formData.get("plan_id")
   const name       = (formData.get("name") as string)?.trim()
   const slug       = (formData.get("slug") as string)?.trim().toLowerCase()
-  const plan       = (formData.get("plan") as string) || "trial"
+  const planId     = typeof rawPlanId === "string" ? rawPlanId.trim() : ""
   const ownerName  = (formData.get("owner_name") as string)?.trim()
   const ownerEmail = (formData.get("owner_email") as string)?.trim().toLowerCase()
   const ownerPass  = formData.get("owner_password") as string
 
-  if (!name || !slug || !ownerName || !ownerEmail || !ownerPass) {
+  if (!name || !slug || !planId || !ownerName || !ownerEmail || !ownerPass) {
     return { error: "Preencha todos os campos obrigatórios" }
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(planId)) {
+    return { error: "Plano inválido" }
   }
   const ownerPwErr = validatePassword(ownerPass)
   if (ownerPwErr) return { error: ownerPwErr }
@@ -58,6 +62,17 @@ export async function createTenant(formData: FormData): Promise<{ error?: string
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ownerEmail) || ownerEmail.length > 254) {
     return { error: "Email do owner inválido" }
   }
+
+  // O formulário só sugere; o servidor confirma que o plano ainda existe e está ativo.
+  // Falha de leitura e plano arquivado são indistinguíveis para quem chama: nenhum dos
+  // dois pode cair silenciosamente no plano legado/default.
+  const { data: selectedPlan, error: planError } = await supabaseAdmin
+    .from("plans")
+    .select("id")
+    .eq("id", planId)
+    .eq("active", true)
+    .maybeSingle()
+  if (planError || !selectedPlan) return { error: "O plano selecionado não está disponível" }
 
   let ownerId: string
   const { data: existing } = await supabaseAdmin
@@ -81,10 +96,28 @@ export async function createTenant(formData: FormData): Promise<{ error?: string
 
   const { data: tenant, error: tenantError } = await supabaseAdmin
     .from("tenants")
-    .insert({ name, slug, plan, active: true })
+    // `plan` não vem do navegador nem é derivado do nome livre do plano. A coluna legada
+    // mantém seu default enquanto `applyPlan` grava a identidade canônica (`plan_id`).
+    .insert({ name, slug, active: true })
     .select("id")
     .single()
   if (tenantError) return { error: `Erro ao criar tenant: ${tenantError.message}` }
+
+  // Aplica antes de conceder acesso ao owner. Se a operação atômica falhar, ninguém ganha
+  // acesso a um tenant sem entitlements coerentes. A compensação só alcança o ID que acabou
+  // de ser criado por esta chamada.
+  const applied = await applyPlan(tenant.id, planId)
+  if (!applied.ok) {
+    const { error: rollbackError } = await supabaseAdmin.from("tenants").delete().eq("id", tenant.id)
+    if (rollbackError) {
+      console.error(JSON.stringify({
+        src: "admin", kind: "create-tenant-plan-rollback-falhou", tenant: tenant.id,
+        msg: rollbackError.message,
+      }))
+      return { error: "Não foi possível aplicar o plano; o cadastro ficou pendente para revisão" }
+    }
+    return { error: applied.error ?? "Não foi possível aplicar o plano" }
+  }
 
   const { error: muError } = await supabaseAdmin.from("tenant_users").insert({
     tenant_id:  tenant.id,
@@ -130,10 +163,6 @@ export async function createTenant(formData: FormData): Promise<{ error?: string
   } else {
     await supabaseAdmin.from("tenant_config").insert({ tenant_id: tenant.id })
   }
-
-  // God Mode: habilita módulos default_on (kanban, widget, automações leves, etc).
-  // Super-admin pode ajustar depois em /admin/tenants/[id]/modulos.
-  await applyDefaultModules(tenant.id)
 
   // Auto-provisiona instância WhatsApp (fire-and-forget — não falha o createTenant)
   try {

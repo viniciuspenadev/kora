@@ -19,6 +19,10 @@ export type NotificationType =
   | "appt_no_show"      // faltou
   | "daily_briefing"    // resumo do dia
   | "task_due"          // tarefa do CRM venceu (responsável)
+  | "followup_due"      // follow-up de ATENDIMENTO deu a hora (dono da promessa).
+                        // ⚠️ O payload leva `conversation_id` — é o que faz o clique
+                        //    abrir A CONVERSA. Sem ele o roteador cai no fallback e
+                        //    manda pra /agenda (é o defeito D2, vivo no task_due).
   | (string & {})       // extensível p/ futuros produtores (transfer_received, …)
 
 export interface CreateNotificationInput {

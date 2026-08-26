@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { abaixoDoMinimoDoCartao } from "@/lib/billing/gateway-limits"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
-import { applyPlan } from "@/lib/plans"
+import { applyPlan, removePlan } from "@/lib/plans"
 import { LIMIT_META, type LimitResource } from "@/lib/limits-shared"
 import { logAudit } from "@/lib/audit"
 
@@ -108,8 +108,19 @@ export interface PlanInput {
 }
 
 
+function validatePlanName(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw.trim()) return "Dê um nome ao plano"
+  const name = raw.trim()
+  if (name.length > 120) return "O nome do plano pode ter no máximo 120 caracteres"
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(name)) {
+    return "O nome do plano não pode conter controles ou quebras de linha"
+  }
+  return null
+}
+
 function validate(input: PlanInput): string | null {
-  if (!input.name.trim())                  return "Dê um nome ao plano"
+  const nameError = validatePlanName(input?.name)
+  if (nameError)                            return nameError
   if (input.price_cents < 0)               return "Preço inválido"
   // 🔑 Piso do GATEWAY, não nosso — fonte única em `billing/gateway-limits.ts`.
   //    Sem esta linha o god mode publica um plano que o cartão nunca consegue cobrar,
@@ -231,6 +242,9 @@ export async function duplicatePlan(id: string): Promise<{ error?: string; id?: 
   if (!origem)  return { error: "Plano não encontrado." }
 
   const o = origem as Record<string, unknown>
+  const copyName = `${String(o.name ?? "Plano")} (cópia)`.slice(0, 120)
+  const nameError = validatePlanName(copyName)
+  if (nameError) return { error: nameError }
 
   const { data, error } = await supabaseAdmin
     .from("plans")
@@ -238,7 +252,7 @@ export async function duplicatePlan(id: string): Promise<{ error?: string; id?: 
       ...o,
       // ⚠️ Nome com sufixo pra não existirem dois "PLANO I" na lista — e o teto de 120
       //    evita estourar a coluna quando alguém duplica a cópia da cópia.
-      name:      `${String(o.name ?? "Plano")} (cópia)`.slice(0, 120),
+      name:      copyName,
       active:    false,
       position:  (Number(o.position) || 0) + 1,
       updated_at: new Date().toISOString(),
@@ -252,7 +266,7 @@ export async function duplicatePlan(id: string): Promise<{ error?: string; id?: 
   //    existe pra a linha do tempo do catálogo não ter buracos: plano que aparece do nada
   //    é o tipo de coisa que ninguém consegue explicar seis meses depois.
   await auditarCatalogo(session, "platform.plano_duplicado", data.id, { origem: id }, {
-    name: `${String(o.name ?? "Plano")} (cópia)`.slice(0, 120), price_cents: o.price_cents, active: false,
+    name: copyName, price_cents: o.price_cents, active: false,
   })
 
   revalidatePath("/admin/planos")
@@ -263,31 +277,55 @@ export async function updatePlan(id: string, input: PlanInput): Promise<{ error?
   const session = await requirePlatformAdmin()
   const err = validate(input)
   if (err) return { error: err }
+  const cleaned = await clean(input)
 
-  // 🔑 O ESTADO ANTERIOR É O QUE DÁ SENTIDO À TRILHA. "Mudou para R$ 199,90" não responde a
-  //    pergunta que se faz depois — "mudou de QUANTO para quanto?" —, e é justamente o
-  //    delta que importa quando N clientes foram reprecificados de uma vez.
-  // ⚠️ Falha de leitura NÃO aborta: diferente de `updateTenantBilling`, aqui o "antes" é
-  //    testemunha, não pré-condição de decisão — nenhuma regra depende dele. Registrar sem o
-  //    antes é pior que registrar nada? Não: continua dizendo quem, quando e para quanto.
-  const { data: antesRow } = await supabaseAdmin
+  // O estado anterior é testemunha E fotografia CAS. Duas abas administrativas não podem
+  // sobrescrever catálogo, preço e módulos em silêncio nem produzir auditoria com before falso.
+  const { data: antesRow, error: antesError } = await supabaseAdmin
     .from("plans")
-    .select("name, price_cents, user_quota, extra_user_price_cents, active, trial_days")
+    .select("name, price_cents, user_quota, extra_user_price_cents, active, trial_days, updated_at")
     .eq("id", id)
     .maybeSingle()
+  if (antesError) return { error: "Não foi possível conferir a versão atual do plano." }
+  if (!antesRow) return { error: "Plano não encontrado." }
 
-  const { error } = await supabaseAdmin
-    .from("plans")
-    .update({ ...(await clean(input)), updated_at: new Date().toISOString() })
-    .eq("id", id)
+  // Catálogo e materialização de módulos mudam na MESMA transação. Limites são lidos ao
+  // vivo; módulos não — sem esta RPC editar included_modules deixaria tenants antigos no
+  // contrato anterior, apesar de continuarem apontando para o plano editado.
+  const { data, error } = await supabaseAdmin.rpc("atualizar_plano_atomico", {
+    p_plan: id,
+    p_name: cleaned.name,
+    p_description: cleaned.description,
+    p_price_cents: cleaned.price_cents,
+    p_user_quota: cleaned.user_quota,
+    p_extra_user_price_cents: cleaned.extra_user_price_cents,
+    p_included_modules: cleaned.included_modules,
+    p_pro_modules: cleaned.pro_modules,
+    p_limits: cleaned.limits,
+    p_trial_days: cleaned.trial_days,
+    p_trial_activation_mode: cleaned.trial_activation_mode,
+    p_active: cleaned.active,
+    p_expected_updated_at: antesRow.updated_at,
+  })
 
-  if (error) return { error: error.message }
+  if (error) {
+    console.error(JSON.stringify({
+      src: "admin-plans", kind: "update-plan-atomico-falhou", plano: id,
+      code: error.code ?? null, msg: String(error.message ?? "").slice(0, 240),
+    }))
+    return { error: "Não foi possível atualizar o plano e seus módulos." }
+  }
+  const raw = Array.isArray(data) ? data[0] : data
+  const result = raw as { atualizado?: boolean; motivo?: string | null; tenants_reaplicados?: number } | null
+  if (!result?.atualizado) {
+    return { error: result?.motivo ?? "O plano mudou durante a atualização." }
+  }
 
   // ⚠️ `price_cents` no `after` é o que a próxima fatura de TODO tenant deste plano vai usar.
-  await auditarCatalogo(session, "platform.plano_alterado", id, antesRow ?? null, {
-    name: input.name, price_cents: input.price_cents, user_quota: input.user_quota,
-    extra_user_price_cents: input.extra_user_price_cents, active: input.active,
-    trial_days: input.trial_days,
+  await auditarCatalogo(session, "platform.plano_alterado", id, antesRow, {
+    name: cleaned.name, price_cents: cleaned.price_cents, user_quota: cleaned.user_quota,
+    extra_user_price_cents: cleaned.extra_user_price_cents, active: cleaned.active,
+    trial_days: cleaned.trial_days, tenants_reaplicados: result.tenants_reaplicados ?? 0,
   })
 
   revalidatePath("/admin/planos")
@@ -389,45 +427,21 @@ export async function assignPlanToTenant(tenantId: string, planId: string | null
 
   // 🔑 O plano ANTERIOR deste tenant, lido antes de qualquer escrita — os dois ramos abaixo
   //    o alteram, e sem ele a trilha não sabe dizer de onde o cliente veio.
-  const { data: planoAntes } = await supabaseAdmin
+  const { data: planoAntes, error: planoAntesError } = await supabaseAdmin
     .from("tenants").select("plan_id").eq("id", tenantId).maybeSingle()
+  if (planoAntesError) return { error: "Não foi possível conferir o plano atual do cliente." }
+  if (!planoAntes) return { error: "Cliente não encontrado." }
   const planoAnterior = (planoAntes as { plan_id?: string | null } | null)?.plan_id ?? null
 
-  if (!planId) {
-    // 🔴 "REMOVER PLANO" ERA UM UPGRADE GRÁTIS (auditoria 05/08/2026). O update mexia SÓ em
-    //    `plan_id` e deixava três rastros que, juntos, davam ao cliente mais do que
-    //    qualquer plano vendido:
-    //      1. todos os módulos continuavam ligados (`applyPlan` nunca revogou nada);
-    //      2. `tenants.plan` seguia na string antiga (ex.: `'pro'`), e é ela que o
-    //         `resolveMax` usa como fallback ⇒ o cliente herdava os limites LEGADOS —
-    //         15 usuários, 20 GB, 3 números oficiais — contra `users: 1` dos planos reais;
-    //      3. sem `plan_id`, `runMonthlyBilling` pula o tenant ⇒ **nunca mais é faturado**.
-    //    Um clique do operador = produto máximo com isenção permanente, em silêncio.
-    // 🔑 "Sem plano" tem que significar sem plano: zera a string legada e desliga o que o
-    //    plano dava. Desativa, não deleta — o histórico do `tenant_modules` fica.
-    // ⚠️ O que foi ligado À MÃO permanece: mesma regra da revogação em `applyPlan`.
-    const { data: antes } = await supabaseAdmin
-      .from("tenants").select("plan_id").eq("id", tenantId).maybeSingle()
-    const anterior = (antes as { plan_id?: string | null } | null)?.plan_id ?? null
-
-    const { error } = await supabaseAdmin
-      .from("tenants").update({ plan_id: null, plan: null }).eq("id", tenantId)
-    if (error) return { error: error.message }
-
-    if (anterior) {
-      const { data: velho } = await supabaseAdmin
-        .from("plans").select("included_modules").eq("id", anterior).maybeSingle()
-      const doVelho = ((velho as { included_modules?: string[] | null } | null)?.included_modules ?? []).filter(Boolean)
-      if (doVelho.length > 0) {
-        await supabaseAdmin.from("tenant_modules")
-          .update({ enabled: false, pro: false, reason: "Plano removido" })
-          .eq("tenant_id", tenantId)
-          .in("module_slug", doVelho)
-      }
-    }
+  if (planId === null) {
+    // A remoção e a revogação plan-owned acontecem na mesma transação. A fotografia do
+    // plano anterior faz uma atribuição concorrente vencer, em vez de ser apagada depois.
+    const r = await removePlan(tenantId, planoAnterior)
+    if (!r.ok) return { error: r.error }
   } else {
-    // Fonte única: aplica plan_id + plan string + módulos do plano (mantém manuais).
-    const r = await applyPlan(tenantId, planId)
+    // Fonte única: aplica plan_id + módulos do plano (mantém manuais). A fotografia
+    // separada impede duas atribuições administrativas concorrentes de virarem last-write-wins.
+    const r = await applyPlan(tenantId, planId, { expectedCurrentPlanId: planoAnterior })
     if (!r.ok) return { error: r.error }
   }
 
@@ -438,7 +452,7 @@ export async function assignPlanToTenant(tenantId: string, planId: string | null
   //    plano" já foi um upgrade grátis com isenção permanente. Registrar isso não é opcional.
   await auditarCatalogo(
     session,
-    planId ? "platform.plano_atribuido" : "platform.plano_removido",
+    planId === null ? "platform.plano_removido" : "platform.plano_atribuido",
     tenantId,
     { plan_id: planoAnterior },
     { plan_id: planId },

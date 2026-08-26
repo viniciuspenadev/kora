@@ -8,6 +8,7 @@ import { autoProvisionWhatsApp } from "@/lib/whatsapp/provisioning"
 import { encryptSecret } from "@/lib/crypto/secrets"
 import { transcodeForMeta } from "@/lib/media/transcode"
 import { getViewerScope, canViewConversation, seesAllContacts, reachableContactIds, assertConversationAccess, assertContactAccess } from "@/lib/visibility"
+import { moveFollowUpOwner } from "@/lib/atendimento/followup"
 import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
@@ -1291,6 +1292,10 @@ export async function transferConversation(
     departmentId: nextDepartment,
     reason:       opts.mode,
   })
+
+  // A promessa segue a CONVERSA: se havia follow-up pendente, o novo dono herda
+  // (quem prometeu fica no evento). Fail-open — nunca derruba a transferência.
+  await moveFollowUpOwner({ tenantId, conversationId, newOwnerId: nextAssigned, actorId: session.user.id })
 
   // Nota de sistema (histórico auditável) — nomeia QUEM transferiu, voz ativa.
   const { data: actor } = await supabaseAdmin.from("profiles").select("full_name").eq("id", session.user.id).maybeSingle()

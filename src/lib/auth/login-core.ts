@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getPlatformSettings } from "@/lib/platform-settings"
 import {
-  isTenantBlockedForAccessAs, motivoDoPaywall,
+  isTenantBlockedForAccessAs, motivoDoPaywallForTenant,
   COLUNAS_DE_ACESSO, type AcessoDoTenant,
 } from "@/lib/lifecycle-shared"
 
@@ -168,10 +168,8 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
       // Uma leitura só, usada pelas DUAS decisões abaixo: o motivo da mensagem e o filtro
       // de tenants acessíveis. Duas leituras poderiam divergir dentro do mesmo login.
       const { pastDueGraceDays } = await getPlatformSettings()
-      barradoPorAtraso = linhas.some((t) => t.active === true && motivoDoPaywall(
-        t.lifecycle_state, t.subscription_status, t.past_due_since, t.past_due_grace_days,
-        pastDueGraceDays, t.past_due_reason,
-      ) === "past_due")
+      barradoPorAtraso = linhas.some((t) =>
+        t.active === true && motivoDoPaywallForTenant(t, pastDueGraceDays) === "past_due")
       const papeis = new Map(accessible.map((m) => [m.tenant_id as string, m.role as string]))
       const okIds = new Set(
         linhas

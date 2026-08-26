@@ -1,6 +1,7 @@
 "use client"
 
-import { TimeGrid, type GridColumn } from "./time-grid"
+import { TimeGrid, type GridColumn, type GhostMark } from "./time-grid"
+import type { DayItem } from "@/lib/actions/my-day"
 import { UserAvatar } from "@/components/ui/user-avatar"
 import { resourceSubLabel, blackoutBlockForDay, type BoardAppt, type RawBlackout } from "./types"
 import type { GestureApi } from "./use-grid-gestures"
@@ -13,7 +14,7 @@ import type { ResourceRow } from "@/lib/actions/agenda"
 // troca de agenda (a coluna define o recurso). Tinta de "hoje" quando é hoje.
 
 export function DayView({
-  resources, appts, blackouts, dayKey, todayKey, startHour, endHour, hourPx, now, onOpen, gestures, onSlotClick, userId,
+  resources, appts, blackouts, dayKey, todayKey, startHour, endHour, hourPx, now, onOpen, gestures, onSlotClick, userId, followUps = [],
 }: {
   resources: ResourceRow[]
   userId: string
@@ -28,8 +29,19 @@ export function DayView({
   onOpen: (id: string) => void
   gestures: GestureApi | null
   onSlotClick: (resourceId: string | undefined, dateKey: string, startMin: number) => void
+  /** Compromissos internos (follow-ups) da janela — viram BANDA: no Dia as colunas
+   *  são recursos, e a promessa não é de recurso nenhum. */
+  followUps?: DayItem[]
 }) {
   const isToday = dayKey === todayKey
+  // A banda abre a FICHA da promessa, igual ao bloco na coluna — antes ela pulava
+  // direto pra conversa, e o dono cobrou a inconsistência (sair do calendário sem pedir).
+  const band: GhostMark[] = followUps
+    .filter((f) => ymdInTzLocal(f.at) === dayKey)
+    .map((f) => ({
+      id: f.id, dateKey: dayKey, startMin: minutesOf(f.at),
+      label: f.title, onClick: () => onOpen(f.id),
+    }))
   const columns: GridColumn[] = resources.map((r) => {
     const mine = r.assigned_agent_id === userId   // destaque: "essa coluna é a SUA agenda"
     return {
@@ -64,5 +76,15 @@ export function DayView({
     return <div className="rounded-xl border border-slate-200 bg-white py-24 text-center text-sm text-slate-400">Nenhuma agenda pra mostrar neste escopo.</div>
   }
 
-  return <TimeGrid columns={columns} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={onOpen} gestures={gestures} onSlotClick={onSlotClick} colMinWidth={190} />
+  return <TimeGrid columns={columns} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={onOpen} gestures={gestures} onSlotClick={onSlotClick} colMinWidth={190} bandGhosts={band} />
+}
+
+const TZ_BOARD = "America/Sao_Paulo"
+const ymdInTzLocal = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ_BOARD })
+/** Minuto do dia no fuso do negócio — mesma base que a grade usa pra posicionar. */
+function minutesOf(iso: string): number {
+  const [h, m] = new Date(iso)
+    .toLocaleTimeString("en-GB", { timeZone: TZ_BOARD, hour: "2-digit", minute: "2-digit" })
+    .split(":")
+  return Number(h) * 60 + Number(m)
 }

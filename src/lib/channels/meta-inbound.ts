@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { getProvider } from "@/lib/providers"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
+import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { allowedFrom, statusPatch, type MessageStatus } from "@/lib/channels/message-status"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
@@ -544,18 +545,15 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
   // Read receipt (✓✓ azul pro cliente) — best-effort, nunca falha o webhook.
   after(async () => { try { await getProvider(instance).markAsRead?.(msg.id) } catch { /* noop */ } })
 
-  const wasResolved = conv.status === "resolved"
-  await supabaseAdmin.from("chat_conversations").update({
-    last_message_at:      new Date().toISOString(),
-    last_message_preview: preview,
-    last_message_dir:     "in",
-    // Âncora da janela de 24h = relógio da Meta (timestamp do inbound), não o nosso.
-    last_inbound_at:      metaTsToIso(msg.timestamp),
-    unread_count:         (conv.unread_count ?? 0) + 1,
-    status:               wasResolved ? "open" : conv.status,
-    updated_at:           new Date().toISOString(),
-    ...(wasResolved ? { resolved_at: null } : {}),
-  }).eq("id", conv.id)
+  // Sobe no inbox pela fonte única (@/lib/channels/inbound-bump).
+  // Âncora da janela de 24h = relógio da META (timestamp do inbound), não o nosso —
+  // é ele que decide se o composer libera texto livre ou exige template.
+  await bumpConversationInbound({
+    tenantId:       instance.tenant_id,
+    conversationId: conv.id,
+    preview,
+    lastInboundAt:  metaTsToIso(msg.timestamp),
+  })
 
   // Texto "roteável": corpo do texto OU o título do botão/lista tocado. É ele que
   // acorda a cadeia (keyword/IA/menu) e o interceptor da Agenda.

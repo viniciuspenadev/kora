@@ -6,8 +6,8 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { getPlatformSettings } from "@/lib/platform-settings"
 import {
   isTenantBlockedForAccess,
-  isTenantBlockedForSpend,
-  motivoDoPaywall,
+  isTenantBlockedForSpendForTenant,
+  motivoDoPaywallForTenant,
   normalizeState,
   PAST_DUE_GRACE_DAYS,
 } from "@/lib/lifecycle-shared"
@@ -290,7 +290,7 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
   const [tenantRes, perfilRes, modRes, invRes] = await Promise.all([
     supabaseAdmin
       .from("tenants")
-      .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id, past_due_since, past_due_grace_days, past_due_reason")
+      .select("active, lifecycle_state, subscription_status, billing_day, plan_id, trial_ends_at, asaas_subscription_id, past_due_since, past_due_grace_days, past_due_reason, billing_mode")
       .eq("id", tenantId)
       .maybeSingle(),
     // Mesmos 5 campos que `getTitularParaCobranca` exige — se divergirem, a tela promete
@@ -395,13 +395,10 @@ export const getBillingStanding = cache(async (tenantId: string): Promise<Billin
     !assinaturaRealId(row.asaas_subscription_id)
 
   // Calculado UMA vez: o degrau usa, e o "próximo fechamento" também (ver o fim da função).
-  const motivo = motivoDoPaywall(
-    row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
-    (await getPlatformSettings()).pastDueGraceDays, row.past_due_reason,
-  )
+  const motivo = motivoDoPaywallForTenant(row, (await getPlatformSettings()).pastDueGraceDays)
 
   const canAccess = row.active === true && !isTenantBlockedForAccess(row.lifecycle_state)
-  const canSpend  = canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status)
+  const canSpend  = canAccess && !isTenantBlockedForSpendForTenant(row)
 
   let degrau: BillingDegrau
   if (!canAccess) {

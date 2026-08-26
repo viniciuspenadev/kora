@@ -28,7 +28,12 @@ const db = new FakeDb()
 let gw = new FakeGateway()
 
 vi.mock("server-only", () => ({}))
-vi.mock("@/lib/supabase", () => ({ supabaseAdmin: { from: (t: string) => db.from(t) } }))
+vi.mock("@/lib/supabase", () => ({
+  supabaseAdmin: {
+    from: (t: string) => db.from(t),
+    rpc: (name: string, args: Record<string, unknown>) => db.rpc(name, args),
+  },
+}))
 vi.mock("@/lib/asaas/client", () => ({
   get asaas() { return gw.client },
   AsaasError,
@@ -58,7 +63,7 @@ function ev(id: string, tipo: string, pay: string) {
   return {
     id, event_type: tipo, payment_id: pay, received_at: "2026-08-08T00:00:00Z",
     processed_at: null, claimed_at: null, error: null,
-    payload: { payment: { id: pay, customer: CUSTOMER } },
+    payload: { dateCreated: "2026-08-08T00:00:00.000Z", payment: { id: pay, customer: CUSTOMER } },
   }
 }
 const invoice = (id: string) => db.linhas("invoices").find((i) => i.id === id)!
@@ -77,16 +82,23 @@ describe("C-01 · um pagamento é creditado UMA vez, para sempre", () => {
     // Ciclo N: fatura de 429,80 com 349,90 já recebidos de pay_A.
     db.seed("invoices", [
       { id: "inv_N", tenant_id: TENANT, status: "partial", total_cents: 42980, paid_cents: 34990,
-        due_date: "2026-07-11", gateway_ref: "pay_A", paid_at: null },
+        due_date: "2026-07-11", period_start: "2026-07-01", period_end: "2026-07-31",
+        kind: "recorrente", gateway_ref: "pay_A", gateway_charge_id: "pay_A", paid_at: null },
     ])
+    db.seed("invoice_payments", [{
+      id: "fact_pay_A", tenant_id: TENANT, invoice_id: "inv_N", provider: "asaas",
+      event_key: "pagamento:pay_A", payment_id: "pay_A", kind: "pagamento",
+      amount_cents: 34990, occurred_at: "2026-07-11T00:00:00.000Z", source: "webhook",
+    }])
     // O complemento pay_B quita a parcial — e hoje sobrescreve o único vestígio de pay_A.
     db.seed("asaas_webhook_events", [ev("evt_B", "PAYMENT_CONFIRMED", "pay_B")])
-    gw.responde("GET /payments/pay_B", { id: "pay_B", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 79.9 })
+    gw.responde("GET /payments/pay_B", { id: "pay_B", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 79.9, dueDate: "2026-07-11" })
     await processAsaasEvent("evt_B")
 
     // Ciclo N+1 nasce aberto.
     db.linhas("invoices").push({ id: "inv_N1", tenant_id: TENANT, status: "open", total_cents: 42980,
-      paid_cents: 0, due_date: "2026-08-11", gateway_ref: null, paid_at: null })
+      paid_cents: 0, due_date: "2026-08-11", period_start: "2026-08-01", period_end: "2026-08-31",
+      kind: "recorrente", gateway_ref: null, paid_at: null })
 
     // Liquidação de pay_A (~D+30): MESMO pagamento, evento NOVO — o claim/lease não vê isso,
     // porque ele protege a linha do EVENTO, não o fato financeiro.
@@ -103,14 +115,15 @@ describe("C-01 · um pagamento é creditado UMA vez, para sempre", () => {
     db.seed("tenants", [tenantRow()])
     db.seed("invoices", [
       { id: "inv_X", tenant_id: TENANT, status: "open", total_cents: 60000, paid_cents: 0,
-        due_date: "2026-08-11", gateway_ref: null, paid_at: null },
+        due_date: "2026-08-11", period_start: "2026-08-01", period_end: "2026-08-31",
+        kind: "recorrente", gateway_ref: null, paid_at: null },
     ])
     db.seed("asaas_webhook_events", [
       ev("evt_1", "PAYMENT_CONFIRMED", "pay_1"),
       ev("evt_2", "PAYMENT_CONFIRMED", "pay_2"),
     ])
-    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 600 })
-    gw.responde("GET /payments/pay_2", { id: "pay_2", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 600 })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 600, dueDate: "2026-08-11" })
+    gw.responde("GET /payments/pay_2", { id: "pay_2", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 600, dueDate: "2026-08-11" })
 
     await processAsaasEvent("evt_1")
     await processAsaasEvent("evt_2")   // segundo pagamento de 600 numa fatura de 600 já quitada
@@ -129,11 +142,12 @@ describe("C-02 · o pagamento pousa no período a que pertence", () => {
     // Só a parcial do ciclo N existe — o cron do ciclo N+1 ainda não rodou.
     db.seed("invoices", [
       { id: "inv_N", tenant_id: TENANT, status: "partial", total_cents: 42980, paid_cents: 34990,
-        due_date: "2026-07-11", gateway_ref: "pay_A", paid_at: null },
+        due_date: "2026-07-11", period_start: "2026-07-01", period_end: "2026-07-31",
+        kind: "recorrente", gateway_ref: "pay_A", paid_at: null },
     ])
     db.seed("asaas_webhook_events", [ev("evt_C", "PAYMENT_CONFIRMED", "pay_C")])
     // Cobrança do ciclo N+1: 429,80.
-    gw.responde("GET /payments/pay_C", { id: "pay_C", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 429.8 })
+    gw.responde("GET /payments/pay_C", { id: "pay_C", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 429.8, dueDate: "2026-08-11" })
 
     await processAsaasEvent("evt_C")
 
@@ -142,6 +156,54 @@ describe("C-02 · o pagamento pousa no período a que pertence", () => {
     // Regra: a fatura de N não é tocada por um pagamento que não é dela.
     expect(invoice("inv_N").paid_cents).toBe(34990)
     expect(invoice("inv_N").gateway_ref).toBe("pay_A")
+    expect(db.linhas("invoice_payments").find((p) => p.payment_id === "pay_C")?.invoice_id).toBeNull()
+    expect(evento("evt_C").error).toContain("suspenso")
+  })
+
+  it("REGRA: com N e N+1 existentes, dueDate aplica exclusivamente em N+1", async () => {
+    db.seed("tenants", [tenantRow()])
+    db.seed("invoices", [
+      { id: "inv_N", tenant_id: TENANT, status: "partial", total_cents: 42980, paid_cents: 34990,
+        due_date: "2026-07-11", period_start: "2026-07-01", period_end: "2026-07-31",
+        kind: "recorrente", gateway_ref: "pay_A", gateway_charge_id: "pay_A", paid_at: null },
+      { id: "inv_N1", tenant_id: TENANT, status: "open", total_cents: 42980, paid_cents: 0,
+        due_date: "2026-08-11", period_start: "2026-08-01", period_end: "2026-08-31",
+        kind: "recorrente", gateway_ref: null, gateway_charge_id: null, paid_at: null },
+    ])
+    db.seed("asaas_webhook_events", [ev("evt_C", "PAYMENT_CONFIRMED", "pay_C")])
+    gw.responde("GET /payments/pay_C", { id: "pay_C", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 429.8, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_C")
+
+    expect(invoice("inv_N")).toMatchObject({ paid_cents: 34990, status: "partial", gateway_ref: "pay_A" })
+    expect(invoice("inv_N1")).toMatchObject({ paid_cents: 42980, status: "paid", gateway_ref: "pay_C" })
+  })
+
+  it("REGRA: dueDate não toma fatura já vinculada a outra cobrança", async () => {
+    db.seed("tenants", [tenantRow()])
+    db.seed("invoices", [{
+      id: "inv_ja_vinculada", tenant_id: TENANT, status: "open", total_cents: 34990, paid_cents: 0,
+      due_date: "2026-08-11", period_start: "2026-08-01", period_end: "2026-08-31",
+      kind: "recorrente", gateway_ref: "pay_original", gateway_charge_id: "pay_original", paid_at: null,
+    }])
+    db.seed("invoice_items", [{
+      id: "item_inv_ja_vinculada", invoice_id: "inv_ja_vinculada", kind: "plan", amount_cents: 34990,
+    }])
+    db.seed("invoice_payments", [])
+    db.seed("asaas_webhook_events", [ev("evt_intruso", "PAYMENT_CONFIRMED", "pay_intruso")])
+    gw.responde("GET /payments/pay_intruso", {
+      id: "pay_intruso", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB,
+      value: 349.9, dueDate: "2026-08-11", dateCreated: "2026-08-08T00:00:00.000Z",
+    })
+    const antes = structuredClone(invoice("inv_ja_vinculada"))
+
+    await processAsaasEvent("evt_intruso")
+
+    // `dueDate` prova o PERÍODO, não transfere a identidade de uma invoice que já pertence
+    // a outro charge/ref. O dinheiro novo fica suspenso e a projeção antiga permanece intacta.
+    expect(invoice("inv_ja_vinculada")).toEqual(antes)
+    expect(db.linhas("invoice_payments").find((p) => p.payment_id === "pay_intruso")?.invoice_id).toBeNull()
+    expect(String(evento("evt_intruso").error)).toContain("suspenso")
   })
 })
 
@@ -157,11 +219,12 @@ describe("Regra do owner (11/08) · pagamento parcial não libera nada", () => {
     })])
     db.seed("invoices", [
       { id: "inv_P", tenant_id: TENANT, status: "open", total_cents: 42980, paid_cents: 0,
-        due_date: "2026-08-11", gateway_ref: null, paid_at: null },
+        due_date: "2026-08-11", period_start: "2026-08-01", period_end: "2026-08-31",
+        kind: "recorrente", gateway_ref: null, paid_at: null },
     ])
     db.seed("asaas_webhook_events", [ev("evt_parcial", "PAYMENT_CONFIRMED", "pay_parcial")])
     // Paga só o valor do plano (349,90) numa fatura de 429,80 — falta o excedente.
-    gw.responde("GET /payments/pay_parcial", { id: "pay_parcial", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 349.9 })
+    gw.responde("GET /payments/pay_parcial", { id: "pay_parcial", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB, value: 349.9, dueDate: "2026-08-11" })
 
     await processAsaasEvent("evt_parcial")
 

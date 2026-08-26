@@ -1,8 +1,13 @@
 import Link from "next/link"
 import { ChevronLeft, ChevronRight } from "lucide-react"
 import { TenantForm } from "@/components/admin/tenant-form"
+import { listPlans } from "@/lib/actions/admin-plans"
 
-export default function NewTenantPage() {
+export default async function NewTenantPage() {
+  const plans = (await listPlans())
+    .filter((plan) => plan.active)
+    .map(({ id, name }) => ({ id, name }))
+
   return (
     <div className="min-h-full">
       <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center gap-3 sticky top-0 z-10">
@@ -20,7 +25,7 @@ export default function NewTenantPage() {
         </div>
       </div>
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6">
-        <TenantForm />
+        <TenantForm plans={plans} />
       </div>
     </div>
   )

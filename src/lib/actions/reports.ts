@@ -255,6 +255,13 @@ async function countMessages(t: string, r: RangeOpts, f: HelperFilters): Promise
   let q = supabaseAdmin.from("chat_messages")
     .select("*", { count: "exact", head: true })
     .eq("tenant_id", t).eq("is_private_note", false)
+    // "Mensagens" = o que foi TROCADO com o cliente. Nota de sistema ("conversa reaberta",
+    // "auto-atribuído a X") nunca foi mensagem — só não aparecia no recorte por atendente
+    // porque `sender_id` era nulo nela. Desde que a auto-atribuição passou a carimbar o
+    // agente ali (pro teto diário contar), cada conversa distribuída somaria +1 ao KPI
+    // daquele atendente. O filtro corrige a inflação nova E a contagem inflada que já
+    // existia no total sem filtro.
+    .neq("sender_type", "system")
     .gte("created_at", r.from.toISOString()).lt("created_at", r.to.toISOString())
   if (f.conversationIds !== null && f.conversationIds !== undefined) q = q.in("conversation_id", f.conversationIds)
   if (f.agentId)              q = q.eq("sender_id", f.agentId)

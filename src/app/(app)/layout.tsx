@@ -3,7 +3,7 @@ import { redirect } from "next/navigation"
 import { cookies, headers } from "next/headers"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getPlatformSettings } from "@/lib/platform-settings"
-import { motivoDoPaywall } from "@/lib/lifecycle-shared"
+import { motivoDoPaywallForTenant } from "@/lib/lifecycle-shared"
 import { Sidebar } from "@/components/app/sidebar"
 import { MobileSidebar } from "@/components/app/mobile-sidebar"
 import { AppShellProvider } from "@/components/app/app-shell-context"
@@ -47,7 +47,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       .from("tenants")
       // ⚠️ As 3 colunas do paywall (`subscription_status`, `past_due_since`,
       //    `past_due_grace_days`) viajam de graça nesta linha, que já era lida.
-      .select("name, plan, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason, billing_mode, created_at, onboarding_profile_at, onboarding_skipped_at")
+      .select("name, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason, billing_mode, created_at, onboarding_profile_at, onboarding_skipped_at")
       .eq("id", session.user.tenantId)
       .single(),
     showOnboarding ? getSetupState(session.user.tenantId) : Promise.resolve(null),
@@ -101,12 +101,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const tp = tenant as {
     lifecycle_state: string | null; subscription_status: string | null
     past_due_since: string | null;  past_due_grace_days: number | null
-    past_due_reason: string | null
+    past_due_reason: string | null;  billing_mode: string | null
   }
-  const motivo = motivoDoPaywall(
-    tp.lifecycle_state, tp.subscription_status, tp.past_due_since, tp.past_due_grace_days,
-    (await getPlatformSettings()).pastDueGraceDays, tp.past_due_reason,
-  )
+  const motivo = motivoDoPaywallForTenant(tp, (await getPlatformSettings()).pastDueGraceDays)
   if (motivo) {
     // 🔑 O texto muda com o motivo; o comportamento não. Uma pessoa que atrasou a fatura
     //    não pode ler "seu período de teste terminou" — ela ligaria pro suporte pra

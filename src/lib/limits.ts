@@ -40,19 +40,59 @@ function parsePlanLimits(raw: unknown): Partial<Record<LimitResource, number | n
   return out
 }
 
-interface PlanCtx { plan: string; planLimits: Partial<Record<LimitResource, number | null>> }
+interface PlanCtx {
+  mode: "catalog" | "legacy" | "unavailable"
+  legacyPlan: string | null
+  planLimits: Partial<Record<LimitResource, number | null>>
+}
+
+/** Forma segura e limitada para observabilidade: nunca serializa resposta/query/payload. */
+function logLimitReadError(
+  scope: "tenant_plan" | "tenant_override",
+  error: { code?: unknown; message?: unknown },
+  tenantId: string,
+  resource: LimitResource,
+): void {
+  console.error(`[limits] ${scope}:`, JSON.stringify({
+    tenantId,
+    resource,
+    code: String(error.code ?? "unknown").slice(0, 64),
+    message: String(error.message ?? "erro desconhecido").slice(0, 240),
+  }))
+}
 
 /** Plano do tenant + limites do plano (lidos AO VIVO de `plans.limits` via plan_id). */
-async function getPlanContext(tenantId: string): Promise<PlanCtx> {
-  const { data } = await supabaseAdmin
+async function getPlanContext(tenantId: string, resource: LimitResource): Promise<PlanCtx> {
+  const { data, error } = await supabaseAdmin
     .from("tenants")
     .select("plan, plan_id, plans:plan_id ( limits )")
     .eq("id", tenantId)
     .maybeSingle()
-  const plan = (data?.plan as string | undefined) ?? "trial"
+
+  // Sem conseguir provar qual é o plano, não se presume Trial nem se usa o nome legado.
+  if (error) {
+    logLimitReadError("tenant_plan", error, tenantId, resource)
+    return { mode: "unavailable", legacyPlan: null, planLimits: {} }
+  }
+  if (!data) return { mode: "unavailable", legacyPlan: null, planLimits: {} }
+
+  const row = data as { plan?: unknown; plan_id?: unknown; plans?: unknown }
+  if (row.plan_id === null) {
+    return {
+      mode: "legacy",
+      legacyPlan: typeof row.plan === "string" ? row.plan : "trial",
+      planLimits: {},
+    }
+  }
+
+  // `plan_id` é a fronteira de autoridade. Relação ausente, limits nulo, chave ausente
+  // ou valor inválido permanecem no modo catálogo e serão resolvidos como zero.
+  if (typeof row.plan_id !== "string" || !row.plan_id) {
+    return { mode: "unavailable", legacyPlan: null, planLimits: {} }
+  }
   const rel = (data as { plans?: { limits?: unknown } | { limits?: unknown }[] | null } | null)?.plans
   const limitsRaw = Array.isArray(rel) ? rel[0]?.limits : rel?.limits
-  return { plan, planLimits: parsePlanLimits(limitsRaw) }
+  return { mode: "catalog", legacyPlan: null, planLimits: parsePlanLimits(limitsRaw) }
 }
 
 async function resolveMax(
@@ -60,25 +100,36 @@ async function resolveMax(
   resource: LimitResource,
   ctx:      PlanCtx,
 ): Promise<{ max: number | null; source: "override" | "plan" | "default" }> {
-  const { data: override } = await supabaseAdmin
+  const { data: override, error: overrideError } = await supabaseAdmin
     .from("tenant_limits")
     .select("max_value, expires_at")
     .eq("tenant_id", tenantId)
     .eq("resource", resource)
     .maybeSingle()
 
+  // Uma falha aqui pode esconder um override restritivo (inclusive zero). Conceder o
+  // limite do plano nesse cenário seria fail-open.
+  if (overrideError) {
+    logLimitReadError("tenant_override", overrideError, tenantId, resource)
+    return { max: 0, source: "plan" }
+  }
+
   if (override) {
     const expired = override.expires_at && new Date(override.expires_at).getTime() < Date.now()
     if (!expired) return { max: override.max_value, source: "override" }
   }
 
-  // Limite do PLANO (ao vivo). Chave presente vale — inclusive `null` = ilimitado.
-  if (Object.prototype.hasOwnProperty.call(ctx.planLimits, resource)) {
-    return { max: ctx.planLimits[resource] ?? null, source: "plan" }
+  if (ctx.mode !== "legacy") {
+    // No catálogo, a chave precisa existir e ser válida. Ausência/erro = zero; somente
+    // `null` EXPLÍCITO significa ilimitado.
+    if (Object.prototype.hasOwnProperty.call(ctx.planLimits, resource)) {
+      return { max: ctx.planLimits[resource] ?? null, source: "plan" }
+    }
+    return { max: 0, source: "plan" }
   }
 
-  // Fallback: defaults hardcoded por string de plano (legado / tenant sem plano).
-  const planDefaults = DEFAULT_LIMITS_BY_PLAN[ctx.plan] ?? DEFAULT_LIMITS_BY_PLAN.trial
+  // Compatibilidade exclusiva de tenants que ainda não têm `plan_id`.
+  const planDefaults = DEFAULT_LIMITS_BY_PLAN[ctx.legacyPlan ?? "trial"] ?? DEFAULT_LIMITS_BY_PLAN.trial
   return { max: planDefaults[resource], source: "default" }
 }
 
@@ -255,7 +306,7 @@ async function getUsage(tenantId: string, resource: LimitResource): Promise<numb
 // ── API pública ────────────────────────────────────────────────
 
 export async function checkLimit(tenantId: string, resource: LimitResource): Promise<LimitInfo> {
-  const ctx = await getPlanContext(tenantId)
+  const ctx = await getPlanContext(tenantId, resource)
   const [{ max, source }, used] = await Promise.all([
     resolveMax(tenantId, resource, ctx),
     getUsage(tenantId, resource),
@@ -283,7 +334,7 @@ export async function checkLimit(tenantId: string, resource: LimitResource): Pro
 export async function resolveLimitMax(
   tenantId: string, resource: LimitResource,
 ): Promise<{ max: number | null; source: "override" | "plan" | "default" }> {
-  return resolveMax(tenantId, resource, await getPlanContext(tenantId))
+  return resolveMax(tenantId, resource, await getPlanContext(tenantId, resource))
 }
 
 /** Rótulo de cada natureza de arquivo na tela de uso. Desconhecido cai em "Outros" —

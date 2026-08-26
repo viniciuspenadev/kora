@@ -26,13 +26,22 @@ const DAY = 86_400_000
 export async function transitionLifecycleCore(
   tenantId: string,
   action: LifecycleAction,
-  opts?: { days?: number; system?: boolean; actorId?: string | null; actorEmail?: string | null },
+  opts?: {
+    days?: number
+    system?: boolean
+    actorId?: string | null
+    actorEmail?: string | null
+    /** CAS de modalidade para automações que só podem agir em um tipo de cobrança. */
+    expectedBillingMode?: "gateway" | "manual"
+  },
 ): Promise<{ error?: string; to?: LifecycleState }> {
-  const { data: t } = await supabaseAdmin
+  const tenantQuery = supabaseAdmin
     .from("tenants")
-    .select("id, name, lifecycle_state, active, trial_ends_at, activated_at, plan_id, plans:plan_id ( trial_days )")
+    .select("id, name, lifecycle_state, active, trial_ends_at, activated_at, plan_id, billing_mode, plans:plan_id ( trial_days )")
     .eq("id", tenantId)
-    .maybeSingle()
+  const { data: t } = opts?.expectedBillingMode
+    ? await tenantQuery.eq("billing_mode", opts.expectedBillingMode).maybeSingle()
+    : await tenantQuery.maybeSingle()
   if (!t) return { error: "Cliente não encontrado." }
 
   const from = normalizeState(t.lifecycle_state as string | null)
@@ -104,8 +113,19 @@ export async function transitionLifecycleCore(
       return { error: "Ação desconhecida." }
   }
 
-  const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenantId)
-  if (error) return { error: error.message }
+  if (opts?.expectedBillingMode) {
+    const { data: updated, error } = await supabaseAdmin.from("tenants")
+      .update(patch)
+      .eq("id", tenantId)
+      .eq("billing_mode", opts.expectedBillingMode)
+      .select("id")
+      .maybeSingle()
+    if (error) return { error: error.message }
+    if (!updated) return { error: "Modalidade de cobrança mudou durante a transição." }
+  } else {
+    const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenantId)
+    if (error) return { error: error.message }
+  }
 
   // ── Cascata de revogação (2026-08-03) ──────────────────────────────────────
   // 🔴 DEPOIS da escrita do estado, nunca antes. O estado é a verdade — é ele que barra o
@@ -154,37 +174,21 @@ export async function transitionLifecycleCore(
     // ⚠️ Best-effort, como o resto da cascata: o estado já foi escrito e o acesso já caiu.
     //    Falha aqui NÃO desfaz a transição — grita no log pra cancelamento manual, porque
     //    manter o cliente com acesso só porque o gateway não respondeu seria pior.
-    const cancel = await cancelSubscriptionForTenant(tenantId)
-    if ("error" in cancel) {
-      console.error(JSON.stringify({
-        src: "lifecycle", kind: "assinatura-NAO-cancelada", tenant: tenantId, action,
-      }))
+    if (t.billing_mode === "gateway") {
+      const cancel = await cancelSubscriptionForTenant(tenantId)
+      if ("error" in cancel) {
+        console.error(JSON.stringify({
+          src: "lifecycle", kind: "assinatura-NAO-cancelada", tenant: tenantId, action,
+        }))
+      }
     }
 
-    // 🧾 E ANULA A FATURA NÃO SERVIDA (12/08). Este bloco herdou a responsabilidade do
-    //    encerramento automático por falta de pagamento, que foi removido do housekeeping no
-    //    mesmo dia — sem isto a regra do pré-pago ficaria **sem executor nenhum**.
-    //
-    // 🔑 A REGRA: em pré-pago a fatura aberta não é dívida, é uma OFERTA. Ela cobre o período
-    //    à frente, e a partir daqui esse período não vai ser entregue — a conta acabou de ser
-    //    suspensa. Mantê-la aberta sujaria o livro para sempre com um valor que ninguém
-    //    pretende cobrar, e ainda apareceria como "em aberto" na tela do cliente.
-    // ⚠️ `void_reason: "nao_servido"` e não um void mudo: sem o motivo, isto ficaria
-    //    indistinguível de um erro nosso de faturamento na hora de auditar o livro.
-    // ⚠️ Best-effort como o resto da cascata, e pelo mesmo motivo: o acesso já caiu, e
-    //    segurar a transição por causa do livro seria trocar um problema por outro maior.
-    // ⚠️ Só `open/overdue/partial`. Fatura `paid` é história e não se reescreve; `void` já
-    //    está no destino.
-    const { error: erroVoid } = await supabaseAdmin.from("invoices")
-      .update({ status: "void", void_reason: "nao_servido", updated_at: new Date().toISOString() })
-      .eq("tenant_id", tenantId)
-      .in("status", ["open", "overdue", "partial"])
-    if (erroVoid) {
-      console.error(JSON.stringify({
-        src: "lifecycle", kind: "FATURA-NAO-ANULADA-CONFERIR", tenant: tenantId, action,
-        msg: erroVoid.message,
-      }))
-    }
+    // 🧾 Faturas ficam em quarentena visível. Lifecycle não conhece o ledger nem o
+    // estado de cobranças externas e, portanto, não tem prova para escrever `void`.
+    // Especialmente `partial` contém dinheiro real e nunca pode ser rasurada por uma cascata
+    // administrativa. A anulação segura será feita por RPC sob lock, somente depois de
+    // provar zero fatos financeiros e zero cobrança pagável. Até lá, aberto é mais honesto
+    // e reparável que um `void` falso.
   }
 
   // ── O caminho de VOLTA (12/08) ─────────────────────────────────────────────

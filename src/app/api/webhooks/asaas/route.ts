@@ -13,12 +13,13 @@ import { processAsaasEvent } from "@/lib/asaas/webhook-handler"
  *    isto de uma porta aberta.
  *
  * 🔴 REGRA OPERACIONAL QUE VEM DA DOC DO ASAAS, E É CONTRA-INTUITIVA:
- *    **responde 2xx quase sempre e processa DEPOIS.**
+ *    **persiste primeiro, responde 2xx e processa DEPOIS.**
  *    15 falhas consecutivas **INTERROMPEM A FILA** — os eventos continuam sendo gerados,
  *    param de ser entregues, e são **apagados em 14 dias**. Um bug nosso despercebido por
  *    duas semanas viraria clientes que pagaram e continuaram bloqueados, **sem registro
- *    nenhum de que pagaram**. Devolver 500 pra "o Asaas re-tentar" é, aqui, a decisão que
- *    destrói o dado. Quem re-tenta somos nós, a partir da fila persistida.
+ *    nenhum de que pagaram**. Mas o 2xx só é seguro DEPOIS de o evento existir na nossa
+ *    fila durável: se o INSERT falhar, devolvemos 503 para o Asaas tentar de novo. Quem
+ *    reprocessa depois do ACK somos nós, a partir da fila persistida.
  *    (Mesmo padrão dos webhooks da Meta/Evolution — lá o motivo era o ACK; aqui é a fila.)
  */
 export const runtime = "nodejs"
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
   const read = await readWebhookBody(req, MAX_BYTES)
   if ("reject" in read) return read.reject
 
-  let body: { id?: string; event?: string; payment?: Record<string, unknown> }
+  let body: Record<string, unknown>
   try { body = JSON.parse(read.raw) } catch { return new NextResponse("bad json", { status: 400 }) }
 
   const eventId = typeof body.id === "string" ? body.id : null
@@ -61,36 +62,55 @@ export async function POST(req: NextRequest) {
   }
 
 /**
- * Remove a CREDENCIAL de cartão do payload antes de ele virar linha no banco.
+ * Representação mínima e fail-closed que pode virar dado em repouso.
  *
- * 🔴 O PROJETO CIFRAVA O TOKEN NUMA TABELA E O GUARDAVA EM CLARO NA OUTRA (achado do
- *    engenheiro de dados, 12/08). `tenants.asaas_card_token` é `enc:v1:…`; o mesmo token
- *    chegava limpo em `payload.payment.creditCard.creditCardToken` — medido: **9 de 18
- *    eventos** carregavam credencial, 4 tokens distintos. E esse token não é rótulo: é o que
- *    se replaya num `POST /payments` pra debitar o cartão.
+ * O handler usa somente identificadores de evento/pagamento/assinatura e `payment.value`;
+ * o restante é corroborado no gateway antes de mover estado. A allow-list exclui por
+ * construção token/número de cartão, titular, CPF/CNPJ, telefone, e-mail, endereço, IP e
+ * URLs de documentos/recibos. Campo novo do Asaas também fica de fora até revisão.
  *
- * 🔑 Não é vazamento externo — `asaas_webhook_events` tem RLS on, 0 policies e 0 grants, e
- *    o token do browser bate em 42501. O que isso derrubava era a garantia de **cifra em
- *    repouso**: um dump de backup, um vazamento de `service_role` ou um log que serialize o
- *    payload entregariam a credencial viva.
- *
- * ⚠️ `creditCardBrand` e `creditCardNumber` (mascarado pelo gateway) FICAM: são rótulo — o
- *    mesmo dado que o cliente lê na fatura do banco dele — e é com eles que se reconstrói
- *    "qual cartão" numa conciliação. A regra do arquivo de assinaturas vale aqui igual:
- *    rótulo ≠ credencial.
- * ⚠️ Cópia rasa por nível, sem `structuredClone`: o payload é JSON puro vindo do `req.json()`
- *    e só o ramo `payment.creditCard` é reescrito — o resto segue por referência, intacto.
+ * Não espalhar o objeto recebido nem copiar ramos desconhecidos: uma deny-list voltaria a
+ * vazar assim que o gateway mudasse o nome ou a posição de um campo sensível.
  */
-function semCredencial(body: Record<string, unknown>): Record<string, unknown> {
-  const pg = body.payment as Record<string, unknown> | undefined
-  const cc = pg?.creditCard as Record<string, unknown> | undefined
-  if (!cc || !("creditCardToken" in cc)) return body
+function payloadPersistivel(body: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  copiarStrings(body, out, ["id", "event", "dateCreated"])
 
-  const { creditCardToken: _descartado, ...rotulo } = cc
-  return { ...body, payment: { ...pg, creditCard: rotulo } }
+  const payment = objeto(body.payment)
+  if (payment) {
+    const seguro: Record<string, unknown> = {}
+    copiarStrings(payment, seguro, ["id", "customer", "subscription", "status", "billingType", "dueDate"])
+    copiarNumero(payment, seguro, "value")
+    if (Object.keys(seguro).length > 0) out.payment = seguro
+  }
+
+  const subscription = objeto(body.subscription)
+  if (subscription) {
+    const seguro: Record<string, unknown> = {}
+    copiarStrings(subscription, seguro, ["id", "customer", "status", "nextDueDate"])
+    copiarNumero(subscription, seguro, "value")
+    if (Object.keys(seguro).length > 0) out.subscription = seguro
+  }
+
+  return out
 }
 
-  const payment = (body.payment ?? {}) as { id?: string; customer?: string }
+function objeto(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function copiarStrings(origem: Record<string, unknown>, destino: Record<string, unknown>, campos: string[]) {
+  for (const campo of campos) if (typeof origem[campo] === "string") destino[campo] = origem[campo]
+}
+
+function copiarNumero(origem: Record<string, unknown>, destino: Record<string, unknown>, campo: string) {
+  const value = origem[campo]
+  if (typeof value === "number" && Number.isFinite(value)) destino[campo] = value
+}
+
+  const payment = objeto(body.payment) as { id?: string; customer?: string } | null
 
   // ── Regra 2 · idempotência REAL, antes de qualquer efeito ───────────────
   // A PK da tabela é o id do evento DO ASAAS. A entrega é "at least once" e o mesmo id
@@ -100,17 +120,17 @@ function semCredencial(body: Record<string, unknown>): Record<string, unknown> {
   const { error: insErr } = await supabaseAdmin.from("asaas_webhook_events").insert({
     id:         eventId,
     event_type: event,
-    payment_id: typeof payment.id === "string" ? payment.id : null,
-    payload:    semCredencial(body),
+    payment_id: typeof payment?.id === "string" ? payment.id : null,
+    payload:    payloadPersistivel(body),
   })
 
   if (insErr) {
     // 23505 = já vimos este evento. Caminho NORMAL, não erro.
     if (insErr.code === "23505") return NextResponse.json({ ok: true, duplicate: true })
-    // Falha real de banco: NÃO devolve 5xx (ver a regra operacional no topo). Perdemos
-    // este evento, e é o mal menor — o alternativo é a fila inteira parar.
+    // Falha real de banco: sem persistência, o 2xx faria o Asaas descartar a entrega e nós
+    // não teríamos de onde reprocessar. 503 mantém o evento no contrato de retentativa.
     console.error("[asaas-webhook] falha ao persistir evento:", eventId, insErr.message)
-    return NextResponse.json({ ok: true, stored: false })
+    return NextResponse.json({ ok: false, stored: false }, { status: 503 })
   }
 
   // ⚠️ Processa FORA do request. O 200 já está garantido abaixo.

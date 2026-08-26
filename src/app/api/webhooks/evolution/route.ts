@@ -11,6 +11,8 @@ import { latestInboundAt } from "@/lib/llm/context"
 import { transcribeStoredAudio } from "@/lib/llm/transcribe"
 import { assignNextAgent } from "@/lib/automation/auto-assign"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
+import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
+import { handleCampaignInbound } from "@/lib/campaigns/engine"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { notifyInboundMessage } from "@/lib/push/send"
 import { slimAdMeta } from "@/lib/ad-reply"
@@ -510,20 +512,19 @@ async function handleMessageUpsert(
 
     const preview = content ? content.substring(0, 100) : `📎 ${contentType}`
 
-    const wasResolved = conversation.status === "resolved"
-    await supabaseAdmin
-      .from("chat_conversations")
-      .update({
-        last_message_at:      new Date().toISOString(),
-        last_message_preview: preview,
-        last_message_dir:     "in",
-        unread_count:         (conversation.unread_count ?? 0) + 1,
-        status:               wasResolved ? "open" : conversation.status,
-        updated_at:           new Date().toISOString(),
-        // Reopen automático limpa resolved_at pra reports não contarem como "ainda resolvida"
-        ...(wasResolved ? { resolved_at: null } : {}),
-      })
-      .eq("id", conversation.id)
+    // Sobe no inbox pela fonte única (@/lib/channels/inbound-bump): contador de
+    // não-lidas incrementado pelo Postgres + reabertura do resolvido.
+    // ⚠️ `lastInboundAt` omitido de propósito: o Baileys não entrega um relógio
+    //    confiável do provedor, então o carimbo é o nosso `now()`. O que NÃO pode
+    //    voltar é ficar sem carimbo nenhum — era assim até 2026-08-23, e o
+    //    `last_inbound_at` nulo fazia o motor de inatividade tratar a conversa como
+    //    "já disparei" pra sempre (rearme só acontece quando o contato fala DEPOIS
+    //    do último disparo). Re-engajamento no Baileys rodava uma vez só, por vida.
+    await bumpConversationInbound({
+      tenantId:       tenantId,
+      conversationId: conversation.id,
+      preview,
+    })
 
     // CTWA — registra atribuição no contato pra relatórios/segmentação futura.
     // Só guarda na 1ª vez (first-touch attribution). Se já existir, mantém.
@@ -577,6 +578,24 @@ async function handleMessageUpsert(
       } catch (err) {
         console.error("[webhook] failed saving from_ad_meta on conversation:", err)
       }
+    }
+
+    // Campanha: opt-out global ("SAIR") + marca "respondeu" no funil da Transmissão.
+    // 🔴 Faltava AQUI (achado do mapeamento 2026-08-23) — existia só no canal oficial.
+    //    O disparo de campanha sai pelo número oficial, mas `marketing_opt_in` mora no
+    //    CONTATO, que é o mesmo nos dois números do tenant. Quem respondia "SAIR" pro
+    //    número Baileys seguia recebendo campanha: descadastro ignorado, que é consentimento
+    //    (LGPD), não preferência. Espelha meta-inbound.ts — inclusive rodando independente
+    //    do interceptor da Agenda: descadastro não é "atendimento", é ordem do titular.
+    if (content) {
+      const contactIdForCampaign = contact.id
+      after(async () => {
+        try {
+          await handleCampaignInbound(tenantId, contactIdForCampaign, content)
+        } catch (err) {
+          console.error("[evolution campaign inbound] failed:", err)
+        }
+      })
     }
 
     // Camada 0 — interceptor da Agenda (confirmação/remarcação, Fase 3d).

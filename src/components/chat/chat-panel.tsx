@@ -13,13 +13,16 @@ import { safeHref } from "@/lib/safe-href"
 import { toast } from "sonner"
 import {
   Phone, CheckCircle2, Clock, XCircle,
-  MoreVertical, RotateCcw, Moon, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore,
+  MoreVertical, RotateCcw, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore, AlarmClock,
   ArrowLeft, Info, CalendarPlus,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
 import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
 import { TransferDialog, type TransferOpts } from "@/components/chat/transfer-dialog"
+import { FollowUpDialog } from "@/components/chat/followup-dialog"
+import { followUpChip } from "@/lib/atendimento/followup-rules"
+import { scheduleFollowUp, cancelFollowUp } from "@/lib/actions/followup"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
 import { listResources, listServices, type ResourceRow, type ServiceRow } from "@/lib/actions/agenda"
 import { ArrowLeftRight } from "lucide-react"
@@ -66,6 +69,9 @@ interface Props {
   onOpenContact?:  () => void
   /** Tenant tem o módulo agenda → habilita "Agendar" no menu da conversa. */
   agendaEnabled?:  boolean
+  /** Follow-up marcado/cancelado — devolve o patch pro InboxClient atualizar a linha
+   *  na hora (o chip da lista não espera o poll nem a varredura). */
+  onFollowUpChange?: (patch: Partial<ChatConversation>) => void
 }
 
 const STATUS_OPTIONS = [
@@ -114,7 +120,7 @@ export function ChatPanel({
   loadingMessages = false,
   onSendText, onSendMedia, onSendVoice, onArchiveToggle,
   onReply, onReact, onSendLocation, onSendContact, onSendSticker, replyTarget, onCancelReply,
-  onBack, onOpenContact, agendaEnabled = false,
+  onBack, onOpenContact, agendaEnabled = false, onFollowUpChange,
 }: Props) {
   const isArchived = !!conversation.archived_at
   // Menu de ações (kebab) por clique — funciona em desktop e mobile (toque).
@@ -122,6 +128,9 @@ export function ChatPanel({
   // Menu de contexto (clique direito numa mensagem): responder/copiar/reagir/agendar/disparar fluxo.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; msg: ChatMessage | null } | null>(null)
   const [transferOpen, setTransferOpen] = useState(false)
+  // Follow-up: a promessa de voltar. Mesma regra do servidor (followup-rules).
+  const [followUpOpen, setFollowUpOpen] = useState(false)
+  const followUp = followUpChip(conversation)
   // Agendar pela conversa (módulo agenda) — carrega recursos/serviços on-demand.
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [agendaData, setAgendaData] = useState<{ resources: ResourceRow[]; services: ServiceRow[] } | null>(null)
@@ -376,6 +385,21 @@ export function ChatPanel({
                       <currentStatus.icon className="size-2.5" /> {currentStatus.label}
                     </span>
                   )}
+                  {/* Promessa de retorno — clicável: o selo É o atalho pra mudar/cancelar. */}
+                  {followUp && (
+                    <button
+                      type="button" onClick={() => setFollowUpOpen(true)} title={followUp.title}
+                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full border transition-colors ${
+                        followUp.tone === "due"
+                          ? "bg-red-50 text-red-700 border-red-100 hover:bg-red-100"
+                          : followUp.tone === "answered"
+                            ? "bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100"
+                            : "bg-primary-50 text-primary-700 border-primary-200 hover:bg-primary-100"
+                      }`}
+                    >
+                      <AlarmClock className="size-2.5" /> {followUp.label}
+                    </button>
+                  )}
                   {/* Janela de 24h (só oficial) — movida do cluster de ações pra cá, alivia a barra. */}
                   {hasWindow && (windowOpen ? (
                     <span
@@ -463,15 +487,19 @@ export function ChatPanel({
                     <ArrowLeftRight className="size-3.5 shrink-0 text-slate-400" /> Transferir
                   </button>
 
-                  {conversation.status !== "snoozed" && (
-                    <button
-                      type="button"
-                      onClick={() => { onStatusChange("snoozed"); setMenuOpen(false) }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                    >
-                      <Moon className="size-3.5 shrink-0 text-slate-400" /> Adiar
-                    </button>
-                  )}
+                  {/* O "Adiar" cego virou "Voltar depois…": ele mandava a conversa pro
+                      limbo (`snoozed`) sem despertador, e NINGUÉM a acordava.
+                      ⚠️ De propósito, marcar retorno NÃO esconde a conversa: o inbound
+                      mantém `snoozed` (webhook evolution), então esconder significaria o
+                      cliente responder e ninguém ver. A promessa é uma MARCAÇÃO. */}
+                  <button
+                    type="button"
+                    onClick={() => { setFollowUpOpen(true); setMenuOpen(false) }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    <AlarmClock className="size-3.5 shrink-0 text-slate-400" />
+                    {followUp ? "Follow-Up · alterar" : "Follow-Up"}
+                  </button>
                   {conversation.status !== "pending" && (
                     <button
                       type="button"
@@ -606,6 +634,37 @@ export function ChatPanel({
         currentAssignedTo={conversation.assigned_to}
         onTransfer={onTransfer}
       />
+
+      {followUpOpen && (
+      <FollowUpDialog
+        onClose={() => setFollowUpOpen(false)}
+        contactName={name}
+        contactPic={contact?.profile_pic_url ?? null}
+        current={conversation}
+        ownerName={
+          conversation.follow_up_by && conversation.follow_up_by !== conversation.assigned_to
+            ? (agents.find((a) => a.id === conversation.follow_up_by)?.full_name ?? null)
+            : null
+        }
+        onSave={async (dueAt, note) => {
+          const r = await scheduleFollowUp(conversation.id, { dueAt, note })
+          if ("error" in r) return r
+          // Patch otimista: o selo e o chip da lista mudam no ato.
+          onFollowUpChange?.({
+            follow_up_at: dueAt, follow_up_note: note,
+            follow_up_set_at: new Date().toISOString(), follow_up_fired_at: null,
+          })
+        }}
+        onCancel={async () => {
+          const r = await cancelFollowUp(conversation.id)
+          if ("error" in r) return r
+          onFollowUpChange?.({
+            follow_up_at: null, follow_up_by: null, follow_up_note: null,
+            follow_up_set_at: null, follow_up_fired_at: null,
+          })
+        }}
+      />
+      )}
 
       {scheduleOpen && agendaData && conversation.contact_id && (
         <NewAppointmentDialog

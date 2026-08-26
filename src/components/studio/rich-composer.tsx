@@ -31,10 +31,21 @@ export type ComposerPart = "text" | "image" | "buttons"
 
 const NEW_ID = () => `b${Math.random().toString(36).slice(2, 8)}`
 
-export function RichComposer({ value, onChange, channel = "instagram", onFocusPart, vars = [] }: {
+export function RichComposer({ value, onChange, channel = "instagram", onFocusPart, vars = [], variant = "format" }: {
   value:    RichMessage
   onChange: (v: RichMessage) => void
   channel?: string
+  /**
+   * `format`  — o de sempre: a pessoa escolhe entre os 4 formatos. Usado pelo direct de
+   *             abertura do comentário, onde só existe UMA mensagem e o formato é a
+   *             decisão (owner, 2026-08-01).
+   * `compact` — usado dentro de um BALÃO do nó Mensagem. Sem a grade de formatos: com 3
+   *             balões ela aparecia 3 vezes e virava confusão visual (achado do owner na
+   *             1ª versão, 2026-08-17). Aqui o formato é DERIVADO do conteúdo — que é o
+   *             que `richFormat` já faz por dentro — e imagem/botão entram por ação
+   *             explícita, não por escolha prévia.
+   */
+  variant?: "format" | "compact"
   /** Avisa qual parte está em foco — é o que faz a prévia acompanhar. */
   onFocusPart?: (p: ComposerPart) => void
   /** Variáveis ofertadas como chips sob o texto. Vazio = sem chips. */
@@ -67,10 +78,19 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
   //    derivação quando o dado é antigo e não tem o campo.
   //    ⚠️ É a MESMA função que o envio usa (lib/messaging/rich-format.ts) — tela e Meta não
   //    podem discordar sobre o que vai sair, porque a bala é única.
+  const compacto = variant === "compact"
   const fmt     = richFormat(value)
-  const show    = RICH_FORMAT_FIELDS[fmt === "empty" ? "text" : fmt]
+  // Compacto: a parte aparece porque TEM conteúdo (ou porque a pessoa acabou de pedir),
+  // nunca porque um formato foi escolhido antes de escrever.
+  const [pedidos, setPedidos] = useState<{ media: boolean; buttons: boolean }>({ media: false, buttons: false })
+  const show    = compacto
+    ? { text: true, media: !!value.media || pedidos.media, buttons: (value.buttons ?? []).length > 0 || pedidos.buttons }
+    : RICH_FORMAT_FIELDS[fmt === "empty" ? "text" : fmt]
   const caveat  = richFormatCaveat(fmt, value)
-  const missing = richFormatMissing(value)
+  // ⚠️ No compacto, balão INTEIRAMENTE vazio não vira aviso: a copy de `richFormatMissing`
+  //    pra esse caso fala "escreva o direct que a pessoa recebe" — vocabulário do gatilho de
+  //    comentário, errado dentro de um fluxo. A publicação recusa de qualquer forma.
+  const missing = compacto && fmt === "empty" ? null : richFormatMissing(value)
 
   /** Trocar de formato NÃO apaga o que já foi escrito — só muda o que aparece. Quem volta
    *  pro cartão reencontra a imagem, em vez de ter que subir de novo. */
@@ -115,16 +135,18 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
           reusado de propósito: a tela nova não pode inventar linguagem visual própria.
           A escolha decide QUAIS CAMPOS APARECEM abaixo — é isso que impede escolher
           "cartão" e deixar a imagem vazia, sem precisar validar depois. */}
+      {!compacto && (
       <div className="grid grid-cols-2 gap-2">
         {RICH_FORMAT_OPTIONS.map(({ key, title, desc }) => (
           <button key={key} type="button" onClick={() => pickFormat(key)}
             className={`text-left p-2.5 rounded-lg border transition-colors ${
-              fmt === key ? "border-primary/30 bg-primary-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
+              fmt === key ? "border-primary/30 bg-primary-50" : "border-slate-300 bg-white hover:bg-slate-50"}`}>
             <p className="text-xs font-semibold text-slate-800">{title}</p>
             <p className="text-[10.5px] text-slate-500">{desc}</p>
           </button>
         ))}
       </div>
+      )}
 
       {caveat && (
         <p className="rounded-lg bg-amber-50 border border-amber-200 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800">
@@ -158,7 +180,7 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
           </div>
         )}
         <div className="mt-1 flex items-center justify-between text-[11px]">
-          <span className="text-slate-400">Uma mensagem por comentário. É a única chance.</span>
+          <span className="text-slate-400">{compacto ? "" : "Uma mensagem por comentário. É a única chance."}</span>
           <span className={(value.text?.length ?? 0) > limits.textMax - 60 ? "text-amber-600 font-medium" : "text-slate-300"}>
             {value.text?.length ?? 0}/{limits.textMax}
           </span>
@@ -170,7 +192,7 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
       {show.media && (
       <div>
         {value.media ? (
-          <div className="flex items-center gap-3 rounded-xl border border-slate-200 p-2.5">
+          <div className="flex items-center gap-3 rounded-xl border border-slate-300 p-2.5">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={value.media.name ?? ""} alt="" className="size-14 rounded-lg object-cover bg-slate-100" />
             <div className="min-w-0 flex-1">
@@ -184,7 +206,7 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
           </div>
         ) : (
           <button type="button" disabled={busy} onClick={() => fileRef.current?.click()}
-            className="w-full flex items-center justify-center gap-2 h-11 rounded-xl border-2 border-dashed border-slate-200 text-[13px] font-medium text-slate-500 hover:border-primary-200 hover:text-primary-600 transition-colors disabled:opacity-60">
+            className="w-full flex items-center justify-center gap-2 h-11 rounded-xl border-2 border-dashed border-slate-300 text-[13px] font-medium text-slate-500 hover:border-primary-200 hover:text-primary-600 transition-colors disabled:opacity-60">
             {busy ? <Loader2 className="size-4 animate-spin" /> : <ImageIcon className="size-4" />}
             {busy ? "Processando…" : "Adicionar imagem"}
           </button>
@@ -205,7 +227,7 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
 
         <div className="mt-2 space-y-2">
           {buttons.map((b, i) => (
-            <div key={b.id} className="rounded-xl border border-slate-200 p-2.5">
+            <div key={b.id} className="rounded-xl border border-slate-300 p-2.5">
               <div className="flex items-center gap-2">
                 <input value={b.label}
                   onFocus={() => onFocusPart?.("buttons")}
@@ -247,7 +269,7 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
           {buttons.length < limits.maxButtons && (
             <button type="button"
               onClick={() => { onFocusPart?.("buttons"); set({ buttons: [...buttons, { id: NEW_ID(), label: "", kind: "reply" }] }) }}
-              className="w-full flex items-center justify-center gap-1.5 h-9 rounded-xl border-2 border-dashed border-slate-200 text-[12px] font-medium text-slate-500 hover:border-primary-200 hover:text-primary-600 transition-colors">
+              className="w-full flex items-center justify-center gap-1.5 h-9 rounded-xl border-2 border-dashed border-slate-300 text-[12px] font-medium text-slate-500 hover:border-primary-200 hover:text-primary-600 transition-colors">
               <Plus className="size-3.5" /> Adicionar botão
             </button>
           )}
@@ -258,6 +280,23 @@ export function RichComposer({ value, onChange, channel = "instagram", onFocusPa
       {/* O que falta pro formato ESCOLHIDO poder ir ao ar. Aparece aqui ao vivo e é a MESMA
           checagem que o servidor usa pra recusar a publicação — a pessoa não descobre no
           "Publicar" o que já dava pra ver enquanto montava. */}
+      {compacto && (!show.media || !show.buttons) && (
+        <div className="flex items-center gap-1.5">
+          {!show.media && (
+            <button type="button" onClick={() => setPedidos((p) => ({ ...p, media: true }))}
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-slate-300 bg-white text-[11px] font-medium text-slate-600 hover:border-primary-200 hover:text-primary-600 transition-colors">
+              <ImageIcon className="size-3" /> Imagem
+            </button>
+          )}
+          {!show.buttons && limits.maxButtons > 0 && (
+            <button type="button" onClick={() => setPedidos((p) => ({ ...p, buttons: true }))}
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-slate-300 bg-white text-[11px] font-medium text-slate-600 hover:border-primary-200 hover:text-primary-600 transition-colors">
+              <MessageSquare className="size-3" /> Botão
+            </button>
+          )}
+        </div>
+      )}
+
       {missing && (
         <p className="flex items-start gap-1.5 text-[11px] text-amber-700">
           <AlertCircle className="size-3.5 shrink-0 mt-px" /> {missing}

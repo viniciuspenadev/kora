@@ -1,6 +1,8 @@
 "use client"
 
-import { TimeGrid, type GridColumn } from "./time-grid"
+import { useRouter } from "next/navigation"
+import { TimeGrid, type GridColumn, type GhostMark } from "./time-grid"
+import type { DayItem } from "@/lib/actions/my-day"
 import { TZ, cap } from "./lanes"
 import { blackoutBlockForDay, type BoardAppt, type RawBlackout } from "./types"
 import type { GestureApi } from "./use-grid-gestures"
@@ -13,9 +15,17 @@ import type { GestureApi } from "./use-grid-gestures"
 // (a coluna é um dia, não define recurso). Coluna de hoje com tinta primary.
 
 const ymd = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: TZ })
+const ymdISO = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: TZ })
+/** Minuto do dia no fuso do negócio — mesma base que a grade usa pra posicionar. */
+function minutesOf(iso: string): number {
+  const [h, m] = new Date(iso)
+    .toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit" })
+    .split(":")
+  return Number(h) * 60 + Number(m)
+}
 
 export function WeekView({
-  weekDays, appts, blackouts, weekRes, resourceName, todayKey, startHour, endHour, hourPx, now, onOpen, gestures, onSlotClick,
+  weekDays, appts, blackouts, weekRes, resourceName, todayKey, startHour, endHour, hourPx, now, onOpen, gestures, onSlotClick, followUps = [],
 }: {
   weekDays: Date[]                // 7 dias (seg→dom)
   appts: BoardAppt[]              // da semana inteira (todos os recursos visíveis)
@@ -30,7 +40,11 @@ export function WeekView({
   onOpen: (id: string) => void
   gestures: GestureApi | null
   onSlotClick: (resourceId: string | undefined, dateKey: string, startMin: number) => void
+  /** Compromissos internos (follow-ups): aqui a coluna É um dia, então cada marca
+   *  entra na coluna do seu dia — sem ambiguidade e sem recurso. */
+  followUps?: DayItem[]
 }) {
+  const router = useRouter()
   const all = weekRes === "all"
   const columns: GridColumn[] = weekDays.map((d) => {
     const key = ymd(d)
@@ -54,6 +68,12 @@ export function WeekView({
       resourceId: undefined,       // Semana nunca troca a pessoa via coluna
       appts: dayAppts,
       blackouts: dayBlackouts,
+      ghosts: followUps
+        .filter((f) => ymdISO(f.at) === key)
+        .map<GhostMark>((f) => ({
+          id: f.id, dateKey: key, startMin: minutesOf(f.at),
+          label: f.title, onClick: () => router.push(f.href),
+        })),
       header: (
         <div className="min-w-0">
           <p className={`text-[12.5px] font-semibold leading-tight truncate ${isToday ? "text-primary-700" : "text-slate-800"}`}>

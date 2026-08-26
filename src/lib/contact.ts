@@ -30,5 +30,8 @@ export function displayContactInitial(contact: {
   bsuid?:        string | null
 }): string {
   const name = displayContactName(contact)
-  return name[0]?.toUpperCase() ?? "?"
+  // `name[0]` corta caracteres fora do BMP (emoji) no meio do surrogate pair,
+  // gerando � e hydration mismatch entre o SSR e o browser. Array.from itera por
+  // code point e mantém a inicial renderizável nos dois ambientes.
+  return Array.from(name)[0]?.toLocaleUpperCase("pt-BR") ?? "?"
 }

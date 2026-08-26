@@ -14,7 +14,7 @@ export default async function AdminWhatsAppPage() {
         last_connection_check_at, last_connection_state, webhook_url_matches,
         reconnect_attempts, last_error, user_disconnected,
         created_at, updated_at,
-        tenants ( id, name, slug, plan, active )
+        tenants ( id, name, slug, plan, plan_id, active, plans ( name ) )
       `)
       .order("created_at", { ascending: false }),
     supabaseAdmin
@@ -33,7 +33,17 @@ export default async function AdminWhatsAppPage() {
   }
 
   const rows: Row[] = (instances ?? []).map((i) => {
-    const t = i.tenants as unknown as { id: string; name: string; slug: string; plan: string; active: boolean } | null
+    const t = i.tenants as unknown as {
+      id: string
+      name: string
+      slug: string
+      plan: string
+      plan_id: string | null
+      active: boolean
+      plans: { name: string } | { name: string }[] | null
+    } | null
+    const relation = t?.plans
+    const canonicalPlanName = Array.isArray(relation) ? relation[0]?.name : relation?.name
     const server = i.evolution_url ? serverMap.get(i.evolution_url) ?? null : null
     const health: InstanceHealth = computeInstanceHealth(i, server)
     return {
@@ -41,7 +51,7 @@ export default async function AdminWhatsAppPage() {
       tenant_id:                i.tenant_id,
       tenant_name:              t?.name ?? "—",
       tenant_slug:              t?.slug ?? "—",
-      tenant_plan:              t?.plan ?? "—",
+      tenant_plan:              t?.plan_id ? (canonicalPlanName ?? "Plano indisponível") : (t?.plan ?? "—"),
       tenant_active:            t?.active ?? false,
       provider:                 (i.provider ?? "baileys") as "baileys" | "meta_cloud",
       instance_name:            i.instance_name,

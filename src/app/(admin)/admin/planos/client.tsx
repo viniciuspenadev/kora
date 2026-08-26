@@ -590,7 +590,7 @@ function PlanEditor({ plan, modules, tenantsUsing, onClose }: {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Nome do plano">
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ex: Pro" className={INP} />
+              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} placeholder="ex: Plano Essencial" className={INP} />
             </Field>
             <Field label="Descrição curta">
               <input value={description} onChange={(e) => setDesc(e.target.value)} placeholder="ex: Para equipes em crescimento" className={INP} />

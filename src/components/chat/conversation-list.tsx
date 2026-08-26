@@ -5,10 +5,11 @@ import { ContactPic } from "@/components/chat/contact-pic"
 import { useState, useMemo, useRef, useEffect } from "react"
 import {
   Search, MessageCircle, AlertCircle, Loader2, Filter, CheckCircle2, Clock, Moon,
-  Image as ImageIcon, Mic, Video, FileText, X, Plus, ChevronDown,
+  Image as ImageIcon, Mic, Video, FileText, X, Plus,
   ArrowUpRight, ArrowDownLeft, Smartphone, BadgeCheck,
-  Pin, PinOff, Flag, FlagOff, UserPlus, Archive, ArchiveRestore,
+  Pin, PinOff, Flag, FlagOff, UserPlus, Archive, ArchiveRestore, AlarmClock,
 } from "lucide-react"
+import { followUpChip } from "@/lib/atendimento/followup-rules"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { NewConversationModal } from "./new-conversation-modal"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
@@ -23,6 +24,7 @@ interface StageMini    { id: string; pipeline_id: string; name: string; color: s
 interface TagMini        { id: string; name: string; color: string }
 interface DepartmentMini { id: string; name: string; color: string }
 interface AgentMini      { id: string; full_name: string | null }
+type ChannelFilter = "" | "whatsapp" | "instagram" | "site"
 
 interface Props {
   conversations:   ChatConversation[]
@@ -35,6 +37,8 @@ interface Props {
   onArchive:       (id: string) => void
   statusFilter:    string
   onStatusChange:  (status: string) => void
+  channelFilter:   ChannelFilter
+  onChannelFilterChange: (channel: ChannelFilter) => void
   pipelines:       PipelineMini[]
   stages:          StageMini[]
   tags:            TagMini[]
@@ -72,11 +76,21 @@ interface Props {
 }
 
 const STATUS_TABS = [
-  { key: "all",      label: "Todos" },        // todos os status — exceto arquivadas (essas têm o seu próprio item)
-  { key: "open",     label: "Abertos" },
+  { key: "all",      label: "Todas" },        // todos os status — exceto arquivadas (essas têm o seu próprio item)
+  { key: "open",     label: "Abertas" },
   { key: "pending",  label: "Pendentes" },
-  { key: "snoozed",  label: "Adiados" },
-  { key: "resolved", label: "Resolvidos" },
+  // "Adiados" virou "Follow-up": adiar SEM hora marcada não servia pra nada (a
+  // conversa sumia e ninguém a acordava). Agora a aba é o recorte por PROMESSA,
+  // ordenada por prazo — o mais atrasado no topo.
+  { key: "followup", label: "Follow-up" },
+  { key: "resolved", label: "Resolvidas" },
+]
+
+const CHANNEL_FILTERS: Array<{ key: ChannelFilter; label: string; source: string | null }> = [
+  { key: "",          label: "Todos os canais", source: null },
+  { key: "whatsapp", label: "WhatsApp",        source: "whatsapp_inbound" },
+  { key: "instagram", label: "Instagram",       source: "instagram" },
+  { key: "site",      label: "Chat do site",    source: "webform" },
 ]
 
 // Ícone de status por card — mesma linguagem do menu ⋮ do header.
@@ -141,7 +155,7 @@ function formatTimeAgo(dateStr: string): string {
 export function ConversationList({
   conversations, activeId, onSelect,
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
-  statusFilter, onStatusChange,
+  statusFilter, onStatusChange, channelFilter, onChannelFilterChange,
   pipelines, tags, departments, showChannel = false, officialChannel = false, channelReady = true, agents,
   unreadTotal,
   searchValue, onSearchChange,
@@ -155,17 +169,24 @@ export function ConversationList({
   hasMore, onLoadMore, loadingMore, loadingList,
 }: Props) {
   const [showFilters, setShowFilters]       = useState(false)
-  const [showStatusMenu, setShowStatusMenu] = useState(false)
   const [showNewModal, setShowNewModal]     = useState(false)
   const [menu, setMenu]                     = useState<{ x: number; y: number; conv: ChatConversation } | null>(null)
   // Lente rápida da fila (client-side sobre as carregadas): 1 clique isola quem espera.
   const [queueOnly, setQueueOnly]           = useState(false)
 
   const waitingCount = useMemo(() => conversations.filter(isWaitingConv).length, [conversations])
-  const shownConversations = useMemo(
-    () => (queueOnly ? conversations.filter(isWaitingConv) : conversations),
-    [conversations, queueOnly],
-  )
+  const shownConversations = useMemo(() => {
+    const base = queueOnly ? conversations.filter(isWaitingConv) : conversations
+    // Na aba Follow-up a ordem é por PRAZO (o mais atrasado primeiro). O servidor
+    // já entrega assim, mas as fusões do Realtime reordenam por recado recente —
+    // reordenar aqui é o único ponto que vê a lista final.
+    if (statusFilter !== "followup") return base
+    return [...base].sort((a, b) => {
+      const da = a.follow_up_at ? new Date(a.follow_up_at).getTime() : Infinity
+      const db = b.follow_up_at ? new Date(b.follow_up_at).getTime() : Infinity
+      return da - db || a.id.localeCompare(b.id)
+    })
+  }, [conversations, queueOnly, statusFilter])
 
   const departmentById = useMemo(() => {
     const m: Record<string, DepartmentMini> = {}
@@ -179,6 +200,14 @@ export function ConversationList({
   const activeFiltersCount =
     (pipelineFilter ? 1 : 0) + (tagFilter ? 1 : 0) + (agentFilter ? 1 : 0) + (departmentFilter ? 1 : 0) + (staleOnly ? 1 : 0) + (fromAd ? 1 : 0)
 
+  const statusView = queueOnly ? "waiting" : archivedOnly ? "archived" : statusFilter
+  const statusViewLabel = queueOnly
+    ? "Aguardando"
+    : archivedOnly
+      ? "Arquivadas"
+      : (STATUS_TABS.find((tab) => tab.key === statusFilter)?.label ?? "Filtros")
+  const hasAdvancedFilters = statusView !== "all" || activeFiltersCount > 0
+
   function clearFilters() {
     onPipelineFilterChange("")
     onTagFilterChange("")
@@ -186,7 +215,35 @@ export function ConversationList({
     onDepartmentFilterChange("")
     onStaleOnlyChange(false)
     onFromAdChange(false)
-    // archivedOnly NÃO entra aqui — é uma visão de status (seletor), não filtro secundário.
+    setQueueOnly(false)
+    onArchivedOnlyChange(false)
+    onStatusChange("all")
+  }
+
+  function selectStatus(status: string) {
+    setQueueOnly(false)
+    onArchivedOnlyChange(false)
+    onStatusChange(status)
+  }
+
+  function selectArchived() {
+    setQueueOnly(false)
+    onArchivedOnlyChange(true)
+    onStatusChange("all")
+  }
+
+  function selectStatusView(value: string) {
+    if (value === "waiting") {
+      onArchivedOnlyChange(false)
+      onStatusChange("all")
+      setQueueOnly(true)
+      return
+    }
+    if (value === "archived") {
+      selectArchived()
+      return
+    }
+    selectStatus(value)
   }
 
   // IntersectionObserver no rodapé pra disparar loadMore
@@ -207,11 +264,14 @@ export function ConversationList({
   return (
     <div className="flex flex-col h-full border-r border-slate-200 bg-white">
 
-      <div className="px-4 pt-4 pb-2 border-b border-slate-100 shrink-0">
-        <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-sm font-bold text-slate-900">Inbox</h2>
+      <div className="relative px-3 pt-3 pb-2.5 border-b border-slate-200 bg-white shrink-0">
+        <div className="flex h-8 items-center gap-2">
+          <h2 className="text-sm font-bold tracking-tight text-slate-900">Inbox</h2>
           {unreadTotal > 0 && (
-            <span className="text-[10px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded-full min-w-[18px] text-center tabular-nums">
+            <span
+              className="min-w-[18px] rounded-full bg-primary px-1.5 py-0.5 text-center text-[10px] font-bold tabular-nums text-white"
+              title={`${unreadTotal} conversa${unreadTotal === 1 ? "" : "s"} não lida${unreadTotal === 1 ? "" : "s"}`}
+            >
               {unreadTotal > 99 ? "99+" : unreadTotal}
             </span>
           )}
@@ -220,163 +280,165 @@ export function ConversationList({
             title={channelReady ? "Nova conversa" : "Conecte um canal de WhatsApp primeiro"}
             onClick={() => { if (channelReady) setShowNewModal(true) }}
             disabled={!channelReady}
-            className={`ml-auto size-7 rounded-lg flex items-center justify-center transition-colors ${
-              channelReady ? "bg-primary-50 hover:bg-primary-100 text-primary-600" : "bg-slate-100 text-slate-300 cursor-not-allowed"
+            aria-label="Nova conversa"
+            className={`ml-auto flex size-8 items-center justify-center rounded-full transition-colors ${
+              channelReady ? "bg-primary text-white shadow-sm hover:bg-primary-700" : "cursor-not-allowed bg-slate-100 text-slate-300"
             }`}
           >
-            <Plus className="size-3.5" />
+            <Plus className="size-4" />
           </button>
         </div>
 
-        <div className="flex gap-1.5 mb-2">
-          <div className="relative flex-1 min-w-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400" />
-            <input
-              type="text"
-              value={searchValue}
-              onChange={(e) => onSearchChange(e.target.value)}
-              placeholder="Buscar..."
-              className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 placeholder:text-slate-400"
-            />
-          </div>
+        <label className="relative mt-2 block">
+          <span className="sr-only">Pesquisar conversas</span>
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+          <input
+            type="search"
+            value={searchValue}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Pesquisar conversas"
+            className="h-9 w-full rounded-xl border border-transparent bg-slate-100 pl-9 pr-3 text-xs text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-primary-300 focus:bg-white focus:ring-2 focus:ring-primary/15"
+          />
+        </label>
 
-          {/* Status dropdown */}
-          <div className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowStatusMenu((v) => !v)}
-              className={`h-9 inline-flex items-center gap-1.5 px-2.5 rounded-lg border text-[11px] font-semibold transition-colors ${
-                showStatusMenu
-                  ? "bg-primary-50 border-primary-200 text-primary-700"
-                  : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-              }`}
-            >
-              {archivedOnly ? "Arquivadas" : (STATUS_TABS.find((t) => t.key === statusFilter)?.label ?? statusFilter)}
-              <ChevronDown className={`size-3 text-slate-400 transition-transform ${showStatusMenu ? "rotate-180" : ""}`} />
-            </button>
-
-            {showStatusMenu && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setShowStatusMenu(false)} />
-                <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg shadow-soft border border-slate-200 z-50 overflow-hidden">
-                  {STATUS_TABS.map((tab) => {
-                    const active = !archivedOnly && statusFilter === tab.key
-                    return (
-                      <button
-                        key={tab.key}
-                        type="button"
-                        onClick={() => { onArchivedOnlyChange(false); onStatusChange(tab.key); setShowStatusMenu(false) }}
-                        className={`w-full flex items-center justify-between px-3 py-2 text-[11px] font-medium ${
-                          active ? "bg-primary-50 text-primary-700" : "text-slate-700 hover:bg-slate-50"
-                        }`}
-                      >
-                        <span>{tab.label}</span>
-                      </button>
-                    )
-                  })}
-                  <div className="border-t border-slate-100" />
-                  <button
-                    type="button"
-                    onClick={() => { onArchivedOnlyChange(true); onStatusChange("all"); setShowStatusMenu(false) }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-[11px] font-medium ${
-                      archivedOnly ? "bg-primary-50 text-primary-700" : "text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    <Archive className="size-3.5 shrink-0" />
-                    <span>Arquivadas</span>
-                  </button>
-                </div>
-              </>
-            )}
+        <div className="mt-2 flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5" role="group" aria-label="Filtrar por canal">
+            {CHANNEL_FILTERS.map((channel) => {
+              const active = channelFilter === channel.key
+              return (
+                <button
+                  key={channel.key || "all"}
+                  type="button"
+                  aria-pressed={active}
+                  aria-label={channel.label}
+                  title={channel.label}
+                  onClick={() => onChannelFilterChange(channel.key)}
+                  className={`flex size-8 shrink-0 items-center justify-center rounded-full border transition-all ${
+                    active
+                      ? "border-primary bg-primary-50 shadow-sm ring-2 ring-primary/15"
+                      : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  {channel.source ? (
+                    <SourceLogo source={channel.source} size={20} />
+                  ) : (
+                    <span className="flex items-center gap-0.5" aria-hidden="true">
+                      <span className="size-1.5 rounded-full bg-[#25D366]" />
+                      <span className="size-1.5 rounded-full bg-[#E1306C]" />
+                      <span className="size-1.5 rounded-full bg-sky-500" />
+                    </span>
+                  )}
+                </button>
+              )
+            })}
           </div>
 
           <button
             type="button"
+            aria-expanded={showFilters}
+            aria-haspopup="dialog"
             onClick={() => setShowFilters((v) => !v)}
-            className={`relative shrink-0 size-9 rounded-lg flex items-center justify-center transition-colors ${
-              showFilters || activeFiltersCount > 0
-                ? "bg-primary-50 text-primary-600 border border-primary-200"
-                : "bg-white border border-slate-200 text-slate-400 hover:bg-slate-50"
+            className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold transition-colors ${
+              showFilters || hasAdvancedFilters
+                ? "border-primary-200 bg-primary-50 text-primary-700"
+                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
             }`}
-            title="Filtros"
           >
-            <Filter className="size-3.5" />
+            <Filter className="size-3" />
+            {statusView === "all" ? "Filtros" : statusViewLabel}
             {activeFiltersCount > 0 && (
-              <span className="absolute -top-1 -right-1 size-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center">
+              <span className="flex size-4 items-center justify-center rounded-full bg-primary text-[9px] font-bold text-white">
                 {activeFiltersCount}
               </span>
             )}
           </button>
         </div>
 
-        {/* Chip da fila — só existe quando HÁ fila. Clicou, isola quem espera. */}
-        {(waitingCount > 0 || queueOnly) && (
-          <div className="mb-2">
+        {showFilters && (
+          <>
             <button
               type="button"
-              onClick={() => setQueueOnly((v) => !v)}
-              className={`inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border text-[11px] font-semibold transition-colors ${
-                queueOnly
-                  ? "bg-amber-100 border-amber-300 text-amber-800"
-                  : "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
-              }`}
-              title={queueOnly ? "Mostrar todas" : "Ver só quem aguarda atendimento"}
+              aria-label="Fechar filtros"
+              className="fixed inset-0 z-40 cursor-default"
+              onClick={() => setShowFilters(false)}
+            />
+            <div
+              role="dialog"
+              aria-label="Filtros avançados"
+              className="absolute left-3 right-3 top-full z-50 mt-1 max-h-[min(430px,70vh)] space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-soft"
             >
-              <span className="size-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
-              Aguardando ({waitingCount})
-              {queueOnly && <X className="size-3 -mr-0.5" />}
-            </button>
-          </div>
-        )}
-
-        {showFilters && (
-          <div className="space-y-1.5 mb-2 p-2.5 rounded-lg border border-slate-200 bg-slate-50/50">
-            {pipelines.length > 0 && (
-              <SimpleSelect value={pipelineFilter} onChange={onPipelineFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
-                options={[{ value: "", label: "Todos os funis" }, ...pipelines.map((p) => ({ value: p.id, label: p.name }))]} />
-            )}
-            {tags.length > 0 && (
-              <SimpleSelect value={tagFilter} onChange={onTagFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
-                options={[{ value: "", label: "Todas as tags" }, ...tags.map((t) => ({ value: t.id, label: t.name }))]} />
-            )}
-            <SimpleSelect value={agentFilter} onChange={onAgentFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
-              options={[{ value: "", label: "Todos os agentes" }, ...agents.map((a) => ({ value: a.id, label: a.full_name ?? "—" }))]} />
-            {departments.length > 0 && (
-              <SimpleSelect value={departmentFilter} onChange={onDepartmentFilterChange} className="h-7 text-[11px] pl-2 pr-1.5 rounded"
-                options={[{ value: "", label: "Todos os departamentos" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]} />
-            )}
-            <div className="pt-1">
-              <Switch
-                size="sm"
-                checked={staleOnly}
-                onChange={onStaleOnlyChange}
-                label={`Apenas sem resposta há +${STALE_HOURS_THRESHOLD}h`}
-              />
+              <div className="flex items-center justify-between gap-3 pb-1">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">Filtros avançados</p>
+                  <p className="text-[10px] text-slate-500">Refine as conversas exibidas</p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Fechar filtros"
+                  onClick={() => setShowFilters(false)}
+                  className="flex size-7 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Situação</p>
+                <SimpleSelect
+                  value={statusView}
+                  onChange={selectStatusView}
+                  className="h-8 rounded-lg pl-2.5 pr-2 text-[11px]"
+                  options={[
+                    ...STATUS_TABS.map((tab) => ({ value: tab.key, label: tab.label })),
+                    { value: "waiting", label: `Aguardando atendimento (${waitingCount})` },
+                    { value: "archived", label: "Arquivadas" },
+                  ]}
+                />
+              </div>
+              {pipelines.length > 0 && (
+                <SimpleSelect value={pipelineFilter} onChange={onPipelineFilterChange} className="h-8 rounded-lg pl-2.5 pr-2 text-[11px]"
+                  options={[{ value: "", label: "Todos os funis" }, ...pipelines.map((p) => ({ value: p.id, label: p.name }))]} />
+              )}
+              {tags.length > 0 && (
+                <SimpleSelect value={tagFilter} onChange={onTagFilterChange} className="h-8 rounded-lg pl-2.5 pr-2 text-[11px]"
+                  options={[{ value: "", label: "Todas as tags" }, ...tags.map((t) => ({ value: t.id, label: t.name }))]} />
+              )}
+              <SimpleSelect value={agentFilter} onChange={onAgentFilterChange} className="h-8 rounded-lg pl-2.5 pr-2 text-[11px]"
+                options={[{ value: "", label: "Todos os agentes" }, ...agents.map((a) => ({ value: a.id, label: a.full_name ?? "—" }))]} />
+              {departments.length > 0 && (
+                <SimpleSelect value={departmentFilter} onChange={onDepartmentFilterChange} className="h-8 rounded-lg pl-2.5 pr-2 text-[11px]"
+                  options={[{ value: "", label: "Todos os departamentos" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]} />
+              )}
+              <div className="space-y-2 border-t border-slate-100 pt-2">
+                <Switch
+                  size="sm"
+                  checked={staleOnly}
+                  onChange={onStaleOnlyChange}
+                  label={`Apenas sem resposta há +${STALE_HOURS_THRESHOLD}h`}
+                />
+                <Switch
+                  size="sm"
+                  checked={fromAd}
+                  onChange={onFromAdChange}
+                  label="Apenas vieram de anúncio Meta"
+                />
+              </div>
+              {hasAdvancedFilters && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="flex h-8 w-full items-center justify-center gap-1 rounded-lg text-[10px] font-semibold text-slate-500 hover:bg-red-50 hover:text-red-600"
+                >
+                  <X className="size-3" /> Limpar filtros
+                </button>
+              )}
             </div>
-            <div className="pt-1">
-              <Switch
-                size="sm"
-                checked={fromAd}
-                onChange={onFromAdChange}
-                label="Apenas vieram de anúncio Meta"
-              />
-            </div>
-            {activeFiltersCount > 0 && (
-              <button
-                type="button"
-                onClick={clearFilters}
-                className="w-full h-6 text-[10px] font-semibold text-slate-500 hover:text-red-500 flex items-center justify-center gap-1"
-              >
-                <X className="size-2.5" /> Limpar filtros
-              </button>
-            )}
-          </div>
+          </>
         )}
 
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {loadingList && conversations.length === 0 ? (
+        {loadingList ? (
           <div className="flex flex-col items-center justify-center py-12 px-4">
             <Loader2 className="size-5 text-slate-300 animate-spin mb-3" />
             <p className="text-xs text-slate-400 text-center">Carregando conversas…</p>
@@ -385,7 +447,13 @@ export function ConversationList({
           <div className="flex flex-col items-center justify-center py-12 px-4">
             <MessageCircle className="size-8 text-slate-200 mb-3" />
             <p className="text-xs text-slate-400 text-center">
-              {queueOnly ? "Fila zerada — ninguém aguardando 🎉" : searchValue || activeFiltersCount > 0 ? "Nenhuma conversa encontrada" : "Nenhuma conversa neste filtro"}
+              {queueOnly
+                ? "Fila zerada — ninguém aguardando 🎉"
+                : channelFilter
+                  ? "Nenhuma conversa neste canal"
+                  : searchValue || hasAdvancedFilters
+                    ? "Nenhuma conversa encontrada"
+                    : "Nenhuma conversa neste filtro"}
             </p>
             {queueOnly && (
               <button type="button" onClick={() => setQueueOnly(false)} className="mt-2 text-[11px] font-semibold text-primary-600 hover:underline">
@@ -430,6 +498,12 @@ export function ConversationList({
             // Pós-merge o contato tem fios de canais distintos: cada um mostra o SEU ícone.
             const rowSource  = channelToSource(conv.channel) ?? contact?.source ?? null
             const showSource = !!rowSource
+            // A promessa de retorno. Mesma conta do servidor (followup-rules) — por isso
+            // o chip apaga no INSTANTE em que o cliente responde, sem esperar a varredura.
+            // Cumprido NÃO entra na lista do inbox: aqui é fila de trabalho, e o
+            // histórico tem casa própria (Tarefas e o dia dele na Agenda).
+            const chip       = followUpChip(conv)
+            const followUp   = chip && chip.tone !== "done" ? chip : null
 
             return (
               <button
@@ -505,6 +579,24 @@ export function ConversationList({
                             ? <>Aguardando <span className="text-amber-600 font-medium">· {queueDept}</span></>
                             : "Aguardando atendimento"}
                         </span>
+                      </span>
+                    </div>
+                  )}
+
+                  {followUp && (
+                    <div className="mt-1.5">
+                      <span
+                        title={followUp.title}
+                        className={`inline-flex items-center gap-1 max-w-full whitespace-nowrap text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${
+                          followUp.tone === "due"
+                            ? "text-red-700 bg-red-50 border-red-100"
+                            : followUp.tone === "answered"
+                              ? "text-slate-500 bg-slate-50 border-slate-200"
+                              : "text-primary-700 bg-primary-50 border-primary-200"
+                        }`}
+                      >
+                        <AlarmClock className="size-2.5 shrink-0" />
+                        <span className="truncate min-w-0">{followUp.label}</span>
                       </span>
                     </div>
                   )}

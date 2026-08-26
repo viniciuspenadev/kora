@@ -127,13 +127,23 @@ export async function listPlansForClient(tenantId: string): Promise<PlanoVitrine
    *    WhatsApp aparece com ✗ na lista de recursos.
    */
   const formatarLimite = (chave: string, v: number | null): { valor: string; zero: boolean } => {
-    if (v === null || v === undefined) return { valor: "Ilimitado", zero: false }
+    if (v === null) return { valor: "Ilimitado", zero: false }
     if (chave === "storage_mb") {
       return v >= 1000
         ? { valor: `${(v / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} GB`, zero: v === 0 }
         : { valor: `${v} MB`, zero: v === 0 }
     }
     return { valor: v.toLocaleString("pt-BR"), zero: v === 0 }
+  }
+
+  /** Chave ausente/inválida é zero. Só `null` explícito comunica ilimitado. */
+  const limiteDoPlano = (raw: unknown, chave: string): number | null => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return 0
+    const limits = raw as Record<string, unknown>
+    if (!Object.prototype.hasOwnProperty.call(limits, chave)) return 0
+    const value = limits[chave]
+    if (value === null) return null
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0
   }
 
   /**
@@ -214,14 +224,14 @@ export async function listPlansForClient(tenantId: string): Promise<PlanoVitrine
           if (!(inclui.has(slug) || core.has(slug))) return null
           const chave = LIMITE_DO_MODULO[slug]
           if (!chave) return null
-          return formatarLimite(chave, (p.limits ?? {})[chave] ?? null).valor
+          return formatarLimite(chave, limiteDoPlano(p.limits, chave)).valor
         })(),
       })),
       // ⚠️ Só dos módulos que o plano REALMENTE inclui — o selo diz "este plano fala com
       //    este canal", não "este canal existe no produto".
       limitesGerais: LIMITES_GERAIS.map((k) => ({
         label: LIMIT_META[k as keyof typeof LIMIT_META].label,
-        valor: formatarLimite(k, (p.limits ?? {})[k] ?? null).valor,
+        valor: formatarLimite(k, limiteDoPlano(p.limits, k)).valor,
       })),
       canais: [...new Set(
         (p.included_modules ?? []).map((m) => CANAL_DO_MODULO[m]).filter(Boolean),

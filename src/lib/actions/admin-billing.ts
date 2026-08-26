@@ -36,6 +36,21 @@ export interface InvoiceItem {
 }
 
 const SUB_STATUS = new Set(["active", "past_due", "canceled"])
+const MANUAL_PAYMENT_METHODS = new Set(["pix", "boleto", "cartao", "manual"])
+
+async function ajusteManualDeFaturaPermitido(tenantId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data, error } = await supabaseAdmin
+    .from("tenants")
+    .select("billing_mode")
+    .eq("id", tenantId)
+    .maybeSingle()
+
+  if (error) return { ok: false, error: `Nao foi possivel validar o modo de cobranca: ${error.message}` }
+  if ((data as { billing_mode?: unknown } | null)?.billing_mode !== "manual") {
+    return { ok: false, error: "Faturas do gateway so podem mudar por um fato financeiro confirmado." }
+  }
+  return { ok: true }
+}
 
 // ── Assinatura ──────────────────────────────────────────────────
 export async function updateTenantBilling(
@@ -281,6 +296,11 @@ export async function generateInvoice(tenantId: string): Promise<{ error?: strin
 export async function markInvoicePaid(invoiceId: string, tenantId: string, method: string): Promise<{ error?: string }> {
   const session = await requirePlatformAdmin()
 
+  if (!MANUAL_PAYMENT_METHODS.has(method)) return { error: "Forma de pagamento invalida." }
+
+  const permissao = await ajusteManualDeFaturaPermitido(tenantId)
+  if (!permissao.ok) return { error: permissao.error }
+
   // 🔑 Baixa manual quita a fatura INTEIRA — não existe "recebi metade" pela mão do
   //    operador. Ler o total garante `paid_cents = total_cents` em vez do default `0`, que
   //    gravaria "paga sem receber nada" (invariante 1).
@@ -320,6 +340,8 @@ export async function markInvoicePaid(invoiceId: string, tenantId: string, metho
 
 export async function voidInvoice(invoiceId: string, tenantId: string): Promise<{ error?: string }> {
   const session = await requirePlatformAdmin()
+  const permissao = await ajusteManualDeFaturaPermitido(tenantId)
+  if (!permissao.ok) return { error: permissao.error }
   const { error } = await supabaseAdmin
     .from("invoices")
     // ⚠️ `erro_operacional` é o motivo certo aqui, e é justamente a distinção que a coluna

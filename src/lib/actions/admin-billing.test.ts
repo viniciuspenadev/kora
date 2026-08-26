@@ -47,14 +47,20 @@ let auditado: Record<string, unknown>[] = []
  * `null` = não há mensalidade paga · string = `period_end` · `"erro"` = a consulta falhou.
  */
 let cicloPago: string | null | "erro" = null
+let modoCobranca: "manual" | "gateway" | null = "manual"
+let totalDaFatura = 10_000
 
 // ⚠️ O dublê VIROU ENCADEÁVEL (11/08). O antigo tinha exatamente dois `.eq()` fixos, e a
 //    consulta do ciclo pago usa três + `order` + `limit` — ele quebrava com "eq is not a
 //    function" em cinco testes. Dublê que espelha a FORMA da chamada (e não a chamada
 //    exata de ontem) para de reprovar por refatoração e volta a reprovar só por regressão.
-function consulta(tabela: string) {
+function consulta(tabela: string, colunas?: string) {
   const resposta = async () => {
+    if (tabela === "tenants" && colunas === "billing_mode") {
+      return { data: modoCobranca ? { billing_mode: modoCobranca } : null, error: null }
+    }
     if (tabela === "invoices") {
+      if (colunas === "total_cents") return { data: { total_cents: totalDaFatura }, error: null }
       if (cicloPago === "erro") return { data: null, error: { message: "conexão caiu" } }
       return { data: cicloPago ? { period_end: cicloPago } : null, error: null }
     }
@@ -71,7 +77,7 @@ function consulta(tabela: string) {
 vi.mock("@/lib/supabase", () => ({
   supabaseAdmin: {
     from: (tabela: string) => ({
-      select: () => consulta(tabela),
+      select: (colunas?: string) => consulta(tabela, colunas),
       update: (p: Record<string, unknown>) => { patch = p; return { eq: () => ({ eq: async () => ({ error: null }) }), then: (r: (v: unknown) => unknown) => r({ error: null }) } },
       // 🔑 `insert` existe pra a TRILHA ser exercitada. Sem ele o `logAudit` falhava em
       //    silêncio (fire-and-forget, por desenho) e os testes passavam sem provar nada
@@ -84,18 +90,59 @@ vi.mock("@/lib/supabase", () => ({
   },
 }))
 
-const { updateTenantBilling } = await import("./admin-billing")
+const { updateTenantBilling, markInvoicePaid, voidInvoice } = await import("./admin-billing")
 
 const TENANT = "11111111-1111-1111-1111-111111111111"
 
 beforeEach(() => {
   linha = { subscription_status: "active", past_due_since: null }
   cicloPago = null
+  modoCobranca = "manual"
+  totalDaFatura = 10_000
   patch = null
   auditado = []
   cancelarMock.mockClear()
   cancelarMock.mockResolvedValue({ ok: true })
   opcoesDoCancelamento = undefined
+})
+
+describe("fronteira entre financeiro manual e gateway", () => {
+  it("recusa baixa e anulacao manuais para tenant gateway sem escrever invoice", async () => {
+    modoCobranca = "gateway"
+
+    const baixa = await markInvoicePaid("inv_1", TENANT, "pix")
+    expect(baixa.error).toContain("gateway")
+    expect(patch).toBeNull()
+
+    const anulacao = await voidInvoice("inv_1", TENANT)
+    expect(anulacao.error).toContain("gateway")
+    expect(patch).toBeNull()
+    expect(auditado).toHaveLength(0)
+  })
+
+  it("preserva a operacao administrativa para tenant manual explicito", async () => {
+    const baixa = await markInvoicePaid("inv_1", TENANT, "pix")
+    expect(baixa.error).toBeUndefined()
+    expect(patch).toMatchObject({ status: "paid", paid_cents: totalDaFatura, paid_method: "pix" })
+
+    patch = null
+    const anulacao = await voidInvoice("inv_1", TENANT)
+    expect(anulacao.error).toBeUndefined()
+    expect(patch).toMatchObject({ status: "void", void_reason: "erro_operacional" })
+  })
+
+  it("modo ausente falha fechado e nao escreve", async () => {
+    modoCobranca = null
+    const r = await markInvoicePaid("inv_1", TENANT, "pix")
+    expect(r.error).toBeTruthy()
+    expect(patch).toBeNull()
+  })
+
+  it("nao aceita forma de pagamento inventada pelo cliente", async () => {
+    const r = await markInvoicePaid("inv_1", TENANT, "<script>")
+    expect(r.error).toBeTruthy()
+    expect(patch).toBeNull()
+  })
 })
 
 // ── A trilha ────────────────────────────────────────────────────────────────

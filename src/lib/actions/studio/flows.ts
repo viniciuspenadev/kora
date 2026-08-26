@@ -14,6 +14,7 @@ import { isWindowOpen, getChannelCompose } from "@/lib/channels/policy"
 import { richFormat, richFormatMissing } from "@/lib/messaging/rich-format"
 import { checkLimit } from "@/lib/limits"
 import { hasModule } from "@/lib/modules"
+import { baloesDe, botaoForaDoUltimo, temBaloesRicos } from "@/lib/ai-v2/flow/message-balloons"
 import { runStudioTurn } from "@/lib/ai-v2/run"
 
 /** Cota de automações (fluxos): bloqueia a CRIAÇÃO acima do teto; os existentes seguem. */
@@ -22,9 +23,8 @@ async function assertAutomationQuota(tenantId: string): Promise<string | null> {
   if (!info.ok) return `Limite de automações atingido (${info.used}/${info.max}). Fale com o administrador da plataforma pra aumentar.`
   return null
 }
-import type { FlowGraph, FlowTrigger } from "@/lib/ai-v2/flow/types"
+import type { FlowGraph, FlowTrigger, MessageNodeConfig } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
-import type { RichMessage } from "@/lib/ai-v2/flow/types"
 import { checkFlowGraphLimits } from "@/lib/ai-v2/flow/limits"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
 
@@ -245,10 +245,28 @@ async function validateSchedulePublish(tenantId: string, graph: FlowGraph): Prom
 function validateMessagePublish(graph: FlowGraph): string | null {
   for (const n of graph.nodes) {
     if (n.type !== "message") continue
-    const rich = (n.config as { rich?: RichMessage }).rich
-    if (!rich) continue                       // nó legado (texto puro) — nada a validar
-    const falta = richFormatMissing(rich)
-    if (falta) return `Um nó Mensagem está incompleto: ${falta.toLowerCase()}`
+    const cfg = n.config as unknown as MessageNodeConfig
+    if (!temBaloesRicos(cfg)) continue        // nó legado (texto puro) — nada a validar
+
+    /**
+     * 🔴 BOTÃO SÓ NO ÚLTIMO BALÃO. Botão de resposta faz o nó esperar e vira SAÍDA no
+     *    desenho: no meio da sequência seria parar antes de terminar de falar, e em dois
+     *    balões seriam duas saídas concorrentes saindo do mesmo nó — que o canvas não
+     *    desenha e o motor não escolhe. Recusado aqui, e não só escondido na tela: o
+     *    jsonb também chega por importação e por cópia de nó entre fluxos.
+     */
+    const fora = botaoForaDoUltimo(cfg)
+    if (fora) return `No nó Mensagem, só o último balão pode ter botão — o balão ${fora} tem um. Mova o botão pro último balão.`
+
+    const baloes = baloesDe(cfg)
+    for (let i = 0; i < baloes.length; i++) {
+      const falta = richFormatMissing(baloes[i])
+      if (falta) {
+        return baloes.length > 1
+          ? `O balão ${i + 1} de um nó Mensagem está incompleto: ${falta.toLowerCase()}`
+          : `Um nó Mensagem está incompleto: ${falta.toLowerCase()}`
+      }
+    }
   }
   return null
 }

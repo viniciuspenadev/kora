@@ -680,11 +680,14 @@ function ConversationCard({
         </div>
         <div className="flex-1 min-w-0 flex flex-col gap-0.5 leading-tight">
           <p className="text-[13px] font-semibold text-slate-900 truncate">{displayName}</p>
-          {conv.ai_handling ? (
-            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-violet-600" title="A IA está atendendo esta conversa">
-              <span className="size-1.5 rounded-full bg-violet-500 animate-pulse" /> IA atendendo
-            </span>
-          ) : aguardando ? (
+          {/* 🔴 O selo "IA atendendo" foi REMOVIDO (decisão do dono, 2026-08-23): ele
+              mentia. Ele lia `ai_handling`, que a conversa passou a carregar desde o
+              NASCIMENTO sempre que o tenant tinha IA ativa — independente de existir
+              fluxo pra atendê-la. Medido em prod no dia da remoção: 93 conversas com o
+              selo aceso e ZERO fluxo rodando (85 numa só cliente), contra 7 com fluxo de
+              verdade. Um indicador que acerta 7% não informa, atrapalha.
+              Sem ele, essas conversas caem no rótulo honesto abaixo: "Aguardando atend.". */}
+          {aguardando ? (
             <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-600" title="Cliente aguardando atendimento">
               <span className="size-1.5 rounded-full bg-amber-500 animate-pulse" /> Aguardando atend.
             </span>

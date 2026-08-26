@@ -22,6 +22,14 @@ export type ConversationEventType =
   | "reopened"        // cliente voltou depois de concluída
   | "sla_breach"      // estourou o SLA
   | "window_expired"  // janela de 24h (canal oficial) venceu sem resposta humana
+  // Follow-up de atendimento (docs/atendimento-followup-design.md).
+  // ⚠️ O CHECK de `conversation_events.type` é enum FECHADO no banco e este emissor
+  //    é FAIL-OPEN: sem a migration 20260820_atendimento_followup_f0.sql aplicada, o
+  //    insert é recusado, o erro é engolido e a trilha fica SILENCIOSAMENTE VAZIA.
+  | "followup_scheduled"  // prometeu voltar (meta: due_at, has_note; handover na transferência)
+  | "followup_due"        // deu a hora e o dono foi cutucado
+  | "followup_done"       // cumprido (meta.closed_by: 'agent' | 'contact')
+  | "followup_canceled"   // desistiu da promessa
 
 export type ConversationActorKind = "agent" | "ai" | "system" | "contact"
 

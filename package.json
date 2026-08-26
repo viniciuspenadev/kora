@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "prebuild": "node scripts/check-server-actions.mjs && node scripts/check-money-io.mjs",
+    "prebuild": "node scripts/check-server-actions.mjs && node scripts/check-money-io.mjs && node scripts/check-studio-config.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

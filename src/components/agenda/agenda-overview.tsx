@@ -5,10 +5,11 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
   ChevronLeft, ChevronRight, CalendarDays, ArrowRight, AlertTriangle,
-  Check, CheckCheck, X, MessageSquare, UserX,
+  Check, CheckCheck, X, MessageSquare, UserX, AlarmClock,
 } from "lucide-react"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { listAppointments, setAppointmentStatus, cancelAppointment } from "@/lib/actions/agenda"
+import { getDayFollowUps, type DayItem } from "@/lib/actions/my-day"
 import { AgendaKpiRow } from "@/components/agenda/agenda-kpi-row"
 
 const TZ = "America/Sao_Paulo"
@@ -91,6 +92,10 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
    *    ou o contrário. Um só não pode.
    */
   const [day, setDay] = useState<{ key: string; items: Appt[] }>({ key: "", items: [] })
+  // Compromissos INTERNOS do dia (follow-ups). Fonte separada de propósito: eles não
+  // são `appointment` — não têm recurso, não reservam horário e não falam com o
+  // cliente. Aqui elas só se encontram na LEITURA (§2.3 do doc do follow-up).
+  const [dayFollowUps, setDayFollowUps] = useState<DayItem[]>([])
   const [markers, setMarkers]   = useState<Set<string>>(new Set())
   const [windowItems, setWindowItems] = useState<Appt[]>([])   // -48h .. +7d (atenção + próximos)
 
@@ -120,6 +125,11 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
     //    com o cabeçalho de outro. Operação de agenda dando informação errada.
     if (id !== dayReq.current) return
     setDay({ key: dayKeyOf(selected), items: data as unknown as Appt[] })
+
+    // Mesma guarda de corrida: o dia pode ter trocado no meio do voo.
+    const fu = await getDayFollowUps({ rangeStart: start.toISOString(), rangeEnd: end.toISOString() })
+    if (id !== dayReq.current) return
+    setDayFollowUps(fu)
   }, [selected])
 
   const loadMarkers = useCallback(async () => {
@@ -286,7 +296,7 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
                   </div>
                 ))}
               </div>
-            ) : dayItems.length === 0 ? (
+            ) : dayItems.length === 0 && dayFollowUps.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center px-4 text-center py-16">
                 <CalendarDays className="size-8 text-slate-200 mb-2" strokeWidth={1.5} />
                 <p className="text-sm font-medium text-slate-500">Nada agendado{isToday ? " hoje" : " neste dia"}</p>
@@ -353,6 +363,46 @@ export function AgendaOverview({ onSeeAll, reloadSignal }: { onSeeAll: () => voi
                     <span className="h-px flex-1 bg-red-200" />
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* COMPROMISSOS INTERNOS — follow-ups do dia. Separados dos agendamentos
+                de propósito: não reservam horário de recurso nenhum e o cliente não
+                sabe que existem. Mesma leitura, natureza declarada. */}
+            {dayFollowUps.length > 0 && (
+              <div className="border-t border-slate-100">
+                <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50/70">
+                  <AlarmClock className="size-3 text-slate-400 shrink-0" />
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Compromissos internos</h4>
+                  <span className="text-[10px] font-semibold text-slate-400 tabular-nums">{dayFollowUps.length}</span>
+                  <span className="ml-auto text-[10px] text-slate-400">não ocupam horário</span>
+                </div>
+                <div className="divide-y divide-slate-50">
+                  {dayFollowUps.map((f) => (
+                    <button
+                      key={f.id} type="button" onClick={() => router.push(f.href)}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50/60 transition-colors group"
+                    >
+                      <span className="w-12 shrink-0 text-sm font-bold text-slate-900 tabular-nums">{hhmm(f.at)}</span>
+                      <span className="w-1 self-stretch rounded-full bg-primary/20" />
+                      <span className="size-9 shrink-0 rounded-full grid place-items-center bg-primary-50 text-primary-600">
+                        <AlarmClock className="size-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-slate-800 truncate">{f.title}</span>
+                          {f.answered && (
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full border shrink-0 bg-slate-100 text-slate-600 border-slate-200">
+                              respondeu
+                            </span>
+                          )}
+                        </span>
+                        <span className="block text-xs text-slate-500 truncate mt-0.5">{f.subtitle ?? "Follow-up"}</span>
+                      </span>
+                      <MessageSquare className="size-4 shrink-0 text-slate-300 group-hover:text-primary-600 transition-colors" />
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>

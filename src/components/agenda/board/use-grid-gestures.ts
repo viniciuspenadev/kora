@@ -210,6 +210,11 @@ export function useGridGestures(opts: GestureOpts) {
     if (!id) return
     const appt = o.getAppt(id)
     if (!appt || appt.busyOnly) return
+    // 🔴 Só AGENDAMENTO se arrasta. Evento e follow-up entram na grade como bloco
+    //    (pra a pessoa poder clicar e abrir a ficha), mas arrastá-los chamaria
+    //    `rescheduleAppointment` com um id que não é de `appointments` — remarcar
+    //    o que não existe. Reagendar follow-up é pela ficha dele.
+    if (appt.kind !== "appointment") return
 
     // touch / cancelado / read-only → não arrasta; o click nativo (AptCard) abre o modal.
     if (!o.api || e.pointerType === "touch" || appt.status === "canceled") return

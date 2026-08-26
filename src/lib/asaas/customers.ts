@@ -50,7 +50,7 @@ const digits = (s: string | null | undefined) => (s ?? "").replace(/\D/g, "")
 export async function ensureAsaasCustomer(tenantId: string): Promise<{ id: string } | { error: string }> {
   const { data: tenant, error: tErr } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, asaas_customer_id")
+    .select("id, name, asaas_customer_id, billing_mode")
     .eq("id", tenantId)
     .maybeSingle()
 
@@ -58,6 +58,9 @@ export async function ensureAsaasCustomer(tenantId: string): Promise<{ id: strin
   //    "no escuro" produziria lixo no Asaas que ninguém sabe a quem pertence.
   if (tErr) return { error: "Não foi possível ler o cliente." }
   if (!tenant) return { error: "Cliente não encontrado." }
+  if ((tenant as { billing_mode?: string | null }).billing_mode !== "gateway") {
+    return { error: "Este cliente está em cobrança manual." }
+  }
 
   const existing = (tenant as { asaas_customer_id?: string | null }).asaas_customer_id
   if (existing) return { id: existing }
@@ -94,13 +97,19 @@ export async function ensureAsaasCustomer(tenantId: string): Promise<{ id: strin
       notificationDisabled: true,                   // quem avisa o cliente é a Kora, não o gateway
     })
 
-    const { error: upErr } = await supabaseAdmin
-      .from("tenants").update({ asaas_customer_id: created.id }).eq("id", tenantId)
+    const { data: vinculado, error: upErr } = await supabaseAdmin
+      .from("tenants")
+      .update({ asaas_customer_id: created.id })
+      .eq("id", tenantId)
+      .eq("billing_mode", "gateway")
+      .is("asaas_customer_id", null)
+      .select("id")
 
     // ⚠️ Criado no Asaas mas não gravado aqui = órfão que vira duplicata na próxima
     //    tentativa. Devolve erro explícito com o id, pra recuperação manual ser possível.
-    if (upErr) {
-      console.error("[asaas] customer criado mas NÃO gravado:", tenantId, created.id, upErr.message)
+    if (upErr || !vinculado || vinculado.length === 0) {
+      console.error("[asaas] customer criado mas NÃO gravado:", tenantId, created.id,
+        upErr?.message ?? "estado do tenant mudou durante a criação")
       return { error: `Cliente criado no gateway (${created.id}) mas não vinculado. Contate o suporte.` }
     }
 
@@ -131,11 +140,15 @@ export async function ensureAsaasCustomer(tenantId: string): Promise<{ id: strin
 export async function syncAsaasCustomer(tenantId: string): Promise<{ ok: true } | { error: string }> {
   const { data: tenant, error: tErr } = await supabaseAdmin
     .from("tenants")
-    .select("asaas_customer_id")
+    .select("asaas_customer_id, billing_mode")
     .eq("id", tenantId)
     .maybeSingle()
 
   if (tErr) return { error: "Não foi possível ler o cliente." }
+
+  if ((tenant as { billing_mode?: string | null } | null)?.billing_mode !== "gateway") {
+    return { ok: true }
+  }
 
   const customerId = (tenant as { asaas_customer_id?: string | null } | null)?.asaas_customer_id
   if (!customerId) return { ok: true }   // nada no gateway ainda — nada a espelhar

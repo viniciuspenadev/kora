@@ -1,15 +1,21 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import { ChevronLeft, ChevronRight, Filter, Lock } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
+import { getDayFollowUps, type DayItem } from "@/lib/actions/my-day"
 import {
   listAppointments, listAppointmentAgents, getAppointmentNoteFlags, listBlackouts,
   rescheduleAppointment, resizeAppointment,
   type ResourceRow, type ServiceRow,
 } from "@/lib/actions/agenda"
 import { TZ, cap, ymdInTz, STATUS_COLORS } from "./lanes"
-import { normalizeAppt, type BoardAppt, type RawAppt, type RawBlackout } from "./types"
+import { listEvents, type EventRow } from "@/lib/actions/agenda-events"
+import { scheduleFollowUp, cancelFollowUp, completeFollowUp } from "@/lib/actions/followup"
+import { FollowUpDialog } from "@/components/chat/followup-dialog"
+import { EventModal } from "./event-modal"
+import { normalizeAppt, normalizeEvent, normalizeFollowUp, type BoardAppt, type RawAppt, type RawBlackout } from "./types"
 import { DayView } from "./day-view"
 import { WeekView } from "./week-view"
 import { MonthView, buildMonthGrid } from "./month-view"
@@ -53,6 +59,7 @@ const GRID_HOURS = { startHour: 0, endHour: 24 }
 /** Listas vazias com identidade fixa — evitam prop nova a cada render pros memos abaixo. */
 const SEM_ITENS: BoardAppt[] = []
 const SEM_BLOQUEIOS: RawBlackout[] = []
+const SEM_FOLLOWUPS: DayItem[] = []
 
 const DENSIDADE_PADRAO = 72
 const DENSIDADES = [48, 72, 96]
@@ -102,7 +109,11 @@ export function AgendaBoard({
    *    desligar. E a atualização de 30s **não pisca mais**: mesma janela ⇒ o carimbo
    *    continua batendo ⇒ os cartões ficam na tela até os novos chegarem.
    */
-  const [dados, setDados] = useState<{ janela: string; items: BoardAppt[]; blackouts: RawBlackout[] } | null>(null)
+  const [dados, setDados] = useState<{
+    janela: string; items: BoardAppt[]; blackouts: RawBlackout[]; followUps: DayItem[]
+    eventos: EventRow[]; fuTodos: DayItem[]
+  } | null>(null)
+  const router = useRouter()
   const [now, setNow] = useState(() => new Date())
   const [detailId, setDetailId] = useState<string | null>(null)
   const [agentNames, setAgentNames] = useState<Map<string, string>>(new Map())
@@ -173,19 +184,53 @@ export function AgendaBoard({
   const fresco    = dados?.janela === janela
   const items     = fresco ? dados.items     : SEM_ITENS
   const blackouts = fresco ? dados.blackouts : SEM_BLOQUEIOS
+  const followUps = fresco ? dados.followUps : SEM_FOLLOWUPS
   const loading   = !fresco
 
   /** SÓ busca e devolve — não encosta em estado do React. Assim cada chamador decide o
    *  que fazer com o resultado, e a função dá pra testar sem montar o componente. */
   const buscarJanela = useCallback(async () => {
     const { start, end } = rangeFor(view, anchor)
-    const [raw, bl] = await Promise.all([
+    const [raw, bl, fu, evs] = await Promise.all([
       listAppointments({ rangeStart: start.toISOString(), rangeEnd: end.toISOString() }) as unknown as Promise<RawAppt[]>,
       listBlackouts(),
+      // Compromissos INTERNOS (follow-ups) da mesma janela. Fonte separada: eles não
+      // são `appointment` — entram como marcação, sem recurso e sem gesto.
+      getDayFollowUps({ rangeStart: start.toISOString(), rangeEnd: end.toISOString() }).catch(() => [] as DayItem[]),
+      // Eventos internos do time. Falha não derruba o quadro — o resto continua.
+      listEvents({ rangeStart: start.toISOString(), rangeEnd: end.toISOString() }).catch(() => [] as EventRow[]),
     ])
     const noted = new Set(await getAppointmentNoteFlags(raw.map((r) => r.id)))
-    return { items: raw.map((r) => normalizeAppt(r, resMap, svcMap, noted)), blackouts: bl as RawBlackout[] }
-  }, [rangeFor, view, anchor, resMap, svcMap])
+
+    // Eventos internos do time (tenant_events) — viram BLOCO no quadro, igual
+    // agendamento, mas não-bloqueantes. Sem agenda escolhida caem na 1ª coluna.
+    const primeira = resources[0]?.id ?? ""
+    const eventos = primeira
+      ? evs.map((e) => normalizeEvent(e, resMap, primeira))
+      : []
+
+    // Follow-up REGISTRADO na grade (pedido do dono): entra na agenda de QUEM
+    // prometeu. Sem recurso do dono não há coluna dele — aí segue como banda.
+    const agendaDe = new Map<string, string>()
+    for (const r of resources) if (r.assigned_agent_id) agendaDe.set(r.assigned_agent_id, r.id)
+    const fuBlocos: BoardAppt[] = []
+    const fuBanda:  DayItem[]   = []
+    for (const f of fu) {
+      const resId = f.ownerId ? agendaDe.get(f.ownerId) : undefined
+      if (resId) fuBlocos.push(normalizeFollowUp(f, resId, resMap))
+      else fuBanda.push(f)
+    }
+
+    return {
+      items: [...raw.map((r) => normalizeAppt(r, resMap, svcMap, noted)), ...eventos, ...fuBlocos],
+      blackouts: bl as RawBlackout[],
+      followUps: fuBanda,
+      // Cru guardado: a FICHA de evento/follow-up precisa do registro inteiro,
+      // não do bloco normalizado (que é só o que a grade desenha).
+      eventos: evs,
+      fuTodos: fu,
+    }
+  }, [rangeFor, view, anchor, resMap, svcMap, resources])
 
   /** Busca e publica na tela, carimbando com a janela de origem. Devolve o CANCELADOR —
    *  o efeito usa como limpeza, e quem chama de um botão/timer simplesmente ignora. */
@@ -267,7 +312,20 @@ export function AgendaBoard({
     return `${wd} ${dm}`
   }, [view, anchor])
 
-  const detail = detailId ? items.find((a) => a.id === detailId) ?? null : null
+  // A ficha depende do QUE foi clicado: agendamento abre a ficha do compromisso,
+  // evento abre o editor do evento, follow-up abre a ficha da promessa. Antes o
+  // follow-up saltava direto pra conversa (tirava a pessoa do calendário) e o
+  // evento caía na ficha de agendamento — que não existe pra ele.
+  const bloco    = detailId ? items.find((a) => a.id === detailId) ?? null : null
+  const detail   = bloco?.kind === "appointment" ? bloco : null
+  const evDetail = !detail && detailId
+    ? (fresco ? dados.eventos : []).find((e) => e.id === detailId) ?? null
+    : null
+  // Busca em `fuTodos` (não no bloco): pega também o follow-up que ficou como
+  // BANDA — dono sem agenda própria não tem coluna, mas a ficha é a mesma.
+  const fuDetail = !detail && !evDetail && detailId
+    ? (fresco ? dados.fuTodos : []).find((f) => f.id === detailId) ?? null
+    : null
   const PILL = "inline-flex items-center h-9 rounded-lg border border-slate-200 bg-white shrink-0"
 
   return (
@@ -320,9 +378,9 @@ export function AgendaBoard({
       {loading ? (
         <div className="rounded-xl border border-slate-200 bg-white py-24 text-center text-sm text-slate-400">Carregando…</div>
       ) : view === "day" ? (
-        <DayView resources={dayResources} userId={userId} appts={statusVisible} blackouts={visibleBlackouts} dayKey={ymdInTz(anchor)} todayKey={todayKey} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={setDetailId} gestures={gestures} onSlotClick={handleSlot} />
+        <DayView resources={dayResources} userId={userId} appts={statusVisible} blackouts={visibleBlackouts} dayKey={ymdInTz(anchor)} todayKey={todayKey} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={setDetailId} gestures={gestures} onSlotClick={handleSlot} followUps={followUps} />
       ) : view === "week" ? (
-        <WeekView weekDays={weekDays} appts={statusVisible} blackouts={visibleBlackouts} weekRes={weekRes} resourceName={resourceName} todayKey={todayKey} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={setDetailId} gestures={gestures} onSlotClick={handleSlot} />
+        <WeekView weekDays={weekDays} appts={statusVisible} blackouts={visibleBlackouts} weekRes={weekRes} resourceName={resourceName} todayKey={todayKey} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={setDetailId} gestures={gestures} onSlotClick={handleSlot} followUps={followUps} />
       ) : (
         <MonthView month={new Date(anchor.getFullYear(), anchor.getMonth(), 1)} appts={monthPool} todayKey={todayKey}
           onOpenDay={(d) => { setAnchor(d); setView("day") }} />
@@ -330,6 +388,40 @@ export function AgendaBoard({
 
       {detail && (
         <AppointmentModal appt={detail} agentNames={agentNames} services={services} resources={resources} onClose={() => setDetailId(null)} onChanged={() => recarregar()} />
+      )}
+
+      {evDetail && (
+        <EventModal
+          resources={resources} edit={evDetail}
+          onClose={() => setDetailId(null)}
+          onSaved={() => recarregar()}
+        />
+      )}
+
+      {fuDetail && (
+        <FollowUpDialog
+          contactName={fuDetail.title}
+          contactPic={fuDetail.avatarUrl ?? null}
+          ownerName={fuDetail.ownerName}
+          current={{ follow_up_at: fuDetail.at, follow_up_note: fuDetail.subtitle, follow_up_set_at: fuDetail.at }}
+          onClose={() => setDetailId(null)}
+          onOpenConversation={() => router.push(fuDetail.href)}
+          onComplete={async () => {
+            const r = await completeFollowUp(fuDetail.id)
+            if ("error" in r) return r
+            recarregar()
+          }}
+          onSave={async (dueAt, note) => {
+            const r = await scheduleFollowUp(fuDetail.id, { dueAt, note })
+            if ("error" in r) return r
+            recarregar()
+          }}
+          onCancel={async () => {
+            const r = await cancelFollowUp(fuDetail.id)
+            if ("error" in r) return r
+            recarregar()
+          }}
+        />
       )}
 
       {/* Popovers (fixed, ancorados no trigger — imunes ao overflow da barra) */}

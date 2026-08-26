@@ -3,8 +3,7 @@ import { cache } from "react"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getPlatformSettings } from "@/lib/platform-settings"
 import {
-  isTenantBlockedForAccess, isTenantBlockedForSpend, isTenantInPaywall,
-  SPEND_BLOCKED_LIFECYCLE, normalizeState,
+  isTenantBlockedForAccess, isTenantBlockedForSpendForTenant, motivoDoPaywallForTenant,
 } from "@/lib/lifecycle-shared"
 
 // ═══════════════════════════════════════════════════════════════
@@ -65,6 +64,7 @@ export interface TenantStatusRow {
   active:              boolean | null
   lifecycle_state:     string | null
   subscription_status: string | null
+  billing_mode:        string | null
   /** Só no caminho de UMA linha (`checkTenantStatus`); o lote não pergunta pelo paywall. */
   past_due_since?:      string | null
   past_due_grace_days?: number | null
@@ -79,7 +79,7 @@ function serviceableFromRow(row: TenantStatusRow | null | undefined): boolean {
   // são EVVICAMP e Bernardo Concept, ambos suspensos — exatamente o caso que este gate fecha.
   if (row.active !== true) return false
   // 💸 Pergunta de GASTO (inclui assinatura). O login usa a OUTRA (`...ForAccess`).
-  return !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status)
+  return !isTenantBlockedForSpendForTenant(row)
 }
 
 /**
@@ -141,7 +141,7 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
     .from("tenants")
     // ⚠️ As 2 colunas do relógio viajam nesta MESMA consulta, que já é memoizada por
     //    request. Uma segunda consulta pro paywall pagaria o dobro em todo webhook e cron.
-    .select("active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason")
+    .select("active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason, billing_mode")
     .eq("id", tenantId)
     .maybeSingle()
 
@@ -162,11 +162,8 @@ export const checkTenantStatus = cache(async (tenantId: string): Promise<TenantS
   return {
     degraded: false,
     canAccess,
-    canSpend: canAccess && !isTenantBlockedForSpend(row.lifecycle_state, row.subscription_status),
-    inPaywall: isTenantInPaywall(
-      row.lifecycle_state, row.subscription_status, row.past_due_since, row.past_due_grace_days,
-      (await getPlatformSettings()).pastDueGraceDays, row.past_due_reason,
-    ),
+    canSpend: canAccess && !isTenantBlockedForSpendForTenant(row),
+    inPaywall: motivoDoPaywallForTenant(row, (await getPlatformSettings()).pastDueGraceDays) !== null,
   }
 })
 
@@ -296,7 +293,7 @@ export async function filterServiceableTenants(tenantIds: Iterable<string>): Pro
   for (let i = 0; i < ids.length; i += CHUNK) {
     const { data, error } = await supabaseAdmin
       .from("tenants")
-      .select("id, active, lifecycle_state, subscription_status")
+      .select("id, active, lifecycle_state, subscription_status, billing_mode")
       .in("id", ids.slice(i, i + CHUNK))
 
     if (error) {

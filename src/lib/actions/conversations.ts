@@ -19,6 +19,7 @@ import type { ChatConversation } from "@/types/chat"
 export interface ConversationFilters {
   search?:       string  // ILIKE no push_name/phone_number do contato
   status?:       string  // 'open' | 'pending' | 'resolved' | 'snoozed' | 'all'
+  channel?:      "whatsapp" | "instagram" | "site"
   pipelineId?:   string
   agentId?:      string
   departmentId?: string
@@ -26,11 +27,18 @@ export interface ConversationFilters {
   staleOnly?:    boolean // só convs com last_message_at >24h
   fromAd?:       boolean // só convs com from_ad_meta IS NOT NULL (Click-to-WhatsApp)
   archivedOnly?: boolean // só convs archived_at IS NOT NULL (default oculta arquivadas)
+  /** Aba Follow-up: só conversas com PROMESSA de retorno, ordenadas por prazo (asc).
+   *  Ignora o filtro de status de propósito — a promessa vale em aberta, adiada
+   *  ou até concluída ("volto semana que vem ver se deu certo"). */
+  followUpOnly?: boolean
 }
 
 export interface ConversationCursor {
   last_message_at: string  // ISO
   id:              string
+  /** Só na aba Follow-up: lá a ordem é por PRAZO (crescente — o mais atrasado primeiro),
+   *  então a página não pode ser cortada por `last_message_at`. */
+  follow_up_at?:   string
 }
 
 export interface ConversationsPage {
@@ -121,7 +129,18 @@ export async function getConversations(opts: {
     .eq("is_group", false)
 
   // Filtros diretos
-  if (filters.status && filters.status !== "all") q = q.eq("status", filters.status)
+  // A aba Follow-up manda no status: pedir "só abertas" esconderia a promessa feita
+  // numa conversa adiada ou concluída, que é justamente o caso de uso.
+  // 🔒 E ela lista SÓ AS SUAS (decisão do dono 2026-08-20): ver a conversa não faz
+  //    da promessa alheia um item da sua lista. Admin/owner e supervisor geral
+  //    (view_all) seguem vendo todas — é o papel deles.
+  if (filters.followUpOnly) {
+    q = q.not("follow_up_at", "is", null)
+         .is("follow_up_done_at", null)     // a aba é FILA: o cumprido sai dela
+    if (!s.isAdmin && !s.viewAll) q = q.eq("follow_up_by", s.userId)
+  }
+  else if (filters.status && filters.status !== "all") q = q.eq("status", filters.status)
+  if (filters.channel)                             q = q.eq("channel", filters.channel)
   if (filters.pipelineId)                          q = q.eq("pipeline_id", filters.pipelineId)
   if (filters.agentId)                             q = q.eq("assigned_to", filters.agentId)
   if (filters.departmentId)                        q = q.eq("department_id", filters.departmentId)
@@ -141,20 +160,33 @@ export async function getConversations(opts: {
   // Visibilidade
   q = applyVisibilityFilter(q, s)
 
-  // Cursor (last_message_at, id) — tie-break por id pra ordem estável
-  if (cursor) {
-    // (last_message_at, id) < (cursor.last_message_at, cursor.id)  em ORDER DESC
-    // Usa filtro composto em SQL row-comparison
-    q = q.or(
-      `last_message_at.lt.${cursor.last_message_at},` +
-      `and(last_message_at.eq.${cursor.last_message_at},id.lt.${cursor.id})`
-    )
+  // Cursor — tie-break por id pra ordem estável. A aba Follow-up ordena pelo PRAZO
+  // (crescente: o mais atrasado no topo), então o corte da página é outro.
+  if (filters.followUpOnly) {
+    if (cursor?.follow_up_at) {
+      q = q.or(
+        `follow_up_at.gt.${cursor.follow_up_at},` +
+        `and(follow_up_at.eq.${cursor.follow_up_at},id.gt.${cursor.id})`
+      )
+    }
+    q = q
+      .order("follow_up_at", { ascending: true })
+      .order("id",           { ascending: true })
+      .limit(limit + 1)
+  } else {
+    if (cursor) {
+      // (last_message_at, id) < (cursor.last_message_at, cursor.id)  em ORDER DESC
+      // Usa filtro composto em SQL row-comparison
+      q = q.or(
+        `last_message_at.lt.${cursor.last_message_at},` +
+        `and(last_message_at.eq.${cursor.last_message_at},id.lt.${cursor.id})`
+      )
+    }
+    q = q
+      .order("last_message_at", { ascending: false, nullsFirst: false })
+      .order("id",              { ascending: false })
+      .limit(limit + 1)  // +1 pra saber se hasMore
   }
-
-  q = q
-    .order("last_message_at", { ascending: false, nullsFirst: false })
-    .order("id",              { ascending: false })
-    .limit(limit + 1)  // +1 pra saber se hasMore
 
   const { data, error } = await q
   if (error) throw new Error(`getConversations: ${error.message}`)
@@ -164,9 +196,11 @@ export async function getConversations(opts: {
   const page    = hasMore ? rows.slice(0, limit) : rows
 
   const last = page[page.length - 1]
-  const nextCursor: ConversationCursor | null = hasMore && last?.last_message_at
-    ? { last_message_at: last.last_message_at, id: last.id }
-    : null
+  const nextCursor: ConversationCursor | null = !hasMore || !last
+    ? null
+    : filters.followUpOnly
+      ? (last.follow_up_at ? { last_message_at: last.last_message_at ?? "", id: last.id, follow_up_at: last.follow_up_at } : null)
+      : (last.last_message_at ? { last_message_at: last.last_message_at, id: last.id } : null)
 
   return { conversations: page, nextCursor, hasMore }
 }
@@ -216,7 +250,16 @@ export async function getConversationsUpdates(opts: {
     .eq("is_group", false)          // idem getConversations: grupo não entra no polling
     .gt("updated_at", opts.since)
 
-  if (filters.status && filters.status !== "all") q = q.eq("status", filters.status)
+  // Mesmo recorte do `getConversations` — o polling não pode trazer de volta o que
+  // a lista filtrou (senão a promessa do colega reaparece a cada 30s).
+  if (filters.followUpOnly) {
+    q = q.not("follow_up_at", "is", null)
+         .is("follow_up_done_at", null)
+    if (!s.isAdmin && !s.viewAll) q = q.eq("follow_up_by", s.userId)
+  } else if (filters.status && filters.status !== "all") {
+    q = q.eq("status", filters.status)
+  }
+  if (filters.channel)                             q = q.eq("channel", filters.channel)
   if (filters.pipelineId)                          q = q.eq("pipeline_id", filters.pipelineId)
   if (filters.agentId)                             q = q.eq("assigned_to", filters.agentId)
   if (filters.departmentId)                        q = q.eq("department_id", filters.departmentId)

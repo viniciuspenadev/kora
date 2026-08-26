@@ -5,6 +5,7 @@ import { Loader2, AlertCircle, Building2, UserPlus } from "lucide-react"
 import { createTenant } from "@/lib/actions/admin"
 import { SectionCard } from "@/components/ui/section-card"
 import { FormRow } from "@/components/ui/form-row"
+import { SimpleSelect } from "@/components/ui/select"
 
 const inputCls =
   "w-full h-9 rounded-lg border border-slate-200 px-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
@@ -21,9 +22,10 @@ function slugify(s: string) {
     .replace(/\s+/g, "-")
 }
 
-export function TenantForm() {
+export function TenantForm({ plans }: { plans: { id: string; name: string }[] }) {
   const [error, setError] = useState("")
   const [name, setName]   = useState("")
+  const [planId, setPlanId] = useState(plans[0]?.id ?? "")
   const [pending, startTransition] = useTransition()
   const slug = slugify(name)
 
@@ -59,12 +61,15 @@ export function TenantForm() {
           </FormRow>
 
           <FormRow label="Plano">
-            <select name="plan" defaultValue="trial" className={inputCls}>
-              <option value="trial">Trial</option>
-              <option value="starter">Starter</option>
-              <option value="pro">Pro</option>
-              <option value="enterprise">Enterprise</option>
-            </select>
+            <input type="hidden" name="plan_id" value={planId} />
+            <SimpleSelect
+              value={planId}
+              onChange={setPlanId}
+              options={plans.map((plan) => ({ value: plan.id, label: plan.name }))}
+              placeholder={plans.length === 0 ? "Nenhum plano ativo" : "Selecione um plano"}
+              disabled={plans.length === 0}
+              className="h-9"
+            />
           </FormRow>
         </div>
       </SectionCard>
@@ -96,7 +101,7 @@ export function TenantForm() {
       <div className="flex justify-end">
         <button
           type="submit"
-          disabled={pending || !name}
+          disabled={pending || !name || !planId}
           className="inline-flex items-center justify-center gap-2 h-10 px-5 bg-primary hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors"
         >
           {pending ? <><Loader2 className="size-4 animate-spin" /> Criando…</> : "Criar cliente"}

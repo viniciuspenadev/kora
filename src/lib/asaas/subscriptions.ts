@@ -156,6 +156,7 @@ export async function vincularAssinatura(
   patch: Record<string, unknown>,
   fimEsperado: string | null,
   vinculoEsperado?: string,
+  expectedBillingMode?: "gateway" | "manual",
 ): Promise<{ ok: true } | { error: string; corridaPerdida: boolean }> {
   let q = supabaseAdmin
     .from("tenants")
@@ -167,6 +168,7 @@ export async function vincularAssinatura(
     : q.is("subscription_ends_at", null)
 
   if (vinculoEsperado) q = q.eq("asaas_subscription_id", vinculoEsperado)
+  if (expectedBillingMode) q = q.eq("billing_mode", expectedBillingMode)
 
   const { data, error } = await q.select("id")
 
@@ -178,6 +180,72 @@ export async function vincularAssinatura(
       tenant: tenantId, fimEsperado }))
     return { error: "estado da assinatura mudou durante a operação", corridaPerdida: true }
   }
+  return { ok: true }
+}
+
+/**
+ * Cancela exatamente a assinatura criada por esta ativacao quando o vinculo local perde
+ * o CAS. A reserva so e removida depois da confirmacao do gateway; numa falha ambigua ela
+ * permanece bloqueando outra tentativa e, portanto, uma segunda recorrencia.
+ */
+async function compensarAssinaturaNaoVinculada(
+  tenantId: string,
+  subscriptionId: string,
+  reserva: string,
+): Promise<{ ok: true } | { error: string }> {
+  try {
+    await asaas.del(`/subscriptions/${encodeURIComponent(subscriptionId)}`)
+  } catch (e) {
+    if (!(e instanceof AsaasError && e.status === 404)) {
+      // O cancelamento concorrente pode ter revogado a reserva para vencer o CAS. Se ainda
+      // nao surgiu outro vinculo, recoloca a mesma sentinela: falhar a compensacao jamais
+      // pode liberar uma segunda tentativa enquanto a recorrencia talvez esteja viva.
+      const { data: retida, error: erroRetencao } = await supabaseAdmin
+        .from("tenants")
+        .update({ asaas_subscription_id: reserva })
+        .eq("id", tenantId)
+        .eq("billing_mode", "gateway")
+        .is("asaas_subscription_id", null)
+        .select("id")
+
+      console.error(JSON.stringify({
+        src: "asaas",
+        kind: "compensacao-de-assinatura-falhou-CANCELAR-A-MAO",
+        tenant: tenantId,
+        subscription: subscriptionId,
+        msg: (e as Error).message,
+        reservaRetida: !erroRetencao && !!retida?.length,
+      }))
+      return { error: "A ativacao perdeu uma disputa e a assinatura criada nao pode ser cancelada automaticamente. Confira no gateway antes de tentar novamente." }
+    }
+  }
+
+  // Nao apaga estado mais novo: limpa somente a reserva desta operacao. Zero linhas e
+  // normal quando o cancelamento concorrente ja revogou a reserva.
+  const { error } = await supabaseAdmin
+    .from("tenants")
+    .update({ asaas_subscription_id: null })
+    .eq("id", tenantId)
+    .eq("billing_mode", "gateway")
+    .eq("asaas_subscription_id", reserva)
+
+  if (error) {
+    console.error(JSON.stringify({
+      src: "asaas",
+      kind: "compensou-no-gateway-mas-reserva-local-falhou-CONFERIR",
+      tenant: tenantId,
+      subscription: subscriptionId,
+      msg: error.message,
+    }))
+    return { error: "A assinatura foi cancelada no gateway, mas a reserva local nao pode ser limpa. Aguarde o suporte antes de tentar novamente." }
+  }
+
+  console.warn(JSON.stringify({
+    src: "asaas",
+    kind: "assinatura-criada-compensada-apos-cas",
+    tenant: tenantId,
+    subscription: subscriptionId,
+  }))
   return { ok: true }
 }
 
@@ -224,6 +292,9 @@ export async function createSubscriptionForTenant(
     rehire_blocked_at: string | null; rehire_blocked_reason: string | null
   }
   const plano = planoRow as { id: string; name: string; price_cents: number } | null
+  // Snapshot imutavel da leitura inicial. Capturar depois de chamadas externas reabriria a
+  // janela: o valor usado no CAS ja poderia refletir uma decisao concorrente.
+  const fimLidoNoInicio = t.subscription_ends_at
   if (!plano) return { error: "Plano indisponível. Escolha um plano antes de ativar." }
 
   // ⚠️ Idempotência: assinatura já existe ⇒ devolve. Criar a segunda faria o cliente ser
@@ -289,13 +360,18 @@ export async function createSubscriptionForTenant(
   // ⚠️ O marcador `pending:` é limpo em TODO caminho de saída daqui pra frente — senão uma
   //    falha de cartão deixaria o cliente permanentemente incapaz de assinar.
   const reserva = novaReservaDeClaim()
-  const { data: claimed } = await supabaseAdmin
+  const { data: claimed, error: erroClaim } = await supabaseAdmin
     .from("tenants")
     .update({ asaas_subscription_id: reserva })
     .eq("id", tenantId)
+    .eq("billing_mode", "gateway")
     .is("asaas_subscription_id", null)
     .select("id")
 
+  if (erroClaim) {
+    console.error("[asaas] claim da ativação falhou:", tenantId, erroClaim.message)
+    return { error: "Não foi possível iniciar a ativação agora. Tente novamente em instantes." }
+  }
   if (!claimed || claimed.length === 0) {
     return { error: "Já existe uma ativação em andamento para esta conta. Aguarde alguns segundos." }
   }
@@ -448,7 +524,6 @@ export async function createSubscriptionForTenant(
     //    Aqui a afirmação é verdadeira: existe assinatura no gateway, com valor e cartão.
     // 🔑 O CAS mora no helper `vincularAssinatura` desde 12/08 — antes ele estava solto aqui
     //    e os outros QUATRO pontos que ressuscitam assinatura ficaram sem. Ver o docblock.
-    const fimLidoNoInicio = t.subscription_ends_at
     const vinculo = await vincularAssinatura(tenantId, {
         asaas_subscription_id: sub.id,
         billing_day: diaDaCobranca,
@@ -464,11 +539,16 @@ export async function createSubscriptionForTenant(
         //    ("Mastercard ···· 4242" pra uma assinatura que não existe mais).
         card_brand: rotulo.bandeira,
         card_last4: rotulo.ultimos4,
-    }, fimLidoNoInicio)
+    }, fimLidoNoInicio, reserva, "gateway")
 
     // ⚠️ Criada lá e não gravada aqui = assinatura cobrando sem a Kora saber. Devolve o id
     //    na mensagem pra recuperação manual ser possível — sem ele, ninguém acha.
     if ("error" in vinculo) {
+      if (vinculo.corridaPerdida) {
+        const compensacao = await compensarAssinaturaNaoVinculada(tenantId, sub.id, reserva)
+        if ("error" in compensacao) return compensacao
+        return { error: "A ativacao foi interrompida porque o estado da assinatura mudou. Nenhuma assinatura nova ficou ativa." }
+      }
       // ⚠️ NÃO solta a reserva aqui, de propósito: a assinatura EXISTE no gateway. Liberar
       //    a vaga deixaria o cliente tentar de novo e criar uma SEGUNDA cobrança mensal —
       //    o dano exato que o claim veio impedir. Fica travado até alguém vincular à mão,
@@ -507,11 +587,16 @@ export async function createSubscriptionForTenant(
             asaas_card_token:      tokenCifrado,
             card_brand:            rotulo.bandeira,
             card_last4:            rotulo.ultimos4,
-        }, t.subscription_ends_at)
+    }, fimLidoNoInicio, reserva, "gateway")
         if (!("error" in vinculo)) {
           console.error(JSON.stringify({ src: "asaas", kind: "assinatura-recuperada-pos-timeout",
             tenant: tenantId, subscription: existente }))
           return { id: existente }
+        }
+        if (vinculo.corridaPerdida) {
+          const compensacao = await compensarAssinaturaNaoVinculada(tenantId, existente, reserva)
+          if ("error" in compensacao) return compensacao
+          return { error: "A ativacao foi interrompida porque o estado da assinatura mudou. Nenhuma assinatura nova ficou ativa." }
         }
         console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, vinculo.error)
         return { error: `Assinatura criada no gateway (${existente}) mas não vinculada. Contate o suporte.` }
@@ -1017,7 +1102,10 @@ export async function cancelSubscriptionForTenant(
   //    medido: acesso cortado e cartão debitado todo mês, sem nada varrendo esse estado.
   //    A regra: **"não sei" ≠ "não existe"**. Indisponibilidade tem que falhar alto.
   const { data, error: erroLeitura } = await supabaseAdmin
-    .from("tenants").select("asaas_subscription_id").eq("id", tenantId).maybeSingle()
+    .from("tenants")
+    .select("asaas_subscription_id, billing_mode")
+    .eq("id", tenantId)
+    .maybeSingle()
 
   if (erroLeitura) {
     console.error(JSON.stringify({
@@ -1027,7 +1115,13 @@ export async function cancelSubscriptionForTenant(
     return { error: "Não foi possível consultar a assinatura agora. Nada foi cancelado — tente de novo." }
   }
 
-  const id = (data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id ?? null
+  const tenant = data as { asaas_subscription_id?: string | null; billing_mode?: string | null } | null
+  if (!tenant) return { error: "Cliente não encontrado." }
+  if (tenant.billing_mode !== "gateway") {
+    return { error: "Esta conta não usa cobrança pelo gateway." }
+  }
+
+  const id = tenant.asaas_subscription_id ?? null
   // Sem assinatura, ou só a reserva do claim: nada a cancelar NO GATEWAY.
   // ⚠️ Mas o token local ainda é limpo. Sem isto, um tenant que perdeu a assinatura por
   //    outro caminho (cancelada no painel do Asaas, reserva órfã) ficaria com uma
@@ -1039,15 +1133,31 @@ export async function cancelSubscriptionForTenant(
     //    pra trás. Agora basta QUALQUER um dos três estar sujo pra a faxina rodar.
     // ⚠️ Zero linhas afetadas aqui é NORMAL (nada sujo pra limpar) — por isso só o `error`
     //    é conferido, não a contagem. Contagem de linhas/CAS é escopo da F4.
-    const { error: erroFaxina } = await supabaseAdmin.from("tenants")
-      .update({ asaas_card_token: null, card_brand: null, card_last4: null })
+    let faxina = supabaseAdmin.from("tenants")
+      .update({
+        ...(id?.startsWith("pending:") ? { asaas_subscription_id: null } : {}),
+        asaas_card_token: null,
+        card_brand: null,
+        card_last4: null,
+      })
       .eq("id", tenantId)
-      .or("asaas_card_token.not.is.null,card_brand.not.is.null,card_last4.not.is.null")
+      .eq("billing_mode", "gateway")
+
+    // A reserva em voo e uma capacidade: o cancelamento a revoga por CAS. Se o POST
+    // terminar depois, a ativacao perde o vinculo e compensa exatamente o id recem-criado.
+    faxina = id?.startsWith("pending:")
+      ? faxina.eq("asaas_subscription_id", id)
+      : faxina.or("asaas_card_token.not.is.null,card_brand.not.is.null,card_last4.not.is.null")
+
+    const { data: linhaFaxinada, error: erroFaxina } = await faxina.select("id").maybeSingle()
     if (erroFaxina) {
       console.error(JSON.stringify({
         src: "asaas", kind: "faxina-do-cartao-falhou", tenant: tenantId, msg: erroFaxina.message,
       }))
       return { error: "Não foi possível limpar os dados de cobrança agora. Tente de novo." }
+    }
+    if (id?.startsWith("pending:") && !linhaFaxinada) {
+      return { error: "A ativacao mudou durante o cancelamento. Recarregue antes de continuar." }
     }
     return { ok: true }
   }
@@ -1079,9 +1189,13 @@ export async function cancelSubscriptionForTenant(
     ? { asaas_subscription_id: null }
     : { asaas_subscription_id: null, asaas_card_token: null, card_brand: null, card_last4: null }
 
-  const { error: erroLimpeza } = await supabaseAdmin.from("tenants")
+  const { data: linhaLimpa, error: erroLimpeza } = await supabaseAdmin.from("tenants")
     .update(limpeza)
     .eq("id", tenantId)
+    .eq("billing_mode", "gateway")
+    .eq("asaas_subscription_id", id)
+    .select("id")
+    .maybeSingle()
 
   if (erroLimpeza) {
     // ⚠️ Estado divergente REAL e deliberadamente visível: a assinatura JÁ MORREU no
@@ -1094,6 +1208,10 @@ export async function cancelSubscriptionForTenant(
       tenant: tenantId, subscription: id, msg: erroLimpeza.message,
     }))
     return { error: "A assinatura foi cancelada no gateway, mas o cadastro local não pôde ser atualizado. Confira antes de recontratar." }
+  }
+
+  if (!linhaLimpa) {
+    return { error: "A modalidade ou o vínculo da assinatura mudou durante a limpeza local." }
   }
 
   console.log(JSON.stringify({ src: "asaas", kind: "assinatura-cancelada", tenant: tenantId, subscription: id }))
@@ -1134,10 +1252,12 @@ export async function atualizarValorDaAssinatura(
   }
 
   const { data, error } = await supabaseAdmin
-    .from("tenants").select("asaas_subscription_id").eq("id", tenantId).maybeSingle()
+    .from("tenants").select("asaas_subscription_id, billing_mode").eq("id", tenantId).maybeSingle()
   if (error) return { error: `leitura do vínculo falhou: ${error.message}` }
 
-  const id = assinaturaRealId((data as { asaas_subscription_id?: string | null } | null)?.asaas_subscription_id)
+  const tenantValor = data as { asaas_subscription_id?: string | null; billing_mode?: string | null } | null
+  if (tenantValor?.billing_mode !== "gateway") return { ok: true, aplicado: false }
+  const id = assinaturaRealId(tenantValor.asaas_subscription_id)
   // Sem assinatura vigente (cliente manual, legado, ou ativação em curso): não é erro —
   // simplesmente não há recorrência para atualizar.
   if (!id) return { ok: true, aplicado: false }
@@ -1272,12 +1392,16 @@ export async function resumeSubscriptionForTenant(
 
   // ── Claim atômico (idêntico ao da criação; ver o racional lá) ───────────────
   const reserva = novaReservaDeClaim()
-  const { data: claimed, error: erroClaim } = await supabaseAdmin
+  let claimRetomada = supabaseAdmin
     .from("tenants")
     .update({ asaas_subscription_id: reserva })
     .eq("id", tenantId)
+    .eq("billing_mode", "gateway")
     .is("asaas_subscription_id", null)
-    .select("id")
+  claimRetomada = t.subscription_ends_at
+    ? claimRetomada.eq("subscription_ends_at", t.subscription_ends_at)
+    : claimRetomada.is("subscription_ends_at", null)
+  const { data: claimed, error: erroClaim } = await claimRetomada.select("id")
 
   // 🔴 FALHA DE ESCRITA ≠ CORRIDA PERDIDA (catraca do `check-money-io`). As duas produzem
   //    `claimed` vazio e as duas devem parar aqui — mas a frase precisa ser diferente:
@@ -1294,6 +1418,7 @@ export async function resumeSubscriptionForTenant(
     await supabaseAdmin.from("tenants")
       .update({ asaas_subscription_id: null })
       .eq("id", tenantId)
+      .eq("billing_mode", "gateway")
       .eq("asaas_subscription_id", reserva)
   }
 
@@ -1328,9 +1453,15 @@ export async function resumeSubscriptionForTenant(
     //    de privilégio que a allow-list veio fechar, um degrau abaixo.
     const vinculo = await vincularAssinatura(
       tenantId, { asaas_subscription_id: sub.id }, t.subscription_ends_at,
+      reserva, "gateway",
     )
 
     if ("error" in vinculo) {
+      if (vinculo.corridaPerdida) {
+        const compensacao = await compensarAssinaturaNaoVinculada(tenantId, sub.id, reserva)
+        if ("error" in compensacao) return compensacao
+        return { error: "A retomada foi interrompida porque o estado da assinatura mudou. Nenhuma assinatura nova ficou ativa." }
+      }
       // Mesma regra da criação: NÃO solta a vaga — a assinatura existe lá fora. Soltar
       // deixaria o cliente retomar de novo e ficar com duas cobranças mensais.
       console.error("[asaas] assinatura retomada mas NÃO vinculada:", tenantId, sub.id, vinculo.error)
@@ -1351,11 +1482,17 @@ export async function resumeSubscriptionForTenant(
       if (existente) {
         const vinculo = await vincularAssinatura(
           tenantId, { asaas_subscription_id: existente }, t.subscription_ends_at,
+          reserva, "gateway",
         )
         if (!("error" in vinculo)) {
           console.error(JSON.stringify({ src: "asaas", kind: "retomada-recuperada-pos-timeout",
             tenant: tenantId, subscription: existente }))
           return { id: existente }
+        }
+        if (vinculo.corridaPerdida) {
+          const compensacao = await compensarAssinaturaNaoVinculada(tenantId, existente, reserva)
+          if ("error" in compensacao) return compensacao
+          return { error: "A retomada foi interrompida porque o estado da assinatura mudou. Nenhuma assinatura nova ficou ativa." }
         }
         console.error("[asaas] assinatura achada pós-timeout mas NÃO vinculada:", tenantId, existente, vinculo.error)
         return { error: `Assinatura recriada no gateway (${existente}) mas não vinculada. Contate o suporte.` }

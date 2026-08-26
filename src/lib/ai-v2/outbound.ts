@@ -291,7 +291,19 @@ export async function sendBotRich(
     await noteFlowSkip(ctx, "⚠️ Imagem não enviada: o endereço público do app não está configurado.", { node: "message" })
   }
   if (!body) return { messageId: null }
-  return sendBotText(ctx, body, { ...meta, rich: true })
+  /**
+   * 🔴 RESPIRO JÁ FOI GASTO LÁ EM CIMA — e chamar `sendBotText` aqui o gastava DE NOVO
+   *    (achado ao construir os balões, 2026-08-17). Uma mensagem rica só-texto consumia
+   *    até 7s do orçamento de 10s do turno em vez de 3,5s.
+   *
+   *    Com um balão só isso só deixava a mensagem lenta. Com balões é pior: o teto de 4
+   *    balões é DERIVADO desse orçamento (MAX_BALOES), então gastar em dobro faria o 3º
+   *    chegar em rajada quando a conta diz que o 4º é que chega.
+   *
+   * ⚠️ `pace: undefined` desliga só o respiro; o "digitando…" já foi aceso lá em cima e
+   *    a persistência da linha segue idêntica.
+   */
+  return sendBotText({ ...ctx, pace: undefined }, body, { ...meta, rich: true })
 }
 
 /** Texto + opções numeradas — o corpo usado quando o canal não tem botão nativo, e também

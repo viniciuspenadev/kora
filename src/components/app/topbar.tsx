@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import { ChevronRight, Home, Menu } from "lucide-react"
 import { useAppShell } from "@/components/app/app-shell-context"
 import { NotificationBell } from "@/components/app/notification-bell"
+import { MyDayPanel } from "@/components/app/my-day-panel"
 import { AccountMenu } from "@/components/app/account-menu"
 import { BillingPill } from "@/components/billing"
 import type { BillingStanding } from "@/components/billing"
@@ -68,6 +69,9 @@ export function Topbar({
         {/* 🔑 ANTES do sino, de propósito: cobrança não é notificação — ela não some ao
             ser lida, e não deve disputar o contador de não-lidas. Ver `billing-pill`. */}
         {standing && <BillingPill standing={standing} />}
+        {/* Compromissos ANTES do sino: o sino é o que chegou; este é o que VOCÊ marcou.
+            São coisas diferentes e não devem disputar o mesmo contador. */}
+        <MyDayPanel />
         <NotificationBell userId={userId} supabaseToken={supabaseToken} />
         <AccountMenu userName={userName} userRole={userRole} userId={userId} />
       </div>

@@ -21,7 +21,7 @@ export default async function UsagePage() {
     listAllLimits(session.user.tenantId),
     supabaseAdmin
       .from("tenants")
-      .select("name, plan, created_at")
+      .select("name, plan, plan_id, created_at, plans(name)")
       .eq("id", session.user.tenantId)
       .single(),
     // Uso de IA (30d) — UNIDADES pro tenant (respostas/áudios); custo USD é
@@ -50,6 +50,15 @@ export default async function UsagePage() {
     else aiSupport++   // router / dossier / ai_parse — operações de apoio
   }
 
+  const planRelation = (tenant as unknown as {
+    plan_id?: string | null
+    plans?: { name: string } | { name: string }[] | null
+  } | null)?.plans
+  const canonicalPlanName = Array.isArray(planRelation) ? planRelation[0]?.name : planRelation?.name
+  const tenantPlan = tenant?.plan_id
+    ? (canonicalPlanName ?? "Plano indisponível")
+    : (tenant?.plan ?? "Sem plano")
+
   return (
     <PageShell
       title="Uso e limites"
@@ -59,7 +68,7 @@ export default async function UsagePage() {
       <UsageClient
         limits={limits}
         tenantName={tenant?.name ?? ""}
-        tenantPlan={tenant?.plan ?? "trial"}
+        tenantPlan={tenantPlan}
         aiUsage={{ replies: aiReplies, transcriptions: aiTranscriptions, support: aiSupport }}
         storage={storage}
       />

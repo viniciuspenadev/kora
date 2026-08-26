@@ -3,14 +3,14 @@
 // Painel lateral de configuração do nó selecionado (ou settings do fluxo).
 import { useRef, useState, useEffect } from "react"
 import {
-  Trash2, Plus, Sparkles, Inbox, Megaphone, BadgeCheck, Smartphone, Loader2,
+  Trash2, Plus, Sparkles, Megaphone, BadgeCheck, Smartphone, Loader2,
   Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info, Lock, X,
 } from "lucide-react"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { SimpleSelect } from "@/components/ui/select"
 import { genId, type RFNode } from "./graph-sync"
-import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode, RichMessage } from "@/lib/ai-v2/flow/types"
+import type { MenuNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, RenderMode } from "@/lib/ai-v2/flow/types"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import type { IgCommentTriggerConfig } from "@/components/integrations/instagram/ig-comment-config"
 import { IgCommentModal } from "@/components/studio/ig-comment-modal"
@@ -27,7 +27,7 @@ export interface ResOpt {
 }
 import { WhatsAppPreview } from "@/components/studio/whatsapp-preview"
 import { varsForContext } from "@/lib/variables/registry"
-import { RichComposer } from "@/components/studio/rich-composer"
+import { MessageBalloons } from "@/components/studio/message-balloons"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
@@ -149,7 +149,7 @@ function ChannelOutcomes({ kind, render, channels }: {
   if (rows.length === 0) return null
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-2.5">
+    <div className="rounded-lg border border-slate-300 bg-white p-2.5">
       <p className="text-[11px] font-medium text-slate-600 mb-1">
         Como {kind === "schedule" ? "os horários" : "as opções"} vão sair neste fluxo
       </p>
@@ -223,23 +223,12 @@ export function ConfigPanel({
       {type === "start" && <p className="text-xs text-slate-400">O ponto de entrada do fluxo. Conecte-o ao primeiro passo.</p>}
 
       {type === "message" && (
-        <div className="space-y-2">
-          {/* 🔴 O MESMO compositor do direct de abertura (rich-composer.tsx). Um editor
-              rico só lá deixaria a mensagem de abertura mais capaz que o fluxo inteiro
-              depois dela — foi o que motivou esta fase.
-              ⚠️ Grava `rich` E `text`: o `text` é o campo legado que a versão anterior do
-                 app ainda lê durante um deploy (mesmo padrão de `dm` × `dmRich`). */}
-          <RichComposer
-            value={(cfg.rich as RichMessage | undefined) ?? { text: String(cfg.text ?? "") }}
-            channel={restrictiveChannel(flowChannels)}
-            vars={[...CONTACT_VARS, ...flowVars.map((t) => ({ token: t, label: "Variável do fluxo" }))]}
-            onChange={(v) => set({ rich: v, text: v.text ?? "" })}
-          />
-          <p className="text-[11px] text-slate-400">
-            Botão de resposta faz o nó <b>esperar</b> e cria uma saída pra cada um, mais a
-            saída <b>&ldquo;escreveu&rdquo;</b>. Só texto (ou só botão de link) envia e segue direto.
-          </p>
-        </div>
+        <MessageBalloons
+          cfg={cfg}
+          set={set}
+          channel={restrictiveChannel(flowChannels)}
+          vars={[...CONTACT_VARS, ...flowVars.map((t) => ({ token: t, label: "Variável do fluxo" }))]}
+        />
       )}
 
       {type === "send_media" && (
@@ -762,7 +751,7 @@ function TemplateConfig({ cfg, set, flowVars }: { cfg: Record<string, unknown>; 
         </div>
       )}
       {chosen && chosen.body && (
-        <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5">
+        <div className="rounded-lg bg-white border border-slate-300 p-2.5">
           <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Corpo do template</span>
           <p className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">{chosen.body}</p>
         </div>
@@ -827,7 +816,7 @@ function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set
                 return (
                   <button key={t.id} type="button" onClick={() => set({ value: sel ? "" : t.name })}
                     className={`inline-flex items-center gap-1.5 px-2.5 h-7 rounded-full border text-[11px] font-medium transition-colors ${
-                      sel ? "" : "border-slate-200 text-slate-600 hover:bg-slate-50"}`}
+                      sel ? "" : "border-slate-200 text-slate-600 hover:bg-white"}`}
                     style={sel ? { backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)`, color, borderColor: color } : undefined}>
                     <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
                     {t.name}
@@ -1009,7 +998,7 @@ function BusinessHoursConfig({ cfg, set }: { cfg: BusinessHoursNodeConfig; set: 
         <div className="flex flex-wrap gap-1">
           {WEEKDAYS.map((label, d) => (
             <button key={d} type="button" onClick={() => toggleDay(d)}
-              className={`h-8 px-2.5 text-[11px] font-medium rounded-lg border transition-colors ${days.includes(d) ? "bg-primary text-white border-primary" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}>
+              className={`h-8 px-2.5 text-[11px] font-medium rounded-lg border transition-colors ${days.includes(d) ? "bg-primary text-white border-primary" : "bg-white text-slate-600 border-slate-200 hover:bg-white"}`}>
               {label}
             </button>
           ))}
@@ -1053,7 +1042,7 @@ function WaitConfig({ cfg, set }: { cfg: WaitNodeConfig; set: (patch: Record<str
           ]} />
         </div>
       </div>
-      <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-[11px] text-slate-500 leading-relaxed">
+      <div className="rounded-lg bg-white border border-slate-300 p-3 text-[11px] text-slate-500 leading-relaxed">
         Este passo tem <b className="text-slate-600">duas saídas</b>:
         <span className="text-slate-500"> «no prazo»</span> segue quando o tempo acaba;
         <span className="text-primary-600 font-medium"> «cliente voltou»</span> dispara na hora se ele responder antes.
@@ -1682,7 +1671,7 @@ export function FlowSettingsPanel({
   ) : null
 
   function config(id: string) {
-    const box = "mt-2 rounded-xl border border-slate-200 bg-slate-50/60 p-3.5 space-y-3"
+    const box = "mt-2 rounded-xl border border-slate-300 bg-white p-3.5 space-y-3"
     // Instagram: a configuração inteira (post, palavra, direct, resposta pública, prévia)
     // vive num componente próprio — é ela que carrega as regras da Meta pra o usuário.
     // Sem `onIgConfig` (fluxo antigo ou tenant sem IG) o gatilho não é configurável.
@@ -1823,7 +1812,7 @@ export function FlowSettingsPanel({
       </div>
     )
     if (id === "manual") return (
-      <div className="mt-2 flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3 text-[11.5px] text-slate-500 leading-relaxed">
+      <div className="mt-2 flex items-start gap-2 rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-[11.5px] text-slate-500 leading-relaxed">
         <Info className="size-3.5 shrink-0 mt-0.5 text-slate-400" />
         <span>Não responde sozinho — é acionado por um <b className="text-slate-700 font-semibold">atendente</b> na conversa ou por uma <b className="text-slate-700 font-semibold">campanha</b> (o template abre a porta, o fluxo assume).</span>
       </div>
@@ -1854,7 +1843,7 @@ export function FlowSettingsPanel({
       <div className="relative py-3">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar gatilho…"
-          className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-200" />
+          className="w-full h-9 pl-9 pr-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-200" />
       </div>
 
       <div className="-mx-1 pr-1">
@@ -1873,7 +1862,7 @@ export function FlowSettingsPanel({
                   <button type="button" disabled={dead} onClick={() => !dead && pick(it.id)} aria-pressed={on}
                     className={`group/it w-full flex items-start gap-3 px-2 py-2 rounded-xl border transition-colors text-left ${
                       dead ? "border-transparent opacity-60 cursor-default"
-                      : on ? "border-primary-200 bg-primary-50" : "border-transparent hover:bg-slate-50 hover:border-slate-200"}`}>
+                      : on ? "border-primary-200 bg-primary-50" : "border-transparent hover:bg-white hover:border-slate-200"}`}>
                     <span className={`size-8 shrink-0 rounded-lg grid place-items-center ${g.tint}`}><it.icon className="size-4" /></span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800">

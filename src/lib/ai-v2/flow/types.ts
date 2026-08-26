@@ -74,6 +74,22 @@ export interface MessageNodeConfig {
    *    não devolve evento nenhum.
    */
   rich?: RichMessage
+  /**
+   * BALÕES — de 1 a 4 mensagens em sequência, no lugar de um campo único (2026-08-17).
+   *
+   * Ideia do dono, e ela SUBSTITUIU a divisão automática que eu havia proposto: quem
+   * decide onde o texto quebra é quem escreve. O teto de 4 é derivado do orçamento de
+   * respiro (ver MAX_BALOES em flow/message-balloons.ts), não escolhido por ser redondo.
+   *
+   * ⚠️ ADITIVO, terceira camada da escada: `messages` vence `rich`, que vence `text`.
+   *    Quem lê NUNCA monta essa escada à mão — pergunta pra `baloesDe()`. Escada
+   *    duplicada diverge, e foi exatamente esse o defeito de 2026-08-17.
+   *
+   * 🔴 BOTÃO SÓ NO ÚLTIMO BALÃO. Botão de resposta faz o nó esperar e vira saída no
+   *    desenho; no meio da sequência seria parar antes de terminar de falar, e em dois
+   *    balões seriam duas saídas concorrentes no mesmo nó. A publicação recusa.
+   */
+  messages?: RichMessage[]
 }
 export interface SendMediaNodeConfig {
   url:       string

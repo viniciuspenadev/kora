@@ -6,8 +6,15 @@
 // pra mensagem FORA da janela. O composer (client) e o envio (server/gate) leem
 // daqui — nada de espalhar `isOfficial`/`if` por canal.
 //
-// Chave = `chat_conversations.channel` (não o provider da instância): WhatsApp Cloud
-// grava "meta_cloud", Baileys "whatsapp", site "site", e os futuros IG/Messenger/TikTok.
+// Chave = o "kind" resolvido por `resolveChannelKind(channel, provider)` — NÃO o
+// `chat_conversations.channel` cru.
+//
+// ⚠️ CUIDADO, isto já enganou uma varredura (2026-08-23): a família WhatsApp grava
+//    `channel = 'whatsapp'` nos DOIS caminhos — Cloud oficial e Baileys. Quem separa é o
+//    `whatsapp_instances.provider`. Medido em prod: 20 conversas com `channel='whatsapp'`
+//    e `provider='meta_cloud'`, e ZERO com `channel='meta_cloud'`. Agrupar relatório ou
+//    query por `channel` mistura canal oficial com não-oficial em silêncio.
+//    (`site`/`instagram`/`messenger`/`tiktok` o próprio `channel` já distingue.)
 
 export type OutsideWindow = "template" | "tag" | "none" | "blocked"
 

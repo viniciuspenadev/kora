@@ -8,6 +8,7 @@ import { asaas, AsaasError } from "./client"
 import { assinaturaRealId } from "@/lib/billing/gateway-limits"
 import { avisarCobranca } from "@/lib/billing/notify"
 import { auditarCobranca } from "@/lib/billing/audit"
+import { registrarPagamentoGateway } from "@/lib/billing/gateway-ledger"
 
 // ═══════════════════════════════════════════════════════════════
 // Processamento dos eventos do Asaas — onde a escada é acionada
@@ -171,6 +172,7 @@ interface EventRow {
    *    justamente o cancelamento, que é o que a escada mais precisa saber.
    */
   payload: {
+    dateCreated?: string
     payment?:      { id?: string; customer?: string; value?: number; status?: string }
     /** Preenchido pela consulta ao gateway, não pelo payload. */
     subscription?: { id?: string; customer?: string; status?: string }
@@ -794,10 +796,10 @@ async function calcularFimDoCiclo(tenantId: string, ev: EventRow): Promise<strin
  *     decisão do dono ("o acesso continua até o fim do ciclo").
  *
  * ── COMO CASA AGORA ──────────────────────────────────────────────────────────
- * Pela **fatura em aberto mais ANTIGA do tenant** — exatamente a definição que
- * `standing.ts` já usa pra dizer "é esta que ele tem que pagar". Reusar a definição em vez
- * de inventar uma segunda é o que impede as duas telas de discordarem sobre qual fatura é
- * a da vez.
+ * Só por prova determinística, nesta ordem: identidade da cobrança já carimbada na fatura,
+ * `externalReference` canônico de fatura, ou `dueDate` único compatível com vencimento/
+ * período. Ausência, contradição ou ambiguidade nunca escolhe "a mais antiga": registra o
+ * fato em suspenso para conciliação, sem tocar em nenhuma fatura.
  *
  * ⚠️ NÃO caso por VALOR. O valor da assinatura no gateway é o preço do plano; o da fatura
  *    inclui excedente. Exigir igualdade faria a baixa falhar justamente em quem consome
@@ -805,10 +807,8 @@ async function calcularFimDoCiclo(tenantId: string, ev: EventRow): Promise<strin
  *    de que o `PUT` de atualização de valor não rodou), mas não impede a baixa: quem diz
  *    quanto entrou é o gateway.
  *
- * ⚠️ Pagamento SEM fatura correspondente é NORMAL e não é erro: durante o trial a
- *    assinatura cobra em `trial_ends_at`, antes de o cron ter gerado qualquer fatura. Fica
- *    logado como fato, não como falha — mas fica logado, porque dinheiro que entra sem
- *    contrapartida no livro é a coisa que a gente mais precisa enxergar.
+ * ⚠️ Pagamento pode chegar antes do cron. Nesse caso só se gera e aplica uma nova fatura se
+ *    a releitura provar que ela corresponde ao `dueDate`; do contrário o fato fica suspenso.
  */
 // ⚠️ Passou a DEVOLVER pendência (antes era `void`). Quem chama precisa saber se o livro
 //    ficou coerente: sem retorno, uma baixa que não aconteceu fechava o evento como
@@ -823,17 +823,184 @@ async function darBaixaNaFatura(
    *    função tinha como cair no payload sem ninguém perceber. Exigi-lo na assinatura faz
    *    o `tsc` cobrar de qualquer chamador futuro de onde veio o número.
    */
-  valorDoGateway: number | undefined,
+  pagamentoGateway: {
+    value?: number
+    billingType?: string | null
+    dueDate?: string | null
+    subscription?: string | null
+    externalReference?: string | null
+    dateCreated?: string | null
+  },
   // 🔑 `quitou` EXISTE PARA A REGRA 3 DO DONO — "pagamento parcial não libera nada" (11/08).
   //    Três valores, e a diferença entre os dois últimos é o ponto:
   //      true      → o pagamento cobriu a fatura ⇒ pode liberar
   //      false     → cobriu em parte ⇒ NÃO libera (é a regra)
-  //      undefined → NÃO SE SABE (evento repetido, pagamento sem fatura, plano sem valor).
-  //                  Aqui libera-se assim mesmo: o cliente pagou, e segurar o produto dele
-  //                  por causa de uma lacuna no NOSSO livro é puni-lo pelo nosso defeito.
-  //    Só se retém acesso quando se SABE que faltou dinheiro — nunca por ignorância.
+  //      undefined → o caminho nem chegou a uma decisão financeira.
+  //    Ausência de vínculo determinístico devolve `false`: dinheiro em suspenso não prova
+  //    quitação e não pode liberar acesso.
 ): Promise<{ error?: string; quitou?: boolean }> {
   if (!ev.payment_id) return {}
+
+  const pago = emCentavos(pagamentoGateway.value)
+  if (pago === null) return { error: "gateway nao informou valor valido para o pagamento" }
+  const occurredAt = ev.payload?.dateCreated ?? null
+  if (!occurredAt) return { error: "evento sem dateCreated do gateway" }
+
+  const registrarNoLivro = (invoiceId: string | null) => registrarPagamentoGateway({
+    tenantId,
+    invoiceId,
+    paymentId: ev.payment_id!,
+    valueCents: pago,
+    occurredAt,
+    sourceEventId: ev.id,
+    source: ev.id.startsWith("reconcile_") ? "reconcile" : "webhook",
+    // Ausência de evidência continua ausência: a RPC só projeta paid_method quando o fato
+    // imutável realmente recebeu um método do GET autoritativo do gateway.
+    method: pagamentoGateway.billingType ?? null,
+    gatewayDueDate: pagamentoGateway.dueDate ?? null,
+    subscriptionId: pagamentoGateway.subscription ?? null,
+    providerRef: ev.payment_id,
+    externalReference: pagamentoGateway.externalReference ?? null,
+  })
+
+  type FaturaAlvo = {
+    id: string
+    status: string
+    total_cents: number
+    paid_cents: number
+    due_date: string | null
+    period_start: string | null
+    period_end: string | null
+    kind: string
+    gateway_charge_id: string | null
+    gateway_ref: string | null
+  }
+
+  type Resolucao =
+    | { tipo: "encontrada"; fatura: FaturaAlvo }
+    | { tipo: "ausente"; podeGerar: boolean; motivo: string }
+    | { tipo: "invalida"; motivo: string }
+    | { tipo: "erro"; motivo: string }
+
+  const colunasAlvo = "id, status, total_cents, paid_cents, due_date, period_start, period_end, kind, gateway_charge_id, gateway_ref"
+  const statusesComDinheiro = ["open", "overdue", "partial", "paid"]
+  const statusesRecebiveis = ["open", "overdue", "partial"]
+
+  const dataCivilValida = (valor: string | null | undefined): valor is string => {
+    if (!valor || !/^\d{4}-\d{2}-\d{2}$/.test(valor)) return false
+    const [ano, mes, dia] = valor.split("-").map(Number)
+    const data = new Date(Date.UTC(ano, mes - 1, dia))
+    return data.getUTCFullYear() === ano && data.getUTCMonth() === mes - 1 && data.getUTCDate() === dia
+  }
+
+  const referenciaDeFatura = (valor: string | null | undefined): string | null | "invalida" => {
+    if (!valor?.startsWith("kora:inv:")) return null
+    const id = valor.slice("kora:inv:".length)
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+      ? id
+      : "invalida"
+  }
+
+  const combinaComVencimento = (fatura: FaturaAlvo, dueDate: string): boolean =>
+    fatura.due_date === dueDate
+    || (dataCivilValida(fatura.period_start)
+      && dataCivilValida(fatura.period_end)
+      && fatura.period_start <= dueDate
+      && dueDate <= fatura.period_end)
+
+  const resolverFatura = async (): Promise<Resolucao> => {
+    const buscarPorIdentidade = async (coluna: "gateway_charge_id" | "gateway_ref") => {
+      const { data, error } = await supabaseAdmin
+        .from("invoices")
+        .select(colunasAlvo)
+        .eq("tenant_id", tenantId)
+        .eq(coluna, ev.payment_id!)
+        .in("status", statusesComDinheiro)
+        .limit(2)
+      return { linhas: (data ?? []) as FaturaAlvo[], error }
+    }
+
+    const porCharge = await buscarPorIdentidade("gateway_charge_id")
+    if (porCharge.error) return { tipo: "erro", motivo: `busca por gateway_charge_id falhou: ${porCharge.error.message}` }
+    const porLegado = await buscarPorIdentidade("gateway_ref")
+    if (porLegado.error) return { tipo: "erro", motivo: `busca por gateway_ref falhou: ${porLegado.error.message}` }
+
+    const identidades = [...porCharge.linhas, ...porLegado.linhas]
+      .filter((fatura, indice, todas) => todas.findIndex((outra) => outra.id === fatura.id) === indice)
+    if (identidades.length > 1) {
+      return { tipo: "invalida", motivo: "o payment_id aponta para mais de uma fatura" }
+    }
+    if (identidades[0] && [identidades[0].gateway_charge_id, identidades[0].gateway_ref]
+      .some((id) => id != null && id !== ev.payment_id)) {
+      return { tipo: "invalida", motivo: "a fatura tem identidades de cobranca divergentes" }
+    }
+
+    const refId = referenciaDeFatura(pagamentoGateway.externalReference)
+    if (refId === "invalida") {
+      return { tipo: "invalida", motivo: "externalReference de fatura tem formato invalido" }
+    }
+
+    let porReferencia: FaturaAlvo | null = null
+    if (refId) {
+      const { data, error } = await supabaseAdmin
+        .from("invoices")
+        .select(colunasAlvo)
+        .eq("tenant_id", tenantId)
+        .eq("id", refId)
+        .in("status", statusesComDinheiro)
+        .maybeSingle()
+      if (error) return { tipo: "erro", motivo: `busca por externalReference falhou: ${error.message}` }
+      if (!data) return { tipo: "invalida", motivo: "externalReference aponta para fatura ausente ou inativa" }
+      porReferencia = data as FaturaAlvo
+    }
+
+    if (identidades[0] && porReferencia && identidades[0].id !== porReferencia.id) {
+      return { tipo: "invalida", motivo: "payment_id e externalReference apontam para faturas diferentes" }
+    }
+    if (identidades[0] || porReferencia) {
+      return { tipo: "encontrada", fatura: identidades[0] ?? porReferencia! }
+    }
+
+    const dueDate = pagamentoGateway.dueDate
+    if (!dataCivilValida(dueDate)) {
+      return {
+        tipo: "ausente",
+        podeGerar: false,
+        motivo: dueDate ? "dueDate do gateway e invalido" : "gateway nao informou dueDate para provar o periodo",
+      }
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("invoices")
+      .select(colunasAlvo)
+      .eq("tenant_id", tenantId)
+      .eq("kind", "recorrente")
+      .in("status", statusesRecebiveis)
+    if (error) return { tipo: "erro", motivo: `busca por periodo falhou: ${error.message}` }
+
+    const candidatas = ((data ?? []) as FaturaAlvo[]).filter((fatura) => combinaComVencimento(fatura, dueDate))
+    if (candidatas.length > 1) {
+      return { tipo: "invalida", motivo: "dueDate corresponde a mais de uma fatura recebivel" }
+    }
+    if (candidatas.length === 1) {
+      const candidata = candidatas[0]
+      // `dueDate` prova somente o período. Depois que uma invoice recebeu identidade de
+      // outra cobrança, um pagamento adicional precisa trazer a referência canônica
+      // `kora:inv:<uuid>`; o vencimento sozinho não pode transferir a posse da invoice.
+      if ([candidata.gateway_charge_id, candidata.gateway_ref]
+        .some((id) => id != null && id !== ev.payment_id)) {
+        return { tipo: "invalida", motivo: "dueDate aponta para fatura ja vinculada a outra cobranca" }
+      }
+      return { tipo: "encontrada", fatura: candidata }
+    }
+    return { tipo: "ausente", podeGerar: true, motivo: "nenhuma fatura corresponde ao dueDate do gateway" }
+  }
+
+  const registrarEmSuspenso = async (motivo: string): Promise<{ error?: string; quitou?: boolean }> => {
+    const ledger = await registrarNoLivro(null)
+    if (!ledger.ok) return { error: `pagamento sem fatura deterministica e ledger falhou: ${ledger.error}` }
+    return { error: `pagamento registrado em suspenso: ${motivo}`, quitou: false }
+  }
 
   // Idempotência: `gateway_ref` já carimbado com ESTE pagamento ⇒ evento repetido.
   // ("at least once" é contrato do Asaas — repetição é caminho normal, não erro.)
@@ -842,19 +1009,6 @@ async function darBaixaNaFatura(
   //    como "ainda não foi baixado" — e o pagamento era **creditado de novo**. É a única
   //    idempotência por fato financeiro que existe hoje; ela falhar aberto é exatamente o
   //    C-01. Sem certeza, não credita: devolve pendência e o evento é retentado.
-  const { data: jaBaixada, error: erroDedup } = await supabaseAdmin
-    .from("invoices").select("id")
-    .eq("tenant_id", tenantId).eq("gateway_ref", ev.payment_id)
-    .limit(1).maybeSingle()
-  if (erroDedup) {
-    console.error(JSON.stringify({
-      src: "asaas-handler", kind: "dedup-indisponivel-baixa-adiada",
-      tenant: tenantId, payment: ev.payment_id, msg: erroDedup.message,
-    }))
-    return { error: "não foi possível conferir se este pagamento já foi baixado" }
-  }
-  if (jaBaixada) return {}
-
   // ══════════════════════════════════════════════════════════════════════════
   // 🔴 QUAL FATURA ESTE PAGAMENTO QUITA — e por que `partial` NÃO pode vir junto
   // ══════════════════════════════════════════════════════════════════════════
@@ -870,35 +1024,22 @@ async function darBaixaNaFatura(
   //               lê "fatura vencida" indefinidamente — a pendência que o pré-pago proíbe.
   //
   // 🔑 A REGRA CERTA: o dinheiro do ciclo corrente quita a fatura do ciclo corrente.
-  //    `open`/`overdue` primeiro; `partial` só quando NÃO há nenhuma em aberto — que é
-  //    exatamente o caso do complemento, o único que a versão anterior queria atender.
-  const buscarFatura = (status: string[]) => supabaseAdmin
-    .from("invoices")
-    .select("id, total_cents, paid_cents")
-    .eq("tenant_id", tenantId)
-    .in("status", status)
-    // A mais ANTIGA primeiro — mesma ordenação de `standing.ts`.
-    .order("due_date", { ascending: true, nullsFirst: false })
-    .limit(1)
-    .maybeSingle()
-
-  let { data: encontrada, error: buscaErr } = await buscarFatura(["open", "overdue"])
-  if (!encontrada && !buscaErr) {
-    ;({ data: encontrada, error: buscaErr } = await buscarFatura(["partial"]))
-  }
-
-  // Mutável: o ramo abaixo pode CRIAR a fatura quando o pagamento chega antes dela.
-  let alvo = encontrada
-
-  if (buscaErr) {
-    // 🔴 Grita. Dinheiro entrou e o livro não soube — é exatamente o estado que este
-    //    helper existe pra tornar impossível, então ele não pode falhar em silêncio.
+  //    Status e antiguidade não provam ciclo. `partial` só recebe complemento quando a
+  //    identidade, a referência ou o período do gateway demonstra que o dinheiro é dela.
+  let resolucao = await resolverFatura()
+  if (resolucao.tipo === "erro") {
     console.error(JSON.stringify({
-      src: "asaas-handler", kind: "baixa-falhou-na-busca",
-      tenant: tenantId, payment: ev.payment_id, msg: buscaErr.message,
+      src: "asaas-handler", kind: "baixa-falhou-na-resolucao",
+      tenant: tenantId, payment: ev.payment_id, motivo: resolucao.motivo,
     }))
-    return { error: `busca da fatura falhou: ${buscaErr.message}` }
+    // Erro transitório de leitura não vira fato suspenso permanente: o retry deve poder
+    // resolver a fatura quando o banco voltar.
+    return { error: resolucao.motivo }
   }
+  if (resolucao.tipo === "invalida") return registrarEmSuspenso(resolucao.motivo)
+
+  // Mutável: o ramo abaixo pode criar a fatura e então refazer TODA a prova de vínculo.
+  let alvo: FaturaAlvo | null = resolucao.tipo === "encontrada" ? resolucao.fatura : null
 
   // 🔴 PAGAMENTO SEM FATURA GERAVA A FATURA — DE NADA (corrigido 06/08/2026).
   //
@@ -917,53 +1058,38 @@ async function darBaixaNaFatura(
   //    se o cron rodar depois), então gerar aqui não cria fatura dobrada.
   // ⚠️ Falhar aqui NÃO desfaz a liberação: o cliente pagou e o acesso é dele. Grita no log
   //    pra alguém emitir à mão — dinheiro sem fatura é problema de livro, não de produto.
-  if (!alvo) {
+  if (!alvo && resolucao.tipo === "ausente" && resolucao.podeGerar) {
     // 🔑 `dinheiroJaEntrou`: o gateway ACABOU de confirmar este pagamento (o valor veio do
     //    `GET /payments/{id}`, não do payload). Sem isto, a baixa passando a rodar ANTES da
     //    liberação faria a guarda de paywall barrar justamente quem pagou — e o dinheiro
     //    ficaria sem fatura. Ver o docblock de `generateInvoiceForTenant`.
     const nova = await generateInvoiceForTenant(tenantId, { dinheiroJaEntrou: true })
-    if (nova.id) {
-      // 🔴 ALARME FALSO + BAIXA PERDIDA (F1, 11/08). Com o `error` descartado, uma falha ao
-      //    reler a fatura RECÉM-CRIADA deixava `alvo` nulo e o fluxo caía no ramo
-      //    "pagamento-SEM-FATURA-emitir-a-mao" — gritando por emissão manual de uma fatura
-      //    que acabara de ser emitida, e deixando o pagamento sem baixa.
-      // 🔑 Devolver pendência é seguro: a fatura existe, e `generateInvoiceForTenant` é
-      //    idempotente por período — a retentativa reencontra em vez de duplicar.
-      const { data: recem, error: erroRecem } = await supabaseAdmin
-        .from("invoices").select("id, total_cents, paid_cents").eq("id", nova.id).maybeSingle()
-      if (erroRecem) {
-        console.error(JSON.stringify({
-          src: "asaas-handler", kind: "fatura-criada-mas-nao-relida-baixa-adiada",
-          tenant: tenantId, payment: ev.payment_id, invoice: nova.id, msg: erroRecem.message,
-        }))
-        return { error: "fatura emitida, mas não foi possível relê-la para dar baixa" }
-      }
-      alvo = (recem ?? null) as typeof alvo
+    if (nova.error) return { error: `pagamento sem fatura: ${nova.error}` }
+
+    // O id devolvido pelo gerador não basta. Uma corrida com o cron pode fazê-lo pular ou
+    // criar outro período; refazer a resolução exige que o estado novo prove o dueDate.
+    resolucao = await resolverFatura()
+    if (resolucao.tipo === "erro") return { error: resolucao.motivo }
+    if (resolucao.tipo === "invalida") return registrarEmSuspenso(resolucao.motivo)
+    if (resolucao.tipo === "encontrada") {
+      alvo = resolucao.fatura
       console.log(JSON.stringify({
-        src: "asaas-handler", kind: "fatura-gerada-no-pagamento",
-        tenant: tenantId, payment: ev.payment_id, invoice: nova.id,
+        src: "asaas-handler", kind: "fatura-gerada-e-validada-no-pagamento",
+        tenant: tenantId, payment: ev.payment_id, invoice: alvo.id,
       }))
-    }
-    if (!alvo) {
-      console.error(JSON.stringify({
-        src: "asaas-handler", kind: "pagamento-SEM-FATURA-emitir-a-mao",
-        tenant: tenantId, payment: ev.payment_id, motivo: nova.error ?? (nova.skipped ? "plano sem valor" : "desconhecido"),
-      }))
-      // ⚠️ `skipped` NÃO é falha — e insistir nele criaria um loop que nunca resolve
-      //    (revalidação 08/08). São dois casos legítimos e definitivos: o período já tem
-      //    fatura (inclusive PAGA — o caminho normal de uma segunda entrega do mesmo
-      //    evento) e plano sem valor. Devolver erro aqui deixaria o evento pendente,
-      //    retentado a cada 15 min por 7 dias, sem desfecho possível.
-      if (nova.skipped) return {}
-      // Dinheiro entrou e a geração FALHOU de verdade: fica pendente (a geração é
-      // idempotente, então retentar é seguro) e a janela de 7 dias serve de dead-letter.
-      return { error: `pagamento sem fatura: ${nova.error ?? "desconhecido"}` }
     }
   }
 
+  if (!alvo) {
+    const motivo = resolucao.tipo === "ausente" ? resolucao.motivo : "fatura nao resolvida"
+    console.error(JSON.stringify({
+      src: "asaas-handler", kind: "pagamento-sem-vinculo-deterministico",
+      tenant: tenantId, payment: ev.payment_id, motivo,
+    }))
+    return registrarEmSuspenso(motivo)
+  }
+
   // 🔒 SÓ O GATEWAY DIZ QUANTO ENTROU. O payload não é mais consultado aqui.
-  const pago = emCentavos(valorDoGateway)
   const devido = (alvo as { total_cents: number }).total_cents
 
   // 🔴 SEM VALOR AUTORITATIVO, NÃO SE DÁ BAIXA. Antes, valor ausente pulava o piso e
@@ -1063,96 +1189,43 @@ async function darBaixaNaFatura(
       src: "asaas-handler", kind: "PAGAMENTO-MENOR-QUE-O-PLANO-revisar",
       tenant: tenantId, payment: ev.payment_id, pagoCents: pago, planoCents: piso, faturaCents: devido,
     }))
-    return { error: `pagamento (${pago}) menor que o preço do plano (${piso}) — baixa não aplicada` }
+    const ledger = await registrarNoLivro(null)
+    if (!ledger.ok) return { error: `pagamento insuficiente e ledger falhou: ${ledger.error}`, quitou: false }
+    return {
+      error: `pagamento (${pago}) menor que o preço do plano (${piso}) — baixa não aplicada`,
+      quitou: false,
+    }
   }
 
-  // ── Quanto entrou × quanto era devido ─────────────────────────────────────
-  //
-  // 🔴 ATÉ 08/08 ISTO ERA UM `console.warn` E A FATURA VIRAVA `paid` DE QUALQUER JEITO
-  //    (H-02 do pentest). O gateway cobrava só o plano, o excedente ficava de fora, e o
-  //    livro **declarava quitado** o que não foi — a diferença sumia sem deixar registro em
-  //    lugar nenhum. Não era erro de arredondamento: era receita entregue e apagada.
-  //
-  // 🔑 `paid_cents` + `partial` tornam o estado REPRESENTÁVEL, e é isso que para a mentira
-  //    mesmo antes de o `PUT` do valor fechar a diferença na origem. A fatura passa a poder
-  //    dizer "devia 429,80, recebi 349,90" em vez de fingir que está quitada.
-  // ⚠️ `paid_at` só na quitação: uma fatura parcial **não** tem data de pagamento, ela tem
-  //    um recebimento. Carimbar ali faria toda contagem de "faturas pagas" incluí-la.
-  // 🔴 ACUMULA, NÃO SOBRESCREVE. Desde que `partial` entrou na busca acima, a MESMA fatura
-  //    pode receber um segundo pagamento — e escrever `paid_cents = pago` apagaria o
-  //    primeiro, fazendo uma fatura quitada em duas parcelas parecer eternamente parcial.
-  //    (`jaRecebido` foi lido acima, junto do piso, porque ele decide os dois.)
-  const somado = jaRecebido + pago
-  const quitou = somado >= devido
-
-  // 🔒 TETO CONTRA A INVARIANTE 2. Mesmo com a busca corrigida acima, um recebimento maior
-  //    que o devido é possível (pagamento manual no painel, valor editado no gateway) — e
-  //    gravar `paid_cents > total_cents` quebraria a consulta que a migration publica como
-  //    "deve voltar vazia para sempre". O excesso não é apagado: fica no log, com o
-  //    pagamento que o causou, pra alguém decidir o que fazer.
-  const recebidoTotal = Math.min(somado, devido)
-  if (somado > devido) {
+  // O banco decide a soma, o excesso e a quitação sob lock. Calcular isso aqui antes da
+  // RPC produziria alarmes falsos em replay e recriaria uma segunda fonte de verdade.
+  const ledger = await registrarNoLivro((alvo as { id: string }).id)
+  if (!ledger.ok) return { error: `baixa da fatura falhou: ${ledger.error}` }
+  if (!ledger.result.aplicado || ledger.result.suspenso) {
     console.error(JSON.stringify({
-      src: "asaas-handler", kind: "RECEBIDO-MAIOR-QUE-O-DEVIDO-revisar",
-      tenant: tenantId, payment: ev.payment_id,
-      faturaCents: devido, somadoCents: somado, excedenteCents: somado - devido,
+      src: "asaas-handler", kind: "PAGAMENTO-SUSPENSO-revisar",
+      tenant: tenantId, payment: ev.payment_id, pagoCents: pago, faturaCents: devido,
     }))
+    return { error: "pagamento registrado em suspenso; requer conciliacao", quitou: false }
   }
-  if (!quitou) {
+
+  if (ledger.result.inserido && !ledger.result.quitou) {
+    const recebidoTotal = ledger.result.paidCents ?? 0
     console.warn(JSON.stringify({
       src: "asaas-handler", kind: "recebimento-parcial",
       tenant: tenantId, payment: ev.payment_id, pagoCents: pago, faturaCents: devido,
-      recebidoTotalCents: recebidoTotal, faltamCents: devido - recebidoTotal,
+      recebidoTotalCents: recebidoTotal, faltamCents: Math.max(devido - recebidoTotal, 0),
     }))
-  }
-
-  const { error } = await supabaseAdmin
-    .from("invoices")
-    .update({
-      status:      quitou ? "paid" : "partial",
-      paid_cents:  recebidoTotal,
-      paid_at:     quitou ? new Date().toISOString() : null,
-      paid_method: "credit_card",
-      // 🔑 O ELO QUE FALTAVA. Daqui pra frente a fatura sabe qual pagamento a quitou —
-      //    e a idempotência lá em cima passa a ter em que se apoiar.
-      gateway_ref: ev.payment_id,
-      // 🔴 A MESMA VERDADE, NA COLUNA QUE TEM A TRAVA (achado do engenheiro de dados, 12/08).
-      //
-      //    A M1 criou `gateway_charge_id` + o índice único parcial `uq_invoices_gateway_charge`
-      //    pra tornar o elo fatura↔cobrança uma IDENTIDADE. Só que nenhum código passou a
-      //    escrever a coluna — a única menção dela no repositório grava `null` (o void). O
-      //    backfill da M1 preencheu uma vez, a fatura foi substituída, e a coluna **regrediu
-      //    pra NULL no primeiro ciclo real**. Medido: índice único protegendo ZERO linhas.
-      //
-      // ⚠️ O efeito não é cosmético: a cadeia de resolução do livro-caixa
-      //    (`vincular_pagamentos_pendentes`) casa por `gateway_charge_id` no ramo mais forte
-      //    — o único que é identidade e não palpite. Com a coluna vazia, aquele ramo nunca
-      //    casa e o C-02 fica dependendo só do palpite por período.
-      // ⚠️ DUAS COLUNAS PARA O MESMO FATO é dívida, e está declarada: `gateway_ref` tem os
-      //    leitores, `gateway_charge_id` tem a trava. Escrever as duas no MESMO update é o
-      //    que impede elas de divergirem enquanto a consolidação não acontece — e a
-      //    consolidação (uma só, com o índice em cima dela) é item próprio do R1.
-      gateway_charge_id: ev.payment_id,
-    })
-    .eq("id", (alvo as { id: string }).id)
-    .neq("status", "paid")
-
-  if (error) {
-    console.error(JSON.stringify({
-      src: "asaas-handler", kind: "baixa-falhou",
-      tenant: tenantId, payment: ev.payment_id, invoice: (alvo as { id: string }).id, msg: error.message,
-    }))
-    return { error: `baixa da fatura falhou: ${error.message}` }
   }
 
   console.log(JSON.stringify({
     src: "asaas-handler", kind: "fatura-baixada",
-    tenant: tenantId, payment: ev.payment_id, invoice: (alvo as { id: string }).id,
-    quitou,
+    tenant: tenantId, payment: ev.payment_id, invoice: ledger.result.invoiceId,
+    quitou: ledger.result.quitou, inserido: ledger.result.inserido,
   }))
   // 🔑 Este é o ÚNICO caminho que SABE se o dinheiro cobriu a fatura — todos os `return {}`
   //    acima são "não sei", e o chamador trata os dois de forma diferente (ver a assinatura).
-  return { quitou }
+  return { quitou: ledger.result.quitou }
 }
 
 /**
@@ -1197,7 +1270,16 @@ async function liberar(
   //    token do webhook. E o pior não era o valor mentido: **omitir** o campo fazia `pago`
   //    virar `null`, o piso de aceite ser PULADO, e a fatura ser quitada sem comprovação
   //    nenhuma. A prova estava a três linhas de distância, sem uso.
-  let pagamento: { status?: string; subscription?: string | null; customer?: string | null; value?: number }
+  let pagamento: {
+    status?: string
+    subscription?: string | null
+    customer?: string | null
+    value?: number
+    billingType?: string | null
+    dueDate?: string | null
+    externalReference?: string | null
+    dateCreated?: string | null
+  }
   try {
     pagamento = await asaas.get(`/payments/${ev.payment_id}`)
   } catch (e) {
@@ -1228,7 +1310,7 @@ async function liberar(
   //    existiu. Uma leitura = todas as guardas julgam o mesmo instante.
   const { data: donoRow, error: donoErr } = await supabaseAdmin
     .from("tenants")
-    .select("asaas_customer_id, asaas_subscription_id, subscription_ends_at, plan_id, plans:plan_id ( price_cents )")
+    .select("asaas_customer_id, asaas_subscription_id, subscription_ends_at, plan_id, billing_mode, subscription_status, lifecycle_state, trial_ends_at, active, past_due_since, past_due_reason, plans:plan_id ( price_cents )")
     .eq("id", tenant.id).maybeSingle()
 
   // 🔴 FALHA DE LEITURA DESLIGAVA AS GUARDAS (revalidação 08/08). O `error` era descartado:
@@ -1237,12 +1319,26 @@ async function liberar(
   //    Fail-closed: não sei de quem é o pagamento ⇒ não libero, deixo pendente.
   if (donoErr) { await fechar(ev, `leitura do tenant falhou: ${donoErr.message}`, false); return }
 
-  const dono = donoRow as {
+  const dono = donoRow ? { ...(donoRow as {
     asaas_customer_id?: string | null; asaas_subscription_id?: string | null
     subscription_ends_at?: string | null; plan_id?: string | null
-  } | null
+    billing_mode?: string | null; subscription_status?: string | null
+    lifecycle_state?: string | null; trial_ends_at?: string | null
+    active?: boolean | null; past_due_since?: string | null
+    past_due_reason?: string | null
+    plans?: { price_cents?: number } | { price_cents?: number }[] | null
+  }) } : null
+  if (!dono) { await fechar(ev, "tenant não encontrado durante a liberação", false); return }
+  if (dono.billing_mode !== "gateway") {
+    await fechar(ev, "tenant fora do gateway — liberação ignorada")
+    return
+  }
   const nossoCustomer = dono?.asaas_customer_id ?? null
-  if (nossoCustomer && pagamento?.customer && pagamento.customer !== nossoCustomer) {
+  if (!nossoCustomer || !pagamento?.customer) {
+    await fechar(ev, "gateway não comprovou o customer do pagamento", false)
+    return
+  }
+  if (pagamento.customer !== nossoCustomer) {
     await fechar(ev, "pagamento é de outro cliente do gateway")
     return
   }
@@ -1332,7 +1428,7 @@ async function liberar(
   if (jaEncerrado) {
     console.warn(JSON.stringify({ src: "asaas-handler", kind: "liberacao-obsoleta-ignorada",
       tenant: tenant.id, payment: ev.payment_id }))
-    const baixaTardia = await darBaixaNaFatura(tenant.id, ev, pagamento?.value)
+    const baixaTardia = await darBaixaNaFatura(tenant.id, ev, pagamento)
     await fechar(ev, baixaTardia?.error ?? "assinatura já encerrada — liberação não reaplicada",
       !baixaTardia?.error)
     return
@@ -1343,7 +1439,7 @@ async function liberar(
   //    do patch abaixo é apostar que o objeto em memória não acompanha a escrita. Aposta
   //    perdida no teste, e do tipo que em produção sairia como "ninguém recebeu o aviso",
   //    sem erro nenhum pra investigar. Uma constante remove a aposta.
-  const estavaCortado = (tenant.subscription_status ?? "") === "past_due"
+  const estavaCortado = (dono.subscription_status ?? "") === "past_due"
 
   const patch: Record<string, unknown> = {
     subscription_status: "active",
@@ -1385,7 +1481,7 @@ async function liberar(
   //    ⇒ modal persistente na cara de quem acabou de pagar, para sempre.
   // ⚠️ Mesma classe do `KNOWN_STATES` de ontem: estado novo no tipo, consumidor antigo
   //    intacto, `tsc` verde. Estado novo obriga a varrer QUEM DECIDE em cima dele.
-  if (["trialing", "trial_ended"].includes(normalizeState(tenant.lifecycle_state))) {
+  if (["trialing", "trial_ended"].includes(normalizeState(dono.lifecycle_state))) {
     patch.lifecycle_state = "active"
     patch.trial_ends_at   = null
     patch.active          = true
@@ -1399,7 +1495,9 @@ async function liberar(
   // liberava, inclusive uma parcial.
   // 🗳️ Regra 3 do dono (11/08): *"pagamento parcial no Kora não libera nada. Pra ativar, ele
   //    seleciona o plano. Pagou, aí libera."*
-  // ➜ Agora: aplica plano → dá baixa (que RESPONDE se cobriu) → libera **se** cobriu.
+  // ➜ Agora: dá baixa (que RESPONDE se cobriu) → vence o CAS do tenant → aplica plano e
+  //    libera **se** cobriu. Entitlement nunca antecede a confirmação de que esta
+  //    fotografia do tenant ainda é vigente.
   //
   // ⚠️ O QUE TORNAVA ESSA INVERSÃO IMPOSSÍVEL, e como foi resolvido: `darBaixaNaFatura`, no
   //    caminho "pagamento sem fatura", chama `generateInvoiceForTenant` — que tem guarda de
@@ -1438,8 +1536,25 @@ async function liberar(
   //    muito antes deste pagamento — e o `patch` acima não encosta nele, então o valor do
   //    snapshot é o mesmo que uma releitura traria.
   const planId = dono?.plan_id
-  if (planId) {
-    const ap = await applyPlan(tenant.id, planId)
+  const aplicarPlanoDepoisDaBaixa = async () => {
+    if (!planId) return
+    const ap = await applyPlan(tenant.id, planId, {
+      expectedBillingMode: "gateway",
+      expectedCustomerId: dono.asaas_customer_id ?? null,
+      expectedSubscriptionId: dono.asaas_subscription_id ?? null,
+      expectedSubscriptionStatus: "active",
+      expectedSubscriptionEndsAt: null,
+      expectedLifecycleState: (patch.lifecycle_state as string | undefined) ?? dono.lifecycle_state ?? null,
+      expectedTrialEndsAt: Object.prototype.hasOwnProperty.call(patch, "trial_ends_at")
+        ? null
+        : dono.trial_ends_at ?? null,
+      expectedPastDueSince: null,
+      expectedPastDueReason: null,
+      expectedActive: Object.prototype.hasOwnProperty.call(patch, "active")
+        ? true
+        : dono.active ?? null,
+      requireCurrentPlan: true,
+    })
     if (!ap.ok) {
       pendencia = `plano não aplicado: ${ap.error ?? "erro desconhecido"}`
       console.error(JSON.stringify({
@@ -1449,7 +1564,7 @@ async function liberar(
     }
   }
 
-  const baixa = await darBaixaNaFatura(tenant.id, ev, pagamento?.value)
+  const baixa = await darBaixaNaFatura(tenant.id, ev, pagamento)
   if (baixa?.error) pendencia = pendencia ? `${pendencia}; ${baixa.error}` : baixa.error
 
   // ── A LIBERAÇÃO, agora CONDICIONADA ao dinheiro ter coberto a fatura ────────
@@ -1458,7 +1573,7 @@ async function liberar(
   //    LIBERA: o cliente pagou, e segurar o produto dele por uma lacuna no NOSSO livro seria
   //    puni-lo pelo nosso defeito. Retém-se acesso por CONHECIMENTO, nunca por ignorância —
   //    a mesma régua que a F1 aplicou em todo o caminho do dinheiro.
-  if (baixa?.quitou === false) {
+  if (baixa?.quitou !== true) {
     console.warn(JSON.stringify({
       src: "asaas-handler", kind: "pagamento-parcial-NAO-libera",
       tenant: tenant.id, payment: ev.payment_id,
@@ -1477,8 +1592,56 @@ async function liberar(
     return
   }
 
-  const { error } = await supabaseAdmin.from("tenants").update(patch).eq("id", tenant.id)
+  // O GET do gateway, a baixa e a geração de fatura abrem uma janela concorrente. A
+  // liberação só pode aplicar a fotografia que foi corroborada acima: cancelamento,
+  // troca para manual, mudança de plano ou de assinatura que aterrisse nesse intervalo
+  // vence o CAS. `.select()` é obrigatório porque UPDATE com zero linhas não é erro no
+  // PostgREST.
+  let liberarQuery = supabaseAdmin.from("tenants")
+    .update(patch)
+    .eq("id", tenant.id)
+    .eq("billing_mode", "gateway")
+
+  liberarQuery = dono.asaas_customer_id
+    ? liberarQuery.eq("asaas_customer_id", dono.asaas_customer_id)
+    : liberarQuery.is("asaas_customer_id", null)
+  liberarQuery = dono.asaas_subscription_id
+    ? liberarQuery.eq("asaas_subscription_id", dono.asaas_subscription_id)
+    : liberarQuery.is("asaas_subscription_id", null)
+  liberarQuery = dono.subscription_ends_at
+    ? liberarQuery.eq("subscription_ends_at", dono.subscription_ends_at)
+    : liberarQuery.is("subscription_ends_at", null)
+  liberarQuery = dono.plan_id
+    ? liberarQuery.eq("plan_id", dono.plan_id)
+    : liberarQuery.is("plan_id", null)
+  liberarQuery = dono.subscription_status
+    ? liberarQuery.eq("subscription_status", dono.subscription_status)
+    : liberarQuery.is("subscription_status", null)
+  liberarQuery = dono.lifecycle_state
+    ? liberarQuery.eq("lifecycle_state", dono.lifecycle_state)
+    : liberarQuery.is("lifecycle_state", null)
+  liberarQuery = dono.trial_ends_at
+    ? liberarQuery.eq("trial_ends_at", dono.trial_ends_at)
+    : liberarQuery.is("trial_ends_at", null)
+  liberarQuery = dono.past_due_since
+    ? liberarQuery.eq("past_due_since", dono.past_due_since)
+    : liberarQuery.is("past_due_since", null)
+  liberarQuery = dono.past_due_reason
+    ? liberarQuery.eq("past_due_reason", dono.past_due_reason)
+    : liberarQuery.is("past_due_reason", null)
+  if (dono.active === null || dono.active === undefined) liberarQuery = liberarQuery.is("active", null)
+  else liberarQuery = liberarQuery.eq("active", dono.active)
+
+  const { data: linhasLiberadas, error } = await liberarQuery.select("id")
   if (error) { await fechar(ev, `falha ao liberar: ${error.message}`, false); return }
+  if (!linhasLiberadas || linhasLiberadas.length === 0) {
+    await fechar(ev, "estado da assinatura mudou durante a liberação", false)
+    return
+  }
+
+  // Módulos são efeito de acesso. Aplicá-los antes de saber se o CAS venceu permitiria
+  // que uma liberação rejeitada ainda alterasse os entitlements do tenant.
+  await aplicarPlanoDepoisDaBaixa()
 
   // ── Avisos ────────────────────────────────────────────────────────────────
   // ⚠️ ANTES do `return` da pendência, de propósito. Pendência é problema NOSSO de livro
@@ -1517,8 +1680,9 @@ async function liberar(
     tenantId: tenant.id,
     acao:     "billing.liberado",
     origem:   "webhook",
+    dedupeKey: `billing:webhook:${ev.id}:liberado`,
     alvo:     { tipo: "payment", id: ev.payment_id },
-    antes:    { subscription_status: tenant.subscription_status, lifecycle_state: tenant.lifecycle_state },
+    antes:    { subscription_status: dono.subscription_status, lifecycle_state: dono.lifecycle_state },
     depois:   { subscription_status: "active", ...(patch.lifecycle_state ? { lifecycle_state: patch.lifecycle_state } : {}) },
     extra:    { valorCents: emCentavos(pagamento?.value), evento: ev.event_type, pendencia },
   })
@@ -1566,9 +1730,16 @@ async function restringir(
 
   /** Estado do tenant lido DENTRO do try — o UPDATE abaixo decide o carimbo em cima dele. */
   let estadoAtual: {
+    asaas_customer_id?: string | null
+    asaas_subscription_id?: string | null
+    billing_mode?: string | null
     subscription_status?: string | null
+    subscription_ends_at?: string | null
     past_due_since?:      string | null
+    past_due_reason?:     string | null
     past_due_grace_days?: number | null
+    rehire_blocked_at?: string | null
+    rehire_blocked_reason?: string | null
   } | null = null
 
   try {
@@ -1586,7 +1757,7 @@ async function restringir(
     //    automações de quem está em dia.
     // ⚠️ Fail-closed: divergiu, não pune — registra e encerra sem tocar no tenant.
     const { data: donoRow, error: donoErr } = await supabaseAdmin
-      .from("tenants").select("asaas_customer_id, asaas_subscription_id, subscription_status, past_due_since, past_due_grace_days")
+      .from("tenants").select("asaas_customer_id, asaas_subscription_id, billing_mode, subscription_status, subscription_ends_at, past_due_since, past_due_reason, past_due_grace_days, rehire_blocked_at, rehire_blocked_reason")
       .eq("id", tenant.id).maybeSingle()
 
     // ⚠️ Falha de leitura NÃO pode virar "checagem dispensada". Descartar o `error` aqui
@@ -1594,15 +1765,26 @@ async function restringir(
     //    este é o caminho que TIRA produto de quem paga. Sem evidência, não pune.
     if (donoErr) { await fechar(ev, `leitura do tenant falhou: ${donoErr.message}`, false); return }
 
-    const dono = donoRow as {
+    const dono = donoRow ? { ...(donoRow as {
       asaas_customer_id?: string | null; asaas_subscription_id?: string | null
-      subscription_status?: string | null; past_due_since?: string | null
-      past_due_grace_days?: number | null
-    } | null
+      billing_mode?: string | null; subscription_status?: string | null
+      subscription_ends_at?: string | null; past_due_since?: string | null
+      past_due_reason?: string | null; past_due_grace_days?: number | null
+      rehire_blocked_at?: string | null; rehire_blocked_reason?: string | null
+    }) } : null
+    if (!dono) { await fechar(ev, "tenant não encontrado durante a restrição", false); return }
+    if (dono.billing_mode !== "gateway") {
+      await fechar(ev, "tenant fora do gateway — restrição ignorada")
+      return
+    }
     // Sai do `try` pra o UPDATE e o aviso lá embaixo (ver `carimbo`).
     estadoAtual = dono
 
-    if (pag?.customer && dono?.asaas_customer_id && pag.customer !== dono.asaas_customer_id) {
+    if (!pag?.customer || !dono.asaas_customer_id) {
+      await fechar(ev, "gateway não comprovou o customer do pagamento", false)
+      return
+    }
+    if (pag.customer !== dono.asaas_customer_id) {
       console.error(JSON.stringify({ src: "asaas-handler", kind: "restringir-customer-divergente",
         tenant: tenant.id, doGateway: pag.customer, nosso: dono.asaas_customer_id }))
       await fechar(ev, "customer do pagamento não é o do tenant — não restringe")
@@ -1610,7 +1792,11 @@ async function restringir(
     }
 
     const nossa = assinaturaRealId(dono?.asaas_subscription_id)
-    if (pag?.subscription && nossa && pag.subscription !== nossa) {
+    if (!nossa) {
+      await fechar(ev, "tenant sem assinatura vigente — não restringe")
+      return
+    }
+    if (pag?.subscription !== nossa) {
       console.error(JSON.stringify({ src: "asaas-handler", kind: "restringir-assinatura-divergente",
         tenant: tenant.id, doGateway: pag.subscription, nossa }))
       await fechar(ev, "pagamento é de outra assinatura — não restringe")
@@ -1665,7 +1851,17 @@ async function restringir(
     ? estadoAtual.past_due_since
     : new Date().toISOString()
 
-  const { error } = await supabaseAdmin.from("tenants")
+  const patchRestricao: Record<string, unknown> = {
+    subscription_status: "past_due",
+    past_due_since: carimbo,
+    past_due_reason: causa,
+  }
+  if (causa === "chargeback" && !estadoAtual?.rehire_blocked_at) {
+    patchRestricao.rehire_blocked_at = new Date().toISOString()
+    patchRestricao.rehire_blocked_reason = "chargeback"
+  }
+
+  let restringirQuery = supabaseAdmin.from("tenants")
     // 🔑 A CAUSA ENTRA JUNTO (12/08). Sem ela, `past_due_reason` nasceria NULL e o R2 trataria
     //    todo estorno como atraso comum — dando ao cliente que desfez o pagamento a mesma
     //    carência de quem teve o cartão recusado. A coluna existe desde a R0 justamente pra
@@ -1673,9 +1869,44 @@ async function restringir(
     // ⚠️ Escrita no MESMO update do status e do carimbo: são três faces do mesmo fato, e
     //    separá-las criaria um instante em que o tenant está `past_due` sem causa — o estado
     //    ambíguo que a revalidação pediu pra não existir.
-    .update({ subscription_status: "past_due", past_due_since: carimbo, past_due_reason: causa })
+    .update(patchRestricao)
     .eq("id", tenant.id)
+    .eq("billing_mode", "gateway")
+
+  restringirQuery = estadoAtual?.asaas_customer_id
+    ? restringirQuery.eq("asaas_customer_id", estadoAtual.asaas_customer_id)
+    : restringirQuery.is("asaas_customer_id", null)
+  restringirQuery = estadoAtual?.asaas_subscription_id
+    ? restringirQuery.eq("asaas_subscription_id", estadoAtual.asaas_subscription_id)
+    : restringirQuery.is("asaas_subscription_id", null)
+  restringirQuery = estadoAtual?.subscription_status
+    ? restringirQuery.eq("subscription_status", estadoAtual.subscription_status)
+    : restringirQuery.is("subscription_status", null)
+  restringirQuery = estadoAtual?.subscription_ends_at
+    ? restringirQuery.eq("subscription_ends_at", estadoAtual.subscription_ends_at)
+    : restringirQuery.is("subscription_ends_at", null)
+  restringirQuery = estadoAtual?.past_due_since
+    ? restringirQuery.eq("past_due_since", estadoAtual.past_due_since)
+    : restringirQuery.is("past_due_since", null)
+  restringirQuery = estadoAtual?.past_due_reason
+    ? restringirQuery.eq("past_due_reason", estadoAtual.past_due_reason)
+    : restringirQuery.is("past_due_reason", null)
+  restringirQuery = estadoAtual?.past_due_grace_days === null || estadoAtual?.past_due_grace_days === undefined
+    ? restringirQuery.is("past_due_grace_days", null)
+    : restringirQuery.eq("past_due_grace_days", estadoAtual.past_due_grace_days)
+  restringirQuery = estadoAtual?.rehire_blocked_at
+    ? restringirQuery.eq("rehire_blocked_at", estadoAtual.rehire_blocked_at)
+    : restringirQuery.is("rehire_blocked_at", null)
+  restringirQuery = estadoAtual?.rehire_blocked_reason
+    ? restringirQuery.eq("rehire_blocked_reason", estadoAtual.rehire_blocked_reason)
+    : restringirQuery.is("rehire_blocked_reason", null)
+
+  const { data: linhasRestringidas, error } = await restringirQuery.select("id")
   if (error) { await fechar(ev, `falha ao restringir: ${error.message}`, false); return }
+  if (!linhasRestringidas || linhasRestringidas.length === 0) {
+    await fechar(ev, "estado da assinatura mudou durante a restrição", false)
+    return
+  }
 
   // Estorno e chargeback não são inadimplência comum — o dinheiro VOLTOU, e isso costuma
   // ter uma história atrás. Grita alto pra alguém olhar.
@@ -1718,15 +1949,10 @@ async function restringir(
   // ⚠️ Só `open/overdue/partial/paid` — e `paid` entra aqui de propósito, ao contrário das
   //    outras varreduras: é justamente a fatura paga que o estorno desmente.
   if (causa === "estorno" || causa === "chargeback") {
-    const { error: erroVoid } = await supabaseAdmin.from("invoices")
-      .update({ status: "void", void_reason: "estornada", updated_at: new Date().toISOString() })
-      .eq("tenant_id", tenant.id)
-      .eq("gateway_ref", ev.payment_id)
-      .in("status", ["open", "overdue", "partial", "paid"])
-    if (erroVoid) {
-      console.error(JSON.stringify({ src: "asaas-handler", kind: "FATURA-NAO-ANULADA-NO-ESTORNO",
-        tenant: tenant.id, payment: ev.payment_id, msg: erroVoid.message }))
-    }
+    // F2a e payment-only. Acesso e bloqueio antifraude continuam fail-closed, mas a
+    // fatura nao e rasurada: a compensacao precisa nascer como novo fato append-only.
+    console.error(JSON.stringify({ src: "asaas-handler", kind: "COMPENSACAO-LEDGER-PENDENTE",
+      tenant: tenant.id, payment: ev.payment_id, causa }))
   }
 
   // 🔒 CHARGEBACK BLOQUEIA RECONTRATAÇÃO — e o bloqueio NÃO é castigo ao cliente.
@@ -1737,16 +1963,9 @@ async function restringir(
   //    castiga o caso honesto — a assimetria é a decisão do dono de 12/08.
   // ⚠️ Data e motivo juntos: o CHECK de coerência da R0 recusa um sem o outro, e é o que
   //    impede um bloqueio que ninguém consegue explicar depois.
-  if (causa === "chargeback") {
-    const { error: erroBloqueio } = await supabaseAdmin.from("tenants")
-      .update({ rehire_blocked_at: new Date().toISOString(), rehire_blocked_reason: "chargeback" })
-      .eq("id", tenant.id)
-      .is("rehire_blocked_at", null)   // não reescreve um bloqueio anterior — o 1º é que conta
-    if (erroBloqueio) {
-      console.error(JSON.stringify({ src: "asaas-handler", kind: "RECONTRATACAO-NAO-BLOQUEADA",
-        tenant: tenant.id, payment: ev.payment_id, msg: erroBloqueio.message }))
-    }
-  }
+  // No chargeback, o bloqueio de recontratação nasceu no MESMO CAS acima. Separá-lo em
+  // outro UPDATE permitiria restringir o acesso e perder a proteção antifraude em uma
+  // corrida silenciosa.
 
   // 🔑 O registro mais importante da trilha: é este que corta campanhas, IA e automações,
   //    e (passada a carência) o acesso da equipe. Guarda o CARIMBO, porque é dele que
@@ -1755,6 +1974,7 @@ async function restringir(
     tenantId: tenant.id,
     acao:     "billing.restringido",
     origem:   "webhook",
+    dedupeKey: `billing:webhook:${ev.id}:restringido`,
     alvo:     { tipo: "payment", id: ev.payment_id },
     antes:    { subscription_status: estadoAtual?.subscription_status ?? null, past_due_since: estadoAtual?.past_due_since ?? null },
     depois:   { subscription_status: "past_due", past_due_since: carimbo, past_due_reason: causa },
@@ -1766,7 +1986,7 @@ async function restringir(
       //    restringido" não responde nada; "foi restringido por estorno, a fatura foi
       //    anulada e a recontratação bloqueada" responde tudo.
       causa,
-      faturaAnulada:            causa !== "vencimento",
+      faturaAnulada:            false,
       recontratacaoBloqueada:   causa === "chargeback",
       // ⚠️ Estorno e chargeback ignoram a carência configurada — o número acima existe pra
       //    a leitura não concluir que ele foi aplicado.
@@ -1775,5 +1995,9 @@ async function restringir(
   })
 
   console.log(JSON.stringify({ src: "asaas-handler", kind: "restringido", tenant: tenant.id, event: ev.event_type }))
+  if (causa === "estorno" || causa === "chargeback") {
+    await fechar(ev, "compensacao financeira aguardando validacao de sandbox", false)
+    return
+  }
   await fechar(ev)
 }

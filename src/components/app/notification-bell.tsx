@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, type LucideIcon } from "lucide-react"
+import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, AlarmClock, type LucideIcon } from "lucide-react"
 import { getRealtimeClient } from "@/lib/realtime"
 import {
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,
@@ -31,6 +31,9 @@ const ICONS: Record<string, LucideIcon> = {
   transfer_received:    UserCheck,
   ig_quota_warning:     Gauge,
   ig_quota_exhausted:   Gauge,
+  // Follow-up de atendimento: despertador. O destino sai do `conversation_id` do
+  // payload (hrefFor) — é o que abre A CONVERSA em vez de cair no fallback /agenda.
+  followup_due:         AlarmClock,
 }
 
 function timeAgo(iso: string): string {
@@ -161,13 +164,12 @@ export function NotificationBell({
         }`}
       >
         <Bell className="size-[18px]" strokeWidth={1.8} />
+        {/* Selo redondo sobreposto no canto do ícone (padrão escolhido pelo dono
+            2026-08-20). Um só pra desktop e mobile — a pílula ao lado sumiu. */}
         {unread > 0 && (
-          <>
-            <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-red-500 ring-2 ring-nav sm:hidden" />
-            <span className="hidden h-5 min-w-5 items-center justify-center rounded-md bg-red-50 px-1.5 text-[10px] font-bold text-red-700 tabular-nums sm:inline-flex">
-              {badge}
-            </span>
-          </>
+          <span className="absolute -top-0.5 -right-0.5 h-[18px] min-w-[18px] px-1 grid place-items-center rounded-full bg-red-500 text-white text-[10px] font-bold leading-none tabular-nums ring-2 ring-nav">
+            {badge}
+          </span>
         )}
       </button>
 

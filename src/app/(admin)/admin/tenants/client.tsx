@@ -141,9 +141,9 @@ export function TenantsListClient({ rows, planoId, planoNome }: {
       header: "Plano",
       width: "110px",
       cell: (r) => (
-        r.plan_name ? (
+        r.plan_id ? (
           <span className="inline-flex h-5 items-center text-[10px] font-semibold px-2 rounded-md border bg-primary-50 text-primary-700 border-primary-200">
-            {r.plan_name}
+            {r.plan_name ?? "Plano indisponível"}
           </span>
         ) : (
           <span className={`inline-flex h-5 items-center text-[10px] font-semibold px-2 rounded-md border ${PLAN_BADGE[r.plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>

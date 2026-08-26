@@ -74,6 +74,8 @@ export interface RegistroDeCobranca {
   depois?:  Record<string, unknown>
   /** Contexto: id do pagamento no gateway, valor em centavos, motivo. */
   extra?:   Record<string, unknown>
+  /** Identifica o efeito, não a tentativa. Reprocessar a mesma origem não duplica trilha. */
+  dedupeKey?: string | null
 }
 
 /**
@@ -95,5 +97,6 @@ export async function auditarCobranca(r: RegistroDeCobranca): Promise<void> {
     before:     r.antes  ?? null,
     after:      r.depois ?? null,
     metadata:   { origem: r.origem, ...(r.extra ?? {}) },
+    dedupeKey:  r.dedupeKey ?? null,
   })
 }

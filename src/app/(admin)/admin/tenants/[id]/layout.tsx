@@ -25,7 +25,7 @@ export default async function TenantLayout({
 
   const { data: tenant } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, slug, plan, active, plans ( name )")
+    .select("id, name, slug, plan, plan_id, active, plans(name)")
     .eq("id", id)
     .maybeSingle()
 
@@ -53,9 +53,9 @@ export default async function TenantLayout({
             <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">{tenant.name}</h1>
             <p className="text-xs text-slate-400 font-mono truncate">{tenant.slug}</p>
           </div>
-          {planName ? (
+          {tenant.plan_id ? (
             <span className="inline-flex h-6 items-center text-[10px] font-semibold px-2 rounded-md border bg-primary-50 text-primary-700 border-primary-200">
-              {planName}
+              {planName ?? "Plano indisponível"}
             </span>
           ) : (
             <span className={`inline-flex h-6 items-center text-[10px] font-semibold px-2 rounded-md border ${PLAN_BADGE[tenant.plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>

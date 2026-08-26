@@ -1,6 +1,5 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
-import { applyDefaultModules } from "@/lib/modules"
 
 /**
  * O plano que o cadastro self-serve entrega — **fonte única da escolha**.
@@ -39,162 +38,121 @@ export async function getSignupTrialPlan(): Promise<{ id: string; trial_days: nu
   return (data as { id: string; trial_days: number } | null) ?? null
 }
 
-// tenants.plan (string) é só label/fallback agora — a verdade é plan_id.
-const TIERS = ["trial", "starter", "pro", "enterprise"]
-function tierFromName(name: string): string {
-  const n = (name ?? "").trim().toLowerCase()
-  return TIERS.includes(n) ? n : "pro"
-}
-
 /**
  * Encaixa um plano num tenant (fonte: tabela `plans`).
  *
- *  • Aponta `tenant.plan_id` (verdade) + `tenant.plan` (string p/ label/fallback).
- *  • HABILITA os módulos do plano — e MANTÉM os extras manuais (não desabilita
- *    nada, pra um downgrade não apagar algo liberado de propósito no god mode).
+ *  • Aponta somente `tenant.plan_id`, a identidade canônica. O nome comercial do plano
+ *    nunca é convertido em tier e a string legada `tenant.plan` não participa.
+ *  • Reconcilia os módulos `source=plan` e MANTÉM todos os extras `source=manual`.
  *  • CONCEDE o nível PRO nos módulos que o plano marca como PRO (`plans.pro_modules`).
  *  • Os LIMITES NÃO são copiados: resolvem AO VIVO de `plans.limits` (ver limits.ts).
  *
  * Usado no signup (plano Trial), no god mode (trocar plano) e, no futuro, no
  * checkout (upgrade self-service).
  *
- * 🔴 NUNCA ESCREVER `pro: false` AQUI — e é por isso que são DOIS upserts.
- *    O upsert do PostgREST só toca as colunas presentes no payload. Se um único upsert
- *    levasse `pro: proSet.has(slug)` pra TODO módulo incluído, cada slug fora do
- *    `pro_modules` gravaria `false` explícito e **apagaria um PRO ligado à mão no god
- *    mode**. Hoje existem 2 linhas assim em produção (`ai` e `instagram_automation`, no
- *    Blue) e elas escapam só porque o Starter não cita esses slugs — bastaria alguém
- *    incluir um deles no plano pra a próxima atribuição derrubar o PRO manual.
- *    Separando, o ramo "sem PRO" **omite a coluna** e a decisão manual sobrevive — a mesma
- *    filosofia aditiva que o `enabled` já tinha, agora estendida ao `pro`.
- *
- * ⚠️ Enquanto `tenant_modules.source` não existir (vem na reestruturação do catálogo),
- *    "veio do plano" e "foi ligado à mão" são indistinguíveis. Este aditivo é o
- *    comportamento seguro no meio-tempo: concede, nunca revoga.
+ * Tudo ocorre na RPC sob row lock: troca de plano, módulos comuns/PRO e revogação de
+ * concessões antigas formam uma única transação. Plano vazio significa core-only.
  */
-export async function applyPlan(tenantId: string, planId: string): Promise<{ ok: boolean; error?: string }> {
-  const { data: plan } = await supabaseAdmin
-    .from("plans")
-    .select("name, included_modules, pro_modules")
-    .eq("id", planId)
-    .maybeSingle()
-  if (!plan) return { ok: false, error: "Plano não encontrado." }
+export interface ApplyPlanGuard {
+  expectedBillingMode?: "gateway" | "manual"
+  expectedCustomerId?: string | null
+  expectedSubscriptionId?: string | null
+  expectedSubscriptionStatus?: string | null
+  expectedSubscriptionEndsAt?: string | null
+  expectedLifecycleState?: string | null
+  expectedTrialEndsAt?: string | null
+  expectedPastDueSince?: string | null
+  expectedPastDueReason?: string | null
+  expectedActive?: boolean | null
+  expectedCurrentPlanId?: string | null
+  requireCurrentPlan?: boolean
+}
 
-  // 🔴 O CORAÇÃO DA FUNÇÃO. Até 07/08 este erro era descartado e a função ainda devolvia
-  //    `{ ok: true }` no fim — mentia sucesso mesmo se o plano NUNCA fosse gravado. Captura
-  //    e sai ANTES dos upserts de módulo: numa falha transitória, pular os módulos é o
-  //    comportamento honesto e auto-curável (o reconcile re-roda `liberar`→`applyPlan`).
-  const { error: planErr } = await supabaseAdmin
-    .from("tenants")
-    .update({ plan_id: planId, plan: tierFromName(plan.name as string) })
-    .eq("id", tenantId)
-  if (planErr) {
-    console.error(JSON.stringify({ src: "plans", kind: "apply-plan-falhou-na-escrita", tenant: tenantId, plano: planId, msg: planErr.message }))
+export async function applyPlan(
+  tenantId: string,
+  planId: string,
+  guard: ApplyPlanGuard = {},
+): Promise<{ ok: boolean; error?: string }> {
+  const checkCustomer = Object.prototype.hasOwnProperty.call(guard, "expectedCustomerId")
+  const checkSubscription = Object.prototype.hasOwnProperty.call(guard, "expectedSubscriptionId")
+  const checkStatus = Object.prototype.hasOwnProperty.call(guard, "expectedSubscriptionStatus")
+  const checkSubscriptionEnds = Object.prototype.hasOwnProperty.call(guard, "expectedSubscriptionEndsAt")
+  const checkLifecycle = Object.prototype.hasOwnProperty.call(guard, "expectedLifecycleState")
+  const checkTrialEnds = Object.prototype.hasOwnProperty.call(guard, "expectedTrialEndsAt")
+  const checkPastDueSince = Object.prototype.hasOwnProperty.call(guard, "expectedPastDueSince")
+  const checkPastDueReason = Object.prototype.hasOwnProperty.call(guard, "expectedPastDueReason")
+  const checkActive = Object.prototype.hasOwnProperty.call(guard, "expectedActive")
+  const checkCurrentPlan = Object.prototype.hasOwnProperty.call(guard, "expectedCurrentPlanId")
+
+  const { data, error } = await supabaseAdmin.rpc("aplicar_plano_atomico", {
+    p_tenant: tenantId,
+    p_plan: planId,
+    p_expected_billing_mode: guard.expectedBillingMode ?? null,
+    p_check_customer: checkCustomer,
+    p_expected_customer: guard.expectedCustomerId ?? null,
+    p_check_subscription: checkSubscription,
+    p_expected_subscription: guard.expectedSubscriptionId ?? null,
+    p_check_status: checkStatus,
+    p_expected_status: guard.expectedSubscriptionStatus ?? null,
+    p_check_subscription_ends: checkSubscriptionEnds,
+    p_expected_subscription_ends: guard.expectedSubscriptionEndsAt ?? null,
+    p_check_lifecycle: checkLifecycle,
+    p_expected_lifecycle: guard.expectedLifecycleState ?? null,
+    p_check_trial_ends: checkTrialEnds,
+    p_expected_trial_ends: guard.expectedTrialEndsAt ?? null,
+    p_check_past_due_since: checkPastDueSince,
+    p_expected_past_due_since: guard.expectedPastDueSince ?? null,
+    p_check_past_due_reason: checkPastDueReason,
+    p_expected_past_due_reason: guard.expectedPastDueReason ?? null,
+    p_check_active: checkActive,
+    p_expected_active: guard.expectedActive ?? null,
+    p_check_current_plan: checkCurrentPlan,
+    p_expected_current_plan: guard.expectedCurrentPlanId ?? null,
+    p_require_current_plan: guard.requireCurrentPlan === true,
+  })
+
+  if (error) {
+    console.error(JSON.stringify({ src: "plans", kind: "apply-plan-atomico-falhou", tenant: tenantId, plano: planId, msg: error.message }))
     return { ok: false, error: "Não foi possível aplicar o plano." }
   }
 
-  const mods = ((plan.included_modules as string[] | null) ?? []).filter(Boolean)
-  const doNovo = new Set(mods)
-  if (mods.length > 0) {
-    // Poda pelo incluído: PRO de um módulo que o plano não inclui não faz sentido.
-    // ⚠️ CORRIGIDO 2026-08-03 — este comentário dizia "(CHECK no banco)" e era FALSO.
-    //    O CHECK `plans_pro_subset_included` existe no PLANO (migration
-    //    20260803_plans_pro_modules.sql), **não** em `tenant_modules`: lá não há
-    //    constraint nenhuma impedindo `pro=true, enabled=false`. Quem sustenta a
-    //    invariante do vínculo é `hasModulePro` na LEITURA (modules.ts) — ele exige
-    //    `hasModule` antes e filtra `enabled=true`, fail-closed. Na prática está coberto
-    //    (o read é chokepoint único), mas é garantia de CÓDIGO, não de banco. Quem
-    //    escrever em `tenant_modules` por fora precisa manter a invariante na mão.
-    const proSet = new Set(((plan.pro_modules as string[] | null) ?? []).filter((s) => s && mods.includes(s)))
-    const comuns = mods.filter((s) => !proSet.has(s))
-
-    // 🔴 O RESULTADO DOS UPSERTS ERA DESCARTADO (M-5, fechado na revalidação de 08/08).
-    //    Esta função devolvia `{ ok: true }` mesmo com os módulos falhando — e quem chama
-    //    no webhook usa esse `ok` pra decidir se o pagamento foi totalmente processado.
-    //    Ou seja: o cliente pagava, os módulos não subiam, e o sistema declarava sucesso.
-    //    É exatamente o "concluir antes de todos os efeitos obrigatórios" que o pentest
-    //    apontou — e o motivo de a pendência do `liberar()` não enxergar nada.
-    if (comuns.length > 0) {
-      const { error } = await supabaseAdmin.from("tenant_modules").upsert(
-        // ⚠️ SEM a chave `pro` — omitir é o que preserva o que já está lá.
-        comuns.map((slug) => ({ tenant_id: tenantId, module_slug: slug, enabled: true, reason: "Incluído no plano" })),
-        { onConflict: "tenant_id,module_slug" },
-      )
-      if (error) return { ok: false, error: `módulos do plano não aplicados: ${error.message}` }
-    }
-    if (proSet.size > 0) {
-      const { error } = await supabaseAdmin.from("tenant_modules").upsert(
-        Array.from(proSet).map((slug) => ({ tenant_id: tenantId, module_slug: slug, enabled: true, pro: true, reason: "Incluído no plano (PRO)" })),
-        { onConflict: "tenant_id,module_slug" },
-      )
-      if (error) return { ok: false, error: `módulos PRO não aplicados: ${error.message}` }
-    }
-  } else {
-    // Plano sem módulos definidos → core + default-on (não deixa o tenant pelado).
-    await applyDefaultModules(tenantId)
+  const raw = Array.isArray(data) ? data[0] : data
+  const result = raw as { aplicado?: boolean; motivo?: string | null } | null
+  if (!result?.aplicado) {
+    return { ok: false, error: result?.motivo ?? "O estado da conta mudou durante a aplicação do plano." }
   }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // 🔴 REVOGAÇÃO — o que veio DE PLANO e o plano atual não dá (05/08/2026)
-  // ══════════════════════════════════════════════════════════════════════════
-  // Até hoje esta função era uma CATRACA DE UM SENTIDO SÓ: só ligava módulo, nunca
-  // desligava. Com os números reais do catálogo isso virava vazamento garantido:
-  //
-  //     Trial     R$   0,00 → 16 módulos
-  //     PLANO I   R$  99,90 →  4 módulos
-  //     PLANO II  R$ 149,90 →  7 módulos
-  //
-  // Quem testava e assinava o plano mais barato ficava com os 16 pra sempre.
-  //
-  // 🔴 A 1ª VERSÃO DESTA CORREÇÃO NASCEU MORTA (achado dos dois revisores, 06/08).
-  //    Ela comparava `tenants.plan_id` ANTES × plano novo — mas `createSubscriptionForTenant`
-  //    **já grava o `plan_id` novo** ao criar a assinatura, e o webhook relê essa mesma
-  //    coluna pra chamar esta função. Então "anterior" e "novo" chegavam IGUAIS e o bloco
-  //    era pulado **sempre**, justamente no único caminho que o cliente percorre. Só
-  //    funcionava pelo god mode. Duas correções minhas do mesmo dia se anulando.
-  //
-  // 🔑 A REGRA AGORA É DE PROCEDÊNCIA, não de comparação: revoga o que ESTA função
-  //    concedeu (`reason` = "Incluído no plano%") e o plano atual não inclui. Não depende
-  //    de ordem de escrita, não depende de saber qual era o plano antigo, e sobrevive à
-  //    corrida entre o webhook e o update da assinatura.
-  // ⚠️ O que foi ligado À MÃO fica intocado — reason próprio ("Piloto CRM Negócios",
-  //    "Backfill inicial", null). Conferido em produção: os rótulos são distintos.
-  //    É a regra que o dono definiu: *"é desativação, não precisa deletar nada"*.
-  // ⚠️ Plano SEM lista de módulos não revoga nada: ali `applyDefaultModules` acabou de
-  //    ligar o core, e revogar contra uma lista vazia apagaria o que a linha de cima ligou.
-  if (mods.length > 0) {
-    const { data: ligados } = await supabaseAdmin
-      .from("tenant_modules")
-      .select("module_slug, reason")
-      .eq("tenant_id", tenantId)
-      .eq("enabled", true)
-
-    const revogar = ((ligados ?? []) as { module_slug: string; reason: string | null }[])
-      .filter((m) => (m.reason ?? "").startsWith("Incluído no plano"))
-      .map((m) => m.module_slug)
-      .filter((slug) => !doNovo.has(slug))
-
-    if (revogar.length > 0) {
-      const { error } = await supabaseAdmin
-        .from("tenant_modules")
-        .update({ enabled: false, pro: false, reason: "Não incluído no plano atual" })
-        .eq("tenant_id", tenantId)
-        .in("module_slug", revogar)
-
-      // ⚠️ Best-effort com log ALTO: falhar deixa módulo a mais (seguro pro cliente), mas
-      //    é receita saindo — tem que aparecer.
-      if (error) {
-        console.error(JSON.stringify({
-          src: "plans", kind: "revogacao-falhou", tenant: tenantId, plano: planId,
-          modulos: revogar, msg: error.message,
-        }))
-      } else {
-        console.log(JSON.stringify({
-          src: "plans", kind: "modulos-revogados", tenant: tenantId, plano: planId, modulos: revogar,
-        }))
-      }
-    }
-  }
-
   return { ok: true }
+}
+
+export async function removePlan(
+  tenantId: string,
+  expectedPlanId: string | null,
+): Promise<{ ok: boolean; previousPlanId?: string | null; error?: string }> {
+  if (!tenantId) return { ok: false, error: "Cliente inválido." }
+
+  const { data, error } = await supabaseAdmin.rpc("remover_plano_atomico", {
+    p_tenant: tenantId,
+    p_expected_plan: expectedPlanId,
+  })
+  if (error) {
+    console.error(JSON.stringify({
+      src: "plans", kind: "remove-plan-atomico-falhou",
+      tenant: tenantId, planoEsperado: expectedPlanId, msg: error.message,
+    }))
+    return { ok: false, error: "Não foi possível remover o plano." }
+  }
+
+  const raw = Array.isArray(data) ? data[0] : data
+  const result = raw as {
+    aplicado?: boolean
+    motivo?: string | null
+    plan_id_anterior?: string | null
+  } | null
+  if (!result?.aplicado) {
+    return { ok: false, error: result?.motivo ?? "O plano mudou durante a remoção." }
+  }
+  return {
+    ok: true,
+    previousPlanId: typeof result.plan_id_anterior === "string" ? result.plan_id_anterior : null,
+  }
 }

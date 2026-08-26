@@ -28,8 +28,11 @@ import { NodePicker } from "./node-picker"
 import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
 import { outcomeLabel } from "@/lib/ai-v2/flow/describe"
 import { saveFlow, publishFlow } from "@/lib/actions/studio/flows"
+import { toast } from "sonner"
+import { circuloSemPausa, type CycleNode } from "@/lib/ai-v2/flow/cycle"
+import { baloesBotoes } from "@/lib/ai-v2/flow/message-balloons"
 import { getFlowJourney, getFlowRevenue, getFlowCampaigns, type FlowJourney, type FlowRevenue } from "@/lib/actions/studio/flow-analytics"
-import type { FlowTrigger, FlowNodeType, IgCommentTrigger, IgStoryTrigger } from "@/lib/ai-v2/flow/types"
+import type { FlowTrigger, FlowNodeType, IgCommentTrigger, IgStoryTrigger, MessageNodeConfig } from "@/lib/ai-v2/flow/types"
 import type { TriggerChannel, TriggerInstance, TriggerAd } from "@/lib/studio/trigger-meta"
 import type { StudioFlowFull } from "@/types/studio"
 
@@ -271,6 +274,46 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
     return map
   }, [selectedNode, nodes, edges, orientation, flowName])
 
+  /**
+   * ═══════════════════════════════════════════════════════════════════════
+   * Aviso de CÍRCULO SEM PAUSA (2026-08-17)
+   * ═══════════════════════════════════════════════════════════════════════
+   *
+   * 🔴 O motor corta a execução em 25 passos seguidos (disjuntor anti-ciclo). Até aqui,
+   *    quando ele cortava, o fluxo era gravado como **concluído** — e o sintoma que o
+   *    dono via não era "parou", era o **cliente final recebendo a mesma mensagem uma
+   *    dúzia de vezes**. O corte no motor protege o servidor; não protege quem recebe.
+   *
+   * 🔑 Então a defesa boa é aqui, na prancheta: avisar no instante em que a ligação é
+   *    feita, quando a pessoa ainda está olhando pro desenho e entende o que fez. É o
+   *    que o n8n resolve por estrutura (lá não se liga um nó pra trás); aqui a ligação
+   *    pra trás é permitida — e ela É legítima na maior parte das vezes.
+   *
+   * ⚠️ **"Voltar ao menu" é círculo LEGÍTIMO e comum** — e não gira, porque o Menu PARA
+   *    e espera a pessoa. Avisar nele seria crescer lobo: o dono aprenderia a ignorar o
+   *    aviso, e aí ele não serve pro caso que importa. Só é perigoso o círculo que não
+   *    tem NENHUMA parada dentro — esse sim roda sozinho até o disjuntor.
+   *
+   * Avisa, não impede: o desenho é do dono (mesma régua da decisão de 06/08 sobre
+   * recusar publicação). Ele pode ter um motivo que a gente não previu.
+   *
+   * A REGRA mora em `@/lib/ai-v2/flow/cycle` — módulo próprio, testado, e o mesmo que a
+   * validação no publicar vai usar quando existir. Aqui só se traduz o nó do canvas.
+   */
+  const detectaCirculo = useCallback((de: string, para: string): boolean => {
+    const simples: CycleNode[] = nodes.map((n) => {
+      const cfg = (n.data as { config?: Record<string, unknown> })?.config
+      return {
+        id:   n.id,
+        type: n.type ?? "",
+        // ÚLTIMO balão — é ele que faz o nó parar e esperar.
+        replyButtons: (baloesBotoes((cfg ?? {}) as unknown as MessageNodeConfig) ?? [])
+          .filter((b) => b.kind === "reply").length,
+      }
+    })
+    return circuloSemPausa(simples, edges, de, para)
+  }, [nodes, edges])
+
   // Ligar-primeiro: arrasta-se do handle "＋" (id "__add") do Agente IA; ao conectar,
   // materializa uma saída nova (label vazio → derivado do destino) e usa o id dela como
   // handle. Assim a saída "aparece sozinha" na config ao ligar (ideia do owner).
@@ -290,10 +333,17 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
       }
     }
     const c = { ...conn, sourceHandle: handle }
+    if (c.source && c.target && detectaCirculo(c.source, c.target)) {
+      toast.warning("Essa ligação fecha um círculo sem parada", {
+        description:
+          "O fluxo vai voltar pra esse ponto sozinho, sem esperar a pessoa em nenhum momento — e o cliente recebe a mesma mensagem repetidas vezes até o sistema cortar. Ponha um Menu, um Coletar dado ou um Esperar dentro do círculo, ou ligue esta saída pra frente.",
+        duration: 12_000,
+      })
+    }
     setEdges((eds) =>
       addEdge(c, eds.filter((e) => !(e.source === c.source && (e.sourceHandle ?? null) === (c.sourceHandle ?? null)))),
     )
-  }, [nodes, setNodes, setEdges])
+  }, [nodes, setNodes, setEdges, detectaCirculo])
 
   // Desligar no canvas = tirar a saída órfã do config (mantém o espelho limpo: apagar a
   // aresta de um outcome do Agente IA remove esse outcome).
@@ -461,7 +511,9 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
     // botão, ou trocá-lo pra link, tem que levar a linha junto — senão fica aresta órfã
     // apontando pra um handle que não existe mais.
     else if (t === "message") {
-      const btns = ((config.rich as { buttons?: { id: string; kind: string }[] } | undefined)?.buttons ?? [])
+      // Botões moram no ÚLTIMO balão (regra dura — `baloesBotoes`). Nó do formato antigo
+      // devolve o próprio `rich`, então a poda segue idêntica pra fluxo existente.
+      const btns = (baloesBotoes(config as unknown as MessageNodeConfig) ?? [])
         .filter((b) => b.kind === "reply")
       valid = new Set([...btns.map((b) => b.id), ...(btns.length ? ["else"] : [])])
       /**
@@ -648,7 +700,14 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
         </div>
 
         {/* Painel direito — contextual: sem seleção = ADICIONAR PASSO · Início = GATILHO · nó = CONFIG */}
-        <div className="w-96 shrink-0 border-l border-slate-200 bg-white p-4 overflow-y-auto hidden lg:block">
+        {/* 🔴 O PAINEL É UM DEGRAU MAIS ESCURO QUE O CANVAS, de propósito (owner, 2026-08-17).
+            1ª tentativa: `bg-white` — lasca branca estourando ao lado do canvas cinza.
+            2ª tentativa: `bg-canvas` (#f7f8fa) — PIOR: o canvas do fluxo é #f8fafc, um ponto
+            de diferença, então o painel dissolveu e a fronteira sumiu.
+            Aqui a receita "moldura contínua" da nav global NÃO serve: lá o conteúdo ao lado
+            é branco e cria o contraste; aqui os dois lados são cinza. Então o painel desce
+            pra slate-100 — separa do canvas E faz os cards brancos de dentro aparecerem. */}
+        <div className="w-96 shrink-0 border-l border-slate-200 bg-slate-100 p-4 overflow-y-auto hidden lg:block">
           {!selectedNode
             ? <NodePicker onPick={addNode} />
             : selectedNode.type !== "start"

@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Artefatos financeiros têm SHA-256 aprovado no manifesto. EOL não pode variar por SO.
+supabase/migrations/20260821000100_tenant_modules_source_foundation.sql text eol=lf
+supabase/migrations/20260821000200_billing_apply_plan_atomic.sql text eol=lf
+supabase/migrations/20260821000300_invoice_payments_gateway_atomic.sql text eol=lf

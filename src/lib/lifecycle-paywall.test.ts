@@ -16,7 +16,8 @@ import { describe, it, expect } from "vitest"
 import {
   carenciaEfetiva,
   passouDaCarencia, motivoDoPaywall, isTenantInPaywall,
-  isTenantBlockedForAccessAs, PAST_DUE_GRACE_DAYS,
+  isTenantBlockedForAccessAs, isTenantBlockedForSpendForTenant,
+  motivoDoPaywallForTenant, PAST_DUE_GRACE_DAYS,
   type AcessoDoTenant,
 } from "./lifecycle-shared"
 
@@ -28,6 +29,7 @@ const haDias = (n: number) => new Date(AGORA - n * DIA).toISOString()
 const base = (over: Partial<AcessoDoTenant> = {}): AcessoDoTenant => ({
   lifecycle_state: "active",
   subscription_status: "active",
+  billing_mode: "gateway",
   past_due_since: null,
   past_due_grace_days: null,
   past_due_reason: null,
@@ -229,6 +231,42 @@ describe("quem ainda entra", () => {
       base({ lifecycle_state: "trial_ended" }),
     ]
     for (const c of cenarios) expect(isTenantBlockedForAccessAs(c, "owner", PADRAO, AGORA)).toBe(false)
+  })
+})
+
+describe("fronteira de acesso manual versus gateway", () => {
+  for (const subscription_status of ["past_due", "canceled"] as const) {
+    it(`manual ignora ${subscription_status}, mas gateway aplica o estado financeiro`, () => {
+      const financeiro = {
+        subscription_status,
+        past_due_since: subscription_status === "past_due" ? haDias(30) : null,
+      }
+      const manual = base({ ...financeiro, billing_mode: "manual" })
+      const gateway = base({ ...financeiro, billing_mode: "gateway" })
+
+      expect(isTenantBlockedForAccessAs(manual, "agent", PADRAO, AGORA)).toBe(false)
+      expect(isTenantBlockedForSpendForTenant(manual)).toBe(false)
+      expect(motivoDoPaywallForTenant(manual, PADRAO, AGORA)).toBeNull()
+
+      expect(isTenantBlockedForAccessAs(gateway, "agent", PADRAO, AGORA)).toBe(true)
+      expect(isTenantBlockedForSpendForTenant(gateway)).toBe(true)
+      expect(motivoDoPaywallForTenant(gateway, PADRAO, AGORA)).toBe(subscription_status)
+    })
+  }
+
+  it("modo ausente nao recebe o bypass de manual", () => {
+    const semModo = {
+      ...base({ subscription_status: "canceled" }),
+      billing_mode: undefined,
+    } as unknown as AcessoDoTenant
+    expect(isTenantBlockedForAccessAs(semModo, "agent", PADRAO, AGORA)).toBe(true)
+    expect(isTenantBlockedForSpendForTenant(semModo)).toBe(true)
+  })
+
+  it("lifecycle administrativo continua bloqueando manual", () => {
+    const manualSuspenso = base({ billing_mode: "manual", lifecycle_state: "suspended", subscription_status: "active" })
+    expect(isTenantBlockedForAccessAs(manualSuspenso, "owner", PADRAO, AGORA)).toBe(true)
+    expect(isTenantBlockedForSpendForTenant(manualSuspenso)).toBe(true)
   })
 })
 

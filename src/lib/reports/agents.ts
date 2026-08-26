@@ -15,6 +15,28 @@
 
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { AUTO_ASSIGN_EVENT_REASON } from "@/lib/automation/auto-assign"
+
+/**
+ * Motivos de `assigned` em que quem decidiu foi o MOTOR, não uma pessoa.
+ * Casamento EXATO, nunca `else` — motivo novo que não entrar aqui aparece como
+ * "atribuição manual" e falseia a leitura do motor. Os do roteador vêm de
+ * `RoutingReason` (`@/lib/routing/types`); repetidos como string pra o relatório
+ * não puxar o módulo de roteamento junto.
+ */
+const ORIGEM_MOTOR: ReadonlySet<string> = new Set([
+  "auto_assign_pool",          // o atendente PEGOU da fila ao responder
+  AUTO_ASSIGN_EVENT_REASON,    // o sistema DISTRIBUIU pelo rodízio
+  "carteira_owner",            // o roteador aplicou a carteira do cliente
+  "distribute",
+  "binding_pool",
+  "no_carteira_owner",
+  "carteira_owner_invalid",
+  "carteira_bypassed",
+  "department_empty",
+  "queue_no_distribution",
+  "no_one_available",
+])
 
 export interface Delta { current: number; previous: number }
 export interface AgentTransferOut { label: string; count: number }
@@ -225,7 +247,13 @@ async function collectRange(
       }
       case "assigned": {
         const e = get(ev.to_agent_id); if (!e) break
-        if (ev.reason === "auto_assign_pool") e.origem.fila++
+        // "Direto" significa **alguém atribuiu na mão**. Tudo que o MOTOR decide precisa
+        // de mapeamento explícito — cair no `else` faria a distribuição automática e a
+        // carteira aparecerem como atribuição manual, numa coluna que o dono usa
+        // justamente pra avaliar o motor.
+        // ⚠️ O livro guarda os motivos separados (é append-only e não se reescreve); o
+        //    balde único é da TELA, e ganha coluna própria quando valer a pena.
+        if (ORIGEM_MOTOR.has(ev.reason ?? "")) e.origem.fila++
         else e.origem.direto++
         break
       }

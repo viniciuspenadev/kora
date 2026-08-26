@@ -134,16 +134,27 @@ const PAPEIS_QUE_PAGAM: ReadonlySet<string> = new Set(["owner", "admin"])
  * 🔑 Uma constante: coluna nova entra aqui e os 6 passam a lê-la juntos.
  */
 export const COLUNAS_DE_ACESSO =
-  "id, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason"
+  "id, active, lifecycle_state, subscription_status, past_due_since, past_due_grace_days, past_due_reason, billing_mode"
 
 /** O que os gates de acesso leem da linha do tenant. Espelha `COLUNAS_DE_ACESSO`. */
 export interface AcessoDoTenant {
   lifecycle_state:      string | null
   subscription_status:  string | null
+  billing_mode:         string | null
   past_due_since:       string | null
   past_due_grace_days:  number | null
   /** POR QUE está em atraso — e é daqui que sai a carência zero. Ver `carenciaEfetiva`. */
   past_due_reason:      string | null
+}
+
+/**
+ * Somente `manual` explicito neutraliza o espelho financeiro.
+ * `null`, ausente em runtime ou valor desconhecido continuam conservadores.
+ */
+export function effectiveSubscriptionStatus(
+  tenant: { billing_mode?: string | null; subscription_status: string | null | undefined },
+): string | null {
+  return tenant.billing_mode === "manual" ? "active" : (tenant.subscription_status ?? null)
 }
 
 /**
@@ -173,7 +184,7 @@ export function isTenantBlockedForAccessAs(
   // 🔑 O paywall (teste vencido OU atraso além da carência) não fecha o tenant — fecha
   //    pra quem não decide pagamento. Owner e admin entram justamente pra resolver.
   if (motivoDoPaywall(
-    tenant.lifecycle_state, tenant.subscription_status,
+    tenant.lifecycle_state, effectiveSubscriptionStatus(tenant),
     tenant.past_due_since, tenant.past_due_grace_days, padraoGlobal,
     // 🔑 Aqui a causa vem da LINHA, não de um parâmetro solto — é o padrão que o docblock
     //    desta função defende, e o motivo de `COLUNAS_DE_ACESSO` ter ganhado a coluna.
@@ -363,6 +374,17 @@ export function isTenantBlockedForSpend(
   return false
 }
 
+/** Regra de gasto consciente da modalidade: manual depende apenas do lifecycle. */
+export function isTenantBlockedForSpendForTenant(
+  tenant: {
+    billing_mode?: string | null
+    lifecycle_state: string | null | undefined
+    subscription_status: string | null | undefined
+  },
+): boolean {
+  return isTenantBlockedForSpend(tenant.lifecycle_state ?? null, effectiveSubscriptionStatus(tenant))
+}
+
 /**
  * 🔴 REMOVIDA EM 2026-08-08 — `isTenantBlockedForSpendAt`.
  *
@@ -534,6 +556,30 @@ export function motivoDoPaywall(
 
   if (sub !== "past_due") return null
   return passouDaCarencia(pastDueSince, graceDays, padraoGlobal, causa, now) ? "past_due" : null
+}
+
+/** Paywall consciente da modalidade: financas do gateway nao governam tenant manual. */
+export function motivoDoPaywallForTenant(
+  tenant: {
+    billing_mode?: string | null
+    lifecycle_state: string | null | undefined
+    subscription_status: string | null | undefined
+    past_due_since?: string | null
+    past_due_grace_days?: number | null
+    past_due_reason?: string | null
+  },
+  padraoGlobal: number,
+  now: number = Date.now(),
+): MotivoPaywall | null {
+  return motivoDoPaywall(
+    tenant.lifecycle_state,
+    effectiveSubscriptionStatus(tenant),
+    tenant.past_due_since,
+    tenant.past_due_grace_days,
+    padraoGlobal,
+    tenant.past_due_reason,
+    now,
+  )
 }
 
 export const STATE_META: Record<LifecycleState, { label: string; badge: string; dot: string; hint: string }> = {

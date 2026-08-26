@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
+import { AlarmClock } from "lucide-react"
 import { AptCard } from "./apt-card"
 import { layoutLanes, minutesInTz, minutesToLabel, snap15, SNAP_MIN, GRID_HOUR, GRID_HALF, GRID_VERT } from "./lanes"
 import { useGridGestures, type GestureApi, type ColMeta } from "./use-grid-gestures"
@@ -16,6 +17,20 @@ import type { BoardAppt, BlackoutBlock } from "./types"
 // estreitas; toque no card abre o modal. Drag/resize via useGridGestures (quando
 // `gestures` presente); read-only quando ausente.
 
+/**
+ * Marca de COMPROMISSO INTERNO (follow-up) na grade — §6.4 do doc do follow-up.
+ * Não é `appointment`: não tem recurso, não reserva horário, não entra na conta de
+ * disponibilidade e **não participa dos gestos** (arrastar/redimensionar remarcam
+ * compromisso, e não há o que remarcar aqui). Desenha como linha + pílula.
+ */
+export interface GhostMark {
+  id:      string
+  dateKey: string
+  startMin: number
+  label:   string
+  onClick?: () => void
+}
+
 export interface GridColumn {
   key: string
   header: React.ReactNode
@@ -26,13 +41,33 @@ export interface GridColumn {
   dateKey: string             // dia que a coluna representa (pro gesto compor o ISO)
   resourceId?: string         // recurso da coluna (Dia) — soltar aqui troca de agenda
   blackouts: BlackoutBlock[]
+  /** Marcas internas DESTA coluna (Semana: a coluna é um dia). */
+  ghosts?: GhostMark[]
 }
 
 const usePrefersReducedMotion = () =>
   useState(() => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true)[0]
 
+/** Linha tracejada + pílula: lê como "marcação", nunca como bloco reservado. */
+function GhostRow({ g, top }: { g: GhostMark; top: number }) {
+  return (
+    <div className="absolute inset-x-0 pointer-events-none z-20" style={{ top }}>
+      <div className="h-0 border-t border-dashed border-primary/50" />
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); g.onClick?.() }}
+        title={`Follow-up: ${g.label}`}
+        className="pointer-events-auto absolute left-1 -top-2.5 inline-flex max-w-[calc(100%-0.5rem)] items-center gap-1 rounded-full border border-primary-200 bg-white/95 px-1.5 py-0.5 text-[10px] font-semibold text-primary-700 shadow-sm hover:bg-primary-50 transition-colors"
+      >
+        <AlarmClock className="size-2.5 shrink-0" />
+        <span className="truncate">{g.label}</span>
+      </button>
+    </div>
+  )
+}
+
 export function TimeGrid({
-  columns, startHour, endHour, hourPx, now, onOpen, gestures, onSlotClick, colMinWidth = 160,
+  columns, startHour, endHour, hourPx, now, onOpen, gestures, onSlotClick, colMinWidth = 160, bandGhosts,
 }: {
   columns: GridColumn[]
   startHour: number
@@ -44,6 +79,9 @@ export function TimeGrid({
   /** Clique em área VAZIA da coluna → cria (Dia/Semana). Bloqueio recusa com toast. */
   onSlotClick?: (resourceId: string | undefined, dateKey: string, startMin: number) => void
   colMinWidth?: number
+  /** Marcas internas que atravessam TODAS as colunas (Dia: as colunas são recursos,
+   *  e o follow-up não pertence a nenhum — por isso ele cruza a grade inteira). */
+  bandGhosts?: GhostMark[]
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const headerRef = useRef<HTMLDivElement>(null)
@@ -139,7 +177,15 @@ export function TimeGrid({
         className="overflow-auto [scrollbar-gutter:stable]"
         style={{ maxHeight: "calc(100dvh - 15.5rem)" }}
       >
-      <div className="flex min-w-fit">
+      <div className="flex min-w-fit relative">
+        {/* Banda de compromissos internos — atravessa as colunas porque o follow-up
+            não é de recurso nenhum (Dia). Começa depois do gutter de horas. */}
+        {(bandGhosts ?? []).map((g) => (
+          <div key={g.id} className="absolute left-14 right-0 z-20" style={{ top: (g.startMin - gridStartMin) * pxPerMin }}>
+            <GhostRow g={g} top={0} />
+          </div>
+        ))}
+
         {/* Gutter de horas */}
         <div className="w-14 shrink-0 sticky left-0 z-10 bg-canvas relative" style={{ height: totalH }}>
           {hours.map((h) => (
@@ -182,6 +228,11 @@ export function TimeGrid({
 
               {c.appts.map((a) => (
                 <AptCard key={a.id} a={a} pos={pos.get(a.id)} gridStartMin={gridStartMin} pxPerMin={pxPerMin} showWho={c.showWho} onOpen={onOpen} />
+              ))}
+
+              {/* Compromissos internos do dia desta coluna (Semana). */}
+              {(c.ghosts ?? []).map((g) => (
+                <GhostRow key={g.id} g={g} top={(g.startMin - gridStartMin) * pxPerMin} />
               ))}
 
               {c.isToday && nowVisible && (

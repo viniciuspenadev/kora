@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { CalendarDays, Plus, Settings2, Share2, LayoutGrid, CalendarRange, Lock, type LucideIcon } from "lucide-react"
+import { CalendarDays, Plus, Settings2, Share2, LayoutGrid, CalendarRange, Lock, CalendarPlus, type LucideIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AgendaOverview } from "@/components/agenda/agenda-overview"
 import { ShareAgendaDialog } from "@/components/agenda/share-agenda-dialog"
 import { AgendaBoard } from "@/components/agenda/board/agenda-board"
 import { BookingModal, type BookingInitial } from "@/components/agenda/board/booking-modal"
 import { BlockModal } from "@/components/agenda/board/block-modal"
+import { EventModal } from "@/components/agenda/board/event-modal"
 import { type ResourceRow, type ServiceRow } from "@/lib/actions/agenda"
 
 /**
@@ -30,6 +31,7 @@ export function AgendaClient({
   const [booking, setBooking]     = useState<BookingInitial | null>(null)
   const [shareOpen, setShareOpen] = useState(false)
   const [blockOpen, setBlockOpen] = useState(false)
+  const [eventOpen, setEventOpen] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
   const activeResources = useMemo(() => resources.filter((r) => r.active), [resources])
@@ -64,6 +66,7 @@ export function AgendaClient({
           canConfig={isAdmin}
           canBlock={isAdmin || myResources.length > 0}
           onNew={() => setBooking({})}
+          onEvent={() => setEventOpen(true)}
           onShare={() => setShareOpen(true)}
           onBlock={() => setBlockOpen(true)}
         />
@@ -76,6 +79,14 @@ export function AgendaClient({
           initial={booking}
           onClose={() => setBooking(null)}
           onCreated={() => { setBooking(null); reload() }}
+        />
+      )}
+
+      {eventOpen && (
+        <EventModal
+          resources={activeResources}
+          onClose={() => setEventOpen(false)}
+          onSaved={reload}
         />
       )}
 
@@ -99,10 +110,10 @@ export function AgendaClient({
 // mais próximo do FAB é o "Novo agendamento" (mais frequente, destaque primário).
 // z-40: acima do board, ABAIXO de modais/DangerConfirm (z-50). Clique-fora/Esc fecha.
 function AgendaSpeedDial({
-  canShare, canConfig, canBlock, onNew, onShare, onBlock,
+  canShare, canConfig, canBlock, onNew, onEvent, onShare, onBlock,
 }: {
   canShare: boolean; canConfig: boolean; canBlock: boolean
-  onNew: () => void; onShare: () => void; onBlock: () => void
+  onNew: () => void; onEvent: () => void; onShare: () => void; onBlock: () => void
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -117,6 +128,8 @@ function AgendaSpeedDial({
   // Ordem do mais próximo do FAB (Novo) pra fora. Gates idênticos ao header antigo.
   const items: { key: string; label: string; icon: LucideIcon; primary?: boolean; onClick: () => void }[] = [
     { key: "new", label: "Novo agendamento", icon: Plus, primary: true, onClick: () => { setOpen(false); onNew() } },
+    // Evento interno do time (reunião, treinamento) — qualquer membro cria.
+    { key: "event", label: "Novo evento", icon: CalendarPlus, onClick: () => { setOpen(false); onEvent() } },
     ...(canBlock ? [{ key: "block", label: "Bloquear horário", icon: Lock, onClick: () => { setOpen(false); onBlock() } }] : []),
     ...(canShare ? [{ key: "share", label: "Compartilhar minha agenda", icon: Share2, onClick: () => { setOpen(false); onShare() } }] : []),
     ...(canConfig ? [{ key: "config", label: "Configurar", icon: Settings2, onClick: () => { setOpen(false); router.push("/agenda/configuracao") } }] : []),

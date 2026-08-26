@@ -51,6 +51,42 @@ export function AptCard({
     )
   }
 
+  // Bloco INTERNO (evento do time ou follow-up): não é venda, então não tem
+  // status, telefone nem serviço — e NÃO ocupa a agenda (decisão do dono). O
+  // tracejado é o que diz isso sem legenda: dá pra marcar cliente por cima.
+  if (a.kind !== "appointment") {
+    const followup = a.kind === "followup"
+    return (
+      <button
+        type="button"
+        // 🔑 `data-appt-id` é como a GRADE reconhece "clicou num cartão" e não num
+        //    slot vazio. Sem isto, o clique atravessava e abria o "Novo agendamento"
+        //    por cima da ficha — o dono via dois modais empilhados.
+        data-appt-id={a.id}
+        // Abre a FICHA, como qualquer bloco do quadro. Pular direto pra conversa
+        // tirava a pessoa do calendário sem ela pedir (defeito apontado pelo dono).
+        onClick={() => onOpen(a.id)}
+        title={`${a.contactName} · ${minutesToLabel(a.startMin)}–${minutesToLabel(a.startMin + a.durMin)}`}
+        className={`group absolute overflow-hidden text-left px-2 pt-1 pb-0.5 rounded-md border border-dashed transition-colors cursor-pointer ${
+          a.done
+            ? "bg-emerald-50/60 border-emerald-300 text-emerald-900 hover:bg-emerald-50"
+            : followup
+              ? "bg-primary-50/70 border-primary-300 text-primary-900 hover:bg-primary-50"
+              : "bg-violet-50/70 border-violet-300 text-violet-900 hover:bg-violet-50"
+        }`}
+        style={{ top, height, left, width }}
+      >
+        <div className="text-[9.5px] font-semibold tabular-nums leading-tight opacity-70">
+          {a.done ? "✓" : followup ? "⏰" : "◆"} {minutesToLabel(a.startMin)}
+        </div>
+        {/* Cumprido fica no lugar, riscado — o dono pediu histórico visual, e sumir
+            era o defeito: "cliquei em cumpri e sumiu, até da agenda". */}
+        <div className={`text-[12px] font-semibold leading-snug truncate ${a.done ? "line-through opacity-80" : ""}`}>{a.contactName}</div>
+        {a.serviceName && <div className="text-[10.5px] leading-tight truncate opacity-80">{a.serviceName}</div>}
+      </button>
+    )
+  }
+
   const st = statusStyle(a.status)
   const cx = a.status === "canceled"
 

@@ -30,6 +30,8 @@ export interface AuditEntry {
   ip?:          string | null
   userAgent?:   string | null
   metadata?:    Record<string, unknown>
+  /** Chave estável do efeito; quando presente, retries não criam outra linha. */
+  dedupeKey?:   string | null
 }
 
 /**
@@ -40,7 +42,7 @@ export interface AuditEntry {
  */
 export async function logAudit(entry: AuditEntry): Promise<void> {
   try {
-    await supabaseAdmin.from("audit_log").insert({
+    const { error } = await supabaseAdmin.from("audit_log").insert({
       tenant_id:     entry.tenantId ?? null,
       actor_user_id: entry.actorId ?? null,
       actor_email:   entry.actorEmail?.slice(0, 254) ?? null,
@@ -52,7 +54,13 @@ export async function logAudit(entry: AuditEntry): Promise<void> {
       ip:            entry.ip?.slice(0, 64) ?? null,
       user_agent:    entry.userAgent?.slice(0, 500) ?? null,
       metadata:      entry.metadata ?? null,
+      dedupe_key:    entry.dedupeKey?.slice(0, 200) ?? null,
     })
+    // Replay idempotente é sucesso. Outros erros continuam best-effort, mas deixam rastro
+    // operacional — o client Supabase devolve erro no resultado, não lança exceção.
+    if (error && (error as { code?: string }).code !== "23505") {
+      console.error("[audit] failed to insert", error)
+    }
   } catch (err) {
     // NÃO lance — audit log falhar não pode quebrar fluxo principal.
     console.error("[audit] failed to insert", err)

@@ -40,7 +40,13 @@ vi.mock("@/lib/crypto/secrets", () => ({
 }))
 vi.mock("./customers", () => ({ ensureAsaasCustomer: async () => ({ id: "cus_kora" }) }))
 
-const { createSubscriptionForTenant, resumeSubscriptionForTenant } = await import("./subscriptions")
+const {
+  atualizarValorDaAssinatura,
+  cancelSubscriptionForTenant,
+  createSubscriptionForTenant,
+  resumeSubscriptionForTenant,
+  vincularAssinatura,
+} = await import("./subscriptions")
 
 const TENANT = "22222222-2222-2222-2222-222222222222"
 const PLANO  = "plan_1"
@@ -326,5 +332,101 @@ describe("chargeback bloqueia recontratação", () => {
     const r = await criar()
 
     expect(r).toEqual({ id: "sub_ok" })
+  })
+})
+
+describe("fronteira manual versus gateway nos helpers externos", () => {
+  it("tenant manual não cancela nem atualiza recorrência no Asaas", async () => {
+    const t = tenant()
+    t.billing_mode = "manual"
+    t.asaas_subscription_id = "sub_manual"
+
+    const cancelamento = await cancelSubscriptionForTenant(TENANT)
+    const atualizacao = await atualizarValorDaAssinatura(TENANT, 34990)
+
+    expect("error" in cancelamento).toBe(true)
+    expect(atualizacao).toEqual({ ok: true, aplicado: false })
+    expect(t.asaas_subscription_id).toBe("sub_manual")
+    expect(gw.chamadas).toHaveLength(0)
+  })
+
+  it("adoção do reconcile perde o CAS se a modalidade virou manual", async () => {
+    const t = tenant()
+    t.billing_mode = "manual"
+    t.asaas_subscription_id = "pending:1:reserva"
+
+    const r = await vincularAssinatura(
+      TENANT,
+      { asaas_subscription_id: "sub_gateway" },
+      null,
+      "pending:1:reserva",
+      "gateway",
+    )
+
+    expect("error" in r).toBe(true)
+    expect(t.asaas_subscription_id).toBe("pending:1:reserva")
+  })
+})
+
+describe("C-04 - ativacao concorrente com cancelamento", () => {
+  async function cancelarEnquantoCria() {
+    const cancelamento = await cancelSubscriptionForTenant(TENANT)
+    expect(cancelamento).toEqual({ ok: true })
+    await db.from("tenants").update({
+      subscription_status: "canceled",
+      subscription_ended_reason: "decisao_interna",
+      subscription_ends_at: new Date().toISOString(),
+    }).eq("id", TENANT)
+    return { id: "sub_corrida" }
+  }
+
+  it("perde o CAS, cancela somente o id recem-criado e preserva o encerramento", async () => {
+    gw.responde("POST /subscriptions", () => cancelarEnquantoCria())
+    gw.responde("DELETE /subscriptions/sub_corrida", () => {
+      throw new AsaasError(404, "assinatura ja removida")
+    })
+
+    const r = await criar()
+
+    expect("error" in r).toBe(true)
+    expect(tenant().asaas_subscription_id).toBeNull()
+    expect(tenant().subscription_status).toBe("canceled")
+    expect(tenant().subscription_ends_at).not.toBeNull()
+    expect(gw.chamadas.filter((c) => c.metodo === "DELETE")).toEqual([
+      { metodo: "DELETE", path: "/subscriptions/sub_corrida", body: undefined },
+    ])
+  })
+
+  it("falha da compensacao mantem uma sentinela e nao sobrescreve o cancelamento", async () => {
+    gw.responde("POST /subscriptions", () => cancelarEnquantoCria())
+    gw.responde("DELETE /subscriptions/sub_corrida", () => {
+      throw new AsaasError(503, "gateway indisponivel")
+    })
+
+    const r = await criar()
+
+    expect("error" in r).toBe(true)
+    expect(String(tenant().asaas_subscription_id)).toMatch(/^pending:/)
+    expect(tenant().subscription_status).toBe("canceled")
+    expect(tenant().subscription_ends_at).not.toBeNull()
+    expect(tenant().plan_id).toBeNull()
+  })
+
+  it("aplica a mesma compensacao quando o POST deu timeout e a busca encontrou a assinatura", async () => {
+    gw.timeoutEm("POST /subscriptions")
+    gw.responde("GET /subscriptions?externalReference=", async () => {
+      await cancelarEnquantoCria()
+      return { data: [{ id: "sub_timeout_corrida", status: "ACTIVE" }] }
+    })
+    gw.responde("DELETE /subscriptions/sub_timeout_corrida", { deleted: true })
+
+    const r = await criar()
+
+    expect("error" in r).toBe(true)
+    expect(tenant().asaas_subscription_id).toBeNull()
+    expect(tenant().subscription_status).toBe("canceled")
+    expect(gw.chamadas.filter((c) => c.metodo === "DELETE")).toEqual([
+      { metodo: "DELETE", path: "/subscriptions/sub_timeout_corrida", body: undefined },
+    ])
   })
 })

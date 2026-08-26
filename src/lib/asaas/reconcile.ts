@@ -98,6 +98,7 @@ async function reconciliar(): Promise<ReconcileResult> {
     .from("tenants")
     // `plan_id` entrou pra o log de adoção órfã dizer se ele ficou faltando (H-13).
     .select("id, asaas_subscription_id, plan_id, subscription_ends_at, subscription_ended_reason")
+    .eq("billing_mode", "gateway")
     .like("asaas_subscription_id", "pending:%")
     .order("id")
     .limit(100)
@@ -185,7 +186,7 @@ async function reconciliar(): Promise<ReconcileResult> {
       //    com janela entre conferir e escrever, numa função que existe justamente pra fechar
       //    janelas. Uma trava atômica vale mais que duas em sequência.
       const vinculo = await vincularAssinatura(
-        t.id, patch, t.subscription_ends_at, t.asaas_subscription_id,
+        t.id, patch, t.subscription_ends_at, t.asaas_subscription_id, "gateway",
       )
       if ("error" in vinculo) { out.erros++; continue }
       out.reservasLimpas++
@@ -220,12 +221,16 @@ async function reconciliar(): Promise<ReconcileResult> {
     //    reparável na próxima rodada; a cobrança em dobro, não.
     if (existente === undefined) { out.erros++; continue }
 
-    const { error } = await supabaseAdmin
+    const { data: limpa, error } = await supabaseAdmin
       .from("tenants")
       .update({ asaas_subscription_id: null })
       .eq("id", t.id)
+      .eq("billing_mode", "gateway")
       .eq("asaas_subscription_id", t.asaas_subscription_id)   // não pisa numa ativação nova
+      .select("id")
+      .maybeSingle()
     if (error) { out.erros++; continue }
+    if (!limpa) continue
     out.reservasLimpas++
     console.log(JSON.stringify({ src: "reconcile", kind: "reserva-orfa-limpa", tenant: t.id }))
   }
@@ -321,12 +326,31 @@ async function reconciliar(): Promise<ReconcileResult> {
       const desde = new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10)
       // `value` é lido pra viajar no payload injetado — sem ele o handler pula o piso de
       // aceite (ver o comentário no `payload` abaixo).
-      const pagos = await asaas.get<{ data?: { id: string; status?: string; value?: number }[] }>(
+      const pagos = await asaas.get<{ data?: {
+        id: string
+        status?: string
+        value?: number
+        confirmedDate?: string
+        paymentDate?: string
+        dateCreated?: string
+      }[] }>(
         `/payments?subscription=${encodeURIComponent(t.asaas_subscription_id)}` +
         `&status=CONFIRMED&confirmedDate[ge]=${desde}&limit=1`,
       )
       const pago = pagos?.data?.[0]
       if (!pago) continue
+      const dataFinanceira = pago.confirmedDate ?? pago.paymentDate ?? pago.dateCreated ?? null
+      const occurredAt = dataFinanceira
+        ? (dataFinanceira.includes("T") ? dataFinanceira : `${dataFinanceira}T00:00:00.000Z`)
+        : null
+      if (!occurredAt || Number.isNaN(Date.parse(occurredAt))) {
+        out.erros++
+        console.error(JSON.stringify({
+          src: "reconcile", kind: "pagamento-sem-data-autoritativa",
+          tenant: t.id, payment: pago.id,
+        }))
+        continue
+      }
 
       // 🔴 DEDUP POR `payment_id`, NÃO PELA PK (06/08). O comentário anterior afirmava que
       //    a PK protegia contra o webhook chegar depois — **falso**: a PK do webhook é
@@ -390,7 +414,10 @@ async function reconciliar(): Promise<ReconcileResult> {
         //    aceite** (o "pagou menos que o plano ⇒ não quita"): a mesma quantia era
         //    barrada pela porta do webhook e aceita pela porta do reconcile. Validação que
         //    depende de por onde o evento entrou não é validação.
-        payload:    { payment: { id: pago.id, customer: t.asaas_customer_id, status: pago.status, value: pago.value } },
+        payload:    {
+          dateCreated: occurredAt,
+          payment: { id: pago.id, customer: t.asaas_customer_id, status: pago.status, value: pago.value },
+        },
         tenant_id:  t.id,
       })
       // 23505 = já existe (o webhook chegou primeiro). Caminho normal, não erro.
@@ -398,6 +425,20 @@ async function reconciliar(): Promise<ReconcileResult> {
       if (insErr) continue
 
       await processAsaasEvent(`reconcile_${pago.id}`)
+      const { data: processado, error: processadoErr } = await supabaseAdmin
+        .from("asaas_webhook_events")
+        .select("processed_at, error")
+        .eq("id", `reconcile_${pago.id}`)
+        .maybeSingle()
+      if (processadoErr || !processado?.processed_at || processado.error) {
+        out.erros++
+        console.error(JSON.stringify({
+          src: "reconcile", kind: "reconciliacao-nao-concluida",
+          tenant: t.id, payment: pago.id,
+          msg: processadoErr?.message ?? processado?.error ?? "evento permaneceu pendente",
+        }))
+        continue
+      }
       out.liberados++
       console.log(JSON.stringify({
         src: "reconcile", kind: "liberado-por-reconciliacao", tenant: t.id, payment: pago.id,
@@ -430,6 +471,7 @@ async function reconciliar(): Promise<ReconcileResult> {
   const { data: cortados, error: cortErr } = await supabaseAdmin
     .from("tenants")
     .select("id, lifecycle_state, asaas_subscription_id")
+    .eq("billing_mode", "gateway")
     .in("lifecycle_state", ["suspended", "deactivated"])
     .not("asaas_subscription_id", "is", null)
     .limit(50)

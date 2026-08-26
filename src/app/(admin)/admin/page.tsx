@@ -60,6 +60,18 @@ function deltaSymbol(curr: number, prev: number) {
   return { sym: Minus, tone: "text-slate-400", pct: 0 }
 }
 
+type TenantPlanDisplay = {
+  plan: string
+  plan_id?: string | null
+  plans?: { name: string } | { name: string }[] | null
+}
+
+function planDisplayName(tenant: TenantPlanDisplay): string {
+  const relation = tenant.plans
+  const name = Array.isArray(relation) ? relation[0]?.name : relation?.name
+  return tenant.plan_id ? (name ?? "Plano indisponível") : (PLAN_LABELS[tenant.plan] ?? tenant.plan)
+}
+
 export default async function AdminDashboardPage() {
   const now = new Date()
   const day24 = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
@@ -145,11 +157,11 @@ export default async function AdminDashboardPage() {
       .gte("created_at", day30),
 
     supabaseAdmin.from("whatsapp_instances").select("status"),
-    supabaseAdmin.from("tenants").select("plan"),
+    supabaseAdmin.from("tenants").select("plan, plan_id, plans(name)"),
 
     supabaseAdmin
       .from("chat_messages")
-      .select("tenant_id, tenants(name, slug, plan), created_at")
+      .select("tenant_id, tenants(name, slug, plan, plan_id, plans(name)), created_at")
       .gte("created_at", monthStart)
       .limit(5000),
 
@@ -168,7 +180,7 @@ export default async function AdminDashboardPage() {
 
     supabaseAdmin
       .from("tenants")
-      .select("id, name, slug, plan, created_at")
+      .select("id, name, slug, plan, plan_id, plans(name), created_at")
       .order("created_at", { ascending: false })
       .limit(5),
   ])
@@ -236,9 +248,9 @@ export default async function AdminDashboardPage() {
   // Top tenants por volume mês
   const topMap = new Map<string, { name: string; slug: string; plan: string; count: number; id: string }>()
   for (const r of topTenants.data ?? []) {
-    const t = r.tenants as unknown as { name: string; slug: string; plan: string } | null
+    const t = r.tenants as unknown as (TenantPlanDisplay & { name: string; slug: string }) | null
     if (!t) continue
-    const prev = topMap.get(r.tenant_id) ?? { id: r.tenant_id, name: t.name, slug: t.slug, plan: t.plan, count: 0 }
+    const prev = topMap.get(r.tenant_id) ?? { id: r.tenant_id, name: t.name, slug: t.slug, plan: planDisplayName(t), count: 0 }
     prev.count++
     topMap.set(r.tenant_id, prev)
   }
@@ -256,7 +268,10 @@ export default async function AdminDashboardPage() {
   for (const r of instanceStatusGroups.data ?? []) instanceByStatus[r.status] = (instanceByStatus[r.status] ?? 0) + 1
 
   const tenantsByPlan: Record<string, number> = {}
-  for (const r of planGroups.data ?? []) tenantsByPlan[r.plan] = (tenantsByPlan[r.plan] ?? 0) + 1
+  for (const row of planGroups.data ?? []) {
+    const plan = planDisplayName(row as unknown as TenantPlanDisplay)
+    tenantsByPlan[plan] = (tenantsByPlan[plan] ?? 0) + 1
+  }
 
   // Deltas
   const msg24h     = msgs24h ?? 0
@@ -562,24 +577,27 @@ export default async function AdminDashboardPage() {
               <EmptyState icon={Building2} title="Nenhum tenant" description="Crie o primeiro." bordered={false} />
             ) : (
               <div className="divide-y divide-slate-100">
-                {(tenantsRecent.data ?? []).map((t) => (
-                  <Link
-                    key={t.id}
-                    href={`/admin/tenants/${t.id}/modulos`}
-                    className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50/50"
-                  >
-                    <div className="size-7 rounded-lg bg-primary-50 border border-primary-100 flex items-center justify-center shrink-0">
-                      <span className="text-xs font-bold text-primary-600">{t.name[0]?.toUpperCase()}</span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-900 truncate">{t.name}</p>
-                      <p className="text-[10px] text-slate-400 font-mono">{t.slug}</p>
-                    </div>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${PLAN_COLORS[t.plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
-                      {PLAN_LABELS[t.plan] ?? t.plan}
-                    </span>
-                  </Link>
-                ))}
+                {(tenantsRecent.data ?? []).map((t) => {
+                  const plan = planDisplayName(t as unknown as TenantPlanDisplay)
+                  return (
+                    <Link
+                      key={t.id}
+                      href={`/admin/tenants/${t.id}/modulos`}
+                      className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50/50"
+                    >
+                      <div className="size-7 rounded-lg bg-primary-50 border border-primary-100 flex items-center justify-center shrink-0">
+                        <span className="text-xs font-bold text-primary-600">{t.name[0]?.toUpperCase()}</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-900 truncate">{t.name}</p>
+                        <p className="text-[10px] text-slate-400 font-mono">{t.slug}</p>
+                      </div>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${PLAN_COLORS[plan] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
+                        {plan}
+                      </span>
+                    </Link>
+                  )
+                })}
               </div>
             )}
           </SectionCard>

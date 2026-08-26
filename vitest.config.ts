@@ -9,12 +9,9 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.{test,spec}.ts"],
-    // ⚠️ `*.gate.test.ts` fica FORA da suíte normal de propósito. São os testes que afirmam
-    //    a REGRA dos 4 críticos de dinheiro e por isso ficam VERMELHOS até a refundação do
-    //    núcleo estar de pé (docs/billing-core-refoundation-design.md). Suíte que convive
-    //    com vermelho deixa de ser sinal — então eles rodam por `npm run test:gate`, que é
-    //    o critério de aceite de cada fase. Quando os 4 ficarem verdes (fim da F5), esta
-    //    linha sai e eles passam a rodar sempre.
+    // `*.gate.test.ts` fica em uma suíte separada para manter o portão financeiro
+    // explícito e rápido. Ele está verde e roda obrigatoriamente na CI por
+    // `npm run test:gate`; não é uma exclusão de cobertura.
     exclude: [...configDefaults.exclude, "src/**/*.gate.test.ts"],
     environment: "node",
   },

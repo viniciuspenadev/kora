@@ -50,7 +50,7 @@ export default async function TenantOverviewPage({ params }: { params: Promise<{
 
   const { data: tenant } = await supabaseAdmin
     .from("tenants")
-    .select("id, name, plan, active, lifecycle_state, trial_ends_at, created_at, acquisition_source, acquisition_detail, business_segment, team_size, current_tool, onboarding_profile_at, onboarding_skipped_at")
+    .select("id, name, active, lifecycle_state, trial_ends_at, created_at, acquisition_source, acquisition_detail, business_segment, team_size, current_tool, onboarding_profile_at, onboarding_skipped_at")
     .eq("id", id)
     .maybeSingle()
 

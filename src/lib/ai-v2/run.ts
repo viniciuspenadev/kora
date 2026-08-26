@@ -26,6 +26,7 @@ import type { ExecCtx } from "./capabilities"
 import { gatherPromptContext, latestInboundAt, type ConvRow, type ContactRow } from "@/lib/llm/context"
 import { costOfTokens } from "@/lib/llm/pricing"
 import { hasModule } from "@/lib/modules"
+import { loadStudioConfig } from "./studio-config"
 import type { RunAITurnInput, RunAITurnResult } from "@/types/automation"
 
 // Lock em processo por conversa (evita 2 turnos simultâneos). O lock
@@ -41,6 +42,7 @@ const estimateCost = costOfTokens
  *   de inbound (atendente atribuído / já roteada) — quem clicou escolheu disparar de propósito.
  */
 export interface StudioTurnOpts { dryRun?: boolean; forceFlowId?: string }
+
 
 export async function runStudioTurn(input: RunAITurnInput, opts?: StudioTurnOpts): Promise<RunAITurnResult> {
   const { conversationId } = input
@@ -84,28 +86,8 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts): Promis
   const startedAt = Date.now()
 
   // ── 1) Config + persona + master switch ────────────────────
-  const { data: configRow } = await supabaseAdmin
-    .from("studio_config")
-    .select("*")
-    .eq("tenant_id", tenantId)
-    .maybeSingle()
-  // A Persona (studio_config) é SÓ da IA. Um fluxo determinístico (menu/coletar/
-  // disparar — sem nó de IA) NÃO precisa dela: sem linha, roda com padrões neutros
-  // em vez de abortar. Isto só muda o caso "config ausente" (que hoje não roda NADA);
-  // todo tenant que já tem studio_config cai no configRow real e é idêntico ao de
-  // antes. O liga/desliga do Studio segue sendo o MÓDULO ai_studio (checado abaixo).
-  const config = configRow ?? {
-    tenant_id:                tenantId,
-    ai_enabled:               true,
-    ai_name:                  null,
-    ai_tone:                  null,
-    ai_language:              "pt-BR",
-    ai_model:                 "gpt-4.1",
-    identity_text:            null,
-    communication_style_text: null,
-    anti_patterns_text:       null,
-    ai_control_decoupled:     false,
-  }
+  // Ficha de Persona OU padrões neutros — a MESMA função que o despertar usa.
+  const config = await loadStudioConfig(tenantId)
   // Controle do Studio = MÓDULO (god mode). O antigo toggle do tenant (config.ai_enabled)
   // foi removido — quem liga/desliga é a plataforma. Disparo manual (forceFlowId) ignora.
   if (!(await hasModule(tenantId, "ai_studio")) && !opts?.forceFlowId) return { status: "skipped", reason: "disabled" }
@@ -412,10 +394,33 @@ function mapResult(status: string, departmentId: string | null, error: string | 
 // Aqui apenas reconstruímos o contexto e seguimos o grafo (incomingText="").
 // Guardas: se um humano assumiu durante a espera (assigned_to/ai_routed), o
 // run é finalizado sem continuar.
-async function finalizeRun(runId: string): Promise<void> {
-  await supabaseAdmin.from("studio_flow_runs")
-    .update({ status: "done", resume_at: null, updated_at: new Date().toISOString() })
+/**
+ * Encerra um run adormecido SEM continuar o fluxo — e **diz por quê**.
+ *
+ * 🔴 "INTERROMPIDO" E "CONCLUÍDO" ERAM A MESMA PALAVRA (achado de 2026-08-17). As seis
+ *    saídas daqui gravavam `done` puro, então "o humano assumiu", "o fluxo foi
+ *    despublicado" e "chegou ao fim do desenho" ficavam indistinguíveis no banco —
+ *    e o caminho que morria por ficha de Persona ausente (o defeito de verdade) não
+ *    deixava rastro em lugar NENHUM: `studio_runs` só ganha linha quando um nó de IA
+ *    roda, e aqui nenhum nó chega a rodar.
+ *
+ * 🔑 O motivo vai em `variables.__ended_reason`, na família `__*` que o motor já usa
+ *    pra estado interno (`__wait_node__`, `__run_started_at`, `__ai_touched`) — jsonb
+ *    que já existe, **zero migration**. O `status` continua `done`: quem lê essa coluna
+ *    (o cron do despertar, `activeFlowRun`, o motor de inatividade) não muda de
+ *    comportamento por causa disto.
+ */
+async function finalizeRun(runId: string, reason: string, vars?: Record<string, unknown>): Promise<void> {
+  const { error } = await supabaseAdmin.from("studio_flow_runs")
+    .update({
+      status:     "done",
+      resume_at:  null,
+      variables:  { ...(vars ?? {}), __ended_reason: reason, __ended_at: new Date().toISOString() },
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", runId)
+  // A gravação some em silêncio? Não mais — ver a mesma disciplina em `persistRun`.
+  if (error) console.error("[studio/resume] encerramento não gravado:", runId, reason, error.message)
 }
 
 export async function resumeStudioRun(tenantId: string, conversationId: string): Promise<RunAITurnResult> {
@@ -438,12 +443,12 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
   const existingRun = await activeFlowRun(conversationId)
   if (!existingRun || existingRun.status !== "waiting") return { status: "skipped", reason: "no_sleeping_run" }
 
-  const { data: config } = await supabaseAdmin
-    .from("studio_config").select("*").eq("tenant_id", tenantId).maybeSingle()
-  if (!config) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "disabled" } }
+  // 🔴 Ficha de Persona OU padrões neutros — a MESMA função da porta de entrada.
+  //    Aqui morava o defeito: ficha ausente ENCERRAVA o fluxo. Ver `loadStudioConfig`.
+  const config = await loadStudioConfig(tenantId)
   // (o gate de módulo ai_studio vem logo abaixo — o toggle do tenant foi removido)
   // God mode tirou o módulo? Não acorda o fluxo (mesma regra do dispatcher na entrada).
-  if (!(await hasModule(tenantId, "ai_studio"))) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "module_disabled" } }
+  if (!(await hasModule(tenantId, "ai_studio"))) { await finalizeRun(existingRun.id, "module_disabled", existingRun.variables); return { status: "skipped", reason: "module_disabled" } }
 
   const { data: convData } = await supabaseAdmin
     .from("chat_conversations")
@@ -452,15 +457,15 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
       chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel, bsuid, primary_external_id, created_at )
     `)
     .eq("id", conversationId).eq("tenant_id", tenantId).maybeSingle()
-  if (!convData || convData.is_group || !convData.contact_id) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "not_eligible" } }
+  if (!convData || convData.is_group || !convData.contact_id) { await finalizeRun(existingRun.id, "not_eligible", existingRun.variables); return { status: "skipped", reason: "not_eligible" } }
 
   const convMeta = (convData.metadata as Record<string, unknown> | null) ?? {}
   const takenOver = config.ai_control_decoupled
     ? !convData.ai_handling
     : (!!convData.assigned_to || !!convMeta.ai_routed)
-  if (takenOver) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "taken_over" } }
+  if (takenOver) { await finalizeRun(existingRun.id, "taken_over", existingRun.variables); return { status: "skipped", reason: "taken_over" } }
   const contact = convData.chat_contacts as unknown as ContactRow | null
-  if (!contact) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "no_contact" } }
+  if (!contact) { await finalizeRun(existingRun.id, "no_contact", existingRun.variables); return { status: "skipped", reason: "no_contact" } }
 
   // Instância (envio real após o sono) — carrega da própria conversa.
   let instance: RunAITurnInput["instance"] = {}
@@ -473,7 +478,7 @@ async function doResume(tenantId: string, conversationId: string): Promise<RunAI
   }
 
   const flow = await loadFlow(tenantId, existingRun.flow_id)
-  if (!flow) { await finalizeRun(existingRun.id); return { status: "skipped", reason: "flow_gone" } }
+  if (!flow) { await finalizeRun(existingRun.id, "flow_gone", existingRun.variables); return { status: "skipped", reason: "flow_gone" } }
 
   const conv: ConvRow = {
     id: convData.id, contact_id: convData.contact_id, stage_id: convData.stage_id,
