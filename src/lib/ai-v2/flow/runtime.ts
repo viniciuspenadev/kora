@@ -1,0 +1,1244 @@
+// ═══════════════════════════════════════════════════════════════
+// Kora Studio (IA v2) — RUNTIME do fluxo (grafo composável) §11
+// ═══════════════════════════════════════════════════════════════
+// Dois modos de entrada:
+//   • RESUME: a conversa esperava input (menu/collect/ai_agent) → parseia
+//     e avança.
+//   • ADVANCE: caminha o grafo executando nós até esperar input, encaminhar,
+//     ou terminar.
+// Composição (§11): o estado é uma PILHA de frames (call_stack). call_flow
+// empilha/troca; end/return faz pop. A IA é um NÓ (ai_agent contínuo /
+// ai_router) que DEVOLVE o controle ao grafo. Estado em studio_flow_runs
+// (1 por conversa). Bounded por MAX_HOPS (anti-ciclo) + MAX_DEPTH (anti-recursão).
+
+import "server-only"
+import { assertStudioControl } from "../control"
+import { supabaseAdmin } from "@/lib/supabase"
+import { isPlausiblePhone } from "@/lib/phone-utils"
+import { normalizeLifecycle } from "@/lib/lifecycle-stage"
+import { sendBotText, sendBotMedia, sendBotTemplate, sendBotRich, noteFlowSkip } from "../outbound"
+import { ensureCapabilitiesRegistered, getCapability, TRANSFER, HTTP_REQUEST, TAG, MOVE_STAGE, type ExecCtx } from "../capabilities"
+import { captureContactField } from "../capabilities/update-contact"
+import { runOutreach } from "./outreach"
+import { runAgentTurn, type AgentTurnResult } from "../agent"
+import { hasModule } from "@/lib/modules"
+import { baloesDe, baloesBotoes, baloesEsperam, temBaloesRicos } from "./message-balloons"
+import type { PersonaInput } from "../prompt"
+import { loadFlow } from "./triggers"
+import { logConversationEvent } from "@/lib/atendimento/events"
+import { routeToHumanDefault } from "@/lib/atendimento/human-routing"
+import { classifyIntent } from "./router"
+import { sendMenu, resolveMenuChoice, resolveRichButton } from "./menu"
+import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
+import { deferralConcepts } from "./boundary"
+import { resolveConnectedSources } from "./data-sources"
+import { outcomeLabel } from "./describe"
+import type {
+  FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
+  RichMessage,
+  MessageNodeConfig, MenuNodeConfig, ConditionNodeConfig, TransferNodeConfig,
+  HttpNodeConfig, CollectNodeConfig, CollectField, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig,
+  SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, TagNodeConfig, MoveStageNodeConfig,
+  WaitNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig, OutreachNodeConfig,
+} from "./types"
+
+/**
+ * Log por passo (F2/§CC) — 1 linha por ENTRADA de nó. Best-effort e
+ * fire-and-forget: o app roda em Node/VPS (a promise completa), NUNCA bloqueia
+ * nem derruba o fluxo. Alimenta funil · CTR por ramo · métricas no canvas ·
+ * jornada→receita. `campaign_id` (coorte) é threaded pelo motor (F2b) via run.
+ */
+function logFlowStep(ctx: ExecCtx, run: FlowRunRow, flow: FlowRow, node: FlowNode, enteredFrom: string | null): void {
+  supabaseAdmin.from("studio_flow_steps").insert({
+    tenant_id:       ctx.tenantId,
+    flow_id:         flow.id,
+    run_id:          run.id,
+    conversation_id: ctx.conversationId,
+    contact_id:      ctx.contact?.id ?? null,
+    node_id:         node.id,
+    node_type:       node.type,
+    entered_from:    enteredFrom,
+    campaign_id:     (run as { campaign_id?: string | null }).campaign_id ?? null,
+  }).then(() => {}, (e: unknown) => console.error("[flow-step]", (e as Error)?.message ?? e))
+}
+
+/**
+ * CPF com DÍGITO VERIFICADOR — não só "tem 11 números".
+ * 🔴 Vale a conta: recusar 111.111.111-11 na conversa é barato; descobrir que o cadastro
+ *    está sujo na hora de emitir nota é caro. E a pessoa ainda está ali pra corrigir.
+ */
+function isCpf(raw: string): boolean {
+  const d = raw.replace(/\D/g, "")
+  if (d.length !== 11 || /^(\d)\1{10}$/.test(d)) return false
+  const dv = (len: number) => {
+    let soma = 0
+    for (let i = 0; i < len; i++) soma += Number(d[i]) * (len + 1 - i)
+    const r = (soma * 10) % 11
+    return r === 10 ? 0 : r
+  }
+  return dv(9) === Number(d[9]) && dv(10) === Number(d[10])
+}
+
+/** CNPJ com dígito verificador (mesma régua do CPF, pesos próprios). */
+function isCnpj(raw: string): boolean {
+  const d = raw.replace(/\D/g, "")
+  if (d.length !== 14 || /^(\d)\1{13}$/.test(d)) return false
+  const calc = (len: number) => {
+    const pesos = len === 12 ? [5,4,3,2,9,8,7,6,5,4,3,2] : [6,5,4,3,2,9,8,7,6,5,4,3,2]
+    const soma = pesos.reduce((a, p, i) => a + Number(d[i]) * p, 0)
+    const r = soma % 11
+    return r < 2 ? 0 : 11 - r
+  }
+  return calc(12) === Number(d[12]) && calc(13) === Number(d[13])
+}
+
+function validateInput(v: string, type: string): boolean {
+  const s = v.trim()
+  switch (type) {
+    case "email":  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
+    // Antes era só contar dígitos (>= 10). Ver `isPlausiblePhone` — o contador deixava
+    // passar dígito a menos e número estrangeiro sem `+`, que viravam outra pessoa.
+    case "phone":  return isPlausiblePhone(s)
+    case "number": return /^\d+([.,]\d+)?$/.test(s)
+    case "cpf":    return isCpf(s)
+    case "cnpj":   return isCnpj(s)
+    default:       return s.length > 0
+  }
+}
+
+/**
+ * Unifica as DUAS formas do nó Coletar (multi-campo novo × campo solto legado) numa lista.
+ * Chamar SEMPRE isto — nunca ler `cfg.question` direto, senão o nó novo é ignorado.
+ */
+function collectFields(cfg: CollectNodeConfig): CollectField[] {
+  const list = (cfg.fields ?? []).filter((f) => f?.question?.trim() && f?.saveAs?.trim())
+  if (list.length) return list
+  return [{ question: cfg.question, saveAs: cfg.saveAs, validate: cfg.validate, retry: cfg.retry, mapTo: cfg.mapTo }]
+}
+
+/** O contato JÁ tem esse dado? Base do "não perguntar o que já se sabe". */
+function contactHas(contact: Record<string, unknown>, mapTo?: string): boolean {
+  switch (mapTo) {
+    case "name":      return !!String(contact.custom_name ?? "").trim()
+    case "phone":     return !!String(contact.phone_number ?? "").trim()
+    case "email":     return !!String(contact.email ?? "").trim()
+    case "document":  return !!String(contact.doc_id ?? "").trim()
+    case "company":   return !!String(contact.company ?? "").trim()
+    case "birthdate": return !!String(contact.birth_date ?? "").trim()
+    default:          return false
+  }
+}
+
+/**
+ * Próximo campo a perguntar. `-1` = acabou → o nó avança.
+ *
+ * 🔴 **NÃO É POSIÇÃO, é "o que ainda falta"** (correção de 2026-08-01, achada testando o
+ *    comportamento). Avançar pelo índice seguinte parece óbvio e quebra em dois casos
+ *    reais, porque o fluxo publicado é lido AO VIVO a cada retomada:
+ *      • lista REORDENADA → o campo que foi pra trás nunca era perguntado;
+ *      • config mudada no meio → reiniciava do zero e repetia o que a pessoa já respondeu.
+ *
+ * Pula: o que o contato já tem (`skipIfKnown`) e o que já foi respondido NESTE nó.
+ *
+ * ⚠️ O "já respondido" vem de uma lista PRÓPRIA do nó (`collect:<id>:done`), nunca de
+ *    `variables[saveAs]` — senão um `set_variable` com o mesmo nome lá atrás faria a
+ *    pergunta sumir sem ninguém entender por quê.
+ */
+function nextCollectIndex(
+  fields: CollectField[], contact: Record<string, unknown>, done: string[] = [],
+): number {
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]
+    if (done.includes(f.saveAs)) continue
+    if (f.skipIfKnown && f.mapTo && contactHas(contact, f.mapTo)) continue
+    return i
+  }
+  return -1
+}
+
+/** Campos já respondidos neste nó (lista própria, à prova de colisão de nome). */
+function collectDone(variables: Record<string, unknown>, nodeId: string): string[] {
+  const v = variables[`collect:${nodeId}:done`]
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []
+}
+
+// Interpola {{variavel}} (e {{a.b.c}}) com as variáveis do fluxo.
+function resolvePath(obj: Record<string, unknown>, path: string): unknown {
+  return path.split(".").reduce<unknown>(
+    (acc, k) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[k] : undefined), obj,
+  )
+}
+/**
+ * O turno passa a correr em OUTRA ficha — a que já era dona daquele telefone.
+ *
+ * 🔴 POR QUE A LINHA INTEIRA, e não só o id. Trocar apenas `variables.id_contato` deixaria
+ *    um Frankenstein: id de uma pessoa com os campos de outra. E não é cosmético — o
+ *    `applyContactCapture` decide "só preencho se estiver vazio" olhando pra ESTA linha em
+ *    memória. Com a linha do rascunho (que está vazia), ele concluiria que o cliente de
+ *    verdade não tem nome nem e-mail e **sobrescreveria os dados reais**. Corrupção de
+ *    cadastro, não detalhe. O mesmo vale pra `has_phone`/`has_name`, a condição de
+ *    lifecycle, `channel_is` e o "pula o que já está preenchido" do Coletar.
+ *
+ * 🔴 E AS VARIÁVEIS PRECISAM SEGUIR. Elas são semeadas UMA vez no início do turno e ficam
+ *    PERSISTIDAS no run: sem isto o fluxo continuaria dizendo "Olá Visitante do site" pro
+ *    cliente antigo, e `{{id_contato}}` apontaria pra uma ficha que ninguém mais usa.
+ *    Sobrescreve só o que foi semeado por nós (valor igual ao derivado da ficha ANTIGA) —
+ *    o que o autor do fluxo definiu à mão continua valendo.
+ *
+ * ⚠️ NÃO FUNDE NADA. Fundir ficha com ficha é decisão humana (botão de mesclar): "número
+ *    reciclado" emite exatamente o mesmo sinal que "é a mesma pessoa". O que ESTE módulo
+ *    faz no fim é outra coisa — descarta o RASCUNHO recém-nascido do widget, que não tem
+ *    nada pra fundir. Ver `descartarRascunhoDoSite`.
+ */
+async function assumirContato(ctx: ExecCtx, variables: Record<string, unknown>, novoId: string): Promise<void> {
+  const anterior = ctx.contact
+  const { data } = await supabaseAdmin.from("chat_contacts")
+    .select("id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel, bsuid, primary_external_id, created_at")
+    .eq("id", novoId).eq("tenant_id", ctx.tenantId).maybeSingle()
+  if (!data) return                                    // sumiu no meio: segue como está
+
+  const novo = data as unknown as typeof ctx.contact
+  const derivar = (c: typeof ctx.contact) => {
+    const nome = c.custom_name?.trim() || c.push_name?.trim() || ""
+    return { nome, contato: nome, cliente: nome, empresa: c.company ?? "", email: c.email ?? "",
+             telefone: c.phone_number ?? "", bsuid: c.bsuid ?? "", id_contato: c.id ?? "" }
+  }
+  const antes = derivar(anterior), depois = derivar(novo)
+  for (const [k, v] of Object.entries(depois)) {
+    if (variables[k] === undefined || variables[k] === "" || variables[k] === antes[k as keyof typeof antes]) {
+      if (v) variables[k] = v
+    }
+  }
+  variables.id_contato = novo.id                       // ponteiro morto é sempre pior
+
+  // A conversa em curso vai junto — senão o histórico do chat fica órfão numa ficha vazia.
+  // Best-effort: se a outra ficha já tiver fio ativo neste canal, o índice único recusa e
+  // a gente segue sem mover (nada se perde, só fica separado).
+  const { error } = await supabaseAdmin.from("chat_conversations")
+    .update({ contact_id: novo.id, updated_at: new Date().toISOString() })
+    .eq("id", ctx.conversationId).eq("tenant_id", ctx.tenantId)
+  if (error) console.error("[assumirContato] fio não movido:", error.code, error.message)
+
+  ctx.contact = novo
+  console.log(JSON.stringify({ event: "flow_contact_assumido", tenantId: ctx.tenantId,
+    de: anterior.id, para: novo.id, conversa: ctx.conversationId }))
+
+  // O rascunho ficou sem nada — e sem nada é literal, a conversa acabou de sair dele.
+  await descartarRascunhoDoSite(ctx.tenantId, anterior, novo.id)
+}
+
+/**
+ * Descarta o RASCUNHO do widget depois que a pessoa se revelou e o turno migrou.
+ *
+ * 🔴 POR QUE EXISTE (medido ao vivo em 2026-08-03, tenant Funchal). O rascunho não fica
+ *    vazio como se imagina: a captura grava nome e telefone nele ANTES de descobrir que
+ *    aquele número já tem dono. Quando o turno migra, sobra uma ficha "Vinicius /
+ *    5511940175730" sem conversa nenhuma — que na lista de Contatos **não parece um resto
+ *    de sessão, parece uma duplicata legítima**. É pior que sujeira: é uma ficha que um
+ *    atendente pode abrir, achar que é o cliente, e mandar mensagem de dentro dela.
+ *
+ * 🔴 ISTO NÃO É A "FUSÃO AUTOMÁTICA" QUE FOI DESCARTADA. Aquela junta duas fichas com
+ *    história e escolhe quem sobrevive — irreversível e ambígua (número reciclado, telefone
+ *    da recepção). Aqui não há o que fundir: o registro nasceu segundos atrás, tudo que ele
+ *    sabia já foi copiado pra ficha certa, e a conversa dele já mudou de dono. O que se
+ *    perde é o `visitor_id` — o mesmo navegador, na próxima visita, abre um rascunho novo
+ *    (comportamento idêntico ao de hoje, sem acumular lixo).
+ *
+ * ⚠️ FAIL-CLOSED, E A LISTA NÃO É DECORATIVA. `chat_contacts` derruba 8 tabelas em CASCADE
+ *    (agenda, negócios, tarefas, listas…). Qualquer sinal de vida — ou qualquer erro ao
+ *    perguntar — e o rascunho FICA. Preferir lixo a perda de dado não é timidez: um contato
+ *    a mais alguém apaga na mão, um agendamento a menos ninguém recupera.
+ */
+async function descartarRascunhoDoSite(
+  tenantId: string,
+  rascunho: { id?: string | null; primary_channel?: string | null; primary_external_id?: string | null; notes?: string | null },
+  sobreviventeId: string,
+): Promise<void> {
+  const id = rascunho.id
+  if (!id || id === sobreviventeId) return
+  // Só rascunho de widget. Ficha de WhatsApp/Instagram nunca entra aqui.
+  if (rascunho.primary_channel !== "site" || !rascunho.primary_external_id) return
+  // Anotação escrita por gente = alguém já cuidou desta ficha.
+  if (rascunho.notes?.trim()) return
+
+  // Tudo que, se existir, torna a ficha valiosa demais pra sumir. As 6 primeiras somem
+  // junto (CASCADE); as 4 últimas ficariam órfãs (SET NULL) — as duas coisas são perda.
+  const vinculos = [
+    "chat_conversations", "appointments", "tenant_deals", "tenant_tasks",
+    "contact_list_members", "contact_import_items",
+    "campaign_recipients", "commercial_documents", "instagram_automation_runs",
+    "tenant_storage_objects",
+  ] as const
+
+  try {
+    const achados = await Promise.all(
+      vinculos.map(async (t) => {
+        // ⚠️ Projeta `contact_id`, não `id`: `contact_import_items` NÃO TEM coluna `id`, e
+        //    o erro do PostgREST cairia no catch — deixando o rascunho pra sempre. Bug de
+        //    no-op silencioso, pego conferindo o schema (2026-08-03).
+        const { data, error } = await supabaseAdmin.from(t)
+          .select("contact_id").eq("tenant_id", tenantId).eq("contact_id", id).limit(1)
+        if (error) throw new Error(`${t}: ${error.message}`)   // não sei ⇒ não apago
+        return (data?.length ?? 0) > 0 ? t : null
+      }),
+    )
+    // `taggings` é polimórfica (sem FK): uma etiqueta sumiria caladinha.
+    const { data: tags, error: tagErr } = await supabaseAdmin.from("taggings")
+      .select("id").eq("tenant_id", tenantId)
+      .eq("taggable_type", "contact").eq("taggable_id", id).limit(1)
+    if (tagErr) throw new Error(`taggings: ${tagErr.message}`)
+
+    const prendem = [...achados.filter(Boolean), ...((tags?.length ?? 0) > 0 ? ["taggings"] : [])]
+    if (prendem.length > 0) {
+      console.log(JSON.stringify({ event: "flow_rascunho_mantido", tenantId, rascunho: id, prendem }))
+      return
+    }
+
+    const { error } = await supabaseAdmin.from("chat_contacts")
+      .delete().eq("id", id).eq("tenant_id", tenantId)
+    if (error) throw new Error(error.message)
+    console.log(JSON.stringify({ event: "flow_rascunho_descartado", tenantId, rascunho: id, sobrevivente: sobreviventeId }))
+  } catch (e) {
+    // O turno não pode quebrar por causa de faxina — o cliente está esperando resposta.
+    console.error("[descartarRascunhoDoSite] mantido por erro:", (e as Error).message)
+  }
+}
+
+function interpolate(text: string, vars: Record<string, unknown>): string {
+  if (!text.includes("{{")) return text
+  return text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, path: string) => {
+    const v = resolvePath(vars, path)
+    return v == null ? "" : typeof v === "string" ? v : JSON.stringify(v)
+  })
+}
+
+const MAX_HOPS  = 25
+const MAX_DEPTH = 8
+
+export interface FlowExecInput {
+  ctx:          ExecCtx
+  model:        string
+  persona:      PersonaInput
+  history:      { role: "user" | "assistant"; content: string }[]
+  incomingText: string
+  /** Oficial (Meta): id da opção interativa TOCADA (botão/lista) — fonte-da-verdade
+   *  determinística da escolha do cliente. Os nós de escolha (menu/schedule) casam
+   *  por ele PRIMEIRO; ausente (Baileys / texto digitado) → parse de texto clássico. */
+  optionId?:    string
+}
+
+export interface FlowResult {
+  status:       "responded" | "routed" | "no_action" | "error"
+  departmentId: string | null
+  error:        string | null
+  /** preenchido se um nó ai_agent rodou (pra studio_runs detalhado). */
+  agent:        AgentTurnResult | null
+}
+
+// ── helpers de grafo ────────────────────────────────────────────
+function nodeById(g: FlowGraph, id: string | null): FlowNode | null {
+  if (!id) return null
+  return g.nodes.find((n) => n.id === id) ?? null
+}
+function edgeTarget(g: FlowGraph, from: string, branch?: string): string | null {
+  // branch específico primeiro; senão a aresta default (sem branch).
+  const exact = g.edges.find((e) => e.from === from && e.branch === branch)
+  if (exact) return exact.to
+  const def = g.edges.find((e) => e.from === from && (e.branch == null || e.branch === ""))
+  return def?.to ?? null
+}
+function startNodeOf(g: FlowGraph): FlowNode | null {
+  return g.nodes.find((n) => n.type === "start") ?? g.nodes[0] ?? null
+}
+
+async function evalCondition(node: FlowNode, ctx: ExecCtx, run: FlowRunRow): Promise<boolean> {
+  const cfg = node.config as unknown as ConditionNodeConfig
+  const c = ctx.contact
+  const val = (cfg.value ?? "").trim().toLowerCase()
+  switch (cfg.check) {
+    // "É novo × É da casa" (owner: "da casa = já está na base" — inclui importado que
+    // nunca conversou). NOVO ⇔ o contato NASCEU junto do disparo DESTE run (ε 15min
+    // cobre webhook/merge). A régua congelada vive em variables.__run_started_at
+    // (gravada no startFlowRunAt; jsonb existente → zero migration; sobrescrita a cada
+    // novo disparo na mesma conversa → recorrente que volta = "da casa" ✓). Fail-safe:
+    // sem created_at do contato OU run legado sem carimbo → "da casa". Design §2.2.
+    case "is_new_contact": {
+      const born = c.created_at ? new Date(c.created_at).getTime() : 0
+      const stamp = (run.variables as Record<string, unknown> | null)?.["__run_started_at"]
+      const runStart = typeof stamp === "string" ? new Date(stamp).getTime() : Date.now()
+      return born > 0 && runStart > 0 && born >= runStart - 15 * 60_000
+    }
+    case "has_email":    return !!c.email?.trim()
+    case "has_phone":    return !!c.phone_number?.trim()
+    case "has_name":     return !!(c.custom_name?.trim() || c.push_name?.trim())
+    case "has_document": return !!c.doc_id?.trim()
+    case "has_company":  return !!c.company?.trim()
+    // Normaliza ambos os lados → config legada ("won"/"lost") casa com o vocabulário novo. Doc §5.
+    case "lifecycle_is": return normalizeLifecycle(c.lifecycle_stage) === normalizeLifecycle(val)
+    case "channel_is":   return (ctx.channel ?? c.primary_channel ?? "").toLowerCase() === val
+    case "has_tag":      return await contactHasTag(ctx, cfg.value ?? "")
+    default:             return false
+  }
+}
+
+/** Contato tem a etiqueta `tagName`? (tenant-scoped; resolve id → taggings). */
+async function contactHasTag(ctx: ExecCtx, tagName: string): Promise<boolean> {
+  const name = tagName.trim()
+  if (!name) return false
+  const { data: tagRows } = await supabaseAdmin
+    .from("tags").select("id").eq("tenant_id", ctx.tenantId).ilike("name", name).limit(1)
+  const tagId = tagRows?.[0]?.id
+  if (!tagId) return false
+  const { data: tg } = await supabaseAdmin
+    .from("taggings").select("id")
+    .eq("tenant_id", ctx.tenantId).eq("tag_id", tagId)
+    .eq("taggable_type", "contact").eq("taggable_id", ctx.contact.id).limit(1)
+  return !!(tg && tg.length)
+}
+
+// Dia da semana (0=dom…6=sáb) + "HH:MM" no fuso dado. Fail-open: fuso inválido → null.
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+}
+function nowInZone(timezone: string): { weekday: number; hhmm: string } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).formatToParts(new Date())
+    const wdShort = parts.find((p) => p.type === "weekday")?.value ?? ""
+    const hour    = parts.find((p) => p.type === "hour")?.value ?? ""
+    const minute  = parts.find((p) => p.type === "minute")?.value ?? ""
+    const weekday = WEEKDAY_INDEX[wdShort]
+    if (weekday === undefined || !hour || !minute) return null
+    // hour12:false às vezes devolve "24" à meia-noite — normaliza pra "00".
+    const hh = hour === "24" ? "00" : hour.padStart(2, "0")
+    return { weekday, hhmm: `${hh}:${minute.padStart(2, "0")}` }
+  } catch {
+    return null
+  }
+}
+
+// ── persistência do estado ──────────────────────────────────────
+// Sempre grava o frame ativo COMPLETO (flow + nó + pilha) — essencial pra
+// sub-fluxos: ao esperar/avançar dentro de um filho, o run precisa apontar
+// pro flow_id do filho com a pilha do(s) pai(s).
+/**
+ * 🔴 A GRAVAÇÃO DO ESTADO É CONFERIDA (2026-08-17). Antes o `await` ia sem olhar o
+ *    retorno: se a escrita falhasse, o motor seguia acreditando que salvou onde parou.
+ *    Consequência real de uma falha silenciosa aqui: a próxima mensagem do cliente
+ *    reexecuta o nó anterior (mensagem repetida) ou o run congela no lugar errado —
+ *    e não há uma linha em lugar nenhum explicando por quê, porque `studio_runs` é o
+ *    ledger da IA e fluxo determinístico nunca escreve lá.
+ *
+ * ⚠️ Loga e SEGUE, nunca lança: um `throw` aqui subiria até o guarda-chuva do turno e
+ *    mataria a execução inteira — trocaria "estado desatualizado" por "cliente sem
+ *    resposta nenhuma", que é estritamente pior. Registrar é o objetivo.
+ */
+async function persistRun(
+  runId: string, flow: FlowRow, nodeId: string | null,
+  variables: Record<string, unknown>, callStack: CallFrame[], status: FlowRunRow["status"],
+): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("studio_flow_runs")
+    .update({
+      flow_id:         flow.id,
+      flow_version:    flow.version,
+      current_node_id: nodeId,
+      variables,
+      call_stack:      callStack,
+      status,
+      // Só o nó `wait` seta resume_at (update próprio). Qualquer outro persist limpa —
+      // senão um timer vencido acordaria uma espera de INPUT (menu/collect) pelo cron.
+      resume_at:       null,
+      updated_at:      new Date().toISOString(),
+    })
+    .eq("id", runId)
+  if (error) console.error("[studio/flow] estado NÃO gravado:", JSON.stringify({ runId, flowId: flow.id, nodeId, status, err: error.message }))
+}
+async function finishRun(runId: string, reason: string, variables?: Record<string, unknown>): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("studio_flow_runs")
+    .update({
+      status: "done",
+      // Família `__*` (estado interno do motor) no jsonb que já existe — zero migration.
+      ...(variables ? { variables: { ...variables, __ended_reason: reason, __ended_at: new Date().toISOString() } } : {}),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", runId)
+  if (error) console.error("[studio/flow] fim NÃO gravado:", JSON.stringify({ runId, reason, err: error.message }))
+}
+
+/** Encerramento sem destino explícito: responsável elegível ou fila humana. */
+async function handBackToHuman(ctx: ExecCtx): Promise<void> {
+  if (ctx.dryRun) return
+  // Nunca restaura snapshot de dono: uma escolha explícita do Studio ou de um
+  // humano (inclusive fila sem assigned_to) é autoritativa.
+  await routeToHumanDefault(ctx.tenantId, ctx.conversationId, "studio_finished", ctx.conversationMetadata)
+}
+
+// ── execução ────────────────────────────────────────────────────
+export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunRow): Promise<FlowResult> {
+  // Os nós determinísticos (transfer/tag/move_stage/http) resolvem a
+  // capacidade via getCapability(). O REGISTRY só é populado por
+  // ensureCapabilitiesRegistered(), que até aqui só era chamado dentro de
+  // runAgentTurn(). Num turno 100% determinístico (ex.: tap de menu → transfer,
+  // sem nó ai_agent), numa réplica "fria" (nenhum turno de agente antes), o
+  // registry ficava VAZIO → getCapability(TRANSFER) === null → o nó transfer
+  // virava no-op SILENCIOSO (sem nota, sem department_id, sem re-pergunta).
+  // O runtime é consumidor de 1ª classe do registry → garante o registro aqui.
+  ensureCapabilitiesRegistered()
+  const { ctx } = input
+  let activeFlow = flow
+  let graph      = activeFlow.graph
+  const variables = { ...run.variables }
+  // {{nome}}/{{empresa}}/... resolvem pros campos do CONTATO (seed-if-vazio — uma
+  // variável do fluxo com o mesmo nome ainda vence). Resolve "Olá {{nome}}" em branco.
+  const cName = ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || ""
+  const contactVars: Record<string, string> = {
+    nome: cName, contato: cName, cliente: cName,
+    empresa:  ctx.contact.company ?? "",
+    email:    ctx.contact.email ?? "",
+    telefone: ctx.contact.phone_number ?? "",
+    bsuid: ctx.contact.bsuid ?? "",
+    id_contato: ctx.contact.id ?? "",
+  }
+  for (const [k, v] of Object.entries(contactVars)) if (v && !variables[k]) variables[k] = v
+  const callStack: CallFrame[] = [...(run.call_stack ?? [])]
+  let currentId: string | null = run.current_node_id
+  // Rastreio da jornada (log por passo): de qual nó viemos. No RESUME, o nó que
+  // esperava input é a origem do próximo passo (ele já foi logado quando entrou).
+  let stepFrom: string | null = run.status === "waiting" ? run.current_node_id : null
+  let responded = false
+  let lastAgent: AgentTurnResult | null = null
+
+  const done = (): FlowResult =>
+    ({ status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: lastAgent })
+
+  // RESUME — estava esperando input. (ai_agent waiting cai direto no ADVANCE,
+  // que re-roda o agente com a nova mensagem.)
+  if (run.status === "waiting" && currentId) {
+    // Wait TEMPORIZADO (resume_at setado) acordado por INBOUND = o cliente VOLTOU
+    // antes do prazo. Se o nó de espera tem saída "returned", roteia por ela (ex:
+    // entrega pro humano e encerra). Sem essa saída → segue "no prazo" (backward-compat).
+    if (run.resume_at) {
+      const waitNodeId = typeof variables["__wait_node__"] === "string" ? variables["__wait_node__"] : null
+      delete variables["__wait_node__"]
+      const returned = waitNodeId ? edgeTarget(graph, waitNodeId, "returned") : null
+      if (returned) currentId = returned
+      // senão: currentId permanece = alvo "no prazo" (pré-avançado) → cai no ADVANCE.
+    } else {
+    const node = nodeById(graph, currentId)
+    if (node?.type === "menu") {
+      const cfg = node.config as unknown as MenuNodeConfig
+      // Oficial: tap num botão/lista volta com o id da opção (= option.id) → casa
+      // determinístico. Baileys (número/rótulo digitado, optionId ausente) → parse texto.
+      const picked = resolveMenuChoice(cfg, input.incomingText, input.optionId)
+      if (!picked) {
+        await sendBotText(ctx, cfg.noMatch?.trim() || "Não entendi 🤔 Responda com o número da opção:")
+        await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: null }
+      }
+      variables[`menu:${node.id}`] = picked.id
+      currentId = edgeTarget(graph, node.id, picked.id)
+    } else if (node?.type === "message") {
+      /**
+       * Nó **Mensagem** com BOTÃO DE RESPOSTA — ele parou aqui esperando a escolha.
+       *
+       * 🔴 Diferente do **Menu**, aqui NÃO existe re-pergunta. O Menu é uma pergunta (não
+       *    escolher é erro); o Mensagem é um recado com atalhos, e escrever outra coisa é
+       *    legítimo — vai pra saída "Escreveu" (`else`), que o autor conectou.
+       */
+      const cfg    = node.config as unknown as MessageNodeConfig
+      // Os botões moram no ÚLTIMO balão (regra dura — ver `baloesBotoes`). Um nó do
+      // formato antigo devolve o próprio `rich`, então a retomada segue idêntica.
+      const picked = resolveRichButton({ buttons: baloesBotoes(cfg) }, input.incomingText, input.optionId)
+      variables[`message:${node.id}`] = picked?.id ?? "else"
+      currentId = edgeTarget(graph, node.id, picked?.id ?? "else")
+    } else if (node?.type === "collect") {
+      const cfg    = node.config as unknown as CollectNodeConfig
+      const fields = collectFields(cfg)
+      const contato = ctx.contact as unknown as Record<string, unknown>
+      const key    = variables[`collect:${node.id}:key`]
+      const idx    = typeof key === "string" ? fields.findIndex((f) => f.saveAs === key) : -1
+
+      /**
+       * 🔴 A CONFIG MUDOU DEBAIXO DA CONVERSA. O fluxo publicado é lido AO VIVO a cada
+       *    retomada, então editar o nó com alguém parado no meio do cadastro é rotina —
+       *    não caso raro. Se o campo que estava sendo perguntado sumiu, não dá pra saber
+       *    o que a resposta responde: DESCARTA a resposta e re-pergunta.
+       *
+       *    A versão anterior "resolvia" com `Math.min(idx, fields.length-1)` — o que
+       *    silenciava a divergência e gravava a resposta NO CAMPO ERRADO, inclusive na
+       *    coluna do contato. (Também cobre o run em voo no momento deste deploy, que
+       *    tem `:idx` antigo e nenhum `:key`.)
+       */
+      if (idx < 0) {
+        const volta = nextCollectIndex(fields, contato, collectDone(variables, node.id))
+        if (volta < 0) {
+          delete variables[`collect:${node.id}:key`]; delete variables[`collect:${node.id}:done`]
+          currentId = edgeTarget(graph, node.id)
+        }
+        else {
+          const q = interpolate(fields[volta].question ?? "", variables).trim()
+          if (!q) {
+            delete variables[`collect:${node.id}:key`]; delete variables[`collect:${node.id}:done`]
+            currentId = edgeTarget(graph, node.id)
+          }
+          else {
+            variables[`collect:${node.id}:key`] = fields[volta].saveAs
+            delete variables[`collect:${node.id}:idx`]     // resíduo do formato antigo
+            await sendBotText(ctx, q, { studio_flow: true })
+            await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+            return { status: "responded", departmentId: null, error: null, agent: null }
+          }
+        }
+      }
+      const field  = fields[idx] ?? fields[0]
+      const reply  = input.incomingText.trim()
+
+      // 🔴 Repete SÓ o campo que falhou, nunca o nó inteiro. Reiniciar um cadastro de 4
+      //    dados porque o e-mail veio torto é o jeito mais rápido de perder a pessoa.
+      // ⚠️ `!reply` ANTES da validação (QA 2026-08-01): campo sem `validate` aceitava
+      //    resposta vazia — figurinha/áudio sem legenda chega com texto "" e "respondia"
+      //    a pergunta, avançando o cadastro com o dado em branco.
+      if (!reply || (field.validate && !validateInput(reply, field.validate))) {
+        await sendBotText(ctx, field.retry?.trim() || "Hmm, não parece válido. Pode mandar de novo?")
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: null }
+      }
+      variables[field.saveAs?.trim() || "resposta"] = reply
+      // F1: write-back opcional pro cadastro (mapTo) — reusa a MESMA lógica da
+      // tool update_contact (normaliza + só-preenche-vazio p/ telefone/doc).
+      // Best-effort: nunca derruba o fluxo. Reflete no ctx.contact em memória pra
+      // um Condição logo à frente (has_phone/lifecycle) enxergar o que salvou.
+      if (field.mapTo) {
+        try {
+          const { campos, outroContato } = await captureContactField(ctx, field.mapTo, reply)
+          if (campos.custom_name)  ctx.contact.custom_name  = campos.custom_name
+          if (campos.phone_number) ctx.contact.phone_number = campos.phone_number
+          if (campos.email)        ctx.contact.email        = campos.email
+          if (campos.doc_id)       ctx.contact.doc_id        = campos.doc_id
+          if (campos.company)      ctx.contact.company       = campos.company
+          if (campos.birth_date)   ctx.contact.birth_date    = campos.birth_date
+          // O telefone informado já é de outra ficha ⇒ o turno segue NELA.
+          if (outroContato) await assumirContato(ctx, variables, outroContato)
+        } catch (e) {
+          console.error("[collect mapTo]", (e as Error)?.message ?? e)
+        }
+      }
+
+      // 🔴 SALVA CAMPO A CAMPO (o `mapTo` acima já gravou). Quem responde 2 de 4 e some
+      //    deixa os 2 gravados — guardar tudo pra escrever no fim perderia justamente o
+      //    caso mais comum, que é o abandono no meio.
+      // Marca ANTES de escolher o próximo — é o que faz "próximo" significar "o que falta".
+      variables[`collect:${node.id}:done`] = [...collectDone(variables, node.id), field.saveAs]
+      const prox = nextCollectIndex(fields, contato, collectDone(variables, node.id))
+      if (prox >= 0) {
+        const q = interpolate(fields[prox].question ?? "", variables).trim()
+        if (q) {
+          variables[`collect:${node.id}:key`] = fields[prox].saveAs
+          await sendBotText(ctx, q, { studio_flow: true })
+          await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+          return { status: "responded", departmentId: null, error: null, agent: null }
+        }
+      }
+      delete variables[`collect:${node.id}:key`]      // acabou: não deixa lixo no estado
+      delete variables[`collect:${node.id}:done`]
+      currentId = edgeTarget(graph, node.id)
+    } else if (node?.type === "schedule") {
+      const cfg   = { ...(node.config as unknown as ScheduleNodeConfig) }
+      cfg.intro   = interpolate(cfg.intro ?? "", variables)
+      const stash = variables[`schedule:${node.id}`] as ScheduleStash | undefined
+      // optionId (Oficial): token `schedule:*` da row/botão tocado → roteio determinístico
+      // (slot/day/svc/none/more/back); ausente (Baileys) → parse de texto clássico.
+      const out   = await resumeSchedule(ctx, cfg, stash, input.incomingText, input.optionId)
+      if (out.kind === "wait") {
+        variables[`schedule:${node.id}`] = out.stash
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: null }
+      }
+      if (out.responded) responded = true
+      if (out.agendamento) variables["agendamento"] = out.agendamento
+      currentId = edgeTarget(graph, node.id, out.branch)
+    }
+    }
+  }
+
+  // ADVANCE — caminha o grafo.
+  let hops = 0
+  while (currentId && hops < MAX_HOPS) {
+    await assertStudioControl(ctx)
+    hops++
+    const node = nodeById(graph, currentId)
+    if (!node) break
+    logFlowStep(ctx, run, activeFlow, node, stepFrom)   // jornada (best-effort)
+
+    switch (node.type) {
+      case "start": {
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "message": {
+        const cfg = node.config as unknown as MessageNodeConfig
+
+        // Nó ANTIGO (só `text`) → caminho de sempre, byte a byte. Os campos ricos são
+        // aditivos, e este ramo fica INTOCADO de propósito: mandar texto puro pelo
+        // caminho rico mudaria o respiro e o metadata da linha gravada.
+        if (!temBaloesRicos(cfg)) {
+          const text = interpolate((cfg.text ?? "").trim(), variables)
+          if (text) { await sendBotText(ctx, text, { studio_flow: true }); responded = true }
+          currentId = edgeTarget(graph, node.id)
+          break
+        }
+
+        /**
+         * BALÕES — de 1 a 4 mensagens em sequência (2026-08-17). Um nó do compositor
+         * antigo (`rich`) devolve uma lista de UM, então ele passa por aqui e sai igual
+         * ao de antes: mesma chamada, mesmo respiro, mesmo metadata.
+         *
+         * ⚠️ Cada balão é uma mensagem inteira e independente — texto, imagem ou cartão.
+         *    O renderizador já sabe montar cada um; aqui só se repete a chamada.
+         */
+        const baloes = baloesDe(cfg)
+        for (let i = 0; i < baloes.length; i++) {
+          const b = baloes[i]
+          const sendable: RichMessage = { ...b, text: interpolate((b.text ?? "").trim(), variables) }
+          // ⚠️ Só o TEXTO interpola — rótulo de botão não. Rótulo tem 20 caracteres e um
+          //    nome longo seria cortado no meio pelo canal.
+          if (sendable.text || sendable.media?.path) {
+            // `balao`/`de` no metadata: sem isso, 3 linhas de bot seguidas no inbox são
+            // indistinguíveis de 3 nós Mensagem — e aí "por que mandou 3 vezes?" é
+            // indepurável. É a mesma disciplina do diagnóstico de empate do comment-to-DM.
+            await sendBotRich(ctx, sendable, { studio_flow: true, ...(baloes.length > 1 ? { balao: i + 1, de: baloes.length } : {}) })
+            responded = true
+          } else {
+          /**
+           * 🔴 NADA A ENVIAR — e antes isto era SILÊNCIO (achado numa execução real do
+           *    owner, 2026-08-06: fluxo "parou no segundo nó").
+           *
+           *    O caso real: nó no formato "Texto e botões" **sem texto**, só com botões de
+           *    link. A Meta exige o texto nesse formato, então não havia mensagem possível
+           *    — o nó era pulado, o fluxo seguia pro fim, e ninguém ficava sabendo. O
+           *    cliente final recebia a 1ª mensagem e nada depois.
+           *
+           *    Publicar isto passou a ser recusado (`validateMessagePublish`), mas a nota
+           *    fica como rede: fluxo publicado ANTES da recusa existir continua no ar, e
+           *    "não entregou" tem que aparecer pra quem atende.
+           */
+            await noteFlowSkip(ctx,
+              baloes.length > 1
+                ? `⚠️ O balão ${i + 1} do nó Mensagem não enviou nada: o formato escolhido exige texto e ele está vazio. Abra o nó no Kora Studio e escreva a mensagem.`
+                : "⚠️ Nó Mensagem não enviou nada: o formato escolhido exige texto e ele está vazio. Abra o nó no Kora Studio e escreva a mensagem.",
+              { node: "message", node_id: node.id, ...(baloes.length > 1 ? { balao: i + 1 } : {}) })
+          }
+        }
+
+        /**
+         * 🔴 BOTÃO DE RESPOSTA ⇒ o nó ESPERA e RAMIFICA. Sem caixinha de "esperar?": pôr
+         *    um botão de resposta já é dizer que espera. Botão de LINK não conta — o toque
+         *    abre o navegador e nunca devolve evento, então esperar seria esperar o que não
+         *    vem.
+         *
+         * ⚠️ Os botões são os do ÚLTIMO balão, sempre — ver `baloesBotoes`.
+         */
+        const waits = baloesEsperam(cfg)
+        if (waits) {
+          await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+          return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+        }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "send_media": {
+        const cfg = node.config as unknown as SendMediaNodeConfig
+        const url = interpolate((cfg.url ?? "").trim(), variables)
+        if (url) {
+          await sendBotMedia(ctx, {
+            url, mediaType: cfg.mediaType ?? "image",
+            caption: interpolate((cfg.caption ?? "").trim(), variables) || undefined,
+          }, { studio_flow: true })
+          responded = true
+        } else {
+          /**
+           * 🔴 ENDEREÇO VAZIO ERA SILÊNCIO — o MESMO defeito que o nó Mensagem já teve e
+           *    que o owner pegou numa execução real (06/08). O nó era pulado, o fluxo
+           *    seguia, e o cliente final simplesmente não recebia a mídia.
+           *
+           * ⚠️ Vazio aqui tem DOIS pais: campo em branco, ou `{{variável}}` que não
+           *    resolveu — o segundo é o caso traiçoeiro, porque na tela o nó parece
+           *    preenchido. Por isso a nota diz as duas coisas.
+           */
+          await noteFlowSkip(ctx,
+            "⚠️ Nó Enviar mídia não enviou nada: o endereço do arquivo está vazio (ou a variável usada nele não tinha valor). O fluxo seguiu sem a mídia.",
+            { node: "send_media", node_id: node.id, reason: "empty_url", raw_url: cfg.url ?? null })
+        }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "condition": {
+        const ok = await evalCondition(node, ctx, run)
+        currentId = edgeTarget(graph, node.id, ok ? "true" : "false")
+        break
+      }
+      case "set_variable": {
+        const cfg = node.config as unknown as SetVariableNodeConfig
+        for (const a of cfg.assignments ?? []) {
+          const key = a.key?.trim()
+          if (key) variables[key] = interpolate(a.value ?? "", variables)
+        }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "switch": {
+        const cfg = node.config as unknown as SwitchNodeConfig
+        const raw = cfg.source === "channel"
+          ? (ctx.channel ?? ctx.contact.primary_channel ?? "")
+          : cfg.source === "lifecycle"
+            ? normalizeLifecycle(ctx.contact.lifecycle_stage)   // vocabulário novo (doc §5)
+            : resolvePath(variables, (cfg.variable ?? "").trim())
+        const val = String(raw ?? "").trim().toLowerCase()
+        const matched = (cfg.cases ?? []).find((c) => String(c.equals ?? "").trim().toLowerCase() === val)
+        currentId = edgeTarget(graph, node.id, matched ? matched.id : "else")
+        break
+      }
+      case "business_hours": {
+        const cfg = node.config as unknown as BusinessHoursNodeConfig
+        const now = nowInZone(cfg.timezone || "America/Sao_Paulo")
+        // Fuso inválido → fail-open (trata como aberto) pra não travar o fluxo.
+        const isOpen = now === null
+          ? true
+          : (cfg.days ?? []).includes(now.weekday)
+            && now.hhmm >= (cfg.open ?? "")
+            && now.hhmm <= (cfg.close ?? "")
+        currentId = edgeTarget(graph, node.id, isOpen ? "open" : "closed")
+        break
+      }
+      case "wait": {
+        const cfg = node.config as unknown as WaitNodeConfig
+        const factor = cfg.unit === "days" ? 86400 : cfg.unit === "hours" ? 3600 : 60
+        const ms = Math.max(1, cfg.amount) * factor * 1000
+        const resumeAt = new Date(Date.now() + ms).toISOString()
+        // Pré-avança pra saída "no prazo" (aresta default) — o cron retoma deste alvo.
+        const next = edgeTarget(graph, node.id)
+
+        /**
+         * 🔴 DORMIR SÓ FAZ SENTIDO SE HÁ PRA ONDE ACORDAR.
+         *
+         * Sem "no prazo" E sem "returned", o run era gravado `waiting`, com despertador e
+         * SEM destino nenhum. E enquanto ele existe, `activeFlowRun` o devolve ⇒ **nenhum
+         * outro fluxo consegue começar naquela conversa** — uma janela do tamanho exato do
+         * tempo configurado ("Esperar 3 dias" = 3 dias de conversa sequestrada por um fluxo
+         * que não vai fazer nada). Era o ÚNICO nó que não caía no fim implícito quando a
+         * saída está solta; agora ele se comporta como os outros 23.
+         *
+         * ⚠️ A condição olha as DUAS saídas de propósito. Só "returned" ligado é config
+         *    LEGÍTIMA — "espere 2 dias; se o cliente voltar antes, faça X; se não voltar,
+         *    encerre" — e ela EXIGE o sono, porque `returned` só dispara com um inbound
+         *    durante a espera. Checar só o "no prazo" mataria esse fluxo.
+         *
+         * `currentId = null` (e não um `break` seco): o laço re-testa `currentId` e um
+         * break sem zerar re-entraria NESTE mesmo nó até estourar MAX_HOPS.
+         */
+        if (!next && !edgeTarget(graph, node.id, "returned")) { currentId = null; break }
+
+        // Marca ONDE dormimos: se um INBOUND chegar ANTES do prazo (cliente voltou), o
+        // resume roteia pela saída "returned" deste nó (ver bloco RESUME). Overwrite a
+        // cada wait → sempre aponta pro nó de espera atual.
+        variables["__wait_node__"] = node.id
+        /**
+         * 🔴 A GRAVAÇÃO MAIS PERIGOSA DO MOTOR, E ERA A ÚNICA SEM CONFERÊNCIA.
+         *
+         *    Ela é o que faz o fluxo dormir E o que marca a hora de acordar. Se falhar,
+         *    o run não fica `waiting` e não ganha despertador — ou seja, **nunca mais
+         *    acorda** — e a linha logo abaixo devolve "respondi" como se estivesse tudo
+         *    certo. Fluxo mudo pra sempre, zero rastro.
+         *
+         *    É a mesma família do defeito da ficha de Persona (2026-08-17), num ponto
+         *    ainda mais escondido: lá o fluxo ao menos virava `done`; aqui ele fica
+         *    `active` no nó anterior, e `activeFlowRun` continua devolvendo ele —
+         *    então nenhum OUTRO fluxo consegue começar naquela conversa.
+         *
+         * ⚠️ Não lança (mesma disciplina de `persistRun`): derrubar o turno trocaria
+         *    "o fluxo não continua" por "o cliente não recebe nada".
+         */
+        const { error: sonoErr } = await supabaseAdmin
+          .from("studio_flow_runs")
+          .update({
+            flow_id:         activeFlow.id,
+            flow_version:    activeFlow.version,
+            current_node_id: next,
+            variables,
+            call_stack:      callStack,
+            status:          "waiting",
+            resume_at:       resumeAt,
+            updated_at:      new Date().toISOString(),
+          })
+          .eq("id", run.id)
+        if (sonoErr) {
+          console.error("[studio/flow] Esperar NÃO adormeceu:", JSON.stringify({ runId: run.id, flowId: activeFlow.id, nodeId: node.id, resumeAt, err: sonoErr.message }))
+          await noteFlowSkip(ctx,
+            "⚠️ O fluxo não conseguiu agendar a espera e não vai continuar sozinho. O atendimento segue normalmente na mão.",
+            { node: "wait", node_id: node.id, reason: "sleep_write_failed" })
+        }
+        // Dorme: não continua o loop — o cron (resume_at) acorda o fluxo.
+        return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: lastAgent }
+      }
+      case "http": {
+        const cfg = node.config as unknown as HttpNodeConfig
+        const cap = getCapability(HTTP_REQUEST)
+        // Interpola {{variaveis}} do fluxo na URL/body/headers ANTES de chamar —
+        // destrava ENVIAR dado coletado pra a API externa. Genérico: vale pra
+        // qualquer integração (frete, CRM, estoque…), não só este caso.
+        const resolved = {
+          ...cfg,
+          url:  interpolate(cfg.url ?? "", variables),
+          body: typeof cfg.body === "string" ? interpolate(cfg.body, variables) : cfg.body,
+          headers: cfg.headers
+            ? Object.fromEntries(Object.entries(cfg.headers).map(([k, v]) => [k, interpolate(String(v), variables)]))
+            : cfg.headers,
+        }
+        const r = await cap?.run(ctx, resolved)
+        const saveAs = cfg.saveAs?.trim() || "http_response"
+        variables[saveAs] = r?.ok && r.data !== undefined ? r.data : { error: r?.error ?? "falha" }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "collect": {
+        const cfg    = node.config as unknown as CollectNodeConfig
+        const fields = collectFields(cfg)
+        // Pula de cara o que o contato já tem — perguntar de novo o e-mail de quem já
+        // mandou é o que faz a conversa parecer formulário.
+        const idx = nextCollectIndex(fields, ctx.contact as unknown as Record<string, unknown>,
+                                     collectDone(variables, node.id))
+        if (idx < 0) { currentId = edgeTarget(graph, node.id); break }   // nada a perguntar
+        const pergunta = interpolate(fields[idx].question ?? "", variables).trim()
+        // ⚠️ Pergunta vazia travaria o run PRA SEMPRE: manda "" pro canal (a Cloud API
+        //    recusa), grava bolha em branco, e ninguém responde o que nunca foi perguntado.
+        //    O nó `message` já se protege assim. Sem pergunta, o nó só avança.
+        if (!pergunta) { currentId = edgeTarget(graph, node.id); break }
+        // 🔴 Guarda a CHAVE do campo, não o índice (QA 2026-08-01). Índice é posição, e
+        //    posição muda: editar o nó com uma conversa parada no meio fazia a resposta
+        //    seguinte cair no campo errado — inclusive escrevendo na ficha do contato.
+        //    A chave identifica o campo mesmo se a lista for reordenada.
+        variables[`collect:${node.id}:key`] = fields[idx].saveAs
+        await sendBotText(ctx, pergunta, { studio_flow: true })
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+      }
+      case "menu": {
+        const cfg = node.config as unknown as MenuNodeConfig
+        await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+      }
+      case "schedule": {
+        const cfg = { ...(node.config as unknown as ScheduleNodeConfig) }
+        cfg.intro = interpolate(cfg.intro ?? "", variables)
+        const out = await startSchedule(ctx, cfg)
+        // Sem destino/horário → ramo "sem_horario" (o autor liga num atendente). Fail-closed.
+        if (out.kind === "branch") { currentId = edgeTarget(graph, node.id, out.branch); break }
+        responded = true
+        variables[`schedule:${node.id}`] = out.stash
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+      }
+      case "ai_router": {
+        const cfg = node.config as unknown as AiRouterNodeConfig
+        const routes = cfg.routes ?? []
+        if (routes.length === 0) { currentId = edgeTarget(graph, node.id); break }
+        // Add-on IA off: sem classificação por LLM → segue o fallback/"else" (determinístico), nunca trava.
+        if (!(await hasModule(ctx.tenantId, "ai"))) { currentId = edgeTarget(graph, node.id, cfg.fallback || "else"); break }
+        const chosen = await classifyIntent({
+          model: input.model, routes, instruction: cfg.instruction ?? null,
+          history: input.history, incomingText: input.incomingText,
+          meter: { tenantId: ctx.tenantId, conversationId: ctx.conversationId, kind: "router", flowId: activeFlow.id, nodeId: node.id },
+        })
+        // rota escolhida → fallback configurado → saída "else" (ou aresta default).
+        currentId = edgeTarget(graph, node.id, (chosen || cfg.fallback) || "else")
+        break
+      }
+      case "ai_agent": {
+        const cfg = node.config as unknown as AiAgentNodeConfig
+        // Add-on IA desligado (módulo `ai`): Studio roda, mas o Agente não pensa →
+        // pula o nó e segue o fluxo determinístico (aresta default). Nunca trava.
+        if (!(await hasModule(ctx.tenantId, "ai"))) { currentId = edgeTarget(graph, node.id); break }
+        // Marca que a IA ESTEVE no fluxo (independente de coletar campo) → um nó Transfer
+        // determinístico mais à frente sabe que pode soltar o dossiê e rotular "pela IA".
+        // Sem nenhum Agente IA = fluxo puro → o Transfer só encaminha.
+        variables["__ai_touched"] = true
+        // Guarda os campos do `collect` (do nó) pra GUIAR a extração do dossiê no
+        // handoff (§Pilar 2): o que o cliente declarou aqui é GARANTIDO no dossiê.
+        if (cfg.collect?.length) {
+          variables["__collect"] = cfg.collect
+            .map((c) => (c.key?.trim() ? (c.description?.trim() ? `${c.key.trim()} (${c.description.trim()})` : c.key.trim()) : ""))
+            .filter(Boolean)
+        }
+        // ai_agent SEMPRE pode devolver o controle (finish_step). Sem outcomes,
+        // a saída é única (aresta default).
+        // Fontes de Consulta CONECTADAS a este agente → tools de consulta + governança
+        // de campos (studio-data-source-node-design.md). Funde com a config inline
+        // (compat: fluxos antigos com toggles no próprio nó seguem valendo).
+        const connected = resolveConnectedSources(graph, node.id)
+        const extraTools = [...new Set([...(cfg.tools ?? []), ...connected.tools])]
+        // ⚠️ SEGURANÇA: `connected.toolConfig` já passou pela lista branca FIELD_ALLOW
+        // (data-sources.ts) e é espalhado DEPOIS → um managed sempre vence o inline.
+        // O `cfg.toolConfig` inline/legado entra CRU (sem __src, sem whitelist) — hoje
+        // seguro porque consult.ts nunca lê chave 🔴 e a coluna 🔴 nem é selecionada.
+        // A fronteira real de 🔴 é a MINIMIZAÇÃO DA QUERY em consult.ts, não esta linha.
+        // Se um dia adicionar chave sensível ao consult.ts, ela PRECISA ser barrada aqui
+        // também (passar o inline por uma peneira análoga) — não confie só no FIELD_ALLOW.
+        const toolConfig = { ...(cfg.toolConfig ?? {}), ...connected.toolConfig }
+        // Derivação de saídas (owner 2026-07-25): o RÓTULO que a IA vê vem do NÓ ligado na
+        // saída (via describeNode) — label manual continua vencendo (override). Sem destino
+        // → "" → outcomeChoices cai no posicional "Saída N". call_flow degrada pra "Sub-fluxo"
+        // aqui (o nome real do fluxo é resolvido no editor, que tem a lista de fluxos).
+        const resolvedOutcomes = (cfg.outcomes ?? []).map((o) => ({
+          id:    o.id,
+          label: outcomeLabel(graph, node.id, o) || undefined,
+        }))
+        const turn = await runAgentTurn({
+          ...input,
+          instruction: cfg.instruction ?? null,
+          variables,
+          flowControl: { outcomes: resolvedOutcomes, collect: cfg.collect ?? [] },
+          extraTools,
+          agendaBinding: cfg.agenda_target ?? null,
+          toolConfig,
+          // Contrato de fronteira: ação determinística logo à frente que este nó
+          // não tem como tool → injeta o "defira, não conduza" (boundary.ts).
+          deferral:    deferralConcepts(graph, node.id, extraTools),
+        })
+        lastAgent = turn
+        if (turn.sentMessage) responded = true
+
+        if (turn.status === "routed") {
+          await finishRun(run.id, "ai_routed", variables)
+          await handBackToHuman(ctx)   // preserva destino explícito
+          return { status: "routed", departmentId: turn.departmentId, error: null, agent: turn }
+        }
+        if (turn.status === "error") {
+          return { status: "error", departmentId: null, error: turn.error, agent: turn }
+        }
+        if (turn.status === "step_done") {
+          // fields vêm do LLM (induzível pelo cliente): nunca deixam sobrescrever
+          // estado interno do motor (__*, menu:*, schedule:*).
+          if (turn.fields) for (const [k, v] of Object.entries(turn.fields)) {
+            if (k.startsWith("__") || k.startsWith("menu:") || k.startsWith("schedule:")) continue
+            variables[k] = v
+          }
+          // Nó COM saídas mas outcome NÃO-casado (ex: LLM truncou/errou) → NÃO cair num
+          // ramo arbitrário (bug 2026-07-25: "agendar" depois do "até mais"). Encerra
+          // limpo e devolve pro humano/fila — nunca dirige automação errada.
+          const outs = (cfg.outcomes ?? []) as { id: string }[]
+          if (outs.length > 0 && !(turn.outcome != null && outs.some((o) => o.id === turn.outcome))) {
+            console.warn("[ai_agent] outcome não-casado — encerrando com segurança", { node: node.id, outcome: turn.outcome })
+            await finishRun(run.id, "ai_outcome_unmatched", variables)
+            await handBackToHuman(ctx)
+            return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
+          }
+          currentId = edgeTarget(graph, node.id, turn.outcome ?? undefined)
+          break   // continua avançando o grafo NESTE turno
+        }
+        // responded / no_action → a IA ainda conduz a etapa → ESPERA neste nó.
+        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
+      }
+      case "call_flow": {
+        const cfg = node.config as unknown as CallFlowNodeConfig
+        const target = cfg.flowId ? await loadFlow(ctx.tenantId, cfg.flowId) : null
+        const childStart = target ? startNodeOf(target.graph) : null
+        // alvo inválido OU profundidade estourada → segue reto (fail-safe).
+        if (!target || !childStart || (cfg.mode === "subflow" && callStack.length >= MAX_DEPTH)) {
+          currentId = edgeTarget(graph, node.id)
+          break
+        }
+        if (cfg.mode === "subflow") {
+          callStack.push({
+            flow_id:        activeFlow.id,
+            flow_version:   activeFlow.version,
+            return_node_id: edgeTarget(graph, node.id),
+          })
+        }
+        activeFlow = target
+        graph      = target.graph
+        currentId  = childStart.id
+        await persistRun(run.id, activeFlow, currentId, variables, callStack, "active")
+        break
+      }
+      case "template": {
+        const cfg = node.config as unknown as TemplateNodeConfig
+        if (cfg.name?.trim()) {
+          await sendBotTemplate(ctx, {
+            name: cfg.name.trim(), language: cfg.language?.trim() || "pt_BR",
+            params: (cfg.params ?? []).map((p) => interpolate(p ?? "", variables)),
+          }, { studio_flow: true })
+          responded = true
+        }
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "outreach": {
+        // Disparo cross-canal: envia no WhatsApp pro número do CONTATO (não no
+        // canal de origem). Interpola aqui (onde vivem as variáveis); o helper
+        // só executa. Ramifica sent/no_whatsapp/blocked.
+        const cfg = node.config as unknown as OutreachNodeConfig
+        const phoneRaw = cfg.toVar?.trim()
+          ? String(resolvePath(variables, cfg.toVar.trim()) ?? "")
+          : (ctx.contact.phone_number ?? "")
+        const out = await runOutreach(ctx, {
+          channel:          cfg.channel ?? "auto",
+          instanceId:       cfg.instanceId,
+          phoneRaw,
+          marketing:        cfg.marketing,
+          templateName:     cfg.template?.name,
+          templateLanguage: cfg.template?.language,
+          templateParams:   (cfg.template?.params ?? []).map((p) => interpolate(p ?? "", variables)),
+          text:             cfg.text ? interpolate(cfg.text, variables) : undefined,
+        })
+        if (out.branch === "sent") responded = true
+        currentId = edgeTarget(graph, node.id, out.branch)
+        break
+      }
+      case "tag": {
+        const cfg = node.config as unknown as TagNodeConfig
+        await getCapability(TAG)?.run(ctx, { tag: cfg.tag, action: cfg.action })
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "move_stage": {
+        const cfg = node.config as unknown as MoveStageNodeConfig
+        await getCapability(MOVE_STAGE)?.run(ctx, { stage: cfg.stage })
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "transfer": {
+        const cfg = node.config as unknown as TransferNodeConfig
+        const cap = getCapability(TRANSFER)
+        // O dossiê é EXTRAÍDO dentro da capability (§Pilar 2, captura confiável —
+        // cobre nó E tool). Aqui só passamos o summary do autor (interpola {{vars}}).
+        const summary = interpolate((cfg.summary ?? "").trim(), variables)
+        // byAI = a IA esteve no fluxo (QUALQUER nó Agente IA rodou → __ai_touched). Aí o
+        // dossiê faz sentido. Menu→transfer puro (sem Agente IA) → false: o transfer NÃO
+        // chama LLM nem finge "pela IA", apenas encaminha. collect_hint guia a EXTRAÇÃO
+        // quando há campos do `collect` (mas não decide o byAI).
+        const collectHint = Array.isArray(variables["__collect"]) ? (variables["__collect"] as string[]) : []
+        const r = await cap?.run(ctx, {
+          target:           cfg.target,               // undefined = nó legado (semântica clássica)
+          department:       cfg.department,
+          agent_id:         cfg.agentId ?? null,
+          summary:          summary || undefined,
+          handoff_message:  cfg.handoff ?? null,
+          when_unavailable: cfg.whenUnavailable,
+          wait_message:     cfg.waitMessage ?? null,
+          collect_hint:     collectHint,
+          byAI:             variables["__ai_touched"] === true,
+        })
+        // Plano B "manter IA": NÃO encaminhou de propósito — a IA segue na frente.
+        // Conta como respondido (senão o hand-back do dispatch derrubaria a IA).
+        if (r?.keptAI) {
+          await persistRun(run.id, activeFlow, node.id, variables, callStack, "active")
+          return { status: "responded", departmentId: null, error: null, agent: lastAgent }
+        }
+        await finishRun(run.id, "transfer", variables)
+        await handBackToHuman(ctx)   // preserva destino explícito
+        if (r?.ok) return { status: "routed", departmentId: r.routedDepartmentId ?? null, error: null, agent: lastAgent }
+        // destino inválido na config → não encaminhou; nota interna já registrou pro admin.
+        return { status: responded ? "responded" : "no_action", departmentId: null, error: r?.error ?? null, agent: lastAgent }
+      }
+      case "resolve": {
+        // CONCLUI a conversa (status=resolved) e encerra o fluxo — terminal duro
+        // (não faz pop de sub-fluxo: concluir fecha tudo). Reabre no próximo inbound.
+        if (!ctx.dryRun) {
+          const now = new Date().toISOString()
+          // Espelha o "Concluir" do header (updateConversationStatus): resolve + zera
+          // não-lidas/flag + tira a IA de cena (decouple) até o cliente voltar.
+          const control = await assertStudioControl(ctx)
+          const { data: closed, error: closeError } = await supabaseAdmin.from("chat_conversations")
+            .update({ status: "resolved", resolved_at: now, updated_at: now, unread_count: 0, flagged_pending: false, ai_handling: false })
+            .eq("id", ctx.conversationId).eq("tenant_id", ctx.tenantId)
+            .eq("status", "open").eq("updated_at", control!.updated_at).select("id")
+          if (closeError || !closed?.length) throw new Error("A conversa mudou antes da conclusão do fluxo.")
+          try {
+            await logConversationEvent({ tenantId: ctx.tenantId, conversationId: ctx.conversationId, type: "resolved", actorKind: "ai" })
+          } catch { /* evento é best-effort — nunca derruba o fluxo */ }
+        }
+        await finishRun(run.id, "resolved", variables)
+        return done()
+      }
+      case "return":
+      case "end": {
+        // Sub-fluxo → volta ao pai (pop). Raiz → encerra (§11.5).
+        const frame = callStack.pop()
+        if (frame) {
+          const parent = await loadFlow(ctx.tenantId, frame.flow_id)
+          if (parent) {
+            activeFlow = parent
+            graph      = parent.graph
+            currentId  = frame.return_node_id
+            await persistRun(run.id, activeFlow, currentId, variables, callStack, "active")
+            break
+          }
+        }
+        await finishRun(run.id, "end_node", variables)
+        await handBackToHuman(ctx)   // fim sem destino → responsável elegível ou fila
+        return done()
+      }
+      default: {
+        // 🔴 TIPO DE NÓ QUE ESTE MOTOR NÃO CONHECE.
+        //    Acontece quando um tipo é REMOVIDO do produto e sobra num grafo salvo (aba
+        //    aberta, cópia de fluxo, colagem). Antes isto caía direto no `edgeTarget`
+        //    sem ramo: as arestas do nó removido têm `branch` nomeado, nenhuma casa o
+        //    ramo vazio, o laço termina com `currentId = null` e o fluxo era encerrado
+        //    como **conclusão normal**. O cliente parava de ser atendido no meio e o
+        //    livro registrava sucesso — a mesma classe que `hop_limit` e `dangling_edge`
+        //    existem pra nomear, escapando por um terceiro nome que não existia.
+        // ⚠️ Registrado como pulo NOMEADO: some do balde de "terminou bem" e passa a
+        //    aparecer em diagnóstico. Se houver aresta default desenhada, o fluxo segue
+        //    (pulando o passo) — o registro é o que conta a verdade nos dois casos.
+        await noteFlowSkip(
+          ctx,
+          `⚠️ Este fluxo tem um passo que não existe mais no Kora Studio e foi pulado. Abra o fluxo e remova ou substitua esse passo.`,
+          { motivo: "no_desconhecido", node_id: node.id, node_type: node.type },
+        )
+        console.error(JSON.stringify({
+          src: "studio-runtime", kind: "no-desconhecido",
+          fluxo: flow.id, no: node.id, tipo: node.type,
+        }))
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+    }
+    // Próximo nó foi entrado A PARTIR deste (casos que retornam não chegam aqui).
+    stepFrom = node.id
+  }
+
+  /**
+   * Fim implícito — e aqui moravam TRÊS desfechos muito diferentes com o mesmo nome
+   * (achado de 2026-08-17):
+   *
+   *   • `flow_end`      — o caminho desenhado acabou. Fim legítimo, o caso normal.
+   *   • `hop_limit`     — o disjuntor anti-ciclo cortou o fluxo NO MEIO. Quase sempre é
+   *                       uma ligação que volta pra trás e virou círculo; nesse caso o
+   *                       cliente final já recebeu a mesma mensagem várias vezes antes
+   *                       do corte. Reportar isso como "concluído" era a pior das três
+   *                       mentiras — some justamente o sintoma que precisa de conserto.
+   *   • `dangling_edge` — a aresta aponta pra um nó que não existe mais no desenho.
+   *
+   * O aviso vai pra conversa como nota interna (o mesmo recurso do nó Mensagem vazio)
+   * porque quem precisa saber é quem atende — não o log de um servidor que ninguém lê.
+   */
+  const motivoFim = !currentId ? "flow_end" : hops >= MAX_HOPS ? "hop_limit" : "dangling_edge"
+  if (motivoFim === "hop_limit") {
+    await noteFlowSkip(ctx,
+      `⚠️ O fluxo foi interrompido após ${MAX_HOPS} passos seguidos, sem chegar ao fim. Quase sempre isso é uma ligação que volta pra um nó anterior e virou um círculo. Abra o fluxo no Kora Studio e confira as ligações.`,
+      { node: "engine", reason: "hop_limit", hops, flow_id: activeFlow.id, node_id: currentId })
+  } else if (motivoFim === "dangling_edge") {
+    await noteFlowSkip(ctx,
+      "⚠️ O fluxo parou: uma ligação aponta pra um nó que não existe mais. Abra o fluxo no Kora Studio e refaça a ligação.",
+      { node: "engine", reason: "dangling_edge", flow_id: activeFlow.id, node_id: currentId })
+  }
+  await finishRun(run.id, motivoFim, variables)
+  await handBackToHuman(ctx)   // fim sem destino → responsável elegível ou fila
+  return done()
+}

@@ -1,0 +1,893 @@
+"use client"
+
+// ═══════════════════════════════════════════════════════════════
+// Kora Studio (IA v2) — nós do canvas (React Flow)
+// ═══════════════════════════════════════════════════════════════
+// Cada tipo = um card com handles. Menu/Roteador IA têm 1 saída por opção
+// (handle id = branch). Agente IA tem 1 saída por outcome (ou única) — DEVOLVE
+// o controle. transfer/return/end são terminais. start não tem entrada.
+
+import { createContext, useContext, useMemo, useState } from "react"
+import { Handle, Position, useNodeId, useStore, type NodeProps } from "@xyflow/react"
+import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
+import type { FlowGraph, MessageNodeConfig, RichMessage } from "@/lib/ai-v2/flow/types"
+import { baloesDe, baloesBotoes } from "@/lib/ai-v2/flow/message-balloons"
+import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck, Link2 } from "lucide-react"
+import { PlatformIcon } from "@/components/ui/platform-icon"
+import { SourceLogo } from "@/components/chat/source-logo"
+import type { MenuNodeConfig, AiAgentNodeConfig, AiRouterNodeConfig, CallFlowNodeConfig, SetVariableNodeConfig, SwitchNodeConfig, BusinessHoursNodeConfig, WaitNodeConfig, TagNodeConfig, MoveStageNodeConfig, SendMediaNodeConfig, ScheduleNodeConfig, TemplateNodeConfig } from "@/lib/ai-v2/flow/types"
+
+const HS: React.CSSProperties = { width: 9, height: 9, background: "#004add", border: "2px solid #fff" }
+const HS_T: React.CSSProperties = { ...HS, background: "#94a3b8" }
+
+// Orientação do canvas (vertical default / horizontal). Define onde ficam os
+// handles: vertical → entra em cima, sai embaixo · horizontal → entra à esquerda,
+// sai à direita. Os nós leem do contexto pra se adaptarem sem duplicar lógica.
+export type Orientation = "vertical" | "horizontal"
+export const OrientationContext = createContext<Orientation>("vertical")
+const useOrient = () => useContext(OrientationContext)
+
+// ── Overlay de JORNADA (F4): números sobre o fluxo que se edita ──
+// O editor injeta as métricas por contexto quando o botão "Jornada" está ligado;
+// cada nó mostra no cabeçalho quantos passaram (ou R$ ganho). null = overlay off.
+export interface JourneyMetrics {
+  mode:      "reach" | "ctr" | "revenue"
+  nodeReach: Record<string, number>
+  nodeRev:   Record<string, number>
+}
+export const JourneyMetricsContext = createContext<JourneyMetrics | null>(null)
+
+const fmtBRLc = (n: number) =>
+  n >= 1000 ? `R$ ${(n / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}k`
+            : `R$ ${n.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}`
+
+/** Badge de alcance/receita no cabeçalho do nó — via useNodeId (cobre todos os tipos). */
+function NodeMetricBadge() {
+  const m  = useContext(JourneyMetricsContext)
+  const id = useNodeId()
+  if (!m || !id) return null
+  const reach = m.nodeReach[id] ?? 0
+  const rev   = m.nodeRev[id] ?? 0
+  const text  = m.mode === "revenue" ? fmtBRLc(rev) : String(reach)
+  return (
+    <span className="inline-flex items-center rounded bg-primary-50 px-1.5 py-px text-[10px] font-bold text-primary-700 ring-1 ring-primary-100 tabular-nums"
+      title={`${reach} passaram por aqui${rev ? ` · ${fmtBRLc(rev)} ganho a jusante` : ""}`}>
+      {text}
+    </span>
+  )
+}
+
+function TargetHandle() {
+  const o = useOrient()
+  return <Handle type="target" position={o === "horizontal" ? Position.Left : Position.Top} style={HS_T} />
+}
+
+// Saída do nó. `pct` espalha múltiplas saídas no eixo cruzado (left% na vertical,
+// top% na horizontal); `color` sobrescreve a cor (ramos sim/não etc.).
+function SourceHandle({ id, pct, color }: { id?: string; pct?: number; color?: string }) {
+  const o = useOrient()
+  const style: React.CSSProperties = { ...HS, ...(color ? { background: color } : {}) }
+  if (pct != null) { if (o === "horizontal") style.top = `${pct}%`; else style.left = `${pct}%` }
+  return <Handle id={id} type="source" position={o === "horizontal" ? Position.Right : Position.Bottom} style={style} />
+}
+
+// Saída ancorada a UM botão/opção (ManyChat-like): o handle nasce na borda
+// direita da própria linha (a opção), não espalhado no rodapé do nó. `right:-12`
+// puxa o ponto até a borda do card (o conteúdo tem px-3 de respiro).
+function BranchHandle({ id, color }: { id: string; color?: string }) {
+  return <Handle id={id} type="source" position={Position.Right} style={{ ...HS, right: -12, ...(color ? { background: color } : {}) }} />
+}
+
+// Selo "Meta" — sinaliza que o nó vai usar template interativo nativo (botões/
+// lista da Cloud API), em contraste com a lista numerada por texto.
+function MetaBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1 py-px text-[9px] font-semibold text-slate-600 ring-1 ring-slate-200" title="Template interativo da Meta">
+      <PlatformIcon app="meta" size={10} /> Meta
+    </span>
+  )
+}
+
+// Resumo do gatilho — alimenta o nó "Início" com modo + canais + tipo, ao vivo
+// (o editor injeta via contexto; o nó não tem esse dado no próprio config).
+export interface TriggerSummary {
+  type:     string
+  mode:     "receptive" | "active" | "auto"
+  channels: string[]   // keys (whatsapp/site)
+  keywords: string
+  /** Só p/ inatividade (modo auto): quanto tempo sem resposta pra disparar. */
+  inactivityValue?: number
+  inactivityUnit?:  "minutes" | "hours"
+  /** Só p/ `ig_comment`: snapshot congelado do post + o direct, pra desenhar o card. */
+  igPosts?: Array<{ id: string; thumbUrl: string | null; caption: string | null }>
+  igDm?:    string
+}
+export const TriggerSummaryContext = createContext<TriggerSummary>({ type: "keyword", mode: "receptive", channels: [], keywords: "" })
+
+const TRIGGER_LABEL: Record<string, string> = {
+  any_message: "qualquer mensagem", keyword: "palavra-chave",
+  new_contact: "novo contato", reopened: "retornou", from_ad: "veio de anúncio",
+  inactivity: "inatividade", ig_comment: "comentário no Instagram",
+}
+function ChannelIcon({ ch }: { ch: string }) {
+  if (ch === "site") return <Globe className="size-3.5 text-slate-400" />
+  return <PlatformIcon app={ch} size={14} />
+}
+
+const CHECK_LABEL: Record<string, string> = {
+  // legados (não mais ofertados no picker, mas nós antigos ainda renderizam)
+  has_email: "Tem e-mail?", has_phone: "Tem telefone?", has_name: "Tem nome?",
+  has_document: "Tem CPF/CNPJ?", has_company: "Tem empresa?",
+  is_new_contact: "Cliente novo?",
+}
+const LIFECYCLE_LBL: Record<string, string> = {
+  contact: "Contato", lead: "Lead", won: "Cliente", customer: "Cliente", lost: "Perdido", unfit: "Fora do perfil",
+}
+function conditionLabel(cfg: Record<string, unknown>): string {
+  const check = String(cfg.check ?? "")
+  const value = String(cfg.value ?? "")
+  switch (check) {
+    case "lifecycle_is": return `Ciclo de vida: ${LIFECYCLE_LBL[value] ?? (value || "…")}?`
+    case "has_tag":      return `Tag: "${value || "…"}"?`
+    case "channel_is":   return `Canal de contato: ${value || "…"}?`
+    default:             return CHECK_LABEL[check] ?? check
+  }
+}
+
+function cfgOf(p: NodeProps): Record<string, unknown> {
+  const d = p.data as { config?: Record<string, unknown> }
+  return d.config ?? {}
+}
+
+function Card({
+  icon: Icon, accent, title, selected, ai, badge, children,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  accent: string
+  title: string
+  selected?: boolean
+  ai?: boolean
+  badge?: React.ReactNode
+  children?: React.ReactNode
+}) {
+  return (
+    <div className={`rounded-xl border bg-white w-56 shadow-sm transition-shadow ${selected ? "border-primary ring-2 ring-primary/20" : "border-slate-200"}`}>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100">
+        <div className={`size-6 rounded-md flex items-center justify-center ${accent}`}>
+          <Icon className="size-3.5" />
+        </div>
+        <span className="text-xs font-semibold text-slate-800">{title}</span>
+        <span className="ml-auto inline-flex items-center gap-1">
+          <NodeMetricBadge />
+          {badge}
+          {ai && (
+            <span className="inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-px text-[9px] font-semibold text-violet-600 ring-1 ring-violet-100">
+              <Sparkles className="size-2.5" /> IA
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="px-3 py-2 text-[11px] text-slate-500 leading-snug min-h-[1.75rem]">{children}</div>
+    </div>
+  )
+}
+
+// Prévia estilo WhatsApp (bolha) — dá a "cara ManyChat" ao bloco: você vê a
+// mensagem como ela chega. Vazio = placeholder tracejado.
+function Bubble({ text, placeholder }: { text: string; placeholder: string }) {
+  const filled = !!text.trim()
+  return (
+    <div className={`rounded-lg rounded-tl-[3px] px-2.5 py-1.5 text-[11px] leading-snug whitespace-pre-wrap break-words line-clamp-4 ${
+      filled
+        ? "bg-primary-50 text-slate-700 ring-1 ring-inset ring-primary-100"
+        : "border border-dashed border-slate-200 bg-slate-50/60 text-slate-400 italic"}`}>
+      {filled ? text : placeholder}
+    </div>
+  )
+}
+
+function StartNode(p: NodeProps) {
+  const t = useContext(TriggerSummaryContext)
+  const kw = t.keywords.split(",").map((k) => k.trim()).filter(Boolean)
+
+  // Gatilho de comentário: o card de Início VESTE a cara do Instagram (miniatura do post
+  // + palavra), em vez de existir um nó solto. É assim que o "nó dedicado" acontece sem
+  // criar um segundo motor — docs/instagram-studio-node-design.md §8.3.
+  if (t.type === "ig_comment") return <IgCommentStartCard t={t} kw={kw} selected={p.selected} />
+
+  return (
+    <>
+      <Card icon={Play} accent="bg-emerald-100 text-emerald-700" title="Início" selected={p.selected}
+        badge={
+          <span className={`inline-flex items-center rounded px-1 py-px text-[9px] font-semibold ring-1 ${
+            t.mode === "active" ? "bg-amber-50 text-amber-700 ring-amber-100"
+            : t.mode === "auto" ? "bg-sky-50 text-sky-700 ring-sky-100"
+            : "bg-emerald-50 text-emerald-700 ring-emerald-100"}`}>
+            {t.mode === "active" ? "Ativo" : t.mode === "auto" ? "Automático" : "Receptivo"}
+          </span>
+        }>
+        <p className="text-[11px] text-slate-600">
+          {t.type === "inactivity"
+            ? <>inatividade: <span className="font-medium text-slate-700">após {t.inactivityValue ?? 24}{t.inactivityUnit === "minutes" ? "min" : "h"} sem resposta</span></>
+            : t.type === "keyword" && kw.length
+            ? <>palavra-chave: <span className="font-medium text-slate-700">{kw[0]}{kw.length > 1 ? ` +${kw.length - 1}` : ""}</span></>
+            : TRIGGER_LABEL[t.type] ?? "quando o fluxo começa"}
+        </p>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          {t.channels.length === 0
+            ? <span className="text-[10px] text-slate-400">todos os canais</span>
+            : t.channels.map((c) => <ChannelIcon key={c} ch={c} />)}
+        </div>
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+/**
+ * Card de Início vestido de Instagram. Sem handle de entrada (igual ao Início normal) —
+ * é o que comunica visualmente "isto COMEÇA aqui", sem precisar de uma linha de texto.
+ * O chip ENTRADA existe porque o fluxo passa a ter duas portas e o dono precisa ver isso.
+ */
+/** Logo REDONDO da marca — o mesmo `SourceLogo` da lista de fluxos (/studio/fluxos) e do
+ *  inbox. Não é o `PlatformIcon`: aquele é o glifo chapado (usado em chart e chip de
+ *  canal); este é o badge circular full-bleed, que é a arte do canal no app. O card do nó
+ *  é "cara do canal", então usa a mesma peça que a lista — se divergir, o mesmo fluxo
+ *  aparece com dois Instagram diferentes em duas telas. */
+function IgIcon({ className }: { className?: string }) {
+  return <SourceLogo source="instagram" size={18} className={className} />
+}
+
+/**
+ * Miniatura do post no card de Início.
+ *
+ * `thumbUrl` deveria ser a URL ESTÁVEL `/api/ig-thumb/<id>` (congelada no Storage ao
+ * escolher o post). Fluxo salvo ANTES disso guardou a URL crua do CDN da Meta, que é
+ * assinada e expira em 1-2 dias → 403 e imagem quebrada num card que fica meses na tela.
+ * Por isso o `onError`: cai num placeholder com a marca do canal, e o `alt` descreve o
+ * post (o painel de config re-congela sozinho quando é aberto).
+ */
+const igPostLabel = (p: { caption: string | null }) => {
+  const cap = p.caption?.trim()
+  return cap ? `Post do Instagram: ${cap.slice(0, 80)}` : "Post do Instagram do gatilho"
+}
+
+/** Placeholder da marca quando a prévia não carrega (ou o post nem foi escolhido). */
+function IgThumbFallback({ label, compact }: { label: string; compact?: boolean }) {
+  return (
+    <div title={label}
+      className="size-full rounded-lg border border-slate-200 bg-gradient-to-br from-fuchsia-50 to-amber-50 flex flex-col items-center justify-center gap-0.5">
+      <PlatformIcon app="instagram" size={compact ? 14 : 20} />
+      {!compact && <span className="text-[9px] text-slate-400">prévia indisponível</span>}
+    </div>
+  )
+}
+
+/** Uma imagem com fallback próprio — cada post tem o seu estado de "quebrou". */
+function IgThumbImg({ post, className, compact }: {
+  post: { thumbUrl: string | null; caption: string | null }
+  className: string
+  compact?: boolean
+}) {
+  const [broken, setBroken] = useState(false)
+  const [seenUrl, setSeenUrl] = useState(post.thumbUrl)
+  if (seenUrl !== post.thumbUrl) { setSeenUrl(post.thumbUrl); setBroken(false) }
+  const label = igPostLabel(post)
+  if (!post.thumbUrl || broken) return <IgThumbFallback label={label} compact={compact} />
+  /* eslint-disable-next-line @next/next/no-img-element */
+  return <img src={post.thumbUrl} alt={label} title={label} onError={() => setBroken(true)} className={className} />
+}
+
+/**
+ * Prévia do(s) post(s) no card de Início.
+ *
+ * 🔴 DUAS FORMAS, decisão do dono (2026-07-30):
+ *   • 1 post  → aparece INTEIRO (`object-contain`). Era `h-16` + `object-cover`: uma faixa
+ *     de 64px cortando o miolo de uma arte quadrada/vertical — justamente o conteúdo que
+ *     diz QUAL post é. Sem corte a pessoa reconhece o criativo de relance.
+ *   • 2+ posts → tirinha de quadradinhos em cima, texto embaixo. Aqui `object-cover` é o
+ *     certo: em miniatura pequena, `contain` viraria uma tarja com barras dos dois lados.
+ *
+ * O `max-h` existe pra um Reel (9:16) não esticar o card até virar uma torre no canvas.
+ */
+function IgPostThumb({ posts }: { posts: Array<{ thumbUrl: string | null; caption: string | null }> }) {
+  if (!posts.length) {
+    return (
+      <div className="h-16 w-full rounded-lg border border-dashed border-slate-200 bg-slate-50/60 grid place-items-center">
+        <span className="text-[10px] text-slate-400">escolha o post…</span>
+      </div>
+    )
+  }
+
+  if (posts.length === 1) {
+    return (
+      <div className="w-full rounded-lg overflow-hidden bg-slate-50 border border-slate-100 grid place-items-center" style={{ minHeight: 96 }}>
+        <IgThumbImg post={posts[0]} className="block w-full h-auto max-h-[220px] object-contain" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {posts.map((p, i) => (
+        <div key={i} className="relative size-14 rounded-lg overflow-hidden border border-slate-100 shrink-0">
+          <IgThumbImg post={p} compact className="size-full object-cover" />
+        </div>
+      ))}
+      <span className="text-[10px] text-slate-400 ml-0.5">{posts.length} posts</span>
+    </div>
+  )
+}
+
+function IgCommentStartCard({ t, kw, selected }: { t: TriggerSummary; kw: string[]; selected?: boolean }) {
+  const posts = t.igPosts ?? []
+  // Legenda só com 1 post: com vários, a legenda de um só confundiria (parece que o
+  // gatilho é daquele). Com vários, quem identifica é a própria tirinha de miniaturas.
+  const caption = posts.length === 1 ? posts[0].caption : null
+  return (
+    <>
+      <Card icon={IgIcon} accent="bg-pink-100 text-pink-700" title="Comentário no Instagram" selected={selected}
+        badge={
+          <span className="inline-flex items-center rounded px-1 py-px text-[9px] font-semibold ring-1 bg-emerald-50 text-emerald-700 ring-emerald-100">
+            Entrada
+          </span>
+        }>
+        <IgPostThumb posts={posts} />
+
+        {caption && <p className="mt-1 text-[11px] text-slate-600 truncate">{caption}</p>}
+
+        <p className="mt-1 text-[11px] text-slate-600">
+          {kw.length
+            ? <>palavra: <span className="font-medium text-slate-700">{kw[0]}{kw.length > 1 ? ` +${kw.length - 1}` : ""}</span></>
+            : <span className="italic text-slate-400">qualquer comentário</span>}
+        </p>
+
+        <Bubble text={t.igDm ?? ""} placeholder="escreva o direct…" />
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+/** O FILHO: um balão do nó Mensagem visto de fora — uma linha, truncada, sempre igual. */
+function BalloonRow({ n, msg }: { n: number; msg: RichMessage }) {
+  const linha = (msg.text ?? "").trim().split(/\r?\n/).find(Boolean) ?? ""
+  const vazio = !linha && !msg.media?.path
+  return (
+    <div className={`flex items-center gap-1.5 rounded-lg rounded-tl-[3px] px-2 py-1 text-[10.5px] leading-snug ${
+      vazio
+        ? "border border-dashed border-slate-200 bg-slate-50/60 text-slate-400 italic"
+        : "bg-primary-50 text-slate-700 ring-1 ring-inset ring-primary-100"}`}>
+      <span className="shrink-0 w-3 text-[9px] font-bold tabular-nums text-slate-400">{n}</span>
+      {msg.media?.path && <ImageIcon className="size-2.5 shrink-0 text-slate-400" />}
+      <span className="truncate">{linha || (msg.media?.path ? "imagem" : "vazio")}</span>
+    </div>
+  )
+}
+
+function MessageNode(p: NodeProps) {
+  const conf = cfgOf(p) as unknown as MessageNodeConfig
+  /**
+   * 🔴 O CARD LÊ OS BALÕES, E ISSO É CORREÇÃO, NÃO ENFEITE (2026-08-17).
+   *
+   *    Ele lia `cfg.rich` — que o compositor grava como o PRIMEIRO balão (compat de
+   *    deploy). Os botões, por regra, moram no ÚLTIMO. Com 2+ balões o card desenharia
+   *    ZERO botões e, com eles, zero `BranchHandle`: as saídas sumiriam do desenho
+   *    enquanto as arestas continuavam válidas no dado — linha apontando pra um ponto
+   *    que não existe na tela.
+   *
+   * ⚠️ `baloesDe` devolve vazio pro nó legado de texto puro (ele tem caminho próprio);
+   *    por isso o texto cai pro `cfg.text`, como sempre foi.
+   */
+  const baloes  = baloesDe(conf)
+  const text    = String(baloes[0]?.text ?? conf.text ?? "")
+  const btns    = baloesBotoes(conf) ?? []
+  // Só botão de RESPOSTA vira saída. O de link aparece (a pessoa configurou, precisa ver)
+  // mas SEM handle — dele não sai linha porque o toque vai pro navegador e nunca volta.
+  const replies = btns.filter((b) => b.kind === "reply")
+  const temImg  = baloes.some((b) => b.media?.path)
+
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={MessageSquare} accent="bg-sky-100 text-sky-700" title="Mensagem" selected={p.selected}>
+        {/**
+          * MÃE E FILHOS (pedido do owner, 2026-08-17). Com 2+ balões o card mostra a
+          * SEQUÊNCIA — cada um uma linha truncada, todos com o MESMO tratamento.
+          *
+          * ⚠️ A 1ª versão dava `Bubble` cheio (4 linhas) pro primeiro e um tracinho cinza
+          *    pros outros: lia como um herói com sobras, não como uma sequência. E o card
+          *    de canvas é um ÍNDICE do que tem dentro, não o editor — texto inteiro aqui
+          *    faz o nó crescer e o desenho perder a leitura.
+          */}
+        {baloes.length > 1 ? (
+          <div className="space-y-1">
+            <p className="text-[9.5px] font-semibold uppercase tracking-wider text-slate-400">
+              {baloes.length} mensagens
+            </p>
+            {baloes.map((b, i) => <BalloonRow key={i} n={i + 1} msg={b} />)}
+          </div>
+        ) : (
+          <>
+            {temImg && (
+              <div className="mb-1 flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-[10px] text-slate-500">
+                <ImageIcon className="size-3" /> imagem
+              </div>
+            )}
+            <Bubble text={text} placeholder="escreva a mensagem…" />
+          </>
+        )}
+        {btns.length > 0 && (
+          <div className="mt-1.5 space-y-1">
+            {btns.map((b) => (
+              <div key={b.id} className="relative flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-1 text-[10px] text-slate-600">
+                {b.kind === "url" && <Link2 className="size-2.5 shrink-0 text-slate-400" />}
+                <span className="truncate">{b.label || "botão"}</span>
+                {b.kind === "reply" && <BranchHandle id={b.id} color="#0284c7" />}
+              </div>
+            ))}
+          </div>
+        )}
+        {replies.length > 0 && (
+          <div className="relative mt-1 rounded-md border border-dashed border-slate-200 px-1.5 py-1 text-[10px] text-slate-400">
+            escreveu
+            <BranchHandle id="else" color="#94a3b8" />
+          </div>
+        )}
+      </Card>
+      {/* Sem botão de resposta o nó não espera nem ramifica → saída única, como sempre foi. */}
+      {replies.length === 0 && <SourceHandle />}
+    </>
+  )
+}
+
+function SendMediaNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as SendMediaNodeConfig
+  const url = String(cfg.url ?? "")
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={ImageIcon} accent="bg-pink-100 text-pink-700" title="Enviar mídia" selected={p.selected}>
+        <div className="rounded-lg rounded-tl-[3px] overflow-hidden ring-1 ring-inset ring-primary-100 bg-primary-50">
+          <div className="flex items-center justify-center gap-1 h-12 bg-slate-100 text-slate-400 text-[10px] capitalize">
+            <ImageIcon className="size-4" /> {url ? (cfg.mediaType ?? "image") : "mídia"}
+          </div>
+          {String(cfg.caption ?? "").trim() && <p className="px-2 py-1 text-[11px] text-slate-700 line-clamp-2">{String(cfg.caption)}</p>}
+        </div>
+        {!url && <p className="mt-1 text-[10px] text-slate-400 italic">configure a URL da mídia</p>}
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+function MenuNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as MenuNodeConfig
+  const opts = cfg.options ?? []
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={ListChecks} accent="bg-violet-100 text-violet-700" title="Menu" selected={p.selected}
+        badge={cfg.render === "interactive" ? <MetaBadge /> : undefined}>
+        <Bubble text={String(cfg.text ?? "")} placeholder="pergunta do menu…" />
+        <div className="mt-1.5 flex flex-col gap-1">
+          {opts.length === 0 && <span className="text-[10px] text-slate-400 italic">sem opções</span>}
+          {opts.map((o) => (
+            <div key={o.id} className="relative text-[10px] text-center font-medium text-primary-700 bg-white ring-1 ring-primary-200 rounded-full px-2 py-1">
+              <span className="block truncate">{o.label || "—"}</span>
+              <BranchHandle id={o.id} />
+            </div>
+          ))}
+        </div>
+      </Card>
+    </>
+  )
+}
+
+function ConditionNode(p: NodeProps) {
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={GitBranch} accent="bg-amber-100 text-amber-700" title="Condição" selected={p.selected}>
+        {conditionLabel(cfgOf(p))}
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-emerald-600">sim</span>
+          <span className="text-slate-400">não</span>
+        </div>
+      </Card>
+      <SourceHandle id="true" pct={28} color="#059669" />
+      <SourceHandle id="false" pct={72} color="#94a3b8" />
+    </>
+  )
+}
+
+function SetVariableNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as SetVariableNodeConfig
+  const n = (cfg.assignments ?? []).filter((a) => a.key?.trim()).length
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Braces} accent="bg-lime-100 text-lime-700" title="Definir variável" selected={p.selected}>
+        {n > 0 ? `${n} variáve${n === 1 ? "l" : "is"} definida${n === 1 ? "" : "s"}` : "nenhuma variável"}
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+function SwitchNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as SwitchNodeConfig
+  const cases = cfg.cases ?? []
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Split} accent="bg-amber-100 text-amber-700" title="Desviar (switch)" selected={p.selected}>
+        <p className="font-medium text-slate-700 truncate">{cfg.variable ? `{{${cfg.variable}}}` : "escolha a variável"}</p>
+        <div className="mt-1.5 space-y-1">
+          {cases.length === 0 && <span className="text-slate-400">sem casos</span>}
+          {cases.map((c) => (
+            <div key={c.id} className="relative text-[10px] bg-slate-50 border border-slate-100 rounded px-1.5 py-0.5">
+              <span className="block truncate">{c.equals || "—"}</span>
+              <BranchHandle id={c.id} color="#d97706" />
+            </div>
+          ))}
+          <div className="relative text-[10px] italic text-slate-400 bg-slate-50/60 border border-dashed border-slate-200 rounded px-1.5 py-0.5">
+            senão
+            <BranchHandle id="else" color="#94a3b8" />
+          </div>
+        </div>
+      </Card>
+    </>
+  )
+}
+
+function BusinessHoursNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as BusinessHoursNodeConfig
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Clock} accent="bg-orange-100 text-orange-700" title="Horário comercial" selected={p.selected}>
+        {`${cfg.open || "--:--"}–${cfg.close || "--:--"}`}
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-emerald-600">aberto</span>
+          <span className="text-slate-400">fechado</span>
+        </div>
+      </Card>
+      <SourceHandle id="open" pct={28} color="#059669" />
+      <SourceHandle id="closed" pct={72} color="#94a3b8" />
+    </>
+  )
+}
+
+const UNIT_LABEL: Record<string, [string, string]> = {
+  minutes: ["minuto", "minutos"], hours: ["hora", "horas"], days: ["dia", "dias"],
+}
+function WaitNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as WaitNodeConfig
+  const amount = Number(cfg.amount ?? 1)
+  const [one, many] = UNIT_LABEL[cfg.unit] ?? UNIT_LABEL.hours
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Timer} accent="bg-slate-100 text-slate-600" title="Esperar" selected={p.selected}>
+        esperar {amount} {amount === 1 ? one : many}
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-slate-400">no prazo</span>
+          <span className="text-primary-600">cliente voltou</span>
+        </div>
+      </Card>
+      <SourceHandle pct={28} />
+      <SourceHandle id="returned" pct={72} color="#004add" />
+    </>
+  )
+}
+
+function HttpNode(p: NodeProps) {
+  const url = String(cfgOf(p).url ?? "")
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Globe} accent="bg-teal-100 text-teal-700" title="Requisição HTTP" selected={p.selected}>
+        {url ? url.replace(/^https?:\/\//, "").slice(0, 40) : "configure a URL"}
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+function CollectNode(p: NodeProps) {
+  const cfg = cfgOf(p)
+  // Nó multi-campo × campo solto legado: o cartão fala das duas formas sem o autor
+  // precisar saber que existem duas.
+  const fields = Array.isArray(cfg.fields) ? (cfg.fields as { question?: string; saveAs?: string }[]) : []
+  const many   = fields.length > 1
+  // ⚠️ `fields[0] ??` e NÃO `many ? …`: com exatamente 1 campo o cartão caía no legado —
+  //    que nunca é limpo — e mostrava a pergunta velha pra sempre (QA 2026-08-01).
+  const first  = fields[0] ?? { question: String(cfg.question ?? ""), saveAs: String(cfg.saveAs ?? "resposta") }
+  const q      = String(first?.question ?? "")
+  const saveAs = String(first?.saveAs ?? "resposta")
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={ClipboardList} accent="bg-indigo-100 text-indigo-700"
+        title={many ? `Coletar ${fields.length} dados` : "Coletar dado"} selected={p.selected}>
+        {q ? q.slice(0, 50) : "pergunta"}
+        <span className="block text-[10px] text-slate-400 mt-0.5">
+          → {saveAs}{many ? ` +${fields.length - 1}` : ""}
+        </span>
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+function ScheduleNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as ScheduleNodeConfig
+  const t = cfg.target
+  const dest = t?.mode === "owner" ? "responsável pelo cliente" : t?.resourceId ? "agenda fixada" : t?.serviceId || t?.servicePick ? "sorteio no serviço" : "sorteio entre as agendas"
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={CalendarPlus} accent="bg-primary-100 text-primary-700" title="Agendar" selected={p.selected}
+        badge={cfg.render === "interactive" ? <MetaBadge /> : undefined}>
+        oferece horários reais e marca
+        <span className="block text-[10px] text-slate-400 mt-0.5">→ {dest}</span>
+        <div className="flex justify-between mt-1 text-[9px] font-semibold uppercase tracking-wide">
+          <span className="text-emerald-600">agendado</span>
+          <span className="text-slate-400">sem horário</span>
+        </div>
+      </Card>
+      <SourceHandle id="agendado" pct={28} color="#059669" />
+      <SourceHandle id="sem_horario" pct={72} color="#94a3b8" />
+    </>
+  )
+}
+
+/** Grafo mínimo (do store do React Flow) pra derivar o rótulo da saída pelo destino. */
+function useAgentGraph(): FlowGraph {
+  const nodes = useStore((s) => s.nodes)
+  const edges = useStore((s) => s.edges)
+  return useMemo(() => ({
+    nodes: nodes.map((n) => ({ id: n.id, type: n.type, config: (n.data as { config?: Record<string, unknown> })?.config ?? {} })),
+    edges: edges.map((e) => ({ from: e.source, to: e.target, branch: e.sourceHandle ?? undefined })),
+  }) as unknown as FlowGraph, [nodes, edges])
+}
+
+function AgentNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as AiAgentNodeConfig
+  const outcomes = cfg.outcomes ?? []
+  const instr = String(cfg.instruction ?? "")
+  const graph = useAgentGraph()   // derivação: cada saída se nomeia pelo nó ligado
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Bot} accent="bg-gradient-to-br from-violet-500 to-blue-600 text-white" title="Agente IA" selected={p.selected} ai>
+        {instr ? instr.slice(0, 60) : "a IA conduz e devolve o controle"}
+        {outcomes.length > 0 && (
+          <div className="mt-1.5 flex flex-col gap-1">
+            {outcomes.map((o) => {
+              const manual  = o.label?.trim()
+              const derived = manual || describeNode(outcomeTarget(graph, p.id, o.id), graph)
+              const unlinked = !derived
+              return (
+                <div key={o.id} className={`relative text-[10px] border rounded px-1.5 py-0.5 ${
+                  unlinked ? "bg-slate-50 text-slate-400 border-dashed border-slate-200" : "bg-violet-50 text-violet-700 border-violet-100"}`}>
+                  <span className="block truncate">{derived || "não ligada"}</span>
+                  <BranchHandle id={o.id} color="#7c3aed" />
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+      {outcomes.length === 0 && <SourceHandle />}
+    </>
+  )
+}
+
+function AiRouterNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as AiRouterNodeConfig
+  const routes = cfg.routes ?? []
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={GitFork} accent="bg-fuchsia-100 text-fuchsia-700" title="Roteador IA" selected={p.selected} ai>
+        <p className="font-medium text-slate-700">classifica a intenção e ramifica</p>
+        <div className="mt-1.5 space-y-1">
+          {routes.length === 0 && <span className="text-slate-400">sem rotas</span>}
+          {routes.map((r) => (
+            <div key={r.id} className="relative text-[10px] bg-slate-50 border border-slate-100 rounded px-1.5 py-0.5">
+              <span className="block truncate">{r.label || "—"}</span>
+              <BranchHandle id={r.id} color="#a21caf" />
+            </div>
+          ))}
+          <div className="relative text-[10px] italic text-slate-400 bg-slate-50/60 border border-dashed border-slate-200 rounded px-1.5 py-0.5">
+            senão
+            <BranchHandle id="else" color="#94a3b8" />
+          </div>
+        </div>
+      </Card>
+    </>
+  )
+}
+
+function CallFlowNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as CallFlowNodeConfig
+  const isGoto = cfg.mode === "goto"
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Workflow} accent="bg-cyan-100 text-cyan-700" title="Executar fluxo" selected={p.selected}>
+        {cfg.flowId ? (isGoto ? "→ ir para outro fluxo" : "↪ sub-fluxo (volta)") : "escolha o fluxo"}
+      </Card>
+      {/* subflow volta → tem saída de continuação; goto não volta → terminal */}
+      {!isGoto && <SourceHandle />}
+    </>
+  )
+}
+
+function ReturnNode(p: NodeProps) {
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={CornerUpLeft} accent="bg-slate-200 text-slate-600" title="Voltar" selected={p.selected}>
+        volta ao fluxo que chamou
+      </Card>
+    </>
+  )
+}
+
+function TemplateNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as TemplateNodeConfig
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={FileBadge} accent="bg-emerald-100 text-emerald-700" title="Enviar template" selected={p.selected}>
+        {cfg.name?.trim()
+          ? <span className="font-mono text-[11px]">{cfg.name}<span className="text-slate-400"> · {cfg.language || "pt_BR"}</span></span>
+          : "escolha o template aprovado"}
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+function OutreachNode(p: NodeProps) {
+  const o = useOrient()
+  const cfg = cfgOf(p)
+  const chan = cfg.channel === "official" ? "Oficial" : cfg.channel === "baileys" ? "Não-oficial" : "Automático"
+  // Rótulos dos 3 ramos seguem a orientação: linha (vertical, handles no rodapé)
+  // ou coluna à direita (horizontal, handles empilhados na borda direita).
+  const horizontal = o === "horizontal"
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Send} accent="bg-sky-100 text-sky-700" title="Disparar no WhatsApp" selected={p.selected}>
+        Envia para o WhatsApp do contato
+        <span className="block text-[10px] text-slate-400 mt-0.5">via {chan}</span>
+        <div className={`mt-1.5 text-[9px] font-semibold uppercase tracking-wide ${horizontal ? "flex flex-col items-end gap-2.5" : "flex justify-between gap-1"}`}>
+          <span className="text-emerald-600">Enviado</span>
+          <span className="text-slate-500">Sem WhatsApp</span>
+          <span className="text-rose-500">Bloqueado</span>
+        </div>
+      </Card>
+      <SourceHandle id="sent"        pct={20} color="#059669" />
+      <SourceHandle id="no_whatsapp" pct={50} color="#94a3b8" />
+      <SourceHandle id="blocked"     pct={80} color="#dc2626" />
+    </>
+  )
+}
+
+function TagNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as TagNodeConfig
+  const isRemove = cfg.action === "remove"
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Tag} accent="bg-rose-100 text-rose-700" title="Etiquetar" selected={p.selected}>
+        {cfg.tag ? `${isRemove ? "− remover" : "+ adicionar"} "${cfg.tag}"` : "escolha a etiqueta"}
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+function MoveStageNode(p: NodeProps) {
+  const cfg = cfgOf(p) as unknown as MoveStageNodeConfig
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Columns3} accent="bg-orange-100 text-orange-700" title="Mover etapa" selected={p.selected}>
+        {cfg.stage ? `→ ${cfg.stage}` : "escolha a etapa"}
+      </Card>
+      <SourceHandle />
+    </>
+  )
+}
+
+
+function TransferNode(p: NodeProps) {
+  const dept = String(cfgOf(p).department ?? "")
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={ArrowRightLeft} accent="bg-blue-100 text-blue-700" title="Transferir" selected={p.selected}>
+        {dept ? `→ ${dept}` : "escolha o departamento"}
+      </Card>
+    </>
+  )
+}
+
+function EndNode(p: NodeProps) {
+  const msg = String(cfgOf(p).message ?? "")
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={Flag} accent="bg-slate-200 text-slate-600" title="Encerrar" selected={p.selected}>
+        {msg ? msg.slice(0, 60) : "fim do fluxo"}
+      </Card>
+    </>
+  )
+}
+
+function ResolveNode(p: NodeProps) {
+  return (
+    <>
+      <TargetHandle />
+      <Card icon={CheckCircle2} accent="bg-emerald-100 text-emerald-700" title="Concluir" selected={p.selected}>
+        conclui o atendimento (marca resolvido)
+      </Card>
+    </>
+  )
+}
+
+const DS_LABEL: Record<string, string> = { agenda: "Agenda", deals: "Negócios", quotes: "Cotações" }
+/** Fonte de Consulta: nó REDONDO — linguagem de "ferramenta plugada" (MCP/n8n), distinta
+ *  dos passos retangulares do fluxo. Borda tracejada indigo antecipa o fio de dados (F2).
+ *  Só SAÍDA (liga no Agente IA por um fio de dados). Não recebe fluxo. */
+function DataSourceNode(p: NodeProps) {
+  const cfg = cfgOf(p) as { source?: string; verify?: boolean }
+  const label = DS_LABEL[cfg.source ?? "agenda"] ?? "—"
+  return (
+    <div className="relative flex flex-col items-center" title="Fonte de Consulta · leitura, só deste contato">
+      <div className={`relative size-[76px] rounded-full bg-white flex flex-col items-center justify-center gap-0.5 shadow-sm transition-all ${
+        p.selected ? "border-2 border-primary ring-4 ring-primary/15" : "border-2 border-dashed border-indigo-300"}`}>
+        <Database className="size-5 text-indigo-600" />
+        <span className="text-[10px] font-semibold text-slate-700 leading-none">{label}</span>
+        {cfg.verify && (
+          <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-emerald-500 ring-2 ring-white" title="Verificação leve ativa">
+            <ShieldCheck className="size-2.5 text-white" />
+          </span>
+        )}
+      </div>
+      <SourceHandle />
+    </div>
+  )
+}
+
+export const nodeTypes = {
+  start:      StartNode,
+  message:    MessageNode,
+  send_media: SendMediaNode,
+  menu:       MenuNode,
+  condition: ConditionNode,
+  set_variable:   SetVariableNode,
+  switch:         SwitchNode,
+  business_hours: BusinessHoursNode,
+  wait:           WaitNode,
+  http:      HttpNode,
+  collect:   CollectNode,
+  schedule:  ScheduleNode,
+  ai_agent:  AgentNode,
+  ai_router: AiRouterNode,
+  data_source: DataSourceNode,
+  call_flow: CallFlowNode,
+  template:   TemplateNode,
+  outreach:   OutreachNode,
+  tag:        TagNode,
+  move_stage: MoveStageNode,
+  transfer:  TransferNode,
+  resolve:   ResolveNode,
+  return:    ReturnNode,
+  end:       EndNode,
+}
