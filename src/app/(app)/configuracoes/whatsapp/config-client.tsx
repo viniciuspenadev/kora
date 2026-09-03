@@ -154,6 +154,7 @@ function AddQrButton({ atLimit, usage, onClick }: { atLimit: boolean; usage: str
 }
 
 function AddQrModal({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+  const [requestId] = useState(() => crypto.randomUUID())
   const [name, setName] = useState("")
   const [err, setErr] = useState<string | null>(null)
   const [pending, startT] = useTransition()
@@ -161,8 +162,8 @@ function AddQrModal({ onClose, onCreated }: { onClose: () => void; onCreated: (i
   function create() {
     setErr(null)
     startT(async () => {
-      const r = await addQrNumber(name)
-      if (r.error || !r.id) { setErr(r.error ?? "Falha ao criar o número."); return }
+      const r = await addQrNumber(name, requestId)
+      if (!r.id) { setErr(r.error ?? "Falha ao criar o número."); return }
       onCreated(r.id)
     })
   }

@@ -127,7 +127,7 @@ export interface SimpleSelectOption {
 }
 
 export function SimpleSelect({
-  value, onChange, options, placeholder = "— selecione —", className, disabled,
+  value, onChange, options, placeholder = "— selecione —", className, disabled, ariaLabel,
 }: {
   value:        string
   onChange:     (value: string) => void
@@ -135,6 +135,7 @@ export function SimpleSelect({
   placeholder?: string
   className?:   string
   disabled?:    boolean
+  ariaLabel?:   string
 }) {
   // "" pode ser OPÇÃO legítima (ex: "— qualquer —"): se existir na lista, o value
   // passa cru; sem opção "" o vazio vira null → placeholder.
@@ -145,7 +146,7 @@ export function SimpleSelect({
       onValueChange={(v) => onChange((v as string) ?? "")}
       disabled={disabled}
     >
-      <SelectTrigger className={cn("group", className)}>
+      <SelectTrigger className={cn("group", className)} aria-label={ariaLabel}>
         <SelectValue>
           {(v: unknown) => {
             const found = options.find((o) => o.value === v)

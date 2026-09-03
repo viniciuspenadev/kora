@@ -398,7 +398,7 @@ function InvoiceRow({ inv, tenantId, onErr, onOk }: {
               className="h-8 px-3 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 inline-flex items-center gap-1.5">
               <Download className="size-3.5" /> Baixar PDF
             </a>
-            {(inv.status === "open" || inv.status === "overdue") && (
+            {inv.billing_origin === "manual" && (inv.status === "open" || inv.status === "overdue") && (
               <>
                 <select value={method} onChange={(e) => setMethod(e.target.value)} className={`${INP} w-32 h-8`}>
                   <option value="pix">Pix</option><option value="boleto">Boleto</option><option value="cartao">Cartão</option><option value="manual">Manual</option>

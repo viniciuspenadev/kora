@@ -99,7 +99,7 @@ const PASSIVO_CONHECIDO = {
   "src/lib/asaas/reconcile.ts":          1,
   "src/lib/asaas/subscriptions.ts":      2,
   "src/lib/trial-housekeeping.ts":       3,
-  "src/lib/actions/admin-billing.ts":    1,
+  "src/lib/actions/admin-billing.ts":    0,
 }
 
 const porArquivo = {}

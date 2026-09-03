@@ -26,6 +26,7 @@ export interface TenantCharge {
   id: string; tenant_id: string; kind: ChargeKind; description: string; amount_cents: number; active: boolean; created_at: string
 }
 export interface Invoice {
+  billing_origin?: "manual" | "gateway"
   id: string; tenant_id: string; status: InvoiceStatus
   period_start: string; period_end: string; due_date: string | null
   subtotal_cents: number; total_cents: number
@@ -38,7 +39,7 @@ export interface InvoiceItem {
 const SUB_STATUS = new Set(["active", "past_due", "canceled"])
 const MANUAL_PAYMENT_METHODS = new Set(["pix", "boleto", "cartao", "manual"])
 
-async function ajusteManualDeFaturaPermitido(tenantId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+async function ajusteManualDeFaturaPermitido(tenantId: string, invoiceId: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const { data, error } = await supabaseAdmin
     .from("tenants")
     .select("billing_mode")
@@ -48,6 +49,11 @@ async function ajusteManualDeFaturaPermitido(tenantId: string): Promise<{ ok: tr
   if (error) return { ok: false, error: `Nao foi possivel validar o modo de cobranca: ${error.message}` }
   if ((data as { billing_mode?: unknown } | null)?.billing_mode !== "manual") {
     return { ok: false, error: "Faturas do gateway so podem mudar por um fato financeiro confirmado." }
+  }
+  const { data: invoice, error: invoiceError } = await supabaseAdmin.from("invoices")
+    .select("billing_origin,gateway_charge_id,status").eq("tenant_id", tenantId).eq("id", invoiceId).maybeSingle()
+  if (invoiceError || !invoice || invoice.billing_origin !== "manual" || invoice.gateway_charge_id || !["draft", "open", "overdue"].includes(invoice.status)) {
+    return { ok: false, error: "Somente faturas manuais em aberto podem ser ajustadas. Revise os fatos financeiros desta fatura." }
   }
   return { ok: true }
 }
@@ -295,79 +301,25 @@ export async function generateInvoice(tenantId: string): Promise<{ error?: strin
 
 export async function markInvoicePaid(invoiceId: string, tenantId: string, method: string): Promise<{ error?: string }> {
   const session = await requirePlatformAdmin()
-
-  if (!MANUAL_PAYMENT_METHODS.has(method)) return { error: "Forma de pagamento invalida." }
-
-  const permissao = await ajusteManualDeFaturaPermitido(tenantId)
-  if (!permissao.ok) return { error: permissao.error }
-
-  // 🔑 Baixa manual quita a fatura INTEIRA — não existe "recebi metade" pela mão do
-  //    operador. Ler o total garante `paid_cents = total_cents` em vez do default `0`, que
-  //    gravaria "paga sem receber nada" (invariante 1).
-  const { data: inv } = await supabaseAdmin
-    .from("invoices").select("total_cents").eq("id", invoiceId).eq("tenant_id", tenantId).maybeSingle()
-  if (!inv) return { error: "Fatura não encontrada para este cliente." }
-
-  const { error } = await supabaseAdmin
-    .from("invoices")
-    .update({
-      status:      "paid",
-      paid_cents:  (inv as { total_cents: number }).total_cents,
-      paid_at:     new Date().toISOString(),
-      paid_method: method,
-      updated_at:  new Date().toISOString(),
-    })
-    .eq("id", invoiceId)
-    .eq("tenant_id", tenantId)
-  if (error) return { error: error.message }
-
-  // 🔑 Dar uma fatura por paga SEM dinheiro ter entrado é a operação que mais pede
-  //    explicação depois — inclusive porque `paid_method` fica registrado como o operador
-  //    escolheu, e não como o gateway confirmou.
-  await auditarCobranca({
-    tenantId,
-    acao:       "billing.fatura_baixada",
-    origem:     "humano",
-    actorId:    session.user.id,
-    actorEmail: session.user.email,
-    alvo:       { tipo: "invoice", id: invoiceId },
-    depois:     { status: "paid", paid_cents: (inv as { total_cents: number }).total_cents, paid_method: method },
+  if (!MANUAL_PAYMENT_METHODS.has(method)) return { error: "Forma de pagamento inválida." }
+  const permission = await ajusteManualDeFaturaPermitido(tenantId, invoiceId)
+  if (!permission.ok) return { error: permission.error }
+  const { error } = await supabaseAdmin.rpc("ajustar_fatura_manual_atomico", {
+    p_tenant: tenantId, p_invoice: invoiceId, p_actor: session.user.id, p_action: "paid", p_method: method,
   })
-
+  if (error) return { error: "A fatura mudou ou não permite baixa manual. Recarregue e confira." }
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   return {}
 }
 
 export async function voidInvoice(invoiceId: string, tenantId: string): Promise<{ error?: string }> {
   const session = await requirePlatformAdmin()
-  const permissao = await ajusteManualDeFaturaPermitido(tenantId)
-  if (!permissao.ok) return { error: permissao.error }
-  const { error } = await supabaseAdmin
-    .from("invoices")
-    // ⚠️ `erro_operacional` é o motivo certo aqui, e é justamente a distinção que a coluna
-    //    veio criar: anulação pela mão do operador é engano nosso; `nao_servido` é o
-    //    funcionamento normal do pré-pago, e quem o escreve é o housekeeping.
-    // 🔑 `gateway_charge_id: null` LIBERA A VAGA (§9.3 do livro-caixa, 11/08). O índice único
-    //    `uq_invoices_gateway_charge` exclui `void`, então a cobrança do gateway não fica
-    //    presa aqui — mas a cadeia de resolução do pagamento casa por `gateway_charge_id`, e
-    //    deixá-lo carimbado numa fatura ANULADA faria o dinheiro apontar para um documento
-    //    morto: o alvo é recusado, e o pagamento fica parado sem caminho de saída. Anular a
-    //    fatura tem de soltar a cobrança junto — as duas coisas são o mesmo ato.
-    .update({ status: "void", void_reason: "erro_operacional", gateway_charge_id: null, updated_at: new Date().toISOString() })
-    .eq("id", invoiceId)
-    .eq("tenant_id", tenantId)
-  if (error) return { error: error.message }
-
-  await auditarCobranca({
-    tenantId,
-    acao:       "billing.fatura_anulada",
-    origem:     "humano",
-    actorId:    session.user.id,
-    actorEmail: session.user.email,
-    alvo:       { tipo: "invoice", id: invoiceId },
-    depois:     { status: "void", void_reason: "erro_operacional" },
+  const permission = await ajusteManualDeFaturaPermitido(tenantId, invoiceId)
+  if (!permission.ok) return { error: permission.error }
+  const { error } = await supabaseAdmin.rpc("ajustar_fatura_manual_atomico", {
+    p_tenant: tenantId, p_invoice: invoiceId, p_actor: session.user.id, p_action: "void", p_method: null,
   })
-
+  if (error) return { error: "A fatura mudou ou não permite anulação manual. Recarregue e confira." }
   revalidatePath(`/admin/tenants/${tenantId}/cobranca`)
   return {}
 }

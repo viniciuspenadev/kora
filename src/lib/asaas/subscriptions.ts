@@ -923,6 +923,8 @@ export async function regularizarComCartao(
       .from("tenants")
       .update({ asaas_card_token: tokenCifrado, card_brand: rotulo.bandeira, card_last4: rotulo.ultimos4 })
       .eq("id", tenantId)
+      .eq("billing_mode", "gateway")
+      .eq("asaas_subscription_id", sub)
     if (upErr) {
       console.error(JSON.stringify({ src: "asaas", kind: "regularizou-mas-rotulo-nao-gravado",
         tenant: tenantId, msg: upErr.message }))
@@ -1031,7 +1033,7 @@ export async function updateSubscriptionCard(
   // ⚠️ Best-effort: se a gravação falhar, o cartão JÁ foi trocado no gateway e a cobrança
   //    mensal está salva. Perder o token só custa o atalho do upgrade — não vale desfazer
   //    uma troca bem-sucedida por causa disso. Grita no log pra aparecer.
-  const { error: upErr } = await supabaseAdmin
+  const { data: persistedCard, error: upErr } = await supabaseAdmin
     .from("tenants")
     .update({
       // ⚠️ `tokenCifrado`, cifrado ANTES do POST lá em cima. Aqui estava `encryptSecret(token)`
@@ -1046,10 +1048,13 @@ export async function updateSubscriptionCard(
       card_last4: rotulo.ultimos4,
     })
     .eq("id", tenantId)
+    .eq("billing_mode", "gateway")
+    .eq("asaas_subscription_id", id)
+    .select("id").maybeSingle()
 
-  if (upErr) {
+  if (upErr || !persistedCard) {
     console.error(JSON.stringify({
-      src: "asaas", kind: "token-nao-gravado", tenant: tenantId, msg: upErr.message,
+      src: "asaas", kind: "token-nao-gravado", tenant: tenantId, msg: upErr?.message ?? "vínculo alterado durante a operação",
     }))
   }
 

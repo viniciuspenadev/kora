@@ -160,19 +160,14 @@ describe("contratos administrativos de plano", () => {
     }])
   })
 
-  it("criação de tenant recebe plan_id, valida plano ativo e aplica antes do vínculo", () => {
+  it("criação de tenant usa plano canônico e base atômica antes de convidar", () => {
     const source = readFileSync("src/lib/actions/admin.ts", "utf8")
-    const validatePlan = source.indexOf('.from("plans")')
-    const insertTenant = source.indexOf('.from("tenants")\n    // `plan` não vem')
-    const apply = source.indexOf("await applyPlan(tenant.id, planId)")
-    const grantOwner = source.indexOf('.from("tenant_users").insert')
-
-    expect(source).toContain('formData.get("plan_id")')
+    const sql = readFileSync("supabase/migrations/20260903000100_tenant_provisioning_atomic.sql", "utf8")
+    expect(source).toContain('plan: field("plan_id")')
     expect(source).not.toContain('formData.get("plan")')
-    expect(source).toContain('.eq("active", true)')
-    expect(validatePlan).toBeGreaterThan(-1)
-    expect(insertTenant).toBeGreaterThan(validatePlan)
-    expect(apply).toBeGreaterThan(insertTenant)
-    expect(grantOwner).toBeGreaterThan(apply)
+    expect(source).toContain('provisionTenant("godmode"')
+    expect(sql).toContain('FROM public.plans WHERE id=p_plan AND active=true FOR SHARE')
+    expect(sql).toContain('public.aplicar_plano_atomico(p_tenant=>v_tenant,p_plan=>p_plan)')
+    expect(sql.indexOf('v_tenant := public.provisionar_base_tenant')).toBeLessThan(sql.indexOf('FROM public.criar_convite_com_assento_atomico'))
   })
 })

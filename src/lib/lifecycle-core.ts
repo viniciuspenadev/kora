@@ -60,7 +60,7 @@ export async function transitionLifecycleCore(
 
   switch (action) {
     case "approve": {
-      const hasTrial = trialDays > 0
+      const hasTrial = t.billing_mode === "gateway" && trialDays > 0
       to = hasTrial ? "trialing" : "active"
       patch.active = true
       patch.lifecycle_state = to

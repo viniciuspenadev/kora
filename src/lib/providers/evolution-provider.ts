@@ -61,6 +61,12 @@ export class EvolutionProvider implements WhatsAppProvider {
         instanceName: this.instanceName,
         integration:  "WHATSAPP-BAILEYS",
         qrcode:       true,
+        groupsIgnore: true,
+        alwaysOnline: false,
+        readMessages: false,
+        readStatus: false,
+        syncFullHistory: false,
+        rejectCall: false,
       }),
     })
   }
@@ -88,7 +94,7 @@ export class EvolutionProvider implements WhatsAppProvider {
   // ── Webhook ─────────────────────────────────────────────────
 
   async setWebhook(webhookUrl: string) {
-    return this.req(`/webhook/set/${this.instanceName}`, {
+    await this.req(`/webhook/set/${this.instanceName}`, {
       method: "POST",
       body: JSON.stringify({
         webhook: {
@@ -100,10 +106,18 @@ export class EvolutionProvider implements WhatsAppProvider {
             "CONNECTION_UPDATE",
             "QRCODE_UPDATED",
           ],
-          webhookByEvents: false,
+          byEvents: false,
+          base64: false,
         },
       }),
     })
+    const webhook = await this.req<{ url?: string; enabled?: boolean; events?: string[]; webhookByEvents?: boolean; webhookBase64?: boolean }>(
+      `/webhook/find/${this.instanceName}`,
+    )
+    const required = ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CONNECTION_UPDATE", "QRCODE_UPDATED"]
+    if (webhook.url !== webhookUrl || webhook.enabled !== true || webhook.webhookByEvents !== false || webhook.webhookBase64 !== false
+      || !required.every(event => webhook.events?.includes(event))) throw new Error("Webhook não confirmado pela Evolution")
+    return { configured: true }
   }
 
   // ── Messaging ───────────────────────────────────────────────

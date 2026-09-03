@@ -159,7 +159,7 @@ export async function saveWhatsAppConfig(formData: {
  * nome amigável (display_name). Gated pelo limite `whatsapp_qr` do plano (fail-closed).
  * owner/admin. Retorna o id da instância criada (pra UI abrir a tela de QR dela).
  */
-export async function addQrNumber(displayName: string): Promise<{ id?: string; error?: string }> {
+export async function addQrNumber(displayName: string, requestId?: string): Promise<{ id?: string; error?: string }> {
   const session = await auth()
   if (!session) return { error: "Não autenticado" }
   if (!["owner", "admin"].includes(session.user.role)) return { error: "Sem permissão" }
@@ -171,15 +171,13 @@ export async function addQrNumber(displayName: string): Promise<{ id?: string; e
   const name = displayName.trim()
   if (!name) return { error: "Dê um nome ao número (ex: Clínica Lotus II)." }
 
-  // Gate de plano (fail-closed): número QR novo conta na cota.
-  try { await requireLimit(tenantId, "whatsapp_qr") }
-  catch (e) { return { error: (e as Error).message } }
+  // The reservation RPC checks quota under the tenant lock; retries reuse the same slot.
 
   const { data: t } = await supabaseAdmin.from("tenants").select("slug").eq("id", tenantId).maybeSingle()
   const slug = (t?.slug as string | undefined)?.trim() || tenantId.slice(0, 8)
 
-  const res = await autoProvisionWhatsApp(tenantId, slug, name, { ignoreFeatureFlag: true })
-  if (!res.ok || !res.instanceId) return { error: res.error ?? "Falha ao criar o número." }
+  const res = await autoProvisionWhatsApp(tenantId, slug, name, { ignoreFeatureFlag: true, requestId, actorId: session.user.id })
+  if (!res.ok || !res.instanceId) return { id: res.instanceId, error: res.error ?? "Falha ao criar o número." }
 
   revalidatePath("/configuracoes/whatsapp")
   revalidatePath("/integracoes/whatsapp")
@@ -223,6 +221,12 @@ export async function connectWhatsApp(instanceId?: string) {
     ? await base.eq("id", instanceId).maybeSingle()
     : await base.eq("provider", "baileys").order("created_at", { ascending: true }).limit(1).maybeSingle()
   if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
+  if (instance.settings?.provisioning) {
+    const { data: tenant } = await supabaseAdmin.from("tenants").select("slug").eq("id",tenantId).maybeSingle()
+    const resumed = await autoProvisionWhatsApp(tenantId,tenant?.slug ?? tenantId,instance.display_name ?? undefined,
+      {ignoreFeatureFlag:true,requestId:instance.id,actorId:session.user.id,verifyRemote:true})
+    if (!resumed.ok) throw new Error(resumed.error ?? "Configuração pendente.")
+  }
   const provider = getProvider(instance)
   const now      = new Date().toISOString()
 
@@ -243,12 +247,14 @@ export async function connectWhatsApp(instanceId?: string) {
 
       return { status: "connected" as const, qrCode: null }
     }
-  } catch {
-    try {
-      await provider.createInstance()
-    } catch {
-      // Ignora se já existe
-    }
+  } catch (error) {
+    if (instance.settings?.provisioning) throw new Error("Não foi possível confirmar a conexão. Tente novamente.")
+    // Existing integrations are recreated only after confirmed absence, with their
+    // authenticated webhook restored before QR. Network errors do not imply deletion.
+    if (!(error instanceof Error) || !/Evolution API error 404:/.test(error.message)) throw new Error("Não foi possível consultar a conexão.")
+    await provider.createInstance()
+    if (!instance.webhook_url) throw new Error("Configure o webhook desta instância antes de conectar.")
+    await provider.setWebhook(instance.webhook_url)
   }
 
   try {

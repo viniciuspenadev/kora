@@ -20,6 +20,9 @@ export async function runTrialHousekeeping(): Promise<{
   suspended: number; purged: number; outboxPurged: number
 }> {
   const nowIso = new Date().toISOString()
+  const { runScheduledBillingChanges } = await import("@/lib/billing/mode-change")
+  let modeChangeFailed = false
+  try { await runScheduledBillingChanges() } catch { modeChangeFailed = true }
 
   // 1. Suspende trials vencidos — via o CORE (server-only, não-action; `system:true`
   //    relaxa a máquina de estados e audita como system:cron). Não passa pela action
@@ -286,6 +289,7 @@ export async function runTrialHousekeeping(): Promise<{
   //    de "nenhum venceu hoje" para quem lê o livro de execuções.
   // ⚠️ No fim, de propósito: tudo o que não dependia dessa leitura já rodou.
   if (expiredErr) throw new Error(`leitura de trials vencidos falhou: ${expiredErr.message}`)
+  if (modeChangeFailed) throw new Error("Mudanças agendadas de cobrança precisam de revisão")
 
   return { suspended, purged, outboxPurged }
 }

@@ -82,6 +82,10 @@ export default async function InvitePage({
     .eq("email", inv.email)
     .maybeSingle()
 
+  const { data: provision, error: provisionError } = await supabaseAdmin.from("tenant_provisioning")
+    .select("tenant_id").eq("tenant_id", inv.tenant_id).eq("invite_id", inv.id).maybeSingle()
+  if (provisionError) throw new Error("Não foi possível consultar o cadastro. Tente novamente.")
+
   return (
     <InviteShell>
       <AcceptInviteForm
@@ -92,6 +96,7 @@ export default async function InvitePage({
         inviterName={inviterName}
         departmentName={departmentName}
         isNewUser={!existingProfile}
+        requiresConsent={!!provision}
       />
     </InviteShell>
   )

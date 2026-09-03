@@ -173,7 +173,7 @@ interface EventRow {
    */
   payload: {
     dateCreated?: string
-    payment?:      { id?: string; customer?: string; value?: number; status?: string }
+    payment?:      { id?: string; customer?: string; value?: number; status?: string; subscription?: string }
     /** Preenchido pela consulta ao gateway, não pelo payload. */
     subscription?: { id?: string; customer?: string; status?: string }
   } | null
@@ -381,6 +381,23 @@ async function despachar(ev: EventRow): Promise<void> {
         event: ev.id, tenant: tenant.id, msg: erroCarimbo.message,
       }))
     }
+  }
+
+  // Changes preserve the old subscription identity. Late events remain visible for
+  // reconciliation and cannot activate/cancel a replacement contract or a manual account.
+  const { data: changes, error: changesError } = await supabaseAdmin.from("tenant_billing_changes")
+    .select("state,from_mode,previous_subscription_id").eq("tenant_id", tenant.id).eq("from_mode", "gateway")
+  if (changesError) { await fechar(ev, "consulta de mudanças de cobrança indisponível", false); return }
+  if (changes?.some(c => c.state === "pending")) {
+    await fechar(ev, "aguardando conclusão da mudança de modalidade", false); return
+  }
+  const eventSubscription = ev.payload?.payment?.subscription ?? ev.payload?.subscription?.id
+  if (eventSubscription && changes?.some(c => c.state === "completed" && c.previous_subscription_id === eventSubscription)) {
+    const { error } = await supabaseAdmin.from("asaas_webhook_events").update({ billing_review_required: true })
+      .eq("id", ev.id).eq("tenant_id", tenant.id)
+    if (error) { await fechar(ev, "não foi possível registrar revisão financeira", false); return }
+    await fechar(ev, "Evento do contrato anterior: revisar fato financeiro; acesso e modalidade preservados.")
+    return
   }
 
   // ⚠️ Cliente `manual` (ativado à mão) NUNCA é movido pela automação — §2 do design.

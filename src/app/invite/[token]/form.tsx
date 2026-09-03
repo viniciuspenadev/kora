@@ -43,6 +43,7 @@ export function AcceptInviteForm({
   inviterName,
   departmentName,
   isNewUser,
+  requiresConsent = false,
 }: {
   token:          string
   email:          string
@@ -51,12 +52,14 @@ export function AcceptInviteForm({
   inviterName:    string | null
   departmentName: string | null
   isNewUser:      boolean
+  requiresConsent?: boolean
 }) {
   const router = useRouter()
   const [error, setError] = useState("")
   const [pending, startTransition] = useTransition()
   const [rejecting, startReject]   = useTransition()
   const [rejected, setRejected]    = useState(false)
+  const [awaitingApproval, setAwaitingApproval] = useState(false)
   const { confirm, confirmDialog } = useConfirm()
 
   const roleLabel = ROLE_LABELS[role] ?? role
@@ -74,6 +77,7 @@ export function AcceptInviteForm({
         setError(result.error)
         return
       }
+      if (result.awaitingApproval) { setAwaitingApproval(true); return }
       if (result?.isNewUser && password) {
         // Auto-login pós-aceite: mesmo caminho de 2 etapas do signin (device
         // trust F2) — o provider de senha não existe mais no NextAuth.
@@ -111,6 +115,11 @@ export function AcceptInviteForm({
       setRejected(true)
     })
   }
+
+  if (awaitingApproval) return <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center">
+    <Check className="mx-auto mb-4 size-8 text-primary" /><h1 className="text-xl font-semibold text-slate-900">Convite aceito</h1>
+    <p className="mt-3 text-sm text-slate-600">Seu acesso está aguardando aprovação da equipe Kora. Sua conta já está cadastrada.</p>
+  </div>
 
   if (rejected) {
     return (
@@ -172,6 +181,19 @@ export function AcceptInviteForm({
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
+        {!isNewUser && (
+          <label className="block text-sm text-slate-700">Senha da sua conta Kora
+            <input name="password" type="password" required autoComplete="current-password" maxLength={128}
+              className="mt-2 w-full h-11 rounded-lg border border-slate-200 px-3" />
+            <span className="text-xs text-slate-500">Sua identidade e senha atuais serão preservadas.</span>
+          </label>
+        )}
+        {requiresConsent && (
+          <label className="flex items-start gap-2 text-sm text-slate-600">
+            <input name="consent" type="checkbox" required className="mt-1 accent-primary" />
+            <span>Li e aceito a <a href="https://www.omnikora.com.br/privacidade" target="_blank" rel="noopener noreferrer" className="text-primary underline">Política de Privacidade</a> do Kora.</span>
+          </label>
+        )}
         <div className="space-y-2">
           <label className="text-xs font-medium text-slate-600 ml-1">E-mail</label>
           <div className="relative">

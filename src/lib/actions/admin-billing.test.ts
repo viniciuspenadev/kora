@@ -60,6 +60,7 @@ function consulta(tabela: string, colunas?: string) {
       return { data: modoCobranca ? { billing_mode: modoCobranca } : null, error: null }
     }
     if (tabela === "invoices") {
+      if (colunas === "billing_origin,gateway_charge_id,status") return { data: { billing_origin: "manual", gateway_charge_id: null, status: "open" }, error: null }
       if (colunas === "total_cents") return { data: { total_cents: totalDaFatura }, error: null }
       if (cicloPago === "erro") return { data: null, error: { message: "conexão caiu" } }
       return { data: cicloPago ? { period_end: cicloPago } : null, error: null }
@@ -76,6 +77,10 @@ function consulta(tabela: string, colunas?: string) {
 
 vi.mock("@/lib/supabase", () => ({
   supabaseAdmin: {
+    rpc: async (_name: string, params: Record<string, unknown>) => {
+      patch = params.p_action === "paid" ? { status:"paid",paid_cents:totalDaFatura,paid_method:params.p_method } : {status:"void",void_reason:"erro_operacional"}
+      return { data: {ok:true}, error:null }
+    },
     from: (tabela: string) => ({
       select: (colunas?: string) => consulta(tabela, colunas),
       update: (p: Record<string, unknown>) => { patch = p; return { eq: () => ({ eq: async () => ({ error: null }) }), then: (r: (v: unknown) => unknown) => r({ error: null }) } },

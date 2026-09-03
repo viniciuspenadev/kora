@@ -6,7 +6,8 @@ import { listPlans } from "@/lib/actions/admin-plans"
 export default async function NewTenantPage() {
   const plans = (await listPlans())
     .filter((plan) => plan.active)
-    .map(({ id, name }) => ({ id, name }))
+    .map(({ id, name, price_cents, trial_days, trial_activation_mode, included_modules, limits }) =>
+      ({ id, name, price_cents, trial_days, trial_activation_mode, included_modules, limits }))
 
   return (
     <div className="min-h-full">
@@ -24,7 +25,7 @@ export default async function NewTenantPage() {
           <span className="text-slate-900">Novo cliente</span>
         </div>
       </div>
-      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6">
+      <div className="px-4 sm:px-6 py-6">
         <TenantForm plans={plans} />
       </div>
     </div>

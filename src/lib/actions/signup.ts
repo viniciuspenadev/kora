@@ -7,10 +7,11 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { validatePassword } from "@/lib/password"
 import { verifyTurnstile } from "@/lib/turnstile"
 import { rateLimit } from "@/lib/rate-limit"
-import { applyDefaultModules } from "@/lib/modules"
-import { applyPlan, getSignupTrialPlan } from "@/lib/plans"
+import { getSignupTrialPlan } from "@/lib/plans"
 import { sendEmail, buildVerificationEmail } from "@/lib/email/send"
 import { seedTrustForCurrentDevice } from "@/lib/auth/trust"
+
+import { provisionTenant } from "@/lib/tenant-provisioning"
 
 type Result = { ok: boolean; error?: string }
 
@@ -19,10 +20,8 @@ type Result = { ok: boolean; error?: string }
  * (`components/signup/signup-client.tsx`) — guardar uma URL que a pessoa não viu seria
  * pior que não guardar nada.
  */
-const PRIVACY_POLICY_URL = "https://www.omnikora.com.br/privacidade"
 
 const CODE_TTL_MIN = 15
-const MAX_ATTEMPTS = 6
 const RESEND_THROTTLE_MS = 60_000
 
 const RESERVED = new Set([
@@ -31,14 +30,6 @@ const RESERVED = new Set([
   "null","undefined","signup","templates","integracoes","relatorios",
 ])
 
-const DEFAULT_STAGES = [
-  { name: "Triagem",     color: "#94A3B8", prob: 0,   triage: true },
-  { name: "Lead",        color: "#3B82F6", prob: 20 },
-  { name: "Qualificado", color: "#8B5CF6", prob: 40 },
-  { name: "Proposta",    color: "#F59E0B", prob: 70 },
-  { name: "Ganho",       color: "#10B981", prob: 100, won: true },
-  { name: "Perdido",     color: "#EF4444", prob: 0,   lost: true },
-] as const
 
 // ── helpers ───────────────────────────────────────────────────────
 const digits  = (s?: string) => (s ?? "").replace(/\D/g, "")
@@ -239,196 +230,18 @@ export async function resendSignupCode(email: string): Promise<Result> {
   return mail.ok ? { ok: true } : { ok: false, error: "Falha ao reenviar o email." }
 }
 
-// ── 2. Confirma o código → cria a conta e provisiona o tenant ──────
+// Confirmation and provisioning commit together. A failed plan leaves the OTP reusable.
 export async function confirmSignup(email: string, code: string): Promise<{ ok: boolean; error?: string; activated?: boolean }> {
   const ip = await clientIp()
-  // Rate-limit por IP — brute-force do código além do contador por-linha.
-  if (ip && !rateLimit(`signup:confirm:${ip}`, 20, 15 * 60_000).ok) {
-    return { ok: false, error: "Muitas tentativas. Aguarde alguns minutos." }
-  }
-  const e = email?.trim().toLowerCase()
-  const c = digits(code)
-
-  const { data: row } = await supabaseAdmin
-    .from("signup_verifications").select("*")
-    .eq("email", e).is("consumed_at", null)
-    .order("created_at", { ascending: false }).limit(1).maybeSingle()
-  if (!row)                                              return { ok: false, error: "Cadastro não encontrado. Comece de novo." }
-  if (new Date(row.expires_at).getTime() < Date.now())  return { ok: false, error: "O código expirou. Reenvie um novo." }
-  if (row.attempts >= MAX_ATTEMPTS)                      return { ok: false, error: "Muitas tentativas. Reenvie um novo código." }
-  if (hashCode(c) !== row.code_hash) {
-    await supabaseAdmin.from("signup_verifications").update({ attempts: row.attempts + 1 }).eq("id", row.id)
-    return { ok: false, error: "Código incorreto." }
-  }
-
-  // M1: reivindica a linha ATOMICAMENTE (consome) antes de provisionar — evita
-  // dupla-provisão se dois confirms concorrentes passarem no check do código.
-  const { data: claimed } = await supabaseAdmin
-    .from("signup_verifications")
-    .update({ consumed_at: new Date().toISOString() })
-    .eq("id", row.id)
-    .is("consumed_at", null)
-    .select("id")
-    .maybeSingle()
-  if (!claimed) return { ok: false, error: "Cadastro já processado." }
-
-  // Re-checa unicidade (corrida entre start e confirm) — a linha já está consumida.
-  if (await alreadyExists(e, row.phone ?? "")) {
-    return { ok: false, error: "Já existe um cadastro com esses dados." }
-  }
-
-  const { data: plan } = row.plan_id
-    ? await supabaseAdmin.from("plans").select("trial_days, trial_activation_mode").eq("id", row.plan_id).maybeSingle()
-    : { data: null }
-  const trialDays    = (plan?.trial_days as number | undefined) ?? 0
-  const hasExpiry    = trialDays > 0
-  const autoActivate = ((plan?.trial_activation_mode as string | undefined) ?? "manual") === "auto"
-  const nowIso       = new Date().toISOString()
-
-  // Owner
-  const { data: profile, error: pErr } = await supabaseAdmin
-    .from("profiles").insert({ email: e, full_name: row.name, password_hash: row.password_hash })
-    .select("id").single()
-  if (pErr || !profile) return { ok: false, error: "Erro ao criar a conta." }
-
-  // Device trust: a pessoa ACABOU de digitar o código recebido por e-mail →
-  // posse provada; semeia confiança neste dispositivo pro primeiro login não
-  // pedir OUTRO código (mesma prova, duas vezes). Best-effort.
-  await seedTrustForCurrentDevice(profile.id)
-
-  // Tenant (estado conforme o modo de ativação do plano)
-  const slug = await uniqueSlug(row.name as string)
-  const { data: tenant, error: tErr } = await supabaseAdmin.from("tenants").insert({
-    name:            row.name,
-    slug,
-    plan:            "trial",
-    plan_id:         row.plan_id,
-    active:          autoActivate,
-    lifecycle_state: autoActivate ? (hasExpiry ? "trialing" : "active") : "pending_approval",
-    trial_ends_at:   autoActivate && hasExpiry ? new Date(Date.now() + trialDays * 86_400_000).toISOString() : null,
-    activated_at:    autoActivate ? nowIso : null,
-    // ⚖️ Prova do consentimento (LGPD Art. 8 §1 — o ônus é do controlador).
-    //
-    // 🔴 Até 2026-08-04 o aceite era VALIDADO no passo 1 e DESCARTADO: não havia coluna,
-    //    tabela nem log. Não existia como provar que qualquer cliente aceitou a política.
-    // 🔑 A data vem de `row.created_at` e o IP de `row.ip` porque é ali que o aceite
-    //    aconteceu de fato — no formulário, não neste insert (que roda minutos depois,
-    //    possivelmente de outro IP, se a pessoa confirmou o código no celular).
-    // 🔑 Chegar até aqui JÁ É a prova do aceite: `startSignup` recusa sem `consent`, então
-    //    não existe linha de verificação sem consentimento dado. Guardar as três colunas é
-    //    tornar isso auditável sem depender de ler o código.
-    privacy_accepted_at: row.created_at ?? nowIso,
-    privacy_accepted_ip: row.ip ?? null,
-    privacy_policy_url:  PRIVACY_POLICY_URL,
-    // 💳 Quem entra pelo cadastro nasce na esteira de cobrança (docs/asaas-billing-design.md §2).
-    //
-    // 🔴 EXPLÍCITO, e não o DEFAULT da coluna, de propósito. O default é `'manual'` porque
-    //    ele existe pra proteger os tenants que JÁ existiam quando a coluna nasceu — a
-    //    automação não pode alcançar quem foi ativado à mão (cortesia, sócio, contrato
-    //    especial). São duas necessidades opostas, e uma só não serve às duas: se o default
-    //    fosse `gateway`, a régua desligaria os de cortesia; se o cadastro herdasse
-    //    `manual`, o dono giraria a chave na mão a cada cliente novo.
-    //
-    // ⚠️ `gateway` + `asaas_subscription_id` NULO é um estado com significado: *"deveria
-    //    pagar, ainda não configurou cartão"* — é exatamente o trial rodando. Quando o
-    //    cartão entrar, a assinatura é criada com `nextDueDate = trial_ends_at`, e aí o fim
-    //    do teste e a primeira cobrança viram o mesmo dia (o cron de trial já respeita isso).
-    billing_mode:    "gateway",
-  }).select("id, slug").single()
-  if (tErr || !tenant) {
-    // Compensa o profile órfão (o insert do tenant falhou → não pode sobrar dono sem casa).
-    await supabaseAdmin.from("profiles").delete().eq("id", profile.id)
-    return { ok: false, error: "Erro ao criar o ambiente." }
-  }
-
-  // Fecha o trio de identidade/acesso: sem tenant_users a empresa nasce SEM DONO (ninguém entra).
-  // Este é o único insert do bloco que precisa checar+compensar; os de baixo são recuperáveis.
-  const { error: muErr } = await supabaseAdmin.from("tenant_users")
-    .insert({ tenant_id: tenant.id, user_id: profile.id, role: "owner", active: true })
-  if (muErr) {
-    await supabaseAdmin.from("tenants").delete().eq("id", tenant.id)
-    await supabaseAdmin.from("profiles").delete().eq("id", profile.id)
-    console.error(JSON.stringify({ src: "signup", kind: "trio-falhou-rollback", tenant: tenant.id, msg: muErr.message }))
-    return { ok: false, error: "Erro ao criar a conta. Tente novamente." }
-  }
-  // ── Perfil fiscal: nasce com o que a porta sabe ──────────────────────────
-  //
-  // ⚠️ SÓ nome, e-mail e telefone. Documento e endereço são a 1ª pergunta do wizard de
-  //    boas-vindas — lá a consulta de CNPJ funciona (tem sessão) e preenche razão social
-  //    e endereço NA FRENTE da pessoa, que confirma. Aqui não há o que consultar.
-  //
-  // 🔴 O perfil nasce INCOMPLETO de propósito, e isso é diferente do bug que existia até
-  //    2026-08-04: antes ele nascia incompleto **sem que houvesse onde completar**, e
-  //    `getTitularParaCobranca` barrava 100% dos cadastros novos na hora de assinar, com
-  //    um aviso mandando falar com o suporte. Hoje há três lugares (wizard, Configurações
-  //    → Dados da empresa, e o link da própria tela de pagamento) e o checklist de setup
-  //    cobra o que falta.
-  await supabaseAdmin.from("tenant_billing_profile").insert({
-    tenant_id: tenant.id, legal_name: row.name,
-    billing_email: e, phone: row.phone, responsible_name: row.name,
-  })
-
-  // Funil padrão + config (igual ao createTenant do god mode)
-  const { data: pipeline } = await supabaseAdmin.from("pipelines").insert({
-    tenant_id: tenant.id, name: "Funil padrão", color: "#3B82F6", is_default: true, position: 0, active: true, created_by: profile.id,
-  }).select("id").single()
-  if (pipeline) {
-    await supabaseAdmin.from("pipeline_stages").insert(DEFAULT_STAGES.map((s, i) => ({
-      pipeline_id: pipeline.id, tenant_id: tenant.id, name: s.name, color: s.color,
-      position: "triage" in s && s.triage ? -1 : i, probability_pct: s.prob,
-      is_won: "won" in s && !!s.won, is_lost: "lost" in s && !!s.lost,
-      is_triage: "triage" in s && !!s.triage, show_in_kanban: !("triage" in s && s.triage),
-    })))
-    await supabaseAdmin.from("tenant_config").upsert({ tenant_id: tenant.id, default_pipeline_id: pipeline.id }, { onConflict: "tenant_id" })
-  } else {
-    await supabaseAdmin.from("tenant_config").insert({ tenant_id: tenant.id })
-  }
-
-  // Encaixa o plano: habilita os módulos do plano (mantém manuais). Limites resolvem do plano.
-  //
-  // 🔴 O RETORNO ERA DESCARTADO — e `applyPlan` NUNCA lança: ela devolve
-  //    `{ ok:false, error }` e engole a causa. Com o retorno no chão, um plano
-  //    recusado (plano inexistente, guarda de concorrência, RPC indisponível)
-  //    terminava o cadastro com CARA DE SUCESSO e a conta nascia SEM MÓDULO
-  //    NENHUM — falha silenciosa, sem rastro no caller, descoberta só quando o
-  //    cliente reclama que o app está vazio.
-  // ⚠️ Não derruba o cadastro: a conta e o dono já existem, e abortar aqui
-  //    deixaria um tenant órfão pior que um tenant sem módulo. O certo é
-  //    REGISTRAR alto pra virar alerta, e cair no seed default pra a conta não
-  //    nascer pelada.
-  if (row.plan_id) {
-    const aplicado = await applyPlan(tenant.id, row.plan_id as string)
-    if (!aplicado.ok) {
-      console.error(JSON.stringify({
-        src: "signup", kind: "apply-plan-falhou", tenant: tenant.id,
-        plano: row.plan_id, msg: aplicado.error ?? null,
-      }))
-      await applyDefaultModules(tenant.id)   // rede: conta nova nunca nasce sem módulo
-    }
-  } else {
-    await applyDefaultModules(tenant.id)
-  }
-
-  // ── Sem auto-provisionar WhatsApp (decisão do dono, 2026-08-06) ──────────
-  //
-  // 🔴 O SIGNUP CRIAVA UMA INSTÂNCIA NA EVOLUTION PRA TODA CONTA NOVA, e isso estragava
-  //    quatro coisas ao mesmo tempo:
-  //      1. **Matava o gate de plano.** Todo tenant nascia com uma linha em
-  //         `whatsapp_instances`, então qualquer checagem do tipo "ele já tem número?"
-  //         era verdadeira desde o primeiro segundo — foi exatamente assim que o gate de
-  //         `multi_instance` da tela de Integrações nasceu inerte (medido em 06/08).
-  //      2. **Gastava recurso por cadastro abandonado.** Cada instância é uma sessão
-  //         Baileys viva no servidor da Evolution; signup de teste, spam ou desistência
-  //         deixava uma lá pra sempre.
-  //      3. **Mentia na tela.** "1 número" para quem nunca conectou nada.
-  //      4. **Virava órfã ao apagar o tenant.** O delete do tenant não fala com a
-  //         Evolution — na limpeza de 06/08 foi preciso apagar à mão.
-  //
-  // 🔑 Criar número é ATO DO CLIENTE, não efeito colateral do cadastro: acontece no botão
-  //    de Integrações → `addQrNumber`, que checa papel E cota (`requireLimit`) antes de
-  //    provisionar. A tela vazia já convida com "Conecte seu primeiro número".
-  // ⚠️ `autoProvisionWhatsApp` continua existindo e sendo usada — pelo god mode e por
-  //    `addQrNumber`. O que saiu foi a chamada automática, não a capacidade.
-
-  return { ok: true, activated: autoActivate }
+  if (ip && !rateLimit(`signup:confirm:${ip}`, 20, 15 * 60_000).ok) return { ok: false, error: "Muitas tentativas. Aguarde alguns minutos." }
+  const e = typeof email === "string" ? email.trim().toLowerCase() : ""
+  const c = typeof code === "string" ? digits(code) : ""
+  if (!isEmail(e) || !/^\d{6}$/.test(c)) return { ok: false, error: "Informe e-mail e código de seis dígitos." }
+  const { data: row, error } = await supabaseAdmin.from("signup_verifications").select("name")
+    .eq("email", e).order("created_at", { ascending: false }).limit(1).maybeSingle()
+  if (error || !row) return { ok: false, error: "Cadastro não encontrado. Tente novamente." }
+  const result = await provisionTenant("signup", { p_email: e, p_code_hash: hashCode(c), p_slug: await uniqueSlug(row.name) })
+  if (!result.ok) return result
+  if (result.value.user_id) await seedTrustForCurrentDevice(result.value.user_id)
+  return { ok: true, activated: result.value.activated }
 }
