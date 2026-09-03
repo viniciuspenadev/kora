@@ -146,3 +146,11 @@ it("matcher real usa canal, número e precedência do retorno", async () => {
   expect((await findFlowToStart("t", "Olá", false, { channel: "site", isReopened: true }))?.id).toBe("site")
   expect((await findFlowToStart("t", "Olá", false, { channel: "whatsapp", instanceId: "n" }))?.id).toBe("any")
 })
+
+it("fallback sem match de turno antigo preserva nova entrada manual",async()=>{
+  Object.assign(conv(),{status:"open",assigned_to:null,ai_handling:true,metadata:{}})
+  db.tables.studio_flow_runs=[]
+  runTurn.mockImplementationOnce(async()=>{conv().metadata={studio_entry:"new"};return {status:"no_action"}})
+  await routeAutomationTurn(turn)
+  expect(conv().ai_handling).toBe(true);expect(conv().metadata.studio_entry).toBe("new")
+})

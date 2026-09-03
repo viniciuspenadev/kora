@@ -10,6 +10,7 @@ import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { latestInboundAt } from "@/lib/llm/context"
 import { transcribeStoredAudio } from "@/lib/llm/transcribe"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
+import { routeUnprocessedInbound } from "@/lib/atendimento/unprocessed-inbound"
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { handleCampaignInbound } from "@/lib/campaigns/engine"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
@@ -632,6 +633,7 @@ async function handleMessageUpsert(
     //   2. Atendente IA — se habilitada e algum trigger casar (com debounce de rajada).
     //   3. Automações fixas (welcome / horário comercial) — fallback se a IA não atuou.
     // Guardas de takeover/grupo/disabled ficam dentro do motor (v1/v2).
+    if (agendaHandled || kwMatched) await routeUnprocessedInbound(tenantId, conversation.id)
     if (!agendaHandled && !kwMatched) {
       const convId = conversation.id
       const convReopened = (conversation as { _reopened?: boolean })._reopened ?? false
@@ -673,9 +675,10 @@ async function handleMessageUpsert(
             // IA atuou (respondeu/roteou) OU a conversa já foi encaminhada pro
             // time humano → não dispara automações fixas por cima do handoff.
             if (ai.status === "responded" || ai.status === "routed") return
-            if (ai.status === "skipped" && ai.reason === "already_routed") return
+            if (ai.status === "skipped" && ["already_routed", "human_assigned", "not_ai_controlled", "control_changed", "locked", "not_eligible"].includes(ai.reason)) return
           }
 
+          if (!aiText) await routeUnprocessedInbound(tenantId, convId)
           await dispatchAutomations({ tenantId, conversationId: convId, instance })
         } catch (err) {
           console.error("[ai+automation chain] failed:", err)

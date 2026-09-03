@@ -10,6 +10,7 @@
 // fluxo, pelo nó Agente IA — não existe auto-atendente global.
 
 import "server-only"
+import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { activeFlowRun } from "./flow/triggers"
@@ -33,6 +34,10 @@ export function channelDispatchesAI(channel: string | null | undefined): boolean
 }
 
 export async function routeAutomationTurn(input: RunAITurnInput): Promise<RunAITurnResult> {
+  const { data: entry, error: entryError } = await supabaseAdmin.from("chat_conversations")
+    .select("metadata").eq("tenant_id", input.tenantId).eq("id", input.conversationId).maybeSingle()
+  if (entryError || !entry) return { status: "error", error: "Não foi possível conferir o controle na entrada." }
+  const entryMetadata = entry.metadata ?? {}
   // 💸 DEGRAU 3 DA ESCADA (docs/access-revocation-design.md §2) — inadimplente PARA de
   //    gastar, mas continua atendendo na mão. Este é o gasto mais caro do produto: LLM na
   //    NOSSA chave. O gate da porta (webhook) decide se a mensagem ENTRA; este decide se
@@ -45,7 +50,7 @@ export async function routeAutomationTurn(input: RunAITurnInput): Promise<RunAIT
   const status = await checkTenantStatus(input.tenantId)
   if (!status.degraded && !status.canSpend) {
     console.warn("[ai-dispatch] tenant sem direito a gasto — IA não roda", input.tenantId)
-    await routeToHumanDefault(input.tenantId, input.conversationId, "tenant_not_serviceable")
+    await routeToHumanDefault(input.tenantId, input.conversationId, "tenant_not_serviceable", entryMetadata)
     return { status: "skipped", reason: "tenant_not_serviceable" }
   }
 
@@ -56,7 +61,7 @@ export async function routeAutomationTurn(input: RunAITurnInput): Promise<RunAIT
     if (result.status !== "error" && result.status !== "routed" && result.status !== "skipped"
         && !(await activeFlowRun(input.conversationId))) {
       await routeToHumanDefault(input.tenantId, input.conversationId,
-        "studio_finished_or_no_match")
+        "studio_finished_or_no_match", entryMetadata)
     }
     return result
   }
@@ -65,7 +70,7 @@ export async function routeAutomationTurn(input: RunAITurnInput): Promise<RunAIT
   // retornava `skipped` na entrada pra TODOS os tenants (nenhum tem ai_atendente).
   // Os 3 callers (webhook Baileys/Meta + widget do site) tratam `skipped` caindo
   // no dispatchAutomations — mesmo destino de antes.
-  await routeToHumanDefault(input.tenantId, input.conversationId, "no_automation_module")
+  await routeToHumanDefault(input.tenantId, input.conversationId, "no_automation_module", entryMetadata)
   return { status: "skipped", reason: "no_automation_module" }
 }
 

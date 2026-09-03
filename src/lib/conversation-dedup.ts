@@ -31,6 +31,7 @@ import { tenantAiActive } from "@/lib/llm/active"
 import { channelDispatchesAI } from "@/lib/ai-v2/dispatch"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { routeToHumanDefault } from "@/lib/atendimento/human-routing"
+import { canViewConversation, type ViewerScope } from "@/lib/visibility"
 
 export interface FindOrReopenInput {
   tenantId:          string
@@ -49,6 +50,13 @@ export interface FindOrReopenInput {
   channel?:          string | null
   /** Pula a validação de ownership do contato (usado pelo webhook que já validou upstream). */
   skipOwnershipCheck?: boolean
+  /** Manual/formulário não disparam Studio. Só afeta a reabertura. */
+  dispatchStudio?: boolean
+  assignTo?: string | null
+  /** Atualização de um fio já identificado (bump); não escolhe outro fio. */
+  conversationId?: string
+  /** Somente callers humanos: validar acesso antes de reusar/reabrir/atribuir. */
+  viewerScope?: ViewerScope
 }
 
 export type FindOrReopenResult =
@@ -83,6 +91,7 @@ export async function findOrReopenConversation(
   input: FindOrReopenInput,
 ): Promise<FindOrReopenResult> {
   const { tenantId, contactId, instanceId, channel, skipOwnershipCheck } = input
+  if (input.viewerScope && input.viewerScope.tenantId !== tenantId) throw new Error("Conversa não encontrada")
 
   // ── 1. Valida ownership do contato (anti-IDOR) ──
   // Webhook pula porque já validou contact via findOrCreateContact upstream.
@@ -105,6 +114,7 @@ export async function findOrReopenConversation(
     .eq("tenant_id", tenantId)
     .eq("contact_id", contactId)
     .in("status", ["open", "pending", "snoozed"])
+  if (input.conversationId) activeQuery = activeQuery.eq("id", input.conversationId)
   if (instanceId) activeQuery = activeQuery.eq("instance_id", instanceId)
   if (channel)    activeQuery = activeQuery.eq("channel", channel)
   const { data: active } = await activeQuery
@@ -113,6 +123,7 @@ export async function findOrReopenConversation(
     .maybeSingle()
 
   if (active) {
+    if (input.viewerScope && !canViewConversation(input.viewerScope, active)) throw new Error("Conversa não encontrada")
     const wasArchived = !!active.archived_at
     if (wasArchived) {
       // Desarquiva — cliente se manifestou, conv volta a ser visível.
@@ -144,6 +155,7 @@ export async function findOrReopenConversation(
     .eq("tenant_id", tenantId)
     .eq("contact_id", contactId)
     .eq("status", "resolved")
+  if (input.conversationId) resolvedQuery = resolvedQuery.eq("id", input.conversationId)
   if (instanceId) resolvedQuery = resolvedQuery.eq("instance_id", instanceId)
   if (channel)    resolvedQuery = resolvedQuery.eq("channel", channel)
   const { data: resolved } = await resolvedQuery
@@ -152,20 +164,22 @@ export async function findOrReopenConversation(
     .maybeSingle()
 
   if (resolved) {
+    if (input.viewerScope && !canViewConversation(input.viewerScope, resolved)) throw new Error("Conversa não encontrada")
     const wasArchived = !!resolved.archived_at
     const now = new Date().toISOString()
 
     // Vínculo só controla o carimbo. Todo retorno oferece a entrada ao Studio;
     // sem Studio, o núcleo resolve responsável elegível ou fila.
     const convChannel = resolved.channel ?? "whatsapp"
-    const aiFirst = channelDispatchesAI(convChannel) && await tenantAiActive(tenantId)
+    const aiFirst = input.dispatchStudio !== false && !input.assignTo
+      && channelDispatchesAI(convChannel) && await tenantAiActive(tenantId)
     const metadata = { ...((resolved.metadata ?? {}) as Record<string, unknown>) }
-    metadata.attendance_cycle = now
+    metadata.attendance_cycle = crypto.randomUUID()
     delete metadata.ai_routed
     delete metadata.reopen_owner
     delete metadata.ai_pinned_flow
     delete metadata.studio_entry
-    const policy = { assigned_to: null, department_id: null, ai_handling: aiFirst, metadata }
+    const policy = { assigned_to: input.assignTo ?? null, department_id: null, ai_handling: aiFirst, metadata }
 
     // Só encerra execuções anteriores ao ciclo fechado. Nunca cancela um run novo
     // que outro inbound tenha iniciado depois desta leitura.

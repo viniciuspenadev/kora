@@ -11,6 +11,7 @@ import type {
   Capability, CapabilitySpec, ExecCtx, CapabilityResult, PlaybookCtx,
 } from "./types"
 import type OpenAI from "openai"
+import { StudioControlChangedError } from "../control-error"
 
 /**
  * Converte uma spec tipada numa Capability "apagada": embrulha
@@ -33,6 +34,7 @@ export function defineCapability<Args>(spec: CapabilitySpec<Args>): Capability {
       try {
         return await spec.execute(ctx, spec.parseArgs(rawArgs))
       } catch (e) {
+        if (e instanceof StudioControlChangedError) throw e
         const msg = e instanceof Error ? e.message : String(e)
         return { ok: false, error: `capability:${spec.id} ${msg}` }
       }

@@ -67,3 +67,17 @@ it.each(["module", "paused"])("retomada %s devolve ao humano e encerra run", asy
   expect(conv().ai_handling).toBe(false); expect(db.tables.studio_flow_runs[0].status).toBe("done")
   expect(execute).not.toHaveBeenCalled()
 })
+
+it("turno após debounce conserva o gatilho de retorno do ciclo", async () => {
+  conv().assigned_to=null; conv().metadata={attendance_cycle:"returned-cycle"}; conv().ai_handling=true
+  db.tables.studio_flow_runs=[]
+  const base=db.tables.studio_flows[0]
+  db.tables.studio_flows=[{...base,id:"return",trigger:{type:"reopened"}},base]
+  execute.mockResolvedValue({status:"responded",error:null,agent:null,departmentId:null})
+  expect((await runStudioTurn({...input,signals:{isReopened:false}})).status).toBe("responded")
+  expect(execute.mock.calls[0][1].id).toBe("return")
+  expect(db.tables.studio_flow_runs[0].variables.__attendance_cycle).toBe("returned-cycle")
+  db.tables.studio_flow_runs[0].status="done"
+  await runStudioTurn({...input,signals:{isReopened:false}})
+  expect(execute.mock.calls[1][1].id).toBe("f")
+})

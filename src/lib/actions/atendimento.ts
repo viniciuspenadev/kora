@@ -53,18 +53,20 @@ export async function updateAtendimentoPolicy(input: AtendimentoPolicy): Promise
   const slaRaw = input.sla_first_response_minutes
   const sla = slaRaw == null ? null : Math.min(1440, Math.max(1, Math.round(Number(slaRaw) || 15)))
 
-  const { error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("tenant_config")
-    .update({
+    .upsert({
+      tenant_id: tenantId,
       handoff_binding:    binding,
       inactivity_enabled: !!input.inactivity_enabled,
       inactivity_hours:   hours,
       inactivity_action:  action,
       sla_first_response_minutes: sla,
-    })
-    .eq("tenant_id", tenantId)
+    }, { onConflict: "tenant_id" })
+    .select("tenant_id")
 
   if (error) return { error: error.message }
+  if (!data?.length) return { error: "Não foi possível salvar a regra de atendimento." }
   revalidatePath("/configuracoes/atendimento")
   return {}
 }

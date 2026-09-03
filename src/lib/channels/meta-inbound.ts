@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { getProvider } from "@/lib/providers"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
+import { routeUnprocessedInbound } from "@/lib/atendimento/unprocessed-inbound"
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { allowedFrom, statusPatch, type MessageStatus } from "@/lib/channels/message-status"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
@@ -622,6 +623,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
 
   // Cadeia: keyword (sync) → IA (debounce) → automações fixas (fallback). Pulada
   // quando a Agenda já consumiu a resposta (Camada 0 acima).
+  if (agendaHandled) await routeUnprocessedInbound(instance.tenant_id, conv.id)
   if (!agendaHandled) {
     let kwMatched = false
     if (routable && msg.type === "text") {  // keyword só em texto puro (paridade c/ Evolution)
@@ -629,6 +631,7 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
         kwMatched = await evaluateKeywordTriggers({ tenantId: instance.tenant_id, conversationId: conv.id, text: routable, instance })
       } catch (e) { console.error("[meta keyword]", e) }
     }
+    if (kwMatched) await routeUnprocessedInbound(instance.tenant_id, conv.id)
     if (!kwMatched) {
       const convId = conv.id
       const text = routable
@@ -668,8 +671,9 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
               onWillRespond: async () => { try { await getProvider(instance).sendTyping?.(msgId) } catch { /* noop */ } },
             })
             if (ai.status === "responded" || ai.status === "routed") return
-            if (ai.status === "skipped" && ai.reason === "already_routed") return
+            if (ai.status === "skipped" && ["already_routed", "human_assigned", "not_ai_controlled", "control_changed", "locked", "not_eligible"].includes(ai.reason)) return
           }
+          if (!aiText) await routeUnprocessedInbound(instance.tenant_id, convId)
           await dispatchAutomations({ tenantId: instance.tenant_id, conversationId: convId, instance })
         } catch (e) { console.error("[meta ai+automation]", e) }
       })

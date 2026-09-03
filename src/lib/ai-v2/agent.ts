@@ -12,6 +12,7 @@
 // enviado, força uma resposta final (cliente nunca fica mudo).
 
 import "server-only"
+import { StudioControlChangedError } from "./control-error"
 import type OpenAI from "openai"
 import { runChat } from "@/lib/llm/openai"
 import { sendBotText } from "./outbound"
@@ -294,10 +295,12 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
           toolResult = `Tool desconhecida: ${tc.name}`
         } else {
           const r = await cap.run(ctx, raw)
-          if (r.sentText != null) {
+          if (r.ok && Object.hasOwn(r, "routedDepartmentId")) {
+            status = "routed"; departmentId = r.routedDepartmentId ?? null; terminal = true
+            sentMessage ||= r.sentText != null
+            toolResult = "Conversa encaminhada ao atendimento."
+          } else if (r.sentText != null) {
             status = "responded"; sentMessage = true; terminal = true; toolResult = "Mensagem enviada ao cliente."
-          } else if (r.routedDepartmentId) {
-            status = "routed"; departmentId = r.routedDepartmentId; terminal = true; toolResult = "Conversa encaminhada ao departamento."
           } else if (r.toolMessage != null) {
             fedBack = true; toolResult = r.toolMessage
           } else if (r.error) {
@@ -321,6 +324,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       if (t) { await sendBotText(ctx, t); status = "responded"; sentMessage = true; llmResponse = t }
     }
   } catch (e) {
+    if (e instanceof StudioControlChangedError) throw e
     return {
       status: "error", departmentId: null, error: e instanceof Error ? e.message : String(e),
       outcome: null, fields: null, sentMessage, systemPrompt, llmResponse, toolsCalled, usage,

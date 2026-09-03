@@ -245,7 +245,7 @@ describe("destino humano e Studio", () => {
   })
   it("transfer iniciada depois da tomada humana não a sobrescreve", async () => {
     const stale = ctx(); await prepareHumanReply("t", "c", "agent", null, scope)
-    expect((await transferCapability.run(stale, { target: "pool", byAI: false })).ok).toBe(false)
+    await expect(transferCapability.run(stale, { target: "pool", byAI: false })).rejects.toThrow("controle")
     expect(conv().assigned_to).toBe("agent")
   })
   it.each(["owner", "pool", "department", "agent"])("transfer Studio %s muda somente atendimento", async target => {
@@ -256,4 +256,29 @@ describe("destino humano e Studio", () => {
     await routeToHumanDefault("t", "c", "end")
     expect(conv().assigned_to).toBe(target === "owner" ? "owner" : target === "agent" ? "other" : null)
   })
+})
+
+it.each(["", "  \n\t"])("texto vazio %j não toma conversa nem carimba", async content => {
+  conv().channel="site"
+  await expect(chat.sendMessage("c", content)).rejects.toThrow("mensagem")
+  expect(conv().assigned_to).toBeNull(); expect(contact().owner_id).toBeNull()
+  expect(db.tables.chat_messages).toHaveLength(0); expect(accepted).not.toHaveBeenCalled()
+})
+it("nota vazia também não é gravada", async () => {
+  await expect(chat.sendMessage("c", "  ", true)).rejects.toThrow("mensagem")
+  expect(db.tables.chat_messages).toHaveLength(0)
+})
+it("configuração ausente salva pool antes de confirmar sucesso", async () => {
+  session.user.role="owner"; db.tables.tenant_config=[]
+  const { updateAtendimentoPolicy }=await import("@/lib/actions/atendimento")
+  expect(await updateAtendimentoPolicy({handoff_binding:"pool",inactivity_enabled:false,inactivity_hours:4,inactivity_action:"notify"})).toEqual({})
+  await chat.sendMessage("c", "Olá")
+  expect(contact().owner_id).toBeNull()
+  expect(db.tables.tenant_config[0].handoff_binding).toBe("pool")
+})
+it("falha de carimbo é registrada sem invalidar envio aceito", async () => {
+  db.errors.chat_contacts="offline"
+  await chat.sendMessage("c", "Olá")
+  expect(accepted).toHaveBeenCalledOnce(); expect(contact().owner_id).toBeNull()
+  expect(console.error).toHaveBeenCalledWith("[carteira/claimOwnerOnAttendance]", expect.stringContaining("gravar"))
 })

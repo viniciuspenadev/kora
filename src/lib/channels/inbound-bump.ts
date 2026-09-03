@@ -1,5 +1,6 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
+import { findOrReopenConversation } from "@/lib/conversation-dedup"
 
 // ═══════════════════════════════════════════════════════════════
 // Fonte ÚNICA do "subiu no inbox" — o bump da conversa pós-inbound
@@ -17,10 +18,8 @@ import { supabaseAdmin } from "@/lib/supabase"
 //     conversa resolvida: **35 de 35** conversas de site com mensagem de cliente e
 //     ZERO bolinha azul. A quinta porta ficou de fora do mapa original das quatro.
 //
-// 🔴 O incremento é feito pelo POSTGRES (`unread_count + 1` dentro do UPDATE),
-//    não pelo Node. As 4 cópias liam o contador, somavam 1 em JS e gravavam —
-//    duas mensagens simultâneas do mesmo contato liam o mesmo valor e uma
-//    não-lida sumia. A bolinha azul do inbox é esse contador.
+// Contador, status e timestamp participam do CAS; uma disputa relê a linha.
+// Nenhum caminho de atualização reabre apenas o status.
 
 export interface InboundBumpInput {
   tenantId:       string
@@ -51,85 +50,41 @@ export interface InboundBumpInput {
   touchWindow?:   boolean
 }
 
-/**
- * Sobe a conversa no inbox após um inbound. Nunca lança — o caller já gravou a
- * mensagem, e perder o bump é feio (linha não sobe) mas não perde dado.
- */
+/** Atualiza preview/contador com CAS. A reabertura passa sempre pelo núcleo;
+ * a RPC legada reabria apenas o status e por isso não é mais chamada aqui. */
 export async function bumpConversationInbound(input: InboundBumpInput): Promise<void> {
   const { tenantId, conversationId, preview } = input
-  const lastInboundAt = input.lastInboundAt ?? null
-  const metadata      = input.metadata ?? null
-  // Explícito, nunca `undefined`: o DEFAULT do banco não pode ser o único guarda —
-  // se a migration nova não estiver aplicada, o caller precisa ter mandado o valor.
-  const touchWindow   = input.touchWindow !== false
-
-  const { error } = await supabaseAdmin.rpc("bump_conversation_inbound", {
-    p_tenant_id:       tenantId,
-    p_conversation_id: conversationId,
-    p_preview:         preview,
-    p_last_inbound_at: lastInboundAt,
-    p_metadata:        metadata,
-    p_touch_window:    touchWindow,
-  })
-  if (!error) return
-
-  // ── Fallback: a migration ainda não foi aplicada ──────────────
-  // ⚠️ TEMPORÁRIO, e de propósito não-silencioso. Existe só pra a ORDEM de deploy
-  //    (código antes da migration) não derrubar o inbox de ninguém. Enquanto esta
-  //    linha aparecer no log, a corrida do contador continua aberta.
-  // ➜ Zero ocorrência de `bump_conversation_inbound-indisponivel` por 24h = pode remover.
-  console.error(JSON.stringify({
-    src:  "inbound-bump",
-    kind: "bump_conversation_inbound-indisponivel",
-    erro: error.message,
-    tenant: tenantId,
-    conversa: conversationId,
-  }))
-
-  await legacyBump({ tenantId, conversationId, preview, lastInboundAt, metadata, touchWindow })
-}
-
-/** Caminho antigo (lê-soma-grava). Só roda se a função do banco não existir. */
-async function legacyBump(i: {
-  tenantId: string; conversationId: string; preview: string
-  lastInboundAt: string | null; metadata: Record<string, unknown> | null
-  touchWindow: boolean
-}): Promise<void> {
   try {
-    const { data: cur } = await supabaseAdmin
-      .from("chat_conversations")
-      .select("unread_count, status, metadata")
-      .eq("id", i.conversationId)
-      .eq("tenant_id", i.tenantId)
-      .maybeSingle()
-    if (!cur) return
-
-    const now         = new Date().toISOString()
-    const wasResolved = (cur.status as string) === "resolved"
-    const patch: Record<string, unknown> = {
-      last_message_at:      now,
-      last_message_preview: i.preview,
-      last_message_dir:     "in",
-      // 🔴 O fallback TEM que respeitar `touchWindow`, senão o conserto tem bypass
-      //    silencioso — e a janela em que este caminho mais roda é justamente o deploy
-      //    da migration (recarga do schema cache do PostgREST). Omitir a coluna do
-      //    patch é diferente de mandar null: null APAGARIA a âncora existente.
-      ...(i.touchWindow ? { last_inbound_at: i.lastInboundAt ?? now } : {}),
-      unread_count:         ((cur.unread_count as number | null) ?? 0) + 1,
-      status:               wasResolved ? "open" : (cur.status as string),
-      updated_at:           now,
-      ...(wasResolved ? { resolved_at: null } : {}),
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { data: cur, error } = await supabaseAdmin.from("chat_conversations")
+        .select("id, contact_id, instance_id, channel, unread_count, status, metadata, updated_at")
+        .eq("tenant_id", tenantId).eq("id", conversationId).maybeSingle()
+      if (error) throw new Error("Não foi possível ler a conversa para atualizar o recebimento.")
+      if (!cur) return
+      if (cur.status === "resolved") {
+        await findOrReopenConversation({ tenantId, contactId: cur.contact_id,
+          instanceId: cur.instance_id, channel: cur.channel, conversationId,
+          dispatchStudio: input.touchWindow !== false })
+        continue
+      }
+      const now = new Date().toISOString()
+      const patch = {
+        last_message_at: now, last_message_preview: preview, last_message_dir: "in",
+        ...(input.touchWindow !== false ? { last_inbound_at: input.lastInboundAt ?? now } : {}),
+        unread_count: (cur.unread_count ?? 0) + 1,
+        ...(input.metadata ? { metadata: { ...(cur.metadata ?? {}), ...input.metadata } } : {}),
+        updated_at: now,
+      }
+      let update = supabaseAdmin.from("chat_conversations").update(patch)
+        .eq("tenant_id", tenantId).eq("id", conversationId)
+        .eq("status", cur.status).eq("updated_at", cur.updated_at)
+      update = cur.unread_count == null ? update.is("unread_count", null) : update.eq("unread_count", cur.unread_count)
+      const { data: changed, error: writeError } = await update.select("id")
+      if (writeError) throw new Error("Não foi possível atualizar o recebimento da conversa.")
+      if (changed?.length) return
     }
-    if (i.metadata) {
-      patch.metadata = { ...((cur.metadata as Record<string, unknown> | null) ?? {}), ...i.metadata }
-    }
-
-    await supabaseAdmin
-      .from("chat_conversations")
-      .update(patch)
-      .eq("id", i.conversationId)
-      .eq("tenant_id", i.tenantId)
-  } catch (e) {
-    console.error("[inbound-bump] fallback falhou:", (e as Error).message)
+    throw new Error("Conversa concorrida; atualização do recebimento não concluída.")
+  } catch (error) {
+    console.error("[inbound-bump]", error instanceof Error ? error.message : error)
   }
 }

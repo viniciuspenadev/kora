@@ -14,7 +14,9 @@
 // Cada turno grava 1 linha em studio_runs (observability desde o dia 1).
 
 import "server-only"
-import { beginStudioControl, StudioControlChangedError } from "./control"
+import { updateFlowRun } from "./flow/run-state"
+import type { FlowRunRow } from "./flow/types"
+import { assertStudioControl, beginStudioControl, StudioControlChangedError } from "./control"
 import { routeToHumanDefault } from "@/lib/atendimento/human-routing"
 import { supabaseAdmin } from "@/lib/supabase"
 import type { AgentTurnResult } from "./agent"
@@ -196,7 +198,11 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
   const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText, optionId }
 
   // ── 6) Fluxo tem PRECEDÊNCIA; agente é o fallback ──────────
-  const existingRun = await activeFlowRun(conversationId)
+  const previousRun = await activeFlowRun(conversationId, true)
+  const existingRun = previousRun && ["active", "waiting"].includes(previousRun.status) ? previousRun : null
+  if (convMeta.attendance_cycle && previousRun?.variables.__attendance_cycle !== convMeta.attendance_cycle) {
+    matchSig.isReopened = true
+  }
   let flowResult: FlowResult | null = null
   let activeFlowId: string | null = null
 
@@ -205,7 +211,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
     const flow = await loadStartableFlow(tenantId, opts.forceFlowId)
     if (!flow) return { status: "skipped", reason: "flow_unavailable" }
     await beginStudioControl(ctx)
-    const run    = await startFlowRun(tenantId, conversationId, flow)  // reseta o run por conversation_id
+    const run    = await startFlowRun(tenantId, conversationId, flow, ctx.conversationMetadata)  // reseta o run por conversation_id
     activeFlowId = flow.id
     flowResult   = await runFlow(flowInput, flow, run)
   } else {
@@ -240,7 +246,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
       .update({ metadata: m }).eq("id", conversationId).eq("tenant_id", tenantId)
     const flow = await loadStartableFlow(tenantId, pinnedFlowId)
     if (flow) {
-      const run    = await startFlowRun(tenantId, conversationId, flow) // reseta o run por conversation_id
+      const run    = await startFlowRun(tenantId, conversationId, flow, ctx.conversationMetadata) // reseta o run por conversation_id
       activeFlowId = flow.id
       flowResult   = await runFlow(flowInput, flow, run)
     }
@@ -269,7 +275,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
           ? nodeAfter(flow.graph, openerId)
           : (startNode ? nodeAfter(flow.graph, startNode.id) : null)
         // startFlowRunAt faz upsert por conversation_id → substitui um run de bot em curso.
-        const run    = await startFlowRunAt(tenantId, conversationId, flow, startAt)
+        const run    = await startFlowRunAt(tenantId, conversationId, flow, startAt, ctx.conversationMetadata)
         activeFlowId = flow.id
         flowResult   = await runFlow(flowInput, flow, run)
       }
@@ -291,7 +297,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
     const flow = await loadStartableFlow(tenantId, igCommentEngage.flowId)
     if (flow) {
       await markIgAutomationReplied(tenantId, igCommentEngage.runId)   // fecha o funil no ledger
-      const run    = await startFlowRun(tenantId, conversationId, flow)
+      const run    = await startFlowRun(tenantId, conversationId, flow, ctx.conversationMetadata)
       activeFlowId = flow.id
       flowResult   = await runFlow(flowInput, flow, run)
     }
@@ -312,13 +318,11 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
       flowResult   = await runFlow(flowInput, flow, existingRun)
     } else {
       // Abandona o run obsoleto e tenta começar um fluxo VÁLIDO (ou cai no agente).
-      await supabaseAdmin.from("studio_flow_runs")
-        .update({ status: "done", updated_at: new Date().toISOString() })
-        .eq("id", existingRun.id)
+      await updateFlowRun(tenantId, existingRun, { status: "done", resume_at: null })
       const isNewContact = history.length <= 1
       const fresh = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
       if (fresh) {
-        const run    = await startFlowRun(tenantId, conversationId, fresh)
+        const run    = await startFlowRun(tenantId, conversationId, fresh, ctx.conversationMetadata)
         activeFlowId = fresh.id
         flowResult   = await runFlow(flowInput, fresh, run)
       }
@@ -328,7 +332,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
     const isNewContact = history.length <= 1
     const fresh = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
     if (fresh) {
-      const run    = await startFlowRun(tenantId, conversationId, fresh)
+      const run    = await startFlowRun(tenantId, conversationId, fresh, ctx.conversationMetadata)
       activeFlowId = fresh.id
       flowResult   = await runFlow(flowInput, fresh, run)
     }
@@ -415,17 +419,11 @@ function mapResult(status: string, departmentId: string | null, error: string | 
  *    (o cron do despertar, `activeFlowRun`, o motor de inatividade) não muda de
  *    comportamento por causa disto.
  */
-async function finalizeRun(runId: string, reason: string, vars?: Record<string, unknown>): Promise<void> {
-  const { error } = await supabaseAdmin.from("studio_flow_runs")
-    .update({
-      status:     "done",
-      resume_at:  null,
-      variables:  { ...(vars ?? {}), __ended_reason: reason, __ended_at: new Date().toISOString() },
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", runId)
-  // A gravação some em silêncio? Não mais — ver a mesma disciplina em `persistRun`.
-  if (error) console.error("[studio/resume] encerramento não gravado:", runId, reason, error.message)
+async function finalizeRun(tenantId: string, run: FlowRunRow, reason: string): Promise<void> {
+  await updateFlowRun(tenantId, run, {
+    status: "done", resume_at: null,
+    variables: { ...run.variables, __ended_reason: reason, __ended_at: new Date().toISOString() },
+  })
 }
 
 export async function resumeStudioRun(tenantId: string, conversationId: string): Promise<RunAITurnResult> {
@@ -453,13 +451,6 @@ async function doResume(tenantId: string, conversationId: string, rememberContro
   const existingRun = await activeFlowRun(conversationId)
   if (!existingRun || existingRun.status !== "waiting") return { status: "skipped", reason: "no_sleeping_run" }
 
-  // 🔴 Ficha de Persona OU padrões neutros — a MESMA função da porta de entrada.
-  //    Aqui morava o defeito: ficha ausente ENCERRAVA o fluxo. Ver `loadStudioConfig`.
-  const config = await loadStudioConfig(tenantId)
-  // (o gate de módulo ai_studio vem logo abaixo — o toggle do tenant foi removido)
-  // God mode tirou o módulo? Não acorda o fluxo (mesma regra do dispatcher na entrada).
-  if (!(await hasModule(tenantId, "ai_studio"))) { await finalizeRun(existingRun.id, "module_disabled", existingRun.variables); await routeToHumanDefault(tenantId, conversationId, "module_disabled"); return { status: "skipped", reason: "module_disabled" } }
-
   const { data: convData } = await supabaseAdmin
     .from("chat_conversations")
     .select(`
@@ -467,15 +458,27 @@ async function doResume(tenantId: string, conversationId: string, rememberContro
       chat_contacts ( id, custom_name, push_name, phone_number, email, company, doc_id, birth_date, lifecycle_stage, notes, source, primary_channel, bsuid, primary_external_id, created_at )
     `)
     .eq("id", conversationId).eq("tenant_id", tenantId).maybeSingle()
-  if (!convData || convData.status !== "open" || convData.is_group || !convData.contact_id) { await finalizeRun(existingRun.id, "not_eligible", existingRun.variables); return { status: "skipped", reason: "not_eligible" } }
+  if (!convData || convData.status !== "open" || convData.is_group || !convData.contact_id) { await finalizeRun(tenantId, existingRun, "not_eligible"); return { status: "skipped", reason: "not_eligible" } }
 
   const convMeta = (convData.metadata as Record<string, unknown> | null) ?? {}
+  if (Object.hasOwn(existingRun.variables, "__studio_entry")
+      && ((existingRun.variables.__studio_entry ?? null) !== (convMeta.studio_entry ?? null)
+        || (existingRun.variables.__attendance_cycle ?? null) !== (convMeta.attendance_cycle ?? null))) {
+    return { status: "skipped", reason: "control_changed" }
+  }
+  // 🔴 Ficha de Persona OU padrões neutros — a MESMA função da porta de entrada.
+  //    Aqui morava o defeito: ficha ausente ENCERRAVA o fluxo. Ver `loadStudioConfig`.
+  const config = await loadStudioConfig(tenantId)
+  // (o gate de módulo ai_studio vem logo abaixo — o toggle do tenant foi removido)
+  // God mode tirou o módulo? Não acorda o fluxo (mesma regra do dispatcher na entrada).
+  if (!(await hasModule(tenantId, "ai_studio"))) { await finalizeRun(tenantId, existingRun, "module_disabled"); await routeToHumanDefault(tenantId, conversationId, "module_disabled", convMeta); return { status: "skipped", reason: "module_disabled" } }
+
   const takenOver = (config.ai_control_decoupled || convMeta.studio_entry)
     ? !convData.ai_handling
     : (!!convData.assigned_to || !!convMeta.ai_routed)
-  if (takenOver) { await finalizeRun(existingRun.id, "taken_over", existingRun.variables); return { status: "skipped", reason: "taken_over" } }
+  if (takenOver) { await finalizeRun(tenantId, existingRun, "taken_over"); return { status: "skipped", reason: "taken_over" } }
   const contact = convData.chat_contacts as unknown as ContactRow | null
-  if (!contact) { await finalizeRun(existingRun.id, "no_contact", existingRun.variables); await routeToHumanDefault(tenantId, conversationId, "no_contact"); return { status: "skipped", reason: "no_contact" } }
+  if (!contact) { await finalizeRun(tenantId, existingRun, "no_contact"); await routeToHumanDefault(tenantId, conversationId, "no_contact", convMeta); return { status: "skipped", reason: "no_contact" } }
 
   // Instância (envio real após o sono) — carrega da própria conversa.
   let instance: RunAITurnInput["instance"] = {}
@@ -489,7 +492,7 @@ async function doResume(tenantId: string, conversationId: string, rememberContro
 
   const candidate = await loadStartableFlow(tenantId, existingRun.flow_id)
   const flow = candidate && isIgTrigger(candidate.trigger) && !(await hasModule(tenantId, "instagram_automation")) ? null : candidate
-  if (!flow) { await finalizeRun(existingRun.id, "flow_gone", existingRun.variables); await routeToHumanDefault(tenantId, conversationId, "flow_gone"); return { status: "skipped", reason: "flow_gone" } }
+  if (!flow) { await finalizeRun(tenantId, existingRun, "flow_gone"); await routeToHumanDefault(tenantId, conversationId, "flow_gone", convMeta); return { status: "skipped", reason: "flow_gone" } }
 
   const conv: ConvRow = {
     id: convData.id, contact_id: convData.contact_id, stage_id: convData.stage_id,
@@ -517,9 +520,8 @@ async function doResume(tenantId: string, conversationId: string, rememberContro
   const flowInput: FlowExecInput = { ctx, model: config.ai_model, persona, history, incomingText: "" }
 
   // Acorda: status active + limpa resume_at; runFlow continua do nó já pré-avançado.
-  await supabaseAdmin.from("studio_flow_runs")
-    .update({ status: "active", resume_at: null, updated_at: new Date().toISOString() })
-    .eq("id", existingRun.id)
+  await assertStudioControl(ctx)
+  await updateFlowRun(tenantId, existingRun, { status: "active", resume_at: null })
   const flowResult = await runFlow(flowInput, flow, { ...existingRun, status: "active" })
 
   await persistStudioRun({

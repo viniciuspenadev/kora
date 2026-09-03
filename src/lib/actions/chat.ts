@@ -382,6 +382,7 @@ export async function sendMessage(
 ) {
   const session = await auth()
   if (!session) throw new Error("Não autenticado")
+  if (typeof content !== "string" || !content.trim()) throw new Error("Digite uma mensagem antes de enviar.")
 
   const tenantId = session.user.tenantId
   // 🔒 Degrau 3 — ver `assertAtendimentoLiberado`. NÃO é gate de gasto: dentro da carência
@@ -1589,16 +1590,23 @@ export async function createManualConversation(input: {
       { jid: norm.jid, phone: norm.phone },
       { pushName: input.pushName ?? null, source: "whatsapp_outbound" },
     )
+    if (!r.created) await assertContactAccess(r.id)
     contactId = r.id
   }
 
   if (!contactId) throw new Error("Falha ao resolver contato")
 
+  const manualScope = await getViewerScope()
+  if (input.contactId) await assertContactAccess(contactId)
+  if (!manualScope.isAdmin && !manualScope.viewAll && manualScope.instanceIds
+      && !manualScope.instanceIds.includes(instance.id)) throw new Error("Sem acesso a este número.")
+
   // ── Dedup: regra única do Kora (1 conversa viva por contato) ──
   // - Se há ATIVA → reusa
   // - Se há fechada recente (≤7 dias) → reabre (só muda status; stage/lifecycle/won/lost intactos)
   // - Senão → cria nova (continua o fluxo abaixo)
-  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId: instance.id, channel: "whatsapp" })
+  const manualReopen = { tenantId, contactId, instanceId: instance.id, channel: "whatsapp", dispatchStudio: false, assignTo: session.user.id, viewerScope: manualScope }
+  const dedup = await findOrReopenConversation(manualReopen)
   if (dedup.found !== "none") {
     revalidatePath("/inbox")
     revalidatePath("/kanban")
@@ -1651,7 +1659,7 @@ export async function createManualConversation(input: {
   // ativo-por-contato dispara 23505 — tentamos dedup de novo pra pegar
   // a conv que ganhou a corrida.
   if (convErr?.code === "23505") {
-    const retry = await findOrReopenConversation({ tenantId, contactId, instanceId: instance.id, channel: "whatsapp" })
+    const retry = await findOrReopenConversation(manualReopen)
     if (retry.found !== "none") {
       revalidatePath("/inbox")
       revalidatePath("/kanban")

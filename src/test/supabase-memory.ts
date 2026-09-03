@@ -15,7 +15,8 @@ export class MemoryDb {
     const db = this
     const q = {
       select: (_columns?: string) => q,
-      eq: (k: string, v: unknown) => { filters.push(r => r[k] === v); return q },
+      eq: (k: string, v: unknown) => { filters.push(r => typeof r[k] === "object" && r[k] !== null && typeof v === "string"
+        ? JSON.stringify(r[k]) === JSON.stringify(JSON.parse(v)) : r[k] === v); return q },
       is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return q },
       in: (k: string, values: unknown[]) => { filters.push(r => values.includes(r[k])); return q },
       lte: (k: string, v: any) => { filters.push(r => r[k] <= v); return q },

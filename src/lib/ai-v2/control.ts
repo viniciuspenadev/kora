@@ -6,7 +6,8 @@ type ControlContext = {
   conversationMetadata?: Record<string, unknown>
 }
 
-export class StudioControlChangedError extends Error {}
+import { StudioControlChangedError } from "./control-error"
+export { StudioControlChangedError } from "./control-error"
 
 /** Revalidate after slow I/O. A human handoff or a new attendance cycle
  * invalidates the old turn. Sending a message never grants control back. */

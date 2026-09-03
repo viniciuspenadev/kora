@@ -5,6 +5,7 @@ import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { allowedFrom, statusPatch } from "@/lib/channels/message-status"
+import { routeUnprocessedInbound } from "@/lib/atendimento/unprocessed-inbound"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { fetchIgProfile, sendIgPrivateReplyRaw, replyToIgComment } from "@/lib/instagram/api"
@@ -162,12 +163,12 @@ async function maybeEnrich(token: string | null, tenantId: string, igsid: string
   if (needAvatar) await saveContactAvatarFromUrl(tenantId, contactId, prof?.profilePic)
 }
 
-async function getOrCreateIgConversation(tenantId: string, contactId: string, instanceId: string | null): Promise<{ id: string; isNew: boolean }> {
+async function getOrCreateIgConversation(tenantId: string, contactId: string, instanceId: string | null): Promise<{ id: string; isNew: boolean; reopened: boolean }> {
   // Porta ÚNICA de recebimento — mesmo helper do WhatsApp/site. Resolve dedup/reopen
   // + nasce com pipeline/etapa do funil padrão (senão a conversa de IG ficava fora do
   // kanban de atendimento, que filtra por pipeline_id + etapa visível).
   const r = await createInboundConversation({ tenantId, contactId, instanceId, channel: "instagram" })
-  return { id: r.id, isNew: r.isNew }
+  return { id: r.id, isNew: r.isNew, reopened: r.reopened }
 }
 
 /** Resolve tenant + contato (identidade IG) + conversa de uma vez (fonte única). */
@@ -175,7 +176,7 @@ async function resolveIgContext(
   igAccountId: string, fromIgsid: string,
   /** Referral do evento — só existe quando a pessoa veio de um anúncio CTD. */
   referral?: IgMessaging["referral"],
-): Promise<{ tenantId: string; convId: string; token: string | null } | null> {
+): Promise<{ tenantId: string; convId: string; token: string | null; reopened: boolean } | null> {
   const conn = await connectionFor(igAccountId)
   if (!conn) { log("skip", { reason: "no-connection", igAccountId }); return null }
   // instance_id é "emprestado" do WhatsApp por compatibilidade; tenant IG-first (sem
@@ -212,7 +213,7 @@ async function resolveIgContext(
     } catch (e) { log("ad-origin-err", { err: (e as Error).message }) }
   }
 
-  return { tenantId: conn.tenantId, convId: conv.id, token: conn.token }
+  return { tenantId: conn.tenantId, convId: conv.id, token: conn.token, reopened: conv.reopened }
 }
 
 /**
@@ -416,14 +417,6 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
   const routable = dec.routableText
   if (routable?.trim()) {
     try {
-      // O motor exige uma instância (contrato do provider). O IG "empresta" a 1ª do
-      // tenant, como já faz pra conversa. Tenant IG-first (sem WhatsApp) → sem instância
-      // → pula o turno em vez de quebrar.
-      const { data: inst } = await supabaseAdmin
-        .from("whatsapp_instances").select("*")
-        .eq("tenant_id", ctx.tenantId).order("created_at", { ascending: true }).limit(1).maybeSingle()
-      if (!inst) { log("ai-skip", { reason: "no-instance", tenantId: ctx.tenantId }); return }
-
       await routeAutomationTurn({
         tenantId:       ctx.tenantId,
         conversationId: ctx.convId,
@@ -446,14 +439,17 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
         // Sinal do INBOUND: a mesma conversa mistura resposta de story com mensagem
         // normal, então isto não pode sair de coluna da conversa.
         signals: {
+          isReopened: ctx.reopened,
           isStoryReply: dec.metadata.ig_story === "reply",
           storyId:      (dec.metadata.ig_story_reply as { id?: string | null } | undefined)?.id ?? null,
         },
-        instance:       inst as Parameters<typeof routeAutomationTurn>[0]["instance"],
+        instance:       {},
       })
     } catch (e) {
       log("ai-err", { convId: ctx.convId, err: (e as Error).message })
     }
+  } else {
+    await routeUnprocessedInbound(ctx.tenantId, ctx.convId)
   }
 }
 

@@ -111,19 +111,21 @@ async function claim(
   via: "negocio" | "agenda" | "atendimento",
 ): Promise<boolean> {
   // Agente ativo no tenant? (não vira dono um id-lixo, nem quem já saiu)
-  const { data: m } = await supabaseAdmin
+  const { data: m, error: memberError } = await supabaseAdmin
     .from("tenant_users").select("user_id")
     .eq("tenant_id", tenantId).eq("user_id", userId).eq("active", true).maybeSingle()
+  if (memberError) throw new Error("Não foi possível confirmar o atendente para o vínculo.")
   if (!m) return false
 
   // fill-only-empty: `.is('owner_id', null)` só preenche o vazio. O `.select("id")` é
   // obrigatório — sem ele o supabase-js devolve `data: null` mesmo tendo escrito, e não
   // dá pra saber se o carimbo pegou (logaríamos posse que não aconteceu).
-  const { data: pego } = await supabaseAdmin
+  const { data: pego, error: claimError } = await supabaseAdmin
     .from("chat_contacts")
     .update({ owner_id: userId, updated_at: new Date().toISOString() })
     .eq("id", contactId).eq("tenant_id", tenantId).is("owner_id", null)
     .select("id")
+  if (claimError) throw new Error("Não foi possível gravar o vínculo do contato.")
   if (!pego?.length) return false
 
   // Trilha: livro append-only do comercial (sem CHECK de tipo, então não precisa de

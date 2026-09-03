@@ -13,6 +13,7 @@
 
 import "server-only"
 import { assertStudioControl } from "../control"
+import { updateFlowRun } from "./run-state"
 import { supabaseAdmin } from "@/lib/supabase"
 import { isPlausiblePhone } from "@/lib/phone-utils"
 import { normalizeLifecycle } from "@/lib/lifecycle-stage"
@@ -430,42 +431,23 @@ function nowInZone(timezone: string): { weekday: number; hhmm: string } | null {
  *    e não há uma linha em lugar nenhum explicando por quê, porque `studio_runs` é o
  *    ledger da IA e fluxo determinístico nunca escreve lá.
  *
- * ⚠️ Loga e SEGUE, nunca lança: um `throw` aqui subiria até o guarda-chuva do turno e
- *    mataria a execução inteira — trocaria "estado desatualizado" por "cliente sem
- *    resposta nenhuma", que é estritamente pior. Registrar é o objetivo.
+ * Escrita perdida interrompe o turno; o runner registra a falha e devolve o controle.
+ * Uma execução substituída é cancelada sem alterar a nova geração.
  */
 async function persistRun(
-  runId: string, flow: FlowRow, nodeId: string | null,
+  run: FlowRunRow, flow: FlowRow, nodeId: string | null,
   variables: Record<string, unknown>, callStack: CallFrame[], status: FlowRunRow["status"],
 ): Promise<void> {
-  const { error } = await supabaseAdmin
-    .from("studio_flow_runs")
-    .update({
-      flow_id:         flow.id,
-      flow_version:    flow.version,
-      current_node_id: nodeId,
-      variables,
-      call_stack:      callStack,
-      status,
-      // Só o nó `wait` seta resume_at (update próprio). Qualquer outro persist limpa —
-      // senão um timer vencido acordaria uma espera de INPUT (menu/collect) pelo cron.
-      resume_at:       null,
-      updated_at:      new Date().toISOString(),
-    })
-    .eq("id", runId)
-  if (error) console.error("[studio/flow] estado NÃO gravado:", JSON.stringify({ runId, flowId: flow.id, nodeId, status, err: error.message }))
+  await updateFlowRun(flow.tenant_id, run, {
+    flow_id: flow.id, flow_version: flow.version, current_node_id: nodeId,
+    variables: { ...variables }, call_stack: callStack, status, resume_at: null,
+  })
 }
-async function finishRun(runId: string, reason: string, variables?: Record<string, unknown>): Promise<void> {
-  const { error } = await supabaseAdmin
-    .from("studio_flow_runs")
-    .update({
-      status: "done",
-      // Família `__*` (estado interno do motor) no jsonb que já existe — zero migration.
-      ...(variables ? { variables: { ...variables, __ended_reason: reason, __ended_at: new Date().toISOString() } } : {}),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", runId)
-  if (error) console.error("[studio/flow] fim NÃO gravado:", JSON.stringify({ runId, reason, err: error.message }))
+async function finishRun(tenantId: string, run: FlowRunRow, reason: string, variables?: Record<string, unknown>): Promise<void> {
+  await updateFlowRun(tenantId, run, {
+    status: "done", resume_at: null,
+    variables: { ...(variables ?? run.variables), __ended_reason: reason, __ended_at: new Date().toISOString() },
+  })
 }
 
 /** Encerramento sem destino explícito: responsável elegível ou fila humana. */
@@ -488,9 +470,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
   // O runtime é consumidor de 1ª classe do registry → garante o registro aqui.
   ensureCapabilitiesRegistered()
   const { ctx } = input
+  await assertStudioControl(ctx)
   let activeFlow = flow
   let graph      = activeFlow.graph
-  const variables = { ...run.variables }
+  const variables = structuredClone(run.variables)
   // {{nome}}/{{empresa}}/... resolvem pros campos do CONTATO (seed-if-vazio — uma
   // variável do fluxo com o mesmo nome ainda vence). Resolve "Olá {{nome}}" em branco.
   const cName = ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || ""
@@ -536,7 +519,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       if (!picked) {
         await sendBotText(ctx, cfg.noMatch?.trim() || "Não entendi 🤔 Responda com o número da opção:")
         await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
-        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
       variables[`menu:${node.id}`] = picked.id
@@ -589,7 +572,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
             variables[`collect:${node.id}:key`] = fields[volta].saveAs
             delete variables[`collect:${node.id}:idx`]     // resíduo do formato antigo
             await sendBotText(ctx, q, { studio_flow: true })
-            await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+            await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
             return { status: "responded", departmentId: null, error: null, agent: null }
           }
         }
@@ -604,7 +587,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       //    a pergunta, avançando o cadastro com o dado em branco.
       if (!reply || (field.validate && !validateInput(reply, field.validate))) {
         await sendBotText(ctx, field.retry?.trim() || "Hmm, não parece válido. Pode mandar de novo?")
-        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
       variables[field.saveAs?.trim() || "resposta"] = reply
@@ -639,7 +622,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         if (q) {
           variables[`collect:${node.id}:key`] = fields[prox].saveAs
           await sendBotText(ctx, q, { studio_flow: true })
-          await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+          await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
           return { status: "responded", departmentId: null, error: null, agent: null }
         }
       }
@@ -655,7 +638,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       const out   = await resumeSchedule(ctx, cfg, stash, input.incomingText, input.optionId)
       if (out.kind === "wait") {
         variables[`schedule:${node.id}`] = out.stash
-        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: null }
       }
       if (out.responded) responded = true
@@ -744,7 +727,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
          */
         const waits = baloesEsperam(cfg)
         if (waits) {
-          await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+          await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
           return { status: "responded", departmentId: null, error: null, agent: lastAgent }
         }
         currentId = edgeTarget(graph, node.id)
@@ -846,42 +829,12 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // resume roteia pela saída "returned" deste nó (ver bloco RESUME). Overwrite a
         // cada wait → sempre aponta pro nó de espera atual.
         variables["__wait_node__"] = node.id
-        /**
-         * 🔴 A GRAVAÇÃO MAIS PERIGOSA DO MOTOR, E ERA A ÚNICA SEM CONFERÊNCIA.
-         *
-         *    Ela é o que faz o fluxo dormir E o que marca a hora de acordar. Se falhar,
-         *    o run não fica `waiting` e não ganha despertador — ou seja, **nunca mais
-         *    acorda** — e a linha logo abaixo devolve "respondi" como se estivesse tudo
-         *    certo. Fluxo mudo pra sempre, zero rastro.
-         *
-         *    É a mesma família do defeito da ficha de Persona (2026-08-17), num ponto
-         *    ainda mais escondido: lá o fluxo ao menos virava `done`; aqui ele fica
-         *    `active` no nó anterior, e `activeFlowRun` continua devolvendo ele —
-         *    então nenhum OUTRO fluxo consegue começar naquela conversa.
-         *
-         * ⚠️ Não lança (mesma disciplina de `persistRun`): derrubar o turno trocaria
-         *    "o fluxo não continua" por "o cliente não recebe nada".
-         */
-        const { error: sonoErr } = await supabaseAdmin
-          .from("studio_flow_runs")
-          .update({
-            flow_id:         activeFlow.id,
-            flow_version:    activeFlow.version,
-            current_node_id: next,
-            variables,
-            call_stack:      callStack,
-            status:          "waiting",
-            resume_at:       resumeAt,
-            updated_at:      new Date().toISOString(),
-          })
-          .eq("id", run.id)
-        if (sonoErr) {
-          console.error("[studio/flow] Esperar NÃO adormeceu:", JSON.stringify({ runId: run.id, flowId: activeFlow.id, nodeId: node.id, resumeAt, err: sonoErr.message }))
-          await noteFlowSkip(ctx,
-            "⚠️ O fluxo não conseguiu agendar a espera e não vai continuar sozinho. O atendimento segue normalmente na mão.",
-            { node: "wait", node_id: node.id, reason: "sleep_write_failed" })
-        }
-        // Dorme: não continua o loop — o cron (resume_at) acorda o fluxo.
+        // Sem persistência confirmada não prometemos uma retomada futura.
+        await updateFlowRun(ctx.tenantId, run, {
+          flow_id: activeFlow.id, flow_version: activeFlow.version,
+          current_node_id: next, variables: { ...variables }, call_stack: callStack,
+          status: "waiting", resume_at: resumeAt,
+        })
         return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: lastAgent }
       }
       case "http": {
@@ -923,13 +876,13 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         //    A chave identifica o campo mesmo se a lista for reordenada.
         variables[`collect:${node.id}:key`] = fields[idx].saveAs
         await sendBotText(ctx, pergunta, { studio_flow: true })
-        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }
       case "menu": {
         const cfg = node.config as unknown as MenuNodeConfig
         await sendMenu(ctx, { ...cfg, text: interpolate(cfg.text ?? "", variables) })
-        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }
       case "schedule": {
@@ -940,7 +893,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         if (out.kind === "branch") { currentId = edgeTarget(graph, node.id, out.branch); break }
         responded = true
         variables[`schedule:${node.id}`] = out.stash
-        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
         return { status: "responded", departmentId: null, error: null, agent: lastAgent }
       }
       case "ai_router": {
@@ -1013,10 +966,11 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         if (turn.sentMessage) responded = true
 
         if (turn.status === "routed") {
-          await finishRun(run.id, "ai_routed", variables)
+          await finishRun(ctx.tenantId, run, "ai_routed", variables)
           await handBackToHuman(ctx)   // preserva destino explícito
           return { status: "routed", departmentId: turn.departmentId, error: null, agent: turn }
         }
+        await assertStudioControl(ctx)
         if (turn.status === "error") {
           return { status: "error", departmentId: null, error: turn.error, agent: turn }
         }
@@ -1033,7 +987,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           const outs = (cfg.outcomes ?? []) as { id: string }[]
           if (outs.length > 0 && !(turn.outcome != null && outs.some((o) => o.id === turn.outcome))) {
             console.warn("[ai_agent] outcome não-casado — encerrando com segurança", { node: node.id, outcome: turn.outcome })
-            await finishRun(run.id, "ai_outcome_unmatched", variables)
+            await finishRun(ctx.tenantId, run, "ai_outcome_unmatched", variables)
             await handBackToHuman(ctx)
             return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
           }
@@ -1041,7 +995,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           break   // continua avançando o grafo NESTE turno
         }
         // responded / no_action → a IA ainda conduz a etapa → ESPERA neste nó.
-        await persistRun(run.id, activeFlow, node.id, variables, callStack, "waiting")
+        await persistRun(run, activeFlow, node.id, variables, callStack, "waiting")
         return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: turn }
       }
       case "call_flow": {
@@ -1063,7 +1017,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         activeFlow = target
         graph      = target.graph
         currentId  = childStart.id
-        await persistRun(run.id, activeFlow, currentId, variables, callStack, "active")
+        await persistRun(run, activeFlow, currentId, variables, callStack, "active")
         break
       }
       case "template": {
@@ -1137,10 +1091,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // Plano B "manter IA": NÃO encaminhou de propósito — a IA segue na frente.
         // Conta como respondido (senão o hand-back do dispatch derrubaria a IA).
         if (r?.keptAI) {
-          await persistRun(run.id, activeFlow, node.id, variables, callStack, "active")
+          await persistRun(run, activeFlow, node.id, variables, callStack, "active")
           return { status: "responded", departmentId: null, error: null, agent: lastAgent }
         }
-        await finishRun(run.id, "transfer", variables)
+        await finishRun(ctx.tenantId, run, "transfer", variables)
         await handBackToHuman(ctx)   // preserva destino explícito
         if (r?.ok) return { status: "routed", departmentId: r.routedDepartmentId ?? null, error: null, agent: lastAgent }
         // destino inválido na config → não encaminhou; nota interna já registrou pro admin.
@@ -1163,7 +1117,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
             await logConversationEvent({ tenantId: ctx.tenantId, conversationId: ctx.conversationId, type: "resolved", actorKind: "ai" })
           } catch { /* evento é best-effort — nunca derruba o fluxo */ }
         }
-        await finishRun(run.id, "resolved", variables)
+        await finishRun(ctx.tenantId, run, "resolved", variables)
         return done()
       }
       case "return":
@@ -1176,11 +1130,11 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
             activeFlow = parent
             graph      = parent.graph
             currentId  = frame.return_node_id
-            await persistRun(run.id, activeFlow, currentId, variables, callStack, "active")
+            await persistRun(run, activeFlow, currentId, variables, callStack, "active")
             break
           }
         }
-        await finishRun(run.id, "end_node", variables)
+        await finishRun(ctx.tenantId, run, "end_node", variables)
         await handBackToHuman(ctx)   // fim sem destino → responsável elegível ou fila
         return done()
       }
@@ -1238,7 +1192,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       "⚠️ O fluxo parou: uma ligação aponta pra um nó que não existe mais. Abra o fluxo no Kora Studio e refaça a ligação.",
       { node: "engine", reason: "dangling_edge", flow_id: activeFlow.id, node_id: currentId })
   }
-  await finishRun(run.id, motivoFim, variables)
+  await finishRun(ctx.tenantId, run, motivoFim, variables)
   await handBackToHuman(ctx)   // fim sem destino → responsável elegível ou fila
   return done()
 }

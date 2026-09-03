@@ -209,7 +209,7 @@ export async function loadFlow(tenantId: string, flowId: string): Promise<FlowRo
  * despublicado/arquivado, devolve null → o caller degrada (gatilho/agente).
  */
 export async function loadStartableFlow(tenantId: string, flowId: string): Promise<FlowRow | null> {
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("studio_flows")
     .select(FLOW_SELECT)
     .eq("tenant_id", tenantId)
@@ -217,31 +217,33 @@ export async function loadStartableFlow(tenantId: string, flowId: string): Promi
     .eq("status", "published")
     .eq("active", true)
     .maybeSingle()
+  if (error) throw new Error("Não foi possível consultar o fluxo publicado.")
   return (data as FlowRow | null) ?? null
 }
 
 const RUN_SELECT = "id, conversation_id, flow_id, flow_version, current_node_id, variables, call_stack, status, resume_at"
 
 /** Run ativo (active|waiting) da conversa, se houver. */
-export async function activeFlowRun(conversationId: string): Promise<FlowRunRow | null> {
-  const { data } = await supabaseAdmin
+export async function activeFlowRun(conversationId: string, includeFinished = false): Promise<FlowRunRow | null> {
+  let query = supabaseAdmin
     .from("studio_flow_runs")
     .select(RUN_SELECT)
     .eq("conversation_id", conversationId)
-    .in("status", ["active", "waiting"])
-    .maybeSingle()
+  if (!includeFinished) query = query.in("status", ["active", "waiting"])
+  const { data, error } = await query.maybeSingle()
+  if (error) throw new Error("Não foi possível consultar a execução do fluxo.")
   return (data as FlowRunRow | null) ?? null
 }
 
 /** Cria/zera o run da conversa (upsert por conversation_id, UNIQUE). */
-export async function startFlowRun(tenantId: string, conversationId: string, flow: FlowRow): Promise<FlowRunRow> {
+export async function startFlowRun(tenantId: string, conversationId: string, flow: FlowRow, metadata?: Record<string, unknown>): Promise<FlowRunRow> {
   const startNode = flow.graph.nodes.find((n) => n.type === "start") ?? flow.graph.nodes[0] ?? null
-  return startFlowRunAt(tenantId, conversationId, flow, startNode?.id ?? null)
+  return startFlowRunAt(tenantId, conversationId, flow, startNode?.id ?? null, metadata)
 }
 
 /** Como startFlowRun, mas começa num nó específico (campanha-por-fluxo: retoma DEPOIS
  *  do template de acionamento, já enviado a frio — sem duplicar o opener). */
-export async function startFlowRunAt(tenantId: string, conversationId: string, flow: FlowRow, nodeId: string | null): Promise<FlowRunRow> {
+export async function startFlowRunAt(tenantId: string, conversationId: string, flow: FlowRow, nodeId: string | null, metadata?: Record<string, unknown>): Promise<FlowRunRow> {
   const row = {
     tenant_id: tenantId,
     conversation_id: conversationId,
@@ -252,15 +254,18 @@ export async function startFlowRunAt(tenantId: string, conversationId: string, f
     // variables (jsonb EXISTENTE → zero migration; família __* protegida do LLM). Por
     // estar no payload do upsert, é SOBRESCRITO a cada novo disparo na MESMA conversa
     // (o run é 1-por-conversa) → o recorrente que volta ganha régua NOVA = "da casa" ✓.
-    variables: { __run_started_at: new Date().toISOString() },
+    variables: { __run_started_at: new Date().toISOString(), __run_generation: crypto.randomUUID(),
+      __attendance_cycle: metadata?.attendance_cycle ?? null, __studio_entry: metadata?.studio_entry ?? null },
     call_stack: [],
     status: "active" as const,
+    resume_at: null,
+    updated_at: new Date().toISOString(),
   }
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("studio_flow_runs")
     .upsert(row, { onConflict: "conversation_id" })
     .select(RUN_SELECT)
     .maybeSingle()
-  // Fallback defensivo (upsert deve sempre retornar a linha).
-  return (data as FlowRunRow | null) ?? { id: "", ...row }
+  if (error || !data) throw new Error("Não foi possível iniciar a execução do fluxo.")
+  return data as FlowRunRow
 }

@@ -4,6 +4,7 @@ import { checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { rateLimit, getClientIp, rateLimitResponse } from "@/lib/rate-limit"
 import { isOriginAllowed } from "@/lib/site/domain-guard"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
+import { routeToHumanDefault } from "@/lib/atendimento/human-routing"
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { syncContactIdentities } from "@/lib/contacts/identity"
 
@@ -228,7 +229,7 @@ export async function POST(req: NextRequest) {
     // Site = ORIGEM (source='webform'), não um fio vivo: o lead captura o número e a
     // conversa real é WhatsApp. Sem escopo de canal → reusa o fio existente do contato
     // (anexa "veio do site"); só cria conversa nova (channel='site') se não houver nenhuma.
-    const dedup = await findOrReopenConversation({ tenantId: tenant.id, contactId })
+    const dedup = await findOrReopenConversation({ tenantId: tenant.id, contactId, dispatchStudio: false })
 
     let conv: { id: string }
     if (dedup.found !== "none") {
@@ -328,6 +329,7 @@ export async function POST(req: NextRequest) {
         return cors(NextResponse.json({ error: "erro criando conversa" }, { status: 500 }))
       }
       conv = created
+      await routeToHumanDefault(tenant.id, conv.id, "site_lead_created")
 
       // 🗑️ Distribuição automática REMOVIDA (2026-08-26, decisão do dono). Conversa nova
       //    nasce SEM dono e aparece na fila; quem responde primeiro vira o responsável.
