@@ -396,6 +396,8 @@ export interface DealRow {
   pipeline_id:      string | null
   pipeline_name:    string | null
   created_by:       string | null
+  /** Responsável comercial atual, distinto de quem criou o negócio. */
+  assigned_to:      string | null
   stage:            DealStageMini | null
   status:           string
   estimated_value:  number | null
@@ -482,6 +484,7 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
       pipeline_id:      (r.pipeline_id as string | null) ?? null,
       pipeline_name:    (r.deal_pipelines as { name: string | null } | null)?.name ?? null,
       created_by:       (r.created_by as string | null) ?? null,
+      assigned_to:      (r.assigned_to as string | null) ?? null,
       stage:            (r.deal_pipeline_stages as DealStageMini | null) ?? null,
       status:           r.status as string,
       estimated_value:  (r.estimated_value as number | null) ?? null,

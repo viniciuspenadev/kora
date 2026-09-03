@@ -4,13 +4,14 @@ import { ContactPic } from "@/components/chat/contact-pic"
 import { SimpleSelect } from "@/components/ui/select"
 
 import { useState, useEffect, useMemo, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
+import { dealListReturnHref } from "@/lib/crm/deal-list"
 import Link from "next/link"
 import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
-  Package, Wrench, Trash2, Search, MoreHorizontal, Hourglass, Bot, ChevronDown, Building2,
+  Package, Wrench, Trash2, MoreHorizontal, Hourglass, Bot, ChevronDown, Building2,
 } from "lucide-react"
 import { maskCpfCnpj } from "@/lib/masks"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -24,15 +25,16 @@ import {
 } from "@/components/ui/dropdown-menu"
 import {
   moveDeal, moveDealById, openDeal, cancelDeal, cancelDealById, reopenDeal, reopenDealById, updateDeal, addDealNote, addDealNoteById,
-  addDealItem, updateDealItem, removeDealItem, searchCatalogForPicker, getCatalogCategories,
-  type DealDetail, type DealEventView, type DealItemView, type CatalogPickerItem, type CatalogPickerCursor,
+  addDealItem, updateDealItem, removeDealItem,
+  type DealDetail, type DealEventView, type DealItemView,
 } from "@/lib/actions/deals"
-import { computeDealValue, lineSubtotal, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
+import { computeDealValue, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
 import { createTask, setTaskDone, type TaskRow } from "@/lib/actions/tasks"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
 import { DealQuotes } from "@/components/crm/deal-quotes"
+import { DealItemModal } from "@/components/crm/deal-item-modal"
 import type { DocumentRow, DocumentSettings } from "@/lib/commercial/documents"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
@@ -69,6 +71,7 @@ function relTime(iso: string | null): string {
 
 export function DealPageClient({ deal, tasks, isManager = false, dealFields = [], agents = [], units = [], currentUserId = "", quotes = [], quoteDefaults }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[]; agents?: { id: string; name: string }[]; units?: { id: string; name: string; color: string }[]; currentUserId?: string; quotes?: DocumentRow[]; quoteDefaults?: DocumentSettings }) {
   const router = useRouter()
+  const backHref = dealListReturnHref(useSearchParams().get("returnTo"))
   const [pending, start] = useTransition()
   const convId = deal.conversationId
   // Tick pra abrir o modal "Gerar cotação" a partir do menu "⋯" do header (o card
@@ -301,7 +304,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
       <div className="bg-white border-b border-slate-200">
         <div className="px-6 pt-3.5">
           <div className="flex items-start gap-3.5">
-            <Link href="/negocios" title="Voltar ao pipeline" className="size-8 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0 mt-1">
+            <Link href={backHref} title="Voltar aos negócios" aria-label="Voltar aos negócios" className="size-8 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0 mt-1">
               <ArrowLeft className="size-4" />
             </Link>
 
@@ -887,11 +890,13 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           dealTotal={valueSummary?.total ?? 0}
           dealMrr={valueSummary?.mrr ?? 0}
           onClose={() => setItemModal(null)}
-          onSubmit={(p) => {
+          onSubmit={async (p) => {
             const m = itemModal
-            setItemModal(null)
-            if (m.mode === "edit") run(() => updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths }))
-            else run(() => addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, priceTableId: p.priceTableId }))
+            if (m.mode !== "edit") return false
+            const r = await updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths })
+            if ("error" in r) { toast.error(r.error); return false }
+            router.refresh()
+            return true
           }}
           onAdd={async (p) => {
             // Quick-add: grava e MANTÉM o modal aberto (montar venda de vários itens de uma vez).
@@ -1472,15 +1477,6 @@ function qtdTermLabel(billing: "monthly" | "yearly", termMonths: number | null):
   if (billing === "yearly") { const y = Math.round(t / 12); return `${y} ${y === 1 ? "ano" : "anos"}` }
   return `${t} ${t === 1 ? "mês" : "meses"}`
 }
-/** "1.234,56" → número em reais (NaN se inválido). */
-function parseMoneyBR(s: string): number | null {
-  const t = s.trim()
-  if (!t) return null
-  const clean = t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t
-  const n = Number(clean)
-  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : NaN
-}
-
 // ── NEGOCIAÇÃO — itens + resumo + termos da proposta (N2, spec do owner) ──
 
 /** Fator de contribuição no total (recorrente × prazo — mesma matemática da lib). */
@@ -1642,443 +1638,3 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
 
 
 
-/** Modal de item — adicionar (picker do catálogo → configurar) ou ajustar (direto). */
-function DealItemModal({ dealId, edit, tables, defaultTableId, pending, dealItemCount, dealTotal, dealMrr, onClose, onSubmit, onAdd }: {
-  dealId: string
-  edit: DealItemView | null
-  tables: { id: string; name: string; is_default: boolean; active: boolean }[]
-  defaultTableId: string | null
-  pending: boolean
-  /** Estado vivo do negócio (recomputado no server a cada add → footer-recibo). */
-  dealItemCount: number
-  dealTotal: number
-  dealMrr: number
-  onClose: () => void
-  onSubmit: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null }) => void
-  onAdd: (p: { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null }) => Promise<boolean>
-}) {
-  // Multi-tabela (T2, decisão owner 2026-07-11): escolhe a tabela POR item, aqui no
-  // add. Seletor só aparece com 2+ tabelas visíveis; "" = tabela padrão do tenant.
-  const visibleTables = tables.filter((p) => p.active || p.id === defaultTableId)
-  const multiTable = visibleTables.length > 1
-  const defaultSel = defaultTableId && visibleTables.find((p) => p.id === defaultTableId && !p.is_default) ? defaultTableId : ""
-  const [tableId, setTableId]   = useState<string>(defaultSel)
-  // Lista server-side (escala): páginas acumuladas via searchCatalogForPicker.
-  //
-  // 🔴 O RESULTADO É CARIMBADO COM A BUSCA QUE O PRODUZIU (`key`). Antes eram 4 estados
-  //    soltos, zerados na mão no corpo do efeito a cada tecla — e o "é a resposta certa?"
-  //    dependia de um contador (`reqIdRef`) que só sabia dizer "mais nova/mais velha".
-  //    Carimbo resolve os dois: página de fora do carimbo atual **não tem como** aparecer,
-  //    e nada precisa ser zerado (o que não bate com o carimbo já É "carregando").
-  //    Bônus: busca "A → B → A" reaproveita a resposta de A; com contador, ela era jogada
-  //    fora por ser "velha" e a pessoa esperava de novo pelo mesmo resultado.
-  const [list, setList] = useState<{
-    key: string; items: CatalogPickerItem[]; cursor: CatalogPickerCursor | null; hasMore: boolean; error: string | null
-  }>({ key: "", items: [], cursor: null, hasMore: false, error: null })
-  const [loadingMore, setLoadingMore] = useState(false)
-
-  const [category, setCategory] = useState<string | null>(null)
-  const [categories, setCategories] = useState<string[]>([])
-  const [basket, setBasket] = useState<Map<string, number>>(new Map())   // qtd que ENTROU nesta sessão, por item (realce/×N)
-  const [search, setSearch]     = useState("")
-
-  /** Identidade da busca atual: os 3 filtros. JSON porque nenhum separador de um caractere
-   *  é seguro — a pessoa pode digitar qualquer coisa na busca. */
-  const reqKey    = JSON.stringify([tableId, search, category])
-  const fresh     = list.key === reqKey
-  const items     = edit ? [] : fresh ? list.items : null   // null = carregando 1ª pág
-  const cursor    = fresh ? list.cursor  : null
-  const hasMore   = fresh ? list.hasMore : false
-  const listError = fresh ? list.error   : null
-  const [picked, setPicked]     = useState<CatalogPickerItem | null>(null)
-  const [qty, setQty]           = useState(edit ? fmtQty(edit.quantity) : "1")
-  // Preço da LINHA (negociado) — o do catálogo entra como sugestão editável.
-  const [price, setPrice]       = useState(edit ? edit.unit_price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
-  const [discount, setDiscount] = useState(edit && edit.discount > 0 ? edit.discount.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
-  // Desconto em R$ OU % (owner 2026-07-20) — o % é açúcar de digitação: converte
-  // pra valor na hora (o server só conhece valor; teto validado igual nos 2 modos).
-  const [discMode, setDiscMode] = useState<"brl" | "pct">("brl")
-  const [term, setTerm]         = useState(edit?.term_months != null ? String(edit.term_months) : "")
-  const [error, setError]       = useState<string | null>(null)
-
-  // Categorias (uma vez, no add) — alimenta os chips de filtro.
-  useEffect(() => {
-    if (edit) return
-    getCatalogCategories().then(setCategories).catch(() => {})
-  }, [edit])
-
-  // 1ª página server-side — refaz ao mudar busca/categoria/tabela (debounce 300ms, latest-wins).
-  // Trocar a tabela re-preça (resolveDealPricing no server). Fail-closed: tabela sem grade → erro.
-  useEffect(() => {
-    if (edit) return
-    const t = setTimeout(async () => {
-      const r = await searchCatalogForPicker({ dealId, tableId, query: search, category, limit: 30 })
-      // Carimba com a busca que originou. Se a pessoa já mudou o filtro, `fresh` fica
-      // falso e isto nunca chega à tela — sem precisar comparar contador nenhum.
-      setList("error" in r
-        ? { key: reqKey, items: [], cursor: null, hasMore: false, error: r.error }
-        : { key: reqKey, items: r.items, cursor: r.nextCursor, hasMore: r.hasMore, error: null })
-    }, 300)
-    return () => clearTimeout(t)
-  }, [edit, dealId, tableId, search, category, reqKey])
-
-  async function loadMore() {
-    if (loadingMore || !hasMore || !cursor) return
-    setLoadingMore(true)
-    const r = await searchCatalogForPicker({ dealId, tableId, query: search, category, cursor, limit: 30 })
-    // Só concatena se a lista ainda for a MESMA busca — senão a página 2 de "cadeira"
-    // entrava no meio do resultado de "mesa".
-    if (!("error" in r)) {
-      setList((prev) => prev.key !== reqKey ? prev
-        : { ...prev, items: [...prev.items, ...r.items], cursor: r.nextCursor, hasMore: r.hasMore })
-    }
-    setLoadingMore(false)
-  }
-
-  // Quick-add: qtd 1, preço da tabela, e MANTÉM o modal aberto (realce na lista). Config fina = clicar no item.
-  async function quickAdd(c: CatalogPickerItem) {
-    const ok = await onAdd({ catalogItemId: c.id, quantity: 1, unitPrice: c.price, discount: null, termMonths: null, priceTableId: tableId || null })
-    if (ok) setBasket((m) => new Map(m).set(c.id, (m.get(c.id) ?? 0) + 1))
-  }
-
-  // Item "ativo" da configuração: o escolhido no picker OU o snapshot em edição.
-  // listPrice/maxPct = base do PISO (teto de desconto snapshotado).
-  const active = useMemo(() => (
-    edit
-      ? { name: edit.name, billing: edit.billing, price: edit.unit_price, type: edit.type, listPrice: edit.list_price ?? edit.unit_price, maxPct: edit.max_discount_pct ?? 0, unit: edit.unit }
-      : picked
-        ? { name: picked.name, billing: picked.billing, price: picked.price, type: picked.type, listPrice: picked.price, maxPct: picked.max_discount_pct ?? 0, unit: picked.unit }
-        : null
-  ), [edit, picked])
-  const recurring = active != null && active.billing !== "one_time"
-
-  // Preço efetivo da linha: o digitado; vazio = sugestão do catálogo/snapshot.
-  const effPrice = useMemo(() => {
-    if (!active) return null
-    if (!price.trim()) return active.price
-    const p = parseMoneyBR(price)
-    return p == null || Number.isNaN(p) ? null : p
-  }, [active, price])
-
-  // Desconto EFETIVO em R$ (modo % converte sobre preço × qtd). NaN = inválido.
-  const discValue = useMemo(() => {
-    if (!discount.trim()) return 0
-    const n = parseMoneyBR(discount)
-    if (n == null || Number.isNaN(n)) return NaN
-    if (discMode === "brl") return n
-    const q = Number(qty.replace(",", "."))
-    if (effPrice == null || !Number.isFinite(q) || n > 100) return NaN
-    return Math.round(effPrice * q * (n / 100) * 100) / 100
-  }, [discount, discMode, qty, effPrice])
-
-  // Preview ao vivo da linha (mesma matemática do server — lib compartilhada).
-  const preview = useMemo(() => {
-    if (!active || effPrice == null) return null
-    const q = Number(qty.replace(",", "."))
-    if (!Number.isFinite(q) || q <= 0 || Number.isNaN(discValue)) return null
-    return lineSubtotal({ billing: active.billing, unit_price: effPrice, quantity: q, discount: discValue, term_months: null })
-  }, [active, effPrice, qty, discValue])
-
-  // Troca de modo converte o que já foi digitado (20% ⇄ R$ 500,00) — sem perder input.
-  function switchDiscMode(m: "brl" | "pct") {
-    if (m === discMode) return
-    const q = Number(qty.replace(",", "."))
-    const base = effPrice != null && Number.isFinite(q) ? effPrice * q : null
-    if (discount.trim() && base && base > 0 && !Number.isNaN(discValue)) {
-      if (m === "pct") {
-        const pct = (discValue / base) * 100
-        setDiscount(pct > 0 ? (Math.round(pct * 10) / 10).toLocaleString("pt-BR") : "")
-      } else {
-        setDiscount(discValue > 0 ? discValue.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
-      }
-    }
-    setDiscMode(m)
-  }
-
-  async function submit() {
-    setError(null)
-    const q = Number(qty.replace(",", "."))
-    if (!Number.isFinite(q) || q <= 0) { setError("Quantidade inválida"); return }
-    if (effPrice == null) { setError("Preço inválido — use por exemplo 1.500,00"); return }
-    const d = discount.trim() ? discValue : null
-    if (d != null && Number.isNaN(d)) { setError(discMode === "pct" ? "Percentual inválido (0–100)" : "Desconto inválido"); return }
-    const tm = term.trim() ? Math.floor(Number(term)) : null
-    if (tm != null && (!Number.isFinite(tm) || tm <= 0)) { setError("Prazo inválido"); return }
-    // Piso do teto (mesma regra do server — que valida de novo, fail-closed):
-    // vale pro desconto E pro preço negociado.
-    if (active) {
-      const floor = active.listPrice * q * (1 - (active.maxPct ?? 0) / 100)
-      const line  = effPrice * q - (d ?? 0)
-      if (line < floor - 0.01) {
-        setError(active.maxPct > 0
-          ? `Desconto acima do permitido — este item aceita no máximo ${active.maxPct}% (mínimo da linha: ${brl(floor)}).`
-          : "Este item não aceita desconto (teto 0% no catálogo).")
-        return
-      }
-    }
-    const payload = { catalogItemId: picked?.id, quantity: q, unitPrice: effPrice, discount: d, termMonths: recurring ? tm : null, priceTableId: tableId || null }
-    // Ajuste (edit) → grava e FECHA. Add configurado → grava e VOLTA pra lista (modal
-    // fica aberto pra montar a venda inteira; item vira realce).
-    if (edit) { onSubmit(payload); return }
-    const ok = await onAdd(payload)
-    if (ok) {
-      if (picked) setBasket((m) => new Map(m).set(picked.id, (m.get(picked.id) ?? 0) + q))
-      setPicked(null); setQty("1"); setPrice(""); setDiscount(""); setTerm(""); setDiscMode("brl")
-    }
-  }
-
-  const field = "w-full h-10 px-3 text-sm bg-white border border-slate-200 rounded-lg placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300"
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className={`bg-white rounded-2xl shadow-2xl shadow-slate-900/20 w-full max-w-2xl flex flex-col overflow-hidden ${active ? "max-h-[88vh]" : "h-[85vh] max-h-[calc(100vh-2rem)]"}`} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-200 shrink-0">
-          <span className="size-9 rounded-xl bg-primary-50 text-primary-600 grid place-items-center shrink-0"><Package className="size-5" /></span>
-          <div className="min-w-0">
-            <p className="text-[15px] font-semibold text-slate-900 tracking-tight">{edit ? "Ajustar item" : picked ? "Configurar item" : "Adicionar produto/serviço"}</p>
-            <p className="text-[11px] text-slate-400 mt-0.5">{active ? "Preço, quantidade e desconto desta venda" : "Do seu catálogo — com tabela de preço e desconto máximo"}</p>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Fechar" className="ml-auto size-8 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 shrink-0"><X className="size-4" /></button>
-        </div>
-
-        {!active ? (
-          /* passo 1 — catálogo: busca server-side + chips de categoria + quick-add (escala pra milhares) */
-          <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-4 pt-3 pb-2.5 border-b border-slate-100 shrink-0 space-y-2.5">
-              {multiTable && (
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-medium text-slate-500 shrink-0">Tabela</span>
-                  <SimpleSelect value={tableId} onChange={setTableId} className="h-8 text-xs flex-1"
-                    options={visibleTables.map((p) => ({ value: p.is_default ? "" : p.id, label: p.active ? p.name : `${p.name} (desativada)` }))} />
-                </div>
-              )}
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400" />
-                <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nome, SKU ou categoria…"
-                  className="w-full h-10 pl-9 pr-3 text-sm bg-white border border-slate-200 rounded-lg placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300" />
-              </div>
-              {categories.length > 0 && (
-                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 -mx-0.5 px-0.5">
-                  <button type="button" onClick={() => setCategory(null)}
-                    className={`shrink-0 px-2.5 h-7 rounded-full text-[11px] font-semibold border transition-colors ${category === null ? "bg-primary text-white border-primary" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>Todos</button>
-                  {categories.map((cat) => (
-                    <button key={cat} type="button" onClick={() => setCategory(cat)}
-                      className={`shrink-0 px-2.5 h-7 rounded-full text-[11px] font-semibold border transition-colors whitespace-nowrap ${category === cat ? "bg-primary text-white border-primary" : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"}`}>{cat}</button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-4 py-2">
-              {items === null && (
-                <div className="space-y-1.5 py-1">
-                  {Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className="flex items-center gap-2.5 px-3 py-2">
-                      <div className="size-8 rounded-lg bg-slate-100 animate-pulse shrink-0" />
-                      <div className="flex-1 space-y-1.5"><div className="h-2.5 w-1/2 bg-slate-100 rounded animate-pulse" /><div className="h-2 w-1/3 bg-slate-100 rounded animate-pulse" /></div>
-                      <div className="h-3 w-14 bg-slate-100 rounded animate-pulse shrink-0" />
-                    </div>
-                  ))}
-                </div>
-              )}
-              {listError && (
-                <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5 leading-relaxed my-2">{listError}</p>
-              )}
-              {items !== null && items.length === 0 && !listError && (
-                <div className="text-center py-10 px-4 leading-relaxed">
-                  {search.trim() || category ? (
-                    <p className="text-[11px] text-slate-400">Nada encontrado{category ? " nesta categoria" : ""}{search.trim() ? ` para "${search.trim()}"` : ""}.</p>
-                  ) : (
-                    <p className="text-[11px] text-slate-400">
-                      Seu catálogo está vazio.<br />
-                      <Link href="/catalogo" className="text-primary-600 font-semibold hover:underline">Cadastre produtos e serviços</Link> pra compor o valor dos negócios.
-                    </p>
-                  )}
-                </div>
-              )}
-              {items !== null && items.length > 0 && (
-                <div className="space-y-1">
-                  {items.map((c) => {
-                    const inBasket = basket.get(c.id) ?? 0
-                    return (
-                      <div key={c.id}
-                        className={`group flex items-center gap-3 pl-2.5 pr-2 py-2 rounded-xl transition-colors ${inBasket ? "bg-primary-50 ring-1 ring-inset ring-primary-100" : "hover:bg-slate-50"}`}>
-                        <button type="button"
-                          onClick={() => { setPicked(c); setPrice(c.price > 0 ? c.price.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : ""); setQty("1"); setDiscount(""); setTerm(""); setDiscMode("brl"); setError(null) }}
-                          className="flex items-center gap-3 min-w-0 flex-1 text-left">
-                          {c.image_path ? (
-                            /* eslint-disable-next-line @next/next/no-img-element */
-                            <img src={`/api/catalog-image/${c.id}`} alt="" className="size-10 rounded-xl object-cover shrink-0 ring-1 ring-slate-200" />
-                          ) : (
-                            <span className={`size-10 rounded-xl grid place-items-center shrink-0 ${c.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
-                              {c.type === "service" ? <Wrench className="size-5" /> : <Package className="size-5" />}
-                            </span>
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <p className="text-sm font-semibold text-slate-800 truncate">{c.name}</p>
-                              {inBasket > 0 && <span className="shrink-0 inline-flex items-center rounded-md bg-primary text-white text-[10px] font-bold px-1.5 h-4 leading-none tabular-nums">×{fmtQty(inBasket)}</span>}
-                            </div>
-                            <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                              {[c.sku, c.category].filter(Boolean).join(" · ") || (c.type === "service" ? "Serviço" : "Produto")}
-                              {c.max_discount_pct > 0 && <span className="ml-1.5 inline-flex items-center rounded bg-emerald-50 px-1.5 py-px text-[10px] font-semibold text-emerald-700 align-middle">até {c.max_discount_pct}%</span>}
-                            </p>
-                          </div>
-                          <span className="text-right shrink-0 pl-1">
-                            <span className="text-sm font-bold text-slate-900 tabular-nums">
-                              {brl(c.price)}<span className="font-medium text-slate-400 text-[10px]">{BILLING_PT[c.billing].suffix}</span>
-                            </span>
-                            {c.table_label && <span className="block text-[9px] font-semibold text-sky-600">{c.table_label}</span>}
-                          </span>
-                        </button>
-                        <button type="button" disabled={pending} onClick={() => quickAdd(c)} title="Adicionar (qtd 1)" aria-label={`Adicionar ${c.name}`}
-                          className={`size-9 grid place-items-center rounded-lg border shrink-0 transition-colors disabled:opacity-40 ${inBasket ? "border-primary-200 bg-primary-100 text-primary-700 hover:bg-primary-200" : "border-slate-200 text-slate-500 hover:border-primary-300 hover:bg-primary-50 hover:text-primary-600"}`}>
-                          <Plus className="size-4" />
-                        </button>
-                      </div>
-                    )
-                  })}
-                  {hasMore && (
-                    <button type="button" onClick={loadMore} disabled={loadingMore}
-                      className="w-full mt-1 py-2 text-[11px] font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-lg transition-colors inline-flex items-center justify-center gap-1.5">
-                      {loadingMore ? <><Loader2 className="size-3.5 animate-spin" /> Carregando…</> : "Carregar mais"}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {dealItemCount > 0 && (
-              /* rodapé-recibo: o valor do negócio (motor computeDealValue) cresce a cada add */
-              <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-slate-200 bg-white shrink-0">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-medium text-slate-400 leading-none">{dealItemCount} {dealItemCount === 1 ? "item no negócio" : "itens no negócio"}</p>
-                  <p className="text-base font-bold text-slate-900 tabular-nums mt-1 leading-none">
-                    {brl(dealTotal)}
-                    {dealMrr > 0 && <span className="ml-2 text-xs font-semibold text-primary-700">+ {brl(dealMrr)}/mês</span>}
-                  </p>
-                </div>
-                <button type="button" onClick={onClose} className="h-9 px-5 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg transition-colors shrink-0">Concluir</button>
-              </div>
-            )}
-          </div>
-        ) : (
-          /* passo 2 — configurar quantidade/desconto/prazo */
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {!edit && <button type="button" onClick={() => setPicked(null)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-700"><ArrowLeft className="size-3" /> trocar item</button>}
-            <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200">
-              <span className={`size-10 rounded-xl grid place-items-center shrink-0 ${active.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
-                {active.type === "service" ? <Wrench className="size-5" /> : <Package className="size-5" />}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-slate-800 truncate">
-                  {active.name}
-                  {(picked?.table_label ?? edit?.price_table_label) && <span className="ml-1.5 text-[9px] font-bold text-sky-600 align-middle">{picked?.table_label ?? edit?.price_table_label}</span>}
-                </p>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  {BILLING_PT[active.billing].label} · tabela <span className="font-semibold text-slate-600 tabular-nums">{brl(active.listPrice)}{BILLING_PT[active.billing].suffix}</span>
-                  {active.maxPct > 0
-                    ? <span className="text-emerald-600 font-semibold"> · pode chegar a {brl(active.listPrice * (1 - active.maxPct / 100))} (até {active.maxPct}%)</span>
-                    : <span className="text-slate-400"> · sem desconto</span>}
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-medium text-slate-500 mb-1">Preço unitário</label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>
-                  <input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0,00"
-                    className={`${field} pl-8 tabular-nums`} />
-                </div>
-                {effPrice != null && effPrice !== active.price && (
-                  <p className="text-[10px] text-slate-400 mt-1">tabela: {brl(active.price)} — preço negociado nesta venda</p>
-                )}
-              </div>
-              <div>
-                <label className="block text-[11px] font-medium text-slate-500 mb-1">Quantidade{active.unit !== "un" ? ` · ${unitSpec(active.unit).symbol}` : ""}</label>
-                <input value={qty} onChange={(e) => setQty(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" autoFocus className={field} />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-[11px] font-medium text-slate-500">Desconto <span className="text-slate-300 font-normal">(opcional)</span></label>
-                  <div className="inline-flex rounded-md border border-slate-200 overflow-hidden">
-                    <button type="button" onClick={() => switchDiscMode("brl")}
-                      className={`px-2 py-0.5 text-[10px] font-bold transition-colors ${discMode === "brl" ? "bg-primary text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}>R$</button>
-                    <button type="button" onClick={() => switchDiscMode("pct")}
-                      className={`px-2 py-0.5 text-[10px] font-bold transition-colors ${discMode === "pct" ? "bg-primary text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}>%</button>
-                  </div>
-                </div>
-                <div className="relative">
-                  {discMode === "brl" && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">R$</span>}
-                  <input value={discount} onChange={(e) => setDiscount(e.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal"
-                    placeholder={discMode === "brl" ? "0,00" : "0"} className={`${field} tabular-nums ${discMode === "brl" ? "pl-8" : "pr-7"}`} />
-                  {discMode === "pct" && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">%</span>}
-                </div>
-                {/* Equivalência ao vivo — quem digita % vê o R$, quem digita R$ vê o % */}
-                {discount.trim() !== "" && !Number.isNaN(discValue) && discValue > 0 && effPrice != null && (() => {
-                  const q = Number(qty.replace(",", "."))
-                  const base = Number.isFinite(q) ? effPrice * q : 0
-                  const pct = base > 0 ? (discValue / base) * 100 : 0
-                  const over = active.maxPct > 0 && pct > active.maxPct + 0.05
-                  return (
-                    <p className="text-[10px] tabular-nums mt-1 text-slate-400">
-                      = {discMode === "pct" ? `−${brl(discValue)}${BILLING_PT[active.billing].suffix}` : `${(Math.round(pct * 10) / 10).toLocaleString("pt-BR")}%`}
-                      {active.maxPct > 0 && (over
-                        ? <span className="text-red-600 font-semibold"> · acima do teto ({active.maxPct}%)</span>
-                        : <span className="text-emerald-600 font-semibold"> · dentro do teto ({active.maxPct}%)</span>)}
-                    </p>
-                  )
-                })()}
-              </div>
-              {recurring && (
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-500 mb-1">Prazo <span className="text-slate-300 font-normal">(meses)</span></label>
-                  <input value={term} onChange={(e) => setTerm(e.target.value.replace(/[^\d]/g, ""))} inputMode="numeric" placeholder={`${DEFAULT_TERM_MONTHS} (padrão)`} className={`${field} tabular-nums`} />
-                </div>
-              )}
-            </div>
-            {recurring && (
-              <p className="text-[10px] text-slate-400 -mt-1.5">Usado no valor total do negócio: {active.billing === "monthly" ? "mensalidade" : "anuidade"} × prazo.</p>
-            )}
-
-            {preview != null && (() => {
-              const q  = Number(qty.replace(",", "."))
-              const tm = term.trim() ? Math.floor(Number(term)) : DEFAULT_TERM_MONTHS
-              const f  = active.billing === "monthly" ? tm : active.billing === "yearly" ? tm / 12 : 1
-              const d  = discount.trim() && !Number.isNaN(discValue) ? discValue : 0
-              return (
-                <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-xl bg-primary-50 border border-primary-100">
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-primary-700">Total da linha</p>
-                    <p className="text-[11px] text-slate-500 tabular-nums mt-0.5 truncate">
-                      {brl(effPrice ?? 0)} × {fmtQty(q)}{d > 0 && <> − {brl(d)} de desconto</>}
-                    </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <span className="text-2xl font-extrabold text-slate-900 tabular-nums leading-none">{brl(preview)}<span className="text-xs font-semibold text-slate-500">{BILLING_PT[active.billing].suffix}</span></span>
-                    {recurring && Number.isFinite(f) && f > 0 && (
-                      <span className="block text-[10px] text-slate-400 tabular-nums mt-1">{tm} meses no total: {brl(preview * f)}</span>
-                    )}
-                  </div>
-                </div>
-              )
-            })()}
-
-            {error && <p className="text-[11px] text-red-600 bg-red-50 border border-red-100 px-3 py-2 rounded-lg">{error}</p>}
-
-            <button type="button" disabled={pending} onClick={submit}
-              className="w-full flex items-center justify-center gap-2 py-2.5 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
-              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
-              {edit ? "Salvar ajuste" : "Adicionar ao negócio"}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
