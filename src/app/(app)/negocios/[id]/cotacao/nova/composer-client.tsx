@@ -28,7 +28,7 @@ export function QuoteComposer({
 }: {
   dealId: string; dealName: string; hasItems: boolean; itemCount: number; defaults: DocumentSettings
   dealPaymentMethod: string | null; dealInstallments: number | null; dealProposalExpiresAt: string | null
-  /** Modo NOVA VERSÃO: cotação de origem (será anulada e substituída ao gerar). */
+  /** Modo NOVA VERSÃO: proposta de origem (será anulada e substituída ao gerar). */
   fromDoc?: { id: string; code: string } | null
   /** Modo RETOMAR RASCUNHO: id do rascunho aberto → salvar sobrescreve, gerar ativa. */
   draftId?: string | null
@@ -45,7 +45,7 @@ export function QuoteComposer({
   // gravam de volta nas colunas do deal — armazenamento, sem UI lá).
   const [payMethod, setPayMethod] = useState<string>(dealPaymentMethod ?? "")
   const [installmentsN, setInstallmentsN] = useState<number | null>(dealInstallments)
-  // Nova versão → herda as condições do snapshot de origem. Cotação NOVA nasce
+  // Nova versão → herda as condições do snapshot de origem. Proposta NOVA nasce
   // com os modelos "SEMPRE INCLUIR" do contexto já carregados (governança do dono);
   // sem modelos marcados = vazia (sem texto-fantasma).
   const alwaysFor = useCallback((ctx: TemplateContext): RichDoc =>
@@ -121,7 +121,7 @@ export function QuoteComposer({
   }, [hasItems, refreshPreview])
 
   function openConfirm() {
-    if (!hasItems) { toast.error("Adicione itens ao negócio antes de gerar a cotação."); return }
+    if (!hasItems) { toast.error("Adicione itens ao negócio antes de gerar a proposta."); return }
     setConfirmOpen(true)
   }
   const condOf = () => ({
@@ -142,8 +142,8 @@ export function QuoteComposer({
         ? await activateQuoteDraftAction(draftId, { dealId, ...cond })
         : await generateQuote({ dealId, ...cond })
       if ("error" in r) { toast.error(r.error); return }
-      toast.success(fromDoc ? `Cotação ${r.code} gerada — ${fromDoc.code} anulada` : `Cotação ${r.code} gerada`)
-      router.push(`/negocios/${dealId}`)
+      toast.success(fromDoc ? `Proposta ${r.code} gerada — ${fromDoc.code} anulada` : `Proposta ${r.code} gerada`)
+      router.push(`/negocios/${dealId}?tab=proposals`)
     })
   }
   // Salvar rascunho: preserva o trabalho SEM numerar/gerar PDF. Cria (1ª vez) ou
@@ -153,7 +153,7 @@ export function QuoteComposer({
       const r = await saveQuoteDraftAction({ dealId, ...condOf() }, draftId ?? undefined)
       if ("error" in r) { toast.error(r.error); return }
       toast.success("Rascunho salvo")
-      router.push(`/negocios/${dealId}`)
+      router.push(`/negocios/${dealId}?tab=proposals`)
     })
   }
 
@@ -164,12 +164,12 @@ export function QuoteComposer({
     <div className="flex flex-col h-full overflow-hidden">
       {/* Barra superior — full-width; Validade e Gerar vivem aqui (não flutuam no corpo) */}
       <header className="flex items-center gap-3 px-5 h-14 border-b border-slate-200 bg-white shrink-0">
-        <Link href={`/negocios/${dealId}`} className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shrink-0">
+        <Link href={`/negocios/${dealId}?tab=proposals`} className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-semibold text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shrink-0">
           <ArrowLeft className="size-3.5" /> Voltar
         </Link>
         <div className="min-w-0">
           <h1 className="text-sm font-bold text-slate-900 leading-tight truncate">
-            {fromDoc ? <>Nova versão <span className="text-slate-400 font-semibold">de {fromDoc.code}</span></> : draftId ? "Retomar rascunho" : "Nova cotação"}
+            {fromDoc ? <>Nova versão <span className="text-slate-400 font-semibold">de {fromDoc.code}</span></> : draftId ? "Retomar rascunho" : "Nova proposta"}
           </h1>
           <p className="text-[11px] text-slate-400 truncate leading-tight">{dealName}</p>
         </div>
@@ -193,7 +193,7 @@ export function QuoteComposer({
           )}
           <button onClick={openConfirm} disabled={pending || !hasItems}
             className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white transition-colors disabled:opacity-50">
-            {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />} Gerar cotação
+            {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />} Gerar proposta
           </button>
         </div>
       </header>
@@ -205,7 +205,7 @@ export function QuoteComposer({
           <div className="space-y-5">
             {!hasItems && (
               <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                Este negócio ainda não tem itens — adicione itens na negociação antes de gerar a cotação.
+                Este negócio ainda não tem itens — adicione itens na negociação antes de gerar a proposta.
               </div>
             )}
 
@@ -241,7 +241,7 @@ export function QuoteComposer({
               menu={<InsertTemplateMenu items={byCtx("condicoes")} onPick={(t) => insertTemplate("terms", t)} />} />
 
             <CollapsibleField label="Observações" optional value={notes} onChange={setNotes}
-              placeholder="Notas visíveis ao cliente na cotação…" editorKey={fieldRev.notes}
+              placeholder="Notas visíveis ao cliente na proposta…" editorKey={fieldRev.notes}
               menu={<InsertTemplateMenu items={byCtx("observacoes")} onPick={(t) => insertTemplate("notes", t)} />} />
 
             {/* Contrato — campo único grande (o texto inteiro do contrato) */}
@@ -280,7 +280,7 @@ export function QuoteComposer({
           </div>
           <div className="flex-1 min-h-0 p-3">
             {hasItems
-              ? <iframe ref={iframeRef} title="Prévia da cotação" className="w-full h-full rounded-lg border border-slate-200 bg-white" />
+              ? <iframe ref={iframeRef} title="Prévia da proposta" className="w-full h-full rounded-lg border border-slate-200 bg-white" />
               : <div className="h-full grid place-items-center text-xs text-slate-400 px-6 text-center">A prévia aparece quando o negócio tiver itens.</div>}
           </div>
         </div>
@@ -309,10 +309,10 @@ function fmtDate(d: string): string {
   return new Date(d + "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })
 }
 function validityInfo(v: string): { tone: "ok" | "warn" | "muted"; text: string } {
-  if (!v) return { tone: "muted", text: "Sem prazo de validade — a cotação não vence." }
+  if (!v) return { tone: "muted", text: "Sem prazo de validade — a proposta não vence." }
   const today = new Date(); today.setHours(0, 0, 0, 0)
   const days = Math.round((new Date(v + "T12:00:00").getTime() - today.getTime()) / 86_400_000)
-  if (days < 0) return { tone: "warn", text: "Data no passado — a cotação nasce vencida." }
+  if (days < 0) return { tone: "warn", text: "Data no passado — a proposta nasce vencida." }
   if (days === 0) return { tone: "ok", text: `Válida só hoje — até ${fmtDate(v)}.` }
   return { tone: "ok", text: `Válida por ${days} dia${days === 1 ? "" : "s"} — até ${fmtDate(v)}.` }
 }
@@ -330,7 +330,7 @@ function ConfirmModal({ dealName, itemCount, validUntil, setValidUntil, filled, 
         <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b border-slate-100">
           <div className="size-9 rounded-lg bg-primary-50 grid place-items-center shrink-0"><FileText className="size-4 text-primary-600" /></div>
           <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-bold text-slate-900">Confirmar e gerar cotação</h3>
+            <h3 className="text-sm font-bold text-slate-900">Confirmar e gerar proposta</h3>
             <p className="text-xs text-slate-400 truncate">{dealName}</p>
           </div>
           <button onClick={onCancel} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100"><X className="size-4" /></button>
@@ -448,7 +448,7 @@ function CollapsibleField({ label, value, onChange, placeholder, optional, menu,
 }
 
 /** "Inserir modelo" — lista os modelos ATIVOS do contexto (Configurações →
- *  Cotação) e ANEXA o escolhido ao campo. Some quando não há modelos. */
+ *  Proposta) e ANEXA o escolhido ao campo. Some quando não há modelos. */
 function InsertTemplateMenu({ items, onPick }: { items: QuoteTemplate[]; onPick: (t: QuoteTemplate) => void }) {
   const [open, setOpen] = useState(false)
   if (!items.length) return null
@@ -493,14 +493,14 @@ function PdfViewerOverlay({ url, onClose }: { url: string; onClose: () => void }
       >
         <div className="flex items-center justify-between pl-4 pr-2 h-11 border-b border-slate-200 bg-white shrink-0">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 inline-flex items-center gap-2">
-            <FileText className="size-3.5 text-primary" /> Prévia da cotação
+            <FileText className="size-3.5 text-primary" /> Prévia da proposta
           </p>
           <button type="button" onClick={onClose} title="Fechar"
             className="size-8 grid place-items-center rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
             <X className="size-4" />
           </button>
         </div>
-        <iframe title="Prévia da cotação (ampliada)" src={`${url}#view=FitH`} className="flex-1 w-full bg-slate-100" />
+        <iframe title="Prévia da proposta (ampliada)" src={`${url}#view=FitH`} className="flex-1 w-full bg-slate-100" />
       </div>
     </div>
   )

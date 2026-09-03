@@ -27,10 +27,11 @@ export function isExpired(status: DocumentStatus, validUntil: string | null): bo
   return validUntil < new Date().toISOString().slice(0, 10)
 }
 
-export function StatusChip({ status, validUntil = null }: { status: DocumentStatus; validUntil?: string | null }) {
+export function StatusChip({ status, validUntil = null, quiet = false }: { status: DocumentStatus; validUntil?: string | null; quiet?: boolean }) {
   if (isExpired(status, validUntil)) {
     return <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200">Vencida</span>
   }
   const m = STATUS_META[status] ?? STATUS_META.draft
+  if (quiet) return <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600">{m.label}</span>
   return <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border ${m.cls}`}>{m.label}</span>
 }

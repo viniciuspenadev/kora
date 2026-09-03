@@ -1,9 +1,12 @@
 "use client"
 
+import detailStyles from "./deal-detail.module.css"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { SimpleSelect } from "@/components/ui/select"
 
-import { useState, useEffect, useMemo, useTransition } from "react"
+import { useState, useMemo, useTransition } from "react"
+import { Tabs } from "@base-ui/react/tabs"
+import { SectionCard } from "@/components/ui/section-card"
 import { useRouter, useSearchParams } from "next/navigation"
 import { dealListReturnHref } from "@/lib/crm/deal-list"
 import Link from "next/link"
@@ -11,7 +14,7 @@ import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
-  Package, Wrench, Trash2, MoreHorizontal, Hourglass, Bot, ChevronDown, Building2,
+  Package, Wrench, Trash2, MoreHorizontal, Bot, ChevronDown, Building2,
 } from "lucide-react"
 import { maskCpfCnpj } from "@/lib/masks"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -37,7 +40,7 @@ import { DealQuotes } from "@/components/crm/deal-quotes"
 import { DealItemModal } from "@/components/crm/deal-item-modal"
 import type { DocumentRow, DocumentSettings } from "@/lib/commercial/documents"
 
-const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
+const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   open:     { label: "Em negociação", cls: "bg-primary-50 text-primary-700 border-primary-200" },
@@ -49,7 +52,7 @@ const CANCEL_REASONS = ["Criado por engano", "Duplicado", "Cliente desistiu", "F
 
 const HBTN = "inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg border transition-colors disabled:opacity-50"
 
-const shortDate = (iso: string | null) => iso ? new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "2-digit" }) : "—"
+const shortDate = (iso: string | null) => iso ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T12:00:00` : iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" }).replaceAll(" de ", " ") : "—"
 const fmtDue = (iso: string) => new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
 const fmtDateTime = (iso: string) => { const d = new Date(iso); return `${d.toLocaleDateString("pt-BR")} às ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` }
 const agingDays = (iso: string | null) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null
@@ -69,13 +72,19 @@ function relTime(iso: string | null): string {
   return `há ${Math.floor(days / 30)} mês${days >= 60 ? "es" : ""}`
 }
 
-export function DealPageClient({ deal, tasks, isManager = false, dealFields = [], agents = [], units = [], currentUserId = "", quotes = [], quoteDefaults }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[]; agents?: { id: string; name: string }[]; units?: { id: string; name: string; color: string }[]; currentUserId?: string; quotes?: DocumentRow[]; quoteDefaults?: DocumentSettings }) {
+export function DealPageClient({ deal, tasks, isManager = false, dealFields = [], units = [], quotes = [], quoteDefaults }: { deal: DealDetail; tasks: TaskRow[]; isManager?: boolean; dealFields?: CustomFieldDef[]; agents?: { id: string; name: string }[]; units?: { id: string; name: string; color: string }[]; currentUserId?: string; quotes?: DocumentRow[]; quoteDefaults?: DocumentSettings }) {
   const router = useRouter()
-  const backHref = dealListReturnHref(useSearchParams().get("returnTo"))
+  const searchParams = useSearchParams()
+  const backHref = dealListReturnHref(searchParams.get("returnTo"))
+  const detailTab = ["proposals", "activity"].includes(searchParams.get("tab") ?? "") ? searchParams.get("tab")! : "negotiation"
+  function changeDetailTab(value: string) {
+    const next = new URLSearchParams(window.location.search)
+    if (value === "negotiation") next.delete("tab"); else next.set("tab", value)
+    window.history.replaceState(null, "", `${window.location.pathname}${next.size ? `?${next}` : ""}`)
+  }
   const [pending, start] = useTransition()
   const convId = deal.conversationId
-  // Tick pra abrir o modal "Gerar cotação" a partir do menu "⋯" do header (o card
-  // Cotações mora na sidebar; o incremento sinaliza a abertura).
+  // O menu do cabeçalho sinaliza ao painel Propostas a navegação ao compositor.
   const [quoteGenTick, setQuoteGenTick] = useState(0)
   const quoteSettings: DocumentSettings = quoteDefaults ?? { paymentTerms: null, validityDays: 7, defaultNotes: null }
 
@@ -91,12 +100,11 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   const wonStage   = (pipeline?.stages ?? []).find((s) => s.is_won)
   const lostStage  = (pipeline?.stages ?? []).find((s) => s.is_lost)
   const curStageId = deal.stage?.id ?? null
-  const curIdx     = stepStages.findIndex((s) => s.id === curStageId)
 
   const [editName, setEditName]   = useState(false)
   const [nameVal, setNameVal]     = useState(deal.name ?? "")
   const [editValue, setEditValue] = useState(false)
-  const [valueVal, setValueVal]   = useState(deal.estimated_value != null ? String(deal.estimated_value) : "")
+  const [valueVal, setValueVal]   = useState(deal.estimated_value != null ? deal.estimated_value.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "")
   const [losing, setLosing]       = useState(false)
   const [canceling, setCanceling] = useState(false)
   const [reopening, setReopening] = useState(false)
@@ -299,83 +307,24 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   const contactName = deal.contact?.name || deal.contact?.push_name || deal.company?.name || "Sem nome"
 
   return (
-    <div className="min-h-[calc(100dvh-3.5rem)] bg-canvas">
-      {/* ── HEADER DE COMANDO (mockup negocio-detalhe) ── */}
-      <div className="bg-white border-b border-slate-200">
-        <div className="px-6 pt-3.5">
-          <div className="flex items-start gap-3.5">
-            <Link href={backHref} title="Voltar aos negócios" aria-label="Voltar aos negócios" className="size-8 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors shrink-0 mt-1">
-              <ArrowLeft className="size-4" />
-            </Link>
-
-            {/* identidade: foto · contato · chips · nome do negócio · saúde */}
-            <div className="flex items-start gap-3 min-w-0 flex-1">
-              <div className="size-11 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0 ring-2 ring-white shadow-[0_0_0_2px_#b7c8ff]">
-                <ContactPic pic={deal.contact?.profile_pic_url} imgClass="size-11 object-cover" fallback={<User className="size-5 text-slate-400" />} />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap min-w-0">
-                  {deal.contact ? (
-                    <Link href={`/contatos/${deal.contact.id}`} className="text-[15px] font-extrabold tracking-tight text-slate-900 hover:text-primary-700 truncate leading-tight">{contactName}</Link>
-                  ) : <h1 className="text-[15px] font-extrabold tracking-tight text-slate-900 truncate leading-tight">{contactName}</h1>}
-                  {lc && <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${lc.bg} ${lc.text}`}>{lc.label}</span>}
-                  {(deal.contact?.tags ?? []).slice(0, 2).map((t) => (
-                    <span key={t.name} className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ backgroundColor: `color-mix(in srgb, ${t.color} 16%, transparent)`, color: t.color }}>{t.name}</span>
-                  ))}
-                </div>
-                <div className="flex items-center gap-2 mt-1 flex-wrap min-w-0">
-                  {editName ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <input autoFocus value={nameVal} onChange={(e) => setNameVal(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditName(false) }}
-                        className="text-xs font-bold text-primary-700 border-b-2 border-primary-300 focus:outline-none bg-transparent" />
-                      <button onClick={saveName} className="text-emerald-600"><Check className="size-3.5" /></button>
-                      <button onClick={() => setEditName(false)} className="text-slate-400"><X className="size-3.5" /></button>
-                    </span>
-                  ) : (
-                    <button onClick={() => { setNameVal(deal.name ?? ""); setEditName(true) }} className="group inline-flex items-center gap-1.5 text-left min-w-0">
-                      <span className="text-xs font-bold text-primary truncate">{deal.name?.trim() || "Negócio sem nome"}</span>
-                      <Pencil className="size-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                    </button>
-                  )}
-                  <span className="text-[10px] font-extrabold text-slate-400 tabular-nums">#{deal.id.slice(0, 4).toUpperCase()}</span>
-                  {health && (
-                    <span className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${health.bad ? "bg-red-50 text-red-600 border-red-200" : "bg-amber-50 text-amber-700 border-amber-200"}`}>
-                      <span className={`size-1.5 rounded-full animate-pulse ${health.bad ? "bg-red-500" : "bg-amber-500"}`} />
-                      {health.label}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* valor em destaque + status + ações (mockup) */}
-            <div className="flex items-start gap-3 shrink-0">
-              <div className="text-right">
-                {hasItems ? (
-                  <span className="inline-flex flex-col items-end" title="Valor composto pelos itens do negócio">
-                    <span className="text-[26px] leading-none font-extrabold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
-                    <span className="text-[10px] text-slate-400 leading-none mt-1.5 inline-flex items-center gap-1">
-                      composto por {deal.items.length} {deal.items.length === 1 ? "item" : "itens"}
-                      {valueSummary && valueSummary.mrr > 0 && <> · <b className="text-emerald-600 font-bold">MRR {brl(valueSummary.mrr)}/mês</b></>}
-                    </span>
-                  </span>
-                ) : editValue ? (
-                  <span className="inline-flex items-center gap-1">
-                    <input autoFocus value={valueVal} onChange={(e) => setValueVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveValue(); if (e.key === "Escape") setEditValue(false) }} className="w-32 h-9 px-2 text-2xl font-bold text-right border border-primary-300 rounded-lg focus:outline-none" />
-                    <button onClick={saveValue} className="text-emerald-600"><Check className="size-4" /></button>
-                  </span>
-                ) : (
-                  <button onClick={() => { setValueVal(deal.estimated_value != null ? String(deal.estimated_value) : ""); setEditValue(true) }} className="group inline-flex items-center gap-1.5">
-                    <span className="text-[26px] leading-none font-extrabold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null && deal.estimated_value > 0 ? brl(deal.estimated_value) : "—"}</span>
-                    <Pencil className="size-3.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </button>
-                )}
-              </div>
-              {/* Status como DROPDOWN (referência): transições de desfecho moram nele */}
-              <DropdownMenu>
+    <div className="min-h-[calc(100dvh-3.5rem)] bg-canvas px-4 py-5 sm:px-6 sm:py-6">
+      <header>
+        <Link href={backHref} className="mb-3 inline-flex items-center gap-2 text-xs text-slate-500 hover:text-slate-900"><ArrowLeft className="size-3.5" />Negócios <span aria-hidden="true">/</span><span>#{deal.id.slice(0, 4).toUpperCase()}</span></Link>
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+          <div className="min-w-0 flex-1">
+            {editName ? <div className="flex items-center gap-2"><input aria-label="Nome do negócio" autoFocus value={nameVal} onChange={(e) => setNameVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditName(false) }} className="h-10 w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-primary/20" /><button aria-label="Salvar nome" onClick={saveName} className={HBTN}><Check className="size-4" /></button><button aria-label="Cancelar edição do nome" onClick={() => setEditName(false)} className={HBTN}><X className="size-4" /></button></div>
+              : <div className="flex items-start gap-2"><h1 className="break-words text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">{deal.name?.trim() || "Negócio sem nome"}</h1><button aria-label="Editar nome do negócio" onClick={() => { setNameVal(deal.name ?? ""); setEditName(true) }} className="mt-1.5 shrink-0 rounded p-1 text-slate-400 hover:text-slate-700"><Pencil className="size-3.5" /></button></div>}
+            <p className="mt-1.5 text-xs text-slate-500">{deal.contact ? <Link className="hover:text-primary-700" href={`/contatos/${deal.contact.id}`}>{contactName}</Link> : contactName}{deal.company && deal.company.name !== contactName && <> · {deal.company.name}</>}</p>
+          </div>
+          <div className="shrink-0 sm:text-right"><p className="text-xs text-slate-500">Valor do negócio</p>
+            {hasItems ? <p className="text-2xl font-bold tracking-tight text-slate-900 tabular-nums">{brl(valueSummary!.total)}</p> : editValue ? <div className="flex items-center gap-1"><input aria-label="Valor do negócio" autoFocus value={valueVal} onChange={(e) => setValueVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveValue(); if (e.key === "Escape") setEditValue(false) }} className="h-9 w-36 rounded-lg border border-slate-200 px-2 text-right text-lg font-semibold" /><button aria-label="Salvar valor" onClick={saveValue} className={HBTN}><Check className="size-4" /></button><button aria-label="Cancelar edição do valor" onClick={() => setEditValue(false)} className={HBTN}><X className="size-4" /></button></div> : <button aria-label="Editar valor do negócio" onClick={() => { setValueVal(deal.estimated_value != null ? deal.estimated_value.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : ""); setEditValue(true) }} className="inline-flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-900 tabular-nums">{deal.estimated_value != null ? brl(deal.estimated_value) : "Definir valor"}<Pencil className="size-3.5 text-slate-400" /></button>}
+            {hasItems && <p className="mt-1 text-[11px] text-slate-500">{deal.items.length} {deal.items.length === 1 ? "item" : "itens"}{valueSummary!.mrr > 0 && <> · {brl(valueSummary!.mrr)}/mês em recorrência</>}</p>}
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">              <DropdownMenu>
                 <DropdownMenuTrigger disabled={pending}
-                  className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full border self-center transition-colors hover:brightness-95 ${st.cls}`}>
+                  className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg border self-center transition-colors hover:brightness-95 border-slate-200 bg-white text-slate-700`}>
                   {isOpen ? "Em negociação" : st.label} <ChevronDown className="size-3" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -397,13 +346,13 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>
-
-              <div className="flex items-center gap-2 self-center">
+<span className="text-xs text-slate-500">Responsável: {deal.responsible ?? "Não definido"}</span></div>
+                        <div className="flex flex-wrap items-center gap-2">
                 {pending && <Loader2 className="size-4 animate-spin text-slate-400" />}
                 {convId && <Link href={`/inbox?conversation=${convId}`} className={`${HBTN} border-slate-200 text-slate-700 bg-white hover:bg-slate-50 hover:border-slate-300`}><MessageSquare className="size-3.5 text-primary-500" /> Abrir conversa</Link>}
-                {isOpen && wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={pending} className={`${HBTN} border-primary bg-primary hover:bg-primary-700 text-white`}><Trophy className="size-3.5" /> Ganhar negócio</button>}
+                {isOpen && wonStage && <button onClick={() => moveTo(wonStage.id)} disabled={pending} className={`${HBTN} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}><Trophy className="size-3.5" /> Ganhar negócio</button>}
                 {!isOpen && deal.status === "won" && convId && deal.pipelines.length > 1 && (
-                  <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-primary bg-primary hover:bg-primary-700 text-white`}><Route className="size-3.5" /> Próximo fluxo</button>
+                  <button onClick={() => setFlowModal("handoff")} disabled={pending} className={`${HBTN} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}><Route className="size-3.5" /> Próximo fluxo</button>
                 )}
                 <DropdownMenu>
                   <DropdownMenuTrigger title="Mais ações"
@@ -425,8 +374,8 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                       <MessageSquare className="size-3.5 text-slate-400" /> Registrar ligação
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem disabled={!hasItems} onClick={() => setQuoteGenTick((t) => t + 1)}>
-                      <FileText className="size-3.5 text-slate-400" /> Gerar cotação
+                    <DropdownMenuItem disabled={!hasItems} onClick={() => { changeDetailTab("proposals"); setQuoteGenTick((t) => t + 1) }}>
+                      <FileText className="size-3.5 text-slate-400" /> Gerar proposta
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     {deal.pipelines.length > 1 && isOpen && (
@@ -443,60 +392,14 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
-            </div>
+        </div>
+        <SectionCard flush className="mt-4 shadow-none">
+          <div className="px-4 py-3"><div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500"><span>{deal.pipeline_name ?? pipeline?.name ?? "Funil"}</span><span>{deal.stage?.name ?? "Sem etapa"}{isOpen && curProb > 0 && <> · {curProb}% de probabilidade</>}</span></div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-3 sm:flex sm:flex-wrap" aria-label="Etapas do funil">{stepStages.map((s) => { const active = s.id === curStageId; const days = daysByStage.get(s.name); return <button key={s.id} aria-current={active ? "step" : undefined} disabled={pending || active} onClick={() => clickStage(s)} className={`min-w-0 border-t-[3px] pt-2 text-left text-xs transition-colors sm:min-w-20 sm:flex-1 ${active ? "border-primary font-semibold text-primary-700" : "border-slate-200 text-slate-500 hover:border-slate-400 hover:text-slate-800"}`}><span className="block break-words">{s.is_won ? "Negócio fechado" : s.is_lost ? "Perdido" : s.name}</span><span className="mt-1 block text-[11px] font-normal text-slate-500">{s.is_won || s.is_lost ? "Desfecho" : active ? `${stageAging ?? 0} dias nesta etapa` : days ? `${days} dias` : "A seguir"}</span></button> })}</div>
           </div>
-
-          {/* Stepper — NÓS CIRCULARES (referência 2026-07-13): check nas percorridas,
-              nó ativo com chip de % em cima, linha conectando, desfechos verde/vermelho. */}
-          <div className="mt-4 pt-5 border-t border-slate-100 flex items-start overflow-x-auto pb-1">
-            {stepStages.map((s, i) => {
-              const active = s.id === curStageId
-              const done   = curIdx >= 0 && i < curIdx && !s.is_won && !s.is_lost
-              const tdays  = daysByStage.get(s.name)
-              const isLast = i === stepStages.length - 1
-              return (
-                <button key={s.id} onClick={() => clickStage(s)} disabled={pending || active}
-                  className="group/step relative flex-1 min-w-[104px] text-center pt-4 disabled:cursor-default">
-                  {active && curProb > 0 && !s.is_won && !s.is_lost && (
-                    <span className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1 text-[9px] font-extrabold text-primary bg-primary-50 border border-primary-100 rounded-full px-2 py-px whitespace-nowrap z-10">{curProb}% de chance</span>
-                  )}
-                  {/* linha + nó */}
-                  <span className="relative block h-5">
-                    {/* trilho: esquerda (chega no nó) e direita (sai do nó) */}
-                    {i > 0 && <span className={`absolute left-0 right-1/2 top-1/2 -translate-y-1/2 h-[3px] ${done || active ? "bg-primary" : "bg-slate-200"}`} />}
-                    {!isLast && <span className={`absolute left-1/2 right-0 top-1/2 -translate-y-1/2 h-[3px] ${done ? "bg-primary" : "bg-slate-200"}`} />}
-                    <span className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 grid place-items-center rounded-full transition-colors ${
-                      done ? "size-5 bg-primary text-white"
-                      : active ? "size-5 ring-4 ring-primary-100"
-                      : s.is_won ? "size-5 bg-white border-2 border-emerald-300 text-emerald-500"
-                      : s.is_lost ? "size-5 bg-white border-2 border-red-200 text-red-400"
-                      : "size-5 bg-white border-2 border-slate-200 text-slate-300 group-hover/step:border-primary-200"}`}
-                      style={active ? { background: s.color ?? "#004add" } : undefined}>
-                      {done ? <Check className="size-3" strokeWidth={3.5} />
-                        : active ? <span className="size-1.5 rounded-full bg-white" />
-                        : s.is_won ? <Trophy className="size-2.5" />
-                        : s.is_lost ? <X className="size-2.5" strokeWidth={3} />
-                        : <span className="size-1.5 rounded-full bg-slate-200 group-hover/step:bg-primary-200" />}
-                    </span>
-                  </span>
-                  <span className={`block text-[10.5px] font-bold mt-1.5 truncate px-1 ${active || done ? "text-slate-900" : s.is_won ? "text-emerald-600" : s.is_lost ? "text-red-500" : "text-slate-400"}`}>
-                    {s.is_won ? "Negócio fechado" : s.is_lost ? "Perdido" : s.name}
-                  </span>
-                  <span className={`block text-[9.5px] mt-px tabular-nums ${active && (stageAging ?? 0) >= 4 ? "text-amber-600 font-bold" : "text-slate-400"}`}>
-                    {s.is_won || s.is_lost ? " " : active ? `${stageAging ?? 0}d${(stageAging ?? 0) >= 4 ? " — parado" : ""}` : tdays != null && tdays > 0 ? `${tdays}d` : " "}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-
-          {/* Régua de gestão — 5 cards individuais ("quadradinhos"), monocromática na
-              identidade (azul), stroke editorial — decisão owner 2026-07-04. */}
-          {/* KPIs desceram pro corpo (abaixo do banner de próximo passo) — feedback owner 2026-07-13 */}
-          <div className="pb-3.5" />
-          {!convId && <p className="pb-2 text-[11px] text-slate-400">Negócio sem conversa vinculada — as ações funcionam por aqui; só “abrir conversa” e “próximo fluxo” dependem de uma conversa.</p>}
-
-          {losing && (
+        </SectionCard>
+        {!convId && <p className="mt-2 text-xs text-slate-500">Sem conversa vinculada. As ações comerciais continuam disponíveis.</p>}
+                  {losing && (
             <div className="mt-3 rounded-lg border border-red-200 bg-red-50/50 p-3 max-w-md">
               <p className="text-xs font-semibold text-red-700 mb-1.5 inline-flex items-center gap-1.5"><XCircle className="size-3.5" /> Marcar como perdido — motivo</p>
               <div className="flex items-center gap-2">
@@ -582,26 +485,23 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               </div>
             </div>
           )}
-        </div>
-      </div>
-
-      {/* ── Corpo (principal + lateral) ── */}
-      <div className="px-6 py-5 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-5 items-start">
-        <div className="min-w-0 space-y-4">
-          {/* PRÓXIMA AÇÃO — herói: negócio vivo tem próximo passo */}
-          {isOpen && (pendingTasks[0] ? (
-            <div className="rounded-2xl border border-amber-200 bg-gradient-to-b from-amber-50 to-white px-4 py-3.5 flex items-center gap-3.5">
-              <span className="size-10 rounded-xl bg-amber-100 text-amber-600 grid place-items-center shrink-0"><Bell className="size-4.5" /></span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-extrabold text-slate-900 truncate">{pendingTasks[0].title}</p>
-                <p className={`text-[11px] font-bold mt-0.5 ${pendingTasks[0].due_at && new Date(pendingTasks[0].due_at) < new Date() ? "text-red-600" : "text-amber-600"}`}>
+      </header>
+      <div className="mt-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_280px] xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="min-w-0 space-y-5">
+          <SectionCard flush className="shadow-none">
+                      {isOpen && (pendingTasks[0] ? (
+            <div className="px-4 py-3.5 flex flex-wrap items-center gap-3">
+              <span className="size-7 text-slate-500 grid place-items-center shrink-0"><Bell className="size-4.5" /></span>
+              <div className="min-w-40 flex-1">
+                <p className="text-[11px] text-slate-500">Próxima atividade</p><p className="text-[13px] font-semibold text-slate-900 break-words">{pendingTasks[0].title}</p>
+                <p className={`text-[11px] font-bold mt-0.5 ${pendingTasks[0].due_at && new Date(pendingTasks[0].due_at) < new Date() ? "text-red-600" : "text-slate-500"}`}>
                   {pendingTasks[0].due_at ? fmtDateTime(pendingTasks[0].due_at) : "sem prazo"}
                   {pendingTasks[0].due_at && new Date(pendingTasks[0].due_at) < new Date() && " · atrasada"}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <button onClick={() => run(() => setTaskDone(pendingTasks[0].id, true))} disabled={pending}
-                  className="h-8 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold inline-flex items-center gap-1.5 disabled:opacity-50">
+                  className="h-8 px-3.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] font-bold inline-flex items-center gap-1.5 disabled:opacity-50">
                   <Check className="size-3.5" strokeWidth={3} /> Concluir
                 </button>
                 <button onClick={() => { setRescheduleOf({ id: pendingTasks[0].id, title: pendingTasks[0].title }); setActiveModal("task") }} disabled={pending}
@@ -611,10 +511,10 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               </div>
             </div>
           ) : (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-3.5 flex items-center gap-3.5">
-              <span className="size-10 rounded-xl bg-white border border-amber-200 text-amber-600 grid place-items-center shrink-0"><Calendar className="size-4.5" /></span>
+            <div className="px-4 py-3.5 flex flex-wrap items-center gap-3">
+              <span className="size-7 text-slate-500 grid place-items-center shrink-0"><Calendar className="size-4.5" /></span>
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-extrabold text-slate-900">Nenhum próximo passo agendado</p>
+                <p className="text-[13px] font-semibold text-slate-900">Nenhum próximo passo agendado</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">Agende uma atividade para manter esta negociação avançando.</p>
               </div>
               <button onClick={() => openTaskModal(null)}
@@ -624,46 +524,20 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
             </div>
           ))}
 
-          {/* KPIs — abaixo do próximo passo (referência: header compacto) */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <Gauge icon={Clock} label={isOpen ? "Tempo em aberto" : "Duração"} value={daysOpen != null ? `${daysOpen} dias` : "—"} />
-            <Gauge icon={Hourglass} label="Tempo na etapa" value={stageAging != null ? `${stageAging} dias` : "—"} warn={(stageAging ?? 0) >= 4 && isOpen} />
-            <div className="flex items-center gap-2.5 px-3.5 py-3 rounded-xl border border-slate-300 bg-white">
-              <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-primary-50 text-primary-600"><Calendar className="size-4" /></span>
-              <div className="min-w-0">
-                <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Previsão de fechamento</p>
-                {editPrev ? (
-                  <input autoFocus type="date" defaultValue={deal.expected_close_date ?? ""}
-                    onBlur={(e) => savePrev(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") savePrev((e.target as HTMLInputElement).value); if (e.key === "Escape") setEditPrev(false) }}
-                    className="text-xs font-bold text-slate-800 border-b border-primary-300 focus:outline-none bg-transparent" />
-                ) : (
-                  <button onClick={() => setEditPrev(true)} className="text-sm font-extrabold text-slate-900 tabular-nums border-b border-dashed border-slate-300 hover:border-primary leading-tight">
-                    {deal.expected_close_date ? shortDate(deal.expected_close_date) : "definir"}
-                  </button>
-                )}
-              </div>
+            <div className={`grid grid-cols-3 gap-3 px-4 py-3 ${isOpen ? "border-t border-slate-200" : ""}`}>
+              <div><p className="text-[11px] text-slate-500">{isOpen ? "Tempo em aberto" : "Duração"}</p><p className="mt-1 text-sm font-semibold text-slate-900">{daysOpen != null ? `${daysOpen} dias` : "—"}</p></div>
+              <div className="border-l border-slate-200 pl-3"><p className="text-[11px] text-slate-500">Tempo na etapa</p><p className="mt-1 text-sm font-semibold text-slate-900">{stageAging != null ? `${stageAging} dias` : "—"}</p></div>
+              <div className="min-w-0 border-l border-slate-200 pl-3"><p className="text-[11px] text-slate-500">Previsão de fechamento</p>{editPrev ? <input aria-label="Previsão de fechamento" autoFocus type="date" defaultValue={deal.expected_close_date ?? ""} onBlur={(e) => savePrev(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setEditPrev(false) }} className="mt-1 w-full min-w-0 text-xs" /> : <button onClick={() => setEditPrev(true)} className="mt-1 border-b border-dashed border-slate-300 text-xs font-semibold text-slate-900 sm:text-sm">{deal.expected_close_date ? shortDate(deal.expected_close_date) : "Definir"}</button>}</div>
             </div>
-          </div>
-
-          {/* NEGOCIAÇÃO — itens + resumo + termos (spec: acima da linha do tempo) */}
-          <NegotiationCard
-            deal={deal}
-            summary={valueSummary}
-            isManager={isManager}
-            pending={pending}
-            onAdd={() => setItemModal({ mode: "add" })}
-            onEdit={(item) => setItemModal({ mode: "edit", item })}
-            onRemove={(item) => run(() => removeDealItem(deal.id, item.id))}
-          />
-
-          {/* Composer saiu do corpo (feedback owner 2026-07-13): Nota/Tarefa/Reunião/Ligação
-              agora moram no menu "⋯" do header e abrem MODAL. */}
-
-          {/* Linha do tempo única — movimentações + notas + tarefas */}
-          <section className="bg-white rounded-2xl border border-slate-200 p-5">
+          </SectionCard>
+          <SectionCard flush className="shadow-none">
+            <Tabs.Root value={detailTab} onValueChange={(v) => changeDetailTab(String(v))}>
+              <Tabs.List aria-label="Conteúdo do negócio" className="flex justify-between gap-2 border-b border-slate-200 px-4 sm:justify-start sm:gap-6">{[["negotiation", "Negociação", deal.items.length], ["proposals", "Propostas", quotes.length], ["activity", "Atividades", feedAll.length]].map(([value, label, count]) => <Tabs.Tab key={value} value={value} className="inline-flex items-center gap-1.5 border-b-2 border-transparent py-3.5 text-xs font-medium text-slate-500 outline-offset-2 data-active:border-primary data-active:text-primary-700"><span>{label}</span><span className="text-[10px] font-normal text-slate-500">{count}</span></Tabs.Tab>)}</Tabs.List>
+              <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} isManager={isManager} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} /></Tabs.Panel>
+              <Tabs.Panel value="proposals" keepMounted className="data-hidden:hidden"><DealQuotes dealId={deal.id} quotes={quotes} defaults={quoteSettings} hasItems={hasItems} items={deal.items} genTick={quoteGenTick} embedded /></Tabs.Panel>
+              <Tabs.Panel value="activity" keepMounted className="data-hidden:hidden">          <section className="bg-white p-4 sm:p-5">
             <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
-              <h2 className="text-base font-bold text-slate-900">Linha do tempo</h2>
+              <h2 className="text-sm font-semibold text-slate-900">Linha do tempo</h2>
               <div className="inline-flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
                 {FEED_TABS.map(([k, label]) => (
                   <button key={k} onClick={() => { setFilter(k); setShown(8) }} className={`text-[11px] font-semibold px-2.5 py-1 rounded-md transition-colors ${filter === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>{label}</button>
@@ -689,84 +563,13 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                 )}
               </>
             )}
-          </section>
+          </section></Tabs.Panel>
+            </Tabs.Root>
+          </SectionCard>
         </div>
-
-        {/* Lateral — fatos & dinheiro (mockup) */}
-        <div className="space-y-4">
-          {/* Contato mini-360 */}
-          {deal.contact && (
-            <section className="bg-white rounded-2xl border border-slate-200 p-4">
-              <div className="flex items-center gap-3">
-                <div className="size-12 rounded-full bg-slate-100 overflow-hidden grid place-items-center shrink-0">
-                  <ContactPic pic={deal.contact.profile_pic_url} imgClass="size-12 object-cover" fallback={<User className="size-5 text-slate-400" />} />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-[13px] font-extrabold text-slate-900 truncate">{contactName}</p>
-                  {deal.contact.phone_number && <p className="text-[11px] text-slate-400 mt-0.5">{deal.contact.phone_number}</p>}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mt-3">
-                <div className="rounded-lg border border-slate-200 px-2.5 py-2">
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Total comprado</p>
-                  <p className="text-[13px] font-extrabold text-slate-900 tabular-nums mt-0.5">{brl(contactWonTotal)}</p>
-                </div>
-                <div className="rounded-lg border border-slate-200 px-2.5 py-2">
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Última compra</p>
-                  <p className="text-[13px] font-extrabold text-slate-900 tabular-nums mt-0.5">{contactLastWonDays != null ? `${contactLastWonDays}d` : "—"}</p>
-                </div>
-              </div>
-              {/* Referência: um botão único, largura total ("Abrir conversa" já mora no header) */}
-              <button onClick={() => setSheetContact(deal.contact!.id)} className="w-full h-9 mt-3 rounded-lg bg-white border border-slate-200 text-slate-700 text-[11px] font-bold hover:bg-slate-50 transition-colors">
-                Ver cliente 360
-              </button>
-            </section>
-          )}
-
-          {/* Cotações — documentos do negócio (F4). Gera do estado atual dos itens,
-              envia no WhatsApp e acompanha o aceite (viewer embutido, sem link externo). */}
-          <DealQuotes dealId={deal.id} quotes={quotes} defaults={quoteSettings} hasItems={hasItems} items={deal.items} genTick={quoteGenTick} />
-
-          {/* Última interação (saiu da régua de KPIs — referência 2026-07-13) */}
-          <section className="bg-white rounded-2xl border border-slate-200 p-4">
-            <h2 className="text-sm font-bold text-slate-900 mb-2.5">Última interação</h2>
-            <div className="flex items-center gap-2.5">
-              <span className="size-9 rounded-full bg-emerald-50 text-emerald-600 grid place-items-center shrink-0"><MessageSquare className="size-4" /></span>
-              <div className="min-w-0">
-                <p className="text-[13px] font-extrabold text-slate-900">{relTime(lastTouch)}</p>
-                {lastChannelLabel && <p className="text-[11px] text-slate-400 mt-0.5">{lastChannelLabel}</p>}
-              </div>
-            </div>
-          </section>
-
-          {/* Campos personalizados do negócio (tenant_custom_fields entity='deal') */}
-          {dealFields.length > 0 && (
-            <CustomFieldsCard dealId={deal.id} defs={dealFields} values={deal.custom_fields} />
-          )}
-
-          {/* Jornada no funil — tempo por etapa (mini-gantt do mockup) */}
-          {journey.length > 0 && journey.some((s) => s.days > 0) && (
-            <section className="bg-white rounded-2xl border border-slate-200 p-4">
-              <h2 className="text-sm font-bold text-slate-900 mb-3">Jornada no funil</h2>
-              <div className="flex h-3.5 gap-0.5">
-                {journey.map((s, i) => (
-                  <div key={i} title={`${s.name} · ${s.days}d`} className="rounded-[4px] min-w-[6px]"
-                    style={{ flex: Math.max(s.days, 0.5), background: `color-mix(in srgb, ${s.color} 55%, white)` }} />
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-2.5">
-                {journey.map((s, i) => (
-                  <span key={i} className="inline-flex items-center gap-1.5 text-[10px] text-slate-500">
-                    <i className="size-2 rounded-[3px]" style={{ background: `color-mix(in srgb, ${s.color} 55%, white)` }} />
-                    {s.name} {s.days}d{s.current && s.days >= 4 ? <span className="text-amber-600 font-bold">⚠</span> : null}
-                  </span>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* Detalhes */}
-          <Card title="Detalhes do negócio">
+        <SectionCard className="shadow-none" bodyClassName="p-4">
+          {deal.contact && <section><div className="flex items-center gap-3"><div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-slate-100"><ContactPic pic={deal.contact.profile_pic_url} imgClass="size-10 object-cover" fallback={<User className="size-4 text-slate-400" />} /></div><div className="min-w-0"><h2 className="break-words text-sm font-semibold text-slate-900">{contactName}</h2><p className="text-xs text-slate-500">{deal.company?.name}</p></div></div><div className="my-3 flex flex-wrap gap-1.5">{lc && <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">{lc.label}</span>}{(deal.contact.tags ?? []).map((t) => <span key={t.name} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">{t.name}</span>)}</div>{deal.contact.phone_number && <p className="text-xs text-slate-500">{deal.contact.phone_number}</p>}<button onClick={() => setSheetContact(deal.contact!.id)} className="mt-1 inline-flex min-h-9 items-center gap-1 text-xs font-semibold text-primary-700">Ver cliente 360 <ArrowRight className="size-3" /></button><div className="mt-2 grid grid-cols-2 gap-3"><div><p className="text-[11px] text-slate-500">Total comprado</p><p className="mt-1 text-xs font-semibold text-slate-900">{brl(contactWonTotal)}</p></div><div><p className="text-[11px] text-slate-500">Última compra</p><p className="mt-1 text-xs font-semibold text-slate-900">{contactLastWonDays != null ? `Há ${contactLastWonDays} dias` : "—"}</p></div></div></section>}
+                    <Card title="Detalhes do negócio">
             <dl>
               <Row label="Responsável">
                 {deal.responsible ? (
@@ -790,29 +593,26 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
               )}
               {(units.length > 0 || deal.unit_id) && (
                 <Row label="Unidade">
-                  <SimpleSelect value={deal.unit_id ?? ""} onChange={saveUnit} disabled={pending} className="h-7 text-xs -my-0.5 min-w-[120px]" options={unitOptions} />
+                  <SimpleSelect value={deal.unit_id ?? ""} onChange={saveUnit} disabled={pending} className="h-8 w-full min-w-0 text-xs" ariaLabel="Unidade do negócio" options={unitOptions} />
                 </Row>
               )}
               {deal.contact?.source && <Row label="Origem do contato">{deal.contact.source}</Row>}
               <Row label="Criado em">{shortDate(deal.created_at)}</Row>
-              <Row label="Previsão">
-                <button onClick={() => setEditPrev(true)} className="border-b border-dashed border-slate-300 hover:border-primary text-slate-700">
-                  {deal.expected_close_date ? shortDate(deal.expected_close_date) : "definir"} ✎
-                </button>
-              </Row>
               {deal.status === "won" && deal.won_at && <Row label="Ganho em">{shortDate(deal.won_at)}</Row>}
               {deal.status === "lost" && <Row label="Perdido em">{`${shortDate(deal.lost_at)}${deal.lost_reason ? ` · ${deal.lost_reason}` : ""}`}</Row>}
               {deal.status === "canceled" && <Row label="Cancelado em">{shortDate(deal.canceled_at ?? null)}</Row>}
             </dl>
           </Card>
 
-          {/* Outros negócios */}
-          {deal.otherDeals.length > 0 && (
-            <Card title={`Outros negócios (${deal.otherDeals.length})`}>
+          <section className="mt-4 border-t border-slate-200 pt-4"><h2 className="text-xs font-semibold text-slate-900">Última interação</h2><p className="mt-2 text-xs text-slate-600">{relTime(lastTouch)}{lastChannelLabel && <> · {lastChannelLabel}</>}</p>{health && <p className={`mt-2 text-xs ${health.bad ? "text-red-600" : "text-amber-700"}`}>{health.label}</p>}</section>
+          {dealFields.length > 0 && <details className="mt-4 border-t border-slate-200 pt-4"><summary className="cursor-pointer text-xs font-semibold text-slate-900">Campos personalizados</summary><CustomFieldsCard dealId={deal.id} defs={dealFields} values={deal.custom_fields} /></details>}
+          {journey.length > 0 && <details className="mt-4 border-t border-slate-200 pt-4"><summary className="cursor-pointer text-xs font-semibold text-slate-900">Jornada no funil</summary><dl className="mt-3 space-y-2">{journey.map((s, i) => <div key={i} className="flex justify-between gap-3 text-xs text-slate-500"><dt>{s.name}{s.current && " · atual"}</dt><dd className="shrink-0 tabular-nums">{s.days} dias</dd></div>)}</dl></details>}
+                    {deal.otherDeals.length > 0 && (
+            <details className="mt-4 border-t border-slate-200 pt-4"><summary className="mb-3 cursor-pointer text-xs font-semibold text-slate-900">Outros negócios ({deal.otherDeals.length})</summary>
               <div className="space-y-1">
                 {deal.otherDeals.map((o) => (
                   <Link key={o.id} href={`/negocios/${o.id}`} className="flex items-center gap-2.5 text-xs py-1.5 px-1.5 -mx-1.5 rounded-lg hover:bg-slate-50">
-                    <span className={`size-7 rounded-lg grid place-items-center shrink-0 ${o.status === "won" ? "bg-emerald-50 text-emerald-600" : o.status === "lost" ? "bg-red-50 text-red-500" : "bg-primary-50 text-primary-600"}`}>
+                    <span className={`size-7 rounded-lg grid place-items-center shrink-0 bg-slate-50 text-slate-500`}>
                       {o.status === "won" ? <Trophy className="size-3" /> : o.status === "lost" ? <XCircle className="size-3" /> : <Briefcase className="size-3" />}
                     </span>
                     <span className="flex-1 min-w-0">
@@ -825,11 +625,10 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   </Link>
                 ))}
               </div>
-            </Card>
+            </details>
           )}
-        </div>
+        </SectionCard>
       </div>
-
       {pendingMove && (
         <MoveDealDialog
           dealName={deal.name} fromStageName={deal.stage?.name ?? null} fromStageDays={agingDays(deal.stage_entered_at)}
@@ -911,9 +710,8 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   )
 }
 
-// ── Célula da régua de gestão (header) ──
-// Régua monocromática (identidade azul), cada célula no seu card — cor extra SÓ com
-// significado (warn = parado).
+
+// Campos complementares ficam recolhidos na lateral, com edição explícita.
 function CustomFieldsCard({ dealId, defs, values }: { dealId: string; defs: CustomFieldDef[]; values: Record<string, string> }) {
   const router = useRouter()
   const [pending, start] = useTransition()
@@ -932,7 +730,7 @@ function CustomFieldsCard({ dealId, defs, values }: { dealId: string; defs: Cust
   const hasAny = defs.some((d) => (values[d.key] ?? "").trim() !== "")
 
   return (
-    <section className="bg-white rounded-2xl border border-slate-200 p-4">
+    <section className="pt-3">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-bold text-slate-900">Campos personalizados</h2>
         {!editing && (
@@ -958,24 +756,6 @@ function CustomFieldsCard({ dealId, defs, values }: { dealId: string; defs: Cust
   )
 }
 
-function Gauge({ icon: Icon, label, value, hint, warn }: {
-  icon: typeof Clock; label: string; value: string; hint?: string; warn?: boolean
-}) {
-  return (
-    <div className="flex items-center gap-2.5 px-3.5 py-3 rounded-xl border border-slate-300 bg-white">
-      <span className="size-8 rounded-lg grid place-items-center shrink-0 bg-primary-50 text-primary-600"><Icon className="size-4" /></span>
-      <div className="min-w-0">
-        <p className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400 truncate">{label}</p>
-        <p className={`text-sm font-extrabold tabular-nums leading-tight truncate ${warn ? "text-amber-600" : "text-slate-900"}`}>{value}</p>
-        {hint && <p className="text-[9.5px] text-slate-400 truncate">{hint}</p>}
-      </div>
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════════════
-// Linha do tempo única — funde eventos do negócio + tarefas num feed
-// ══════════════════════════════════════════════════════════════
 type FeedFilter = "all" | "stages" | "notes" | "tasks"
 const FEED_TABS: [FeedFilter, string][] = [["all", "Tudo"], ["stages", "Movimentações"], ["notes", "Notas"], ["tasks", "Tarefas"]]
 
@@ -1043,14 +823,8 @@ function nodeIcon(node: FeedNode): typeof Clock {
 
 // Círculos COLORIDOS sólidos (linguagem do sheet 360): o tipo carrega a cor.
 function nodeStyle(node: FeedNode): string {
-  if (node.kind === "task") return node.t.status !== "pending" ? "bg-emerald-500 text-white" : "bg-amber-400 text-white"
-  const t = node.e.type
-  if (t === "won") return "bg-emerald-500 text-white"
-  if (t === "lost") return "bg-red-400 text-white"
-  if (t === "canceled") return "bg-slate-300 text-white"
-  if (t === "note") return "bg-violet-400 text-white"
-  if (t === "field_changed") return "bg-sky-400 text-white"
-  return "bg-primary text-white"
+  if (node.kind === "task" && taskState(node.t).overdue) return "bg-amber-50 text-amber-700"
+  return "bg-slate-50 text-slate-500"
 }
 
 /** Rodapé do cartão de evento — autor (humano/robô) + data (linguagem do sheet). */
@@ -1063,7 +837,7 @@ function CardFooter({ by, at }: { by: string | null; at: string }) {
           {robotic ? (
             <span className="size-4 rounded-full grid place-items-center bg-slate-200 text-slate-500 shrink-0"><Bot className="size-2.5" /></span>
           ) : (
-            <span className="size-4 rounded-full grid place-items-center text-[7px] font-extrabold text-white shrink-0" style={{ background: "#004add" }}>{by.trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase()}</span>
+            <span className="size-4 rounded-full grid place-items-center text-[7px] font-semibold bg-slate-100 text-slate-600 shrink-0">{by.trim().split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase()}</span>
           )}
           <span className="truncate">{by}</span>
         </span>
@@ -1086,7 +860,7 @@ function FeedItem({ node, isLast, pending, onOpenProtocol, onToggleTask }: {
   return (
     <li className="flex gap-3.5">
       <div className="flex flex-col items-center">
-        <span className={`relative z-10 size-10 rounded-full grid place-items-center shrink-0 ring-4 ring-white ${nodeStyle(node)}`}>
+        <span className={`relative z-10 size-7 rounded-full grid place-items-center shrink-0 ring-4 ring-white ${nodeStyle(node)}`}>
           {/* eslint-disable-next-line react-hooks/static-components -- ícone vem de tabela fixa (ver acima) */}
           <Icon className="size-4" />
         </span>
@@ -1175,7 +949,7 @@ function EventBody({ e, protocol, clickable }: { e: DealEventView; protocol: Pro
           <h4 className="text-[13px] font-bold text-slate-900 truncate">
             {title}{no && <span className="ml-1.5 text-xs font-bold text-primary-600 tabular-nums">{no}</span>}
           </h4>
-          {clickable && <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 opacity-0 group-hover:opacity-100 transition-opacity">Ver protocolo <ArrowRight className="size-3" /></span>}
+          {clickable && <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 transition-opacity">Ver protocolo <ArrowRight className="size-3" /></span>}
         </div>
         {desc && <p className="text-xs text-slate-600 mt-0.5 break-words whitespace-pre-wrap leading-snug">{desc}</p>}
         {(delta || e.extras?.followUp) && (
@@ -1447,7 +1221,7 @@ function DocStat({ label, value, sub }: { label: string; value: string; sub?: st
 // Card lateral no respiro da referência (2026-07-13): título forte + linhas com ar.
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="bg-white rounded-2xl border border-slate-200 p-4">
+    <section className="mt-4 border-t border-slate-200 pt-4">
       <h2 className="text-sm font-bold text-slate-900 mb-1.5">{title}</h2>
       {children}
     </section>
@@ -1456,9 +1230,9 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2.5 border-b border-slate-100 last:border-0 last:pb-0">
+    <div className="grid grid-cols-[86px_minmax(0,1fr)] items-center gap-2 py-2">
       <dt className="text-[11px] text-slate-400 shrink-0">{label}</dt>
-      <dd className="text-xs font-semibold text-slate-800 text-right min-w-0 truncate">{children}</dd>
+      <dd className="text-xs text-slate-700 text-right min-w-0 break-words">{children}</dd>
     </div>
   )
 }
@@ -1498,7 +1272,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
   // Bruto = preço de TABELA × qtd × prazo; Final = negociado (lib); Desconto = diferença.
   const bruto = items.reduce((s, it) => s + (it.list_price ?? it.unit_price) * it.quantity * termFactor(it), 0)
   const final = summary?.total ?? 0
-  const descTotal = Math.max(0, bruto - final)
+  const descTotal = Math.max(0, Math.round((bruto - final) * 100) / 100)
   const descPct = bruto > 0 ? (descTotal / bruto) * 100 : 0
   // Margem (só gestor): final − custo total (custo × qtd × prazo). Só quando há custo em algum item.
   const hasCost = isManager && items.some((it) => it.cost != null && it.cost > 0)
@@ -1509,15 +1283,15 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
   const expired = !!deal.proposalExpiresAt && deal.proposalExpiresAt < today && deal.status === "open"
 
   return (
-    <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-      <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5">
-        <h2 className="text-sm font-bold text-slate-900">Negociação</h2>
+    <section className="bg-white">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-4">
+        <h2 className="text-sm font-bold text-slate-900">Itens do negócio</h2>
         {expired && (
           <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">
             <Clock className="size-2.5" /> Proposta vencida
           </span>
         )}
-        <button onClick={onAdd} disabled={pending} className="ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-50">
+        <button onClick={onAdd} disabled={pending} className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
           <Plus className="size-3" /> Adicionar item
         </button>
       </div>
@@ -1528,7 +1302,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
         </p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[640px]">
+          <table className={`${detailStyles.itemsTable} w-full text-sm md:min-w-[560px]`}>
             <thead>
               <tr className="border-y border-slate-100 text-[10px] uppercase tracking-wide text-slate-400 bg-slate-50/60">
                 <th className="text-left font-semibold py-2 px-4">Item</th>
@@ -1550,16 +1324,16 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                   <tr key={it.id} className="group border-b border-slate-50 last:border-0 even:bg-slate-50/50 hover:bg-primary-50/30 transition-colors">
                     <td className="py-2 px-4">
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className={`size-6 rounded-md grid place-items-center shrink-0 ${it.type === "service" ? "bg-violet-50 text-violet-500" : "bg-primary-50 text-primary-600"}`}>
+                        <span className={`size-6 rounded-md grid place-items-center shrink-0 ${it.type === "service" ? "bg-slate-50 text-slate-500" : "bg-slate-50 text-slate-500"}`}>
                           {it.type === "service" ? <Wrench className="size-3" /> : <Package className="size-3" />}
                         </span>
                         <div className="min-w-0">
                           <p className="text-xs font-bold text-slate-900 truncate">{it.name}</p>
                           <p className="text-[10px] text-slate-400 truncate">
                             {it.category ?? BILLING_PT[it.billing].label}
-                            {it.billing !== "one_time" && ` · ${brl(lineVal)}/mês × ${it.term_months ?? DEFAULT_TERM_MONTHS}m`}
-                            {it.max_discount_pct > 0 && <span className="text-emerald-600"> · teto {it.max_discount_pct}%</span>}
-                            {it.price_table_label && <span className="text-sky-600 font-semibold"> · {it.price_table_label}</span>}
+                            {it.billing !== "one_time" && ` · ${brl(lineVal)}${BILLING_PT[it.billing].suffix} · ${it.term_months ?? DEFAULT_TERM_MONTHS} meses`}
+                            {it.max_discount_pct > 0 && <span className="text-slate-500"> · teto {it.max_discount_pct}%</span>}
+                            {it.price_table_label && <span className="text-slate-500 font-medium"> · {it.price_table_label}</span>}
                           </p>
                         </div>
                       </div>
@@ -1581,7 +1355,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                     </td>
                     <td className="py-2 px-2 text-right text-xs tabular-nums">
                       {dPct > 0.05
-                        ? <span className="text-amber-700 font-semibold">−{brl(lineBase - lineVal)} <span className="text-[10px] font-medium text-slate-400">({dPct.toFixed(dPct >= 10 ? 0 : 1)}%)</span></span>
+                        ? <span className="text-slate-600 font-semibold">−{brl(lineBase - lineVal)} <span className="text-[10px] font-medium text-slate-400">({dPct.toFixed(dPct >= 10 ? 0 : 1)}%)</span></span>
                         : <span className="text-slate-300">—</span>}
                     </td>
                     {/* Sem legenda "6× R$…" — a coluna Qtd agora mostra o prazo e a
@@ -1590,9 +1364,9 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                       <p className="text-xs font-bold tabular-nums text-slate-900">{brl(lineVal * f)}</p>
                     </td>
                     <td className="py-2 pr-3">
-                      <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => onEdit(it)} disabled={pending} title="Ajustar" className="size-6 grid place-items-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50"><Pencil className="size-3" /></button>
-                        <button onClick={() => onRemove(it)} disabled={pending} title="Remover" className="size-6 grid place-items-center rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"><Trash2 className="size-3" /></button>
+                      <div className="flex items-center justify-end gap-0.5 transition-opacity">
+                        <button onClick={() => onEdit(it)} disabled={pending} title="Ajustar" aria-label={`Ajustar ${it.name}`} className="size-6 grid place-items-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50"><Pencil className="size-3" /></button>
+                        <button onClick={() => onRemove(it)} disabled={pending} title="Remover" aria-label={`Remover ${it.name}`} className="size-6 grid place-items-center rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"><Trash2 className="size-3" /></button>
                       </div>
                     </td>
                   </tr>
@@ -1607,24 +1381,24 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
           Subtotal → Desconto → Total, MRR colado embaixo em primary). Pagamento/
           Parcelas/Validade saíram daqui (owner 2026-07-20): casa única = compositor. */}
       {items.length > 0 && summary && (
-        <div className="px-4 pb-4 pt-3 border-t border-slate-100 flex justify-end">
-          <div className="w-full max-w-[320px] rounded-xl bg-primary-50/50 border border-primary-100 px-4 py-3.5 text-xs space-y-1.5">
+        <div className="px-4 py-4 border-t border-slate-200 bg-slate-50">
+          <div className="w-full text-xs space-y-2">
             <div className="flex justify-between gap-8"><span className="text-slate-500">Subtotal</span><span className="tabular-nums font-semibold text-slate-700">{brl(bruto)}</span></div>
             {descTotal > 0 && (
-              <div className="flex justify-between gap-8"><span className="text-slate-400">Descontos ({descPct.toFixed(descPct >= 10 ? 0 : 1)}%)</span><span className="tabular-nums text-amber-700">−{brl(descTotal)}</span></div>
+              <div className="flex justify-between gap-8"><span className="text-slate-400">Descontos ({descPct.toFixed(descPct >= 10 ? 0 : 1)}%)</span><span className="tabular-nums text-slate-600">−{brl(descTotal)}</span></div>
             )}
-            <div className="flex justify-between items-baseline gap-8 pt-2 mt-0.5 border-t border-primary-100">
+            <div className="flex justify-between items-baseline gap-8 pt-2 mt-0.5 border-t border-slate-200">
               <span className="font-bold text-slate-900">Total</span>
               <span className="tabular-nums font-extrabold text-slate-900 text-base">{brl(final)}</span>
             </div>
             {summary.mrr > 0 && (
               <div className="flex justify-between items-baseline gap-8">
-                <span className="font-semibold text-primary-700">Mensalidade</span>
-                <span className="tabular-nums font-bold text-primary-700">{brl(summary.mrr)}/mês</span>
+                <span className="font-semibold text-slate-500">Receita mensal equivalente</span>
+                <span className="tabular-nums font-semibold text-slate-700">{brl(summary.mrr)}/mês</span>
               </div>
             )}
             {hasCost && (
-              <div className="flex justify-between gap-8 pt-1.5 mt-0.5 border-t border-primary-100/70">
+              <div className="flex justify-between gap-8 pt-1.5 mt-0.5 border-t border-slate-200">
                 <span className="text-slate-400 inline-flex items-center gap-1">Margem <span className="text-[9px] font-bold uppercase bg-slate-200 text-slate-500 rounded px-1">gestor</span></span>
                 <span className={`tabular-nums font-bold ${margem >= 0 ? "text-emerald-600" : "text-red-600"}`}>{brl(margem)} <span className="text-[10px] font-medium text-slate-400">({final > 0 ? ((margem / final) * 100).toFixed(0) : 0}%)</span></span>
               </div>
@@ -1635,6 +1409,3 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
     </section>
   )
 }
-
-
-
