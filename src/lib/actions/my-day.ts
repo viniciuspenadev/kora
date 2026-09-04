@@ -1,5 +1,6 @@
 "use server"
 
+import { listManagedTasks } from "@/lib/actions/task-management"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, applyVisibilityFilter } from "@/lib/visibility"
@@ -32,7 +33,7 @@ const HORIZONTE_MAX  = 90
 const MAX_FOLLOWUPS  = 200
 
 export interface DayItem {
-  kind:      "followup" | "appointment"
+  kind:      "followup" | "appointment" | "task"
   /** conversationId (follow-up) ou appointmentId (agendamento). */
   id:        string
   /** Quando acontece / venceu. ISO. */
@@ -58,6 +59,8 @@ export interface MyDay {
   /** O viewer enxerga a aba Equipe? (admin/owner, supervisor geral ou de setor) */
   canSeeTeam: boolean
   /** A Agenda está ligada pra este tenant? (senão a lista é só de follow-ups) */
+  crmOn?: boolean
+  tasksLimited?: boolean
   agendaOn: boolean
 }
 
@@ -116,7 +119,7 @@ export async function getDayFollowUps(input: { rangeStart: string; rangeEnd: str
   const { data } = await q.order("follow_up_at", { ascending: true }).limit(MAX_FOLLOWUPS)
 
   const agora = Date.now()
-  return ((data ?? []) as unknown as ConvRow[]).map((r) => ({
+  const result: DayItem[] = ((data ?? []) as unknown as ConvRow[]).map((r) => ({
     kind:      "followup" as const,
     id:        r.id,
     at:        r.follow_up_at!,
@@ -129,6 +132,11 @@ export async function getDayFollowUps(input: { rangeStart: string; rangeEnd: str
     done:      !!r.follow_up_done_at,
     answered:  followUpState(r, agora) === "answered",
   }))
+  if (await hasModule(s.tenantId, "crm")) {
+    const tasks = await getDayTasks(input)
+    result.push(...tasks)
+  }
+  return result
 }
 
 export async function getMyDay(input?: { scope?: "me" | "team"; horizonDays?: number }): Promise<MyDay> {
@@ -225,6 +233,34 @@ export async function getMyDay(input?: { scope?: "me" | "team"; horizonDays?: nu
     }
   }
 
+  const crmOn = await hasModule(s.tenantId, "crm")
+  let tasksLimited = false
+  if (crmOn) {
+    const tasks = await listManagedTasks({ scope: team ? "team" : "me", to: ate, status: "pending", pageSize: 200 })
+    const completed = await listManagedTasks({ scope: team ? "team" : "me", from: new Date(agora - 30 * 86400000).toISOString(), to: ate, status: "done", pageSize: 100 })
+    tasksLimited = tasks.total > tasks.items.length
+    items.push(...[...tasks.items,...completed.items].filter(t => t.due_at).map(t => ({
+      kind: "task" as const, id: t.id, at: t.due_at!, title: t.title, subtitle: t.deal_id ? "Tarefa do negócio" : "Tarefa interna",
+      ownerId: t.assigned_to, ownerName: t.responsible, href: t.href, done: t.status === "done",
+    })))
+  }
   items.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
-  return { items, canSeeTeam, agendaOn }
+  return { items, canSeeTeam, agendaOn, crmOn, tasksLimited }
+}
+
+/** Tarefas com prazo: somente leitura, sem criar agendamentos ou bloquear slots. */
+export async function getDayTasks(input: { rangeStart: string; rangeEnd: string }): Promise<DayItem[]> {
+  const duration = Date.parse(input.rangeEnd) - Date.parse(input.rangeStart)
+  if (!Number.isFinite(duration) || duration <= 0 || duration > 93 * 86400000) throw new Error("Período inválido")
+  const items: DayItem[] = []
+  let page = 0
+  for (;;) {
+    const batch = await listManagedTasks({ scope: "me", from: input.rangeStart, to: input.rangeEnd, status: "all", pageSize: 200, page })
+    items.push(...batch.items.filter(t => t.due_at && t.status !== "canceled").map(t => ({
+      kind: "task" as const, id: t.id, at: t.due_at!, title: t.title, subtitle: "Tarefa comercial", ownerId: t.assigned_to,
+      ownerName: t.responsible, href: t.href, done: t.status === "done",
+    })))
+    if (++page * 200 >= batch.total) break
+  }
+  return items
 }

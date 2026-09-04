@@ -79,7 +79,7 @@ export async function scheduleFollowUp(
       conversationId,
       dueAt:      new Date(input.dueAt).toISOString(),
       note:       input.note?.trim().slice(0, FOLLOW_UP_NOTE_MAX) || null,
-      ownerId:    session.user.id,   // quem promete é o dono; transferência move (moveFollowUpOwner)
+      ownerId:    atual?.follow_up_by ?? session.user.id, // reagendar não redistribui a promessa
       actorId:    session.user.id,
       reschedule: !!atual?.follow_up_at,
     })

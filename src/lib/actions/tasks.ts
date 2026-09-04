@@ -4,7 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule } from "@/lib/modules"
 import { canAccessDeal } from "@/lib/actions/deals"
-import { recordDealEvent } from "@/lib/crm/deals"
+import { createManagedTask, updateManagedTask } from "@/lib/actions/task-management"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM — Tarefas / Próxima ação
@@ -24,79 +24,16 @@ export interface TaskRow {
 }
 
 export async function createTask(input: {
-  dealId?:     string | null
-  contactId?:  string | null
-  title:       string
-  dueAt?:      string | null
-  assignedTo?: string | null
-}): Promise<{ id: string } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
-  if (!input.title.trim()) return { error: "Dê um título pra tarefa" }
-  const t = session.user.tenantId
-
-  let contactId = input.contactId ?? null
-  let dealAssignedTo: string | null = null
-  const dealId  = input.dealId ?? null
-  if (dealId) {
-    const { data: deal } = await supabaseAdmin.from("tenant_deals").select("contact_id, assigned_to").eq("id", dealId).eq("tenant_id", t).maybeSingle()
-    if (!deal) return { error: "Negócio inválido" }
-    const dl = deal as { contact_id: string | null; assigned_to: string | null }
-    contactId = dl.contact_id
-    dealAssignedTo = dl.assigned_to
-  }
-  if (!(await canAccessDeal(t, contactId, dealAssignedTo))) return { error: "Sem acesso" }
-
-  const { data, error } = await supabaseAdmin.from("tenant_tasks").insert({
-    tenant_id:   t,
-    contact_id:  contactId,
-    deal_id:     dealId,
-    title:       input.title.trim(),
-    due_at:      input.dueAt ?? null,
-    assigned_to: input.assignedTo ?? session.user.id,
-    created_by:  session.user.id,
-  }).select("id").single()
-  if (error || !data) return { error: error?.message ?? "Falha ao criar tarefa" }
-  // Dossiê do negócio: "Próxima ação definida" (só auditoria — sem cartão no chat).
-  if (dealId) await recordDealEvent({ tenantId: t, dealId, type: "task_created", by: session.user.id, note: input.title.trim(), postCard: false })
-  return { id: (data as { id: string }).id }
-}
+  dealId?: string | null; contactId?: string | null; title: string; dueAt?: string | null; assignedTo?: string | null
+}): Promise<{ id: string } | { error: string }> { return createManagedTask(input) }
 
 export async function setTaskDone(taskId: string, done: boolean): Promise<{ ok: true } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
-  const t = session.user.tenantId
-  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id, deal_id, title, assigned_to").eq("id", taskId).eq("tenant_id", t).maybeSingle()
-  if (!task) return { error: "Tarefa não encontrada" }
-  const tk = task as { contact_id: string | null; deal_id: string | null; title: string; assigned_to: string | null }
-  if (!(await canAccessDeal(t, tk.contact_id, tk.assigned_to))) return { error: "Sem acesso" }
-  await supabaseAdmin.from("tenant_tasks").update({
-    status:  done ? "done" : "pending",
-    done_at: done ? new Date().toISOString() : null,
-    updated_at: new Date().toISOString(),
-  }).eq("id", taskId).eq("tenant_id", t)
-  // Dossiê: concluir tarefa de um negócio entra na timeline (só auditoria).
-  if (done && tk.deal_id) await recordDealEvent({ tenantId: t, dealId: tk.deal_id, type: "task_done", by: session.user.id, note: tk.title, postCard: false })
-  return { ok: true }
+  return updateManagedTask(taskId, { status: done ? "done" : "pending" })
 }
 
-/** Adiar uma tarefa pra um novo prazo (rearma o lembrete). */
+/** Reagenda a mesma tarefa; a transação rearma o lembrete e registra histórico. */
 export async function snoozeTask(taskId: string, dueAt: string): Promise<{ ok: true } | { error: string }> {
-  const session = await auth()
-  if (!session?.user?.tenantId) return { error: "Não autenticado" }
-  try { await requireModule("crm") } catch { return { error: "Módulo CRM não habilitado" } }
-  const t = session.user.tenantId
-  const { data: task } = await supabaseAdmin.from("tenant_tasks").select("contact_id, assigned_to").eq("id", taskId).eq("tenant_id", t).maybeSingle()
-  if (!task) return { error: "Tarefa não encontrada" }
-  const tk = task as { contact_id: string | null; assigned_to: string | null }
-  if (!(await canAccessDeal(t, tk.contact_id, tk.assigned_to))) return { error: "Sem acesso" }
-  // NOTA: rearmar o lembrete (reminded_at = null) entra quando a migration reminded_at for aplicada.
-  await supabaseAdmin.from("tenant_tasks")
-    .update({ due_at: dueAt, updated_at: new Date().toISOString() })
-    .eq("id", taskId).eq("tenant_id", t)
-  return { ok: true }
+  return updateManagedTask(taskId, { dueAt })
 }
 
 /** Tarefas de um negócio (pendentes primeiro, por prazo). Pra a ficha do negócio. */

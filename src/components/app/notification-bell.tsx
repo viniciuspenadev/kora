@@ -34,6 +34,7 @@ const ICONS: Record<string, LucideIcon> = {
   // Follow-up de atendimento: despertador. O destino sai do `conversation_id` do
   // payload (hrefFor) — é o que abre A CONVERSA em vez de cair no fallback /agenda.
   followup_due:         AlarmClock,
+  task_due:             CalendarCheck,
 }
 
 function timeAgo(iso: string): string {
@@ -51,6 +52,8 @@ function hrefFor(n: NotificationItem): string {
   // Destino explícito do produtor (ex: cota → /configuracoes/uso). Só caminho interno:
   // o payload vem do banco, então URL absoluta seria um open-redirect de graça.
   if (typeof p.url === "string" && p.url.startsWith("/") && !p.url.startsWith("//")) return p.url
+  if (typeof p.deal_id === "string") return `/negocios/${encodeURIComponent(p.deal_id)}?tab=activity`
+  if (typeof p.task_id === "string") return typeof p.contact_id === "string" ? `/contatos/${encodeURIComponent(p.contact_id)}` : "/tarefas"
   if (p.conversation_id) return `/inbox?conversation=${p.conversation_id}`
   if (p.appointment_id) return "/agenda"
   return "/agenda"

@@ -218,6 +218,20 @@ export async function exportPersonalData(contactId: string): Promise<
   ] as const).find(([, res]) => res.error)
   if (failed) return { error: `Erro ao exportar ${failed[0]}: ${failed[1].error?.message}` }
 
+  // Histórico das tarefas herda a eliminação pelo FK task_id ON DELETE CASCADE.
+  const taskIds = (tasks.data ?? []).map(t => t.id as string)
+  const taskEvents: Record<string, unknown>[] = []
+  for (let start = 0; start < taskIds.length; start += 100) {
+    const ids = taskIds.slice(start, start + 100)
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabaseAdmin.from("tenant_task_events").select("*")
+        .eq("tenant_id", tenantId).in("task_id", ids).order("id").range(offset, offset + 499)
+      if (error) return { error: "Erro ao exportar histórico de tarefas" }
+      taskEvents.push(...(data ?? []))
+      if ((data?.length ?? 0) < 500) break
+    }
+  }
+
   // 5c. Ledger de automações do Instagram (comment-to-DM & cia): guarda contact_id,
   //     from_igsid e o @ de quem comentou → é dado pessoal e entra no acesso (Art. 18 II).
   //     O texto do comentário nunca é guardado, então não há o que exportar dele.
@@ -299,6 +313,7 @@ export async function exportPersonalData(contactId: string): Promise<
     contact_identities:  identities.data ?? [],
     deals:               deals.data ?? [],
     tasks:               tasks.data ?? [],
+    task_events:         taskEvents,
     appointments:        appts.data ?? [],
     documents:           documents.data ?? [],
     list_memberships:    listMembers.data ?? [],
@@ -316,6 +331,7 @@ export async function exportPersonalData(contactId: string): Promise<
       contact_identities:  identities.data?.length ?? 0,
       deals:               deals.data?.length ?? 0,
       tasks:               tasks.data?.length ?? 0,
+      task_events:         taskEvents.length,
       appointments:        appts.data?.length ?? 0,
       documents:           documents.data?.length ?? 0,
       list_memberships:    listMembers.data?.length ?? 0,

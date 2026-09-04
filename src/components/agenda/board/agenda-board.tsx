@@ -13,6 +13,7 @@ import {
 import { TZ, cap, ymdInTz, STATUS_COLORS } from "./lanes"
 import { listEvents, type EventRow } from "@/lib/actions/agenda-events"
 import { scheduleFollowUp, cancelFollowUp, completeFollowUp } from "@/lib/actions/followup"
+import { TaskDialog } from "@/components/crm/task-dialog"
 import { FollowUpDialog } from "@/components/chat/followup-dialog"
 import { EventModal } from "./event-modal"
 import { normalizeAppt, normalizeEvent, normalizeFollowUp, type BoardAppt, type RawAppt, type RawBlackout } from "./types"
@@ -215,9 +216,10 @@ export function AgendaBoard({
     for (const r of resources) if (r.assigned_agent_id) agendaDe.set(r.assigned_agent_id, r.id)
     const fuBlocos: BoardAppt[] = []
     const fuBanda:  DayItem[]   = []
-    for (const f of fu) {
+    for (const original of fu) {
+      const f = original.kind === "task" ? {...original, id: `task:${original.id}`} : original
       const resId = f.ownerId ? agendaDe.get(f.ownerId) : undefined
-      if (resId) fuBlocos.push(normalizeFollowUp(f, resId, resMap))
+      if (resId) fuBlocos.push({ ...normalizeFollowUp(f, resId, resMap), kind: f.kind === "task" ? "task" : "followup" })
       else fuBanda.push(f)
     }
 
@@ -228,7 +230,7 @@ export function AgendaBoard({
       // Cru guardado: a FICHA de evento/follow-up precisa do registro inteiro,
       // não do bloco normalizado (que é só o que a grade desenha).
       eventos: evs,
-      fuTodos: fu,
+      fuTodos: fu.map(f => f.kind === "task" ? {...f, id: `task:${f.id}`} : f),
     }
   }, [rangeFor, view, anchor, resMap, svcMap, resources])
 
@@ -382,7 +384,7 @@ export function AgendaBoard({
       ) : view === "week" ? (
         <WeekView weekDays={weekDays} appts={statusVisible} blackouts={visibleBlackouts} weekRes={weekRes} resourceName={resourceName} todayKey={todayKey} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={setDetailId} gestures={gestures} onSlotClick={handleSlot} followUps={followUps} />
       ) : (
-        <MonthView month={new Date(anchor.getFullYear(), anchor.getMonth(), 1)} appts={monthPool} todayKey={todayKey}
+        <MonthView month={new Date(anchor.getFullYear(), anchor.getMonth(), 1)} appts={[...monthPool,...followUps.map(f=>({...normalizeFollowUp(f,"",resMap),kind:f.kind === "task" ? "task" as const : "followup" as const}))]} todayKey={todayKey}
           onOpenDay={(d) => { setAnchor(d); setView("day") }} />
       )}
 
@@ -398,7 +400,8 @@ export function AgendaBoard({
         />
       )}
 
-      {fuDetail && (
+      {fuDetail?.kind === "task" && <TaskDialog id={fuDetail.id.slice(5)} onClose={() => setDetailId(null)} onChanged={() => recarregar()} />}
+      {fuDetail && fuDetail.kind !== "task" && (
         <FollowUpDialog
           contactName={fuDetail.title}
           contactPic={fuDetail.avatarUrl ?? null}

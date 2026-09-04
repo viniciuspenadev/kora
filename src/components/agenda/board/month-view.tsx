@@ -69,7 +69,7 @@ export function MonthView({
                 </span>
                 {items.slice(0, 3).map((a) => {
                   const st = statusStyle(a.status)
-                  const firstName = a.busyOnly ? "Ocupado" : (a.contactName.split(" ")[0] || a.contactName)
+                  const firstName = a.busyOnly ? "Ocupado" : a.kind === "task" ? a.contactName : (a.contactName.split(" ")[0] || a.contactName)
                   return a.busyOnly ? (
                     <div key={a.id} className="text-[9.5px] font-semibold rounded-md px-1.5 py-0.5 mt-1 truncate bg-slate-100 text-slate-400">
                       {minutesToLabel(a.startMin)} Ocupado

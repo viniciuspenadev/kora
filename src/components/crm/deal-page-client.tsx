@@ -32,6 +32,7 @@ import {
   type DealDetail, type DealEventView, type DealItemView,
 } from "@/lib/actions/deals"
 import { computeDealValue, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
+import { TaskDialog } from "@/components/crm/task-dialog"
 import { createTask, setTaskDone, type TaskRow } from "@/lib/actions/tasks"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
@@ -199,16 +200,6 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   function openTaskModal(preset: string | null) {
     setRescheduleOf(null); setTaskPreset(preset); setActiveModal("task")
   }
-  function doReschedule(title: string, dueAt: string | null) {
-    const old = rescheduleOf; setRescheduleOf(null); setActiveModal(null)
-    start(async () => {
-      const r = await createTask({ dealId: deal.id, title: title.trim(), dueAt })
-      if (r && "error" in r && r.error) { alert(r.error); return }
-      if (old) await setTaskDone(old.id, true)
-      router.refresh()
-    })
-  }
-
   const isOpen = deal.status === "open"
   const st     = STATUS_META[deal.status] ?? STATUS_META.open
   const stageAging = isOpen ? agingDays(deal.stage_entered_at) : null
@@ -274,12 +265,6 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
     setCanceling(false); setReasonSel(""); setReasonTxt("")
     run(() => convId ? cancelDeal(convId, deal.id, reason || null) : cancelDealById(deal.id, reason || null))
   }
-  function doAddTask(title: string, dueAt: string | null) {
-    if (!title.trim()) return
-    setActiveModal(null)
-    run(() => createTask({ dealId: deal.id, title: title.trim(), dueAt }))
-  }
-
   // Fluxo — entrada do funil destino (1ª etapa de funil). Reclassificar = mesmo negócio muda
   // de funil. Handoff = abre um negócio NOVO no destino, ligado a este (jornada).
   function entryStageOf(pid: string): string | null {
@@ -652,12 +637,9 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
 
       {/* Tarefa via modal: banner, "Reagendar" e presets Reunião/Ligação do menu ⋯ */}
       {activeModal === "task" && (
-        <TaskModal
-          initialTitle={rescheduleOf?.title ?? taskPreset ?? undefined}
-          onSubmit={(title, dueAt) => (rescheduleOf ? doReschedule(title, dueAt) : doAddTask(title, dueAt))}
-          onClose={() => { setActiveModal(null); setRescheduleOf(null); setTaskPreset(null) }}
-          pending={pending}
-        />
+        <TaskDialog id={rescheduleOf?.id ?? null} dealId={deal.id} initialTitle={taskPreset ?? ""}
+          onChanged={() => router.refresh()}
+          onClose={() => { setActiveModal(null); setRescheduleOf(null); setTaskPreset(null) }} />
       )}
 
       {/* Nota via modal (menu ⋯) — registra na linha do tempo com assinatura */}
@@ -1006,40 +988,6 @@ function ModalShell({ title, desc, icon: Icon, accent, onClose, children }: {
   )
 }
 
-
-function TaskModal({ onSubmit, onClose, pending, initialTitle }: { onSubmit: (title: string, dueAt: string | null) => void; onClose: () => void; pending?: boolean; initialTitle?: string }) {
-  const [title, setTitle] = useState(initialTitle ?? "")
-  const [date, setDate]   = useState("")
-  const [time, setTime]   = useState("09:00")
-  function quick(days: number) { const d = new Date(); d.setDate(d.getDate() + days); setDate(d.toISOString().slice(0, 10)) }
-  function submit() { onSubmit(title, date ? new Date(`${date}T${time || "09:00"}:00`).toISOString() : null) }
-  const CHIP = "h-7 px-2 text-[11px] font-semibold rounded-md border transition-colors"
-  return (
-    <ModalShell title="Nova tarefa" desc="Lembrete com prazo — cutuca o responsável no vencimento" icon={Bell} accent="#004add" onClose={onClose}>
-      <div className="px-5 py-4 space-y-3">
-        <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit() } }}
-          placeholder="Ex: Ligar pra fechar a proposta"
-          className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[10px] text-slate-400">Quando:</span>
-          {[["Hoje", 0], ["Amanhã", 1], ["+3 dias", 3]].map(([label, d]) => {
-            const dt = new Date(); dt.setDate(dt.getDate() + (d as number)); const iso = dt.toISOString().slice(0, 10)
-            const on = date === iso
-            return <button key={label as string} type="button" onClick={() => quick(d as number)} className={`${CHIP} ${on ? "border-primary-300 bg-primary-50 text-primary-700" : "border-slate-200 text-slate-500 hover:bg-slate-50"}`}>{label}</button>
-          })}
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-7 px-1.5 text-[11px] border border-slate-200 rounded-md text-slate-600 focus:outline-none" />
-          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="h-7 px-1.5 text-[11px] border border-slate-200 rounded-md text-slate-600 focus:outline-none" />
-        </div>
-      </div>
-      <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-100 bg-slate-50/50">
-        <button type="button" onClick={onClose} disabled={pending} className="h-9 px-4 text-sm font-semibold text-slate-600 hover:bg-slate-200/60 rounded-lg disabled:opacity-50">Cancelar</button>
-        <button type="button" onClick={submit} disabled={!title.trim() || pending} className="inline-flex items-center gap-1.5 h-9 px-5 text-sm font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg disabled:opacity-50">
-          {pending && <Loader2 className="size-4 animate-spin" />} Criar tarefa
-        </button>
-      </div>
-    </ModalShell>
-  )
-}
 
 // ── Documentos do Negócio — um protocolo por movimentação (evolução/regressão) ──
 type ProtocolKind = "abertura" | "evolucao" | "regressao" | "ganho" | "perda" | "cancelamento" | "reabertura" | "mudanca"

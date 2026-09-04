@@ -73,7 +73,7 @@ export function DayView({
   })
 
   if (columns.length === 0) {
-    return <div className="rounded-xl border border-slate-200 bg-white py-24 text-center text-sm text-slate-400">Nenhuma agenda pra mostrar neste escopo.</div>
+    return <div className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500"><p>Nenhuma agenda neste escopo.</p>{band.map(item=><button key={item.id} onClick={item.onClick} className="mt-3 block w-full rounded-lg border border-slate-200 p-3 text-left text-slate-700">{item.label}</button>)}</div>
   }
 
   return <TimeGrid columns={columns} startHour={startHour} endHour={endHour} hourPx={hourPx} now={now} onOpen={onOpen} gestures={gestures} onSlotClick={onSlotClick} colMinWidth={190} bandGhosts={band} />

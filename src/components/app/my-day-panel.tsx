@@ -1,12 +1,14 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import {
   CalendarClock, AlarmClock, CalendarCheck, X, Loader2, ChevronRight,
   CheckCheck, Check, Sunrise, ArrowUpRight,
 } from "lucide-react"
 import { ContactPic } from "@/components/chat/contact-pic"
+import { toast } from "sonner"
+import { TaskDialog } from "@/components/crm/task-dialog"
 import { getMyDay, type DayItem } from "@/lib/actions/my-day"
 import { completeFollowUp, scheduleFollowUp, cancelFollowUp } from "@/lib/actions/followup"
 import { FollowUpDialog } from "@/components/chat/followup-dialog"
@@ -101,19 +103,24 @@ export function MyDayPanel() {
   const [scope, setScope]   = useState<"me" | "team">("me")
   const [lente, setLente]   = useState<Lente | null>(null)
   const [tipo, setTipo]     = useState<"all" | DayItem["kind"]>("all")
-  const [data, setData]     = useState<{ items: DayItem[]; canSeeTeam: boolean; agendaOn: boolean } | null>(null)
+  const [data, setData]     = useState<{ items: DayItem[]; canSeeTeam: boolean; agendaOn: boolean; crmOn?: boolean; tasksLimited?: boolean } | null>(null)
   const [loading, setLoading] = useState(false)
   const [contador, setContador] = useState(0)
   const [concluindo, setConcluindo] = useState<string | null>(null)
   /** Ficha da promessa aberta a partir da lista — a MESMA do calendário. */
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const request = useRef(0)
+  const [loadError, setLoadError] = useState("")
   const [ficha, setFicha] = useState<DayItem | null>(null)
   /** Relógio do painel: carimbado a cada carga (o render nunca lê `Date.now()`). */
   const [agora, setAgora] = useState(0)
 
   const carregar = useCallback(async (s: "me" | "team") => {
-    setLoading(true)
+    const ticket = ++request.current
+    setLoading(true); setLoadError("")
     try {
       const r = await getMyDay({ scope: s, horizonDays: HORIZONTE })
+      if (ticket !== request.current) return
       const t = Date.now()
       setAgora(t)
       setData(r)
@@ -122,8 +129,8 @@ export function MyDayPanel() {
       if (s === "me") {
         setContador(r.items.filter((i) => !i.done && ["atrasado", "hoje"].includes(faixaDe(i.at, t))).length)
       }
-    } finally {
-      setLoading(false)
+    } catch { if(ticket === request.current) setLoadError("Não foi possível atualizar as tarefas.") } finally {
+      if(ticket === request.current) setLoading(false)
     }
   }, [])
 
@@ -131,11 +138,11 @@ export function MyDayPanel() {
   // 5 min — o mesmo passo da varredura; olhar mais rápido não adianta.
   useEffect(() => {
     let vivo = true
-    const puxar = () => { if (vivo) void carregar("me") }
+    const puxar = () => { if (vivo) void carregar(open ? scope : "me") }
     puxar()
     const t = setInterval(puxar, 5 * 60_000)
     return () => { vivo = false; clearInterval(t) }
-  }, [carregar])
+  }, [carregar, open, scope])
 
   useEffect(() => {
     if (!open) return
@@ -151,6 +158,7 @@ export function MyDayPanel() {
    *  o mesmo defeito que o dono apontou no calendário. Agendamento segue navegando:
    *  a máquina dele é a Agenda, não esta. */
   function ir(item: DayItem) {
+    if (item.kind === "task") { setTaskId(item.id); return }
     if (item.kind === "followup") { setFicha(item); return }
     setOpen(false)
     router.push(item.href)
@@ -160,7 +168,8 @@ export function MyDayPanel() {
   async function concluir(item: DayItem) {
     setConcluindo(item.id)
     try {
-      await completeFollowUp(item.id)
+      const result = await completeFollowUp(item.id)
+      if ("error" in result) { toast.error(result.error); return }
       await carregar(scope)
     } finally {
       setConcluindo(null)
@@ -240,7 +249,7 @@ export function MyDayPanel() {
                     {loading && <Loader2 className="size-3.5 animate-spin text-slate-400" />}
                   </div>
                   <p className="mt-0.5 truncate text-[11px] text-slate-500">
-                    {data?.agendaOn ? "Follow-ups e agenda" : "Seus follow-ups"} · próximos {HORIZONTE} dias
+                    {data?.crmOn ? "Follow-ups e tarefas" : "Follow-ups"}{data?.agendaOn ? " · agenda" : ""} · próximos {HORIZONTE} dias
                   </p>
                 </div>
                 <button
@@ -308,6 +317,7 @@ export function MyDayPanel() {
               {([
                 ["all", "Todos"],
                 ["followup", "Follow-ups"],
+                ...(data?.crmOn ? [["task", "CRM"]] : []),
                 ...(data?.agendaOn ? [["appointment", "Agenda"]] : []),
               ] as Array<["all" | DayItem["kind"], string]>).map(([key, label]) => (
                 <button
@@ -340,6 +350,8 @@ export function MyDayPanel() {
               </button>
             </div>
 
+            {loadError && <p role="alert" className="px-4 py-2 text-xs text-red-700">{loadError}</p>}
+            {data?.tasksLimited && <p className="px-4 py-2 text-xs text-slate-500">Exibindo até 200 tarefas comerciais. Consulte todas na gestão.</p>}
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               {loading && itens.length === 0 && (
                 <div className="divide-y divide-slate-100">
@@ -370,7 +382,7 @@ export function MyDayPanel() {
                     <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed text-slate-500">
                       {lente || tipo !== "all"
                         ? "Altere ou desmarque os filtros para consultar os outros compromissos."
-                        : "Os próximos follow-ups e agendamentos aparecerão aqui em ordem de horário."}
+                        : "Seus próximos compromissos aparecerão aqui em ordem de horário."}
                     </p>
                   </div>
                 </div>
@@ -433,7 +445,7 @@ export function MyDayPanel() {
                                 }`}>
                                   {i.title}
                                 </p>
-                                <span title={followup ? "Follow-up" : "Agenda"} className={followup ? "text-primary-600" : "text-emerald-600"}>
+                                <span title={followup ? "Follow-up" : i.kind === "task" ? "Tarefa CRM" : "Agenda"} className={followup ? "text-primary-600" : "text-emerald-600"}>
                                   {followup ? <AlarmClock className="size-3" /> : <CalendarCheck className="size-3" />}
                                 </span>
                               </div>
@@ -453,7 +465,7 @@ export function MyDayPanel() {
                                 </span>
                               ) : (
                                 <span className={`text-[10px] font-semibold ${followup ? "text-primary-700" : "text-emerald-700"}`}>
-                                  {followup ? "Follow-up" : "Agenda"}
+                                  {followup ? "Follow-up" : i.kind === "task" ? "Tarefa CRM" : "Agenda"}
                                 </span>
                               )}
                               {i.ownerName && <p className="mt-1 truncate text-[10px] text-slate-400">{i.ownerName}</p>}
@@ -495,6 +507,7 @@ export function MyDayPanel() {
                 {visiveis.length === 1 ? "compromisso" : "compromissos"}
                 {!lente && tipo === "all" && ` · próximos ${HORIZONTE} dias`}
               </p>
+              {data?.crmOn && <button onClick={() => { setOpen(false); router.push("/tarefas") }} className="text-xs font-semibold text-primary-700">Gerir tarefas</button>}
               {data?.agendaOn && (
                 <button
                   type="button"
@@ -509,6 +522,7 @@ export function MyDayPanel() {
         </div>
       )}
 
+      {taskId && <TaskDialog id={taskId} onClose={() => setTaskId(null)} onChanged={() => { void carregar(scope) }} />}
       {/* A MESMA ficha do calendário — uma peça só pras duas superfícies. Fica
           fora do painel no DOM pra desenhar por cima dele. */}
       {ficha && (

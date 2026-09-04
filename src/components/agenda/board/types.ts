@@ -32,7 +32,7 @@ export interface RawAppt {
  * ⚠️ Só `appointment` ocupa a agenda. Os outros dois são **não-bloqueantes**
  *    (decisão do dono): aparecem como bloco e dividem o slot com o cliente.
  */
-export type BoardKind = "appointment" | "event" | "followup"
+export type BoardKind = "appointment" | "event" | "followup" | "task"
 
 export interface BoardAppt {
   id: string

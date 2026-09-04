@@ -55,7 +55,7 @@ export function AptCard({
   // status, telefone nem serviço — e NÃO ocupa a agenda (decisão do dono). O
   // tracejado é o que diz isso sem legenda: dá pra marcar cliente por cima.
   if (a.kind !== "appointment") {
-    const followup = a.kind === "followup"
+    const followup = a.kind === "followup" || a.kind === "task"
     return (
       <button
         type="button"
