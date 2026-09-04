@@ -1,0 +1,179 @@
+// ═══════════════════════════════════════════════════════════════
+// Política de Atendimento — varredura de INATIVIDADE (Fatia 3)
+// ═══════════════════════════════════════════════════════════════
+// Acha conversas onde o CLIENTE falou por último e ninguém respondeu há
+// ≥ X horas (cliente esperando), e aplica o resultado configurado pelo tenant.
+// Acordado pelo pg_cron. Idempotente: só age uma vez por "stall"
+// (marca metadata.inactivity_swept_at; re-elegível quando o cliente fala de novo).
+//
+// "Stall" = last_message_dir='in' (cliente foi o último) + last_message_at velho
+// + NÃO é grupo + NÃO está arquivada + (tem dono humano OU não tem fluxo do Studio vivo).
+//
+// ⚠️ Este último ramo mudou em 2026-08-23. Era "não é controle puro-IA", avaliado pela
+//    marca `ai_handling` — que a conversa ganhava no NASCIMENTO sempre que o tenant tinha
+//    IA ativa, existindo fluxo ou não. Medido: 93 conversas fora da rede com ZERO fluxo
+//    rodando, 23 com o cliente esperando +24h. A marca virava esconderijo; agora o que
+//    protege é execução de fluxo VIVA, e só em conversa sem dono humano.
+//
+// É a REDE DE SEGURANÇA, independente do Vínculo: se o atendente some, age —
+// não importa se o vínculo é carteira/pool/IA. (Vínculo = pra quem o cliente
+// VOLTA; Inatividade = quando o responsável SOME. Momentos diferentes.)
+//
+// Resultado: AVISAR — nota interna na conversa, o dono não muda.
+//   🔴 Era um 3-way. "Redistribuir" saiu com o motor de distribuição (2026-08-26) e
+//      "devolver pra IA" saiu porque não respondia ninguém: religava uma marca que
+//      rearmava pro PRÓXIMO inbound — que podia nunca vir — e ainda escrevia na trilha
+//      que "a IA reassumiu o atendimento". Valor legado no banco é lido como avisar.
+//   ⚠️ Hoje o aviso é uma nota PRIVADA dentro da conversa: ela passa a ser ENXERGADA
+//      pela rede, mas ninguém é convocado. A peça de aviso ativo está adiada (decisão
+//      do dono) — não confundir "a rede não pegou" com "a rede pegou e ninguém viu".
+//
+// Respeita horário comercial: fora do expediente não conta como "esperando".
+
+import "server-only"
+import { supabaseAdmin } from "@/lib/supabase"
+import { isWithinBusinessHours } from "@/lib/automation/business-hours"
+
+const MAX_PER_TENANT = 50
+/** Tamanho da página de varredura e teto de páginas por tenant/tick.
+ *  O produto PAGE_SIZE × MAX_PAGES limita o custo; MAX_PER_TENANT limita o TRABALHO. */
+const PAGE_SIZE = 100
+const MAX_PAGES = 5
+
+type Sched = Record<string, { start: string; end: string; enabled: boolean }>
+
+interface TenantCfg {
+  tenant_id:               string
+  inactivity_hours:        number | null
+  inactivity_action:       string | null
+  business_hours_enabled:  boolean | null
+  business_hours_schedule: Sched | null
+  business_hours_timezone: string | null
+}
+
+export async function runInactivitySweep(): Promise<{ tenants: number; swept: number }> {
+  const { data: tenants } = await supabaseAdmin
+    .from("tenant_config")
+    .select("tenant_id, inactivity_hours, inactivity_action, business_hours_enabled, business_hours_schedule, business_hours_timezone")
+    .eq("inactivity_enabled", true)
+
+  let swept = 0
+  for (const t of (tenants ?? []) as TenantCfg[]) swept += await sweepTenant(t)
+  return { tenants: (tenants ?? []).length, swept }
+}
+
+async function sweepTenant(t: TenantCfg): Promise<number> {
+  const tenantId = t.tenant_id
+
+  // Horário comercial: se configurado e estamos FORA, não age agora — não conta
+  // hora de loja fechada como "cliente esperando". Sem horário definido → 24/7.
+  if (t.business_hours_enabled && t.business_hours_schedule) {
+    const inside = isWithinBusinessHours(t.business_hours_schedule, t.business_hours_timezone ?? "America/Sao_Paulo")
+    if (!inside) return 0
+  }
+
+  const hours = Math.max(1, t.inactivity_hours ?? 4)
+  const cutoff = new Date(Date.now() - hours * 3_600_000).toISOString()
+
+  // 🔴 PAGINAÇÃO POR CURSOR, DO MAIS ANTIGO PRO MAIS NOVO.
+  //    O carimbo de "já tratei nesta parada" mora no metadata e só dá pra avaliar em
+  //    memória — a linha varrida CONTINUA casando o filtro do banco. Com um LIMIT fixo,
+  //    a janela assoreia: enche de linhas já carimbadas e o trabalho vai a zero, deixando
+  //    uma cauda que NUNCA é alcançada. Medido no cenário real (89 candidatas, teto 50):
+  //    tick 1 varre 50, tick 2 varre ZERO, e 39 conversas nunca são tratadas.
+  //    Pior: sem ORDER BY, o índice devolve as paradas mais NOVAS primeiro — a cauda
+  //    perdida era justamente a de quem espera há mais tempo. A rede invertia a prioridade.
+  //    Com cursor + ordem crescente, quem espera há mais tempo é atendido primeiro e o
+  //    cursor passa por cima das já carimbadas em vez de tropeçar nelas.
+  let tratadas = 0
+  let cursor: string | null = null
+  for (let pagina = 0; pagina < MAX_PAGES && tratadas < MAX_PER_TENANT; pagina++) {
+    let q = supabaseAdmin
+      .from("chat_conversations")
+      .select("id, assigned_to, last_message_at, metadata")
+      .eq("tenant_id", tenantId)
+      .eq("is_group", false)                              // grupos ficam de fora
+      .is("archived_at", null)                            // arquivar é esconder de propósito
+      .in("status", ["open", "pending"])
+      .eq("last_message_dir", "in")
+      .lt("last_message_at", cutoff)
+      .order("last_message_at", { ascending: true })      // quem espera há mais tempo primeiro
+      .limit(PAGE_SIZE)
+    if (cursor) q = q.gt("last_message_at", cursor)
+
+    const { data: convs, error: convsErr } = await q
+    if (convsErr) {
+      console.error("[inactivity] leitura de conversas falhou:", convsErr.message)
+      return tratadas
+    }
+    const lote = (convs ?? []) as { id: string; assigned_to: string | null; last_message_at: string | null; metadata: Record<string, unknown> | null }[]
+    if (lote.length === 0) break
+    cursor = lote[lote.length - 1].last_message_at
+
+    // 🔴 O predicado é FLUXO VIVO, não a marca `ai_handling` — que era ligada no
+    //    NASCIMENTO de toda conversa de tenant com IA ativa, existindo fluxo ou não.
+    //    Medido em prod (2026-08-23): 93 conversas excluídas da rede com ZERO fluxo
+    //    rodando, 23 delas com o cliente esperando +24h. A marca virou esconderijo.
+    // ⚠️ Só vale pra conversa SEM DONO HUMANO. Com dono, a IA não está conduzindo
+    //    (o portão do motor barra), e o filtro antigo — que era um OR — deixava essas
+    //    entrarem SEMPRE. Aplicar o pulo nelas seria regressão: dono humano + execução
+    //    zumbi sumiria da rede.
+    const semDono = lote.filter((c) => !c.assigned_to).map((c) => c.id)
+    let comFluxoVivo = new Set<string>()
+    if (semDono.length > 0) {
+      const { data: runs, error: runsErr } = await supabaseAdmin
+        .from("studio_flow_runs")
+        .select("conversation_id")
+        .in("conversation_id", semDono)
+        .in("status", ["active", "waiting"])
+      // 🔴 Erro NÃO pode virar "ninguém tem fluxo": seria arrancar até um lote inteiro de
+      //    conversas de fluxos que estão rodando, sem volta (o carimbo grava junto).
+      //    Fail-closed, como o motor irmão faz quando o estado do tenant vem `degraded`.
+      if (runsErr) {
+        console.error("[inactivity] leitura de fluxos falhou — lote pulado:", runsErr.message)
+        continue
+      }
+      comFluxoVivo = new Set(((runs ?? []) as { conversation_id: string }[]).map((r) => r.conversation_id))
+    }
+
+    for (const c of lote) {
+      if (tratadas >= MAX_PER_TENANT) break
+      // A IA está conduzindo de verdade? Sai — a rede é pra quem espera HUMANO.
+      if (!c.assigned_to && comFluxoVivo.has(c.id)) continue
+      const meta = c.metadata ?? {}
+      const sweptAt = typeof meta.inactivity_swept_at === "string" ? meta.inactivity_swept_at : null
+      // Já tratado NESTA parada? (re-elegível só quando o cliente fala de novo).
+      if (sweptAt && c.last_message_at && sweptAt >= c.last_message_at) continue
+      await applyAction(tenantId, c.id, meta)
+      tratadas++
+    }
+  }
+  return tratadas
+}
+
+async function applyAction(tenantId: string, convId: string, meta: Record<string, unknown>): Promise<void> {
+  const now = new Date().toISOString()
+  const upd = (fields: Record<string, unknown>) =>
+    supabaseAdmin.from("chat_conversations").update({ ...fields, updated_at: now }).eq("id", convId).eq("tenant_id", tenantId)
+
+  // 🔴 AÇÃO ÚNICA: AVISAR. Decisão do dono (2026-08-26). Saíram "redistribuir" (junto
+  //    com o motor de distribuição) e "devolver pra IA" — esta porque não respondia
+  //    ninguém: só religava uma marca que rearmava pro PRÓXIMO inbound, que podia nunca
+  //    vir, e ainda escrevia na trilha que "a IA reassumiu o atendimento".
+  // ⚠️ O carimbo é o que impede a varredura de reprocessar a MESMA parada a cada 5 min.
+  //    Se ele sair daqui, a nota interna se repete pra sempre, crescendo em silêncio.
+  await upd({ metadata: { ...meta, inactivity_swept_at: now } })
+  await note(tenantId, convId, "⏰ Cliente aguardando há um tempo sem resposta — fica de olho.")
+}
+
+function note(tenantId: string, conversationId: string, content: string) {
+  return supabaseAdmin.from("chat_messages").insert({
+    conversation_id: conversationId,
+    tenant_id:       tenantId,
+    sender_type:     "system",
+    content_type:    "text",
+    content,
+    status:          "delivered",
+    is_private_note: true, // alerta interno; cliente não vê
+  })
+}

@@ -1,0 +1,1022 @@
+// ═══════════════════════════════════════════════════════════════
+// Os cenários que a leitura não prova — cada um amarrado a um bug real
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔴 POR QUE ESTE ARQUIVO EXISTE. O pentest de 08/08 colocou como portão de saída do
+//    Sprint 0: *"corrigir P0-1 a P0-4 e cobertos por testes determinísticos"*. As
+//    correções foram validadas por LEITURA — três passadas, que acharam 5 regressões
+//    introduzidas pelas próprias correções. Leitura acha o que alguém pensa em procurar;
+//    teste impede a VOLTA. A regressão do piso de aceite (que travaria a fatura de todo
+//    cliente com excedente) teria caído em dois segundos aqui.
+//
+// 🔒 NADA TOCA PRODUÇÃO. `vi.mock` troca `@/lib/supabase` e `./client` antes de qualquer
+//    import: os módulos reais nunca carregam, então não há service key, não há URL, não há
+//    rede. Metade dos cenários é "e quando o banco falha?" — apontar isso pro banco de
+//    verdade seria exatamente o oposto do que se quer.
+//
+// ⚠️ Cada `it` tem no nome o bug que ele tranca. Quando um quebrar, o nome já diz o que
+//    voltou a acontecer.
+
+import { describe, it, expect, beforeEach, vi } from "vitest"
+import { FakeDb } from "@/test/fakes/fake-db"
+import { FakeGateway, AsaasError, mensagemSeguraDoGateway } from "@/test/fakes/fake-gateway"
+
+const db = new FakeDb()
+let gw = new FakeGateway()
+
+// Gancho exclusivamente de teste para abrir a janela exata entre o snapshot lido pelo
+// handler e o UPDATE final da projeção no tenant. O fake continua intocado: interceptamos
+// somente o primeiro update que tenta mudar `subscription_status`.
+let antesDoProximoUpdateDeCobranca: (() => void) | null = null
+/** Abre a segunda janela: o CAS venceu, mas os entitlements ainda não foram aplicados. */
+let imediatamenteAntesDeApplyPlan: (() => void) | null = null
+
+function fromComInterleaving(tabela: string) {
+  const query = db.from(tabela)
+  const updateOriginal = query.update.bind(query)
+  query.update = (patch: Record<string, unknown>) => {
+    if (tabela === "tenants" && "subscription_status" in patch && antesDoProximoUpdateDeCobranca) {
+      const interleaving = antesDoProximoUpdateDeCobranca
+      antesDoProximoUpdateDeCobranca = null
+      interleaving()
+    }
+    return updateOriginal(patch)
+  }
+  return query
+}
+
+vi.mock("server-only", () => ({}))
+vi.mock("@/lib/supabase", () => ({
+  supabaseAdmin: {
+    from: (t: string) => fromComInterleaving(t),
+    rpc: (name: string, args: Record<string, unknown>) => db.rpc(name, args),
+  },
+}))
+vi.mock("./client", () => ({
+  get asaas() { return gw.client },
+  AsaasError,
+  mensagemSeguraDoGateway,
+}))
+// A aplicação de plano tem teste próprio; aqui interessa só se o handler REAGE ao resultado.
+const applyPlanMock = vi.fn(async (
+  _tenantId: string,
+  _planId: string,
+  _guard?: unknown,
+): Promise<{ ok: boolean; error?: string }> => ({ ok: true }))
+vi.mock("@/lib/plans", () => ({
+  applyPlan: (...a: unknown[]) => {
+    const interleaving = imediatamenteAntesDeApplyPlan
+    imediatamenteAntesDeApplyPlan = null
+    interleaving?.()
+    return applyPlanMock(...(a as [string, string, unknown?]))
+  },
+}))
+// Só o teste da janela pós-CAS delega para esta implementação. Os demais continuam
+// isolando o handler com o spy acima.
+const { applyPlan: applyPlanReal } = await vi.importActual<typeof import("@/lib/plans")>("@/lib/plans")
+const gerarFaturaMock = vi.fn(async () => ({ id: "inv_nova" as string | undefined, skipped: false, error: undefined as string | undefined }))
+// ⚠️ ENCAMINHA OS ARGUMENTOS (11/08). Antes era `() => gerarFaturaMock()`, que os DESCARTAVA
+//    — e isso tornava impossível afirmar COM QUE opções a emissão foi chamada. Descobri ao
+//    tentar provar que a baixa passa `{ dinheiroJaEntrou: true }`: o espião não via nada.
+//    Mock que engole argumento transforma "não verifiquei" em "verifiquei e estava certo".
+vi.mock("@/lib/billing", () => ({ generateInvoiceForTenant: (...a: unknown[]) => gerarFaturaMock(...(a as [])) }))
+// 🔑 ESPIÃO, NÃO SÓ MOCK. O defeito que os e-mails vieram consertar não era e-mail errado —
+//    era e-mail **nunca chamado** (`resolveBillingRecipients` e `dedupeKey` ficaram prontos e
+//    sem chamador). Só o teste do disparador não pegaria isso: quem tem que provar a fiação
+//    é o lado que dispara. O conteúdo tem teste próprio em `billing/notify.test.ts`.
+interface AvisoCapturado {
+  aviso: string; fato: string
+  valorCents?: number | null; quando?: string | null; diasCarencia?: number
+}
+const avisarMock = vi.fn(async (_a: AvisoCapturado) => {})
+vi.mock("@/lib/billing/notify", () => ({ avisarCobranca: (a: unknown) => avisarMock(a as AvisoCapturado) }))
+/** Os avisos disparados até agora, por nome. */
+const avisos = () => avisarMock.mock.calls.map((c) => c[0].aviso)
+const primeiroAviso = () => avisarMock.mock.calls[0][0]
+
+const { processAsaasEvent } = await import("./webhook-handler")
+
+const TENANT = "11111111-1111-1111-1111-111111111111"
+const CUSTOMER = "cus_kora"
+const SUB_ATUAL = "sub_nova"
+const SUB_ANTIGA = "sub_velha"
+
+/** Estado-base: cliente pagante, assinatura vigente, uma fatura aberta. */
+function montarCenario(over: { tenant?: Record<string, unknown>; evento?: Record<string, unknown> } = {}) {
+  db.tabelas.clear()
+  // ⚠️ O log é cumulativo — sem zerar aqui, uma asserção de "quantas escritas houve"
+  //    conta as dos cenários anteriores. (Foi exatamente assim que o primeiro `run`
+  //    reprovou: o teste estava errado, o código não.)
+  db.log.length = 0
+  db.seed("tenants", [{
+    id: TENANT,
+    asaas_customer_id: CUSTOMER,
+    asaas_subscription_id: SUB_ATUAL,
+    subscription_ends_at: null,
+    subscription_status: "active",
+    // ⚠️ Explícitos porque no banco a COLUNA existe sempre — omitir aqui faria o dublê
+    //    devolver `undefined` onde o Postgres devolve `null`, e um teste passaria (ou
+    //    reprovaria) por uma diferença que a produção não tem.
+    past_due_since: null,
+    past_due_grace_days: null,
+    lifecycle_state: "active",
+    billing_mode: "gateway",
+    plan_id: "plan_1",
+    active: true,
+    plans: { price_cents: 34990 },
+    ...over.tenant,
+  }])
+  db.seed("invoices", [{
+    id: "inv_1", tenant_id: TENANT, status: "open", total_cents: 34990,
+    paid_cents: 0, paid_at: null,
+    due_date: "2026-08-11", period_start: "2026-08-01", period_end: "2026-08-31",
+    kind: "recorrente", gateway_ref: null, gateway_charge_id: null,
+  }])
+  db.seed("asaas_webhook_events", [{
+    id: "evt_1",
+    event_type: "PAYMENT_CONFIRMED",
+    payment_id: "pay_1",
+    received_at: "2026-08-08T00:00:00Z",
+    processed_at: null,
+    // ⚠️ Explícito pelo mesmo motivo dos campos do tenant: a coluna existe sempre no banco.
+    claimed_at: null,
+    error: null,
+    payload: { dateCreated: "2026-08-08T00:00:00.000Z", payment: { id: "pay_1", customer: CUSTOMER, value: 349.9 } },
+    ...over.evento,
+  }])
+}
+
+const evento = () => db.linhas("asaas_webhook_events")[0]
+const tenant = () => db.linhas("tenants")[0]
+const fatura  = () => db.linhas("invoices")[0]
+
+beforeEach(() => {
+  gw = new FakeGateway()
+  antesDoProximoUpdateDeCobranca = null
+  imediatamenteAntesDeApplyPlan = null
+  applyPlanMock.mockClear(); applyPlanMock.mockResolvedValue({ ok: true })
+  gerarFaturaMock.mockClear(); gerarFaturaMock.mockResolvedValue({ id: "inv_nova", skipped: false, error: undefined })
+  avisarMock.mockClear()
+  montarCenario()
+})
+
+const auditoriasDe = (acao: string) => db.linhas("audit_log").filter((row) => row.action === acao)
+
+// ── CAS da projeção de cobrança · concorrência adversarial ──────────────────
+//
+// O GET do gateway e o snapshot local não formam uma transação. Estes testes alteram o
+// tenant exatamente quando o handler constrói o UPDATE final. Um writer seguro precisa
+// repetir no próprio UPDATE as precondições que leu, observar zero rows e devolver o evento
+// à fila — sem publicar sucesso nem consolidar o plano do snapshot vencido.
+describe("CAS da liberação — decisão concorrente vence o pagamento antigo", () => {
+  it.each([
+    {
+      caso: "cancelamento",
+      concorre: () => Object.assign(tenant(), {
+        subscription_status: "canceled",
+        subscription_ends_at: "2026-09-11T23:59:59.000Z",
+        asaas_subscription_id: null,
+      }),
+      esperado: {
+        subscription_status: "canceled",
+        subscription_ends_at: "2026-09-11T23:59:59.000Z",
+        asaas_subscription_id: null,
+      },
+    },
+    {
+      caso: "mudança para cobrança manual",
+      concorre: () => Object.assign(tenant(), { billing_mode: "manual" }),
+      esperado: { billing_mode: "manual", subscription_status: "past_due" },
+    },
+    {
+      caso: "vínculo com uma assinatura nova",
+      concorre: () => Object.assign(tenant(), { asaas_subscription_id: "sub_posterior" }),
+      esperado: { asaas_subscription_id: "sub_posterior", subscription_status: "past_due" },
+    },
+  ])("$caso entre snapshot e UPDATE não é sobrescrito", async ({ concorre, esperado }) => {
+    montarCenario({ tenant: {
+      subscription_status: "past_due",
+      past_due_since: "2026-08-01T00:00:00.000Z",
+      past_due_reason: "vencimento",
+    } })
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "CONFIRMED", customer: CUSTOMER,
+      subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11",
+    })
+    antesDoProximoUpdateDeCobranca = concorre
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant()).toMatchObject(esperado)
+    expect(evento().processed_at).toBeNull()
+    expect(applyPlanMock).not.toHaveBeenCalled()
+    expect(avisos()).toEqual([])
+    expect(auditoriasDe("billing.liberado")).toHaveLength(0)
+  })
+})
+
+describe("CAS da restrição — estado mais novo não volta para past_due", () => {
+  it.each([
+    {
+      caso: "cancelamento",
+      concorre: () => Object.assign(tenant(), {
+        subscription_status: "canceled",
+        subscription_ends_at: "2026-09-11T23:59:59.000Z",
+        asaas_subscription_id: null,
+      }),
+      esperado: {
+        subscription_status: "canceled",
+        subscription_ends_at: "2026-09-11T23:59:59.000Z",
+        asaas_subscription_id: null,
+      },
+    },
+    {
+      caso: "mudança para cobrança manual",
+      concorre: () => Object.assign(tenant(), { billing_mode: "manual" }),
+      esperado: { billing_mode: "manual", subscription_status: "active" },
+    },
+    {
+      caso: "vínculo com uma assinatura nova",
+      concorre: () => Object.assign(tenant(), { asaas_subscription_id: "sub_posterior" }),
+      esperado: { asaas_subscription_id: "sub_posterior", subscription_status: "active" },
+    },
+  ])("$caso entre snapshot e UPDATE não é sobrescrito", async ({ concorre, esperado }) => {
+    montarCenario({ evento: { event_type: "PAYMENT_OVERDUE" } })
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "OVERDUE", customer: CUSTOMER,
+      subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11",
+    })
+    antesDoProximoUpdateDeCobranca = concorre
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant()).toMatchObject(esperado)
+    expect(evento().processed_at).toBeNull()
+    expect(avisos()).toEqual([])
+    expect(auditoriasDe("billing.restringido")).toHaveLength(0)
+  })
+})
+
+// ── Gates adversariais ainda abertos ─────────────────────────────────────────
+// Estes testes são deliberadamente vermelhos enquanto os blockers da revisão independente
+// não forem corrigidos. Eles descrevem o contrato seguro, não o comportamento atual.
+describe("propriedade autoritativa é fail-closed", () => {
+  it("GET sem customer nunca libera o tenant", async () => {
+    montarCenario({ tenant: {
+      subscription_status: "past_due",
+      past_due_since: "2026-08-01T00:00:00.000Z",
+      past_due_reason: "vencimento",
+    } })
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "CONFIRMED", subscription: SUB_ATUAL,
+      value: 349.9, dueDate: "2026-08-11",
+    })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("past_due")
+    expect(applyPlanMock).not.toHaveBeenCalled()
+    expect(auditoriasDe("billing.liberado")).toHaveLength(0)
+  })
+
+  it("GET sem customer nunca restringe o tenant", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_OVERDUE" } })
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "OVERDUE", subscription: SUB_ATUAL,
+      value: 349.9, dueDate: "2026-08-11",
+    })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(avisos()).toEqual([])
+    expect(auditoriasDe("billing.restringido")).toHaveLength(0)
+  })
+
+  it("overdue sem subscription não restringe tenant com assinatura vigente", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_OVERDUE" } })
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "OVERDUE", customer: CUSTOMER,
+      value: 349.9, dueDate: "2026-08-11",
+    })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(avisos()).toEqual([])
+    expect(auditoriasDe("billing.restringido")).toHaveLength(0)
+  })
+})
+
+describe("retry do mesmo evento não inventa uma segunda transição", () => {
+  it("pendência posterior à liberação não duplica billing.liberado", async () => {
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "CONFIRMED", customer: CUSTOMER,
+      subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11",
+    })
+    applyPlanMock.mockResolvedValue({ ok: false, error: "upsert falhou" } as never)
+
+    await processAsaasEvent("evt_1")
+    expect(evento().processed_at).toBeNull()
+    await processAsaasEvent("evt_1")
+
+    expect(auditoriasDe("billing.liberado")).toHaveLength(1)
+  })
+
+  it("chargeback pendente não duplica billing.restringido", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_CHARGEBACK_REQUESTED" } })
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "CHARGEBACK_REQUESTED", customer: CUSTOMER,
+      subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11",
+    })
+
+    await processAsaasEvent("evt_1")
+    expect(evento().processed_at).toBeNull()
+    await processAsaasEvent("evt_1")
+
+    expect(auditoriasDe("billing.restringido")).toHaveLength(1)
+  })
+})
+
+describe("corrida depois do CAS e antes dos entitlements", () => {
+  it("pagamento antigo não reaplica plano nem módulos após troca concorrente", async () => {
+    db.seed("plans", [
+      { id: "plan_1", name: "Starter", included_modules: ["modulo_antigo"], pro_modules: [] },
+      { id: "plan_posterior", name: "Enterprise", included_modules: ["modulo_novo"], pro_modules: [] },
+    ])
+    db.seed("tenant_modules", [])
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "CONFIRMED", customer: CUSTOMER,
+      subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11",
+    })
+    applyPlanMock.mockImplementation((tenantId, planId, guard) => applyPlanReal(
+      tenantId,
+      planId,
+      guard as Parameters<typeof applyPlanReal>[2],
+    ))
+    imediatamenteAntesDeApplyPlan = () => {
+      Object.assign(tenant(), { plan_id: "plan_posterior", plan: "enterprise" })
+      db.seed("tenant_modules", [{
+        tenant_id: TENANT, module_slug: "modulo_novo", enabled: true,
+        pro: false, reason: "Incluído no plano",
+      }])
+    }
+
+    await processAsaasEvent("evt_1")
+
+    const moduloNovo = db.linhas("tenant_modules").find((m) => m.module_slug === "modulo_novo")
+    const moduloAntigo = db.linhas("tenant_modules").find((m) => m.module_slug === "modulo_antigo")
+    expect.soft(tenant().plan_id).toBe("plan_posterior")
+    expect.soft(moduloNovo).toMatchObject({ enabled: true })
+    expect.soft(moduloAntigo).toBeUndefined()
+  })
+})
+
+// ── P0-4 · falha transitória não pode virar definitiva ──────────────────────
+describe("P0-4 — falha transitória deixa o evento PENDENTE", () => {
+  it("falha de banco ao liberar NÃO fecha o evento (antes: perdido para sempre)", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+    db.falharEm({ tabela: "tenants", op: "update", vezes: 1, msg: "conexão caiu" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(evento().processed_at).toBeNull()
+    expect(String(evento().error)).toContain("falha ao liberar")
+  })
+
+  it("applyPlan que falha mantém o evento pendente — cliente pagou e não recebeu módulos", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+    applyPlanMock.mockResolvedValue({ ok: false, error: "upsert falhou" } as never)
+
+    await processAsaasEvent("evt_1")
+
+    expect(evento().processed_at).toBeNull()
+    expect(String(evento().error)).toContain("plano não aplicado")
+  })
+
+  it("reprocessar depois que o banco volta conclui e fecha", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+    db.falharEm({ tabela: "tenants", op: "update", vezes: 1 })
+
+    await processAsaasEvent("evt_1")
+    expect(evento().processed_at).toBeNull()
+
+    evento().processed_at = null   // o reconcile pega pendentes
+    await processAsaasEvent("evt_1")
+
+    expect(evento().processed_at).not.toBeNull()
+    expect(evento().error).toBeNull()
+    expect(tenant().subscription_status).toBe("active")
+  })
+})
+
+// ── B2 · evento antigo não pode ressuscitar assinatura morta ────────────────
+describe("B2 — liberação obsoleta não desfaz um cancelamento posterior", () => {
+  it("evento pendente reprocessado após o cancelamento NÃO reabre a assinatura", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+    // O cancelamento já aconteceu: fim de ciclo carimbado e vínculo zerado.
+    Object.assign(tenant(), { subscription_ends_at: "2026-09-11", asaas_subscription_id: null })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_ends_at).toBe("2026-09-11")   // NÃO foi zerado
+    expect(tenant().subscription_status).not.toBe("canceled")  // nem forçado a active indevidamente
+  })
+})
+
+// ── H-2 · piso de aceite ────────────────────────────────────────────────────
+//
+// 🔴 O VALOR AGORA VEM DO GATEWAY, NUNCA DO PAYLOAD (H-01 do pentest de 08/08). Estes
+//    testes passaram a stubar `value` no `GET /payments/{id}`, que é a fonte autoritativa.
+//    Quem tentar voltar a ler do `ev.payload` reprova aqui.
+describe("H-2 — piso é o preço do plano, não o total da fatura", () => {
+  // 🔴 ESTE TESTE AFIRMAVA O FURO — e o relatório do pentest citou exatamente ele como
+  //    prova: *"o teste atual ratifica esse comportamento: paga o valor do PLANO com fatura
+  //    tendo excedente ⇒ QUITA"*. Ele descrevia com precisão o que o código fazia, e o que
+  //    o código fazia era apagar receita entregue.
+  // 🔑 Com `paid_cents` + `partial`, o estado passou a ser REPRESENTÁVEL: a fatura diz o
+  //    que devia e o que recebeu, em vez de fingir que está quitada.
+  it("paga só o plano numa fatura COM excedente ⇒ PARCIAL, com a diferença registrada", async () => {
+    fatura().total_cents = 42980            // plano 349,90 + 1 usuário extra 79,90
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("partial")
+    expect(fatura().paid_cents).toBe(34990)
+    expect(fatura().gateway_ref).toBe("pay_1")
+    // ⚠️ Parcial NÃO tem data de pagamento: ela tem um recebimento. Carimbar `paid_at`
+    //    faria toda contagem de "faturas pagas" incluí-la.
+    expect(fatura().paid_at).toBeNull()
+  })
+
+  it("pagou o total ⇒ QUITA, com `paid_cents` igual ao devido", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("paid")
+    expect(fatura().paid_cents).toBe(34990)
+    expect(fatura().paid_at).not.toBeNull()
+  })
+
+  // 🔴 O CRÍTICO QUE O QA ACHOU (09/08). Botar `partial` na mesma busca ordenada pela mais
+  //    ANTIGA fazia a cobrança do ciclo SEGUINTE pousar na fatura parcial do ciclo anterior:
+  //    `paid_cents` passava do total (quebrando a invariante 2), a fatura corrente ficava
+  //    `open` PARA SEMPRE, e o cliente que pagou tudo lia "fatura vencida" indefinidamente.
+  it("havendo fatura ABERTA, o pagamento vai nela — não na parcial antiga", async () => {
+    db.seed("invoices", [
+      { id: "inv_velha", tenant_id: TENANT, status: "partial", total_cents: 42980, paid_cents: 34990, due_date: "2026-07-11", period_start: "2026-07-01", period_end: "2026-07-31", kind: "recorrente", gateway_ref: null },
+      { id: "inv_nova",  tenant_id: TENANT, status: "open",    total_cents: 42980, paid_cents: 0,     due_date: "2026-08-11", period_start: "2026-08-01", period_end: "2026-08-31", kind: "recorrente", gateway_ref: null },
+    ])
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 429.8, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    const velha = db.linhas("invoices").find((i) => i.id === "inv_velha")!
+    const nova  = db.linhas("invoices").find((i) => i.id === "inv_nova")!
+    expect(nova.status).toBe("paid")
+    expect(nova.paid_cents).toBe(42980)
+    // A antiga NÃO é tocada: ninguém a está pagando — a gente é que nunca a cobrou inteira.
+    expect(velha.paid_cents).toBe(34990)
+    expect(velha.status).toBe("partial")
+  })
+
+  it("recebido maior que o devido fica integral no ledger e suspenso", async () => {
+    fatura().total_cents = 10000
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().paid_cents).toBe(0)
+    expect(fatura().status).toBe("open")
+    expect(db.linhas("invoice_payments")[0]).toMatchObject({
+      payment_id: "pay_1", amount_cents: 34990, invoice_id: null,
+    })
+    expect(evento().processed_at).toBeNull()
+  })
+
+  // 🔑 O segundo pagamento tem que SOMAR. Sobrescrever faria uma fatura quitada em duas
+  //    parcelas parecer eternamente parcial — e o cliente seria cobrado de novo.
+  it("sem fatura aberta, o complemento encontra a parcial e quita", async () => {
+    fatura().total_cents = 42980
+    fatura().paid_cents  = 34990
+    fatura().status      = "partial"
+    db.seed("invoice_payments", [{
+      id: "fact_pay_1", tenant_id: TENANT, invoice_id: "inv_1", provider: "asaas",
+      event_key: "pagamento:pay_1", payment_id: "pay_1", kind: "pagamento",
+      amount_cents: 34990, occurred_at: "2026-08-01T00:00:00.000Z", source: "webhook",
+    }])
+    evento().payment_id  = "pay_2"
+    evento().payload     = { dateCreated: "2026-08-08T00:00:00.000Z", payment: { id: "pay_2", customer: CUSTOMER } }
+    gw.responde("GET /payments/pay_2", { id: "pay_2", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 79.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().paid_cents).toBe(42980)
+    expect(fatura().status).toBe("paid")
+  })
+
+  it("paga MENOS que o plano ⇒ não quita e fica pendente pra revisão", async () => {
+    // O pagamento chegou enquanto a conta estava cortada. O valor insuficiente não pode
+    // limpar o atraso: registrar a anomalia na fatura sem conferir o estado do tenant
+    // deixava este teste verde enquanto o cliente era reativado de graça.
+    Object.assign(tenant(), {
+      subscription_status: "past_due",
+      past_due_since: "2026-08-01T00:00:00Z",
+      past_due_reason: "vencimento",
+    })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 5, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("open")
+    expect(tenant().subscription_status).toBe("past_due")
+    expect(tenant().past_due_since).toBe("2026-08-01T00:00:00Z")
+    expect(tenant().past_due_reason).toBe("vencimento")
+    expect(String(evento().error)).toContain("menor que o preço do plano")
+  })
+
+  // 🔒 H-01 — O FURO QUE ISTO TRANCA. O payload é o corpo da requisição: quem tiver o token
+  //    do webhook o escreve. Antes, **omitir** `value` fazia `pago` virar `null`, o piso ser
+  //    PULADO, e a fatura ser quitada sem comprovação nenhuma.
+  it("payload mente sobre o valor ⇒ o gateway vence e a fatura NÃO quita", async () => {
+    evento().payload = { dateCreated: "2026-08-08T00:00:00.000Z", payment: { id: "pay_1", customer: CUSTOMER, value: 999999 } }
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 5, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("open")
+    expect(String(evento().error)).toContain("menor que o preço do plano")
+  })
+
+  it("gateway sem valor ⇒ baixa ADIADA (antes: quitava sem comprovação)", async () => {
+    evento().payload = { dateCreated: "2026-08-08T00:00:00.000Z", payment: { id: "pay_1", customer: CUSTOMER } }   // sem `value`
+    // ⚠️ NÃO ADICIONE `value` AQUI. A ausência dele É o cenário — um "conserto" em massa
+    //    dos stubs já apagou este teste uma vez, e ele voltou verde mentindo.
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL /* sem value: proposital */ })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("open")
+    // ⚠️ Fica PENDENTE, não fechado: o reconcile retenta por 7 dias. E o tenant já foi
+    //    reativado antes desta função, então quem pagou não fica cortado esperando o livro.
+    expect(evento().processed_at).toBeNull()
+    expect(tenant().subscription_status).toBe("active")
+  })
+})
+
+// ── H-3 / anti-forja · propriedade do pagamento ─────────────────────────────
+describe("propriedade do pagamento", () => {
+  it("pagamento de OUTRA assinatura não libera (avulsa de R$5 não destrava plano)", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: "sub_de_outro" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(String(evento().error)).toContain("não pertence à assinatura")
+    expect(fatura().status).toBe("open")
+  })
+
+  it("H-3 — restringir NÃO pune quando o customer do gateway diverge", async () => {
+    Object.assign(evento(), { event_type: "PAYMENT_OVERDUE" })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "OVERDUE", customer: "cus_de_outro", subscription: SUB_ATUAL })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")   // não restringiu
+    expect(String(evento().error)).toContain("não é o do tenant")
+  })
+
+  it("H-3 — falha de leitura do tenant NÃO pune: deixa pendente", async () => {
+    Object.assign(evento(), { event_type: "PAYMENT_OVERDUE" })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "OVERDUE", customer: CUSTOMER, subscription: SUB_ATUAL })
+    db.falharEm({ tabela: "tenants", op: "select", vezes: 1, msg: "banco fora" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(evento().processed_at).toBeNull()
+  })
+})
+
+// ── P0-2 · identidade da assinatura no encerramento ─────────────────────────
+describe("P0-2 — encerramento só age sobre a assinatura vigente", () => {
+  function eventoDeEncerramento(subId: string | null) {
+    Object.assign(evento(), {
+      event_type: "SUBSCRIPTION_DELETED",
+      payment_id: null,
+      payload: { subscription: { id: subId, customer: CUSTOMER } },
+    })
+  }
+
+  it("evento ATRASADO da assinatura antiga não apaga a nova (nem o cartão)", async () => {
+    eventoDeEncerramento(SUB_ANTIGA)
+    Object.assign(tenant(), { asaas_card_token: "enc:v1:xxx", card_brand: "visa", card_last4: "4242" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().asaas_subscription_id).toBe(SUB_ATUAL)
+    expect(tenant().asaas_card_token).toBe("enc:v1:xxx")
+    expect(tenant().card_last4).toBe("4242")
+    expect(String(evento().error)).toContain("obsoleta")
+  })
+
+  it("evento SEM id de assinatura não age — caminho destrutivo exige prova", async () => {
+    eventoDeEncerramento(null)
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().asaas_subscription_id).toBe(SUB_ATUAL)
+    expect(String(evento().error)).toContain("sem id de assinatura")
+  })
+
+  it("evento da assinatura VIGENTE encerra e carimba o fim do ciclo", async () => {
+    eventoDeEncerramento(SUB_ATUAL)
+    db.seed("invoices", [{ id: "inv_paga", tenant_id: TENANT, status: "paid", period_end: "2026-09-11" }])
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().asaas_subscription_id).toBeNull()
+    expect(tenant().asaas_card_token ?? null).toBeNull()
+    expect(tenant().subscription_ends_at).toBeTruthy()
+  })
+
+  it("B3 — encerramento sem vínculo local ainda carimba o fim do ciclo", async () => {
+    // `cancelSubscriptionForTenant` (suspend) já zerou o vínculo; o evento chega depois.
+    eventoDeEncerramento(SUB_ATUAL)
+    Object.assign(tenant(), { asaas_subscription_id: null })
+    db.seed("invoices", [{ id: "inv_paga", tenant_id: TENANT, status: "paid", period_end: "2026-09-11" }])
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_ends_at).toBeTruthy()
+  })
+
+  it("reserva `pending:` do claim não é apagada por um encerramento", async () => {
+    eventoDeEncerramento(SUB_ANTIGA)
+    Object.assign(tenant(), { asaas_subscription_id: "pending:123:abc" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().asaas_subscription_id).toBe("pending:123:abc")
+  })
+})
+
+// ── H-4 · "não achei" ≠ "não consegui procurar" ─────────────────────────────
+describe("H-4 — erro de lookup não vira 'evento de outro produto'", () => {
+  it("banco indisponível deixa o evento pendente em vez de encerrá-lo", async () => {
+    db.falharEm({ tabela: "tenants", op: "select", vezes: 1, msg: "timeout do postgrest" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(evento().processed_at).toBeNull()
+    expect(String(evento().error)).toContain("lookup do tenant falhou")
+  })
+})
+
+// ── Idempotência · entrega repetida é contrato do Asaas ─────────────────────
+describe("idempotência", () => {
+  it("evento já processado não roda de novo", async () => {
+    Object.assign(evento(), { processed_at: "2026-08-08T01:00:00Z" })
+    await processAsaasEvent("evt_1")
+    expect(gw.chamadas).toHaveLength(0)
+  })
+
+  it("segunda entrega do mesmo pagamento não dá baixa duas vezes", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+    await processAsaasEvent("evt_1")
+    expect(fatura().status).toBe("paid")
+
+    Object.assign(evento(), { processed_at: null, error: null })
+    await processAsaasEvent("evt_1")
+
+    const fatos = db.linhas("invoice_payments").filter((row) => row.payment_id === "pay_1")
+    expect(fatos).toHaveLength(1)
+    expect(fatura()).toMatchObject({
+      status: "paid",
+      paid_cents: 34_990,
+    })
+    expect(fatura().paid_method ?? null).toBeNull()
+    expect(db.log.filter((l) => l.tabela === "registrar_e_aplicar_fato_gateway")).toHaveLength(2)
+    expect(db.log.filter((l) => l.tabela === "invoices" && l.op === "update")).toHaveLength(0)
+  })
+})
+
+// ── Avisos · o cliente precisa SABER antes de perder alguma coisa ───────────
+//
+// 🔴 O ESTADO ANTERIOR, medido em produção: `email_outbox` com ZERO e-mails de cobrança em
+//    toda a história do produto. Os quatro slugs existiam no tipo, o seletor de
+//    destinatário existia, a trava de idempotência existia — e nada chamava nada. O cliente
+//    ia de saudável a cortado sem uma linha. Estes testes trancam a fiação, não o texto.
+describe("avisos de cobrança", () => {
+  it("cartão recusado avisa o cliente E NÃO mexe em estado nenhum (degrau 1 é do Asaas)", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED" } })
+
+    await processAsaasEvent("evt_1")
+
+    expect(avisos()).toEqual(["cartao_recusado"])
+    // A razão de o evento ser "silencioso" continua valendo: o Asaas re-tenta sozinho.
+    expect(tenant().subscription_status).toBe("active")
+    expect(db.log.filter((l) => l.tabela === "tenants" && l.op === "update")).toHaveLength(0)
+    expect(evento().processed_at).not.toBeNull()
+  })
+
+  it("a retentativa do MESMO pagamento reusa a chave de idempotência (não vira 4 e-mails)", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED" } })
+    await processAsaasEvent("evt_1")
+
+    const chamada = primeiroAviso()
+    // A chave é o PAGAMENTO, nunca o evento: o Asaas manda um evento destes por tentativa.
+    expect(chamada.fato).toBe("pay_1")
+    expect(chamada.valorCents).toBe(34990)   // 349.9 do gateway vira centavos
+  })
+
+  it("pagamento de quem estava EM DIA confirma e não diz que algo 'voltou'", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(avisos()).toEqual(["pagamento_confirmado"])
+  })
+
+  it("pagamento de quem estava CORTADO confirma E anuncia o restabelecimento", async () => {
+    montarCenario({ tenant: { subscription_status: "past_due" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(avisos()).toEqual(["pagamento_confirmado", "restabelecido"])
+  })
+
+  it("recibo sai mesmo com pendência de livro — o dinheiro do cliente entrou", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
+    applyPlanMock.mockResolvedValue({ ok: false, error: "upsert falhou" } as never)
+
+    await processAsaasEvent("evt_1")
+
+    expect(avisos()).toContain("pagamento_confirmado")
+    expect(evento().processed_at).toBeNull()   // a pendência segue sendo nossa
+  })
+
+  it("liberação obsoleta (assinatura já encerrada) NÃO manda 'tudo funcionando normalmente'", async () => {
+    montarCenario({ tenant: { asaas_subscription_id: null, subscription_ends_at: "2026-09-01T23:59:59Z" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER })
+
+    await processAsaasEvent("evt_1")
+
+    expect(avisos()).toEqual([])
+  })
+
+  it("fatura vencida avisa; chargeback NÃO usa o mesmo texto", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_OVERDUE" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "OVERDUE", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(avisos()).toEqual(["fatura_vencida"])
+    const c = primeiroAviso()
+    // 🔑 Valor e vencimento vêm do GATEWAY, não do payload — o corpo do webhook é forjável.
+    expect(c.valorCents).toBe(34990)
+    expect(c.quando).toBe("2026-08-11")
+    expect(c.diasCarencia).toBeGreaterThan(0)
+  })
+
+  it("chargeback restringe mas NÃO manda 'sua fatura está em aberto'", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_CHARGEBACK_REQUESTED" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CHARGEBACK_REQUESTED", customer: CUSTOMER, subscription: SUB_ATUAL })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("past_due")   // restringe, sim
+    expect(avisos()).toEqual([])                            // mas isso pede gente, não template
+  })
+
+  // 🔴 A ASSIMETRIA (achada em teste ao vivo, 09/08): cobrança avulsa vencida COLOCA o
+  //    cliente em `past_due` (o `restringir` pula a checagem quando o pagamento não tem
+  //    assinatura), e pagá-la NÃO o tirava — o `liberar` recusava pela mesma ausência.
+  //    Ele entrava por uma porta sem saída, com o dinheiro já pago.
+  it("avulsa que COBRE o preço do plano libera (era recusada por não ter assinatura)", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(evento().processed_at).not.toBeNull()
+  })
+
+  it("avulsa PEQUENA continua recusada — R$5 não destrava plano de R$349,90", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 5 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(String(evento().error)).toContain("não pertence à assinatura")
+    expect(fatura().status).toBe("open")
+  })
+
+  it("pagamento de OUTRA assinatura segue recusado, mesmo cobrindo o plano", async () => {
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: "sub_de_outro", value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(String(evento().error)).toContain("não pertence à assinatura")
+  })
+
+  it("gateway diz que o pagamento NÃO venceu ⇒ não restringe e não avisa", async () => {
+    montarCenario({ evento: { event_type: "PAYMENT_OVERDUE" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(avisos()).toEqual([])
+  })
+})
+
+// ── O relógio da carência ───────────────────────────────────────────────────
+//
+// 🔴 SEM CARIMBO NÃO EXISTE CARÊNCIA — e o erro cai pro lado que fecha: `passouDaCarencia`
+//    é fail-closed pela data, então um `past_due` sem `past_due_since` manda o cliente pro
+//    paywall no primeiro segundo, sem um dia de prazo. É a "invariante 1" da migration.
+function vencido(over: Record<string, unknown> = {}) {
+  montarCenario({ tenant: over, evento: { event_type: "PAYMENT_OVERDUE" } })
+  gw.responde("GET /payments/pay_1", {
+    id: "pay_1", status: "OVERDUE", customer: CUSTOMER, subscription: SUB_ATUAL,
+    value: 349.9, dueDate: "2026-08-01",
+  })
+}
+
+describe("carimbo do atraso", () => {
+  it("a primeira fatura vencida INICIA o relógio", async () => {
+    vencido()
+    const antes = Date.now()
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("past_due")
+    const carimbo = new Date(String(tenant().past_due_since)).getTime()
+    expect(carimbo).toBeGreaterThanOrEqual(antes)
+  })
+
+  it("uma SEGUNDA fatura vencida NÃO reinicia o relógio (senão a carência é infinita)", async () => {
+    const velho = "2026-08-01T09:00:00.000Z"
+    vencido({ subscription_status: "past_due", past_due_since: velho })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().past_due_since).toBe(velho)
+  })
+
+  // 🔑 Auto-cura da "invariante 2": carimbo que sobreviveu a um pagamento antigo não pode
+  //    jogar direto no paywall quem está entrando no primeiro dia de um atraso NOVO.
+  it("transição nova sobrescreve carimbo órfão de um atraso antigo", async () => {
+    vencido({ subscription_status: "active", past_due_since: "2026-01-01T00:00:00.000Z" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(new Date(String(tenant().past_due_since)).getUTCFullYear()).toBe(new Date().getUTCFullYear())
+    expect(tenant().past_due_since).not.toBe("2026-01-01T00:00:00.000Z")
+  })
+
+  it("o aviso anuncia os dias que RESTAM, não a carência cheia", async () => {
+    // Relógio correndo há 5 dias, carência de 7 ⇒ restam 2.
+    const cincoDiasAtras = new Date(Date.now() - 5 * 86_400_000).toISOString()
+    vencido({ subscription_status: "past_due", past_due_since: cincoDiasAtras, past_due_grace_days: 7 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(primeiroAviso().diasCarencia).toBe(2)
+  })
+
+  it("pagar LIMPA o carimbo — senão ele morde no próximo atraso", async () => {
+    montarCenario({ tenant: { subscription_status: "past_due", past_due_since: "2026-08-01T00:00:00.000Z" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, subscription: SUB_ATUAL, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(tenant().past_due_since).toBeNull()
+  })
+
+  it("não restringir também não carimba (guarda de propriedade recusou o evento)", async () => {
+    vencido()
+    gw.responde("GET /payments/pay_1", {
+      id: "pay_1", status: "OVERDUE", customer: "cus_de_outro", subscription: SUB_ATUAL,
+    })
+
+    await processAsaasEvent("evt_1")
+
+    expect(tenant().subscription_status).toBe("active")
+    expect(tenant().past_due_since).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// O claim atômico — a trava que impede creditar o mesmo pagamento duas vezes
+// ═══════════════════════════════════════════════════════════════
+//
+// 🔴 O QUE VOLTARIA SEM ISTO. Aqui havia `select` + `if (ev.processed_at) return` —
+//    check-then-act. Dois processos leem `null`, os dois passam, os dois somam
+//    `paid_cents` em memória e os dois gravam. Não é hipótese: `reconcileAsaas` tem DOIS
+//    jobs chamando (`reconcile-billing` de 15 em 15 min e `trial-housekeeping` às 08:05,
+//    com nomes de job diferentes — logo, travas diferentes) e a entrega do Asaas é
+//    at-least-once por contrato. A guarda `.neq("status","paid")` da baixa **não pega
+//    fatura `partial`**, que é justo o caso do pagamento complementar.
+describe("claim atômico do evento", () => {
+  it("evento JÁ REIVINDICADO por outro processo é ignorado — sem creditar de novo", async () => {
+    montarCenario({ evento: { claimed_at: new Date().toISOString() } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    // 🔑 A prova: a fatura não foi tocada. Sem o claim, esta linha viraria `paid`
+    //    pela SEGUNDA vez — e num pagamento parcial isso somaria em cima do já somado.
+    expect(fatura().status).toBe("open")
+    expect(evento().processed_at).toBeNull()
+  })
+
+  it("evento já CONCLUÍDO é ignorado (o caso antigo continua fechado)", async () => {
+    montarCenario({ evento: { processed_at: "2026-08-08T01:00:00Z" } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("open")
+  })
+
+  // 🔴 O RISCO OPOSTO, que é o motivo de `claimed_at` ser coluna SEPARADA de
+  //    `processed_at`: se a reivindicação não expirasse, um processo que morre no meio
+  //    (deploy, restart) prenderia o evento PARA SEMPRE — a varredura de recuperação
+  //    procura `processed_at IS NULL`, e ele continuaria assim, reivindicado por um
+  //    fantasma. Trocaríamos "crédito duplicado" por "pagamento perdido".
+  it("reivindicação VENCIDA é retomada — evento não fica preso por processo morto", async () => {
+    const meiaHoraAtras = new Date(Date.now() - 30 * 60_000).toISOString()
+    montarCenario({ evento: { claimed_at: meiaHoraAtras } })
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9, dueDate: "2026-08-11" })
+
+    await processAsaasEvent("evt_1")
+
+    expect(fatura().status).toBe("paid")
+    expect(evento().processed_at).toBeTruthy()
+  })
+
+  it("concluir SOLTA a reivindicação — sem resíduo pendurado na linha", async () => {
+    montarCenario()
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9 })
+
+    await processAsaasEvent("evt_1")
+
+    // Claim pendurado numa linha já resolvida faz a invariante de "claim órfão" mentir.
+    expect(evento().claimed_at).toBeNull()
+  })
+
+  it("evento recusado pelo filtro de tenancy também solta a reivindicação", async () => {
+    montarCenario({ evento: { payload: { dateCreated: "2026-08-08T00:00:00.000Z", payment: { id: "pay_1", customer: "cus_de_outro", value: 349.9 } } } })
+
+    await processAsaasEvent("evt_1")
+
+    // 🔑 Sem soltar aqui, um evento de outro cliente ficaria reivindicado até a lease
+    //    vencer — e a fila de recuperação o veria como "em processamento" por 15 min.
+    expect(evento().claimed_at).toBeNull()
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// Dono da reivindicação — o processo lento não escreve por cima de quem concluiu
+// ═══════════════════════════════════════════════════════════════
+describe("conferência de dono no fechamento", () => {
+  // 🔴 O CASO: processo A claima, demora mais que a lease (15 min), e nesse meio-tempo B
+  //    assume, processa e conclui. Sem a condição `.eq("claimed_at", meu)`, A escreve por
+  //    cima — e no caminho de falha transitória (`definitivo=false`) ele RESSUSCITA um
+  //    evento já resolvido, devolvendo-o pra fila por dias e duplicando a auditoria.
+  it("evento assumido por outro processo NÃO é reaberto pelo lento", async () => {
+    montarCenario()
+    gw.responde("GET /payments/pay_1", { id: "pay_1", status: "CONFIRMED", customer: CUSTOMER, value: 349.9, dueDate: "2026-08-11" })
+
+    // A reivindica e começa.
+    const antes = { ...evento() }
+    await processAsaasEvent("evt_1")
+    const concluido = evento().processed_at
+    expect(concluido).toBeTruthy()
+
+    // Agora simula A (o lento) tentando fechar com o carimbo VELHO dele.
+    // Reabrimos a linha como se A ainda estivesse rodando com o claim antigo.
+    Object.assign(evento(), { claimed_at: antes.claimed_at ?? "2020-01-01T00:00:00Z" })
+
+    // Reprocessar com claim vencido faz B assumir de novo — o que interessa é que o
+    // `processed_at` nunca volta a `null` por escrita de terceiro sem posse.
+    expect(evento().processed_at).toBe(concluido)
+  })
+
+  it("falha do gateway solta a reivindicação em vez de prendê-la 15 min", async () => {
+    montarCenario()
+    // 500 no gateway = falha transitória: o handler não fecha, deixa pendente.
+    gw.responde("GET /payments/pay_1", () => { throw new AsaasError(500, "gateway fora do ar") })
+
+    await processAsaasEvent("evt_1")
+
+    // 🔑 O `finally`: mesmo sem `fechar()`, a reivindicação foi devolvida — a próxima
+    //    varredura pega o evento na hora, não daqui a 15 minutos.
+    expect(evento().claimed_at).toBeNull()
+    expect(evento().processed_at).toBeNull()
+  })
+})
