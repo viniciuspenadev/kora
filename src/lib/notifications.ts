@@ -62,7 +62,7 @@ export async function createNotification(input: CreateNotificationInput): Promis
     // de cota → /configuracoes/uso) não tem por que cair no /agenda. Só caminho interno:
     // URL absoluta viraria redirect pra fora do app a partir de um dado gravado no banco.
     const rawUrl = typeof p.url === "string" && p.url.startsWith("/") && !p.url.startsWith("//") ? p.url : null
-    await sendPushToUsers([input.recipientId], {
+    await sendPushToUsers(input.tenantId, [input.recipientId], {
       title: input.title,
       body:  input.body ?? "",
       url:   rawUrl ?? (convId ? `/inbox?conversation=${convId}` : "/agenda"),

@@ -1,6 +1,8 @@
 "use client"
 
+import { useConversationWorkflow } from "./conversation-workflow"
 import { ContactPic } from "@/components/chat/contact-pic"
+import { ConversationLabels } from "./conversation-labels"
 
 import { useState, useMemo, useRef, useEffect } from "react"
 import type { KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from "react"
@@ -164,7 +166,7 @@ export function ConversationList({
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
   viewFilter, onViewChange, viewCounts,
   statusFilter, onStatusChange, channelFilter, onChannelFilterChange,
-  pipelines, tags, departments, showChannel = false, officialChannel = false, channelReady = true, agents,
+  pipelines, tags, tagsByContact, departments, showChannel = false, officialChannel = false, channelReady = true, agents,
   searchValue, onSearchChange,
   pipelineFilter, onPipelineFilterChange,
   agentFilter,    onAgentFilterChange,
@@ -175,9 +177,16 @@ export function ConversationList({
   archivedOnly,   onArchivedOnlyChange,
   hasMore, onLoadMore, loadingMore, loadingList,
 }: Props) {
+  const workflow = useConversationWorkflow()
+  const tagsById = useMemo(() => new Map(tags.map(tag => [tag.id, tag])), [tags])
+  const workflowExtras = (c: ChatConversation) => [
+    { label: c.flagged_pending ? "Remover pendente" : "Marcar como pendente", run: () => onToggleFlag(c.id, !c.flagged_pending) },
+    { label: c.pinned_at ? "Desafixar do topo" : "Fixar no topo", run: () => onTogglePin(c.id, !c.pinned_at) },
+    { label: c.assigned_to === currentUserId ? "Atribuída a você" : "Atribuir a mim", disabled: c.assigned_to === currentUserId, run: () => onAssignMe(c.id) },
+    { label: archivedOnly ? "Desarquivar" : "Arquivar", run: () => onArchive(c.id) },
+  ]
   const [showFilters, setShowFilters]       = useState(false)
   const [showNewModal, setShowNewModal]     = useState(false)
-  const [menu, setMenu]                     = useState<{ x: number; y: number; conv: ChatConversation } | null>(null)
   const quickViewRefs = useRef<Partial<Record<ConversationView, HTMLButtonElement | null>>>({})
   const quickViewScrollerRef = useRef<HTMLDivElement>(null)
   const quickViewTrackRef = useRef<HTMLDivElement>(null)
@@ -608,6 +617,7 @@ export function ConversationList({
           <>
             {shownConversations.map((conv) => {
             const contact    = conv.chat_contacts
+            const contactTags = contact && !conv.is_group ? [...new Set(tagsByContact[contact.id] ?? [])].flatMap(id => { const tag = tagsById.get(id); return tag ? [tag] : [] }).sort((a, b) => a.name.localeCompare(b.name, "pt-BR")) : []
             const name       = contact ? displayContactName(contact) : formatPhoneDisplay("")
             const initial    = contact ? displayContactInitial(contact) : "?"
             const isActive   = conv.id === activeId
@@ -649,16 +659,13 @@ export function ConversationList({
             const followUp   = chip && chip.tone !== "done" ? chip : null
 
             return (
-              <button
+              <div
                 key={conv.id}
-                type="button"
+                role="button"
+                tabIndex={0}
+                onKeyDown={e => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(conv.id) } if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) { const rect = e.currentTarget.getBoundingClientRect(); workflow?.menu(conv, { ...e, clientX: rect.left + 30, clientY: rect.top + 30, currentTarget: e.currentTarget, preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation() }, workflowExtras(conv)) } }}
                 onClick={() => onSelect(conv.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  const x = Math.min(e.clientX, window.innerWidth - 224)
-                  const y = Math.min(e.clientY, window.innerHeight - 210)
-                  setMenu({ x, y, conv })
-                }}
+                onContextMenu={e => workflow?.menu(conv, e, workflowExtras(conv))}
                 className={`relative w-full flex items-start gap-3.5 px-4 py-3.5 text-left transition-colors border-b border-slate-100 ${
                   isActive
                     ? "bg-gradient-to-r from-primary-100 via-primary-50/40 to-transparent"
@@ -710,6 +717,8 @@ export function ConversationList({
                       {conv.last_message_preview ?? "Nova conversa"}
                     </p>
                   </div>
+
+                  {!conv.is_group && <ConversationLabels classification={contact?.lifecycle_stage} tags={contactTags} />}
 
                   {isWaiting && (
                     <div className="mt-1.5">
@@ -787,7 +796,7 @@ export function ConversationList({
                     </div>
                   )}
                 </div>
-              </button>
+              </div>
             )
           })}
 
@@ -804,50 +813,6 @@ export function ConversationList({
           </>
         )}
       </div>
-
-      {menu && (() => {
-        const c        = menu.conv
-        const mPinned  = !!c.pinned_at
-        const mFlagged = c.flagged_pending
-        const mIsMine  = c.assigned_to === currentUserId
-        const item     = "w-full flex items-center gap-2.5 px-3 py-2 text-left text-[13px] text-slate-700 hover:bg-slate-50 transition-colors"
-        return (
-          <>
-            <div
-              className="fixed inset-0 z-40"
-              onClick={() => setMenu(null)}
-              onContextMenu={(e) => { e.preventDefault(); setMenu(null) }}
-            />
-            <div
-              className="fixed z-50 w-56 bg-white rounded-lg shadow-soft border border-slate-200 py-1"
-              style={{ top: menu.y, left: menu.x }}
-            >
-              <button type="button" className={item} onClick={() => { onToggleFlag(c.id, !mFlagged); setMenu(null) }}>
-                {mFlagged ? <FlagOff className="size-4 text-slate-400 shrink-0" /> : <Flag className="size-4 text-primary-600 shrink-0" />}
-                {mFlagged ? "Remover pendente" : "Marcar como pendente"}
-              </button>
-              <button type="button" className={item} onClick={() => { onTogglePin(c.id, !mPinned); setMenu(null) }}>
-                {mPinned ? <PinOff className="size-4 text-slate-400 shrink-0" /> : <Pin className="size-4 text-amber-500 shrink-0" />}
-                {mPinned ? "Desafixar do topo" : "Fixar no topo"}
-              </button>
-              <button
-                type="button"
-                disabled={mIsMine}
-                className={`${item} disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent`}
-                onClick={() => { onAssignMe(c.id); setMenu(null) }}
-              >
-                <UserPlus className="size-4 text-slate-500 shrink-0" />
-                {mIsMine ? "Atribuída a você" : "Atribuir a mim"}
-              </button>
-              <div className="my-1 border-t border-slate-100" />
-              <button type="button" className={`${item} !text-red-600`} onClick={() => { onArchive(c.id); setMenu(null) }}>
-                {archivedOnly ? <ArchiveRestore className="size-4 shrink-0" /> : <Archive className="size-4 shrink-0" />}
-                {archivedOnly ? "Desarquivar" : "Arquivar"}
-              </button>
-            </div>
-          </>
-        )
-      })()}
 
       <NewConversationModal open={showNewModal} onClose={() => setShowNewModal(false)} officialChannel={officialChannel} />
     </div>

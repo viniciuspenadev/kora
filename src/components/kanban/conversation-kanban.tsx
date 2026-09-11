@@ -1,8 +1,10 @@
 "use client"
 
+import { ConversationActionsButton, useConversationWorkflow } from "@/components/chat/conversation-workflow"
 import { useState, useEffect, useMemo, useCallback, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
+import { toast } from "sonner"
 import {
   Clock, Trophy, XCircle, Loader2, Plus, FileText,
   Globe, MessageCircle, Mail, User,
@@ -99,6 +101,8 @@ export type GroupBy = "stage" | "agent" | "department"
 interface Column { key: string; title: string; color?: string; stage?: Stage }
 
 interface Props {
+  pipelineId?: string
+  defaultPipeline?: boolean
   stages: Stage[]
   conversations: Conversation[]
   /** Pinta o fundo das colunas com a cor da etapa (preferência do tenant). */
@@ -125,6 +129,7 @@ function mergeCardScalars(existing: Conversation, row: Conversation): Conversati
   return {
     ...existing,
     stage_id: row.stage_id,
+    pipeline_id: row.pipeline_id,
     assigned_to: row.assigned_to,
     ai_handling: row.ai_handling,
     department_id: row.department_id,
@@ -210,7 +215,8 @@ function sortCards(list: Conversation[], sort: SortKey): Conversation[] {
   })
 }
 
-export function ConversationKanban({ stages, conversations: initial, tintColumns, groupBy, filters = { search: "", agentId: null, instanceId: null }, sort = "recent", agents = [], departments = [], tenantId, supabaseToken }: Props) {
+export function ConversationKanban({ pipelineId, defaultPipeline = false, stages, conversations: initial, tintColumns, groupBy, filters = { search: "", agentId: null, instanceId: null }, sort = "recent", agents = [], departments = [], tenantId, supabaseToken }: Props) {
+  const workflowRevision = useConversationWorkflow()?.revision ?? 0
   const router = useRouter()
   const [convs, setConvs] = useState(initial)
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -255,7 +261,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
       .then((r) => { if (alive) setMgmtCards(r as unknown as Conversation[]) })
       .catch((e) => console.error("getManagementCards:", e))
     return () => { alive = false }
-  }, [groupBy])
+  }, [groupBy, workflowRevision])
 
   // ── Realtime: substitui o poll de 10s/15s ───────────────────
   // Merge incremental in-place dos cards já carregados (move de coluna, atualiza
@@ -280,6 +286,8 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
    *    É também bail-out duro do React Compiler, se um dia for ligado.
    */
   const groupByRef = useRef(groupBy)
+  const pipelineRef = useRef({ pipelineId, defaultPipeline })
+  pipelineRef.current = { pipelineId, defaultPipeline }
   const stageIdsRef = useRef<string[]>(stages.map((s) => s.id))
   const convsRef = useRef(convs)
   const mgmtRef = useRef(mgmtCards)
@@ -324,7 +332,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
 
           const qualifies = !isDelete && !row.archived_at && (
             gb === "stage"
-              ? stageIdsRef.current.includes(row.stage_id ?? "")
+              ? ((row.pipeline_id === pipelineRef.current.pipelineId && (stageIdsRef.current.includes(row.stage_id ?? "") || row.stage_id == null || row.status === "resolved")) || (row.pipeline_id == null && pipelineRef.current.defaultPipeline))
               : ["open", "pending", "snoozed"].includes(row.status)
           )
 
@@ -377,7 +385,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
   )
 
   // Etapa de triagem (entrada). Conversas SEM etapa (atendimento-puro) caem aqui.
-  const triageStageId = useMemo(() => stages.find((s) => s.is_triage)?.id ?? null, [stages])
+  const triageStageId = useMemo(() => stages.find((s) => s.is_triage)?.id ?? "__unassigned__", [stages])
 
   // Resolver de setor pro card (nome+cor). Decisão do owner: mostrar a tag de setor
   // em TODAS as visões (inclusive /atendimentos) — quer ver de qual fila cada card é.
@@ -398,10 +406,11 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
       ...departments.map((d) => ({ key: d.id, title: d.name, color: d.color })),
     ]
     return [
+      ...(triageStageId === "__unassigned__" ? [{ key: "__unassigned__", title: "Sem etapa", color: "#64748b" }] : []),
       ...stages.map((s) => ({ key: s.id, title: s.name, color: s.color, stage: s })),
       { key: DONE_KEY, title: "Concluídos", color: "#16a34a" },
     ]
-  }, [groupBy, stages, agents, departments])
+  }, [groupBy, stages, agents, departments, triageStageId])
 
   function cardsFor(key: string): Conversation[] {
     // Concluídos = status resolvido (de qualquer etapa). Recentes primeiro, cap pra não inchar.
@@ -464,6 +473,7 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     }
 
     // Destino é uma etapa real. Vindo de Concluídos → reabre (status → open) e move.
+    if (targetKey === "__unassigned__") { toast.info("Escolha uma etapa do Kanban para mover a conversa."); return }
     const stageId = targetKey
     const wasResolved = c.status === "resolved"
     if (c.stage_id === stageId && !wasResolved) return
@@ -471,8 +481,9 @@ export function ConversationKanban({ stages, conversations: initial, tintColumns
     setConvs((prev) => prev.map((x) => x.id === cardId ? { ...x, stage_id: stageId, card_position: newPos, status: wasResolved ? "open" : x.status } : x))
     startTransition(async () => {
       try {
+        const result = await moveConversation(cardId, stageId, newPos)
+        if (result.warning) toast.warning(result.warning)
         if (wasResolved) await updateConversationStatus(cardId, "open")
-        await moveConversation(cardId, stageId, newPos)
       } catch (err) { alert((err as Error).message ?? "Erro ao mover"); router.refresh() }
     })
   }
@@ -637,6 +648,7 @@ function ConversationCard({
   deptById?: Map<string, { name: string; color: string }>
   hideSector?: boolean
 }) {
+  const workflow = useConversationWorkflow()
   const contact = conv.chat_contacts
   const displayName = contact ? displayContactName(contact) : "Sem nome"
   const initial = contact ? displayContactInitial(contact) : "?"
@@ -693,6 +705,7 @@ function ConversationCard({
             </span>
           ) : null}
         </div>
+        {!overlay && <ConversationActionsButton conversation={conv} />}
         {conv.unread_count > 0 && (
           <span className="size-5 rounded-full bg-primary text-white text-[10px] font-bold flex items-center justify-center shrink-0">
             {conv.unread_count}
@@ -750,14 +763,18 @@ function ConversationCard({
 
   if (overlay) return <div className={cardCls}>{body}</div>
   return (
-    <Link
-      href={`/inbox?conversation=${conv.id}`}
-      ref={dragRef as React.Ref<HTMLAnchorElement>}
+    <div
+      role="link"
+      tabIndex={0}
+      onClick={() => router.push(`/inbox?conversation=${conv.id}`)}
+      ref={dragRef as React.Ref<HTMLDivElement>}
       {...listeners}
       {...attributes}
+      onContextMenu={e => workflow?.menu(conv, e)}
+      onKeyDown={e => { if (e.target === e.currentTarget && e.key === "Enter") router.push(`/inbox?conversation=${conv.id}`) }}
       className={cardCls}
     >
       {body}
-    </Link>
+    </div>
   )
 }

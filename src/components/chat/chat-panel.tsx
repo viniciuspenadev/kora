@@ -1,5 +1,6 @@
 "use client"
 
+import { ConversationActionsButton, ConversationKanbanPosition, useConversationWorkflow, type WorkflowExtra } from "./conversation-workflow"
 import { ContactPic } from "@/components/chat/contact-pic"
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
@@ -13,25 +14,26 @@ import { safeHref } from "@/lib/safe-href"
 import { toast } from "sonner"
 import {
   Phone, CheckCircle2, Clock, XCircle,
-  MoreVertical, RotateCcw, Loader2, Megaphone, ExternalLink, Archive, ArchiveRestore, AlarmClock,
-  ArrowLeft, Info, CalendarPlus,
+  RotateCcw, Loader2, Megaphone, ExternalLink, AlarmClock,
+  ArrowLeft, Info,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
 import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
 import { AgentAvatar } from "@/components/chat/agent-avatar"
-import { TransferDialog, type TransferOpts } from "@/components/chat/transfer-dialog"
+import type { TransferOpts } from "@/components/chat/transfer-dialog"
 import { FollowUpDialog } from "@/components/chat/followup-dialog"
 import { followUpChip } from "@/lib/atendimento/followup-rules"
 import { scheduleFollowUp, cancelFollowUp } from "@/lib/actions/followup"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
 import { listResources, listServices, type ResourceRow, type ServiceRow } from "@/lib/actions/agenda"
-import { ArrowLeftRight } from "lucide-react"
 import { buildTimelineGroups, TimelineDivider, DateDivider } from "@/components/chat/timeline-divider"
 import type { ChatMessage, ChatConversation, ChatQuickReply, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
 
 interface Props {
+  pipelines?: Array<{ id: string; name: string }>
+  stages?: Array<{ id: string; name: string }>
   conversation: ChatConversation
   messages:     ChatMessage[]
   quickReplies: ChatQuickReply[]
@@ -115,19 +117,17 @@ function MessageSkeleton() {
 }
 
 export function ChatPanel({
-  conversation, messages, quickReplies, agents, departments, onStatusChange, onTransfer,
+  conversation, messages, quickReplies, agents, onStatusChange,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
   loadingMessages = false,
   onSendText, onSendMedia, onSendVoice, onArchiveToggle,
   onReply, onReact, onSendLocation, onSendContact, onSendSticker, replyTarget, onCancelReply,
-  onBack, onOpenContact, agendaEnabled = false, onFollowUpChange,
+  onBack, onOpenContact, agendaEnabled = false, onFollowUpChange, pipelines = [], stages = [],
 }: Props) {
+  const workflow = useConversationWorkflow()
   const isArchived = !!conversation.archived_at
-  // Menu de ações (kebab) por clique — funciona em desktop e mobile (toque).
-  const [menuOpen, setMenuOpen] = useState(false)
   // Menu de contexto (clique direito numa mensagem): responder/copiar/reagir/agendar/disparar fluxo.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; msg: ChatMessage | null } | null>(null)
-  const [transferOpen, setTransferOpen] = useState(false)
   // Follow-up: a promessa de voltar. Mesma regra do servidor (followup-rules).
   const [followUpOpen, setFollowUpOpen] = useState(false)
   const followUp = followUpChip(conversation)
@@ -137,7 +137,6 @@ export function ChatPanel({
   const [agendaLoading, setAgendaLoading] = useState(false)
 
   async function openSchedule() {
-    setMenuOpen(false)
     if (!conversation.contact_id) return
     let data = agendaData
     if (!data) {
@@ -273,11 +272,24 @@ export function ChatPanel({
   // Lookup p/ o menu de contexto: resolve a mensagem clicada (data-msg-id no DOM).
   const msgById = useMemo(() => new Map(timelineMessages.map((m) => [m.id, m])), [timelineMessages])
 
+  const conversationActions: WorkflowExtra[] = [
+    ...(agendaEnabled && conversation.contact_id ? [{ label: "Agendar", run: openSchedule, disabled: agendaLoading }] : []),
+    { label: followUp ? "Follow-Up · alterar" : "Follow-Up", run: () => setFollowUpOpen(true) },
+    ...(conversation.status !== "pending" ? [{ label: "Marcar pendente", run: () => onStatusChange("pending") }] : []),
+    { label: isArchived ? "Restaurar conversa" : "Arquivar conversa", run: onArchiveToggle },
+    ...(onOpenContact ? [{ label: "Ver contato", run: onOpenContact }] : []),
+  ]
+
   // Clique direito em QUALQUER ponto do chat → menu de contexto. Se caiu numa
   // bolha (data-msg-id), traz as ações de mensagem; no vazio, só as da conversa.
-  function openContextMenu(e: React.MouseEvent) {
+  function openContextMenu(e: React.MouseEvent<HTMLDivElement>) {
     const el = (e.target as HTMLElement).closest("[data-msg-id]") as HTMLElement | null
     const msg = el?.dataset.msgId ? (msgById.get(el.dataset.msgId) ?? null) : null
+    if (!msg && workflow) {
+      setCtxMenu(null)
+      workflow.menu(conversation, e, conversationActions)
+      return
+    }
     e.preventDefault()
     setCtxMenu({ x: e.clientX, y: e.clientY, msg })
   }
@@ -443,6 +455,7 @@ export function ChatPanel({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {onOpenContact && <button type="button" onClick={onOpenContact} aria-label="Abrir detalhes do contato" title="Detalhes do contato" className="inline-flex size-8 items-center justify-center rounded-lg text-slate-500 hover:bg-primary-50 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary"><Info className="size-4" /></button>}
           {/* Ação primária — Concluir (encerra) ou Reabrir se já resolvida.
               É o CTA que dispara o ciclo resolve→reopen→IA da Política de Atendimento. */}
           {conversation.status === "resolved" ? (
@@ -459,7 +472,7 @@ export function ChatPanel({
               type="button"
               onClick={() => onStatusChange("resolved")}
               title="Concluir o atendimento (encerra a conversa)"
-              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-primary text-white hover:bg-primary-700 transition-colors"
             >
               <CheckCircle2 className="size-3.5" /> Concluir
             </button>
@@ -467,103 +480,18 @@ export function ChatPanel({
 
           {/* Menu de ações secundárias — acessível em QUALQUER tela (fim do buraco
               de Transferir/Arquivar sumirem no mobile). */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setMenuOpen((v) => !v)}
-              aria-label="Mais ações"
-              className="size-8 inline-flex items-center justify-center rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
-            >
-              <MoreVertical className="size-4" />
-            </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 bg-white rounded-lg border border-slate-200 shadow-lg py-1 min-w-[188px] z-20">
-                  {agendaEnabled && conversation.contact_id && (
-                    <button
-                      type="button"
-                      onClick={openSchedule}
-                      disabled={agendaLoading}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
-                    >
-                      {agendaLoading ? <Loader2 className="size-3.5 shrink-0 text-slate-400 animate-spin" /> : <CalendarPlus className="size-3.5 shrink-0 text-slate-400" />} Agendar
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => { setTransferOpen(true); setMenuOpen(false) }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                  >
-                    <ArrowLeftRight className="size-3.5 shrink-0 text-slate-400" /> Transferir
-                  </button>
-
-                  {/* O "Adiar" cego virou "Voltar depois…": ele mandava a conversa pro
-                      limbo (`snoozed`) sem despertador, e NINGUÉM a acordava.
-                      ⚠️ De propósito, marcar retorno NÃO esconde a conversa: o inbound
-                      mantém `snoozed` (webhook evolution), então esconder significaria o
-                      cliente responder e ninguém ver. A promessa é uma MARCAÇÃO. */}
-                  <button
-                    type="button"
-                    onClick={() => { setFollowUpOpen(true); setMenuOpen(false) }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                  >
-                    <AlarmClock className="size-3.5 shrink-0 text-slate-400" />
-                    {followUp ? "Follow-Up · alterar" : "Follow-Up"}
-                  </button>
-                  {conversation.status !== "pending" && (
-                    <button
-                      type="button"
-                      onClick={() => { onStatusChange("pending"); setMenuOpen(false) }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                    >
-                      <Clock className="size-3.5 shrink-0 text-slate-400" /> Marcar pendente
-                    </button>
-                  )}
-                  {(conversation.status === "snoozed" || conversation.status === "pending") && (
-                    <button
-                      type="button"
-                      onClick={() => { onStatusChange("open"); setMenuOpen(false) }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                    >
-                      <RotateCcw className="size-3.5 shrink-0 text-slate-400" /> Reabrir
-                    </button>
-                  )}
-
-                  <div className="my-1 border-t border-slate-100" />
-
-                  <button
-                    type="button"
-                    onClick={() => { onArchiveToggle(); setMenuOpen(false) }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                  >
-                    {isArchived ? <ArchiveRestore className="size-3.5 shrink-0 text-amber-600" /> : <Archive className="size-3.5 shrink-0 text-slate-400" />}
-                    {isArchived ? "Restaurar" : "Arquivar"}
-                  </button>
-
-                  {/* Mobile: ver a ficha do contato (no desktop ela é coluna fixa). */}
-                  {onOpenContact && (
-                    <button
-                      type="button"
-                      onClick={() => { onOpenContact(); setMenuOpen(false) }}
-                      className="md:hidden w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-                    >
-                      <Info className="size-3.5 shrink-0 text-slate-400" /> Ver contato
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+          <ConversationActionsButton conversation={conversation} extras={conversationActions} />
         </div>
       </div>
 
+      <ConversationKanbanPosition conversation={conversation} pipelines={pipelines} stages={stages} />
       <AdSourceBanner ad={conversation.from_ad_meta} />
 
       <SiteSourceBanner conversation={conversation} />
 
       <div
         ref={scrollContainerRef}
+        tabIndex={-1}
         onContextMenu={openContextMenu}
         className="flex-1 overflow-y-auto px-2 py-4"
         style={{ backgroundImage: "radial-gradient(circle at 1px 1px, rgba(0,0,0,0.03) 1px, transparent 0)", backgroundSize: "20px 20px" }}
@@ -635,15 +563,6 @@ export function ChatPanel({
         onSendSticker={onSendSticker}
         replyTarget={replyTarget}
         onCancelReply={onCancelReply}
-      />
-
-      <TransferDialog
-        open={transferOpen}
-        onClose={() => setTransferOpen(false)}
-        departments={departments}
-        agents={agents}
-        currentAssignedTo={conversation.assigned_to}
-        onTransfer={onTransfer}
       />
 
       {followUpOpen && (

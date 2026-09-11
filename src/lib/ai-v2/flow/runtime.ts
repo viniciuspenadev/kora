@@ -1062,7 +1062,8 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "move_stage": {
         const cfg = node.config as unknown as MoveStageNodeConfig
-        await getCapability(MOVE_STAGE)?.run(ctx, { stage: cfg.stage })
+        const moved = await getCapability(MOVE_STAGE)?.run(ctx, { stage: cfg.stage })
+        if (!moved?.ok) throw new Error(moved?.error ?? moved?.toolMessage ?? "Não foi possível mover a conversa de etapa.")
         currentId = edgeTarget(graph, node.id)
         break
       }

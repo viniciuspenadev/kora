@@ -168,7 +168,7 @@ async function notifyHealthAlert(
     : `A qualidade do seu número oficial está baixa. Reveja seus envios para não ser restrito.`
 
   // Push (best-effort).
-  await sendPushToUsers(userIds, { title: label, body, url: "/integracoes/whatsapp-oficial", tag: "wa-health" })
+  await sendPushToUsers(tenantId, userIds, { title: label, body, url: "/integracoes/whatsapp-oficial", tag: "wa-health" })
 
   // E-mail (best-effort) — só pra quem tem e-mail.
   await Promise.all(rows

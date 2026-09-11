@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react"
 import Link from "next/link"
+import { ConversationWorkflowProvider } from "@/components/chat/conversation-workflow"
 import { ChevronDown, Plus, Settings, ZoomIn, ZoomOut } from "lucide-react"
 import { ConversationKanban, cardMatchesFilters, effectiveValue, type GroupBy, type SortKey, type KanbanFilters } from "@/components/kanban/conversation-kanban"
 import { KanbanToolbar } from "@/components/kanban/kanban-toolbar"
@@ -10,7 +11,7 @@ import { ZOOM_MIN, ZOOM_MAX, persistZoom, ZOOM_COOKIE_KANBAN } from "@/lib/board
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
 
-interface PipelineMini { id: string; name: string; color: string }
+interface PipelineMini { id: string; name: string; color: string; is_default?: boolean }
 interface AgentMini    { id: string; full_name: string | null; department_id?: string | null }
 interface DeptMini     { id: string; name: string; color: string }
 
@@ -93,6 +94,7 @@ export function KanbanView({
   }
 
   return (
+    <ConversationWorkflowProvider agents={agents} departments={departments}>
     <div className="h-[calc(100dvh-3.5rem)] bg-slate-50 flex flex-col overflow-hidden">
       <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3 min-w-0">
@@ -217,6 +219,8 @@ export function KanbanView({
             height compensa o zoom: pré-zoom = 100/zoom% → escalado bate 100% (sem buraco). */}
         <div style={{ zoom, height: `${(100 / zoom).toFixed(3)}%` }}>
           <ConversationKanban
+            pipelineId={currentPipeline.id}
+            defaultPipeline={(pipelines.find(p => p.is_default) ?? pipelines[0])?.id === currentPipeline.id}
             stages={stages}
             conversations={conversations}
             tintColumns={tintColumns}
@@ -234,5 +238,6 @@ export function KanbanView({
         </div>
       </div>
     </div>
+    </ConversationWorkflowProvider>
   )
 }

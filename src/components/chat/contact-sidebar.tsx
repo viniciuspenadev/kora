@@ -1,5 +1,7 @@
 "use client"
 
+import { ConversationKanbanPosition, useConversationWorkflow } from "./conversation-workflow"
+import { followUpChip } from "@/lib/atendimento/followup-rules"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { SimpleSelect } from "@/components/ui/select"
 
@@ -9,7 +11,7 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, MoreHorizontal, Ban, Archive,
   Users, Tag as TagIcon, FileText, Sparkles,
   Plus, X, Loader2, Trophy, Check, UserPlus, Target, Briefcase,
-  CalendarClock, Flag, User as UserIcon,
+  CalendarClock, User as UserIcon,
   Route, ArrowRightLeft, Search, ArrowUpRight,
 } from "lucide-react"
 import { getContactAppointments, type ContactAppt } from "@/lib/actions/agenda"
@@ -28,10 +30,6 @@ import {
   removeConversationParticipant,
 } from "@/lib/actions/chat"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
-import {
-  moveConversation,
-  markConversationWonLost,
-} from "@/lib/actions/pipeline"
 import { getDealsPanel, moveDeal, moveDealById, openDeal, updateDeal, reopenDeal, getConversationTimeline, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship, type TimelineItem } from "@/lib/actions/deals"
 import { createTask, setTaskDone, snoozeTask } from "@/lib/actions/tasks"
 import { OpenDealConfirm } from "@/components/chat/open-deal-confirm"
@@ -39,7 +37,7 @@ import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-
 import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { applyTag, removeTag, createTag } from "@/lib/actions/tags"
-import type { ChatContact, ChatConversation, LifecycleStage, ExternalAdReply } from "@/types/chat"
+import type { ChatContact, ChatConversation, ExternalAdReply } from "@/types/chat"
 
 // ── Types compartilhados ────────────────────────────────────
 
@@ -129,7 +127,7 @@ export function ContactSidebar(props: Props) {
     .filter((t): t is NonNullable<typeof t> => !!t)
 
   return (
-    <aside className="w-72 shrink-0 border-l border-slate-200 bg-white flex flex-col h-full overflow-y-auto">
+    <aside className={`${props.forceExpanded ? "w-full" : "w-72"} shrink-0 border-l border-slate-200 bg-white flex flex-col h-full overflow-y-auto`}>
       <HeaderCard
         conversation={props.conversation}
         contact={props.contact}
@@ -141,6 +139,8 @@ export function ContactSidebar(props: Props) {
       />
       {/* ── Zona "Agora": o que o atendente decide enquanto conversa ── */}
       <ZoneLabel>Agora</ZoneLabel>
+      <ConversationKanbanPosition conversation={props.conversation} pipelines={props.pipelines} stages={props.stages} card />
+      <AttendanceReminder conversation={props.conversation} />
       <DealsCard
         conversationId={props.conversation.id}
         contactName={displayContactName(props.contact)}
@@ -152,17 +152,13 @@ export function ContactSidebar(props: Props) {
         contactName={displayContactName(props.contact)}
         conversationId={props.conversation.id}
       />
-      <LifecycleCard contact={props.contact} />
+
 
       {/* ── Zona "Detalhes": referência, colapsada por padrão ── */}
       <ZoneLabel>Detalhes</ZoneLabel>
       <ContactInfoLink contactId={props.contact.id} />
-      <PipelineCard
-        conversation={props.conversation}
-        pipelines={props.pipelines}
-        stages={props.stages}
-      />
       <TagsCard
+        conversationId={props.conversation.id}
         contactId={props.contact.id}
         tags={props.tags}
         appliedIds={appliedTagIds}
@@ -184,13 +180,14 @@ function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="border-b border-slate-100">
+    <div className="mx-4 mb-3 rounded-xl border border-slate-200 bg-white overflow-hidden">
       <div className="group/sec flex items-center gap-2.5 px-3.5 h-11">
-        <span className="size-6 rounded-lg bg-slate-100 grid place-items-center shrink-0 transition-colors group-hover/sec:bg-primary-50">
+        <span className="size-5 grid place-items-center shrink-0">
           <Icon className="size-3.5 text-slate-500 transition-colors group-hover/sec:text-primary-600" strokeWidth={2} />
         </span>
         <button
           type="button"
+          aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           className="flex-1 text-left text-[13px] font-semibold text-slate-700 hover:text-slate-900 transition-colors"
         >
@@ -274,6 +271,7 @@ function HeaderCard({
   onClose?:      () => void
 }) {
   const relMeta = relationship ? REL_META[relationship] : null
+  const workflow = useConversationWorkflow()
   const [, startTransition] = useTransition()
   const [showActions, setShowActions] = useState(false)
   const { confirm, confirmDialog } = useConfirm()
@@ -355,31 +353,9 @@ function HeaderCard({
       )}
       {(() => { const h = contact.ig_username || contact.wp_username || contact.username; return h ? <p className="text-[11px] font-medium text-primary-600 mt-0.5">@{h}</p> : null })()}
 
-      {/* Selo de relacionamento + tags em chips compactos abaixo do nome */}
-      {(relMeta || appliedTags.length > 0) && (
-        <div className="mt-2 flex flex-wrap gap-1 justify-center max-w-full px-2">
-          {relMeta && (
-            <span className={`inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${relMeta.cls}`}>
-              {relMeta.label}
-            </span>
-          )}
-          {appliedTags.slice(0, 4).map((t) => (
-            <span
-              key={t.id}
-              className="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-              style={{ backgroundColor: t.color + "22", color: t.color }}
-              title={t.name}
-            >
-              {t.name}
-            </span>
-          ))}
-          {appliedTags.length > 4 && (
-            <span className="inline-flex items-center text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
-              +{appliedTags.length - 4}
-            </span>
-          )}
-        </div>
-      )}
+      {contact.company && <p className="mt-1 text-xs text-slate-500 truncate max-w-full">{contact.company}</p>}
+      {workflow && !conversation.is_group ? <button type="button" onClick={() => workflow.open("qualify", conversation.id)} aria-label={`Alterar classificação: ${lifecycleMeta(contact.lifecycle_stage).label}`} className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-primary-50 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary">{lifecycleMeta(contact.lifecycle_stage).label}<ChevronDown className="size-3" /></button> : <span className="mt-2 inline-flex rounded-md bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-600">{lifecycleMeta(contact.lifecycle_stage).label}</span>}
+      {relationship === "negociacao" && <span className="mt-1 text-[10px] text-slate-500">Com negócio em negociação</span>}
 
       {contact.is_blocked && (
         <span className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-red-50 text-red-600 px-2 py-0.5 rounded-full">
@@ -401,137 +377,16 @@ function HeaderCard({
 // Lifecycle
 // ═══════════════════════════════════════════════════════════════
 
-function LifecycleCard({ contact }: { contact: ChatContact }) {
-  const lc = lifecycleMeta(contact.lifecycle_stage as LifecycleStage)
-  return (
-    <Section icon={Flag} title="Ciclo de vida">
-      <div className={`inline-flex items-center gap-1.5 ${lc.bg} ${lc.text} text-xs font-semibold px-2.5 py-1 rounded-md`}>
-        <span>{lc.icon}</span> {lc.label}
-      </div>
-    </Section>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Pipeline
-// ═══════════════════════════════════════════════════════════════
-
-function PipelineCard({
-  conversation, pipelines, stages,
-}: {
-  conversation: ChatConversation
-  pipelines:    PipelineMini[]
-  stages:       StageMini[]
-}) {
-  const [, startTransition] = useTransition()
-  const [lostOpen, setLostOpen] = useState(false)
-  const [lostReason, setLostReason] = useState("")
-  // Com CRM ligado, a etapa/fechamento vive no Negócio (fonte única) → esconde o Pipeline da conversa.
-  const [crmOn, setCrmOn] = useState<boolean | null>(null)
-  useEffect(() => { crmEnabled().then(setCrmOn).catch(() => setCrmOn(false)) }, [])
-
-  const currentPipeline = pipelines.find((p) => p.id === conversation.pipeline_id)
-                       ?? pipelines.find((p) => p.is_default)
-                       ?? pipelines[0]
-  const pipelineStages  = stages.filter((s) => s.pipeline_id === currentPipeline?.id)
-  const currentStage    = pipelineStages.find((s) => s.id === conversation.stage_id)
-
-  if (crmOn !== false) return null   // null (carregando) ou true (CRM on) → não renderiza (sem flicker)
-  if (!currentPipeline) return null
-
-  function changeStage(stageId: string) {
-    if (!stageId || stageId === conversation.stage_id) return
-    startTransition(async () => {
-      try { await moveConversation(conversation.id, stageId, 0) } catch (e) { alert((e as Error).message) }
-    })
-  }
-
-  function markWon() {
-    startTransition(async () => {
-      try { await markConversationWonLost(conversation.id, "won") } catch (e) { alert((e as Error).message) }
-    })
-  }
-
-  function confirmLost() {
-    startTransition(async () => {
-      try {
-        await markConversationWonLost(conversation.id, "lost", lostReason.trim() || undefined)
-        setLostOpen(false); setLostReason("")
-      } catch (e) { alert((e as Error).message) }
-    })
-  }
-
-  return (
-    <Section icon={Target} title="Pipeline" defaultOpen={false} action={
-      <span className="text-[10px] text-slate-500 flex items-center gap-1">
-        <span className="size-1.5 rounded-full" style={{ backgroundColor: currentPipeline.color }} />
-        {currentPipeline.name}
-      </span>
-    }>
-      {currentStage ? (
-        <div
-          className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg mb-2"
-          style={{ backgroundColor: currentStage.color + "15", color: currentStage.color }}
-        >
-          <span className="size-1.5 rounded-full" style={{ backgroundColor: currentStage.color }} />
-          <span className="text-xs font-semibold flex-1 truncate">{currentStage.name}</span>
-          <span className="text-[10px] opacity-70 tabular-nums">{currentStage.position + 1}/{pipelineStages.length}</span>
-        </div>
-      ) : (
-        <p className="text-[11px] text-slate-400 italic mb-2">Sem etapa atribuída</p>
-      )}
-
-      <SimpleSelect value={conversation.stage_id ?? ""} onChange={changeStage} placeholder="— Selecionar etapa —" className="h-8 text-xs pl-2"
-        options={pipelineStages
-          .filter((s) => !s.is_won && !s.is_lost)
-          .sort((a, b) => a.position - b.position)
-          .map((s) => ({ value: s.id, label: s.name }))} />
-
-      <div className="grid grid-cols-2 gap-2 mt-2">
-        <button
-          type="button"
-          onClick={markWon}
-          className="inline-flex items-center justify-center gap-1.5 h-8 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg transition-colors"
-        >
-          <Trophy className="size-3.5" /> Ganho
-        </button>
-        <button
-          type="button"
-          onClick={() => setLostOpen(true)}
-          className="inline-flex items-center justify-center gap-1.5 h-8 text-xs font-semibold bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-lg transition-colors"
-        >
-          <X className="size-3.5" /> Perdido
-        </button>
-      </div>
-
-      {lostOpen && (
-        <div
-          className="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4"
-          onClick={() => setLostOpen(false)}
-        >
-          <div className="bg-white rounded-xl shadow-soft w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="px-5 py-4 border-b border-slate-100">
-              <h4 className="text-sm font-semibold text-slate-900">Marcar como perdido</h4>
-              <p className="text-xs text-slate-500 mt-0.5">Por quê? Isso ajuda a melhorar o funil depois.</p>
-            </div>
-            <div className="p-5">
-              <textarea
-                value={lostReason}
-                onChange={(e) => setLostReason(e.target.value)}
-                rows={3}
-                placeholder="Ex: preço, escolheu concorrente, sumiu…"
-                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 resize-none"
-              />
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 py-3 bg-slate-50 border-t border-slate-100">
-              <button type="button" onClick={() => setLostOpen(false)} className="h-9 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-lg">Cancelar</button>
-              <button type="button" onClick={confirmLost} className="h-9 px-4 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg">Confirmar</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </Section>
-  )
+function AttendanceReminder({ conversation }: { conversation: ChatConversation }) {
+  const chip = followUpChip(conversation)
+  return <Section icon={CalendarClock} title="Próximo passo">
+    {chip && conversation.follow_up_at ? <>
+      <p className="text-xs leading-relaxed text-slate-700">{conversation.follow_up_note || "Retornar ao contato"}</p>
+      <p className="mt-2 text-[11px] text-slate-500">{new Date(conversation.follow_up_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}</p>
+      <p className="mt-1 text-[11px] font-medium text-slate-600">{chip.label}</p>
+      <Link href="/tarefas" className="inline-block mt-3 text-xs font-semibold text-primary">Ver tarefas</Link>
+    </> : <p className="text-xs leading-relaxed text-slate-500">Nenhum retorno marcado. Use Follow-Up no menu da conversa para agendar.</p>}
+  </Section>
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -682,13 +537,15 @@ function ParticipantsCard({
 // ═══════════════════════════════════════════════════════════════
 
 function TagsCard({
-  contactId, tags, appliedIds, onTagChange,
+  contactId, tags, appliedIds, onTagChange, conversationId,
 }: {
+  conversationId?: string
   contactId:    string
   tags:         TagMini[]
   appliedIds:   string[]
   onTagChange?: (contactId: string, tagId: string, applied: boolean) => void
 }) {
+  const workflow = useConversationWorkflow()
   const [, startTransition] = useTransition()
   const [showPicker, setShowPicker] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -724,14 +581,14 @@ function TagsCard({
   }
 
   return (
-    <Section icon={TagIcon} title="Tags" defaultOpen={false} action={
+    <Section icon={TagIcon} title="Etiquetas" defaultOpen={true} action={
       <button
         type="button"
-        onClick={() => setShowPicker((v) => !v)}
-        aria-label="Adicionar tag"
-        className="size-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100"
+        onClick={() => conversationId && workflow ? workflow.open("tags", conversationId) : setShowPicker((v) => !v)}
+        aria-label="Gerenciar etiquetas"
+        className="inline-flex items-center justify-center rounded px-1 text-xs font-semibold text-primary hover:bg-primary-50"
       >
-        <Plus className="size-3.5" />
+        Gerenciar
       </button>
     }>
       {applied.length > 0 ? (
@@ -1467,4 +1324,3 @@ function ApptRow({ a }: { a: ContactAppt }) {
     </div>
   )
 }
-

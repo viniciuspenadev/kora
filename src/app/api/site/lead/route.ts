@@ -7,6 +7,7 @@ import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { routeToHumanDefault } from "@/lib/atendimento/human-routing"
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { syncContactIdentities } from "@/lib/contacts/identity"
+import { notifyInboundMessage } from "@/lib/push/send"
 
 /**
  * POST /api/site/lead
@@ -342,7 +343,7 @@ export async function POST(req: NextRequest) {
     const isReturning = dedup.found !== "none"
     const widgetQuestions = (cfg.questions as Array<{ id: string; label: string }> | null) ?? []
 
-    await supabaseAdmin.from("chat_messages").insert([
+    const { error: messagesError } = await supabaseAdmin.from("chat_messages").insert([
       {
         conversation_id: conv.id,
         tenant_id:       tenant.id,
@@ -373,6 +374,19 @@ export async function POST(req: NextRequest) {
         },
       },
     ])
+    if (messagesError) {
+      console.error("[/api/site/lead] message insert failed:", messagesError.message)
+      return cors(NextResponse.json({ error: "erro criando mensagens" }, { status: 500 }))
+    }
+
+    // Não expõe as respostas do formulário na tela bloqueada. O destinatário abre
+    // a conversa para consultar os dados segundo a autorização normal do Inbox.
+    after(() => notifyInboundMessage({
+      tenantId: tenant.id,
+      conversationId: conv.id,
+      title: "Novo lead pelo site",
+      preview: "Um novo formulário foi recebido.",
+    }))
 
     // ── Aplica tag/departamento default se configurados ───────
     if (cfg.default_tag_id) {

@@ -3,6 +3,10 @@
 import { beforeEach, expect, it, vi } from "vitest"
 import { MemoryDb } from "@/test/supabase-memory"
 vi.mock("server-only", () => ({}))
+vi.mock("next/server", async (original) => ({
+  ...await original<typeof import("next/server")>(),
+  after: (callback: () => unknown) => { void callback() },
+}))
 const db = new MemoryDb()
 let manualAdmin=true
 const dispatch = vi.fn(async (_input: any) => ({ status: "no_action" }))
@@ -38,6 +42,7 @@ vi.mock("@/lib/rate-limit", () => ({ rateLimit: () => ({ ok: true }), getClientI
 vi.mock("@/lib/site/domain-guard", () => ({ isOriginAllowed: () => true }))
 vi.mock("@/lib/limits", () => ({ requireLimit: async () => {} }))
 vi.mock("@/lib/notifications", () => ({ createNotification: async () => {} }))
+vi.mock("@/lib/push/send", () => ({ notifyInboundMessage: async () => {} }))
 
 const { createManualConversation } = await import("@/lib/actions/chat")
 const { processInstagramWebhook } = await import("@/lib/channels/instagram-inbound")

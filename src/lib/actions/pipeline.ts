@@ -5,7 +5,7 @@ import { assertSessionTenant } from "@/lib/auth/assert-tenant"
 import { requireModule } from "@/lib/modules"
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, applyVisibilityFilter, canViewConversation, assertConversationAccess } from "@/lib/visibility"
-import { resolveLifecycle } from "@/lib/lifecycle-stage"
+import { moveAttendanceConversation } from "@/lib/atendimento/move-conversation"
 import { getBlueprint } from "@/lib/templates/funnels"
 import { revalidatePath } from "next/cache"
 
@@ -452,119 +452,17 @@ export async function reorderStages(pipelineId: string, orderedIds: string[]) {
 // ═══════════════════════════════════════════════════════════════
 
 export async function moveConversation(
-  conversationId: string,
-  newStageId:     string,
-  newPosition:    number,
+  conversationId: string, newStageId: string, newPosition: number, expectedUpdatedAt?: string,
 ) {
   const session = await requireSession()
-
-  const { data: conv } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("stage_id, pipeline_id, assigned_to, participants, department_id, instance_id")
-    .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
-    .single()
-
-  if (!conv) throw new Error("Conversa não encontrada")
-
-  // Gate de visibilidade (fail-closed): só move quem PODE ver/atuar na conversa
-  // (mesma regra do envio/transferência). Mover etapa é colaboração — participante
-  // pode (≠ trocar dono, que é só dono/admin/supervisor).
   const scope = await getViewerScope()
-  if (!canViewConversation(scope, conv as { assigned_to: string | null; participants?: string[] | null; department_id?: string | null; instance_id?: string | null })) {
-    throw new Error("Sem permissão para mover esta conversa.")
-  }
-
-  const { data: newStage } = await supabaseAdmin
-    .from("pipeline_stages")
-    .select("id, pipeline_id, name, is_won, is_lost, is_triage")
-    .eq("id", newStageId)
-    .eq("tenant_id", session.user.tenantId)
-    .maybeSingle()
-
-  if (!newStage) throw new Error("Estágio inválido")
-
-  const updates: Record<string, unknown> = {
-    stage_id:      newStageId,
-    pipeline_id:   newStage.pipeline_id,
-    card_position: newPosition,
-    updated_at:    new Date().toISOString(),
-  }
-
-  // Aging (Tier 0): marca quando entrou na etapa — só na troca REAL de etapa
-  // (reordenar dentro da mesma coluna não reseta o relógio).
-  if (conv.stage_id !== newStageId) {
-    updates.stage_entered_at = new Date().toISOString()
-  }
-
-  if (newStage.is_won) {
-    updates.won_at  = new Date().toISOString()
-    updates.lost_at = null
-  } else if (newStage.is_lost) {
-    updates.lost_at = new Date().toISOString()
-    updates.won_at  = null
-  } else {
-    updates.won_at  = null
-    updates.lost_at = null
-  }
-
-  await supabaseAdmin
-    .from("chat_conversations")
-    .update(updates)
-    .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
-
-  // Acoplamento pipeline → lifecycle do contato (toda etapa, nunca rebaixa).
-  const { data: convWithContact } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("contact_id")
-    .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
-    .single()
-
-  if (convWithContact?.contact_id) {
-    const { data: ct } = await supabaseAdmin
-      .from("chat_contacts")
-      .select("lifecycle_stage")
-      .eq("id", convWithContact.contact_id)
-      .eq("tenant_id", session.user.tenantId)
-      .maybeSingle()
-    const next = resolveLifecycle(ct?.lifecycle_stage, newStage)
-    if (next) {
-      await supabaseAdmin
-        .from("chat_contacts")
-        .update({
-          lifecycle_stage:      next,
-          lifecycle_changed_at: new Date().toISOString(),
-          updated_at:           new Date().toISOString(),
-        })
-        .eq("id", convWithContact.contact_id)
-        .eq("tenant_id", session.user.tenantId)
-    }
-
-  }
-
-  // Mover a conversa NÃO mexe mais no negócio: o funil de venda (deal_*) é independente
-  // do pipeline de ATENDIMENTO da conversa. (espelho syncActiveDeal removido na separação)
-
-  if (conv.stage_id !== newStageId) {
-    await supabaseAdmin.from("chat_messages").insert({
-      conversation_id: conversationId,
-      tenant_id:       session.user.tenantId,
-      sender_type:     "system",
-      content_type:    "text",
-      content:         newStage.is_won
-        ? `🏆 Negócio ganho! Conversa movida para "${newStage.name}"`
-        : newStage.is_lost
-        ? `❌ Negócio perdido. Conversa movida para "${newStage.name}"`
-        : `Conversa movida para "${newStage.name}"`,
-      status:          "delivered",
-      is_private_note: false,
-    })
-  }
-
+  if (scope.tenantId !== session.user.tenantId) throw new Error("Sessão inválida.")
+  const result = await moveAttendanceConversation({ tenantId: scope.tenantId, conversationId,
+    stageId: newStageId, position: newPosition, scope, expectedUpdatedAt,
+    actorName: session.user.name ?? undefined })
   revalidatePath("/kanban")
   revalidatePath("/inbox")
+  return result
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -585,7 +483,7 @@ export async function updateConversationDealInfo(
 
   // Whitelist de campos (impede mass assignment se o schema crescer)
   const allowed: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (data.pipeline_id !== undefined)         allowed.pipeline_id         = data.pipeline_id
+  if (data.pipeline_id !== undefined) throw new Error("Use a movimentação de Kanban para alterar quadro e etapa juntos.")
   if (data.estimated_value !== undefined)     allowed.estimated_value     = data.estimated_value
   if (data.expected_close_date !== undefined) allowed.expected_close_date = data.expected_close_date
   if (data.lost_reason !== undefined)         allowed.lost_reason         = data.lost_reason
@@ -680,16 +578,7 @@ export async function assignConversationToPipeline(
 
   if (!firstStage) throw new Error("Funil sem estágios")
 
-  await supabaseAdmin
-    .from("chat_conversations")
-    .update({
-      pipeline_id:   pipelineId,
-      stage_id:      firstStage.id,
-      card_position: 0,
-      updated_at:    new Date().toISOString(),
-    })
-    .eq("id", conversationId)
-    .eq("tenant_id", session.user.tenantId)
+  await moveConversation(conversationId, firstStage.id, 0)
 
   revalidatePath("/kanban")
   revalidatePath("/inbox")

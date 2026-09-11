@@ -1,5 +1,6 @@
 "use server"
 
+import { qualifyConversationContact } from "@/lib/actions/conversation-workflow"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { prepareHumanReply, claimAfterAcceptedReply } from "@/lib/atendimento/attendance-claim"
@@ -1408,7 +1409,7 @@ export async function updateConversationStatus(conversationId: string, status: s
   // Concluir/Reabrir/Adiar/Pendente são ações principais do header → precisam do gate.
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("id, instance_id, assigned_to, participants, department_id")
+    .select("id, instance_id, assigned_to, participants, department_id, updated_at, status")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
     .single()
@@ -1434,14 +1435,18 @@ export async function updateConversationStatus(conversationId: string, status: s
     updates.resolved_at  = null
   }
 
-  await supabaseAdmin
+  const { data: saved, error: saveError } = await supabaseAdmin
     .from("chat_conversations")
     .update(updates)
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
+    .eq("updated_at", conv.updated_at)
+    .select("id").maybeSingle()
+  if (saveError) throw new Error("Não foi possível atualizar o atendimento.")
+  if (!saved) throw new Error("A conversa mudou. Atualize e tente novamente.")
 
   // Evento do ciclo (relatórios): conclusão. Atribui ao atendente que concluiu.
-  if (status === "resolved") {
+  if (status === "resolved" && conv.status !== "resolved") {
     await logConversationEvent({
       tenantId, conversationId, type: "resolved",
       actorKind: "agent",
@@ -1451,6 +1456,7 @@ export async function updateConversationStatus(conversationId: string, status: s
   }
 
   revalidatePath("/inbox")
+  revalidatePath("/kanban")
 }
 
 export async function markConversationRead(conversationId: string) {
@@ -2037,74 +2043,8 @@ export async function getTenantConfig() {
  * Promove um contato de "contact" para "lead" e (opcionalmente) cria deal no funil.
  * O atendente clica "Qualificar" quando avalia que há FIT comercial.
  */
-export async function qualifyLead(conversationId: string, pipelineId?: string) {
-  const { scope } = await assertConversationAccess(conversationId)   // H-04
-  const tenantId = scope.tenantId
-
-  const { data: conv } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("id, contact_id, pipeline_id, is_group")
-    .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
-    .single()
-
-  if (!conv) throw new Error("Conversa não encontrada")
-  if (conv.is_group) throw new Error("Conversas de grupo não vão para o funil")
-  if (!conv.contact_id) throw new Error("Conversa sem contato vinculado")
-
-  await supabaseAdmin
-    .from("chat_contacts")
-    .update({
-      lifecycle_stage:      "lead",
-      lifecycle_changed_at: new Date().toISOString(),
-      qualified_at:         new Date().toISOString(),
-      qualified_by:         scope.userId,
-      unfit_reason:         null,
-      updated_at:           new Date().toISOString(),
-    })
-    .eq("id", conv.contact_id)
-    .eq("tenant_id", tenantId)
-
-  const targetPipelineId = pipelineId ?? conv.pipeline_id
-  if (targetPipelineId) {
-    const { data: firstStage } = await supabaseAdmin
-      .from("pipeline_stages")
-      .select("id")
-      .eq("tenant_id", tenantId)
-      .eq("pipeline_id", targetPipelineId)
-      .eq("is_triage", false)
-      .eq("is_won", false)
-      .eq("is_lost", false)
-      .order("position", { ascending: true })
-      .limit(1)
-      .maybeSingle()
-
-    if (firstStage) {
-      await supabaseAdmin
-        .from("chat_conversations")
-        .update({
-          pipeline_id:   targetPipelineId,
-          stage_id:      firstStage.id,
-          card_position: 0,
-          updated_at:    new Date().toISOString(),
-        })
-        .eq("id", conversationId)
-    }
-  }
-
-  await supabaseAdmin.from("chat_messages").insert({
-    conversation_id: conversationId,
-    tenant_id:       tenantId,
-    sender_type:     "system",
-    content_type:    "text",
-    content:         "✅ Contato qualificado como Lead.",
-    status:          "delivered",
-    is_private_note: false,
-  })
-
-  revalidatePath("/inbox")
-  revalidatePath("/kanban")
-  return { ok: true }
+export async function qualifyLead(conversationId: string) {
+  return qualifyConversationContact(conversationId)
 }
 
 /**

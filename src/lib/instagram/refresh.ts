@@ -159,7 +159,7 @@ async function markNeedsReauth(
   const userIds = (members ?? []).map((m) => m.user_id as string)
   if (!userIds.length) return
 
-  await sendPushToUsers(userIds, {
+  await sendPushToUsers(tenantId, userIds, {
     title: "🔴 Instagram desconectado",
     body:  `A conexão${username ? ` de @${username}` : ""} expirou e precisa ser refeita. Mensagens do Direct não estão chegando.`,
     url:   "/integracoes/instagram",

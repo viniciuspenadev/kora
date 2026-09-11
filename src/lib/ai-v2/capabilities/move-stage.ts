@@ -6,7 +6,8 @@
 // visibilidade (etapa ≠ quem vê). Tenant-scoping em toda query.
 import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
-import { resolveLifecycle } from "@/lib/lifecycle-stage"
+import { moveAttendanceConversation } from "@/lib/atendimento/move-conversation"
+import { hasModule } from "@/lib/modules"
 
 export const MOVE_STAGE = "move_stage"
 
@@ -45,31 +46,26 @@ export const moveStageCapability = defineCapability<MoveStageArgs>({
     return { stage: typeof p.stage === "string" ? p.stage.trim() : "" }
   },
   execute: async (ctx, args) => {
-    const { tenantId, conversationId, contact } = ctx
+    const { tenantId, conversationId } = ctx
     if (!args.stage) return { ok: false, error: "etapa vazia" }
 
+    if (!(await hasModule(tenantId, "kanban"))) return { ok: false, error: "Kanban não habilitado." }
     const { data: stages } = await supabaseAdmin
       .from("pipeline_stages").select("id, pipeline_id, name, is_won, is_lost, is_triage").eq("tenant_id", tenantId)
     const norm = (s: string) => s.trim().toLowerCase()
-    const st = (stages ?? []).find((s) => norm(s.name) === norm(args.stage))
+    const matches = (stages ?? []).filter((s) => norm(s.name) === norm(args.stage))
+    if (matches.length > 1) return { ok: false, error: "Nome de etapa ambíguo entre Kanbans. Renomeie as etapas para identificar o destino." }
+    const st = matches[0]
     if (!st) {
       const opts = (stages ?? []).map((s) => s.name).join(", ") || "(nenhuma)"
       return { ok: false, toolMessage: `Etapa "${args.stage}" não existe. Etapas válidas: ${opts}.` }
     }
 
-    const { error } = await supabaseAdmin
-      .from("chat_conversations")
-      .update({ stage_id: st.id, pipeline_id: st.pipeline_id, updated_at: new Date().toISOString() })
-      .eq("id", conversationId).eq("tenant_id", tenantId)
-    if (error) return { ok: false, error: error.message }
-
-    // Acoplamento pipeline → lifecycle (nunca rebaixa) — mesma regra do kanban.
-    const next = resolveLifecycle(contact.lifecycle_stage, st)
-    if (next) {
-      await supabaseAdmin.from("chat_contacts")
-        .update({ lifecycle_stage: next, lifecycle_changed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-        .eq("id", contact.id).eq("tenant_id", tenantId)
+    try {
+      const result = await moveAttendanceConversation({ tenantId, conversationId, stageId: st.id, position: 0, actorName: "Kora Studio" })
+      return { ok: true, toolMessage: result.warning ?? `Conversa movida para a etapa "${st.name}".` }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "Não foi possível mover a conversa." }
     }
-    return { ok: true, toolMessage: `Conversa movida para a etapa "${st.name}"${next ? ` (lifecycle: ${next})` : ""}.` }
   },
 })

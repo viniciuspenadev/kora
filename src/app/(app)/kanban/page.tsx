@@ -79,6 +79,7 @@ export default async function KanbanPage({
     .from("pipeline_stages")
     .select("*")
     .eq("pipeline_id", currentPipeline.id)
+    .eq("tenant_id", tenantId)
     .order("position")
 
   const isAdminOrOwner = scope.isAdmin
@@ -110,7 +111,7 @@ export default async function KanbanPage({
     // Etapas visíveis do funil atual OU conversas SEM funil (atendimento-puro →
     // caem na Triagem). Pra tenant com funil é no-op (não há conversa sem funil).
     // Compõe com o .or() de visibilidade abaixo (PostgREST: múltiplos .or() = AND).
-    .or(`and(pipeline_id.eq.${currentPipeline.id},stage_id.in.(${activeStageIds.length > 0 ? activeStageIds.join(",") : "00000000-0000-0000-0000-000000000000"})),pipeline_id.is.null`)
+    .or(`and(pipeline_id.eq.${currentPipeline.id},or(stage_id.is.null,status.eq.resolved,stage_id.in.(${activeStageIds.length > 0 ? activeStageIds.join(",") : "00000000-0000-0000-0000-000000000000"})))${currentPipeline.id === (pipelines.find(p => p.is_default) ?? pipelines[0]).id ? ",pipeline_id.is.null" : ""}`)
     .is("archived_at", null)
     .order("card_position", { ascending: true })
 
@@ -140,7 +141,7 @@ export default async function KanbanPage({
 
   return (
     <KanbanView
-      pipelines={pipelines.map((p) => ({ id: p.id, name: p.name, color: p.color }))}
+      pipelines={pipelines.map((p) => ({ id: p.id, name: p.name, color: p.color, is_default: p.is_default }))}
       currentPipeline={{ id: currentPipeline.id, name: currentPipeline.name, color: currentPipeline.color }}
       convCount={(conversations ?? []).length}
       isAdminOrOwner={isAdminOrOwner}

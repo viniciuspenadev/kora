@@ -14,6 +14,7 @@ export default async function InboxPage() {
   if (!session) return null
 
   const tenantId = session.user.tenantId
+  const kanbanEnabled = await hasModule(tenantId, "kanban")
   const quickRepliesOn = await hasModule(tenantId, "quick_replies")
 
   // Multi-instância (M1): pode haver 2+ (ex: Baileys + Meta oficial).
@@ -36,7 +37,7 @@ export default async function InboxPage() {
   if (!hasUsableInstance) {
     return (
       <div className="h-[calc(100dvh-3.5rem)]">
-        <InboxClient
+        <InboxClient kanbanEnabled={kanbanEnabled}
           conversations={[]}
           messages={{}}
           contacts={{}}
@@ -144,7 +145,7 @@ export default async function InboxPage() {
 
   return (
     <div className="h-[calc(100dvh-3.5rem)]">
-      <InboxClient
+      <InboxClient kanbanEnabled={kanbanEnabled}
         conversations={conversations}
         messages={messagesByConv}
         contacts={contactsMap}

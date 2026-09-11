@@ -8,6 +8,7 @@ import { getOrCreateSiteContact, getOrCreateSiteConversation } from "@/lib/chann
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { siteAiWithinBudget } from "@/lib/ai-v2/site-budget"
+import { notifyInboundMessage } from "@/lib/push/send"
 
 /**
  * POST /api/site/message
@@ -93,7 +94,7 @@ export async function POST(req: NextRequest) {
     const convId    = conv.id
 
     // Persiste a mensagem do visitante
-    await supabaseAdmin.from("chat_messages").insert({
+    const { error: messageError } = await supabaseAdmin.from("chat_messages").insert({
       conversation_id: convId,
       tenant_id:       tenant.id,
       sender_type:     "contact",
@@ -103,6 +104,7 @@ export async function POST(req: NextRequest) {
       is_private_note: false,
       metadata:        { kind: "site_chat" },
     })
+    if (messageError) throw new Error("Não foi possível persistir a mensagem do site.")
     // 🔴 QUINTA PORTA. Este UPDATE era artesanal e faltavam DUAS coisas — medido em prod
     //    (2026-08-27): **35 de 35** conversas de site tinham mensagem de cliente e
     //    `unread_count = 0`. A bolinha azul do inbox NUNCA acendeu para o webchat.
@@ -119,6 +121,15 @@ export async function POST(req: NextRequest) {
       conversationId: convId,
       preview:        text.substring(0, 100),
     })
+
+    // Mesmo produtor e mesma seleção de destinatários dos outros canais. O envio
+    // acontece depois da resposta HTTP e independe do sucesso da automação.
+    after(() => notifyInboundMessage({
+      tenantId: tenant.id,
+      conversationId: convId,
+      title: "Nova mensagem pelo site",
+      preview: text.substring(0, 100),
+    }))
 
     // Dispara a IA fora do request (a resposta cai como mensagem 'bot', o
     // widget pega via polling). Sem debounce: chat ao vivo quer resposta já.

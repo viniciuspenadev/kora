@@ -27,15 +27,17 @@ interface PushPayload {
 
 interface SubRow { id: string; endpoint: string; p256dh: string; auth: string }
 
-/** Envia um push pra todos os devices inscritos dos usuários dados. Limpa subs mortas. */
-export async function sendPushToUsers(userIds: string[], payload: PushPayload): Promise<void> {
+/** Envia push aos dispositivos destes usuários dentro do tenant. Limpa subs mortas. */
+export async function sendPushToUsers(tenantId: string, userIds: string[], payload: PushPayload): Promise<void> {
   const ids = Array.from(new Set(userIds)).filter(Boolean)
   if (ids.length === 0 || !ensureConfigured()) return
 
-  const { data: subs } = await supabaseAdmin
+  const { data: subs, error: subscriptionsError } = await supabaseAdmin
     .from("push_subscriptions")
     .select("id, endpoint, p256dh, auth")
+    .eq("tenant_id", tenantId)
     .in("user_id", ids)
+  if (subscriptionsError) throw new Error("Falha ao consultar dispositivos de push")
 
   const rows = (subs ?? []) as SubRow[]
   if (rows.length === 0) return
@@ -58,14 +60,14 @@ export async function sendPushToUsers(userIds: string[], payload: PushPayload): 
   }))
 
   if (dead.length) {
-    await supabaseAdmin.from("push_subscriptions").delete().in("id", dead)
+    await supabaseAdmin.from("push_subscriptions").delete().eq("tenant_id", tenantId).in("id", dead)
   }
 }
 
 /**
  * Notifica os atendentes relevantes de uma mensagem recebida (inbound).
- * Destinatário: o `assigned_to` da conversa; se ninguém (pool), todos os
- * usuários ativos do tenant (regra de visibilidade do inbox: pool = todos veem).
+ * Destinatário: responsável e participantes ativos; se ninguém estiver atribuído,
+ * apenas membros ativos que descobrem a conversa pela regra canônica do Inbox.
  * Fire-and-forget — nunca lança (chamado de dentro dos webhooks via after()).
  */
 export async function notifyInboundMessage(opts: {
@@ -77,11 +79,14 @@ export async function notifyInboundMessage(opts: {
   try {
     if (!ensureConfigured()) return
 
-    const { data: conv } = await supabaseAdmin
+    const { data: conv, error: conversationError } = await supabaseAdmin
       .from("chat_conversations")
       .select("assigned_to, participants, instance_id, department_id")
+      .eq("tenant_id", opts.tenantId)
       .eq("id", opts.conversationId)
       .maybeSingle()
+    if (conversationError) throw new Error("Falha ao consultar conversa para push")
+    if (!conv) return
 
     const participants = ((conv?.participants ?? []) as string[])
     const convScope = {
@@ -92,11 +97,19 @@ export async function notifyInboundMessage(opts: {
     // Destinatários = quem REALMENTE pode ver a conversa (mesma regra de
     // @/lib/visibility). Não basta "todos os ativos": um atendente see_pool=false
     // não vê o pool, então receber push dele seria ruído E vazamento de preview.
+    const { data: members, error: membersError } = await supabaseAdmin
+      .from("tenant_users")
+      .select("user_id, role, view_all, see_pool, instance_ids, department_id, supervises_departments")
+      .eq("tenant_id", opts.tenantId)
+      .eq("active", true)
+    if (membersError) throw new Error("Falha ao consultar destinatários do push")
+    const activeMembers = (members ?? []) as Array<FanoutMemberRow & { user_id: string }>
     let userIds: string[]
     if (conv?.assigned_to) {
       // Atribuída → o responsável + quem participa (admins não levam push de
       // cada conversa de cada atendente; eles consultam o inbox).
-      userIds = [conv.assigned_to as string, ...participants]
+      const explicit = new Set([conv.assigned_to as string, ...participants])
+      userIds = activeMembers.filter((member) => explicit.has(member.user_id)).map((member) => member.user_id)
     } else {
       // Não atribuída → quem enxerga a conversa por DESCOBERTA + participantes.
       // A regra vem inteira de `memberSeesUnassigned` (@/lib/visibility) — pool,
@@ -105,18 +118,17 @@ export async function notifyInboundMessage(opts: {
       // setor (conversa que ele vê no inbox). Nunca reimplementar a regra aqui.
       // Número (Fase D): pool de um número só notifica quem atende esse número —
       // mas conversa SEM número (Instagram, site) notifica todos que descobrem.
-      const { data: members } = await supabaseAdmin
-        .from("tenant_users")
-        .select("user_id, role, view_all, see_pool, instance_ids, department_id, supervises_departments")
-        .eq("tenant_id", opts.tenantId)
-        .eq("active", true)
-      const poolViewers = (members ?? [])
+      const participantSet = new Set(participants)
+      const poolViewers = activeMembers
         .filter((m) => memberSeesUnassigned(m as unknown as FanoutMemberRow, convScope))
         .map((m) => (m as { user_id: string }).user_id)
-      userIds = [...poolViewers, ...participants]
+      const activeParticipants = activeMembers
+        .filter((member) => participantSet.has(member.user_id))
+        .map((member) => member.user_id)
+      userIds = [...poolViewers, ...activeParticipants]
     }
 
-    await sendPushToUsers(userIds, {
+    await sendPushToUsers(opts.tenantId, userIds, {
       title: opts.title || "Nova mensagem",
       body:  opts.preview || "Você recebeu uma nova mensagem",
       url:   `/inbox?conversation=${opts.conversationId}`,

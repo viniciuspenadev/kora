@@ -27,6 +27,7 @@ const selectCls =
   "w-full h-9 px-2.5 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
 
 export function TransferDialog({ open, onClose, departments, agents, currentAssignedTo, onTransfer }: Props) {
+  const [submitError, setSubmitError] = useState("")
   const [mode, setMode]                   = useState<"department" | "agent">(departments.length > 0 ? "department" : "agent")
   const [departmentId, setDepartmentId]   = useState<string>(departments[0]?.id ?? "")
   const [deptAssign, setDeptAssign]       = useState<"queue" | "agent">("queue")
@@ -68,16 +69,16 @@ export function TransferDialog({ open, onClose, departments, agents, currentAssi
 
   if (!open) return null
 
-  function submit() {
-    if (!opts) return
+  function executeTransfer(next: TransferOpts) {
     startTransition(async () => {
-      await onTransfer(opts)
-      onClose()
+      setSubmitError("")
+      try { await onTransfer(next); onClose() }
+      catch (e) { setSubmitError(e instanceof Error ? e.message : "Não foi possível transferir. Tente novamente.") }
     })
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-slate-900/40 flex items-center justify-center p-4" onClick={() => { if (!pending) onClose() }}>
       <div
         className="bg-white rounded-xl border border-slate-200 shadow-soft w-full max-w-md overflow-hidden"
         onClick={(e) => e.stopPropagation()}
@@ -90,6 +91,7 @@ export function TransferDialog({ open, onClose, departments, agents, currentAssi
         </header>
 
         <div className="p-5 space-y-4">
+          {submitError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs text-red-700">{submitError}</p>}
           {/* PARA ONDE — toggle */}
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Para onde</p>
@@ -162,7 +164,7 @@ export function TransferDialog({ open, onClose, departments, agents, currentAssi
             <button
               type="button"
               disabled={pending}
-              onClick={() => startTransition(async () => { await onTransfer({ mode: "pool", stayAsParticipant: stay }); onClose() })}
+              onClick={() => executeTransfer({ mode: "pool", stayAsParticipant: stay })}
               className="text-[11px] font-medium text-slate-500 hover:text-slate-800 disabled:opacity-50"
             >
               Devolver pra fila geral
@@ -172,7 +174,7 @@ export function TransferDialog({ open, onClose, departments, agents, currentAssi
             <button type="button" onClick={onClose} disabled={pending} className="h-9 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-lg disabled:opacity-50">Cancelar</button>
             <button
               type="button"
-              onClick={submit}
+              onClick={() => opts && executeTransfer(opts)}
               disabled={!valid || pending}
               className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 text-white rounded-lg disabled:opacity-40 transition-colors"
             >

@@ -31,7 +31,7 @@ export async function runTaskReminderSweep(): Promise<{ notified: number; skippe
     if (!result.data) { skipped++; continue }
     notified++
     try {
-      await sendPushToUsers([task.assigned_to], { title: `Tarefa: ${task.title}`, body: "O prazo desta tarefa chegou.", url: taskHref(task), tag: `task_due:${task.id}` })
+      await sendPushToUsers(task.tenant_id, [task.assigned_to], { title: `Tarefa: ${task.title}`, body: "O prazo desta tarefa chegou.", url: taskHref(task), tag: `task_due:${task.id}` })
     } catch { /* O aviso já está salvo no sino; falha de push não repete a notificação. */ }
   }
   if (!data?.length || data.length < 500) break

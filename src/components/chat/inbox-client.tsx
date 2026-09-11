@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useTransition, useCallback, useRef, useMemo } from "react"
 import { useSearchParams, useRouter, usePathname } from "next/navigation"
+import { ConversationWorkflowProvider } from "@/components/chat/conversation-workflow"
 import { ConversationList } from "@/components/chat/conversation-list"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { ContactSidebar } from "@/components/chat/contact-sidebar"
+import { ContactDetailsOverlay } from "@/components/chat/contact-details-overlay"
 import { MessageCircle } from "lucide-react"
 import { toast } from "sonner"
 import Link from "next/link"
@@ -61,6 +63,7 @@ interface Props {
   quickReplies:        ChatQuickReply[]
   agents:              Array<{ id: string; full_name: string | null; department_id?: string | null }>
   instanceStatus:      string
+  kanbanEnabled?: boolean
   pipelines?:          PipelineMini[]
   stages?:             StageMini[]
   tags?:               TagMini[]
@@ -143,6 +146,7 @@ export function InboxClient({
   quickReplies,
   agents,
   instanceStatus,
+  kanbanEnabled = false,
   pipelines      = [],
   stages         = [],
   tags           = [],
@@ -715,7 +719,7 @@ export function InboxClient({
   // Trava o scroll do body enquanto o sheet de contato está aberto (mobile) —
   // senão o fundo rola atrás do painel fixo (jank no iOS).
   useEffect(() => {
-    if (!contactSheetOpen) return
+    if (!contactSheetOpen || window.matchMedia("(min-width: 768px)").matches) return
     const prev = document.body.style.overflow
     document.body.style.overflow = "hidden"
     return () => { document.body.style.overflow = prev }
@@ -1104,6 +1108,12 @@ export function InboxClient({
   const channelReady = instanceStatus === "connected"
 
   return (
+    <ConversationWorkflowProvider kanban={kanbanEnabled} agents={agents} departments={departments} onUnavailable={id => { setConversations(prev => prev.filter(c => c.id !== id)); if (activeId === id) { setActiveId(null); setActiveMessages([]); setContactSheetOpen(false) } void loadFirstPage() }} onUpdated={(result) => {
+      setConversations(prev => prev.map(c => c.id === result.conversation.id ? { ...c, ...result.conversation, chat_contacts: c.chat_contacts && result.contact ? { ...c.chat_contacts, ...result.contact } : c.chat_contacts } : result.contact && c.chat_contacts && c.chat_contacts.id === result.contact.id ? { ...c, chat_contacts: { ...c.chat_contacts, ...result.contact } } : c))
+      const contactId = result.contact?.id
+      if (contactId) setTagsByContact(prev => ({ ...prev, [contactId]: result.tagIds }))
+      if (pipelineFilter || tagFilter || statusFilter !== "all" || viewFilter !== "all") void loadFirstPage()
+    }}>
     <div className="flex flex-col h-full overflow-hidden">
       {realtimeDown && (
         <div className="px-4 py-1.5 text-[11px] font-medium flex items-center gap-2 bg-amber-50 text-amber-700 border-b border-amber-200">
@@ -1189,12 +1199,14 @@ export function InboxClient({
 
         {/* Detail (chat) — escondido no mobile até abrir uma conversa; full-width
             quando ativo. No desktop é sempre a coluna principal. */}
-        <div className={`${activeId ? "flex" : "hidden md:flex"} flex-1 min-w-0`}>
+        <div className={`${activeId ? "flex" : "hidden md:flex"} relative flex-1 min-w-0 overflow-hidden`}>
           {activeConv ? (
             <>
               <div className="flex-1 min-w-0">
                 <ChatPanel
                   conversation={activeConv}
+                  pipelines={pipelines}
+                  stages={stages}
                   messages={activeMessages}
                   quickReplies={quickReplies}
                   agents={agents}
@@ -1224,48 +1236,19 @@ export function InboxClient({
               </div>
               {activeConv.chat_contacts && (
                 <>
-                  {/* Desktop: coluna fixa (mantém o colapso via localStorage). */}
-                  <div className="hidden md:block shrink-0">
-                    <ContactSidebar
-                      conversation={activeConv}
-                      contact={activeConv.chat_contacts}
-                      pipelines={pipelines}
-                      stages={stages}
-                      tags={tags}
-                      tagsByContact={tagsByContact}
-                      onTagChange={handleTagChange}
-                      agents={agents}
-                      externalAdReply={activeAdReply}
-                    />
-                  </div>
-
-                  {/* Mobile: sheet deslizante da direita + backdrop. Instância
-                      própria, sempre expandida, com X pra fechar. */}
-                  <div
-                    onClick={() => setContactSheetOpen(false)}
-                    className={`md:hidden fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm transition-opacity duration-200 ${
-                      contactSheetOpen ? "opacity-100" : "opacity-0 pointer-events-none"
-                    }`}
+                  <ContactDetailsOverlay
+                    open={contactSheetOpen}
+                    onClose={() => setContactSheetOpen(false)}
+                    conversation={activeConv}
+                    contact={activeConv.chat_contacts}
+                    pipelines={pipelines}
+                    stages={stages}
+                    tags={tags}
+                    tagsByContact={tagsByContact}
+                    onTagChange={handleTagChange}
+                    agents={agents}
+                    externalAdReply={activeAdReply}
                   />
-                  <div
-                    className={`md:hidden fixed inset-y-0 right-0 z-50 w-72 max-w-[88vw] h-dvh transition-transform duration-200 ease-out ${
-                      contactSheetOpen ? "translate-x-0" : "translate-x-full pointer-events-none"
-                    }`}
-                  >
-                    <ContactSidebar
-                      conversation={activeConv}
-                      contact={activeConv.chat_contacts}
-                      pipelines={pipelines}
-                      stages={stages}
-                      tags={tags}
-                      tagsByContact={tagsByContact}
-                      onTagChange={handleTagChange}
-                      agents={agents}
-                      externalAdReply={activeAdReply}
-                      forceExpanded
-                      onClose={() => setContactSheetOpen(false)}
-                    />
-                  </div>
                 </>
               )}
             </>
@@ -1283,5 +1266,6 @@ export function InboxClient({
         </div>
       </div>
     </div>
+    </ConversationWorkflowProvider>
   )
 }
