@@ -13,9 +13,9 @@ export function ConversationLabels({ classification, tags }: { classification?: 
   const [first, ...remaining] = tags
   if (!lifecycle && !first) return null
 
-  return <div className="mt-1.5 flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap text-[10px]">
-    {lifecycle && <span className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 font-medium ${lifecycle.bg} ${lifecycle.text}`}>{lifecycle.label}</span>}
-    {first && <span title={first.name} className="inline-flex min-w-0 max-w-[128px] items-center gap-1 rounded border border-slate-200 bg-white/80 px-1.5 py-0.5 text-slate-600"><span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: first.color }} /><span className="truncate">{first.name}</span></span>}
+  return <div className="mt-2 flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap text-[11px]">
+    {lifecycle && <span className={`inline-flex shrink-0 items-center rounded border border-transparent px-1.5 text-[10px] leading-4 font-medium ${lifecycle.bg} ${lifecycle.text}`}>{lifecycle.label}</span>}
+    {first && <span title={first.name} className="inline-flex min-w-0 max-w-[140px] items-center rounded border px-1.5 text-[10px] leading-4 font-medium" style={{ backgroundColor: first.color + "20", color: first.color, borderColor: first.color + "30" }}><span className="truncate">{first.name}</span></span>}
     {remaining.length > 0 && <Popover.Root>
       <Popover.Trigger openOnHover delay={180} closeDelay={160}
         aria-label={`Ver mais ${remaining.length} etiqueta${remaining.length === 1 ? "" : "s"}`}
@@ -32,7 +32,7 @@ export function ConversationLabels({ classification, tags }: { classification?: 
               <Popover.Close aria-label="Fechar etiquetas" className="inline-flex size-6 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="size-3.5" /></Popover.Close>
             </div>
             <ul className="max-h-52 space-y-1 overflow-y-auto">
-              {remaining.map(tag => <li key={tag.id} className="flex items-start gap-2 rounded-lg bg-slate-50 px-2.5 py-2 text-xs"><span className="mt-1 size-2 shrink-0 rounded-full" style={{ backgroundColor: tag.color }} /><span className="min-w-0 whitespace-normal break-words">{tag.name}</span></li>)}
+              {remaining.map(tag => <li key={tag.id} className="rounded-md px-2 py-1.5 text-[11px]" style={{ backgroundColor: tag.color + "20", color: tag.color }}><span className="whitespace-normal break-words">{tag.name}</span></li>)}
             </ul>
           </Popover.Popup>
         </Popover.Positioner>

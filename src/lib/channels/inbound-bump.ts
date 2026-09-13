@@ -26,6 +26,9 @@ export interface InboundBumpInput {
   conversationId: string
   /** Texto curto da lista (já truncado pelo caller). */
   preview:        string
+  /** Validated provider event time, used when both ingress and external replies
+   * share a clock. Late older messages must not replace a newer reply preview. */
+  occurredAt?: string | null
   /**
    * Âncora da janela de sessão. Canal com relógio próprio e autoritativo
    * (WhatsApp Oficial, Instagram) passa o timestamp DO PROVEDOR; omitir carimba
@@ -57,7 +60,7 @@ export async function bumpConversationInbound(input: InboundBumpInput): Promise<
   try {
     for (let attempt = 0; attempt < 8; attempt++) {
       const { data: cur, error } = await supabaseAdmin.from("chat_conversations")
-        .select("id, contact_id, instance_id, channel, unread_count, status, metadata, updated_at")
+        .select("id, contact_id, instance_id, channel, unread_count, status, metadata, updated_at, last_message_at, last_message_dir, last_inbound_at")
         .eq("tenant_id", tenantId).eq("id", conversationId).maybeSingle()
       if (error) throw new Error("Não foi possível ler a conversa para atualizar o recebimento.")
       if (!cur) return
@@ -68,9 +71,12 @@ export async function bumpConversationInbound(input: InboundBumpInput): Promise<
         continue
       }
       const now = new Date().toISOString()
+      const eventAt = input.occurredAt ?? now
+      const older = !!input.occurredAt && Date.parse(eventAt) < Date.parse(cur.last_message_at ?? "")
+      const inboundAt = input.lastInboundAt ?? now
       const patch = {
-        last_message_at: now, last_message_preview: preview, last_message_dir: "in",
-        ...(input.touchWindow !== false ? { last_inbound_at: input.lastInboundAt ?? now } : {}),
+        ...(!older ? { last_message_at: eventAt, last_message_preview: preview, last_message_dir: "in" } : {}),
+        ...(input.touchWindow !== false ? { last_inbound_at: input.occurredAt && Date.parse(cur.last_inbound_at ?? "") > Date.parse(inboundAt) ? cur.last_inbound_at : inboundAt } : {}),
         unread_count: (cur.unread_count ?? 0) + 1,
         ...(input.metadata ? { metadata: { ...(cur.metadata ?? {}), ...input.metadata } } : {}),
         updated_at: now,
@@ -79,6 +85,9 @@ export async function bumpConversationInbound(input: InboundBumpInput): Promise<
         .eq("tenant_id", tenantId).eq("id", conversationId)
         .eq("status", cur.status).eq("updated_at", cur.updated_at)
       update = cur.unread_count == null ? update.is("unread_count", null) : update.eq("unread_count", cur.unread_count)
+      update = cur.last_message_at == null ? update.is("last_message_at", null) : update.eq("last_message_at", cur.last_message_at)
+      update = cur.last_message_dir == null ? update.is("last_message_dir", null) : update.eq("last_message_dir", cur.last_message_dir)
+      update = cur.last_inbound_at == null ? update.is("last_inbound_at", null) : update.eq("last_inbound_at", cur.last_inbound_at)
       const { data: changed, error: writeError } = await update.select("id")
       if (writeError) throw new Error("Não foi possível atualizar o recebimento da conversa.")
       if (changed?.length) return

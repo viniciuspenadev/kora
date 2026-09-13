@@ -12,6 +12,7 @@ import { transcribeStoredAudio } from "@/lib/llm/transcribe"
 import { createInboundConversation } from "@/lib/channels/inbound-conversation"
 import { routeUnprocessedInbound } from "@/lib/atendimento/unprocessed-inbound"
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
+import { applyExternalReply, evolutionSentAt } from "@/lib/channels/external-reply"
 import { handleCampaignInbound } from "@/lib/campaigns/engine"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { notifyInboundMessage } from "@/lib/push/send"
@@ -303,6 +304,7 @@ async function handleMessageUpsert(
     // ═══════════════════════════════════════════════════════════
     if (msg.key.fromMe) {
       try {
+        const sentAt = evolutionSentAt(msg.messageTimestamp)
         if (msg.key.id) {
           const { data: existing } = await supabaseAdmin
             .from("chat_messages")
@@ -310,11 +312,14 @@ async function handleMessageUpsert(
             .eq("tenant_id", tenantId)
             .eq("whatsapp_msg_id", msg.key.id)
             .maybeSingle()
-          if (existing) continue
+          if (existing) {
+            await applyExternalReply({ tenantId, instanceId, messageId: existing.id })
+            continue
+          }
         }
 
         let linkedExisting = false
-        if (msg.key.id) {
+        if (msg.key.id && sentAt && contentType === "text" && content?.trim() && !extraMetadata?.edited) {
           const { data: ct } = await supabaseAdmin
             .from("chat_contacts")
             .select("id")
@@ -328,38 +333,53 @@ async function handleMessageUpsert(
               .select("id")
               .eq("tenant_id", tenantId)
               .eq("contact_id", ct.id)
+              .eq("instance_id", instanceId)
+              .eq("channel", "whatsapp")
               .order("created_at", { ascending: false })
               .limit(1)
               .maybeSingle()
 
             if (cv) {
-              const sixtySecAgo = new Date(Date.now() - 60_000).toISOString()
-              const { data: matched } = await supabaseAdmin
+              const sixtySecAgo = new Date(Date.parse(sentAt) - 60_000).toISOString()
+              const { data: candidates, error: candidateError } = await supabaseAdmin
                 .from("chat_messages")
-                .update({ whatsapp_msg_id: msg.key.id, status: "sent" })
+                .select("id")
                 .eq("tenant_id", tenantId)
                 .eq("conversation_id", cv.id)
                 .eq("sender_type", "agent")
+                .eq("is_private_note", false)
+                .eq("status", "pending")
+                .eq("content_type", "text")
+                .eq("content", content)
                 .is("whatsapp_msg_id", null)
                 .gte("created_at", sixtySecAgo)
+                .lte("created_at", new Date(Date.parse(sentAt) + 999).toISOString())
                 .order("created_at", { ascending: false })
-                .limit(1)
-                .select("id")
-
-              if (matched && matched.length > 0) linkedExisting = true
+                .limit(2)
+              if (candidateError) throw new Error("Falha ao localizar eco de mensagem enviada.")
+              // Only an unambiguous pending text in the same number may be linked.
+              if (candidates?.length === 1) {
+                const { data: matched, error: matchError } = await supabaseAdmin.from("chat_messages")
+                  .update({ whatsapp_msg_id: msg.key.id, status: "sent" })
+                  .eq("tenant_id", tenantId).eq("conversation_id", cv.id).eq("id", candidates[0].id)
+                  .eq("is_private_note", false).eq("status", "pending").is("whatsapp_msg_id", null).select("id")
+                if (matchError) throw new Error("Falha ao vincular eco de mensagem enviada.")
+                linkedExisting = !!matched?.length
+              }
             }
           }
         }
         if (linkedExisting) continue
 
-            let contactFromMe: { id: string } | null = null
+        let contactFromMe: { id: string } | null = null
         const phoneFromMe  = jidToPhone(jid)
         contactFromMe      = await findOrCreateContact(tenantId, jid, phoneFromMe, null, instance)
-        const convFromMe   = await findOrCreateConversation(tenantId, contactFromMe.id, instanceId)
+        const convFromMe = await createInboundConversation({ tenantId, contactId: contactFromMe.id, instanceId, origin: "external_reply" })
 
         let finalMediaUrlFromMe: string | null = null
         let finalMimeFromMe:     string | null = mediaMimeType
         const metaFromMe: Record<string, unknown> = { ...(extraMetadata ?? {}), via_celular: true }
+        if (sentAt) metaFromMe.whatsapp_sent_at = sentAt
         if (externalAdReply) metaFromMe.external_ad_reply = externalAdReply
         if (quoted)          metaFromMe.quoted            = quoted
 
@@ -381,7 +401,7 @@ async function handleMessageUpsert(
           }
         }
 
-        const { error: fromMeInsertErr } = await supabaseAdmin.from("chat_messages").insert({
+        const { data: savedFromMe, error: fromMeInsertErr } = await supabaseAdmin.from("chat_messages").insert({
           conversation_id:       convFromMe.id,
           tenant_id:             tenantId,
           sender_type:           "agent",
@@ -395,25 +415,22 @@ async function handleMessageUpsert(
           status:                "sent",
           is_private_note:       false,
           metadata:              metaFromMe,
-        })
+          ...(sentAt ? { created_at: sentAt } : {}),
+        }).select("id").single()
 
-        // 23505 = duplicata. Já foi salva por outro evento — não atualiza preview.
-        if (fromMeInsertErr?.code === "23505") continue
+        // Redelivery also repairs a projection that failed after the insert.
+        if (fromMeInsertErr?.code === "23505") {
+          const { data: duplicate } = await supabaseAdmin.from("chat_messages").select("id")
+            .eq("tenant_id", tenantId).eq("conversation_id", convFromMe.id).eq("whatsapp_msg_id", msg.key.id).maybeSingle()
+          if (duplicate) await applyExternalReply({ tenantId, instanceId, messageId: duplicate.id })
+          continue
+        }
         if (fromMeInsertErr) {
           console.error("[evolution-webhook] fromMe insert failed:", fromMeInsertErr)
           continue
         }
 
-        const previewFromMe = content ? content.substring(0, 100) : `📎 ${contentType}`
-        await supabaseAdmin
-          .from("chat_conversations")
-          .update({
-            last_message_at:      new Date().toISOString(),
-            last_message_preview: previewFromMe,
-            last_message_dir:     "out_phone",
-            updated_at:           new Date().toISOString(),
-          })
-          .eq("id", convFromMe.id)
+        if (savedFromMe) await applyExternalReply({ tenantId, instanceId, messageId: savedFromMe.id })
       } catch (err) {
         console.error("[evolution-webhook] fromMe handler failed:", err)
       }
@@ -464,6 +481,7 @@ async function handleMessageUpsert(
       }
     }
 
+    const inboundSentAt = evolutionSentAt(msg.messageTimestamp)
     // sender_id é FK pra profiles(id) (usuários do sistema). Pra mensagens
     // de contato, fica null — a identidade do contato vem via conversation.contact_id.
     const { error: insertErr } = await supabaseAdmin.from("chat_messages").insert({
@@ -480,6 +498,7 @@ async function handleMessageUpsert(
       status:                "delivered",
       is_private_note:       false,
       metadata:              Object.keys(metadata).length > 0 ? metadata : {},
+      ...(inboundSentAt ? { created_at: inboundSentAt } : {}),
     })
 
     // 23505 = unique violation no índice (tenant_id, whatsapp_msg_id).
@@ -505,16 +524,14 @@ async function handleMessageUpsert(
 
     // Sobe no inbox pela fonte única (@/lib/channels/inbound-bump): contador de
     // não-lidas incrementado pelo Postgres + reabertura do resolvido.
-    // ⚠️ `lastInboundAt` omitido de propósito: o Baileys não entrega um relógio
-    //    confiável do provedor, então o carimbo é o nosso `now()`. O que NÃO pode
-    //    voltar é ficar sem carimbo nenhum — era assim até 2026-08-23, e o
-    //    `last_inbound_at` nulo fazia o motor de inatividade tratar a conversa como
-    //    "já disparei" pra sempre (rearme só acontece quando o contato fala DEPOIS
-    //    do último disparo). Re-engajamento no Baileys rodava uma vez só, por vida.
+    // Use the same event clock for inbound and external replies. Invalid/missing
+    // provider timestamps retain the legacy ingestion-time fallback.
     await bumpConversationInbound({
       tenantId:       tenantId,
       conversationId: conversation.id,
       preview,
+      occurredAt: inboundSentAt,
+      lastInboundAt: inboundSentAt,
     })
 
     // CTWA — registra atribuição no contato pra relatórios/segmentação futura.

@@ -29,6 +29,8 @@ export interface InboundConversationInput {
   channel?:   string | null
   /** Dono inicial — criação MANUAL carimba o criador; inbound deixa null (pool). */
   assignTo?:  string | null
+  /** Synchronization of a reply from a linked WhatsApp device is not inbound. */
+  origin?: "external_reply"
 }
 
 export interface InboundConversationResult {
@@ -71,9 +73,30 @@ export async function createInboundConversation(
 ): Promise<InboundConversationResult> {
   const { tenantId, contactId, instanceId, channel, assignTo } = input
 
+  // External echoes preserve the lifecycle, assignment and archive state.
+  const findExternal = async () => {
+    if (!instanceId) throw new Error("Resposta externa sem instância.")
+    const query = () => supabaseAdmin.from("chat_conversations")
+      .select("id, status, unread_count").eq("tenant_id", tenantId).eq("contact_id", contactId)
+      .eq("instance_id", instanceId).eq("channel", "whatsapp")
+    const { data: active, error: activeError } = await query().in("status", ["open", "pending", "snoozed"])
+      .order("updated_at", { ascending: false }).limit(1).maybeSingle()
+    if (activeError) throw new Error("Falha ao localizar conversa da resposta externa.")
+    if (active) return active
+    const { data: resolved, error: resolvedError } = await query().eq("status", "resolved")
+      .order("updated_at", { ascending: false }).limit(1).maybeSingle()
+    if (resolvedError) throw new Error("Falha ao localizar conversa da resposta externa.")
+    return resolved
+  }
+  if (input.origin === "external_reply") {
+    const existing = await findExternal()
+    if (existing) return toResult(existing, false)
+  }
+
   // 1. Dedup/reopen — porta única (webhook já validou o contato upstream).
   // Escopo por (instância, canal): 1 fio ativo por número/canal. WhatsApp = default.
-  const dedup = await findOrReopenConversation({ tenantId, contactId, instanceId, channel: channel ?? "whatsapp", skipOwnershipCheck: true, assignTo })
+  const dedup = input.origin === "external_reply" ? { found: "none" as const, conversation: null }
+    : await findOrReopenConversation({ tenantId, contactId, instanceId, channel: channel ?? "whatsapp", skipOwnershipCheck: true, assignTo })
   if (dedup.found !== "none") {
     return toResult(dedup.conversation as unknown as { id: string; status: string; unread_count?: unknown }, dedup.found === "reopened")
   }
@@ -85,7 +108,7 @@ export async function createInboundConversation(
   // num canal que despacha IA (verdade do motor) e tenant com IA ativa → nasce
   // ai_handling=true (a IA é a linha de frente do turno 1; se nada do Studio casar,
   // o hand-back devolve pro humano). Manual (assignTo) / canal sem IA / IA-off → false.
-  const aiSeed = !assignTo && channelDispatchesAI(channel) && (await tenantAiActive(tenantId))
+  const aiSeed = input.origin !== "external_reply" && !assignTo && channelDispatchesAI(channel) && (await tenantAiActive(tenantId))
 
   // 3. Cria. department_id null (Triagem); assigned_to = manual ou null.
   const insert: Record<string, unknown> = {
@@ -110,12 +133,17 @@ export async function createInboundConversation(
 
   // Race (unique constraint): outra request criou — refaz o dedup.
   if (error?.code === "23505") {
+    if (input.origin === "external_reply") {
+      const existing = await findExternal()
+      if (existing) return toResult(existing, false)
+      throw new Error("Falha ao recuperar conversa da resposta externa.")
+    }
     const retry = await findOrReopenConversation({ tenantId, contactId, instanceId, channel: channel ?? "whatsapp", skipOwnershipCheck: true })
     if (retry.conversation) {
       return toResult(retry.conversation as unknown as { id: string; status: string; unread_count?: unknown }, retry.found === "reopened")
     }
   }
   if (error || !nc) throw new Error(`createInboundConversation: ${error?.message}`)
-  if (!aiSeed && !assignTo) await routeToHumanDefault(tenantId, nc.id, "created_without_studio")
+  if (input.origin !== "external_reply" && !aiSeed && !assignTo) await routeToHumanDefault(tenantId, nc.id, "created_without_studio")
   return { id: nc.id as string, status: nc.status as string, unread_count: nc.unread_count as number, isNew: true, reopened: false }
 }

@@ -20,6 +20,7 @@ export class MemoryDb {
       is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return q },
       in: (k: string, values: unknown[]) => { filters.push(r => values.includes(r[k])); return q },
       lte: (k: string, v: any) => { filters.push(r => r[k] <= v); return q },
+      gte: (k: string, v: any) => { filters.push(r => r[k] >= v); return q },
       or: (_value: string) => q,
       order: (_column: string, _opts?: unknown) => q,
       limit: (n: number) => { limit = n; return q },
