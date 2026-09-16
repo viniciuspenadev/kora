@@ -3,6 +3,7 @@
 import { ConversationKanbanPosition, useConversationWorkflow } from "./conversation-workflow"
 import { followUpChip } from "@/lib/atendimento/followup-rules"
 import { ContactPic } from "@/components/chat/contact-pic"
+import { ParticipantsDialog } from "./participants-dialog"
 import { SimpleSelect } from "@/components/ui/select"
 
 import Link from "next/link"
@@ -12,7 +13,7 @@ import {
   Users, Tag as TagIcon, FileText, Sparkles,
   Plus, X, Loader2, Trophy, Check, UserPlus, Target, Briefcase,
   CalendarClock, User as UserIcon,
-  Route, ArrowRightLeft, Search, ArrowUpRight,
+  Route, ArrowRightLeft, ArrowUpRight,
 } from "lucide-react"
 import { getContactAppointments, type ContactAppt } from "@/lib/actions/agenda"
 import { NewAppointmentDialog } from "@/components/agenda/new-appointment-dialog"
@@ -26,8 +27,6 @@ import {
   setContactBlocked,
   setContactNotes,
   archiveConversation,
-  addConversationParticipant,
-  removeConversationParticipant,
 } from "@/lib/actions/chat"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
 import { getDealsPanel, moveDeal, moveDealById, openDeal, updateDeal, reopenDeal, getConversationTimeline, crmEnabled, type DealsPanel, type PanelDeal, type DealPipeline, type Relationship, type TimelineItem } from "@/lib/actions/deals"
@@ -56,6 +55,7 @@ interface Props {
   /** Toggle otimista de tag, tratado no pai (inbox-client). Sem ele, o TagsCard
       cai no caminho legado (chama applyTag/removeTag direto, sem otimismo). */
   onTagChange?:  (contactId: string, tagId: string, applied: boolean) => void
+  onParticipantsChange?: (conversationId: string, ids: string[], stillVisible: boolean) => void
   agents:        AgentMini[]
   /** ad reply do primeiro contato — fica em chat_messages.metadata.external_ad_reply */
   externalAdReply?: ExternalAdReply | null
@@ -164,7 +164,7 @@ export function ContactSidebar(props: Props) {
         appliedIds={appliedTagIds}
         onTagChange={props.onTagChange}
       />
-      <ParticipantsCard conversation={props.conversation} agents={props.agents} ownerId={props.contact.owner_id} />
+      <ParticipantsCard key={props.conversation.id} conversation={props.conversation} agents={props.agents} ownerId={props.contact.owner_id} onChanged={props.onParticipantsChange} />
       <SiteLeadCard conversation={props.conversation} contact={props.contact} />
       <MovimentacoesCard conversationId={props.conversation.id} />
     </aside>
@@ -393,145 +393,42 @@ function AttendanceReminder({ conversation }: { conversation: ChatConversation }
 // Participantes
 // ═══════════════════════════════════════════════════════════════
 
-function ParticipantsCard({
-  conversation, agents, ownerId,
-}: {
+function ParticipantsCard({ conversation, agents, ownerId, onChanged }: {
   conversation: ChatConversation
-  agents:       AgentMini[]
-  /** Dono da CARTEIRA (do contato) — de quem o cliente é, não quem atende agora. */
-  ownerId:      string | null
+  agents: AgentMini[]
+  ownerId: string | null
+  onChanged?: (conversationId: string, ids: string[], stillVisible: boolean) => void
 }) {
-  const [, startTransition] = useTransition()
-  const [adding, setAdding] = useState(false)
-  const [query, setQuery]   = useState("")
-
-  const participantIds  = conversation.participants ?? []
-  const handler         = agents.find((a) => a.id === conversation.assigned_to)
-  const others          = participantIds
-    .map((id) => agents.find((a) => a.id === id))
-    .filter((a): a is AgentMini => !!a && a.id !== conversation.assigned_to)
-
-  const available = agents.filter((a) =>
-    a.id !== conversation.assigned_to && !participantIds.includes(a.id)
-  )
-  const q = query.trim().toLowerCase()
-  const filtered = q ? available.filter((a) => (a.full_name ?? "").toLowerCase().includes(q)) : available
-
-  function add(id: string) {
-    setQuery(""); setAdding(false)
-    startTransition(async () => {
-      try { await addConversationParticipant(conversation.id, id) } catch (e) { alert((e as Error).message) }
-    })
-  }
-
-  function remove(id: string) {
-    startTransition(async () => {
-      try { await removeConversationParticipant(conversation.id, id) } catch (e) { alert((e as Error).message) }
-    })
-  }
-
-  return (
-    <Section icon={Users} title="Atendentes" defaultOpen={false}>
-      {/* Quem ATENDE agora (assigned_to) — "Atendendo" ≠ o "Responsável"/Dono da ficha (carteira). */}
-      {handler ? (
-        <div className="flex items-center gap-2 mb-1.5">
-          <AgentAvatar userId={handler.id} name={handler.full_name} className="size-6" />
-          <span className="text-xs font-medium text-slate-700 truncate flex-1">{handler.full_name ?? "—"}</span>
-          <StatusDot tone="success" label="Atendendo" />
-        </div>
-      ) : (
-        <p className="text-[11px] text-slate-400 italic mb-1.5">Na fila — ninguém atendendo</p>
-      )}
-
-      {/* 🔴 RESPONSÁVEL (carteira) — de quem o CLIENTE é. Diferente de "Atendendo",
-          que é quem pegou ESTA conversa. Sem esta linha o atendente reivindicava e
-          herdava clientes às cegas: o carimbo acontece ao enviar a 1ª mensagem, e
-          nada na tela dizia que ele virou dono — nem que o cliente já era de outro. */}
-      {(() => {
-        const dono = agents.find((a) => a.id === ownerId)
-        if (!ownerId) {
-          return <p className="text-[11px] text-slate-400 italic mb-1.5">Cliente sem responsável</p>
-        }
-        return (
-          <div className="flex items-center gap-2 mb-1.5">
-            <AgentAvatar userId={ownerId} name={dono?.full_name ?? null} className="size-6" />
-            <span className="text-xs text-slate-600 truncate flex-1">
-              {/* Dono que não está na lista de atendentes = saiu da equipe. O roteamento
-                  do retorno já ignora quem não é membro ativo (ver carteira.ts). */}
-              {dono?.full_name ?? "Fora da equipe"}
-            </span>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-300 mr-0.5">Responsável</span>
-          </div>
-        )
-      })()}
-
-      {others.map((p) => (
-        <div key={p.id} className="flex items-center gap-2 mb-1.5 group">
-          <AgentAvatar userId={p.id} name={p.full_name} className="size-6" />
-          <span className="text-xs text-slate-600 truncate flex-1">{p.full_name ?? "—"}</span>
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-300 mr-0.5">Participante</span>
-          <button
-            type="button"
-            onClick={() => remove(p.id)}
-            aria-label="Remover"
-            className="size-5 inline-flex items-center justify-center rounded text-slate-300 hover:text-red-500 hover:bg-red-50 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
-          >
-            <X className="size-3" />
-          </button>
-        </div>
-      ))}
-
-      {/* Adicionar atendente — linha clara → campo de busca (digita o nome, acha na
-          hora). Substitui o ícone-dropdown do canto; escala pra time grande. */}
-      {available.length > 0 && (adding ? (
-        <div className="mt-2">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-slate-400 pointer-events-none" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoFocus
-              placeholder="Buscar atendente…"
-              className="w-full h-9 pl-8 pr-2.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
-            />
-          </div>
-          <div className="mt-1 max-h-44 overflow-y-auto rounded-lg border border-slate-100 divide-y divide-slate-50">
-            {filtered.length > 0 ? filtered.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => add(a.id)}
-                className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-slate-700 hover:bg-primary-50/50 transition-colors"
-              >
-                <AgentAvatar userId={a.id} name={a.full_name} className="size-5" />
-                <span className="truncate flex-1 text-left">{a.full_name ?? "—"}</span>
-                <Plus className="size-3.5 text-slate-300" />
-              </button>
-            )) : (
-              <p className="text-[11px] text-slate-400 px-2.5 py-2.5">Nenhum atendente encontrado.</p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={() => { setAdding(false); setQuery("") }}
-            className="mt-1.5 text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors"
-          >
-            Cancelar
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setAdding(true)}
-          className="w-full mt-2 flex items-center justify-center gap-1.5 h-9 rounded-lg border border-dashed border-slate-200 text-slate-500 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50/40 transition-colors text-xs font-semibold"
-        >
-          <UserPlus className="size-3.5" /> Adicionar atendente
-        </button>
-      ))}
-    </Section>
-  )
+  const [open, setOpen] = useState(false)
+  const [participantIds, setParticipantIds] = useState(conversation.participants ?? [])
+  useEffect(() => { setParticipantIds(conversation.participants ?? []) }, [conversation.participants])
+  const handler = agents.find(a => a.id === conversation.assigned_to)
+  const owner = agents.find(a => a.id === ownerId)
+  const others = [...new Set(participantIds)].filter(id => id !== conversation.assigned_to)
+  return <Section icon={Users} title="Atendentes" defaultOpen={false}>
+    {conversation.assigned_to ? <div className="mb-1.5 flex items-center gap-2">
+      <AgentAvatar userId={conversation.assigned_to} name={handler?.full_name} className="size-6" />
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-700">{handler?.full_name ?? "Atendente"}</span>
+      <StatusDot tone="success" label="Atendendo" />
+    </div> : <p className="mb-1.5 text-[11px] italic text-slate-400">Na fila — ninguém atendendo</p>}
+    {ownerId ? <div className="mb-1.5 flex items-center gap-2">
+      <AgentAvatar userId={ownerId} name={owner?.full_name} className="size-6" />
+      <span className="min-w-0 flex-1 truncate text-xs text-slate-600">{owner?.full_name ?? "Fora da equipe"}</span>
+      <span className="text-[10px] font-semibold text-slate-400">Responsável</span>
+    </div> : <p className="mb-1.5 text-[11px] italic text-slate-400">Cliente sem responsável</p>}
+    {others.map(id => <div key={id} className="mb-1.5 flex items-center gap-2">
+      <AgentAvatar userId={id} name={agents.find(a => a.id === id)?.full_name} className="size-6" />
+      <span className="min-w-0 flex-1 truncate text-xs text-slate-600">{agents.find(a => a.id === id)?.full_name ?? "Fora da equipe"}</span>
+      <span className="text-[10px] text-slate-400">Convidado</span>
+    </div>)}
+    <button type="button" onClick={() => setOpen(true)} className="mt-3 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-600 transition-colors hover:border-primary-200 hover:bg-primary-50 hover:text-primary">
+      <UserPlus className="size-3.5" /> Gerenciar convidados
+    </button>
+    {open && <ParticipantsDialog conversationId={conversation.id} onClose={() => setOpen(false)} onChanged={(ids, stillVisible) => {
+      setParticipantIds(ids); onChanged?.(conversation.id, ids, stillVisible)
+    }} />}
+  </Section>
 }
-
 // ═══════════════════════════════════════════════════════════════
 // Tags
 // ═══════════════════════════════════════════════════════════════

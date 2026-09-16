@@ -1283,6 +1283,17 @@ export function InboxClient({
                     tags={tags}
                     tagsByContact={tagsByContact}
                     onTagChange={handleTagChange}
+                    onParticipantsChange={(id, participants, stillVisible) => {
+                      if (!stillVisible) {
+                        accessEpochRef.current++
+                        setConversations(prev => prev.filter(c => c.id !== id))
+                        if (activeIdRef.current === id) {
+                          activeIdRef.current = null
+                          setActiveId(null); setActiveMessages([]); setReplyTarget(null); setContactSheetOpen(false)
+                        }
+                        toast.info("Você saiu da conversa e não tem outro vínculo de acesso.")
+                      } else setConversations(prev => prev.map(c => c.id === id ? { ...c, participants } : c))
+                    }}
                     agents={agents}
                     externalAdReply={activeAdReply}
                   />

@@ -25,6 +25,7 @@ import { logConversationEvent } from "@/lib/atendimento/events"
 import { assertAtendimentoLiberado, atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { requireModule } from "@/lib/modules"
 import { getNavigationUnread } from "@/lib/actions/navigation-unread"
+import { addParticipant, removeParticipant } from "@/lib/actions/conversation-participants"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -1896,93 +1897,12 @@ export async function unarchiveConversation(conversationId: string) {
 // ── Participantes da conversa (array uuid[]) ────────────────
 
 export async function addConversationParticipant(conversationId: string, userId: string) {
-  const { scope, conv } = await assertConversationAccess(conversationId)   // H-04 (reusa a conversa do guard)
-  const tenantId = scope.tenantId
-
-  const isAdmin    = scope.isAdmin
-  const isAssigned = conv.assigned_to === scope.userId
-  if (!isAdmin && !isAssigned) throw new Error("Apenas o atendente atribuído ou administradores podem adicionar participantes.")
-
-  // Valida que userId pertence ao tenant — bloqueia IDOR
-  const { data: member } = await supabaseAdmin
-    .from("tenant_users")
-    .select("user_id")
-    .eq("tenant_id", tenantId)
-    .eq("user_id", userId)
-    .eq("active", true)
-    .maybeSingle()
-  if (!member) throw new Error("Usuário não pertence a este tenant")
-
-  const current = (conv.participants ?? []) as string[]
-  if (current.includes(userId)) return { ok: true }
-  const next = [...current, userId]
-
-  await supabaseAdmin
-    .from("chat_conversations")
-    .update({ participants: next, updated_at: new Date().toISOString() })
-    .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
-
-  const { data: prof } = await supabaseAdmin
-    .from("profiles")
-    .select("full_name")
-    .eq("id", userId)
-    .single()
-
-  await supabaseAdmin.from("chat_messages").insert({
-    conversation_id: conversationId,
-    tenant_id:       tenantId,
-    sender_type:     "system",
-    content_type:    "text",
-    content:         `${prof?.full_name ?? "Agente"} foi adicionado à conversa.`,
-    status:          "delivered",
-    is_private_note: false,
-  })
-
-  revalidatePath("/inbox")
-  return { ok: true }
+  return addParticipant(conversationId, userId)
 }
 
 export async function removeConversationParticipant(conversationId: string, userId: string) {
-  const { scope, conv } = await assertConversationAccess(conversationId)   // H-04 (reusa a conversa do guard)
-  const tenantId = scope.tenantId
-
-  const isAdmin    = scope.isAdmin
-  const isAssigned = conv.assigned_to === scope.userId
-  const isSelf     = userId === scope.userId
-  if (!isAdmin && !isAssigned && !isSelf) {
-    throw new Error("Sem permissão para remover participantes.")
-  }
-
-  const current = (conv.participants ?? []) as string[]
-  const next    = current.filter((id) => id !== userId)
-
-  await supabaseAdmin
-    .from("chat_conversations")
-    .update({ participants: next, updated_at: new Date().toISOString() })
-    .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
-
-  const { data: prof } = await supabaseAdmin
-    .from("profiles")
-    .select("full_name")
-    .eq("id", userId)
-    .single()
-
-  await supabaseAdmin.from("chat_messages").insert({
-    conversation_id: conversationId,
-    tenant_id:       tenantId,
-    sender_type:     "system",
-    content_type:    "text",
-    content:         `${prof?.full_name ?? "Agente"} saiu da conversa.`,
-    status:          "delivered",
-    is_private_note: false,
-  })
-
-  revalidatePath("/inbox")
-  return { ok: true }
+  return removeParticipant(conversationId, userId)
 }
-
 // ── Total de não-lidas (para badge no menu) ─────────────────
 
 export async function getUnreadTotal() {
