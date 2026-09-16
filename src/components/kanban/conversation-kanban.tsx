@@ -1,6 +1,7 @@
 "use client"
 
 import { ConversationActionsButton, useConversationWorkflow } from "@/components/chat/conversation-workflow"
+import { useConversationAccess } from "@/components/chat/use-conversation-access"
 import { useState, useEffect, useMemo, useCallback, useRef, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -225,6 +226,9 @@ export function ConversationKanban({ pipelineId, defaultPipeline = false, stages
 
   const [mgmtCards, setMgmtCards] = useState<Conversation[] | null>(null)
   const [showNew, setShowNew] = useState(false)   // "+ Adicionar conversa"
+  const [accessUnavailable, setAccessUnavailable] = useState(false)
+  const accessEpochRef = useRef(0)
+  const revokedIdsRef = useRef(new Set<string>())
 
   /**
    * Sincroniza o funil com o SSR (router.refresh / fallback).
@@ -239,13 +243,34 @@ export function ConversationKanban({ pipelineId, defaultPipeline = false, stages
    *    60 em 60s) zeraria o scroll das colunas e o estado do DnD.
    */
   const [seenInitial, setSeenInitial] = useState(initial)
-  if (seenInitial !== initial) { setSeenInitial(initial); setConvs(initial) }
+  if (seenInitial !== initial) { setSeenInitial(initial); setConvs(initial.filter(c => !revokedIdsRef.current.has(c.id))) }
 
   const loadMgmt = useCallback(() => {
+    const epoch = accessEpochRef.current
     getManagementCards()
-      .then((r) => setMgmtCards(r as unknown as Conversation[]))
+      .then((r) => { if (epoch === accessEpochRef.current) setMgmtCards((r as unknown as Conversation[]).filter(c => !revokedIdsRef.current.has(c.id))) })
       .catch((e) => console.error("getManagementCards:", e))
   }, [])
+
+  useConversationAccess({
+    ids: [...initial, ...convs, ...(mgmtCards ?? [])].map(c => c.id),
+    onRevoked: ids => {
+      accessEpochRef.current++
+      const revoked = new Set(ids)
+      ids.forEach(id => revokedIdsRef.current.add(id))
+      setConvs(prev => prev.filter(c => !revoked.has(c.id)))
+      setMgmtCards(prev => prev?.filter(c => !revoked.has(c.id)) ?? null)
+      if (activeId && revoked.has(activeId)) setActiveId(null)
+    },
+    onScopeChanged: () => { accessEpochRef.current++; router.refresh(); if (groupBy !== "stage") loadMgmt() },
+    onUnavailable: () => { accessEpochRef.current++; setAccessUnavailable(true); setConvs([]); setMgmtCards([]); setActiveId(null) },
+    onRecovered: () => { setAccessUnavailable(false); router.refresh(); if (groupBy !== "stage") loadMgmt() },
+    onVerified: ids => {
+      const regained = ids.some(id => revokedIdsRef.current.has(id))
+      ids.forEach(id => revokedIdsRef.current.delete(id))
+      if (regained) { router.refresh(); if (groupBy !== "stage") loadMgmt() }
+    },
+  })
 
   /**
    * Carrega o panorama de gestão ao entrar numa lente (o Realtime mantém a partir daí).
@@ -257,8 +282,9 @@ export function ConversationKanban({ pipelineId, defaultPipeline = false, stages
   useEffect(() => {
     if (groupBy === "stage") return
     let alive = true
+    const epoch = accessEpochRef.current
     getManagementCards()
-      .then((r) => { if (alive) setMgmtCards(r as unknown as Conversation[]) })
+      .then((r) => { if (alive && epoch === accessEpochRef.current) setMgmtCards((r as unknown as Conversation[]).filter(c => !revokedIdsRef.current.has(c.id))) })
       .catch((e) => console.error("getManagementCards:", e))
     return () => { alive = false }
   }, [groupBy, workflowRevision])
@@ -493,7 +519,9 @@ export function ConversationKanban({ pipelineId, defaultPipeline = false, stages
   return (
     <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
       <div className="h-full">
-        {loadingMgmt ? (
+        {accessUnavailable ? (
+          <p className="px-4 py-3 text-sm text-amber-800 bg-amber-50" role="status">Não foi possível confirmar seu acesso. Os atendimentos ficam ocultos até a conexão ser restabelecida.</p>
+        ) : loadingMgmt ? (
           <div className="flex items-center justify-center gap-2 h-full text-sm text-slate-400">
             <Loader2 className="size-4 animate-spin" /> Carregando panorama…
           </div>

@@ -1,6 +1,7 @@
 "use server"
 
 import { auth } from "@/auth"
+import { saveMemberConversationAccess } from "@/lib/actions/team-conversation-access"
 import { supabaseAdmin } from "@/lib/supabase"
 import { atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { revalidatePath } from "next/cache"
@@ -187,10 +188,12 @@ export interface UnitOption { id: string; name: string; color: string }
 async function requireTenantAdmin() {
   const session = await auth()
   if (!session?.user?.tenantId) throw new Error("Não autenticado")
-  if (!["owner", "admin"].includes(session.user.role)) {
-    throw new Error("Apenas owner ou admin podem gerenciar a equipe")
+  const { data: member, error } = await supabaseAdmin.from("tenant_users").select("role, active")
+    .eq("tenant_id", session.user.tenantId).eq("user_id", session.user.id).maybeSingle()
+  if (error || !member?.active || !["owner", "admin"].includes(member.role)) {
+    throw new Error("Não foi possível confirmar sua permissão para gerenciar a equipe.")
   }
-  return session
+  return { ...session, user: { ...session.user, role: member.role as TenantRole } }
 }
 
 // ── Listagem ────────────────────────────────────────────────────
@@ -381,51 +384,12 @@ export async function cancelInvite(inviteId: string): Promise<void> {
 // ── Edição de membros ───────────────────────────────────────────
 
 export async function updateMemberRole(userId: string, role: TenantRole): Promise<{ error?: string }> {
-  const session = await requireTenantAdmin()
-  const tenantId = session.user.tenantId
-
-  if (!["owner", "admin", "agent"].includes(role)) return { error: "Papel inválido" }
-
-  const { data: target } = await supabaseAdmin
-    .from("tenant_users")
-    .select("role")
-    .eq("tenant_id", tenantId)
-    .eq("user_id", userId)
-    .maybeSingle()
-  if (!target) return { error: "Membro não encontrado" }
-
-  // H-06 (pentest 2026-08-01) + multi-owner (owners CO-IGUAIS, decisão do owner 2026-08-01):
-  // QUALQUER transição que envolva owner OU admin (papel atual OU novo) é privilégio de OWNER.
-  // Antes, um admin promovia agent→admin / rebaixava admin (escalada horizontal). Agora admin
-  // não gerencia papéis de admin/owner — só owner. Owners podem promover/rebaixar admins E
-  // outros owners entre si.
-  const involvesPrivileged =
-    role === "owner" || role === "admin" || target.role === "owner" || target.role === "admin"
-  if (involvesPrivileged && session.user.role !== "owner") {
-    return { error: "Apenas um owner pode gerenciar papéis de admin/owner." }
-  }
-
-  // 🔒 Guarda-corpo: o tenant NUNCA pode ficar com ZERO owner (rebaixar o último owner).
-  if (target.role === "owner" && role !== "owner") {
-    const { count } = await supabaseAdmin
-      .from("tenant_users").select("user_id", { count: "exact", head: true })
-      .eq("tenant_id", tenantId).eq("role", "owner").eq("active", true)
-    if ((count ?? 0) <= 1) {
-      return { error: "O tenant precisa ter ao menos um owner. Promova outro antes de rebaixar este." }
-    }
-  }
-
-  const { error } = await supabaseAdmin
-    .from("tenant_users")
-    .update({ role })
-    .eq("tenant_id", tenantId)
-    .eq("user_id", userId)
-
-  if (error) return { error: error.message }
-
-  await auditTeam(session, "role.change", userId, { from: target.role, to: role })
-  revalidatePath("/configuracoes/equipe")
-  return {}
+  await requireTenantAdmin()
+  const member = await getTeamMember(userId)
+  if (!member) return { error: "Usuário não encontrado nesta empresa." }
+  return saveMemberConversationAccess(userId, { role, departmentId: member.department_id,
+    viewAll: member.view_all, seePool: member.see_pool, instanceIds: member.instance_ids ?? [],
+    supervisesDepartments: member.view_all ? [] : member.supervises_departments })
 }
 
 export async function updateMemberDepartment(userId: string, departmentId: string | null): Promise<{ error?: string }> {
@@ -507,8 +471,8 @@ export async function toggleMemberViewAll(userId: string, viewAll: boolean): Pro
 
 /**
  * Liga/desliga se o atendente vê as conversas não atribuídas (pool).
- * Default true (vê). Desligado = só vê o atribuído a ele + participações;
- * depende da Distribuição/atribuição manual pra receber conversas novas.
+ * Fila geral = sem atendente e sem departamento. Desligar mantém atribuições,
+ * participações, fila do próprio departamento e supervisão.
  */
 export async function toggleMemberSeePool(userId: string, seePool: boolean): Promise<{ error?: string }> {
   const session = await requireTenantAdmin()
@@ -812,12 +776,14 @@ export async function setMemberActive(userId: string, active: boolean): Promise<
     })
     if (!activation.ok) return { error: activation.error }
   } else {
-    const { error } = await supabaseAdmin
+    const { data: deactivated, error } = await supabaseAdmin
       .from("tenant_users")
       .update({ active: false })
       .eq("tenant_id", tenantId)
       .eq("user_id", userId)
+      .eq("role", target.role).eq("active", target.active).select("user_id")
     if (error) return { error: error.message }
+    if (!deactivated?.length) return { error: "A função ou o acesso deste usuário mudou. Atualize a página antes de tentar novamente." }
   }
 
   // Agenda do agente acompanha o status: desativado → fora do ar (não roda paralelo);

@@ -10,17 +10,19 @@ import {
 import { SimpleSelect } from "@/components/ui/select"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
-  updateMemberRole, updateMemberDepartment, toggleMemberViewAll, toggleMemberSeePool,
-  updateMemberInstances, setMemberSupervises, setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberCompanionAccess, setMemberUnit, updateMemberProfile,
+  
+  setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberCompanionAccess, setMemberUnit, updateMemberProfile,
   type TeamMember, type Department, type UnitOption, type TenantRole,
 } from "@/lib/actions/team"
 import { UserDevices } from "@/components/app/user-devices"
+import { saveMemberConversationAccess } from "@/lib/actions/team-conversation-access"
+import { teamAccessSummary } from "@/lib/team-access-summary"
 import {
   listMemberAgendaAccess, setMemberAgendaAccess, type MemberAgendaAccess, type ShareLevel,
 } from "@/lib/actions/agenda"
 import type { InventoryAccessLevel } from "@/lib/visibility"
 
-const ROLE_LABEL: Record<TenantRole, string> = { owner: "Owner", admin: "Admin", agent: "Atendente" }
+const ROLE_LABEL: Record<TenantRole, string> = { owner: "Proprietário", admin: "Administrador", agent: "Atendente" }
 const INV_ORDER: Record<InventoryAccessLevel, number> = { none: 0, view: 1, edit: 2, manage: 3 }
 const initials = (s: string) => s.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?"
 const inputCls = "w-full h-10 px-3 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition-colors"
@@ -75,28 +77,33 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
 
   function handleSave() {
     startSave(async () => {
+      try {
       let err: string | null = null
       const run = async (p: Promise<{ error?: string }>) => { const r = await p; if (r.error) err = r.error }
 
       if (fullName.trim() !== (member.full_name ?? "")) await run(updateMemberProfile(member.user_id, { fullName }))
-      if (role !== member.role) await run(updateMemberRole(member.user_id, role))
-      if ((departmentId || null) !== member.department_id) await run(updateMemberDepartment(member.user_id, departmentId || null))
+      const accessChanged = role !== member.role || (departmentId || null) !== member.department_id ||
+        (supMode === "all") !== member.view_all || seePool !== member.see_pool ||
+        !sameSet(supMode === "scoped" ? supDepts : [], member.supervises_departments) || !sameSet(instanceIds, member.instance_ids ?? [])
+      if (accessChanged) {
+        const result = await saveMemberConversationAccess(member.user_id, { role, departmentId: departmentId || null,
+          viewAll: supMode === "all", seePool, instanceIds, supervisesDepartments: supMode === "scoped" ? supDepts : [] })
+        if (result.error) { setFlash("error", result.error); return }
+      }
       if ((unitId || null) !== member.unit_id) await run(setMemberUnit(member.user_id, unitId || null))
-      if ((supMode === "all") !== member.view_all) await run(toggleMemberViewAll(member.user_id, supMode === "all"))
-      const targetSup = supMode === "scoped" ? supDepts : []
-      if (!sameSet(targetSup, member.supervises_departments)) await run(setMemberSupervises(member.user_id, targetSup))
-      if (seePool !== member.see_pool) await run(toggleMemberSeePool(member.user_id, seePool))
       if (invAccess !== member.inventory_access) await run(setMemberInventoryAccess(member.user_id, invAccess))
       if (dealsAccess !== member.deals_access) await run(setMemberDealsAccess(member.user_id, dealsAccess))
       if (contactsAccess !== member.contacts_access) await run(setMemberContactsAccess(member.user_id, contactsAccess))
       if (marketingAccess !== member.marketing_access) await run(setMemberMarketingAccess(member.user_id, marketingAccess))
       if (catalogAccess !== member.catalog_access) await run(setMemberCatalogAccess(member.user_id, catalogAccess))
       if (companionAccess !== member.companion_access) await run(setMemberCompanionAccess(member.user_id, companionAccess))
-      if (!sameSet(instanceIds, member.instance_ids ?? [])) await run(updateMemberInstances(member.user_id, instanceIds))
 
       if (err) { setFlash("error", err); return }
       setFlash("ok", "Alterações salvas")
       router.refresh()
+      } catch {
+        setFlash("error", "Não foi possível concluir o salvamento. Atualize a página para conferir os dados e tente novamente.")
+      }
     })
   }
 
@@ -141,7 +148,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
 
   const TABS: { id: Tab; label: string; icon: typeof User }[] = [
     { id: "perfil",  label: "Perfil", icon: User },
-    { id: "acesso",  label: "Função & Visibilidade", icon: ShieldCheck },
+    { id: "acesso",  label: "Função e acesso", icon: ShieldCheck },
     { id: "modulos", label: "Módulos", icon: LayoutGrid },
     { id: "agenda",  label: "Agenda", icon: CalendarDays },
     { id: "conta",   label: "Conta", icon: Settings2 },
@@ -173,7 +180,11 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
           </div>
           <div className="mt-4 p-3 rounded-xl bg-slate-50 border border-slate-100">
             <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">Resumo de acesso</p>
-            {accessSummary(supMode, seePool, instanceIds.length, invAccess, member.role).map((line, i) => (
+            {teamAccessSummary({ role, viewAll: supMode === "all", seePool,
+              departmentName: departments.find(d => d.id === departmentId)?.name,
+              supervisedNames: supMode === "scoped" ? departments.filter(d => supDepts.includes(d.id)).map(d => d.name) : [],
+              numberNames: numbers.filter(n => instanceIds.includes(n.id)).map(n => n.label),
+            }).map((line, i) => (
               <p key={i} className="flex items-center gap-2 text-[12px] text-slate-600 py-0.5"><Check className="size-3 text-emerald-500 shrink-0" />{line}</p>
             ))}
           </div>
@@ -193,9 +204,9 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
           <div className="p-6">
             {(isOwner || isSelf) && (
               <div className={`flex items-start gap-2 px-3 py-2 rounded-lg mb-5 ${isOwner ? "bg-amber-50 border border-amber-100" : "bg-slate-50 border border-slate-200"}`}>
-                <span className={`text-[10px] font-bold uppercase tracking-wider ${isOwner ? "text-amber-700" : "text-slate-600"}`}>{isOwner ? "Owner" : "Você"}</span>
+                <span className={`text-[10px] font-bold uppercase tracking-wider ${isOwner ? "text-amber-700" : "text-slate-600"}`}>{isOwner ? "Proprietário" : "Você"}</span>
                 <p className={`text-[11px] leading-relaxed ${isOwner ? "text-amber-800" : "text-slate-600"}`}>
-                  {isOwner ? "Owner do tenant — papel muda só via “Transferir posse”." : "Sua própria conta — desativar e mudar o próprio papel estão bloqueados."}
+                  {isOwner ? "Proprietário da empresa. Para mudar essa função, use a transferência de propriedade." : "Sua própria conta — desativar e mudar a própria função estão bloqueados."}
                 </p>
               </div>
             )}
@@ -216,16 +227,16 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
 
             {/* ACESSO */}
             {tab === "acesso" && (
-              <Section title="Função & Visibilidade" sub="O que ela pode fazer e quais conversas enxerga.">
+              <Section title="Função e acesso" sub="O que ela pode fazer e quais conversas enxerga.">
                 <div className="max-w-lg space-y-5">
-                  <Field label="Papel" hint={!canEditRole ? "Apenas o owner muda papéis." : undefined}>
+                  <Field label="Função" hint={!canEditRole ? "Apenas o proprietário pode alterar funções." : undefined}>
                     <SimpleSelect value={role} onChange={(v) => setRole(v as TenantRole)} disabled={!canEditRole || isSelf} options={[
                       { value: "agent", label: "Atendente — atende conversas" },
-                      { value: "admin", label: "Admin — gerencia equipe e config" },
-                      { value: "owner", label: "Owner — só um por tenant", disabled: true },
+                      { value: "admin", label: "Administrador — gerencia equipe e configurações" },
+                      { value: "owner", label: "Proprietário — responsável pela empresa", disabled: true },
                     ]} />
                   </Field>
-                  <Field label="Departamento" hint="Habilita a fila do setor: passa a ver os não-atribuídos do departamento.">
+                  <Field label="Departamento" hint="Permite ver e assumir conversas sem atendente neste departamento.">
                     <SimpleSelect value={departmentId} onChange={setDepartment} disabled={!canEditOther}
                       options={[{ value: "", label: "— Sem departamento —" }, ...departments.map((d) => ({ value: d.id, label: d.name }))]} />
                   </Field>
@@ -242,7 +253,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
                     <Segmented value={supMode} disabled={!canEditOther} onChange={(v) => setSupMode(v as typeof supMode)}
                       options={[{ v: "none", l: "Não" }, { v: "scoped", l: "Setores" }, { v: "all", l: "Geral" }]} />
                     <p className="text-[11px] text-slate-500 mt-2">
-                      {supMode === "none" ? "Vê só o que é dela + a fila do setor dela." : supMode === "all" ? "Vê todas as conversas do tenant." : "Vê tudo dos setores marcados — inclusive com dono."}
+                      {supMode === "none" ? "Sem acesso de supervisão. Atribuições, participações e filas autorizadas continuam disponíveis." : supMode === "all" ? "Vê todas as conversas da empresa." : "Vê todas as conversas dos departamentos selecionados, inclusive as atribuídas a outros atendentes."}
                     </p>
                     {supMode === "scoped" && (
                       <div className="space-y-1.5 mt-2">
@@ -261,10 +272,12 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
                     <input type="checkbox" checked={supMode === "all" ? true : seePool} onChange={(e) => setSeePool(e.target.checked)} disabled={!canEditOther || supMode === "all"}
                       className="size-4 mt-0.5 rounded border-slate-300 text-primary focus:ring-primary/30 disabled:opacity-50" />
                     <div>
-                      <p className="text-sm font-medium text-slate-800">Ver conversas não atribuídas (fila geral)</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">{supMode === "all" ? "Como vê tudo, já enxerga a fila." : "Desligado = só vê o atribuído a ela ou que participa."}</p>
+                      <p className="text-sm font-medium text-slate-800">Acessar fila geral</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{supMode === "all" ? "A supervisão de toda a empresa já inclui a fila geral." : "Permite ver e assumir conversas sem atendente e sem departamento. A fila do próprio departamento continua disponível mesmo com esta opção desligada."}</p>
                       {supMode !== "all" && !seePool && (
-                        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mt-1.5 leading-relaxed">⚠️ Só verá o atribuído a ela — garanta a Distribuição automática ligada.</p>
+                        <p className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-md px-2 py-1.5 mt-1.5 leading-relaxed">{departmentId
+                          ? "Recebe pela fila do seu departamento, por atribuição direta ou como participante. A supervisão selecionada também continua valendo."
+                          : "Sem departamento e sem acesso à fila geral, recebe por atribuição direta ou como participante. Configure o direcionamento no Kora Studio ou transfira o atendimento manualmente. A supervisão selecionada continua valendo."}</p>
                       )}
                     </div>
                   </label>
@@ -291,7 +304,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
 
             {/* MODULOS */}
             {tab === "modulos" && (
-              <Section title="Acessos por módulo" sub="Libere só o que faz sentido. Owner e admin têm tudo. Módulos novos aparecem aqui.">
+              <Section title="Acessos por módulo" sub="Defina o acesso a cada módulo. Proprietários e administradores têm acesso completo aos módulos contratados.">
                 {member.role !== "agent" ? (
                   <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">{ROLE_LABEL[member.role]} já tem acesso total a todos os módulos. Os acessos por módulo valem pra atendentes.</p>
                 ) : (
@@ -377,7 +390,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
                   <UserDevices userId={member.user_id} />
                 </div>
                 {isSelf || isOwner ? (
-                  <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">{isOwner ? "O owner não pode ser desativado." : "Você não pode desativar a própria conta."}</p>
+                  <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">{isOwner ? "O proprietário não pode ser desativado." : "Você não pode desativar a própria conta."}</p>
                 ) : (
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-wider text-danger mb-2">Zona de perigo</p>
@@ -426,14 +439,6 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
 
 function sameSet(a: string[], b: string[]) { return a.length === b.length && a.every((x) => b.includes(x)) }
 
-function accessSummary(sup: string, pool: boolean, nums: number, inv: InventoryAccessLevel, role: TenantRole): string[] {
-  if (role !== "agent") return ["Acesso total (admin)"]
-  const out: string[] = []
-  out.push(sup === "all" ? "Vê todas as conversas" : sup === "scoped" ? "Supervisiona setores" : pool ? "Vê a fila geral" : "Só o atribuído a ela")
-  out.push(nums === 0 ? "Todos os números" : `${nums} número${nums > 1 ? "s" : ""}`)
-  if (inv !== "none") out.push(`Estoque: ${inv === "view" ? "Ver" : "Gerenciar"}`)
-  return out
-}
 
 function Meta({ icon: Icon, k, v }: { icon: typeof User; k: string; v: string }) {
   return <div className="flex items-start gap-2.5"><Icon className="size-4 text-slate-400 shrink-0 mt-0.5" /><div><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{k}</p><p className="text-[13px] font-semibold text-slate-700">{v}</p></div></div>

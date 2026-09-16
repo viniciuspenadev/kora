@@ -155,7 +155,7 @@ describe("notifyInboundMessage", () => {
 
     await notifyInboundMessage({ tenantId: "tenant-blue", conversationId: "conv-2", title: "Nova", preview: "Olá" })
 
-    expect(push.in).toHaveBeenCalledWith("user_id", ["owner", "pool", "sales", "supervisor", "participant"])
+    expect(push.in).toHaveBeenCalledWith("user_id", ["owner", "sales", "supervisor", "participant"])
   })
 
   it("não consulta membros nem dispositivos quando a conversa não pertence ao tenant", async () => {

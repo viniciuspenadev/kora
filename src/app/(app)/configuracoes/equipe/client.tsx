@@ -27,6 +27,7 @@ interface UserLimit {
 }
 
 interface Props {
+  queueWarnings?: string[]
   members:         TeamMember[]
   invites:         TeamInvite[]
   departments:     Department[]
@@ -36,7 +37,7 @@ interface Props {
 }
 
 const ROLE_LABEL: Record<TenantRole, string> = {
-  owner: "Owner",
+  owner: "Proprietário",
   admin: "Admin",
   agent: "Atendente",
 }
@@ -47,7 +48,7 @@ const ROLE_BADGE: Record<TenantRole, string> = {
   agent: "bg-slate-50 text-slate-600 border-slate-200",
 }
 
-export function EquipeClient({ members, invites, departments, currentUserId, currentUserRole, userLimit }: Props) {
+export function EquipeClient({ members, invites, departments, currentUserId, currentUserRole, userLimit, queueWarnings = [] }: Props) {
   const router = useRouter()
   const [inviting, setInviting] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: "ok" | "error"; text: string } | null>(null)
@@ -83,7 +84,7 @@ export function EquipeClient({ members, invites, departments, currentUserId, cur
     },
     {
       id: "role",
-      header: "Papel",
+      header: "Função",
       width: "120px",
       cell: (m) => (
         <span className={`inline-flex h-5 items-center text-[10px] font-semibold px-2 rounded-md border ${ROLE_BADGE[m.role]}`}>
@@ -122,12 +123,12 @@ export function EquipeClient({ members, invites, departments, currentUserId, cur
       id: "scope",
       header: "Escopo",
       width: "140px",
-      cell: (m) => m.view_all ? (
+      cell: (m) => m.role !== "agent" || m.view_all ? (
         <span className="text-[11px] text-slate-700">
           <strong className="font-semibold">Todas</strong> conversas
         </span>
       ) : (
-        <span className="text-[11px] text-slate-500">Atribuídas + setor</span>
+        <span className="text-[11px] text-slate-500">{["Atribuídas e participações", m.see_pool && "fila geral", m.department_id && "fila do departamento", m.supervises_departments.length > 0 && "supervisão"].filter(Boolean).join(" · ")}</span>
       ),
     },
     {
@@ -169,6 +170,11 @@ export function EquipeClient({ members, invites, departments, currentUserId, cur
 
   return (
     <div className="space-y-6">
+      {queueWarnings.length > 0 && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900" role="status">
+        <p className="font-semibold mb-1">Algumas filas estão sem atendentes com acesso</p>
+        <ul className="list-disc pl-4 space-y-1">{queueWarnings.map(warning => <li key={warning}>{warning}</li>)}</ul>
+        <p className="mt-2">Administradores ainda podem acompanhar. Autorize um atendente ou configure o direcionamento pelo Kora Studio para evitar clientes sem atendimento.</p>
+      </div>}
 
       {feedback && (
         <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${

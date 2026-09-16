@@ -1,7 +1,7 @@
 "use client"
 
 import { createContext, useContext, useEffect, useState } from "react"
-import { getUnreadTotal } from "@/lib/actions/chat"
+import { getNavigationUnread } from "@/lib/actions/navigation-unread"
 
 interface AppShell {
   /** Drawer de navegação mobile (md:hidden) aberto. */
@@ -9,6 +9,8 @@ interface AppShell {
   setNavOpen: (v: boolean) => void
   /** Total de não-lidas — fonte única pro badge (desktop sidebar + drawer). */
   unread: number
+  unreadByPipeline: Record<string, number>
+  unreadWithoutPipeline: number
 }
 
 const Ctx = createContext<AppShell | null>(null)
@@ -20,16 +22,16 @@ const Ctx = createContext<AppShell | null>(null)
  */
 export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(false)
-  const [unread, setUnread]   = useState(0)
+  const [messages, setMessages] = useState({ unread: 0, unreadByPipeline: {} as Record<string, number>, unreadWithoutPipeline: 0 })
 
   useEffect(() => {
     let cancelled = false
     async function tick() {
       try {
-        const n = await getUnreadTotal()
-        if (!cancelled) setUnread(n)
+        const summary = await getNavigationUnread()
+        if (!cancelled) setMessages(summary)
       } catch {
-        /* silencioso — polling não bloqueia UI */
+        if (!cancelled) setMessages({ unread: 0, unreadByPipeline: {}, unreadWithoutPipeline: 0 })
       }
     }
     tick()
@@ -43,7 +45,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  return <Ctx.Provider value={{ navOpen, setNavOpen, unread }}>{children}</Ctx.Provider>
+  return <Ctx.Provider value={{ navOpen, setNavOpen, ...messages }}>{children}</Ctx.Provider>
 }
 
 export function useAppShell() {

@@ -98,6 +98,7 @@ export interface ChatConversation {
   // de WhatsApp com recado acionável; ignorar o filtro/selo de número.
   instance_id:           string | null
   assigned_to:           string | null
+  ai_handling:           boolean
   department_id:         string | null
   status:                ConversationStatus
   priority:              ConversationPriority

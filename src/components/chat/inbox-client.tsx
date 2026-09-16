@@ -7,6 +7,7 @@ import { ConversationList } from "@/components/chat/conversation-list"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { ContactSidebar } from "@/components/chat/contact-sidebar"
 import { ContactDetailsOverlay } from "@/components/chat/contact-details-overlay"
+import { useConversationAccess } from "@/components/chat/use-conversation-access"
 import { MessageCircle } from "lucide-react"
 import { toast } from "sonner"
 import Link from "next/link"
@@ -126,8 +127,7 @@ function matchesActiveFilters(conv: ChatConversation, f: ActiveFilters): boolean
 }
 
 function isWaitingConversation(conv: ChatConversation): boolean {
-  const aiRouted = (conv.metadata as { ai_routed?: unknown } | null | undefined)?.ai_routed
-  return conv.assigned_to === null && (!!conv.department_id || !!aiRouted)
+  return conv.assigned_to === null && conv.ai_handling !== true
 }
 
 function matchesSecondaryFilters(conv: ChatConversation, f: ActiveFilters): boolean {
@@ -217,6 +217,9 @@ export function InboxClient({
   // sem entrar nas deps do effect (senão re-subscreveria a cada mudança de filtro).
   const pollFnRef       = useRef<() => void>(() => {})
   const wasDownRef      = useRef(false)
+  const accessEpochRef = useRef(0)
+  const accessAllowedRef = useRef(true)
+  const [accessUnavailable, setAccessUnavailable] = useState(false)
   const replyTargetRef  = useRef<{ id: string; preview: string; kind: string | null } | null>(null)
   const searchParams    = useSearchParams()
   const router          = useRouter()
@@ -300,9 +303,10 @@ export function InboxClient({
     abortRef.current = ac
 
     setLoadingList(true)
+    const accessEpoch = accessEpochRef.current
     try {
       const page = await getConversations({ filters: buildFilters(), cursor: null })
-      if (ac.signal.aborted) return
+      if (ac.signal.aborted || accessEpoch !== accessEpochRef.current || !accessAllowedRef.current) return
       setConversations(page.conversations)
       setCursor(page.nextCursor)
       setHasMore(page.hasMore)
@@ -318,8 +322,10 @@ export function InboxClient({
   const loadMore = useCallback(async () => {
     if (!hasMore || loadingMore || !cursor) return
     setLoadingMore(true)
+    const accessEpoch = accessEpochRef.current
     try {
       const page = await getConversations({ filters: buildFilters(), cursor })
+      if (accessEpoch !== accessEpochRef.current || !accessAllowedRef.current) return
       setConversations((prev) => [...prev, ...page.conversations])
       setCursor(page.nextCursor)
       setHasMore(page.hasMore)
@@ -330,12 +336,37 @@ export function InboxClient({
     }
   }, [hasMore, loadingMore, cursor, buildFilters])
 
+  useConversationAccess({
+    ids: [...conversations.map(c => c.id), ...(activeId ? [activeId] : [])],
+    onRevoked: ids => {
+      accessEpochRef.current++
+      const revoked = new Set(ids)
+      setConversations(prev => prev.filter(c => !revoked.has(c.id)))
+      if (activeIdRef.current && revoked.has(activeIdRef.current)) {
+        activeIdRef.current = null
+        setActiveId(null); setActiveMessages([]); setReplyTarget(null); setContactSheetOpen(false)
+        toast.info("Seu acesso a esta conversa foi alterado.")
+      }
+    },
+    onScopeChanged: () => { accessEpochRef.current++; void loadFirstPage() },
+    onUnavailable: () => {
+      accessAllowedRef.current = false
+      accessEpochRef.current++; abortRef.current?.abort(); activeIdRef.current = null
+      setConversations([]); setActiveId(null); setActiveMessages([]); setContactSheetOpen(false); setReplyTarget(null)
+      setAccessUnavailable(true)
+    },
+    onRecovered: () => { accessAllowedRef.current = true; setAccessUnavailable(false); void loadFirstPage() },
+  })
+
   // ── Polling (updates incrementais) ──────────────────────────
   const poll = useCallback(async () => {
+    if (!accessAllowedRef.current) return
     try {
+      const accessEpoch = accessEpochRef.current
       const since = lastSyncRef.current
       lastSyncRef.current = new Date().toISOString()
       const { conversations: updates } = await getConversationsUpdates({ since, filters: buildFilters() })
+      if (accessEpoch !== accessEpochRef.current || !accessAllowedRef.current) return
 
       if (updates.length > 0) {
         setConversations((prev) => {
@@ -347,13 +378,14 @@ export function InboxClient({
 
       // Msgs novas/atualizadas da conv ativa — só busca o delta desde último sync
       if (activeIdRef.current) {
+        const messageConversationId = activeIdRef.current
         const msgSince = lastMsgSyncRef.current
         lastMsgSyncRef.current = new Date().toISOString()
         const { messages: newMsgs } = await getMessagesUpdates({
-          conversationId: activeIdRef.current,
+          conversationId: messageConversationId,
           since:          msgSince,
         })
-        if (newMsgs.length > 0 && activeIdRef.current) {
+        if (newMsgs.length > 0 && activeIdRef.current === messageConversationId && accessEpoch === accessEpochRef.current && accessAllowedRef.current) {
           setActiveMessages((prev) => {
             const byId = new Map(prev.map((m) => [m.id, m]))
             for (const m of newMsgs) byId.set(m.id, m)
@@ -406,17 +438,19 @@ export function InboxClient({
 
   // ── Scroll up: carregar 20 anteriores ───────────────────────
   const loadOlderMessages = useCallback(async () => {
-    if (!activeIdRef.current || loadingOlder || !hasMoreOlder) return
+    if (!activeIdRef.current || !accessAllowedRef.current || loadingOlder || !hasMoreOlder) return
+    const conversationId = activeIdRef.current
+    const accessEpoch = accessEpochRef.current
     const oldest = activeMessages[0]
     if (!oldest) return
     setLoadingOlder(true)
     try {
       const result = await getMessages({
-        conversationId: activeIdRef.current,
+        conversationId,
         before:         { created_at: oldest.created_at, id: oldest.id },
         limit:          20,
       })
-      if (activeIdRef.current) {
+      if (activeIdRef.current === conversationId && accessAllowedRef.current && accessEpoch === accessEpochRef.current) {
         setActiveMessages((prev) => [...result.messages, ...prev])
         setHasMoreOlder(result.hasMore)
       }
@@ -573,6 +607,7 @@ export function InboxClient({
           filter: `tenant_id=eq.${tenantId}`,
         },
         (payload) => {
+          if (!accessAllowedRef.current) return
           const row = (payload.new ?? payload.old) as ChatConversation | undefined
           if (!row?.id) return
 
@@ -600,9 +635,10 @@ export function InboxClient({
             (row.assigned_to == null && !!userDepartmentId && row.department_id === userDepartmentId) ||
             (row.participants ?? []).includes(currentUserId)
           if (!inList && (payload.eventType === "INSERT" || (payload.eventType === "UPDATE" && becameMine))) {
+            const accessEpoch = accessEpochRef.current
             getConversationById(row.id)
               .then((conv) => {
-                if (!conv) return
+                if (!conv || !accessAllowedRef.current || accessEpoch !== accessEpochRef.current) return
                 if (payload.eventType === "INSERT" && conv.status !== "resolved") {
                   setViewCounts((counts) => ({
                     ...counts,
@@ -1115,6 +1151,7 @@ export function InboxClient({
       if (pipelineFilter || tagFilter || statusFilter !== "all" || viewFilter !== "all") void loadFirstPage()
     }}>
     <div className="flex flex-col h-full overflow-hidden">
+      {accessUnavailable && <div className="px-4 py-2 text-xs text-amber-800 bg-amber-50 border-b border-amber-200" role="status">Não foi possível confirmar seu acesso. As conversas ficam ocultas até a conexão ser restabelecida.</div>}
       {realtimeDown && (
         <div className="px-4 py-1.5 text-[11px] font-medium flex items-center gap-2 bg-amber-50 text-amber-700 border-b border-amber-200">
           <span className="size-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />

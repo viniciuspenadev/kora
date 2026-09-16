@@ -30,6 +30,7 @@ interface NavLeaf {
   officialOnly?: boolean
   /** Sobrescreve a detecção de ativo (ex: itens com querystring que o pathname não pega). */
   activeOverride?: boolean
+  hasUnread?: boolean
   /** "Funil de Vendas": link ao board + botão dedicado que expande os funis de venda ativos. */
   dealSwitcher?: boolean
 }
@@ -180,7 +181,7 @@ export function SidebarBody({
   const pathname              = usePathname()
   const searchParams          = useSearchParams()
   const [signing, setSigning] = useState(false)
-  const { unread }            = useAppShell()
+  const { unread, unreadByPipeline, unreadWithoutPipeline } = useAppShell()
   const isAdminOrOwner        = ["owner", "admin"].includes(userRole)
   const modulesSet            = useMemo(() => new Set(enabledModules), [enabledModules])
   const capsSet               = useMemo(() => new Set(capabilities ?? []), [capabilities])
@@ -257,11 +258,13 @@ export function SidebarBody({
               </span>
             ),
             activeOverride: p.id === sw.currentId,
+            hasUnread: (unreadByPipeline[p.id] ?? 0) +
+              (p.id === (pipelines?.find(pipeline => pipeline.is_default) ?? pipelines?.[0])?.id ? unreadWithoutPipeline : 0) > 0,
           })),
         } as NavGroup
       })
     return inject(filteredNav)
-  }, [filteredNav, pipelines, currentPipelineId])
+  }, [filteredNav, pipelines, currentPipelineId, unreadByPipeline, unreadWithoutPipeline])
 
   const allHrefs = useMemo(() => {
     const out: string[] = []
@@ -463,7 +466,7 @@ export function SidebarBody({
         key={sub.href}
         href={sub.soon ? "#" : sub.href}
         onClick={() => { if (!sub.soon) onNavigate?.() }}
-        title={sub.label}
+        title={sub.hasUnread ? `${sub.label} · mensagens não lidas` : sub.label}
         className={`
           group/sub flex items-center gap-2.5 rounded-lg pl-2 pr-3 py-1.5 text-[13px] transition-colors overflow-hidden
           ${active
@@ -478,6 +481,7 @@ export function SidebarBody({
           {sub.icon}
         </span>
         <span className={`whitespace-nowrap flex-1 ${reveal}`}>{sub.label}</span>
+        {sub.hasUnread && <span className={`size-2 rounded-full bg-red-500 shrink-0 ${reveal}`} role="img" aria-label="Mensagens não lidas" />}
         {sub.soon && (
           <span className={`whitespace-nowrap rounded-full bg-nav-hover px-1.5 py-0.5 text-[9px] font-semibold text-nav-dim uppercase tracking-wider ${reveal}`}>
             breve
@@ -551,6 +555,7 @@ export function SidebarBody({
         key={sub.href}
         href={sub.soon ? "#" : sub.href}
         onClick={() => { if (!sub.soon) { setFlyoutKey(null); onNavigate?.() } }}
+        title={sub.hasUnread ? `${sub.label} · mensagens não lidas` : sub.label}
         className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors ${
           active
             ? "bg-nav-active text-nav-accent font-semibold"
@@ -561,6 +566,7 @@ export function SidebarBody({
       >
         <span className={`shrink-0 ${active ? "text-nav-accent" : sub.soon ? "text-nav-dim" : "text-nav-dim"}`}>{sub.icon}</span>
         <span className="flex-1 whitespace-nowrap">{sub.label}</span>
+        {sub.hasUnread && <span className="size-2 rounded-full bg-red-500 shrink-0" role="img" aria-label="Mensagens não lidas" />}
         {sub.soon && (
           <span className="rounded-full bg-nav-hover px-1.5 py-0.5 text-[9px] font-semibold text-nav-dim uppercase tracking-wider">breve</span>
         )}
@@ -675,7 +681,7 @@ export function SidebarBody({
         {nav.map((item) => {
           if (!isGroup(item)) {
             const active    = isLeafActive(item.href)
-            // Bolinha de "tem mensagem" — só sinaliza presença, sem contador (decisão do owner).
+            // O pai Kanban não recebe badge; os indicadores ficam nos fluxos filhos.
             const showBadge = item.href === "/inbox" && unread > 0
 
             return (

@@ -5,23 +5,22 @@ import { supabaseAdmin } from "@/lib/supabase"
 /**
  * Fonte ÚNICA da regra de visibilidade de conversa do sistema.
  *
- * A RLS de `chat_conversations` é só `tenant_id = app_tenant_id()` (isolamento
- * de tenant). A visibilidade POR-ATENDENTE (assigned/participants/view_all/pool)
- * é imposta aqui, na aplicação, e TODO caminho de leitura/escrita de conversa ou
- * mensagem deve passar por este módulo — senão vaza entre atendentes.
+ * A RLS de `chat_conversations` espelha a visibilidade por atendente. Leituras e
+ * escritas pela aplicação também passam por este módulo, pois service_role
+ * ignora a RLS. Ambos exigem vínculo ativo com a empresa.
  *
  * Regra (CLAUDE.md): um atendente vê/atua numa conversa se:
  *   • é owner/admin do tenant, OU
  *   • tem view_all=true (supervisor), OU
  *   • assigned_to = ele, OU
  *   • está em participants, OU
- *   • a conversa está no pool (assigned_to IS NULL) E ele tem see_pool=true, OU
+ *   • supervisiona o departamento da conversa, OU
+ *   • a conversa não tem atendente nem departamento E ele tem see_pool=true, OU
  *   • a conversa está na FILA DO SETOR dele (assigned_to IS NULL E
  *     department_id = o departamento do atendente).
  *
  * Visibilidade é sempre UNION (OR): cada condição só ADICIONA acesso, nunca
- * remove. A fila do setor é gated por o atendente TER departamento — quem não
- * tem (maioria) fica idêntico ao comportamento clássico.
+ * remove. Restrições de número se aplicam apenas à descoberta nas filas.
  */
 
 /** Escada genérica de capability por-atendente (Ver·Gerenciar exibidos; `edit` reservado
@@ -36,7 +35,7 @@ export interface ViewerScope {
   userId:       string
   isAdmin:      boolean          // owner | admin
   viewAll:      boolean          // supervisor GERAL — vê tudo do tenant
-  seePool:      boolean          // vê conversas não atribuídas (pool)
+  seePool:      boolean          // fila geral: sem atendente e sem departamento
   departmentId: string | null    // departamento do atendente — habilita a fila do setor
   instanceIds:  string[] | null  // números que atende (Fase D); null = todos (sem restrição)
   supervisesDepartments: string[]  // supervisão ESCOPADA: vê tudo desses setores (qualquer dono); [] = nenhum
@@ -172,8 +171,8 @@ export type ScopeTenantUserRow = {
 } | null
 
 /**
- * Mapeador ÚNICO linha→escopo. Defaults seguros: linha ausente/flags null →
- * see_pool=true (não-quebra), view_all=false, capabilities none. Usado pela
+ * Mapeador ÚNICO linha→escopo. Membro ausente nunca ganha acesso à fila.
+ * Flags legadas nulas de um membro existente mantêm o padrão. Usado pela
  * sessão do app E pelo token da extensão — nunca duplicar esta normalização.
  */
 export function scopeFromTenantUserRow(
@@ -189,7 +188,7 @@ export function scopeFromTenantUserRow(
     userId,
     isAdmin,
     viewAll:      !isAdmin && tu?.view_all === true,
-    seePool:      isAdmin ? true : tu?.see_pool !== false,   // null/undefined → true
+    seePool:      isAdmin || (!!tu && tu.see_pool !== false),
     departmentId: isAdmin ? null : (tu?.department_id ?? null),
     instanceIds:  !isAdmin && Array.isArray(arr) && arr.length > 0 ? arr : null,   // {} / null → todos
     supervisesDepartments: !isAdmin && Array.isArray(sup) ? sup : [],
@@ -202,28 +201,26 @@ export function scopeFromTenantUserRow(
 }
 
 /**
- * Resolve o escopo do usuário logado. Faz UMA query em tenant_users (só quando
- * não-admin) pra ler view_all + see_pool. Defaults seguros: se a linha não
- * existir ou as flags forem null, see_pool=true (não-quebra) e view_all=false.
+ * Resolve as permissões atuais do membro ativo. Erro de consulta ou vínculo
+ * inexistente interrompe o acesso, inclusive para uma sessão antes administrativa.
  */
 export async function getViewerScope(): Promise<ViewerScope> {
   const session = await auth()
   if (!session?.user?.tenantId) throw new Error("Não autenticado")
 
-  const isAdmin = ["owner", "admin"].includes(session.user.role)
-  let tu: ScopeTenantUserRow = null
-
-  if (!isAdmin) {
-    const { data } = await supabaseAdmin
-      .from("tenant_users")
-      .select(SCOPE_TU_SELECT)
-      .eq("tenant_id", session.user.tenantId)
-      .eq("user_id", session.user.id)
-      .maybeSingle()
-    tu = (data ?? null) as ScopeTenantUserRow
+  const { data, error } = await supabaseAdmin
+    .from("tenant_users")
+    .select(`role, active, ${SCOPE_TU_SELECT}`)
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", session.user.id)
+    .maybeSingle()
+  if (error) throw new Error("Não foi possível verificar seu acesso. Tente novamente.")
+  if (!data || data.active !== true || !["owner", "admin", "agent"].includes(data.role)) {
+    throw new Error("Seu acesso a esta empresa não está ativo.")
   }
-
-  return scopeFromTenantUserRow(session.user.tenantId, session.user.id, isAdmin, tu)
+  // O papel atual no banco prevalece sobre uma sessão anterior à alteração.
+  const isAdmin = ["owner", "admin"].includes(data.role)
+  return scopeFromTenantUserRow(session.user.tenantId, session.user.id, isAdmin, data as ScopeTenantUserRow)
 }
 
 /**
@@ -245,13 +242,13 @@ export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFiel
   // ⚠️ O gate SÓ se aplica quando a conversa TEM número. Conversa com
   // `instance_id = null` (Instagram, site — canais sem número) NÃO é filtrada por
   // número: a etiqueta na UI é "Números que atende", e restringir alguém a um
-  // número não pode esconder um canal que não tem número nenhum. Quem precisa
-  // travar o atendente usa `see_pool=false` (esse sim é o botão de travar).
+  // número não pode esconder um canal que não tem número nenhum. As regras de
+  // fila geral e departamento continuam valendo também nesses canais.
   const numberOk =
     !scope.instanceIds ||                       // atende todos
     conv.instance_id == null ||                 // conversa sem número → fora do gate
     scope.instanceIds.includes(conv.instance_id)
-  if (conv.assigned_to === null && scope.seePool && numberOk) return true
+  if (conv.assigned_to === null && conv.department_id == null && scope.seePool && numberOk) return true
   if (conv.assigned_to === null && scope.departmentId && conv.department_id === scope.departmentId && numberOk) return true
   return false
 }
@@ -366,7 +363,7 @@ export function memberSeesUnassigned(
   if (conv.department_id && Array.isArray(sup) && sup.includes(conv.department_id)) return true
   // Ramos de descoberta — gated por número (que já tolera conversa sem número).
   if (!memberAttendsNumber(m, conv.instance_id)) return false
-  if (m.see_pool !== false) return true                                 // pool (default true)
+  if (conv.department_id == null && m.see_pool !== false) return true    // fila geral, sem departamento
   return !!m.department_id && conv.department_id === m.department_id    // fila do setor
 }
 
@@ -389,11 +386,10 @@ export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
     `participants.cs.{${scope.userId}}`,
   ]
   if (scope.seePool) {
-    clauses.unshift(scope.instanceIds ? `and(assigned_to.is.null${inInst})` : "assigned_to.is.null")
+    clauses.unshift(`and(assigned_to.is.null,department_id.is.null${inInst})`)
   }
-  // Fila do setor — só quando NÃO vê o pool inteiro (senão seria redundante:
-  // quem vê o pool já enxerga todo não-atribuído, depto incluso).
-  if (scope.departmentId && !scope.seePool) {
+  // Fila do próprio departamento é independente do acesso à fila geral.
+  if (scope.departmentId) {
     clauses.push(`and(assigned_to.is.null,department_id.eq.${scope.departmentId}${inInst})`)
   }
   // Supervisão ESCOPADA: vê TUDO dos setores supervisionados (qualquer dono) —

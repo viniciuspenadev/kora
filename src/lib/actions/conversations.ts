@@ -73,7 +73,7 @@ export async function getConversationViewCounts(): Promise<ConversationViewCount
     baseCount()
       .neq("status", "resolved")
       .is("assigned_to", null)
-      .or("department_id.not.is.null,metadata->ai_routed.not.is.null"),
+      .not("ai_handling", "is", true),
     baseCount().neq("status", "resolved").gt("unread_count", 0),
     baseCount().eq("status", "resolved"),
   ])
@@ -201,7 +201,7 @@ export async function getConversations(opts: {
     q = q
       .neq("status", "resolved")
       .is("assigned_to", null)
-      .or("department_id.not.is.null,metadata->ai_routed.not.is.null")
+      .not("ai_handling", "is", true)
   } else if (filters.view === "unread") {
     q = q.neq("status", "resolved").gt("unread_count", 0)
   } else if (filters.view === "resolved") {
@@ -332,7 +332,7 @@ export async function getConversationsUpdates(opts: {
     q = q
       .neq("status", "resolved")
       .is("assigned_to", null)
-      .or("department_id.not.is.null,metadata->ai_routed.not.is.null")
+      .not("ai_handling", "is", true)
   } else if (filters.view === "unread") {
     q = q.neq("status", "resolved").gt("unread_count", 0)
   } else if (filters.view === "resolved") {

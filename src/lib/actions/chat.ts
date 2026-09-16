@@ -24,6 +24,7 @@ import { createNotification } from "@/lib/notifications"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { assertAtendimentoLiberado, atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { requireModule } from "@/lib/modules"
+import { getNavigationUnread } from "@/lib/actions/navigation-unread"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -1173,11 +1174,13 @@ export async function assignConversation(conversationId: string, agentId: string
   delete metadata.reopen_owner
   delete metadata.ai_pinned_flow
   delete metadata.studio_entry
-  const { data: assigned, error: assignError } = await supabaseAdmin
+  let assignment = supabaseAdmin
     .from("chat_conversations")
     .update({ assigned_to: agentId, ai_handling: false, metadata, updated_at: now })
     .eq("id", conversationId)
-    .eq("tenant_id", tenantId).eq("updated_at", conv.updated_at).select("id")
+    .eq("tenant_id", tenantId).eq("updated_at", conv.updated_at)
+  assignment = conv.assigned_to == null ? assignment.is("assigned_to", null) : assignment.eq("assigned_to", conv.assigned_to)
+  const { data: assigned, error: assignError } = await assignment.select("id")
   if (assignError || !assigned?.length) throw new Error("A conversa mudou. Atualize antes de atribuir.")
 
   // Evento do ciclo (relatórios): atribuição/retirada manual de dono.
@@ -1985,41 +1988,7 @@ export async function removeConversationParticipant(conversationId: string, user
 export async function getUnreadTotal() {
   const session = await auth()
   if (!session) return 0
-
-  const tenantId = session.user.tenantId
-  const userId   = session.user.id
-  const isAdmin  = ["owner", "admin"].includes(session.user.role)
-
-  const { data } = await supabaseAdmin
-    .from("chat_conversations")
-    .select("unread_count, assigned_to, participants")
-    .eq("tenant_id", tenantId)
-    .gt("unread_count", 0)
-    .in("status", ["open", "pending"])
-
-  if (!data) return 0
-
-  let visible = data
-  if (!isAdmin) {
-    const { data: tu } = await supabaseAdmin
-      .from("tenant_users")
-      .select("view_all")
-      .eq("tenant_id", tenantId)
-      .eq("user_id", userId)
-      .maybeSingle()
-
-    if (!tu?.view_all) {
-      visible = data.filter((c: { assigned_to: string | null; participants: string[] | null }) =>
-        c.assigned_to === null ||                  // pool aberto
-        c.assigned_to === userId ||
-        (c.participants ?? []).includes(userId)
-      )
-    }
-  }
-
-  // Conta CONVERSAS com não-lidas (não a soma de mensagens) — `visible` já está
-  // filtrado a unread_count > 0, então o tamanho = nº de conversas pendentes.
-  return visible.length
+  return (await getNavigationUnread()).unread
 }
 
 // ── Configuração por tenant ─────────────────────────────────
