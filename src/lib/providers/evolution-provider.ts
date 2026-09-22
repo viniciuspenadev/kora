@@ -1,4 +1,5 @@
 import { canonicalWhatsAppJid } from "@/lib/phone-utils"
+import { parseMessageEdit } from "@/lib/chat/message-edit"
 import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
   GroupMetadata, MediaDownload, ContentType,
@@ -103,6 +104,7 @@ export class EvolutionProvider implements WhatsAppProvider {
           events:  [
             "MESSAGES_UPSERT",
             "MESSAGES_UPDATE",
+            "SEND_MESSAGE_UPDATE",
             "CONNECTION_UPDATE",
             "QRCODE_UPDATED",
           ],
@@ -114,13 +116,43 @@ export class EvolutionProvider implements WhatsAppProvider {
     const webhook = await this.req<{ url?: string; enabled?: boolean; events?: string[]; webhookByEvents?: boolean; webhookBase64?: boolean }>(
       `/webhook/find/${this.instanceName}`,
     )
-    const required = ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CONNECTION_UPDATE", "QRCODE_UPDATED"]
+    const required = ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "SEND_MESSAGE_UPDATE", "CONNECTION_UPDATE", "QRCODE_UPDATED"]
     if (webhook.url !== webhookUrl || webhook.enabled !== true || webhook.webhookByEvents !== false || webhook.webhookBase64 !== false
       || !required.every(event => webhook.events?.includes(event))) throw new Error("Webhook não confirmado pela Evolution")
     return { configured: true }
   }
 
   // ── Messaging ───────────────────────────────────────────────
+
+  async editText(messageId: string, text: string, deadline: number): Promise<{ editedAt: string }> {
+    // Read-only lookup: the key can contain a LID instead of a phone number.
+    // Fail closed if Evolution no longer retains the original message.
+    let key: { id: string; remoteJid: string; fromMe: boolean }
+    try {
+      const result = await this.req<{ messages?: { records?: Array<{ key?: typeof key; messageType?: string }> } }>(
+        `/chat/findMessages/${this.instanceName}`, {
+          method: "POST", body: JSON.stringify({ where: { key: { id: messageId, fromMe: true } }, offset: 2, page: 1 }),
+        },
+      )
+      const records = result.messages?.records
+      const original = records?.length === 1 ? records[0] : null
+      if (!original?.key || original.key.id !== messageId || original.key.fromMe !== true
+        || !/^\d+@(s\.whatsapp\.net|lid)$/.test(original.key.remoteJid)
+        || !["conversation", "extendedTextMessage"].includes(original.messageType ?? "")) throw new Error()
+      key = { id: messageId, remoteJid: original.key.remoteJid, fromMe: true }
+    } catch {
+      throw new MessageEditNotSentError()
+    }
+    // Any error from this point is uncertain: Evolution may fail AFTER sending.
+    if (!Number.isFinite(deadline) || Date.now() >= deadline) throw new MessageEditNotSentError()
+    const result = await this.req<unknown>(`/chat/updateMessage/${this.instanceName}`, {
+      method: "POST", body: JSON.stringify({ number: key.remoteJid, key, text }),
+    })
+    const edit = parseMessageEdit(result)
+    if (!edit || edit.contentType !== "text" || edit.messageId !== messageId || edit.remoteJid !== key.remoteJid || !edit.fromMe || edit.text !== text)
+      throw new Error("Confirmação de edição indisponível")
+    return { editedAt: edit.editedAt }
+  }
 
   async sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
@@ -300,6 +332,11 @@ export class EvolutionProvider implements WhatsAppProvider {
       return null
     }
   }
+}
+
+/** No mutating request was attempted. Safe to release the reservation. */
+export class MessageEditNotSentError extends Error {
+  constructor() { super("Não foi possível localizar a mensagem original na Evolution. Nenhuma edição foi enviada.") }
 }
 
 /** Resposta de envio do Evolution: o `key` traz o id da mensagem E o destinatário. */

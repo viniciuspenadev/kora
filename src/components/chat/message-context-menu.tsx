@@ -6,7 +6,7 @@
 // é uma ação que manda mensagens ao cliente, então nunca dispara num clique só.
 
 import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react"
-import { Reply, Copy, Megaphone, Loader2, Check, AlertTriangle, CalendarPlus } from "lucide-react"
+import { Reply, Copy, Megaphone, Loader2, Check, AlertTriangle, CalendarPlus, Pencil } from "lucide-react"
 import { toast } from "sonner"
 import type { ChatMessage } from "@/types/chat"
 import { listActiveFlows, triggerFlowInConversation } from "@/lib/actions/studio/flows"
@@ -22,6 +22,7 @@ interface Props {
   /** Disparar fluxo não faz sentido em grupo (sem contato único). */
   canTriggerFlow?: boolean
   onReply?: (m: ChatMessage) => void
+  onEdit?: (m: ChatMessage) => void
   onReact?: (m: ChatMessage, emoji: string) => void
   /** Agendar (módulo agenda) — só passado quando habilitado. */
   onSchedule?: () => void
@@ -29,7 +30,7 @@ interface Props {
 }
 
 export function MessageContextMenu({
-  x, y, message, conversationId, canTriggerFlow = true, onReply, onReact, onSchedule, onClose,
+  x, y, message, conversationId, canTriggerFlow = true, onReply, onEdit, onReact, onSchedule, onClose,
 }: Props) {
   // 🔴 SUBMENU, não troca de tela. Antes o clique em "Disparar fluxo" SUBSTITUÍA o menu
   //    inteiro pela lista (com um "‹ voltar"): a pessoa perdia de vista Responder /
@@ -163,8 +164,10 @@ export function MessageContextMenu({
               <MenuItem icon={Copy} label="Copiar texto" onMouseEnter={() => setSubOpen(false)} onClick={copyText} />
             )}
             {onSchedule && (
-              <MenuItem icon={CalendarPlus} label="Agendar" onMouseEnter={() => setSubOpen(false)}
-                onClick={() => { onSchedule(); onClose() }} />
+              <MenuItem icon={CalendarPlus} label="Agendar" onMouseEnter={() => setSubOpen(false)} onClick={() => { onSchedule(); onClose() }} />
+            )}
+            {onEdit && message && (
+              <MenuItem icon={Pencil} label="Editar mensagem" onMouseEnter={() => setSubOpen(false)} onClick={() => { onEdit(message); onClose() }} />
             )}
             {canTriggerFlow && (
               <>

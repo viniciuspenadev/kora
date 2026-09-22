@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server"
+import { reconcileMessageEdit } from "@/lib/chat/reconcile-message-edit"
 import { supabaseAdmin } from "@/lib/supabase"
 import { jidToPhone } from "@/lib/phone-utils"
 import { allowedFrom, statusPatch, type MessageStatus } from "@/lib/channels/message-status"
@@ -150,6 +151,10 @@ export async function dispatchEvolutionEvent(
   if (!event) return
 
   switch (event) {
+    case "send.message.update":
+    case "SEND_MESSAGE_UPDATE":
+      await reconcileMessageEdit(instance, body.data)
+      break
     case "messages.upsert":
     case "MESSAGES_UPSERT":
       await handleMessageUpsert(instance, body.data, allowSpend)
@@ -219,6 +224,7 @@ async function handleMessageUpsert(
   const messages   = Array.isArray(data) ? data : [data]
 
   for (const msg of messages) {
+    if (await reconcileMessageEdit(instance, msg)) continue
     if (!msg.key?.remoteJid) continue
 
     const jid = msg.key.remoteJid
@@ -262,23 +268,6 @@ async function handleMessageUpsert(
             content_type: "deleted",
             content:      null,
             deleted_at:   new Date().toISOString(),
-          })
-          .eq("tenant_id", tenantId)
-          .eq("whatsapp_msg_id", targetId)
-        continue
-      }
-      if (protocol.type === 14 && protocol.editedMessage) {
-        // Cliente editou — extrai o novo conteúdo
-        const editedExtract = extractMessageContent({
-          ...msg,
-          message: protocol.editedMessage,
-        } as EvolutionMessageData)
-        await supabaseAdmin
-          .from("chat_messages")
-          .update({
-            content:      editedExtract.content,
-            content_type: editedExtract.contentType,
-            edited_at:    new Date().toISOString(),
           })
           .eq("tenant_id", tenantId)
           .eq("whatsapp_msg_id", targetId)
@@ -705,10 +694,11 @@ async function handleMessageUpsert(
   }
 }
 
-async function handleMessageUpdate(instance: { tenant_id: string }, data: unknown) {
+async function handleMessageUpdate(instance: { id: string; tenant_id: string }, data: unknown) {
   const updates = Array.isArray(data) ? data : [data]
 
   for (const update of updates) {
+    if (await reconcileMessageEdit(instance, update)) continue
     const u = update as { key?: { id?: string }; status?: string }
     if (!u.key?.id || !u.status) continue
 
@@ -1301,4 +1291,3 @@ async function findOrCreateConversation(
 }
 
 // ── Grupos: opt-in ─────────────────────────────────────────
-

@@ -381,11 +381,13 @@ export function InboxClient({
       if (activeIdRef.current) {
         const messageConversationId = activeIdRef.current
         const msgSince = lastMsgSyncRef.current
-        lastMsgSyncRef.current = new Date().toISOString()
+        const nextMsgSync = new Date().toISOString()
         const { messages: newMsgs } = await getMessagesUpdates({
           conversationId: messageConversationId,
           since:          msgSince,
         })
+        if (activeIdRef.current === messageConversationId && accessEpoch === accessEpochRef.current && accessAllowedRef.current)
+          lastMsgSyncRef.current = nextMsgSync
         if (newMsgs.length > 0 && activeIdRef.current === messageConversationId && accessEpoch === accessEpochRef.current && accessAllowedRef.current) {
           setActiveMessages((prev) => {
             const byId = new Map(prev.map((m) => [m.id, m]))
@@ -1238,6 +1240,8 @@ export function InboxClient({
             <>
               <div className="flex-1 min-w-0">
                 <ChatPanel
+                  currentUserId={currentUserId}
+                  onMessageEdited={patch => setActiveMessages(prev => prev.map(message => message.id === patch.id ? { ...message, ...patch } : message))}
                   conversation={activeConv}
                   pipelines={pipelines}
                   stages={stages}

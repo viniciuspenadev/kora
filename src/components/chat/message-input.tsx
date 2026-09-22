@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect, useTransition, useCallback, type RefObject } from "react"
+import { useState, useRef, useEffect, useTransition, useCallback, type RefObject, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { SimpleSelect } from "@/components/ui/select"
 import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2, Plus, MapPin, User as UserIcon, Users, Search, Reply, Sticker } from "lucide-react"
@@ -18,6 +18,8 @@ import type { ChatQuickReply } from "@/types/chat"
 export interface ReplyTargetInfo { id: string; preview: string; kind: string | null }
 
 interface Props {
+  editComposer?: ReactNode
+  onEditAvailabilityChange?: (available: boolean) => void
   conversationId: string
   quickReplies:   ChatQuickReply[]
   disabled?:      boolean
@@ -77,7 +79,7 @@ function formatBytes(b: number) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function MessageInput({ conversationId, quickReplies, disabled, dropTargetRef, mediaUnavailableReason, contactName, windowClosed, windowNoReopen, channelLabel, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
+export function MessageInput({ editComposer, onEditAvailabilityChange, conversationId, quickReplies, disabled, dropTargetRef, mediaUnavailableReason, contactName, windowClosed, windowNoReopen, channelLabel, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
   const [text, setText]                = useState("")
   const [isPrivate, setIsPrivate]      = useState(false)
   const [showQuickReplies, setShowQR]  = useState(false)
@@ -101,7 +103,9 @@ export function MessageInput({ conversationId, quickReplies, disabled, dropTarge
   const composerRef = useRef<HTMLDivElement>(null)
   const objectUrlRef = useRef<string | null>(null)
   const imageEditorRef = useRef<{ addFiles: (files: File[]) => void } | null>(null)
-  const blockReason = attachmentBlockReason({ disabled, windowClosed, windowNoReopen, unavailableReason: mediaUnavailableReason, isPrivate, isRecording })
+  const blockReason = editComposer ? "Conclua a edição antes de adicionar arquivos." : attachmentBlockReason({ disabled, windowClosed, windowNoReopen, unavailableReason: mediaUnavailableReason, isPrivate, isRecording })
+  useEffect(() => { onEditAvailabilityChange?.(!isRecording && !imageSession && !attachedFile && !attachMode) },
+    [isRecording, imageSession, attachedFile, attachMode, onEditAvailabilityChange])
   const wrongConversation = !!attachedFile && attachmentOwner?.id !== conversationId
 
   useEffect(() => () => { if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current) }, [])
@@ -329,7 +333,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, dropTarge
   // WhatsApp: lá o template reabre pagando; aqui não existe template — só a pessoa
   // voltando a falar. Explicar o mecanismo evita o atendente digitar e levar recusa.
   return (
-    <>{imageEditor}{windowNoReopen ? <>{dropOverlay}<NoReopenComposer channelLabel={channelLabel ?? "Instagram"} /></> : windowClosed ? <>{dropOverlay}<ClosedWindowGate conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} /></> :
+    <>{imageEditor}{editComposer ? <>{dropOverlay}{editComposer}</> : windowNoReopen ? <>{dropOverlay}<NoReopenComposer channelLabel={channelLabel ?? "Instagram"} /></> : windowClosed ? <>{dropOverlay}<ClosedWindowGate conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} /></> :
     <div ref={composerRef} className="border-t border-slate-200 bg-white relative pb-[env(safe-area-inset-bottom)]">
       {dropOverlay}
       {imageSession && <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-primary-50 px-4 py-2">

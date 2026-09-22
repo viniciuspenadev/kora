@@ -115,6 +115,8 @@ export interface WhatsAppProvider {
   /** Citação: `id` = whatsapp_msg_id da msg citada; `text` = prévia dela (Baileys
    *  precisa do conteúdo pra renderizar o trecho citado; Meta usa só o id). */
   sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult>
+  /** Original key is resolved inside the owning instance, never guessed from phone. */
+  editText?(messageId: string, text: string, deadline: number): Promise<{ editedAt: string }>
   sendMedia(
     phone:     string,
     mediaUrl:  string,

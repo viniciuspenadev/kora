@@ -7,7 +7,7 @@ import {
   Image as ImageIcon, Download, X, ImageOff, Reply, Smartphone,
   Megaphone, ExternalLink, Eye, EyeOff, Trash2, Pencil, MessageSquareWarning,
   User as UserIcon, ListChecks, Square, Sparkles, ArrowRight, Smile, Forward,
-  DollarSign, Bell, Camera, Share2, Captions, ChevronDown,
+  DollarSign, Bell, Camera, Share2, Captions, ChevronDown, MoreHorizontal,
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
@@ -79,6 +79,7 @@ interface Props {
   onReact?:     (msg: ChatMessage, emoji: string) => void
   /** Clique direito → menu de contexto (resolvido pelo ChatPanel). */
   onContextMenu?: (e: React.MouseEvent, msg: ChatMessage) => void
+  onOpenMenu?: (msg: ChatMessage, position: { x: number; y: number }) => void
   /** Reações que colam NESTA bolha (resolvidas pelo ChatPanel por whatsapp_msg_id). */
   reactions?:   { emoji: string; fromAgent: boolean }[]
 }
@@ -86,22 +87,23 @@ interface Props {
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
 /** Toolbar que aparece no hover da bolha: reagir (popover rápido) + responder. */
-function HoverActions({ message, onReply, onReact }: {
+function HoverActions({ message, onReply, onReact, onOpenMenu }: {
   message: ChatMessage
   onReply?: (m: ChatMessage) => void
   onReact?: (m: ChatMessage, e: string) => void
+  onOpenMenu?: Props["onOpenMenu"]
 }) {
   const [showReact, setShowReact] = useState(false)
-  if (!onReply && !onReact) return null
+  if (!onReply && !onReact && !onOpenMenu) return null
   return (
-    <div className="relative shrink-0 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+    <div className="relative shrink-0 flex items-center gap-0.5 opacity-100 sm:opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
       {onReact && (
         <>
           <button
             type="button"
             onClick={() => setShowReact((v) => !v)}
             title="Reagir"
-            className="size-7 rounded-full text-slate-400 hover:text-amber-500 hover:bg-slate-100 inline-flex items-center justify-center transition-colors"
+            className="size-7 rounded-full text-slate-400 hover:text-amber-500 hover:bg-slate-100 hidden sm:inline-flex items-center justify-center transition-colors"
           >
             <Smile className="size-4" />
           </button>
@@ -129,11 +131,16 @@ function HoverActions({ message, onReply, onReact }: {
           type="button"
           onClick={() => onReply(message)}
           title="Responder"
-          className="size-7 rounded-full text-slate-400 hover:text-primary-600 hover:bg-slate-100 inline-flex items-center justify-center transition-colors"
+          className="size-7 rounded-full text-slate-400 hover:text-primary-600 hover:bg-slate-100 hidden sm:inline-flex items-center justify-center transition-colors"
         >
           <Reply className="size-4" />
         </button>
       )}
+      {onOpenMenu && <button type="button" aria-label="Opções da mensagem" title="Opções da mensagem"
+        onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); onOpenMenu(message, { x: rect.left, y: rect.bottom }) }}
+        className="size-9 sm:size-7 rounded-full text-slate-400 hover:text-primary hover:bg-primary-50 inline-flex items-center justify-center transition-colors">
+        <MoreHorizontal className="size-4" />
+      </button>}
     </div>
   )
 }
@@ -147,7 +154,7 @@ function scrollToQuoted(msgId: string) {
   setTimeout(() => el.classList.remove("ring-2", "ring-primary", "ring-offset-2"), 1600)
 }
 
-export function MessageBubble({ message, agentName, senderLabel, onReply, onReact, onContextMenu, reactions }: Props) {
+export function MessageBubble({ message, agentName, senderLabel, onReply, onReact, onContextMenu, onOpenMenu, reactions }: Props) {
   const isIncoming = message.sender_type === "contact"
   const isSystem   = message.sender_type === "system"
   const isNote     = message.is_private_note
@@ -157,8 +164,9 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
   const [touchActions, setTouchActions] = useState(false)
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const startPress = (e: React.PointerEvent) => {
-    if (e.pointerType !== "touch" || (!onReply && !onReact)) return
-    pressTimer.current = setTimeout(() => setTouchActions(true), 450)
+    if (e.pointerType !== "touch" || (!onReply && !onReact && !onOpenMenu)) return
+    const position = { x: e.clientX, y: e.clientY }
+    pressTimer.current = setTimeout(() => onOpenMenu ? onOpenMenu(message, position) : setTouchActions(true), 450)
   }
   const endPress = () => { if (pressTimer.current) { clearTimeout(pressTimer.current); pressTimer.current = null } }
 
@@ -420,7 +428,7 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
   const hasReactions = !!reactions && reactions.length > 0
   return (
     <div className={`group flex items-center gap-1 px-4 py-0.5 ${hasReactions ? "mb-3" : ""} ${isIncoming ? "justify-start" : "justify-end"}`}>
-      {!isIncoming && <HoverActions message={message} onReply={onReply} onReact={onReact} />}
+      {!isIncoming && <HoverActions message={message} onReply={onReply} onReact={onReact} onOpenMenu={onOpenMenu} />}
       <div
         data-wa-id={message.whatsapp_msg_id ?? undefined}
         onPointerDown={startPress}
@@ -829,7 +837,7 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
         )}
       </div>
 
-      {isIncoming && <HoverActions message={message} onReply={onReply} onReact={onReact} />}
+      {isIncoming && <HoverActions message={message} onReply={onReply} onReact={onReact} onOpenMenu={onOpenMenu} />}
 
       {lightboxOpen && resolveMediaUrl(message) && (
         <div

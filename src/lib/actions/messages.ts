@@ -101,7 +101,7 @@ export async function getMessages(opts: {
 }
 
 /**
- * Mensagens novas (created_at > since) ou atualizadas (updated_at > since).
+ * Mensagens novas e edições confirmadas desde o último polling.
  * Usado pelo polling — geralmente retorna 0-1 linhas.
  */
 export async function getMessagesUpdates(opts: {
@@ -109,16 +109,31 @@ export async function getMessagesUpdates(opts: {
   since:          string  // ISO
 }): Promise<{ messages: ChatMessage[] }> {
   const t = await assertCanView(opts.conversationId)
+  const sinceDate = new Date(opts.since)
+  if (!Number.isFinite(sinceDate.getTime())) throw new Error("Cursor inválido")
+  const since = sinceDate.toISOString()
 
   const { data, error } = await supabaseAdmin
     .from("chat_messages")
     .select(MESSAGE_SELECT)
     .eq("conversation_id", opts.conversationId)
     .eq("tenant_id", t)
-    .gt("created_at", opts.since)
+    .gt("created_at", since)
     .order("created_at", { ascending: true })
     .limit(100)  // safety cap
 
   if (error) throw new Error(`getMessagesUpdates: ${error.message}`)
-  return { messages: (data ?? []) as unknown as ChatMessage[] }
+  // Provider timestamps can be old/delayed. Use the database confirmation time
+  // to recover edits when Realtime is disconnected.
+  const { data: edits, error: editError } = await supabaseAdmin.from("chat_message_edits")
+    .select("message_id").eq("tenant_id", t).eq("conversation_id", opts.conversationId)
+    .gt("confirmed_at", since).order("confirmed_at", { ascending: true }).limit(1000)
+  if (editError) throw new Error("Não foi possível atualizar as edições da conversa")
+  const ids = [...new Set((edits ?? []).map(edit => edit.message_id as string))]
+  if (!ids.length) return { messages: (data ?? []) as unknown as ChatMessage[] }
+  const { data: changed, error: changedError } = await supabaseAdmin.from("chat_messages")
+    .select(MESSAGE_SELECT).eq("tenant_id", t).eq("conversation_id", opts.conversationId).in("id", ids)
+  if (changedError) throw new Error("Não foi possível atualizar as mensagens editadas")
+  const merged = new Map([...data ?? [], ...changed ?? []].map(message => [message.id, message]))
+  return { messages: [...merged.values()] as unknown as ChatMessage[] }
 }

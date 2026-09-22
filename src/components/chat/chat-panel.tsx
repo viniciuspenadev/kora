@@ -6,6 +6,8 @@ import { ContactPic } from "@/components/chat/contact-pic"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { MessageBubble } from "./message-bubble"
 import { MessageInput } from "./message-input"
+import { MessageEditComposer } from "./message-edit-composer"
+import { messageEditProblem } from "@/lib/chat/message-edit"
 import { MessageContextMenu } from "./message-context-menu"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
@@ -32,6 +34,8 @@ import { sanitizeAdReply } from "@/lib/ad-reply"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
 
 interface Props {
+  currentUserId?: string
+  onMessageEdited?: (patch: Pick<ChatMessage, "id" | "content" | "edited_at">) => void
   pipelines?: Array<{ id: string; name: string }>
   stages?: Array<{ id: string; name: string }>
   conversation: ChatConversation
@@ -117,6 +121,7 @@ function MessageSkeleton() {
 }
 
 export function ChatPanel({
+  currentUserId = "", onMessageEdited,
   conversation, messages, quickReplies, agents, onStatusChange,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
   loadingMessages = false,
@@ -128,6 +133,24 @@ export function ChatPanel({
   const isArchived = !!conversation.archived_at
   // Menu de contexto (clique direito numa mensagem): responder/copiar/reagir/agendar/disparar fluxo.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; msg: ChatMessage | null } | null>(null)
+  const [editTarget, setEditTarget] = useState<ChatMessage | null>(null)
+  const [composerAvailable, setComposerAvailable] = useState(true)
+  const [editClock, setEditClock] = useState(() => Date.now())
+  const editClockActive = !!ctxMenu || !!editTarget
+  useEffect(() => {
+    if (!editClockActive) return
+    const timer = setInterval(() => setEditClock(Date.now()), 5000)
+    return () => clearInterval(timer)
+  }, [editClockActive])
+  const [editConversation, setEditConversation] = useState(conversation.id)
+  if (editConversation !== conversation.id) {
+    setEditConversation(conversation.id); setEditTarget(null); setCtxMenu(null)
+  }
+  function editProblem(message: ChatMessage) {
+    return messageEditProblem(message, { userId: currentUserId, channel: conversation.channel,
+      provider: conversation.whatsapp_instances?.provider, status: conversation.status,
+      isGroup: conversation.is_group, now: editClock })
+  }
   // Follow-up: a promessa de voltar. Mesma regra do servidor (followup-rules).
   const [followUpOpen, setFollowUpOpen] = useState(false)
   const followUp = followUpChip(conversation)
@@ -292,6 +315,7 @@ export function ChatPanel({
       return
     }
     e.preventDefault()
+    setEditClock(Date.now())
     setCtxMenu({ x: e.clientX, y: e.clientY, msg })
   }
 
@@ -526,6 +550,7 @@ export function ChatPanel({
                   <div key={item.id} id={`msg-${item.msg.id}`} data-msg-id={item.msg.id}>
                   <MessageBubble
                     message={item.msg}
+                    onOpenMenu={(msg, position) => { setEditClock(Date.now()); setCtxMenu({ ...position, msg }) }}
                     agentName={item.msg.sender_type === "agent" ? (agentsById.get(item.msg.sender_id ?? "") ?? item.msg.profiles?.full_name) : null}
                     reactions={item.msg.whatsapp_msg_id ? reactionsByTarget.get(item.msg.whatsapp_msg_id) : undefined}
                     onReply={onReply}
@@ -548,6 +573,15 @@ export function ChatPanel({
       </div>
 
       <MessageInput
+        onEditAvailabilityChange={setComposerAvailable}
+        editComposer={editTarget && editTarget.conversation_id === conversation.id ? <MessageEditComposer
+          key={editTarget.id} message={editTarget} blockedReason={editProblem(editTarget)}
+          onCancel={() => setEditTarget(null)}
+          onSaved={patch => {
+            onMessageEdited?.(patch)
+            setEditTarget(current => current?.id === patch.id ? null : current)
+            toast.success("Mensagem editada")
+          }} /> : undefined}
         dropTargetRef={fileDropTargetRef}
         contactName={name}
         mediaUnavailableReason={!isWhatsAppChannel(conversation.channel) ? "Envio de arquivos ainda não disponível neste canal. Use texto." : undefined}
@@ -616,6 +650,10 @@ export function ChatPanel({
           x={ctxMenu.x}
           y={ctxMenu.y}
           message={ctxMenu.msg}
+          onEdit={ctxMenu.msg && ctxMenu.msg.conversation_id === conversation.id && !editProblem(ctxMenu.msg) && !editTarget ? msg => {
+            if (!composerAvailable) { toast.info("Conclua o anexo ou a gravação antes de editar uma mensagem."); return }
+            setEditTarget(msg)
+          } : undefined}
           conversationId={conversation.id}
           canTriggerFlow
           onReply={onReply}
