@@ -159,7 +159,7 @@ export function ConversationWorkflowProvider({ children, kanban = true, agents, 
         <DialogFooter className="border-t border-slate-100 pt-4"><Button variant="outline" disabled={pending} onClick={close}>Cancelar</Button><Button disabled={!!invalid} onClick={() => void save()}>{pending && <Loader2 className="size-4 animate-spin" />}{action === "move" ? "Mover conversa" : action === "stage" ? "Salvar etapa" : action === "qualify" ? "Salvar alteração" : action === "tags" ? "Salvar etiquetas" : title}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
-    {action === "transfer" && request && data && <TransferDialog open onClose={close} agents={agents} departments={departments} currentAssignedTo={data.conversation.assigned_to} onTransfer={async opts => { const result = await transferConversation(request.id, opts); if (result.error) throw new Error(result.error); await refreshed(request.id); setRequest(null); toast.success("Atendimento transferido.") }} />}
+    {action === "transfer" && request && data && <TransferDialog key={request.id} open onClose={close} agents={agents} departments={departments} contactName={data.contact ? displayContactName(data.contact) : undefined} currentAssignedTo={data.conversation.assigned_to} onTransfer={async opts => { const result = await transferConversation(request.id, opts); if (result.error) throw new Error(result.error); await refreshed(request.id); toast.success("Atendimento transferido.") }} />}
   </Context.Provider>
 }
 

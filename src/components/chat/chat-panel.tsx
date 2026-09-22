@@ -9,7 +9,7 @@ import { MessageInput } from "./message-input"
 import { MessageContextMenu } from "./message-context-menu"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { displayContactName, displayContactInitial } from "@/lib/contact"
-import { getChannelPolicy } from "@/lib/channels/policy"
+import { getChannelPolicy, isWhatsAppChannel } from "@/lib/channels/policy"
 import { safeHref } from "@/lib/safe-href"
 import { toast } from "sonner"
 import {
@@ -49,7 +49,7 @@ interface Props {
   loadingMessages?: boolean
   // Envio otimista — orquestrado em InboxClient
   onSendText:     (content: string, isPrivate: boolean) => Promise<void>
-  onSendMedia:    (file: File, caption: string) => Promise<void>
+  onSendMedia:    (file: File, caption: string, expectedConversationId?: string) => Promise<void>
   onSendVoice:    (file: File) => Promise<void>
   /** Responder/citar uma mensagem (define o alvo no composer). */
   onReply?:        (msg: ChatMessage) => void
@@ -150,6 +150,7 @@ export function ChatPanel({
     setScheduleOpen(true)
   }
   const messagesEndRef     = useRef<HTMLDivElement>(null)
+  const fileDropTargetRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const topSentinelRef     = useRef<HTMLDivElement>(null)
   const prevConvIdRef      = useRef<string | null>(null)
@@ -367,7 +368,7 @@ export function ChatPanel({
   const numberName = conversation.whatsapp_instances?.display_name?.trim() || null
 
   return (
-    <div className="flex flex-col h-full bg-slate-50">
+    <div ref={fileDropTargetRef} className="relative flex flex-col h-full bg-slate-50">
       <div className="flex items-center justify-between px-3 sm:px-5 py-3 bg-white border-b border-slate-200 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           {onBack && (
@@ -547,6 +548,9 @@ export function ChatPanel({
       </div>
 
       <MessageInput
+        dropTargetRef={fileDropTargetRef}
+        contactName={name}
+        mediaUnavailableReason={!isWhatsAppChannel(conversation.channel) ? "Envio de arquivos ainda não disponível neste canal. Use texto." : undefined}
         conversationId={conversation.id}
         quickReplies={quickReplies}
         disabled={conversation.status === "resolved"}

@@ -1,11 +1,15 @@
 "use client"
 
-import { useState, useRef, useEffect, useTransition } from "react"
+import { useState, useRef, useEffect, useTransition, useCallback, type RefObject } from "react"
+import { createPortal } from "react-dom"
 import { SimpleSelect } from "@/components/ui/select"
 import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2, Plus, MapPin, User as UserIcon, Users, Search, Reply, Sticker } from "lucide-react"
 import { EmojiPicker } from "./emoji-picker"
 import { VoiceRecorder } from "./voice-recorder"
+import { ImageAttachmentsDialog } from "./image-attachments-dialog"
+import { validateImageBatch } from "@/lib/chat/image-attachments"
 import { validateMediaFile, ACCEPT_ATTR } from "@/lib/chat/media-validation"
+import { attachmentBlockReason, prepareAttachment, transferredFiles } from "@/lib/chat/file-intake"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { sendOfficialTemplate, searchContactsForShare } from "@/lib/actions/chat"
 import { nameVarKey, type TemplateVar } from "@/lib/whatsapp/template-vars"
@@ -17,6 +21,10 @@ interface Props {
   conversationId: string
   quickReplies:   ChatQuickReply[]
   disabled?:      boolean
+  /** Scope drag/drop to the current chat, never to the whole page. */
+  dropTargetRef?: RefObject<HTMLDivElement | null>
+  mediaUnavailableReason?: string
+  contactName?: string
   /** Janela de 24h fechada (WhatsApp Oficial) → bloqueia texto livre, exige template. */
   windowClosed?:  boolean
   /** Janela fechada em canal sem reabertura paga (Instagram/Messenger). */
@@ -29,7 +37,7 @@ interface Props {
   contactFirstName?:  string
   /** Orquestrado em InboxClient: insere msg otimista, chama server action, faz swap do id. */
   onSendText:     (content: string, isPrivate: boolean) => Promise<void>
-  onSendMedia:    (file: File, caption: string) => Promise<void>
+  onSendMedia:    (file: File, caption: string, expectedConversationId?: string) => Promise<void>
   /** Voice note (PTT). Cliente vê como nota de voz nativa do WhatsApp. */
   onSendVoice:    (file: File) => Promise<void>
   /** Mensagem citada ativa (mostra a barra de citação acima do composer). */
@@ -69,14 +77,18 @@ function formatBytes(b: number) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function MessageInput({ conversationId, quickReplies, disabled, windowClosed, windowNoReopen, channelLabel, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
+export function MessageInput({ conversationId, quickReplies, disabled, dropTargetRef, mediaUnavailableReason, contactName, windowClosed, windowNoReopen, channelLabel, windowNeverOpened, contactFirstName, onSendText, onSendMedia, onSendVoice, replyTarget, onCancelReply, onSendLocation, onSendContact, onSendSticker }: Props) {
   const [text, setText]                = useState("")
   const [isPrivate, setIsPrivate]      = useState(false)
   const [showQuickReplies, setShowQR]  = useState(false)
   const [filteredReplies, setFiltered] = useState<ChatQuickReply[]>([])
   const [showEmoji, setShowEmoji]      = useState(false)
   const [attachedFile, setFile]        = useState<File | null>(null)
+  const [imageSession, setImageSession] = useState<{ files: File[]; caption: string; ownerId: string; recipient: string } | null>(null)
+  const [imageEditorOpen, setImageEditorOpen] = useState(false)
   const [filePreview, setFilePreview]  = useState<string | null>(null)
+  const [attachmentOwner, setAttachmentOwner] = useState<{ id: string; name: string } | null>(null)
+  const [dropSurface, setDropSurface] = useState<HTMLDivElement | null>(null)
   const [sendError, setSendError]      = useState<string | null>(null)
   const [isRecording, setIsRecording]  = useState(false)
   const [showAttachMenu, setAttachMenu] = useState(false)
@@ -86,6 +98,66 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   const inputRef                       = useRef<HTMLTextAreaElement>(null)
   const fileInputRef                   = useRef<HTMLInputElement>(null)
   const stickerInputRef                = useRef<HTMLInputElement>(null)
+  const composerRef = useRef<HTMLDivElement>(null)
+  const objectUrlRef = useRef<string | null>(null)
+  const imageEditorRef = useRef<{ addFiles: (files: File[]) => void } | null>(null)
+  const blockReason = attachmentBlockReason({ disabled, windowClosed, windowNoReopen, unavailableReason: mediaUnavailableReason, isPrivate, isRecording })
+  const wrongConversation = !!attachedFile && attachmentOwner?.id !== conversationId
+
+  useEffect(() => () => { if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current) }, [])
+
+  const acceptFiles = useCallback((files: File[]) => {
+    if (imageSession) {
+      if (!blockReason && imageSession.ownerId === conversationId) {
+        imageEditorRef.current?.addFiles(files)
+        setSendError(null)
+      } else {
+        setSendError(blockReason || `Há imagens em preparação para ${imageSession.recipient}. Volte à conversa de origem para adicionar outras.`)
+      }
+      setImageEditorOpen(true)
+      return
+    }
+    if (files.length && files.every(file => file.type.startsWith("image/"))) {
+      const problem = blockReason || (attachedFile ? "Remova o anexo atual antes de adicionar imagens." : validateImageBatch(files))
+      if (problem) { setSendError(problem); return }
+      setImageSession({ files, caption: text, ownerId: conversationId, recipient: contactName || "esta conversa" })
+      setText(""); setImageEditorOpen(true); setSendError(null); setAttachMenu(false); setShowQR(false); setShowEmoji(false)
+      return
+    }
+    const result = prepareAttachment(files, blockReason, !!attachedFile)
+    if (!result.file) { setSendError(result.error); return }
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+    const preview = result.file.type.startsWith("image/") ? URL.createObjectURL(result.file) : null
+    objectUrlRef.current = preview
+    setFile(result.file); setFilePreview(preview)
+    setAttachmentOwner({ id: conversationId, name: contactName || "esta conversa" })
+    setSendError(null); setAttachMenu(false); setShowQR(false); setShowEmoji(false)
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }, [attachedFile, blockReason, conversationId, contactName, imageSession, text])
+
+  useEffect(() => {
+    const target = dropTargetRef?.current ?? composerRef.current
+    if (!target) return
+    let depth = 0
+    const reset = () => { depth = 0; setDropSurface(null) }
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files")
+    const enter = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); depth++; setDropSurface(target) } }
+    const over = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer!.dropEffect = "copy" } }
+    const leave = () => { depth = Math.max(0, depth - 1); if (!depth) setDropSurface(null) }
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault(); reset()
+      acceptFiles(transferredFiles(e.dataTransfer!))
+    }
+    target.addEventListener("dragenter", enter); target.addEventListener("dragover", over)
+    target.addEventListener("dragleave", leave); target.addEventListener("drop", drop)
+    window.addEventListener("dragend", reset); window.addEventListener("blur", reset)
+    return () => {
+      target.removeEventListener("dragenter", enter); target.removeEventListener("dragover", over)
+      target.removeEventListener("dragleave", leave); target.removeEventListener("drop", drop)
+      window.removeEventListener("dragend", reset); window.removeEventListener("blur", reset)
+    }
+  }, [dropTargetRef, acceptFiles])
 
   // Citar → foca o campo de texto na hora.
   useEffect(() => { if (replyTarget) inputRef.current?.focus() }, [replyTarget])
@@ -139,30 +211,18 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   }
 
   function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    setSendError(null)
-    const f = e.target.files?.[0]
-    if (!f) return
-
-    const result = validateMediaFile(f)
-    if (!result.ok) {
-      setSendError(result.error ?? "Arquivo inválido.")
-      if (fileInputRef.current) fileInputRef.current.value = ""
-      return
-    }
-
-    setFile(f)
-    if (f.type.startsWith("image/")) {
-      const reader = new FileReader()
-      reader.onload = () => setFilePreview(reader.result as string)
-      reader.readAsDataURL(f)
-    } else {
-      setFilePreview(null)
-    }
+    const files = Array.from(e.target.files ?? [])
+    e.target.value = ""
+    if (files.length) acceptFiles(files)
   }
 
   function clearFile() {
+    setSendError(null)
     setFile(null)
     setFilePreview(null)
+    setAttachmentOwner(null)
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+    objectUrlRef.current = null
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
 
@@ -183,9 +243,14 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   }
 
   function handleSubmit() {
+    if (disabled || windowClosed || windowNoReopen) return
     setSendError(null)
 
     if (attachedFile) {
+      if (blockReason || wrongConversation) {
+        setSendError(blockReason || "Este anexo pertence a outra conversa. Volte à conversa de origem ou remova o anexo.")
+        return
+      }
       // Re-valida no momento do envio (caso o arquivo tenha mudado).
       const result = validateMediaFile(attachedFile)
       if (!result.ok) {
@@ -222,7 +287,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       handleSubmit()
     }
@@ -245,21 +310,32 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
   }
 
   const hasContent = !!attachedFile || text.trim().length > 0
+  const dropOverlay = dropSurface ? createPortal(
+    <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary-200 bg-white/95 p-6 text-center" role="status">
+      <div><ImageIcon className="mx-auto mb-3 size-8 text-primary" /><p className="text-base font-semibold text-slate-900">{blockReason ? "Anexo indisponível" : attachedFile ? "Já existe um anexo" : "Solte o arquivo nesta conversa"}</p><p className="mt-2 max-w-sm text-sm text-slate-500">{blockReason || (attachedFile ? "Remova o anexo atual antes de adicionar outro." : "Você poderá conferir a prévia e adicionar uma legenda antes de enviar.")}</p></div>
+    </div>, dropSurface) : null
+
+  const imageEditor = imageSession && <ImageAttachmentsDialog
+    ref={imageEditorRef}
+    files={imageSession.files} initialCaption={imageSession.caption} recipient={imageSession.recipient}
+    open={imageEditorOpen}
+    blockedReason={imageSession.ownerId !== conversationId ? `Estas imagens são para ${imageSession.recipient}. Volte à conversa de origem para enviar.` : blockReason}
+    onClose={() => setImageEditorOpen(false)}
+    onEmpty={() => { setImageSession(null); setImageEditorOpen(false) }}
+    onSend={(file, caption) => onSendMedia(file, caption, imageSession.ownerId)}
+  />
 
   // Janela fechada em canal SEM reabertura paga (Instagram/Messenger). Diferente do
   // WhatsApp: lá o template reabre pagando; aqui não existe template — só a pessoa
   // voltando a falar. Explicar o mecanismo evita o atendente digitar e levar recusa.
-  if (windowNoReopen) {
-    return <NoReopenComposer channelLabel={channelLabel ?? "Instagram"} />
-  }
-
-  // Janela de 24h fechada (Oficial): só template aprovado reabre a conversa.
-  if (windowClosed) {
-    return <ClosedWindowGate conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} />
-  }
-
   return (
-    <div className="border-t border-slate-200 bg-white relative pb-[env(safe-area-inset-bottom)]">
+    <>{imageEditor}{windowNoReopen ? <>{dropOverlay}<NoReopenComposer channelLabel={channelLabel ?? "Instagram"} /></> : windowClosed ? <>{dropOverlay}<ClosedWindowGate conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} /></> :
+    <div ref={composerRef} className="border-t border-slate-200 bg-white relative pb-[env(safe-area-inset-bottom)]">
+      {dropOverlay}
+      {imageSession && <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-primary-50 px-4 py-2">
+        <p className="min-w-0 text-xs text-slate-600">Imagens em preparação para <span className="font-medium">{imageSession.recipient}</span></p>
+        <button type="button" onClick={() => setImageEditorOpen(true)} className="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-primary hover:bg-primary-100">Abrir editor</button>
+      </div>}
 
       {showQuickReplies && (
         <div className="border-b border-slate-100 max-h-40 overflow-y-auto">
@@ -296,7 +372,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
       )}
 
       {sendError && (
-        <div className="flex items-start gap-2 px-4 py-2 bg-danger-bg border-b border-red-100">
+        <div role="alert" className="flex items-start gap-2 px-4 py-2 bg-danger-bg border-b border-red-100">
           <AlertCircle className="size-3.5 text-danger shrink-0 mt-0.5" />
           <span className="text-xs text-red-700 flex-1">{sendError}</span>
           <button
@@ -312,10 +388,11 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
 
       {attachedFile && (
         <div className="px-3 py-2 border-b border-slate-100 bg-slate-50">
+          <p className="mb-2 text-xs font-medium text-slate-600">Prévia do anexo · confira antes de enviar</p>
           <div className="flex items-center gap-3 p-2 bg-white rounded-lg border border-slate-200">
             {filePreview ? (
               /* eslint-disable-next-line @next/next/no-img-element */
-              <img src={filePreview} alt="" className="size-12 rounded object-cover" />
+              <img src={filePreview} alt={`Prévia de ${attachedFile.name}`} className="size-20 shrink-0 rounded-lg bg-slate-50 object-contain sm:size-24" />
             ) : (
               <div className="size-12 rounded bg-primary-50 flex items-center justify-center text-primary-600">
                 {(() => {
@@ -327,15 +404,18 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-slate-900 truncate">{attachedFile.name}</p>
               <p className="text-[11px] text-slate-400">{formatBytes(attachedFile.size)}</p>
+              <p className="mt-1 text-xs text-slate-500">Para {attachmentOwner?.name}</p>
             </div>
             <button
               type="button"
               onClick={clearFile}
+              aria-label="Remover anexo"
               className="size-7 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center transition-colors"
             >
               <X className="size-4" />
             </button>
           </div>
+          {wrongConversation && <p role="alert" className="mt-2 text-xs text-danger">Este anexo é de outra conversa. Volte para {attachmentOwner?.name} ou remova-o para continuar.</p>}
         </div>
       )}
 
@@ -391,7 +471,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
             <button
               type="button"
               onClick={() => setIsPrivate(!isPrivate)}
-              disabled={!!attachedFile}
+              disabled={!!attachedFile || !!imageSession}
               title={attachedFile ? "Mídia sempre vai ao cliente" : (isPrivate ? "Sair do chat interno (voltar a falar com o cliente)" : "Chat interno (conversa entre atendentes)")}
               className={`hidden sm:flex size-10 items-center justify-center rounded-lg transition-colors ${
                 isPrivate
@@ -406,7 +486,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={isPrivate}
+              disabled={!!blockReason}
               title="Anexar arquivo"
               className="hidden sm:flex size-10 items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
@@ -415,6 +495,9 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
             <input
               ref={fileInputRef}
               type="file"
+              aria-label="Selecionar anexo"
+              multiple
+              disabled={!!blockReason}
               accept={ACCEPT_ATTR}
               onChange={handleFileSelected}
               className="sr-only"
@@ -442,7 +525,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
                     <button
                       type="button"
                       onClick={() => { setAttachMenu(false); setIsPrivate(!isPrivate) }}
-                      disabled={!!attachedFile}
+                      disabled={!!attachedFile || !!imageSession}
                       className="sm:hidden w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
                     >
                       <Users className="size-4 text-amber-600" /> {isPrivate ? "Sair do chat interno" : "Chat interno"}
@@ -450,7 +533,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
                     <button
                       type="button"
                       onClick={() => { setAttachMenu(false); fileInputRef.current?.click() }}
-                      disabled={isPrivate}
+                      disabled={!!blockReason}
                       className="sm:hidden w-full flex items-center gap-2.5 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-40"
                     >
                       <Paperclip className="size-4 text-primary-600" /> Anexar arquivo
@@ -523,6 +606,13 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
               value={text}
               onChange={(e) => handleInput(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={e => {
+                const files = transferredFiles(e.clipboardData)
+                if (!files.length) return
+                e.preventDefault()
+                acceptFiles(files)
+              }}
+              aria-label={attachedFile ? "Legenda do anexo" : isPrivate ? "Mensagem interna" : "Mensagem para o cliente"}
               placeholder={
                 attachedFile ? "Legenda (opcional)..." :
                 isPrivate ? "Mensagem para a equipe… (o cliente não vê)" :
@@ -548,7 +638,8 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={disabled}
+              aria-label={attachedFile ? "Enviar anexo" : isPrivate ? "Enviar mensagem interna" : "Enviar mensagem"}
+              disabled={disabled || (!!attachedFile && (!!blockReason || wrongConversation))}
               className={`size-10 flex items-center justify-center rounded-xl shrink-0 transition-all ${
                 isPrivate
                   ? "bg-amber-500 hover:bg-amber-600 text-white shadow-sm"
@@ -561,7 +652,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
             <button
               type="button"
               onClick={() => { setSendError(null); setIsRecording(true) }}
-              disabled={disabled || isPrivate}
+              disabled={disabled || isPrivate || !!imageSession}
               title={isPrivate ? "Áudio sempre vai ao cliente — desligue nota privada" : "Gravar áudio"}
               className="size-10 flex items-center justify-center rounded-xl shrink-0 bg-primary hover:bg-primary-700 text-white shadow-sm shadow-primary/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
@@ -571,6 +662,7 @@ export function MessageInput({ conversationId, quickReplies, disabled, windowClo
         </div>
       )}
     </div>
+    }</>
   )
 }
 

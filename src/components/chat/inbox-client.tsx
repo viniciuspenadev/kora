@@ -10,6 +10,7 @@ import { ContactDetailsOverlay } from "@/components/chat/contact-details-overlay
 import { useConversationAccess } from "@/components/chat/use-conversation-access"
 import { MessageCircle } from "lucide-react"
 import { toast } from "sonner"
+import { MediaSendBlockedError } from "@/lib/chat/image-attachments"
 import Link from "next/link"
 import {
   assignConversation,
@@ -829,9 +830,11 @@ export function InboxClient({
     }
   }, [makeTempMessage])
 
-  const sendMediaInternal = useCallback(async (file: File, caption: string, isVoiceNote: boolean) => {
+  const sendMediaInternal = useCallback(async (file: File, caption: string, isVoiceNote: boolean, expectedConversationId?: string) => {
     const convId = activeIdRef.current
-    if (!convId) return
+    if (!convId || (expectedConversationId && expectedConversationId !== convId)) {
+      throw new MediaSendBlockedError("A conversa mudou. Volte à conversa de origem para continuar o envio.")
+    }
 
     const blobUrl  = URL.createObjectURL(file)
     const mimeType = file.type
@@ -872,14 +875,8 @@ export function InboxClient({
       if (reply) fd.append("replyTo", reply.id)
       const result = await sendChatMedia(convId, fd)
       if ("error" in result) {
-        // Falha tratada (ex: formato não aceito pelo WhatsApp Oficial) — bolha
-        // marca "falhou" + toast claro, SEM crashar a UI (era o bug do re-throw).
-        URL.revokeObjectURL(blobUrl)
-        setActiveMessages((prev) =>
-          prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m)
-        )
-        toast.error(result.error)
-        return
+        // The composer catches this rejection and retains the image draft.
+        throw new Error(result.error)
       }
       // Swap id. Mantém blob URL até o próximo poll/realtime trazer o real
       // (com storage_path no metadata → resolveMediaUrl passa a usar /api/media/<id>).
@@ -887,17 +884,17 @@ export function InboxClient({
         prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m)
       )
     } catch (err) {
-      console.error("sendMedia:", err)
       URL.revokeObjectURL(blobUrl)
       setActiveMessages((prev) =>
         prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m)
       )
-      toast.error("Não consegui enviar a mídia. Tente de novo.")
+      // Do not treat an uncertain response as success (or automatically retry it).
+      throw err instanceof Error ? err : new Error("Não foi possível confirmar o envio da mídia. Confira o histórico antes de tentar novamente.")
     }
   }, [makeTempMessage])
 
   const handleSendMedia = useCallback(
-    (file: File, caption: string) => sendMediaInternal(file, caption, false),
+    (file: File, caption: string, expectedConversationId?: string) => sendMediaInternal(file, caption, false, expectedConversationId),
     [sendMediaInternal],
   )
 
