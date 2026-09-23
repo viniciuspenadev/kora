@@ -13,7 +13,7 @@ export async function reconcileConversationAccess(ids: string[]) {
     scope.departmentId, scope.instanceIds, scope.supervisesDepartments])
   if (!ids.length) return { visibleIds: [] as string[], scopeKey }
   const { data, error } = await supabaseAdmin.from("chat_conversations")
-    .select("id, assigned_to, participants, department_id, instance_id")
+    .select("id, assigned_to, participants, department_id, instance_id, is_group, group_live_enabled, group_access_mode")
     .eq("tenant_id", scope.tenantId).in("id", [...new Set(ids)])
   if (error) throw new Error("Não foi possível confirmar o acesso às conversas.")
   return { visibleIds: (data ?? []).filter(c => canViewConversation(scope, c)).map(c => c.id as string), scopeKey }

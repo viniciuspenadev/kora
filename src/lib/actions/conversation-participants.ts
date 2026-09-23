@@ -7,9 +7,9 @@ import { revalidatePath } from "next/cache"
 async function context(conversationId: string) {
   const scope = await getViewerScope()
   const { data: conv, error } = await supabaseAdmin.from("chat_conversations")
-    .select("assigned_to, participants, department_id, instance_id, updated_at")
+    .select("assigned_to, participants, department_id, instance_id, updated_at, is_group")
     .eq("tenant_id", scope.tenantId).eq("id", conversationId).maybeSingle()
-  if (error || !conv || !canViewConversation(scope, conv)) throw new Error("Conversa indisponível ou sem acesso.")
+  if (error || !conv || conv.is_group || !canViewConversation(scope, conv)) throw new Error("Conversa indisponível ou sem acesso.")
   return { scope, conv, canManage: scope.isAdmin || conv.assigned_to === scope.userId }
 }
 

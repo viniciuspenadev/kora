@@ -27,10 +27,10 @@ export function NewContactButton() {
   )
 }
 
-function NewContactDialog({ onClose }: { onClose: () => void }) {
+export function NewContactDialog({ onClose, initialPhone = "" }: { onClose: () => void; initialPhone?: string }) {
   const router = useRouter()
   const [name, setName]   = useState("")
-  const [phone, setPhone] = useState("")
+  const [phone, setPhone] = useState(initialPhone)
   const [bsuid, setBsuid] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [pending, start]  = useTransition()

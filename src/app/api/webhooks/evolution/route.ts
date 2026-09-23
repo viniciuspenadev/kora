@@ -1,3 +1,4 @@
+import { reconcileMessageDelete } from "@/lib/chat/reconcile-message-delete"
 import { NextRequest, NextResponse, after } from "next/server"
 import { reconcileMessageEdit } from "@/lib/chat/reconcile-message-edit"
 import { supabaseAdmin } from "@/lib/supabase"
@@ -17,6 +18,7 @@ import { applyExternalReply, evolutionSentAt } from "@/lib/channels/external-rep
 import { handleCampaignInbound } from "@/lib/campaigns/engine"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
 import { notifyInboundMessage } from "@/lib/push/send"
+import { isEvolutionGroupJid, recordEvolutionGroupMessage } from "@/lib/channels/evolution-group-inbound"
 import { slimAdMeta } from "@/lib/ad-reply"
 import type { EvolutionMessageData, ExternalAdReply } from "@/types/chat"
 
@@ -48,6 +50,7 @@ interface InstanceRow {
   evolution_url?:            string | null
   evolution_key?:            string | null
   instance_name?:            string | null
+  settings?:                 Record<string, unknown> | null
   meta_phone_number_id?:     string | null
   meta_business_account_id?: string | null
   meta_access_token?:        string | null
@@ -122,6 +125,8 @@ export type ResolvedInstance = {
   evolution_url:  string
   evolution_key:  string
   instance_name:  string
+  provider?:      string | null
+  settings?:      Record<string, unknown> | null
 }
 
 /**
@@ -153,7 +158,7 @@ export async function dispatchEvolutionEvent(
   switch (event) {
     case "send.message.update":
     case "SEND_MESSAGE_UPDATE":
-      await reconcileMessageEdit(instance, body.data)
+      if (!isGroupProtocol(body.data)) await reconcileMessageEdit(instance, body.data)
       break
     case "messages.upsert":
     case "MESSAGES_UPSERT":
@@ -163,6 +168,26 @@ export async function dispatchEvolutionEvent(
     case "messages.update":
     case "MESSAGES_UPDATE":
       await handleMessageUpdate(instance, body.data)
+      break
+
+    case "messages.delete":
+    case "MESSAGES_DELETE":
+      for (const deletion of (Array.isArray(body.data) ? body.data : [body.data])) {
+        if (!isGroupProtocol(deletion)) await reconcileMessageDelete(instance, deletion, true)
+      }
+      break
+
+    case "groups.upsert":
+    case "GROUPS_UPSERT":
+    case "group.update":
+    case "GROUP_UPDATE":
+      if (instance.settings?.groups_pilot_enabled === true) await updateKnownGroupMetadata(instance, body.data)
+      break
+
+    case "group-participants.update":
+    case "GROUP_PARTICIPANTS_UPDATE":
+      // Participantes são consultados sob demanda ao abrir o grupo.
+      // O evento não cadastra contatos nem cria conversa sem mensagem.
       break
 
     case "connection.update":
@@ -182,6 +207,30 @@ export async function dispatchEvolutionEvent(
     .from("whatsapp_instances")
     .update({ last_webhook_at: new Date().toISOString() })
     .eq("id", instance.id)
+}
+
+function isGroupProtocol(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  const obj = value as { key?: { remoteJid?: string }; remoteJid?: string; message?: { protocolMessage?: { key?: { remoteJid?: string } } } }
+  return isEvolutionGroupJid(obj.key?.remoteJid)
+    || isEvolutionGroupJid(obj.remoteJid)
+    || isEvolutionGroupJid(obj.message?.protocolMessage?.key?.remoteJid)
+}
+
+async function updateKnownGroupMetadata(instance: ResolvedInstance, data: unknown): Promise<void> {
+  for (const item of (Array.isArray(data) ? data : [data])) {
+    if (!item || typeof item !== "object") continue
+    const group = item as { id?: string; groupJid?: string; jid?: string; subject?: string; name?: string }
+    const jid = group.id ?? group.groupJid ?? group.jid
+    if (!isEvolutionGroupJid(jid)) continue
+    const name = (group.subject ?? group.name)?.trim().slice(0, 160)
+    if (!name) continue
+    const { error } = await supabaseAdmin.from("chat_conversations")
+      .update({ group_name: name, updated_at: new Date().toISOString() })
+      .eq("tenant_id", instance.tenant_id).eq("instance_id", instance.id)
+      .eq("is_group", true).eq("group_jid", jid).eq("group_live_enabled", true)
+    if (error) throw error
+  }
 }
 
 /**
@@ -224,6 +273,15 @@ async function handleMessageUpsert(
   const messages   = Array.isArray(data) ? data : [data]
 
   for (const msg of messages) {
+    if (isEvolutionGroupJid(msg.key?.remoteJid)) {
+      // Rollout interno por instância: a Blue só começa a gravar grupos após
+      // o backend, a RLS e o Inbox terem sido implantados e conferidos.
+      if (instance.settings?.groups_pilot_enabled === true) {
+        await recordEvolutionGroupMessage(instance, msg, extractMessageContent(msg))
+      }
+      continue
+    }
+    if (await reconcileMessageDelete(instance, msg)) continue
     if (await reconcileMessageEdit(instance, msg)) continue
     if (!msg.key?.remoteJid) continue
 
@@ -231,27 +289,8 @@ async function handleMessageUpsert(
 
     if (jid === "status@broadcast") continue
 
-    /**
-     * 🔴 GRUPO NÃO ENTRA (decisão do dono, 2026-08-03). Descartado na porta, antes de
-     *    qualquer escrita.
-     *
-     *    O que a ingestão de grupo estava fazendo em produção: a Meta identifica o
-     *    participante por `@lid` — um id OPACO, que esconde o telefone de propósito. Nós
-     *    cortávamos o sufixo e chamávamos aquilo de telefone, criando uma FICHA INDIVIDUAL
-     *    por participante. Resultado medido: **44 contatos fantasma** em 2 clientes, e 24
-     *    saudações automáticas disparadas para endereços que **o WhatsApp confirma não
-     *    existir** (`whatsappNumbers` → `exists:false`). Nenhum erro, nenhum alerta: as
-     *    mensagens ficam em "enviada" pra sempre e o atendente lê como "não responderam".
-     *
-     * ⚠️ REABRIR EXIGE, ANTES: (1) participante de grupo **não** vira contato 1:1;
-     *    (2) o `@lid` vira identidade própria em `contact_identities`, e `phone_number`
-     *    fica VAZIO em vez de receber o id; (3) decidir o que é "responder num grupo".
-     *    Nada disso existe hoje — por isso está fechado, e não meio-aberto.
-     *
-     * ⚠️ Os guardas `is_group` espalhados pelo app (IA, inatividade, varredura
-     *    de janela) FICAM: as 9 conversas de grupo já gravadas continuam no banco, e são
-     *    eles que impedem a IA de responder dentro delas.
-     */
+    // JID de grupo inválido nunca cai no ramo 1:1: o participante @lid não é
+    // telefone e não pode criar contato, saudação ou conversa individual.
     if (jid.includes("@g.us")) continue
 
     // ── Protocol message: delete/edit ───────────────────────────
@@ -259,20 +298,6 @@ async function handleMessageUpsert(
     // Atualiza mensagem existente em vez de criar nova — sai cedo do loop.
     const protocol = msg.message?.protocolMessage
     if (protocol?.key?.id) {
-      const targetId = protocol.key.id
-      if (protocol.type === 0) {
-        // Cliente apagou no WhatsApp
-        await supabaseAdmin
-          .from("chat_messages")
-          .update({
-            content_type: "deleted",
-            content:      null,
-            deleted_at:   new Date().toISOString(),
-          })
-          .eq("tenant_id", tenantId)
-          .eq("whatsapp_msg_id", targetId)
-        continue
-      }
       // Outros tipos de protocolo (read receipts em grupo, etc.) — ignora
       continue
     }
@@ -490,7 +515,7 @@ async function handleMessageUpsert(
       ...(inboundSentAt ? { created_at: inboundSentAt } : {}),
     })
 
-    // 23505 = unique violation no índice (tenant_id, whatsapp_msg_id).
+    // 23505 = unique violation no índice (conversation_id, whatsapp_msg_id).
     // Evolution re-tentou o mesmo POST: ignora sem incrementar unread/preview.
     if (insertErr?.code === "23505") {
       continue
@@ -698,6 +723,25 @@ async function handleMessageUpdate(instance: { id: string; tenant_id: string }, 
   const updates = Array.isArray(data) ? data : [data]
 
   for (const update of updates) {
+    if (isGroupProtocol(update)) {
+      const u = update as { key?: { id?: string; remoteJid?: string }; remoteJid?: string; status?: string }
+      const statusMap: Record<string, MessageStatus> = { DELIVERY_ACK: "delivered", READ: "read", PLAYED: "read" }
+      const next = u.status ? statusMap[u.status] : null
+      const groupJid = u.key?.remoteJid ?? u.remoteJid
+      if (!next || !u.key?.id || !isEvolutionGroupJid(groupJid)) continue
+      const { data: group } = await supabaseAdmin.from("chat_conversations")
+        .select("id").eq("tenant_id", instance.tenant_id).eq("instance_id", instance.id)
+        .eq("is_group", true).eq("group_jid", groupJid).eq("group_live_enabled", true)
+        .in("status", ["open", "pending", "snoozed"]).maybeSingle()
+      if (!group) continue
+      const { error } = await supabaseAdmin.from("chat_messages")
+        .update(statusPatch(next)).eq("tenant_id", instance.tenant_id)
+        .eq("conversation_id", group.id).eq("whatsapp_msg_id", u.key.id)
+        .in("status", allowedFrom(next))
+      if (error) console.error("[evolution-group-status]", error.code, error.message)
+      continue
+    }
+    if (await reconcileMessageDelete(instance, update)) continue
     if (await reconcileMessageEdit(instance, update)) continue
     const u = update as { key?: { id?: string }; status?: string }
     if (!u.key?.id || !u.status) continue

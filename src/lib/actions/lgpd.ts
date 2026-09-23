@@ -185,6 +185,15 @@ export async function exportPersonalData(contactId: string): Promise<
     : { rows: [] as Record<string, unknown>[] }
   if ("error" in editRes) return { error: editRes.error }
 
+  const deletionRes = conversationIds.length
+    ? await fetchAllPages<Record<string, unknown>>("histórico de exclusões", (from, to) =>
+        supabaseAdmin.from("chat_message_deletions")
+          .select("id,message_id,conversation_id,actor_user_id,source,status,created_at,confirmed_at")
+          .eq("tenant_id", tenantId).in("conversation_id", conversationIds)
+          .order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to))
+    : { rows: [] as Record<string, unknown>[] }
+  if ("error" in deletionRes) return { error: deletionRes.error }
+
   // 4. Tags aplicadas
   const { data: taggings, error: tagErr } = await supabaseAdmin
     .from("taggings")
@@ -319,6 +328,7 @@ export async function exportPersonalData(contactId: string): Promise<
     conversations,
     messages,
     message_edits: editRes.rows,
+    message_deletions: deletionRes.rows,
     taggings:            taggings ?? [],
     contact_identities:  identities.data ?? [],
     deals:               deals.data ?? [],

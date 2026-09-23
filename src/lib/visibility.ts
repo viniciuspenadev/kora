@@ -149,6 +149,9 @@ export interface ConvVisibilityFields {
   participants?:  string[] | null
   department_id?: string | null
   instance_id?:   string | null
+  is_group?:      boolean | null
+  group_live_enabled?: boolean | null
+  group_access_mode?: "management" | "number_team" | "selected" | null
 }
 
 /** Select dos campos de escopo em tenant_users — compartilhado entre a sessão do
@@ -228,6 +231,20 @@ export async function getViewerScope(): Promise<ViewerScope> {
  * mídia, envio) onde já temos a conversa em mãos.
  */
 export function canViewConversation(scope: ViewerScope, conv: ConvVisibilityFields): boolean {
+  if (conv.is_group === true) {
+    if (conv.group_live_enabled !== true) return false
+    if (scope.isAdmin) return true
+    // Grupos não herdam fila geral, supervisão nem o bypass de número das
+    // conversas individuais. Ausência de modo/instância falha fechada.
+    if (!conv.instance_id || !conv.group_access_mode) return false
+    if (scope.instanceIds && !scope.instanceIds.includes(conv.instance_id)) return false
+    if (conv.group_access_mode === "number_team") return true
+    return conv.group_access_mode === "selected" && (
+      conv.assigned_to === scope.userId ||
+      (conv.participants ?? []).includes(scope.userId) ||
+      (!!scope.departmentId && conv.department_id === scope.departmentId)
+    )
+  }
   if (scope.isAdmin || scope.viewAll) return true
   // Supervisor ESCOPADO: vê tudo dos setores que supervisiona — inclusive conversas
   // COM dono (≠ fila do setor, que é só não-atribuído). Independe de número.
@@ -269,6 +286,7 @@ export async function assertConversationAccess(
     .select("assigned_to, participants, department_id, instance_id")
     .eq("id", conversationId)
     .eq("tenant_id", scope.tenantId)
+    .eq("is_group", false)
     .maybeSingle()
   const conv = (data ?? null) as ConvVisibilityFields | null
   if (!conv || !canViewConversation(scope, conv)) throw new Error("Conversa não encontrada")
@@ -367,8 +385,17 @@ export function memberSeesUnassigned(
   return !!m.department_id && conv.department_id === m.department_id    // fila do setor
 }
 
-export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
-  if (scope.isAdmin || scope.viewAll) return query
+export function applyVisibilityFilter<T>(query: T, scope: ViewerScope, includeGroups = false): T {
+  // As listas de CRM, Kanban e tarefas continuam exclusivamente individuais.
+  // Só o Inbox opta explicitamente pelo ramo de grupos quando o fluxo estiver pronto.
+  if (!includeGroups) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const individualQuery = (query as any).eq("is_group", false) as T
+    if (scope.isAdmin || scope.viewAll) return individualQuery
+    query = individualQuery
+  } else if (scope.isAdmin) {
+    return query
+  }
   // Restrição de número (Fase D): entra DENTRO dos ramos de descoberta (pool/fila),
   // nunca global — senão restringiria também assigned/participants (grant explícito).
   // instanceIds = null → string vazia → ramos idênticos ao comportamento clássico.
@@ -397,6 +424,22 @@ export function applyVisibilityFilter<T>(query: T, scope: ViewerScope): T {
   if (scope.supervisesDepartments.length) {
     clauses.push(`department_id.in.(${scope.supervisesDepartments.join(",")})`)
   }
+  if (!includeGroups) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (query as any).or(clauses.join(",")) as T
+  }
+  const individual = scope.viewAll
+    ? "is_group.eq.false"
+    : `and(is_group.eq.false,or(${clauses.join(",")}))`
+  const selected = [
+    `assigned_to.eq.${scope.userId}`,
+    `participants.cs.{${scope.userId}}`,
+    ...(scope.departmentId ? [`department_id.eq.${scope.departmentId}`] : []),
+  ]
+  const groupNumber = scope.instanceIds
+    ? `,instance_id.in.(${scope.instanceIds.join(",")})`
+    : ""
+  const group = `and(is_group.eq.true,group_live_enabled.eq.true,instance_id.not.is.null${groupNumber},or(group_access_mode.eq.number_team,and(group_access_mode.eq.selected,or(${selected.join(",")}))))`
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (query as any).or(clauses.join(",")) as T
+  return (query as any).or(`${individual},${group}`) as T
 }

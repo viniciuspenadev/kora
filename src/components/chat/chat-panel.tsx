@@ -6,6 +6,8 @@ import { ContactPic } from "@/components/chat/contact-pic"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { MessageBubble } from "./message-bubble"
 import { MessageInput } from "./message-input"
+import { MessageDeleteDialog } from "./message-delete-dialog"
+import { messageDeleteProblem } from "@/lib/chat/message-delete"
 import { MessageEditComposer } from "./message-edit-composer"
 import { messageEditProblem } from "@/lib/chat/message-edit"
 import { MessageContextMenu } from "./message-context-menu"
@@ -17,7 +19,7 @@ import { toast } from "sonner"
 import {
   Phone, CheckCircle2, Clock, XCircle,
   RotateCcw, Loader2, Megaphone, ExternalLink, AlarmClock,
-  ArrowLeft, Info,
+  ArrowLeft, Info, UsersRound,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
 import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
@@ -35,7 +37,7 @@ import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
 
 interface Props {
   currentUserId?: string
-  onMessageEdited?: (patch: Pick<ChatMessage, "id" | "content" | "edited_at">) => void
+  onMessageEdited?: (patch: Pick<ChatMessage, "id" | "content"> & Partial<Pick<ChatMessage, "edited_at" | "deleted_at" | "content_type">>) => void
   pipelines?: Array<{ id: string; name: string }>
   stages?: Array<{ id: string; name: string }>
   conversation: ChatConversation
@@ -133,6 +135,7 @@ export function ChatPanel({
   const isArchived = !!conversation.archived_at
   // Menu de contexto (clique direito numa mensagem): responder/copiar/reagir/agendar/disparar fluxo.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; msg: ChatMessage | null } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<ChatMessage | null>(null)
   const [editTarget, setEditTarget] = useState<ChatMessage | null>(null)
   const [composerAvailable, setComposerAvailable] = useState(true)
   const [editClock, setEditClock] = useState(() => Date.now())
@@ -144,7 +147,7 @@ export function ChatPanel({
   }, [editClockActive])
   const [editConversation, setEditConversation] = useState(conversation.id)
   if (editConversation !== conversation.id) {
-    setEditConversation(conversation.id); setEditTarget(null); setCtxMenu(null)
+    setEditConversation(conversation.id); setEditTarget(null); setDeleteTarget(null); setCtxMenu(null)
   }
   function editProblem(message: ChatMessage) {
     return messageEditProblem(message, { userId: currentUserId, channel: conversation.channel,
@@ -153,7 +156,7 @@ export function ChatPanel({
   }
   // Follow-up: a promessa de voltar. Mesma regra do servidor (followup-rules).
   const [followUpOpen, setFollowUpOpen] = useState(false)
-  const followUp = followUpChip(conversation)
+  const followUp = conversation.is_group ? null : followUpChip(conversation)
   // Agendar pela conversa (módulo agenda) — carrega recursos/serviços on-demand.
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [agendaData, setAgendaData] = useState<{ resources: ResourceRow[]; services: ServiceRow[] } | null>(null)
@@ -183,7 +186,7 @@ export function ChatPanel({
   const prevMessagesLengthRef       = useRef(0)
 
   const contact = conversation.chat_contacts
-  const name    = contact ? displayContactName(contact) : formatPhoneDisplay("")
+  const name    = conversation.is_group ? (conversation.group_name?.trim() || "Grupo do WhatsApp") : contact ? displayContactName(contact) : formatPhoneDisplay("")
 
   const currentStatus = STATUS_OPTIONS.find((s) => s.key === conversation.status) ?? STATUS_OPTIONS[0]
 
@@ -361,7 +364,6 @@ export function ChatPanel({
       clearTimeout(t2)
       cleanups.forEach((fn) => fn())
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id, lastMessageId])
 
   // IntersectionObserver no topo: dispara loadOlder quando sentinela entra na tela
@@ -406,17 +408,20 @@ export function ChatPanel({
             </button>
           )}
           <ContactPic
-              pic={contact?.profile_pic_url}
+              pic={conversation.is_group ? conversation.group_picture : contact?.profile_pic_url}
               imgClass="size-10 rounded-full object-cover shrink-0"
               fallback={
                 <div className="size-10 rounded-full bg-gradient-to-br from-white to-slate-200 ring-1 ring-inset ring-slate-200/70 flex items-center justify-center shrink-0">
-                  <span className="text-sm font-bold text-slate-400">{contact ? displayContactInitial(contact) : "?"}</span>
+                  {conversation.is_group
+                    ? <UsersRound className="size-5 text-slate-500" aria-hidden="true" />
+                    : <span className="text-sm font-bold text-slate-400">{contact ? displayContactInitial(contact) : "?"}</span>}
                 </div>
               }
             />
           <div className="min-w-0">
             <p className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5">
-              {name}
+              <span className="truncate">{name}</span>
+              {conversation.is_group && <span className="shrink-0 rounded bg-primary-50 px-1.5 py-0.5 text-[9px] font-semibold leading-none tracking-wide text-primary-700" aria-label="Conversa em grupo">GRUPO</span>}
             </p>
             <div className="flex items-center gap-2 flex-wrap">
                   {numberName && (
@@ -558,8 +563,12 @@ export function ChatPanel({
                     senderLabel={
                       item.msg.sender_type !== "contact"
                         ? null
-                        : item.msg.group_participant_jid
-                          ? formatPhoneDisplay(item.msg.group_participant_jid.split("@")[0])
+                        : conversation.is_group
+                          ? (typeof item.msg.metadata?.group_push_name === "string" && item.msg.metadata.group_push_name.trim()
+                              ? item.msg.metadata.group_push_name.trim()
+                              : item.msg.group_participant_jid?.endsWith("@s.whatsapp.net")
+                                ? formatPhoneDisplay(item.msg.group_participant_jid.split("@")[0])
+                                : "Participante")
                           : name
                     }
                   />
@@ -571,6 +580,10 @@ export function ChatPanel({
         )}
         <div ref={messagesEndRef} />
       </div>
+
+      {deleteTarget && deleteTarget.conversation_id === conversation.id && <MessageDeleteDialog
+        key={deleteTarget.id} message={deleteTarget} onClose={() => setDeleteTarget(null)}
+        onDeleted={patch => { onMessageEdited?.(patch); toast.success("Exclusão confirmada pelo WhatsApp") }} />}
 
       <MessageInput
         onEditAvailabilityChange={setComposerAvailable}
@@ -650,7 +663,11 @@ export function ChatPanel({
           x={ctxMenu.x}
           y={ctxMenu.y}
           message={ctxMenu.msg}
-          onEdit={ctxMenu.msg && ctxMenu.msg.conversation_id === conversation.id && !editProblem(ctxMenu.msg) && !editTarget ? msg => {
+          onDelete={ctxMenu.msg && ctxMenu.msg.conversation_id === conversation.id && !editTarget && !deleteTarget
+            && !messageDeleteProblem(ctxMenu.msg, { userId: currentUserId, channel: conversation.channel,
+              provider: conversation.whatsapp_instances?.provider, status: conversation.status,
+              isGroup: conversation.is_group, now: editClock }) ? setDeleteTarget : undefined}
+          onEdit={ctxMenu.msg && ctxMenu.msg.conversation_id === conversation.id && !editProblem(ctxMenu.msg) && !editTarget && !deleteTarget ? msg => {
             if (!composerAvailable) { toast.info("Conclua o anexo ou a gravação antes de editar uma mensagem."); return }
             setEditTarget(msg)
           } : undefined}

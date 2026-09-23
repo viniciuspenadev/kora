@@ -33,7 +33,7 @@ export async function POST(
 
     const { data: instance } = await supabaseAdmin
       .from("whatsapp_instances")
-      .select("id, tenant_id, evolution_url, evolution_key, instance_name")
+      .select("id, tenant_id, provider, evolution_url, evolution_key, instance_name, settings")
       .eq("webhook_secret", secret)
       .maybeSingle()
 

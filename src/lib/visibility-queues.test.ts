@@ -28,6 +28,37 @@ it.each([
 it("admin continua vendo tudo com pool desligado", () => {
   expect(canViewConversation(scopeFromTenantUserRow("tenant", "agent", true, member), { ...conversation, assigned_to: "other" })).toBe(true)
 })
+const groupCases: Array<[
+  string,
+  { see_pool?: boolean; instance_ids?: string[]; view_all?: boolean },
+  "management" | "number_team" | "selected",
+  boolean,
+]> = [
+  ["novo grupo: só gestão", {}, "management", false],
+  ["equipe do número", {}, "number_team", true],
+  ["outro número", { instance_ids: ["number-b"] }, "number_team", false],
+  ["selecionado pelo agente", { see_pool: true }, "selected", false],
+  ["selecionado pelo departamento", {}, "selected", true],
+  ["supervisor geral não atravessa grupo", { view_all: true, instance_ids: ["number-b"] }, "number_team", false],
+]
+it.each(groupCases)("grupo: %s", (_label, flags, mode, expected) => {
+  const scope = scopeFromTenantUserRow("tenant", "agent", false, { ...member, ...flags })
+  const conv = { ...conversation, is_group: true, group_live_enabled: true, group_access_mode: mode,
+    department_id: mode === "selected" && _label === "selecionado pelo departamento" ? "sales" : null }
+  expect(canViewConversation(scope, conv)).toBe(expected)
+})
+it("convite explícito de grupo não atravessa o acesso ao número", () => {
+  const scope = scopeFromTenantUserRow("tenant", "agent", false, member)
+  expect(canViewConversation(scope, { ...conversation, is_group: true, group_live_enabled: true,
+    group_access_mode: "selected", instance_id: "number-b", assigned_to: "agent", participants: ["agent"] })).toBe(false)
+  expect(canViewConversation(scope, { ...conversation, is_group: true, group_live_enabled: true,
+    group_access_mode: "selected", participants: ["agent"] })).toBe(true)
+})
+it("grupo legado não entra no piloto mesmo com agente selecionado", () => {
+  const scope = scopeFromTenantUserRow("tenant", "agent", false, member)
+  expect(canViewConversation(scope, { ...conversation, is_group: true,
+    group_live_enabled: false, group_access_mode: "selected", participants: ["agent"] })).toBe(false)
+})
 it("push da fila própria é elegível com pool desligado", () => {
   expect(memberSeesUnassigned(member, { department_id: "sales", instance_id: "number-a" })).toBe(true)
 })

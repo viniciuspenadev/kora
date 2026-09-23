@@ -9,6 +9,7 @@ export async function getNavigationUnread() {
   const { data, error } = await supabaseAdmin.from("chat_conversations")
     .select("unread_count, pipeline_id, archived_at, assigned_to, participants, department_id, instance_id")
     .eq("tenant_id", scope.tenantId)
+    .eq("is_group", false)
     .gt("unread_count", 0)
     .in("status", ["open", "pending"])
   if (error) throw new Error("Não foi possível atualizar os indicadores de mensagens.")

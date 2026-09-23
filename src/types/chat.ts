@@ -138,6 +138,8 @@ export interface ChatConversation {
   group_name:            string | null
   group_picture:         string | null
   group_members:         Array<{ jid: string; name?: string }>
+  group_live_enabled?:   boolean
+  group_access_mode?:    "management" | "number_team" | "selected"
 
   // CTWA — populado pelo webhook na 1ª msg com externalAdReply
   from_ad_meta:          ExternalAdReply | null
@@ -332,8 +334,10 @@ export interface EvolutionMessageData {
     remoteJid:  string
     fromMe:     boolean
     id:         string
+    participant?: string
   }
   pushName?:    string
+  participant?: string
   /**
    * contextInfo no NÍVEL RAIZ — Evolution põe aqui quando o message é tipo
    * `conversation` (texto simples sem contextInfo aninhado). É AQUI que vem

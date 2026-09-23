@@ -84,6 +84,7 @@ export interface ContactCard {
 
 export interface GroupParticipant {
   id:     string
+  phoneNumber?: string | null
   admin?: string | null
 }
 
@@ -116,6 +117,7 @@ export interface WhatsAppProvider {
    *  precisa do conteúdo pra renderizar o trecho citado; Meta usa só o id). */
   sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult>
   /** Original key is resolved inside the owning instance, never guessed from phone. */
+  deleteForEveryone?(messageId: string, deadline: number): Promise<void>
   editText?(messageId: string, text: string, deadline: number): Promise<{ editedAt: string }>
   sendMedia(
     phone:     string,
@@ -182,4 +184,6 @@ export interface WhatsAppProvider {
   // ── Contatos / grupos ───────────────────────────────────────
   fetchProfilePictureUrl(jidOrPhone: string): Promise<string | null>
   fetchGroupMetadata(groupJid: string):       Promise<GroupMetadata | null>
+  /** Destinatário é o JID @g.us exato; não normalizar como telefone individual. */
+  sendGroupText?(groupJid: string, text: string): Promise<{ messageId: string }>
 }

@@ -62,7 +62,7 @@ beforeEach(() => {
     instanceIds: null, departmentId: "sales", seePool: true, supervisesDepartments: [] } as unknown as ViewerScope
   db.reset({
     chat_conversations: [{ id: "c", tenant_id: "t", contact_id: "contact", assigned_to: null, participants: [],
-      department_id: null, instance_id: "number", status: "open", ai_handling: true, channel: "whatsapp",
+      department_id: null, instance_id: "number", is_group: false, status: "open", ai_handling: true, channel: "whatsapp",
       updated_at: "2026-01-01T00:00:00Z", metadata: {}, last_inbound_at: new Date().toISOString(),
       whatsapp_instances: { provider: "baileys" }, chat_contacts: { phone_number: "5511999999999", primary_external_id: "igsid" } }],
     chat_contacts: [{ id: "contact", tenant_id: "t", owner_id: null }],

@@ -403,6 +403,7 @@ export async function sendMessage(
     .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(whatsapp_id, phone_number, primary_channel, bsuid, primary_external_id)")
     .eq("id", conversationId)
     .eq("tenant_id", tenantId)
+    .eq("is_group", false)
     .single()
 
   if (!conv) throw new Error("Conversa não encontrada")

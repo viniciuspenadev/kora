@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { InboxClient } from "@/components/chat/inbox-client"
 import { getConversations, getConversationViewCounts } from "@/lib/actions/conversations"
 import { hasModule } from "@/lib/modules"
+import { getViewerScope } from "@/lib/visibility"
 import type { ChatMessage, ChatContact, ChatQuickReply } from "@/types/chat"
 
 const INITIAL_LIMIT       = 25
@@ -14,6 +15,7 @@ export default async function InboxPage() {
   if (!session) return null
 
   const tenantId = session.user.tenantId
+  const viewer = await getViewerScope()
   const kanbanEnabled = await hasModule(tenantId, "kanban")
   const quickRepliesOn = await hasModule(tenantId, "quick_replies")
 
@@ -49,6 +51,7 @@ export default async function InboxPage() {
           initialViewCounts={{ all: 0, mine: 0, waiting: 0, unread: 0, resolved: 0 }}
           tenantId={tenantId}
           currentUserId={session.user.id}
+          canManageGroups={viewer.isAdmin}
           supabaseToken={session.user.supabaseToken}
         />
       </div>
@@ -165,6 +168,7 @@ export default async function InboxPage() {
         initialViewCounts={initialViewCounts}
         tenantId={tenantId}
         currentUserId={session.user.id}
+        canManageGroups={viewer.isAdmin}
         userDepartmentId={userDepartmentId}
         supabaseToken={session.user.supabaseToken}
         agendaEnabled={agendaEnabled}

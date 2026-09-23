@@ -41,7 +41,7 @@ async function assertCanView(conversationId: string): Promise<string> {
   const scope = await getViewerScope()
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
-    .select("instance_id, assigned_to, participants, department_id")
+    .select("instance_id, assigned_to, participants, department_id, is_group, group_live_enabled, group_access_mode")
     .eq("id", conversationId)
     .eq("tenant_id", scope.tenantId)
     .maybeSingle()
@@ -118,7 +118,7 @@ export async function getMessagesUpdates(opts: {
     .select(MESSAGE_SELECT)
     .eq("conversation_id", opts.conversationId)
     .eq("tenant_id", t)
-    .gt("created_at", since)
+    .or(`created_at.gt.${since},deleted_at.gt.${since}`)
     .order("created_at", { ascending: true })
     .limit(100)  // safety cap
 

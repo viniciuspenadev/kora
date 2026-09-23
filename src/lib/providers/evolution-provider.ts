@@ -1,4 +1,5 @@
 import { canonicalWhatsAppJid } from "@/lib/phone-utils"
+import { parseMessageDelete } from "@/lib/chat/message-delete"
 import { parseMessageEdit } from "@/lib/chat/message-edit"
 import type {
   WhatsAppProvider, SendResult, StatusResult, QrCodeResult,
@@ -18,6 +19,21 @@ interface EvolutionConfig {
   evolution_key:  string
   instance_name:  string
 }
+
+// Eventos de grupo são preparados no webhook antes da liberação de groupsIgnore.
+// MESSAGES_UPSERT continua sendo a fonte das mensagens; os demais atualizam
+// metadados/participantes quando o tratamento de grupos estiver implantado.
+const WEBHOOK_EVENTS = [
+  "MESSAGES_UPSERT",
+  "MESSAGES_UPDATE",
+  "SEND_MESSAGE_UPDATE",
+  "MESSAGES_DELETE",
+  "CONNECTION_UPDATE",
+  "QRCODE_UPDATED",
+  "GROUPS_UPSERT",
+  "GROUP_UPDATE",
+  "GROUP_PARTICIPANTS_UPDATE",
+] as const
 
 export class EvolutionProvider implements WhatsAppProvider {
   readonly providerName = "baileys" as const
@@ -101,13 +117,7 @@ export class EvolutionProvider implements WhatsAppProvider {
         webhook: {
           url:     webhookUrl,
           enabled: true,
-          events:  [
-            "MESSAGES_UPSERT",
-            "MESSAGES_UPDATE",
-            "SEND_MESSAGE_UPDATE",
-            "CONNECTION_UPDATE",
-            "QRCODE_UPDATED",
-          ],
+          events:  WEBHOOK_EVENTS,
           byEvents: false,
           base64: false,
         },
@@ -116,9 +126,8 @@ export class EvolutionProvider implements WhatsAppProvider {
     const webhook = await this.req<{ url?: string; enabled?: boolean; events?: string[]; webhookByEvents?: boolean; webhookBase64?: boolean }>(
       `/webhook/find/${this.instanceName}`,
     )
-    const required = ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "SEND_MESSAGE_UPDATE", "CONNECTION_UPDATE", "QRCODE_UPDATED"]
     if (webhook.url !== webhookUrl || webhook.enabled !== true || webhook.webhookByEvents !== false || webhook.webhookBase64 !== false
-      || !required.every(event => webhook.events?.includes(event))) throw new Error("Webhook não confirmado pela Evolution")
+      || !WEBHOOK_EVENTS.every(event => webhook.events?.includes(event))) throw new Error("Webhook não confirmado pela Evolution")
     return { configured: true }
   }
 
@@ -154,6 +163,28 @@ export class EvolutionProvider implements WhatsAppProvider {
     return { editedAt: edit.editedAt }
   }
 
+  async deleteForEveryone(messageId: string, deadline: number): Promise<void> {
+    let key: { id: string; remoteJid: string; fromMe: boolean }
+    try {
+      const result = await this.req<{ messages?: { records?: Array<{ key?: typeof key }> } }>(
+        `/chat/findMessages/${this.instanceName}`, {
+          method: "POST", body: JSON.stringify({ where: { key: { id: messageId, fromMe: true } }, offset: 2, page: 1 }),
+        })
+      const original = result.messages?.records?.length === 1 ? result.messages.records[0] : null
+      if (!original?.key || original.key.id !== messageId || original.key.fromMe !== true
+        || !/^\d+@(s\.whatsapp\.net|lid)$/.test(original.key.remoteJid)) throw new Error()
+      key = { id: messageId, remoteJid: original.key.remoteJid, fromMe: true }
+    } catch { throw new MessageDeleteNotSentError() }
+    if (!Number.isFinite(deadline) || Date.now() >= deadline) throw new MessageDeleteNotSentError()
+    // Failures after this request may occur after WhatsApp accepted the revoke.
+    const result = await this.req<unknown>(`/chat/deleteMessageForEveryone/${this.instanceName}`, {
+      method: "DELETE", body: JSON.stringify(key),
+    })
+    const deleted = parseMessageDelete(result)
+    if (!deleted || deleted.messageId !== messageId || deleted.remoteJid !== key.remoteJid || !deleted.fromMe)
+      throw new Error("Confirmação de exclusão indisponível")
+  }
+
   async sendText(phone: string, text: string, replyTo?: ReplyContext): Promise<SendResult> {
     const number = phone.replace(/\D/g, "")
     const r = await this.req<EvoSendResponse>(
@@ -164,6 +195,18 @@ export class EvolutionProvider implements WhatsAppProvider {
       },
     )
     return evoResult(r)
+  }
+
+  async sendGroupText(groupJid: string, text: string): Promise<{ messageId: string }> {
+    if (!/^\d+(?:-\d+)?@g\.us$/.test(groupJid)) throw new Error("Identificador do grupo inválido")
+    const r = await this.req<EvoSendResponse>(`/message/sendText/${this.instanceName}`, {
+      method: "POST",
+      body: JSON.stringify({ number: groupJid, text }),
+    })
+    if (!r.key?.id || r.key.remoteJid !== groupJid) {
+      throw new Error("A Evolution não confirmou o grupo destinatário. Confira o WhatsApp antes de tentar de novo.")
+    }
+    return { messageId: r.key.id }
   }
 
   async sendMedia(
@@ -356,3 +399,5 @@ type EvoSendResponse = { key?: { id?: string; remoteJid?: string } }
 function evoResult(r: EvoSendResponse): SendResult {
   return { messageId: r.key?.id ?? "", recipientJid: canonicalWhatsAppJid(r.key?.remoteJid) }
 }
+
+export class MessageDeleteNotSentError extends Error {}

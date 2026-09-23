@@ -5,6 +5,7 @@ import { useSearchParams, useRouter, usePathname } from "next/navigation"
 import { ConversationWorkflowProvider } from "@/components/chat/conversation-workflow"
 import { ConversationList } from "@/components/chat/conversation-list"
 import { ChatPanel } from "@/components/chat/chat-panel"
+import { GroupChatPanel } from "@/components/chat/group-chat-panel"
 import { ContactSidebar } from "@/components/chat/contact-sidebar"
 import { ContactDetailsOverlay } from "@/components/chat/contact-details-overlay"
 import { useConversationAccess } from "@/components/chat/use-conversation-access"
@@ -45,6 +46,7 @@ import {
   type MessagesCursor,
 } from "@/lib/actions/messages"
 import { applyTag, removeTag } from "@/lib/actions/tags"
+import { markGroupRead, sendGroupText } from "@/lib/actions/groups"
 import { getRealtimeClient } from "@/lib/realtime"
 import type {
   ChatConversation,
@@ -79,6 +81,7 @@ interface Props {
   initialViewCounts?:  ConversationViewCounts
   tenantId:            string
   currentUserId:       string
+  canManageGroups?:    boolean
   userDepartmentId?:   string | null
   supabaseToken:       string
   agendaEnabled?:      boolean
@@ -112,6 +115,11 @@ interface ActiveFilters {
 // ATIVOS — mas só os "baratos" (resolvíveis client-side). search/tag exigem
 // ILIKE/taggings no server → nesses casos deixamos o poll trazer.
 function matchesActiveFilters(conv: ChatConversation, f: ActiveFilters): boolean {
+  if (conv.is_group) {
+    if (!conv.group_live_enabled || f.searchDebounced || f.tagFilter || f.pipelineFilter || f.agentFilter || f.departmentFilter || f.fromAd || f.staleOnly || f.archivedOnly) return false
+    if (f.channelFilter && f.channelFilter !== "whatsapp") return false
+    return f.viewFilter === "all" && conv.status !== "resolved"
+  }
   if (f.searchDebounced || f.tagFilter) return false            // resolve no server → poll
   if (f.archivedOnly || conv.archived_at) return false          // conv nova nunca é arquivada
   if (f.viewFilter === "all" && conv.status === "resolved") return false
@@ -161,6 +169,7 @@ export function InboxClient({
   initialViewCounts   = { all: 0, mine: 0, waiting: 0, unread: 0, resolved: 0 },
   tenantId,
   currentUserId,
+  canManageGroups = false,
   userDepartmentId = null,
   supabaseToken,
   agendaEnabled = false,
@@ -464,7 +473,7 @@ export function InboxClient({
     }
   }, [activeMessages, loadingOlder, hasMoreOlder])
 
-  const handleSelect = useCallback((id: string) => {
+  const handleSelect = useCallback((id: string, isGroupOverride?: boolean) => {
     setActiveId(id)
     setContactSheetOpen(false)   // fecha a ficha ao trocar de conversa (mobile)
     setActiveMessages([])
@@ -476,7 +485,9 @@ export function InboxClient({
     loadMessages(id).finally(() => { if (activeIdRef.current === id) setLoadingMsg(false) })
 
     startTransition(async () => {
-      await markConversationRead(id)
+      const selected = conversationsRef.current.find(c => c.id === id)
+      if (isGroupOverride ?? selected?.is_group) await markGroupRead(id)
+      else await markConversationRead(id)
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id !== id) return c
@@ -557,7 +568,7 @@ export function InboxClient({
           if (prev.some((c) => c.id === conv.id)) return prev
           return [conv, ...prev]
         })
-        handleSelect(convParam)
+        handleSelect(convParam, conv.is_group)
       } catch (err) {
         console.error("Erro ao abrir conversa via ?conversation:", err)
       } finally {
@@ -828,6 +839,23 @@ export function InboxClient({
       setActiveMessages((prev) =>
         prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m)
       )
+      throw err
+    }
+  }, [makeTempMessage])
+
+  const handleGroupSendText = useCallback(async (content: string) => {
+    const convId = activeIdRef.current
+    if (!convId) return
+    const temp = makeTempMessage({ content, contentType: "text" })
+    setActiveMessages(prev => [...prev, temp])
+    setConversations(prev => prev.map(c => c.id === convId
+      ? { ...c, last_message_at: temp.created_at, last_message_preview: `Equipe: ${content}`.slice(0, 100), last_message_dir: "out" as const }
+      : c).sort(sortByLastMessage))
+    try {
+      const result = await sendGroupText(convId, content)
+      setActiveMessages(prev => prev.map(m => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+    } catch (err) {
+      setActiveMessages(prev => prev.map(m => m.id === temp.id ? { ...m, status: "failed" } : m))
       throw err
     }
   }, [makeTempMessage])
@@ -1239,7 +1267,20 @@ export function InboxClient({
           {activeConv ? (
             <>
               <div className="flex-1 min-w-0">
-                <ChatPanel
+                {activeConv.is_group ? <GroupChatPanel
+                  key={activeConv.id}
+                  conversation={activeConv}
+                  messages={activeMessages}
+                  currentUserId={currentUserId}
+                  canManage={canManageGroups}
+                  hasMoreOlder={hasMoreOlder}
+                  loadingOlder={loadingOlder}
+                  onLoadOlder={loadOlderMessages}
+                  loadingMessages={loadingMsg}
+                  onSendText={handleGroupSendText}
+                  onBack={() => { setActiveId(null); setActiveMessages([]) }}
+                  onAccessChanged={() => { void loadFirstPage() }}
+                /> : <ChatPanel
                   currentUserId={currentUserId}
                   onMessageEdited={patch => setActiveMessages(prev => prev.map(message => message.id === patch.id ? { ...message, ...patch } : message))}
                   conversation={activeConv}
@@ -1270,7 +1311,7 @@ export function InboxClient({
                   onBack={() => { setActiveId(null); setActiveMessages([]); setContactSheetOpen(false) }}
                   onOpenContact={() => setContactSheetOpen(true)}
                   agendaEnabled={agendaEnabled}
-                />
+                />}
               </div>
               {activeConv.chat_contacts && (
                 <>

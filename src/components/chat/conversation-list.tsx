@@ -9,7 +9,7 @@ import type { KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from "react"
 import {
   Search, MessageCircle, AlertCircle, Loader2, Filter, CheckCircle2, Clock, Moon,
   Image as ImageIcon, Mic, Video, FileText, X, MessageSquarePlus,
-  Smartphone, Pin, AlarmClock,
+  Smartphone, Pin, AlarmClock, UsersRound,
 } from "lucide-react"
 import { followUpChip } from "@/lib/atendimento/followup-rules"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
@@ -172,7 +172,7 @@ export function ConversationList({
 }: Props) {
   const workflow = useConversationWorkflow()
   const tagsById = useMemo(() => new Map(tags.map(tag => [tag.id, tag])), [tags])
-  const workflowExtras = (c: ChatConversation) => [
+  const workflowExtras = (c: ChatConversation) => c.is_group ? [] : [
     { label: c.flagged_pending ? "Remover pendente" : "Marcar como pendente", run: () => onToggleFlag(c.id, !c.flagged_pending) },
     { label: c.pinned_at ? "Desafixar do topo" : "Fixar no topo", run: () => onTogglePin(c.id, !c.pinned_at) },
     { label: c.assigned_to === currentUserId ? "Atribuída a você" : "Atribuir a mim", disabled: c.assigned_to === currentUserId, run: () => onAssignMe(c.id) },
@@ -611,7 +611,7 @@ export function ConversationList({
             {shownConversations.map((conv) => {
             const contact    = conv.chat_contacts
             const contactTags = contact && !conv.is_group ? [...new Set(tagsByContact[contact.id] ?? [])].flatMap(id => { const tag = tagsById.get(id); return tag ? [tag] : [] }).sort((a, b) => a.name.localeCompare(b.name, "pt-BR")) : []
-            const name       = contact ? displayContactName(contact) : formatPhoneDisplay("")
+            const name       = conv.is_group ? (conv.group_name?.trim() || "Grupo do WhatsApp") : contact ? displayContactName(contact) : formatPhoneDisplay("")
             const initial    = contact ? displayContactInitial(contact) : "?"
             const isActive   = conv.id === activeId
             // Bolinha azul = "não aberta por nenhum agente" (não lida) OU marcada como pendente.
@@ -623,7 +623,7 @@ export function ConversationList({
             const dept       = conv.department_id ? departmentById[conv.department_id] : null
             // Alerta legado pela última mensagem; não representa o início da espera
             // nem uma escalada do futuro motor de pendências.
-            const isStale     = conv.last_message_dir === "in" && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD && conv.status !== "resolved"
+            const isStale     = !conv.is_group && conv.last_message_dir === "in" && !!conv.last_message_at && hoursSince(conv.last_message_at) >= STALE_HOURS_THRESHOLD && conv.status !== "resolved"
             const isPinned    = !!conv.pinned_at
             const statusMeta  = STATUS_ICON[conv.status] ?? null
             const timeLabel   = conv.last_message_at ? formatMessageTime(conv.last_message_at) : ""
@@ -645,7 +645,7 @@ export function ConversationList({
             // o chip apaga no INSTANTE em que o cliente responde, sem esperar a varredura.
             // Cumprido NÃO entra na lista do inbox: aqui é fila de trabalho, e o
             // histórico tem casa própria (Tarefas e o dia dele na Agenda).
-            const chip       = followUpChip(conv)
+            const chip       = conv.is_group ? null : followUpChip(conv)
             const followUp   = chip && chip.tone !== "done" ? chip : null
 
             return (
@@ -655,9 +655,9 @@ export function ConversationList({
                 tabIndex={0}
                 aria-label={`Abrir conversa de ${name}`}
                 aria-pressed={isActive}
-                onKeyDown={e => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(conv.id) } if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) { const rect = e.currentTarget.getBoundingClientRect(); workflow?.menu(conv, { ...e, clientX: rect.left + 30, clientY: rect.top + 30, currentTarget: e.currentTarget, preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation() }, workflowExtras(conv)) } }}
+                onKeyDown={e => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(conv.id) } if (!conv.is_group && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) { const rect = e.currentTarget.getBoundingClientRect(); workflow?.menu(conv, { ...e, clientX: rect.left + 30, clientY: rect.top + 30, currentTarget: e.currentTarget, preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation() }, workflowExtras(conv)) } }}
                 onClick={() => onSelect(conv.id)}
-                onContextMenu={e => workflow?.menu(conv, e, workflowExtras(conv))}
+                onContextMenu={e => { if (conv.is_group) e.preventDefault(); else workflow?.menu(conv, e, workflowExtras(conv)) }}
                 className={`relative w-full flex items-start gap-3 px-4 py-3.5 text-left transition-colors border-b border-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary ${isActive ? "bg-primary-50" : "hover:bg-primary-50/60"}`}
               >
                 {isActive && (
@@ -665,7 +665,9 @@ export function ConversationList({
                 )}
                 <div className="relative shrink-0">
                   <div className="size-11 rounded-full flex items-center justify-center overflow-hidden bg-gradient-to-br from-white to-slate-200 text-slate-400 ring-1 ring-inset ring-slate-200/70">
-                    <ContactPic pic={contact?.profile_pic_url} initial={initial} imgClass="size-11 object-cover" fallbackClass="text-base font-bold" />
+                    {conv.is_group && !conv.group_picture
+                      ? <UsersRound className="size-5 text-slate-500" aria-hidden="true" />
+                      : <ContactPic pic={conv.is_group ? conv.group_picture : contact?.profile_pic_url} initial={initial} imgClass="size-11 object-cover" fallbackClass="text-base font-bold" />}
                   </div>
                   {showSource && (
                     <span className="absolute -bottom-1 -right-1 inline-flex items-center justify-center">
@@ -683,6 +685,7 @@ export function ConversationList({
                       <span className={`text-sm truncate ${hasUnread ? "font-bold text-slate-900" : "font-medium text-slate-700"}`}>
                         {name}
                       </span>
+                      {conv.is_group && <span className="shrink-0 rounded bg-primary-50 px-1.5 py-0.5 text-[9px] font-semibold leading-none tracking-wide text-primary-700" aria-label="Conversa em grupo">GRUPO</span>}
                     </span>
                     <span className="inline-flex shrink-0 items-center gap-1.5">
                       <span className="text-[11px] tabular-nums text-slate-500" title={conv.last_message_at ? new Date(conv.last_message_at).toLocaleString("pt-BR") : undefined}>{timeLabel}</span>
@@ -693,18 +696,18 @@ export function ConversationList({
                   <div className="flex items-center gap-1.5">
                     {mediaIcon}
                     <p className={`text-xs truncate flex-1 ${hasUnread ? "font-medium text-slate-700" : "text-slate-500"}`}>
-                      {outgoing && <span>{conv.last_message_dir === "out_phone" ? "Celular: " : "Equipe: "}</span>}
+                      {outgoing && !conv.is_group && <span>{conv.last_message_dir === "out_phone" ? "Celular: " : "Equipe: "}</span>}
                       {preview || "Nova conversa"}
                     </p>
                   </div>
 
                   <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-slate-500">
                     {departmentName && <><span className="min-w-0 max-w-full truncate" title={`Departamento: ${departmentName}`}>{departmentName}</span><span aria-hidden="true">·</span></>}
-                    <span className="inline-flex min-w-0 max-w-full items-center gap-1" title={assignedTo ? `Atendendo: ${assignedTo}` : "Sem atendente atribuído"}>
-                      {assignedTo && <UserAvatar userId={conv.assigned_to} name={assignedTo} size={16} />}
-                      <span className="truncate">{assignedTo ? assignedTo.split(/\s+/)[0] : "Sem atendente"}</span>
+                    <span className="inline-flex min-w-0 max-w-full items-center gap-1" title={conv.is_group ? "Acesso ao grupo" : assignedTo ? `Atendendo: ${assignedTo}` : "Sem atendente atribuído"}>
+                      {!conv.is_group && assignedTo && <UserAvatar userId={conv.assigned_to} name={assignedTo} size={16} />}
+                      <span className="truncate">{conv.is_group ? conv.group_access_mode === "management" ? "Somente gestão" : conv.group_access_mode === "number_team" ? "Equipe do número" : "Equipe selecionada" : assignedTo ? assignedTo.split(/\s+/)[0] : "Sem atendente"}</span>
                     </span>
-                    {showChannel && conv.instance_id && <ChannelBadge instance={conv.whatsapp_instances} />}
+                    {(showChannel || conv.is_group) && conv.instance_id && <ChannelBadge instance={conv.whatsapp_instances} />}
                   </div>
 
                   {!conv.is_group && <ConversationLabels classification={contact?.lifecycle_stage} tags={contactTags} />}

@@ -67,7 +67,14 @@ export async function getConversationViewCounts(): Promise<ConversationViewCount
     return q
   }
 
-  const [all, mine, waiting, unread, resolved] = await Promise.all([
+  let groupCountQuery = supabaseAdmin.from("chat_conversations")
+    .select("id", { count: "exact", head: true })
+    .eq("tenant_id", s.tenantId).eq("is_group", true)
+    .eq("group_live_enabled", true).is("archived_at", null)
+    .neq("status", "resolved")
+  groupCountQuery = applyVisibilityFilter(groupCountQuery, s, true)
+
+  const [all, mine, waiting, unread, resolved, groupCount, unreadGroups] = await Promise.all([
     baseCount().neq("status", "resolved"),
     baseCount().neq("status", "resolved").eq("assigned_to", s.userId),
     baseCount()
@@ -76,18 +83,21 @@ export async function getConversationViewCounts(): Promise<ConversationViewCount
       .not("ai_handling", "is", true),
     baseCount().neq("status", "resolved").gt("unread_count", 0),
     baseCount().eq("status", "resolved"),
+    groupCountQuery,
+    groupUnreadIds(s),
   ])
 
   const results = { all, mine, waiting, unread, resolved }
   for (const [view, result] of Object.entries(results)) {
     if (result.error) throw new Error(`getConversationViewCounts(${view}): ${result.error.message}`)
   }
+  if (groupCount.error) throw new Error(`getConversationViewCounts(groups): ${groupCount.error.message}`)
 
   return {
-    all:      all.count      ?? EMPTY_VIEW_COUNTS.all,
+    all:      (all.count ?? EMPTY_VIEW_COUNTS.all) + (groupCount.count ?? 0),
     mine:     mine.count     ?? EMPTY_VIEW_COUNTS.mine,
     waiting:  waiting.count  ?? EMPTY_VIEW_COUNTS.waiting,
-    unread:   unread.count   ?? EMPTY_VIEW_COUNTS.unread,
+    unread:   (unread.count ?? EMPTY_VIEW_COUNTS.unread) + unreadGroups.length,
     resolved: resolved.count ?? EMPTY_VIEW_COUNTS.resolved,
   }
 }
@@ -126,12 +136,55 @@ const CONVERSATION_SELECT = `
 // Visibilidade (scope + filtro) centralizada em @/lib/visibility — fonte única
 // usada por inbox, kanban, mídia, mensagens e envio.
 
-/**
- * Pré-resolve contact_ids filtrados por search/tag — usados em IN(...) no query
- * principal. Retorna null se filtro não aplica (significa "sem restrição").
- */
-async function resolveContactIds(s: ViewerScope, f: ConversationFilters): Promise<string[] | null> {
-  if (!f.search && !f.tagId) return null
+function includesGroups(f: ConversationFilters): boolean {
+  return (f.view == null || f.view === "all" || f.view === "unread")
+    && (!f.status || f.status === "all" || f.status === "open")
+    && !f.followUpOnly && !f.pipelineId && !f.agentId && !f.departmentId
+    && !f.tagId && !f.staleOnly && !f.fromAd
+    && (!f.channel || f.channel === "whatsapp")
+}
+
+async function groupUnreadIds(s: ViewerScope): Promise<string[]> {
+  let q = supabaseAdmin.from("chat_conversations")
+    .select("id,last_inbound_at")
+    .eq("tenant_id", s.tenantId).eq("is_group", true)
+    .eq("group_live_enabled", true).is("archived_at", null)
+    .neq("status", "resolved")
+    .not("last_inbound_at", "is", null)
+    .limit(1001)
+  q = applyVisibilityFilter(q, s, true)
+  const { data: groups, error } = await q
+  if (error) throw new Error(`groupUnreadIds: ${error.message}`)
+  if ((groups ?? []).length > 1000) throw new Error("Limite de grupos não lidos atingido; revisar paginação")
+  if (!groups?.length) return []
+  const ids = groups.map(g => g.id)
+  const { data: states, error: stateError } = await supabaseAdmin.from("group_user_state")
+    .select("conversation_id,last_seen_at")
+    .eq("tenant_id", s.tenantId).eq("user_id", s.userId).in("conversation_id", ids)
+  if (stateError) throw new Error(`groupUnreadIds(state): ${stateError.message}`)
+  const seen = new Map((states ?? []).map(row => [row.conversation_id, row.last_seen_at]))
+  return groups.filter(g => !seen.get(g.id) || Date.parse(g.last_inbound_at!) > Date.parse(seen.get(g.id)!)).map(g => g.id)
+}
+
+async function withGroupUnread(s: ViewerScope, rows: ChatConversation[]): Promise<ChatConversation[]> {
+  const groups = rows.filter(row => row.is_group)
+  if (!groups.length) return rows
+  const { data, error } = await supabaseAdmin.from("group_user_state")
+    .select("conversation_id,last_seen_at")
+    .eq("tenant_id", s.tenantId).eq("user_id", s.userId)
+    .in("conversation_id", groups.map(g => g.id))
+  if (error) throw new Error(`withGroupUnread: ${error.message}`)
+  const seen = new Map((data ?? []).map(row => [row.conversation_id, row.last_seen_at]))
+  return rows.map(row => row.is_group ? {
+    ...row,
+    unread_count: row.last_inbound_at && (!seen.get(row.id) || Date.parse(row.last_inbound_at) > Date.parse(seen.get(row.id)!)) ? 1 : 0,
+    flagged_pending: false,
+  } : row)
+}
+
+/** Resolve filtros de contato sem transformar participantes de grupo em contatos. */
+async function resolveTargets(s: ViewerScope, f: ConversationFilters): Promise<{ contactIds: string[] | null; groupIds: string[] | null }> {
+  if (!f.search && !f.tagId) return { contactIds: null, groupIds: null }
 
   let contactIds: string[] | null = null
 
@@ -157,7 +210,17 @@ async function resolveContactIds(s: ViewerScope, f: ConversationFilters): Promis
     contactIds = (data ?? []).map((c) => (c as { id: string }).id)
   }
 
-  return contactIds
+  let groupIds: string[] = []
+  if (f.search && includesGroups(f)) {
+    const term = `%${f.search.replace(/[%_\\]/g, (m) => "\\" + m)}%`
+    const { data, error } = await supabaseAdmin.from("chat_conversations")
+      .select("id").eq("tenant_id", s.tenantId)
+      .eq("is_group", true).eq("group_live_enabled", true)
+      .ilike("group_name", term).limit(500)
+    if (error) throw new Error(`resolveTargets(groups): ${error.message}`)
+    groupIds = (data ?? []).map(row => row.id)
+  }
+  return { contactIds, groupIds }
 }
 
 // ── Public actions ──────────────────────────────────────────
@@ -172,8 +235,9 @@ export async function getConversations(opts: {
   const limit   = opts.limit   ?? DEFAULT_LIMIT
   const cursor  = opts.cursor  ?? null
 
-  const contactIds = await resolveContactIds(s, filters)
-  if (contactIds !== null && contactIds.length === 0) {
+  const { contactIds, groupIds } = await resolveTargets(s, filters)
+  const showGroups = includesGroups(filters)
+  if (contactIds !== null && contactIds.length === 0 && !groupIds?.length) {
     return { conversations: [], nextCursor: null, hasMore: false }
   }
 
@@ -181,11 +245,9 @@ export async function getConversations(opts: {
     .from("chat_conversations")
     .select(CONVERSATION_SELECT)
     .eq("tenant_id", s.tenantId)
-    // 🔴 GRUPO NÃO É LISTADO (remoção de 2026-08-03). A ingestão de grupo saiu do webhook,
-    //    mas as 9 conversas já gravadas ficam no banco — e elas têm `contact_id` NULO, então
-    //    apareceriam na caixa sem nome, sem telefone e sem ficha. Este filtro é o que permite
-    //    o resto do app não saber mais o que é grupo. Reabrir grupo passa por aqui.
-    .eq("is_group", false)
+  q = showGroups
+    ? q.or("is_group.eq.false,and(is_group.eq.true,group_live_enabled.eq.true)")
+    : q.eq("is_group", false)
 
   // Filtros diretos
   // A aba Follow-up manda no status: pedir "só abertas" esconderia a promessa feita
@@ -203,7 +265,11 @@ export async function getConversations(opts: {
       .is("assigned_to", null)
       .not("ai_handling", "is", true)
   } else if (filters.view === "unread") {
-    q = q.neq("status", "resolved").gt("unread_count", 0)
+    const unreadGroups = showGroups ? await groupUnreadIds(s) : []
+    q = q.neq("status", "resolved")
+    q = unreadGroups.length
+      ? q.or(`and(is_group.eq.false,unread_count.gt.0),id.in.(${unreadGroups.join(",")})`)
+      : q.eq("is_group", false).gt("unread_count", 0)
   } else if (filters.view === "resolved") {
     q = q.eq("status", "resolved")
   } else if (filters.followUpOnly) {
@@ -216,7 +282,9 @@ export async function getConversations(opts: {
   if (filters.pipelineId)                          q = q.eq("pipeline_id", filters.pipelineId)
   if (filters.agentId)                             q = q.eq("assigned_to", filters.agentId)
   if (filters.departmentId)                        q = q.eq("department_id", filters.departmentId)
-  if (contactIds !== null)                         q = q.in("contact_id", contactIds)
+  if (contactIds !== null && contactIds.length && groupIds?.length) q = q.or(`contact_id.in.(${contactIds.join(",")}),id.in.(${groupIds.join(",")})`)
+  else if (groupIds?.length)                       q = q.in("id", groupIds)
+  else if (contactIds !== null)                    q = q.in("contact_id", contactIds)
   if (filters.staleOnly) {
     const cutoff = new Date(Date.now() - STALE_HOURS * 3600_000).toISOString()
     q = q.lt("last_message_at", cutoff).not("last_message_at", "is", null)
@@ -230,7 +298,7 @@ export async function getConversations(opts: {
   }
 
   // Visibilidade
-  q = applyVisibilityFilter(q, s)
+  q = applyVisibilityFilter(q, s, showGroups)
 
   // Cursor — tie-break por id pra ordem estável. A aba Follow-up ordena pelo PRAZO
   // (crescente: o mais atrasado no topo), então o corte da página é outro.
@@ -263,7 +331,7 @@ export async function getConversations(opts: {
   const { data, error } = await q
   if (error) throw new Error(`getConversations: ${error.message}`)
 
-  const rows = (data ?? []) as unknown as ChatConversation[]
+  const rows = await withGroupUnread(s, (data ?? []) as unknown as ChatConversation[])
   const hasMore = rows.length > limit
   const page    = hasMore ? rows.slice(0, limit) : rows
 
@@ -290,14 +358,15 @@ export async function getConversationById(id: string): Promise<ChatConversation 
     .from("chat_conversations")
     .select(CONVERSATION_SELECT)
     .eq("tenant_id", s.tenantId)
-    .eq("is_group", false)
     .eq("id", id)
+    .or("is_group.eq.false,and(is_group.eq.true,group_live_enabled.eq.true)")
 
-  q = applyVisibilityFilter(q, s)
+  q = applyVisibilityFilter(q, s, true)
 
   const { data, error } = await q.maybeSingle()
   if (error) throw new Error(`getConversationById: ${error.message}`)
-  return (data ?? null) as unknown as ChatConversation | null
+  if (!data) return null
+  return (await withGroupUnread(s, [data as unknown as ChatConversation]))[0]
 }
 
 /**
@@ -312,15 +381,18 @@ export async function getConversationsUpdates(opts: {
   const s = await getViewerScope()
   const filters = opts.filters ?? {}
 
-  const contactIds = await resolveContactIds(s, filters)
-  if (contactIds !== null && contactIds.length === 0) return { conversations: [] }
+  const { contactIds, groupIds } = await resolveTargets(s, filters)
+  const showGroups = includesGroups(filters)
+  if (contactIds !== null && contactIds.length === 0 && !groupIds?.length) return { conversations: [] }
 
   let q = supabaseAdmin
     .from("chat_conversations")
     .select(CONVERSATION_SELECT)
     .eq("tenant_id", s.tenantId)
-    .eq("is_group", false)          // idem getConversations: grupo não entra no polling
     .gt("updated_at", opts.since)
+  q = showGroups
+    ? q.or("is_group.eq.false,and(is_group.eq.true,group_live_enabled.eq.true)")
+    : q.eq("is_group", false)
 
   // Mesmo recorte do `getConversations` — o polling não pode trazer de volta o que
   // a lista filtrou (senão a promessa do colega reaparece a cada 30s).
@@ -334,7 +406,11 @@ export async function getConversationsUpdates(opts: {
       .is("assigned_to", null)
       .not("ai_handling", "is", true)
   } else if (filters.view === "unread") {
-    q = q.neq("status", "resolved").gt("unread_count", 0)
+    const unreadGroups = showGroups ? await groupUnreadIds(s) : []
+    q = q.neq("status", "resolved")
+    q = unreadGroups.length
+      ? q.or(`and(is_group.eq.false,unread_count.gt.0),id.in.(${unreadGroups.join(",")})`)
+      : q.eq("is_group", false).gt("unread_count", 0)
   } else if (filters.view === "resolved") {
     q = q.eq("status", "resolved")
   } else if (filters.followUpOnly) {
@@ -348,7 +424,9 @@ export async function getConversationsUpdates(opts: {
   if (filters.pipelineId)                          q = q.eq("pipeline_id", filters.pipelineId)
   if (filters.agentId)                             q = q.eq("assigned_to", filters.agentId)
   if (filters.departmentId)                        q = q.eq("department_id", filters.departmentId)
-  if (contactIds !== null)                         q = q.in("contact_id", contactIds)
+  if (contactIds !== null && contactIds.length && groupIds?.length) q = q.or(`contact_id.in.(${contactIds.join(",")}),id.in.(${groupIds.join(",")})`)
+  else if (groupIds?.length)                       q = q.in("id", groupIds)
+  else if (contactIds !== null)                    q = q.in("contact_id", contactIds)
   if (filters.staleOnly) {
     const cutoff = new Date(Date.now() - STALE_HOURS * 3600_000).toISOString()
     q = q.lt("last_message_at", cutoff).not("last_message_at", "is", null)
@@ -360,10 +438,10 @@ export async function getConversationsUpdates(opts: {
     q = q.is("archived_at", null)
   }
 
-  q = applyVisibilityFilter(q, s)
+  q = applyVisibilityFilter(q, s, showGroups)
   q = q.order("updated_at", { ascending: false }).limit(50)  // safety cap
 
   const { data, error } = await q
   if (error) throw new Error(`getConversationsUpdates: ${error.message}`)
-  return { conversations: (data ?? []) as unknown as ChatConversation[] }
+  return { conversations: await withGroupUnread(s, (data ?? []) as unknown as ChatConversation[]) }
 }

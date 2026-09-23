@@ -10,7 +10,7 @@ vi.mock("@/auth", () => ({ auth: async () => loggedIn ? { user: { id: "agent", t
 const { getNavigationUnread } = await import("./navigation-unread")
 beforeEach(() => {
   role = "agent"; loggedIn = true
-  const row = { tenant_id: "tenant", status: "open", unread_count: 1, assigned_to: "agent", participants: [], department_id: null, instance_id: "number-a", archived_at: null }
+  const row = { tenant_id: "tenant", status: "open", unread_count: 1, assigned_to: "agent", participants: [], department_id: null, instance_id: "number-a", archived_at: null, is_group: false }
   db.reset({
     tenant_users: [{ tenant_id: "tenant", user_id: "agent", role: "agent", active: true, see_pool: false, instance_ids: ["number-a"] }],
     chat_conversations: [
@@ -22,6 +22,10 @@ beforeEach(() => {
   })
 })
 it("separa fluxos, considera sem fluxo e não soma a quantidade de mensagens", async () => {
+  expect(await getNavigationUnread()).toEqual({ unread: 3, unreadByPipeline: { sales: 1, support: 1 }, unreadWithoutPipeline: 1 })
+})
+it("atividade de grupo não entra no contador de Kanban ou no unread individual", async () => {
+  db.tables.chat_conversations.push({ ...db.tables.chat_conversations[0], id: "group", is_group: true, pipeline_id: null, unread_count: 5 })
   expect(await getNavigationUnread()).toEqual({ unread: 3, unreadByPipeline: { sales: 1, support: 1 }, unreadWithoutPipeline: 1 })
 })
 it("admin vê outros atendentes somente do próprio tenant", async () => {
