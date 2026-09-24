@@ -38,6 +38,14 @@ beforeEach(() => {
 })
 
 describe("edit server orchestration", () => {
+  it("preserves the original signature in reservation, provider and confirmation", async () => {
+    message.content = "*Ana*\n\nantes"
+    message.metadata = { agent_signature: { version: 1, name: "Ana", prefix: "*Ana*\n\n" } }
+    await editSentMessage({ ...input, previousContent: String(message.content) })
+    expect(mocks.edit).toHaveBeenCalledWith("wa", "*Ana*\n\ndepois", expect.any(Number))
+    expect(mocks.rpc).toHaveBeenCalledWith("reserve_chat_message_edit", expect.objectContaining({ p_text: "*Ana*\n\ndepois" }))
+    expect(mocks.rpc).toHaveBeenCalledWith("confirm_chat_message_edit", expect.objectContaining({ p_text: "*Ana*\n\ndepois" }))
+  })
   it("scopes every table and confirms before returning the patched content", async () => {
     expect(await editSentMessage(input)).toMatchObject({ message: { id: id(1), content: "depois" } })
     for (const table of ["chat_messages", "chat_conversations", "whatsapp_instances", "chat_message_edits"])

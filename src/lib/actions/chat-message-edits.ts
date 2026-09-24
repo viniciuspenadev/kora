@@ -7,6 +7,7 @@ import { getProvider } from "@/lib/providers"
 import { MessageEditNotSentError } from "@/lib/providers/evolution-provider"
 import { messageEditProblem, editTextProblem, MESSAGE_EDIT_WINDOW_MS } from "@/lib/chat/message-edit"
 import { rateLimit } from "@/lib/rate-limit"
+import { signedContent, signatureStamp } from "@/lib/atendimento/agent-signature"
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type MessagePatch = { id: string; content: string | null; edited_at: string | null }
@@ -56,6 +57,9 @@ export async function editSentMessage(input: {
     const textError = editTextProblem(input.text, input.previousContent)
     if (textError) return { error: textError }
     const { scope, message, conversation } = await editContext(input.messageId)
+    const text = signedContent(input.text, signatureStamp(message.metadata))
+    const signedError = editTextProblem(text, message.content)
+    if (signedError) return { error: signedError }
     if (!rateLimit(`edit-message:${scope.tenantId}:${scope.userId}`, 20, 60_000).ok)
       return { error: "Aguarde um momento antes de editar novamente." }
     await assertAtendimentoLiberado(scope.tenantId)
@@ -70,7 +74,7 @@ export async function editSentMessage(input: {
     if (!provider.editText) return { error: "Edição indisponível neste canal." }
     const { data: reservation, error: reserveError } = await supabaseAdmin.rpc("reserve_chat_message_edit", {
       p_tenant: scope.tenantId, p_message: message.id, p_actor: scope.userId, p_operation: input.operationId,
-      p_previous: input.previousContent, p_edited_at: input.previousEditedAt, p_text: input.text,
+      p_previous: input.previousContent, p_edited_at: input.previousEditedAt, p_text: text,
     })
     if (reserveError || !reservation) return { error: "Não foi possível iniciar a edição. Atualize a conversa e confira se a mensagem mudou." }
     if (!reservation.acquired) return getMessageEditStatus(message.id, reservation.operationId ?? input.operationId)
@@ -85,10 +89,10 @@ export async function editSentMessage(input: {
       return { error: "A conversa ou seu acesso mudou. A edição não foi enviada." }
     }
     try {
-      const result = await provider.editText(message.whatsapp_msg_id!, input.text, Date.parse(message.created_at) + MESSAGE_EDIT_WINDOW_MS)
+      const result = await provider.editText(message.whatsapp_msg_id!, text, Date.parse(message.created_at) + MESSAGE_EDIT_WINDOW_MS)
       const { error: confirmError } = await supabaseAdmin.rpc("confirm_chat_message_edit", {
         p_tenant: scope.tenantId, p_instance: conversation.instance_id, p_whatsapp_id: message.whatsapp_msg_id,
-        p_from_me: true, p_text: input.text, p_edited_at: result.editedAt, p_operation: input.operationId,
+        p_from_me: true, p_text: text, p_edited_at: result.editedAt, p_operation: input.operationId,
       })
       if (confirmError) throw new Error("confirmation_pending")
       return getMessageEditStatus(message.id, input.operationId)

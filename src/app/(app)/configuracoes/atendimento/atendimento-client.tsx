@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { AgentSignatureSettings } from "@/components/atendimento/agent-signature-settings"
 import { useState, useTransition } from "react"
 import {
   Save, Loader2, AlertCircle, CheckCircle2,
@@ -12,7 +13,7 @@ import { updateAtendimentoPolicy } from "@/lib/actions/atendimento"
 
 type IAct = "notify"
 type Bind = "carteira" | "pool"
-type Tab  = "vinculo" | "inatividade"
+type Tab  = "vinculo" | "inatividade" | "assinatura"
 
 interface Props {
   hasStudio:         boolean
@@ -57,6 +58,7 @@ export function AtendimentoClient(props: Props) {
   const TABS: { id: Tab; label: string }[] = [
     { id: "vinculo",      label: "Vínculo" },
     { id: "inatividade",  label: "Inatividade" },
+    { id: "assinatura", label: "Assinatura" },
   ]
 
   return (
@@ -71,6 +73,7 @@ export function AtendimentoClient(props: Props) {
         ))}
       </div>
 
+      {tab === "assinatura" && <AgentSignatureSettings />}
       {/* ───────── Vínculo ───────── */}
       {tab === "vinculo" && (
         <SectionCard icon={UserCheck} title="Vínculo criado pelo atendimento" description="Defina se uma resposta do atendente cria um responsável para o cliente.">
@@ -141,7 +144,7 @@ export function AtendimentoClient(props: Props) {
       <p className="text-[11px] text-slate-400 px-1">Ao responder ou transferir uma conversa, a equipe assume o atendimento. O vínculo com o cliente é tratado separadamente.</p>
 
       {/* Save sticky */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-card p-4 flex items-center gap-3 sticky bottom-4">
+      {tab !== "assinatura" && <div className="bg-white rounded-xl border border-slate-200 shadow-card p-4 flex items-center gap-3 sticky bottom-4">
         <button type="button" onClick={save} disabled={pending}
           className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />} Salvar
@@ -151,7 +154,7 @@ export function AtendimentoClient(props: Props) {
             {fb.ok ? <CheckCircle2 className="size-3.5" /> : <AlertCircle className="size-3.5" />} {fb.text}
           </span>
         )}
-      </div>
+      </div>}
     </div>
   )
 }

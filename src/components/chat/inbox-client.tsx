@@ -6,6 +6,8 @@ import { ConversationWorkflowProvider } from "@/components/chat/conversation-wor
 import { ConversationList } from "@/components/chat/conversation-list"
 import { ChatPanel } from "@/components/chat/chat-panel"
 import { GroupChatPanel } from "@/components/chat/group-chat-panel"
+import { GroupConversationTools } from "@/components/chat/group-conversation-tools"
+import type { GroupSection } from "@/components/chat/group-conversation-actions"
 import { ContactSidebar } from "@/components/chat/contact-sidebar"
 import { ContactDetailsOverlay } from "@/components/chat/contact-details-overlay"
 import { useConversationAccess } from "@/components/chat/use-conversation-access"
@@ -436,9 +438,10 @@ export function InboxClient({
 
   // ── Carregar últimas 20 msgs ao selecionar conv ─────────────
   const loadMessages = useCallback(async (convId: string) => {
+    const accessEpoch = accessEpochRef.current
     try {
       const result = await getMessages({ conversationId: convId, limit: 20 })
-      if (activeIdRef.current === convId) {
+      if (activeIdRef.current === convId && accessAllowedRef.current && accessEpoch === accessEpochRef.current) {
         setActiveMessages(result.messages)
         setHasMoreOlder(result.hasMore)
         lastMsgSyncRef.current = new Date().toISOString()
@@ -473,7 +476,10 @@ export function InboxClient({
     }
   }, [activeMessages, loadingOlder, hasMoreOlder])
 
+  const [groupToolRequest, setGroupToolRequest] = useState<{ id: string; section: GroupSection; nonce: number } | null>(null)
+  const groupToolSequence = useRef(0)
   const handleSelect = useCallback((id: string, isGroupOverride?: boolean) => {
+    setGroupToolRequest(null)
     setActiveId(id)
     setContactSheetOpen(false)   // fecha a ficha ao trocar de conversa (mobile)
     setActiveMessages([])
@@ -500,6 +506,11 @@ export function InboxClient({
       )
     })
   }, [loadMessages])
+
+  function openGroupTools(id: string, section: GroupSection) {
+    if (activeId !== id) handleSelect(id, true)
+    setGroupToolRequest({ id, section, nonce: ++groupToolSequence.current })
+  }
 
   /**
    * Banner "o modal reusou/reabriu uma conversa que já existia em vez de criar do zero".
@@ -833,7 +844,7 @@ export function InboxClient({
     try {
       const result = await sendMessage(convId, content, isPrivate, reply?.id)
       setActiveMessages((prev) =>
-        prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m)
+        prev.map((m) => m.id === temp.id ? { ...m, id: result.id, content: result.content, metadata: { ...m.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) }, status: "sent" } : m)
       )
     } catch (err) {
       setActiveMessages((prev) =>
@@ -853,7 +864,7 @@ export function InboxClient({
       : c).sort(sortByLastMessage))
     try {
       const result = await sendGroupText(convId, content)
-      setActiveMessages(prev => prev.map(m => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+      setActiveMessages(prev => prev.map(m => m.id === temp.id ? { ...m, id: result.id, content: result.content, metadata: { ...m.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) }, status: "sent" } : m))
     } catch (err) {
       setActiveMessages(prev => prev.map(m => m.id === temp.id ? { ...m, status: "failed" } : m))
       throw err
@@ -911,7 +922,7 @@ export function InboxClient({
       // Swap id. Mantém blob URL até o próximo poll/realtime trazer o real
       // (com storage_path no metadata → resolveMediaUrl passa a usar /api/media/<id>).
       setActiveMessages((prev) =>
-        prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m)
+        prev.map((m) => m.id === temp.id ? { ...m, id: result.id, content: result.content, metadata: { ...m.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) }, status: "sent" } : m)
       )
     } catch (err) {
       URL.revokeObjectURL(blobUrl)
@@ -1215,6 +1226,8 @@ export function InboxClient({
             conversations={displayConversations}
             activeId={activeId}
             onSelect={handleSelect}
+            onGroupAction={openGroupTools}
+            canManageGroups={canManageGroups}
             currentUserId={currentUserId}
             onToggleFlag={handleToggleFlag}
             onTogglePin={handleTogglePin}
@@ -1279,7 +1292,7 @@ export function InboxClient({
                   loadingMessages={loadingMsg}
                   onSendText={handleGroupSendText}
                   onBack={() => { setActiveId(null); setActiveMessages([]) }}
-                  onAccessChanged={() => { void loadFirstPage() }}
+                  onOpenTools={section => openGroupTools(activeConv.id, section)}
                 /> : <ChatPanel
                   currentUserId={currentUserId}
                   onMessageEdited={patch => setActiveMessages(prev => prev.map(message => message.id === patch.id ? { ...message, ...patch } : message))}
@@ -1313,7 +1326,15 @@ export function InboxClient({
                   agendaEnabled={agendaEnabled}
                 />}
               </div>
-              {activeConv.chat_contacts && (
+              {activeConv.is_group && groupToolRequest?.id === activeConv.id && <GroupConversationTools
+                key={groupToolRequest.nonce}
+                conversation={activeConv}
+                canManage={canManageGroups}
+                initialSection={groupToolRequest.section}
+                onClose={() => setGroupToolRequest(null)}
+                onAccessChanged={() => { void loadFirstPage() }}
+              />}
+              {activeConv.chat_contacts && !activeConv.is_group && (
                 <>
                   <ContactDetailsOverlay
                     open={contactSheetOpen}

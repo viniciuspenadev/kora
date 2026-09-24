@@ -5,6 +5,7 @@ import { createPortal } from "react-dom"
 import { SimpleSelect } from "@/components/ui/select"
 import { Send, Paperclip, Lock, Smile, X, Image as ImageIcon, FileText, Music, AlertCircle, Mic, Loader2, Plus, MapPin, User as UserIcon, Users, Search, Reply, Sticker } from "lucide-react"
 import { EmojiPicker } from "./emoji-picker"
+import { AgentSignatureHint } from "./agent-signature-hint"
 import { VoiceRecorder } from "./voice-recorder"
 import { ImageAttachmentsDialog } from "./image-attachments-dialog"
 import { validateImageBatch } from "@/lib/chat/image-attachments"
@@ -333,7 +334,7 @@ export function MessageInput({ editComposer, onEditAvailabilityChange, conversat
   // WhatsApp: lá o template reabre pagando; aqui não existe template — só a pessoa
   // voltando a falar. Explicar o mecanismo evita o atendente digitar e levar recusa.
   return (
-    <>{imageEditor}{editComposer ? <>{dropOverlay}{editComposer}</> : windowNoReopen ? <>{dropOverlay}<NoReopenComposer channelLabel={channelLabel ?? "Instagram"} /></> : windowClosed ? <>{dropOverlay}<ClosedWindowGate conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} /></> :
+    <><AgentSignatureHint conversationId={conversationId} hidden={!!editComposer || isPrivate || isRecording || !!windowClosed || !!windowNoReopen} />{imageEditor}{editComposer ? <>{dropOverlay}{editComposer}</> : windowNoReopen ? <>{dropOverlay}<NoReopenComposer channelLabel={channelLabel ?? "Instagram"} /></> : windowClosed ? <>{dropOverlay}<ClosedWindowGate conversationId={conversationId} neverOpened={windowNeverOpened ?? false} contactFirstName={contactFirstName ?? ""} /></> :
     <div ref={composerRef} className="border-t border-slate-200 bg-white relative pb-[env(safe-area-inset-bottom)]">
       {dropOverlay}
       {imageSession && <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-primary-50 px-4 py-2">

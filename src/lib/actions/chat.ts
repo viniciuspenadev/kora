@@ -26,6 +26,8 @@ import { assertAtendimentoLiberado, atendimentoBloqueado, checkTenantStatus } fr
 import { requireModule } from "@/lib/modules"
 import { getNavigationUnread } from "@/lib/actions/navigation-unread"
 import { addParticipant, removeParticipant } from "@/lib/actions/conversation-participants"
+import { resolveManualSignature } from "@/lib/atendimento/agent-signature-server"
+import { signedContent, type SignatureStamp } from "@/lib/atendimento/agent-signature"
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -438,6 +440,8 @@ export async function sendMessage(
     throw new Error("Esta conversa está sem número de WhatsApp. Reative um número antes de responder.")
   }
   if (!isPrivateNote) await prepareHumanReply(tenantId, conversationId, session.user.id, assignedTo, scope)
+  const signature = !isPrivateNote && isWhatsAppChannel(conversationChannel) ? await resolveManualSignature(tenantId, session.user.id, conv.department_id) : null
+  content = signedContent(content, signature)
 
   // Citação (responder a uma mensagem). Notas privadas não citam pro WhatsApp.
   const quotedMeta = !isPrivateNote && replyTo ? await buildQuotedMeta(tenantId, replyTo) : null
@@ -456,7 +460,7 @@ export async function sendMessage(
       content,
       status:          isPrivateNote ? "delivered" : "pending",
       is_private_note: isPrivateNote ?? false,
-      ...(quotedMeta ? { metadata: { quoted: quotedMeta } } : {}),
+      metadata: { ...(quotedMeta ? { quoted: quotedMeta } : {}), ...(signature ? { agent_signature: signature } : {}) },
     })
     .select("id")
     .single()
@@ -547,7 +551,7 @@ export async function sendMessage(
     .eq("id", conversationId)
 
   revalidatePath("/inbox")
-  return { id: msg.id }
+  return { id: msg.id, content, signature }
 }
 
 /**
@@ -577,7 +581,7 @@ export async function sendOfficialTemplate(
     .from("chat_conversations")
     .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
+    .eq("tenant_id", tenantId).eq("is_group", false)
     .single()
   if (!conv) throw new Error("Conversa não encontrada")
 
@@ -715,7 +719,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   }
 
   const file    = formData.get("file") as File | null
-  const caption = (formData.get("caption") as string) || ""
+  let caption = (formData.get("caption") as string) || ""
   // Flag PTT — gravação de voice note nativa. Quando true e mediaType=audio,
   // usa endpoint sendWhatsAppAudio (cliente vê bolha de áudio nativa do WhatsApp).
   const isVoiceNote = formData.get("ptt") === "1"
@@ -732,7 +736,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     .from("chat_conversations")
     .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, primary_channel, bsuid)")
     .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
+    .eq("tenant_id", tenantId).eq("is_group", false)
     .single()
 
   if (!conv) return { error: "Conversa não encontrada." }
@@ -792,6 +796,13 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
   }
   try { await prepareHumanReply(tenantId, conversationId, session.user.id, assignedTo, scope) }
   catch (e) { return { error: (e as Error).message } }
+  let signature: SignatureStamp | null = null
+  if (caption.trim() && !isVoiceNote && mediaType !== "audio") {
+    try {
+      signature = await resolveManualSignature(tenantId, session.user.id, conv.department_id)
+      caption = signedContent(caption, signature, 1024)
+    } catch (error) { return { error: (error as Error).message } }
+  }
 
   const contact = conv.chat_contacts as unknown as { phone_number: string | null; bsuid: string | null }
 
@@ -831,7 +842,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
       media_file_name: uploadName,
       status:          "pending",
       is_private_note: false,
-      metadata:        { storage_path: storagePath, ...(sendAsVoiceNote ? { is_voice_note: true } : {}), ...(quotedMeta ? { quoted: quotedMeta } : {}) },
+      metadata:        { storage_path: storagePath, ...(signature ? { agent_signature: signature } : {}), ...(sendAsVoiceNote ? { is_voice_note: true } : {}), ...(quotedMeta ? { quoted: quotedMeta } : {}) },
     })
     .select("id")
     .single()
@@ -897,7 +908,7 @@ export async function sendChatMedia(conversationId: string, formData: FormData) 
     .eq("id", conversationId)
 
   revalidatePath("/inbox")
-  return { id: msg.id }
+  return { id: msg.id, content: caption, signature }
 }
 
 // ── Mensagens ricas: reação / localização / contato ─────────
@@ -930,7 +941,7 @@ async function resolveSendContext(
   const { data: conv } = await supabaseAdmin
     .from("chat_conversations")
     .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, primary_channel, bsuid)")
-    .eq("id", conversationId).eq("tenant_id", tenantId).single()
+    .eq("id", conversationId).eq("tenant_id", tenantId).eq("is_group", false).single()
   if (!conv) return { error: "Conversa não encontrada." }
 
   const assignedTo = (conv as { assigned_to: string | null }).assigned_to
@@ -1146,7 +1157,7 @@ export async function assignConversation(conversationId: string, agentId: string
     .from("chat_conversations")
     .select("assigned_to, participants, department_id, instance_id, metadata, updated_at")
     .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
+    .eq("tenant_id", tenantId).eq("is_group", false)
     .maybeSingle()
   if (!conv) throw new Error("Conversa não encontrada")
 
@@ -1228,7 +1239,7 @@ export async function transferConversation(
     .from("chat_conversations")
     .select("id, instance_id, updated_at, assigned_to, participants, department_id, metadata, contact_id, chat_contacts ( custom_name, push_name )")
     .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
+    .eq("tenant_id", tenantId).eq("is_group", false)
     .single()
   if (!conv) throw new Error("Conversa não encontrada")
 
@@ -1416,7 +1427,7 @@ export async function updateConversationStatus(conversationId: string, status: s
     .from("chat_conversations")
     .select("id, instance_id, assigned_to, participants, department_id, updated_at, status")
     .eq("id", conversationId)
-    .eq("tenant_id", tenantId)
+    .eq("tenant_id", tenantId).eq("is_group", false)
     .single()
   if (!conv) throw new Error("Conversa não encontrada")
   const scope = await getViewerScope()

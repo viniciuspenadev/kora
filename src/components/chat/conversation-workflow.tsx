@@ -25,7 +25,7 @@ const classificationOf = (value?: string | null): Classification => value === "w
 
 export type WorkflowData = Awaited<ReturnType<typeof getConversationWorkflow>>
 type Action = "stage" | "move" | "qualify" | "tags" | "transfer" | "finish"
-type Target = { id: string; status: string; is_group?: boolean; archived_at?: string | null; chat_contacts?: { custom_name: string | null; push_name: string | null; lifecycle_stage?: string | null; phone_number?: string | null } | null }
+type Target = { id: string; status: string; is_group?: boolean; group_name?: string | null; archived_at?: string | null; chat_contacts?: { custom_name: string | null; push_name: string | null; lifecycle_stage?: string | null; phone_number?: string | null } | null }
 export type WorkflowExtra = { label: string; run: () => void; disabled?: boolean }
 type MenuState = { target: Target; x: number; y: number; origin: HTMLElement; extras: WorkflowExtra[] }
 const Context = createContext<{
@@ -179,10 +179,10 @@ function WorkflowMenu({ state, kanban, onClose, onAction }: { state: MenuState; 
     const buttons = [...ref.current!.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")]; const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
     if (e.key === "Escape" || e.key === "Tab") { onClose(); return }
     if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) { e.preventDefault(); buttons[e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (index + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length]?.focus() }
-  }}><div className="border-b border-slate-100 px-2.5 py-2 text-xs font-semibold truncate">{state.target.chat_contacts ? displayContactName(state.target.chat_contacts) : "Conversa"}</div>
+  }}><div className="border-b border-slate-100 px-2.5 py-2 text-xs font-semibold truncate">{state.target.is_group ? state.target.group_name || "Grupo do WhatsApp" : state.target.chat_contacts ? displayContactName(state.target.chat_contacts) : "Conversa"}</div>
     {kanban && !state.target.is_group && <>{label("Kanban de atendimento")}{item("stage", Columns3, "Alterar etapa", !!state.target.archived_at)}{item("move", ArrowRightLeft, "Mover para outro Kanban", !!state.target.archived_at)}</>}
     {!!state.target.chat_contacts && !state.target.is_group && <>{label("Contato")}{item("qualify", UserRound, "Classificar contato")}{item("tags", Tag, "Gerenciar etiquetas")}</>}
-    {label("Atendimento")}{item("transfer", ArrowRightLeft, "Transferir atendimento")}{item("finish", Check, state.target.status === "resolved" ? "Reabrir atendimento" : "Concluir atendimento")}
+    {!state.target.is_group && <>{label("Atendimento")}{item("transfer", ArrowRightLeft, "Transferir atendimento")}{item("finish", Check, state.target.status === "resolved" ? "Reabrir atendimento" : "Concluir atendimento")}</>}
     {state.extras.length > 0 && <><div className="my-1 border-t border-slate-100" />{state.extras.map((extra, i) => <button key={i} role="menuitem" type="button" disabled={extra.disabled} className={itemClass} onMouseEnter={e => { if (!extra.disabled) e.currentTarget.focus({ preventScroll: true }) }} onClick={() => { onClose(); extra.run() }}>{extra.label}</button>)}</>}
   </div></>, document.body)
 }

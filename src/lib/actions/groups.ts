@@ -7,16 +7,21 @@ import { getProvider } from "@/lib/providers"
 import { isEvolutionGroupJid } from "@/lib/channels/evolution-group-inbound"
 import { assertAtendimentoLiberado } from "@/lib/auth/tenant-serviceable"
 import { logAudit } from "@/lib/audit"
+import { resolveManualSignature } from "@/lib/atendimento/agent-signature-server"
+import { signedContent, type SignatureStamp } from "@/lib/atendimento/agent-signature"
+import { matchGroupParticipantContacts, type ParticipantContact } from "@/lib/contacts/group-participants"
 
 type AccessMode = "management" | "number_team" | "selected"
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 async function requireGroup(conversationId: string) {
+  if (typeof conversationId !== "string" || !UUID.test(conversationId)) throw new Error("Grupo inválido")
   const scope = await getViewerScope()
   const { data: conv, error } = await supabaseAdmin.from("chat_conversations")
-    .select("id,tenant_id,instance_id,group_jid,group_name,is_group,group_live_enabled,group_access_mode,assigned_to,participants,department_id,last_inbound_at")
+    .select("id,tenant_id,instance_id,group_jid,group_name,is_group,group_live_enabled,group_access_mode,assigned_to,participants,department_id,last_inbound_at,updated_at")
     .eq("id", conversationId).eq("tenant_id", scope.tenantId).eq("is_group", true)
     .eq("group_live_enabled", true).maybeSingle()
-  if (error || !conv || !canViewConversation(scope, conv)) throw new Error("Grupo não encontrado ou sem acesso")
+  if (error || !conv || conv.is_group !== true || conv.group_live_enabled !== true || !canViewConversation(scope, conv)) throw new Error("Grupo não encontrado ou sem acesso")
   if (!isEvolutionGroupJid(conv.group_jid) || !conv.instance_id) throw new Error("Grupo sem número válido")
   return { scope, conv }
 }
@@ -31,8 +36,9 @@ export async function markGroupRead(conversationId: string): Promise<void> {
   if (error) throw new Error("Não foi possível marcar o grupo como lido")
 }
 
-export async function sendGroupText(conversationId: string, content: string): Promise<{ id: string }> {
-  const text = content.trim()
+export async function sendGroupText(conversationId: string, content: string): Promise<{ id: string; content: string; signature: SignatureStamp | null }> {
+  if (typeof content !== "string") throw new Error("Digite uma mensagem de até 4096 caracteres")
+  let text = content.trim()
   if (!text || text.length > 4096) throw new Error("Digite uma mensagem de até 4096 caracteres")
   const { scope, conv } = await requireGroup(conversationId)
   await assertAtendimentoLiberado(scope.tenantId)
@@ -45,6 +51,10 @@ export async function sendGroupText(conversationId: string, content: string): Pr
   }
   const provider = getProvider(instance)
   if (!provider.sendGroupText) throw new Error("Envio para grupos indisponível neste canal")
+  const signature = await resolveManualSignature(scope.tenantId, scope.userId, conv.department_id)
+  text = signedContent(text, signature)
+  // A permissão pode ser revogada enquanto a instância e a situação da conta são lidas.
+  await requireGroup(conversationId)
   // Envia antes de persistir: se o provedor recusar, não cria uma mensagem falsa.
   // Se o eco chegar primeiro, a unique por conversa+id reconcilia abaixo.
   const sent = await provider.sendGroupText(conv.group_jid!, text)
@@ -54,11 +64,12 @@ export async function sendGroupText(conversationId: string, content: string): Pr
     sender_type: "agent", sender_id: scope.userId,
     content_type: "text", content: text,
     whatsapp_msg_id: sent.messageId, status: "sent", is_private_note: false,
+    metadata: signature ? { agent_signature: signature } : {},
   }).select("id").single()
   let id = inserted?.id
   if (error?.code === "23505") {
     const { data: echo, error: echoError } = await supabaseAdmin.from("chat_messages")
-      .update({ sender_id: scope.userId, content: text, metadata: { via_celular: false } })
+      .update({ sender_id: scope.userId, content: text, metadata: { via_celular: false, ...(signature ? { agent_signature: signature } : {}) } })
       .eq("tenant_id", scope.tenantId).eq("conversation_id", conv.id)
       .eq("whatsapp_msg_id", sent.messageId).select("id").maybeSingle()
     if (echoError || !echo) throw new Error("Mensagem enviada, mas não foi possível conciliar o eco. Confira o grupo antes de reenviar.")
@@ -74,12 +85,12 @@ export async function sendGroupText(conversationId: string, content: string): Pr
     .or(`last_message_at.is.null,last_message_at.lte.${now}`)
   if (bumpError) console.error("[groups] sent message activity update failed", { conversationId, code: bumpError.code })
   revalidatePath("/inbox")
-  return { id: id! }
+  return { id: id!, content: text, signature }
 }
 
 export async function getGroupParticipants(conversationId: string): Promise<{
   subject: string | null
-  participants: Array<{ jid: string; phone: string | null; isAdmin: boolean }>
+  participants: Array<{ jid: string; phone: string | null; isAdmin: boolean } & ParticipantContact>
 }> {
   const { scope, conv } = await requireGroup(conversationId)
   const { data: instance } = await supabaseAdmin.from("whatsapp_instances")
@@ -88,6 +99,7 @@ export async function getGroupParticipants(conversationId: string): Promise<{
   if (!instance || instance.provider !== "baileys") throw new Error("Número do grupo indisponível")
   const info = await getProvider(instance).fetchGroupMetadata(conv.group_jid!)
   if (!info || info.id !== conv.group_jid) throw new Error("Não foi possível consultar os participantes agora")
+  const current = await requireGroup(conversationId)
   const participants = (info.participants ?? []).slice(0, 1000).flatMap(p => {
     const jid = typeof p.id === "string" ? p.id : ""
     if (!/^\d+@(s\.whatsapp\.net|lid)$/.test(jid)) return []
@@ -96,7 +108,13 @@ export async function getGroupParticipants(conversationId: string): Promise<{
     return [{ jid, phone: phoneJid?.split("@")[0] ?? null,
       isAdmin: p.admin === "admin" || p.admin === "superadmin" }]
   })
-  return { subject: info.subject?.trim() || null, participants }
+  const contacts = await matchGroupParticipantContacts(current.scope, participants.flatMap(p => p.phone ? [p.phone] : []))
+  const latest = await requireGroup(conversationId)
+  // Do not return names resolved under a permission snapshot that changed mid-request.
+  if (JSON.stringify(current.scope) !== JSON.stringify(latest.scope)) throw new Error("Seu acesso mudou. Consulte os participantes novamente.")
+  return { subject: info.subject?.trim() || null, participants: participants.map(p => ({ ...p,
+    ...(p.phone ? contacts.get(p.phone) : undefined) ?? { contact: null, contactAmbiguous: false },
+  })) }
 }
 
 export async function getGroupAccessRoster(conversationId: string): Promise<{
@@ -113,6 +131,8 @@ export async function getGroupAccessRoster(conversationId: string): Promise<{
       .select("id,name").eq("tenant_id", scope.tenantId).order("name"),
   ])
   if (users.error || departments.error) throw new Error("Não foi possível carregar a equipe")
+  const current = await requireGroup(conversationId)
+  if (!current.scope.isAdmin) throw new Error("Somente a gestão pode alterar o acesso ao grupo")
   return {
     members: (users.data ?? []).filter(u => u.role === "agent").map(u => {
       const profile = Array.isArray(u.profiles) ? u.profiles[0] : u.profiles
@@ -134,7 +154,10 @@ export async function saveGroupAccess(conversationId: string, input: {
 }): Promise<void> {
   const { scope, conv } = await requireGroup(conversationId)
   if (!scope.isAdmin) throw new Error("Somente a gestão pode alterar o acesso ao grupo")
-  if (!["management", "number_team", "selected"].includes(input.mode)) throw new Error("Modo de acesso inválido")
+  if (!input || typeof input !== "object" || !["management", "number_team", "selected"].includes(input.mode)) throw new Error("Modo de acesso inválido")
+  if (input.userIds !== undefined && (!Array.isArray(input.userIds) || input.userIds.length > 100
+    || input.userIds.some(id => typeof id !== "string" || !UUID.test(id)))) throw new Error("Seleção de atendentes inválida")
+  if (input.departmentId != null && (typeof input.departmentId !== "string" || !UUID.test(input.departmentId))) throw new Error("Departamento inválido")
   const userIds = input.mode === "selected" ? [...new Set(input.userIds ?? [])] : []
   const departmentId = input.mode === "selected" ? input.departmentId || null : null
   if (userIds.length > 100) throw new Error("Selecione até 100 atendentes")
@@ -157,11 +180,15 @@ export async function saveGroupAccess(conversationId: string, input: {
     }
   }
   const before = { mode: conv.group_access_mode, participants: conv.participants, departmentId: conv.department_id }
-  const { error } = await supabaseAdmin.from("chat_conversations").update({
+  const current = await requireGroup(conversationId)
+  if (!current.scope.isAdmin) throw new Error("Somente a gestão pode alterar o acesso ao grupo")
+  const { data: saved, error } = await supabaseAdmin.from("chat_conversations").update({
     group_access_mode: input.mode, participants: userIds,
     department_id: departmentId, assigned_to: null, updated_at: new Date().toISOString(),
   }).eq("id", conv.id).eq("tenant_id", scope.tenantId).eq("is_group", true)
+    .eq("updated_at", conv.updated_at).select("id").maybeSingle()
   if (error) throw new Error("Não foi possível salvar o acesso ao grupo")
+  if (!saved) throw new Error("O grupo foi atualizado durante esta alteração. Feche e abra as permissões para tentar novamente.")
   await logAudit({ tenantId: scope.tenantId, actorId: scope.userId,
     action: "group.access.update", targetType: "conversation", targetId: conv.id,
     before, after: { mode: input.mode, participants: userIds, departmentId },

@@ -1,6 +1,7 @@
 "use client"
 
 import { useConversationWorkflow } from "./conversation-workflow"
+import { groupConversationActions, type GroupSection } from "./group-conversation-actions"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { ConversationLabels } from "./conversation-labels"
 
@@ -34,6 +35,8 @@ interface Props {
   conversations:   ChatConversation[]
   activeId:        string | null
   onSelect:        (id: string) => void
+  onGroupAction?:  (id: string, section: GroupSection) => void
+  canManageGroups?: boolean
   currentUserId:   string
   onToggleFlag:    (id: string, value: boolean) => void
   onTogglePin:     (id: string, value: boolean) => void
@@ -155,7 +158,7 @@ function formatMessageTime(dateStr: string): string {
 }
 
 export function ConversationList({
-  conversations, activeId, onSelect,
+  conversations, activeId, onSelect, onGroupAction, canManageGroups = false,
   currentUserId, onToggleFlag, onTogglePin, onAssignMe, onArchive,
   viewFilter, onViewChange, viewCounts,
   statusFilter, onStatusChange, channelFilter, onChannelFilterChange,
@@ -172,7 +175,7 @@ export function ConversationList({
 }: Props) {
   const workflow = useConversationWorkflow()
   const tagsById = useMemo(() => new Map(tags.map(tag => [tag.id, tag])), [tags])
-  const workflowExtras = (c: ChatConversation) => c.is_group ? [] : [
+  const workflowExtras = (c: ChatConversation) => c.is_group ? groupConversationActions(canManageGroups, section => onGroupAction?.(c.id, section)) : [
     { label: c.flagged_pending ? "Remover pendente" : "Marcar como pendente", run: () => onToggleFlag(c.id, !c.flagged_pending) },
     { label: c.pinned_at ? "Desafixar do topo" : "Fixar no topo", run: () => onTogglePin(c.id, !c.pinned_at) },
     { label: c.assigned_to === currentUserId ? "Atribuída a você" : "Atribuir a mim", disabled: c.assigned_to === currentUserId, run: () => onAssignMe(c.id) },
@@ -655,9 +658,9 @@ export function ConversationList({
                 tabIndex={0}
                 aria-label={`Abrir conversa de ${name}`}
                 aria-pressed={isActive}
-                onKeyDown={e => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(conv.id) } if (!conv.is_group && (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) { const rect = e.currentTarget.getBoundingClientRect(); workflow?.menu(conv, { ...e, clientX: rect.left + 30, clientY: rect.top + 30, currentTarget: e.currentTarget, preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation() }, workflowExtras(conv)) } }}
+                onKeyDown={e => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(conv.id) } if ((e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) { const rect = e.currentTarget.getBoundingClientRect(); workflow?.menu(conv, { ...e, clientX: rect.left + 30, clientY: rect.top + 30, currentTarget: e.currentTarget, preventDefault: () => e.preventDefault(), stopPropagation: () => e.stopPropagation() }, workflowExtras(conv)) } }}
                 onClick={() => onSelect(conv.id)}
-                onContextMenu={e => { if (conv.is_group) e.preventDefault(); else workflow?.menu(conv, e, workflowExtras(conv)) }}
+                onContextMenu={e => { workflow?.menu(conv, e, workflowExtras(conv)) }}
                 className={`relative w-full flex items-start gap-3 px-4 py-3.5 text-left transition-colors border-b border-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary ${isActive ? "bg-primary-50" : "hover:bg-primary-50/60"}`}
               >
                 {isActive && (
