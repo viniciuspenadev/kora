@@ -27,11 +27,14 @@ describe("gestão e escopo da assinatura", () => {
     expect(await saveSignatureSettings(off, null)).toHaveProperty("error")
     expect(db.writes).toHaveLength(0)
   })
-  it("nega usuário/departamento de outra empresa e payload inválido", async () => {
-    expect(await saveSignatureSettings({ ...off, agents: { "00000000-0000-4000-8000-000000000099": { mode: "on", name: "Outro" } } }, null)).toHaveProperty("error")
-    expect(await saveSignatureSettings({ ...off, departments: { "00000000-0000-4000-8000-000000000098": true } }, null)).toHaveProperty("error")
-    expect(await saveSignatureSettings({ ...off, agents: { [scope.userId]: { mode: "on", name: "*Admin*" } } }, null)).toHaveProperty("error")
-    expect(db.writes).toHaveLength(0)
+  it("ignora e limpa exceções antigas ao salvar sem perder a comparação concorrente", async () => {
+    const legacy = { ...off, agents: { [scope.userId]: { mode: "on", name: "Nome antigo" } }, departments: { antigo: true } }
+    db.tables.tenant_config[0].agent_signature = legacy
+    expect(await resolveManualSignature("blue", scope.userId, null)).toBeNull()
+    expect(await saveSignatureSettings({ ...legacy, enabled: true }, legacy)).toEqual({})
+    expect(db.tables.tenant_config[0].agent_signature).toEqual({ ...off, enabled: true })
+    expect((await resolveManualSignature("blue", scope.userId, null))?.name).toBe("Ana")
+    expect(await saveSignatureSettings({ enabled: "sim" }, null)).toHaveProperty("error")
   })
   it("não sobrescreve alteração concorrente", async () => {
     db.tables.tenant_config[0].agent_signature = { ...off, enabled: true }

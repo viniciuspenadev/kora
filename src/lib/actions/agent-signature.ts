@@ -10,15 +10,9 @@ import { logAudit } from "@/lib/audit"
 export async function getSignatureSettings() {
   const scope = await getViewerScope()
   if (!scope.isAdmin) throw new Error("Somente a gestão pode configurar assinaturas.")
-  const [config, users, departments] = await Promise.all([
-    readSignaturePolicy(scope.tenantId),
-    supabaseAdmin.from("tenant_users").select("user_id,profiles!tenant_users_user_id_fkey(full_name)").eq("tenant_id", scope.tenantId).eq("active", true),
-    supabaseAdmin.from("tenant_departments").select("id,name").eq("tenant_id", scope.tenantId).order("name"),
-  ])
-  if (users.error || departments.error) throw new Error("Não foi possível carregar a equipe.")
-  return { ...config, agents: (users.data ?? []).map(user => ({ id: user.user_id as string,
-    name: (Array.isArray(user.profiles) ? user.profiles[0] : user.profiles)?.full_name || "Sem nome" })),
-    departments: (departments.data ?? []) as Array<{ id: string; name: string }> }
+  const config = await readSignaturePolicy(scope.tenantId)
+  const { data: profile } = await supabaseAdmin.from("profiles").select("full_name").eq("id", scope.userId).maybeSingle()
+  return { ...config, previewName: profile?.full_name || "Nome do atendente" }
 }
 
 export async function saveSignatureSettings(input: unknown, previous: unknown): Promise<{ error?: string }> {
@@ -26,11 +20,11 @@ export async function saveSignatureSettings(input: unknown, previous: unknown): 
     const scope = await getViewerScope()
     if (!scope.isAdmin) throw new Error("Somente a gestão pode configurar assinaturas.")
     const policy = validateSignaturePolicy(input)
-    const expected = previous === null ? null : validateSignaturePolicy(previous)
+    // Preserve the exact legacy JSON for optimistic concurrency; normalize only the new value.
+    if (previous !== null) validateSignaturePolicy(previous)
+    const expected = previous
     const state = await getSignatureSettings()
     if (!state.ready) throw new Error("A configuração ainda não está disponível nesta versão do banco.")
-    if (Object.keys(policy.departments).some(id => !state.departments.some(d => d.id === id))
-      || Object.keys(policy.agents).some(id => !state.agents.some(a => a.id === id))) throw new Error("A equipe mudou. Recarregue as opções antes de salvar.")
     let result
     if (!state.exists) {
       if (expected !== null) throw new Error("Configuração alterada. Recarregue a página.")

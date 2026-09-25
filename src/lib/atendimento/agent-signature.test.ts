@@ -1,19 +1,12 @@
 import { describe, expect, it } from "vitest"
 import { emptySignaturePolicy, resolveSignature, signedContent, signatureBody, signatureStamp } from "./agent-signature"
 describe("assinatura de atendimento", () => {
-  it("começa desligada e herda empresa/departamento/agente nesta ordem", () => {
+  it("usa somente o botão global e o nome do perfil, ignorando exceções antigas", () => {
     const p = emptySignaturePolicy()
-    expect(resolveSignature(p, "a", null, "Ana")).toBeNull()
-    p.enabled = true
-    expect(resolveSignature(p, "a", null, "Ana")?.name).toBe("Ana")
-    p.departments.d = false
+    p.agents.a = { mode: "on", name: "Nome antigo" }; p.departments.d = true
     expect(resolveSignature(p, "a", "d", "Ana")).toBeNull()
-    p.agents.a = { mode: "on", name: "Ana Vendas" }
-    expect(resolveSignature(p, "a", "d", "Ana")?.name).toBe("Ana Vendas")
-    p.agents.a.mode = "off"; p.departments.d = true
-    expect(resolveSignature(p, "a", "d", "Ana")).toBeNull()
-    p.agents.a.mode = "inherit"
-    expect(resolveSignature(p, "a", "d", "Ana")?.name).toBe("Ana Vendas")
+    p.enabled = true; p.agents.a.mode = "off"; p.departments.d = false
+    expect(resolveSignature(p, "a", "d", "Ana")?.name).toBe("Ana")
   })
   it("formata sem duplicar, mantém o corpo e respeita limites", () => {
     const stamp = resolveSignature({ ...emptySignaturePolicy(), enabled: true }, "a", null, "Ana")!

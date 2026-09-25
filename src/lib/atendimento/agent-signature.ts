@@ -10,15 +10,12 @@ export type SignatureStamp = { version: 1; name: string; prefix: string }
 export function signatureName(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f*_~`]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80)
 }
-export function signatureEnabled(policy: SignaturePolicy, userId: string, departmentId: string | null): boolean {
-  const agent = policy.agents[userId]
-  return agent?.mode === "on" ? true : agent?.mode === "off" ? false
-    : departmentId && typeof policy.departments[departmentId] === "boolean" ? policy.departments[departmentId] : policy.enabled
+export function signatureEnabled(policy: SignaturePolicy, _userId: string, _departmentId: string | null): boolean {
+  return policy.enabled
 }
 export function resolveSignature(policy: SignaturePolicy, userId: string, departmentId: string | null, profileName: string): SignatureStamp | null {
   if (!signatureEnabled(policy, userId, departmentId)) return null
-  const agent = policy.agents[userId]
-  const name = signatureName(agent?.name || profileName)
+  const name = signatureName(profileName)
   if (!name) throw new Error("Configure o nome de atendimento antes de enviar com assinatura.")
   return { version: 1, name, prefix: `*${name}*\n\n` }
 }
