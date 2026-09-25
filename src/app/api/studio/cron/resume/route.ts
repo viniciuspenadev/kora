@@ -5,6 +5,7 @@
 // vencidos (status=waiting, resume_at <= agora) e continua cada um.
 // FAIL-CLOSED: sem CRON_SECRET correto no header → 401 (nunca público).
 
+import { recoverTransferPresentations } from "@/lib/ai-v2/transfer-recovery"
 import { NextResponse } from "next/server"
 import { supabaseAdmin } from "@/lib/supabase"
 import { filterServiceableTenants } from "@/lib/auth/tenant-serviceable"
@@ -29,6 +30,10 @@ export async function POST(req: Request): Promise<Response> {
 }
 
 async function retomar() {
+  let presentations = 0
+  let presentationError = false
+  try { presentations = await recoverTransferPresentations() }
+  catch { presentationError = true; console.error("[studio/cron] falha na recuperação de apresentações") }
   const nowIso = new Date().toISOString()
   const { data: due, error } = await supabaseAdmin
     .from("studio_flow_runs")
@@ -72,5 +77,5 @@ async function retomar() {
     }
   }
 
-  return { processed: resumed, meta: { checked: runs.length, resumed } }
+  return { status: presentationError ? "partial" as const : "ok" as const, processed: resumed, meta: { checked: runs.length, resumed, presentations, presentationError } }
 }

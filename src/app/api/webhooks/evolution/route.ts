@@ -360,7 +360,7 @@ async function handleMessageUpsert(
                 .select("id")
                 .eq("tenant_id", tenantId)
                 .eq("conversation_id", cv.id)
-                .eq("sender_type", "agent")
+                .in("sender_type", ["agent", "bot"])
                 .eq("is_private_note", false)
                 .eq("status", "pending")
                 .eq("content_type", "text")

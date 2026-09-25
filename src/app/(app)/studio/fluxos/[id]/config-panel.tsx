@@ -524,6 +524,7 @@ export function ConfigPanel({
             <SimpleSelect value={target} onChange={(v) => set({ target: v })} options={[
               { value: "department", label: "Fila do setor" },
               { value: "agent",      label: "Atendente específico" },
+              { value: "round_robin", label: "Distribuir igualmente entre agentes" },
               { value: "owner",      label: "Devolver ao responsável pelo cliente" },
               { value: "pool",       label: "Fila geral" },
             ]} />
@@ -542,12 +543,37 @@ export function ConfigPanel({
                 options={agents.map((a) => ({ value: a.id, label: a.name }))} />
             </div>
           )}
+          {target === "round_robin" && (
+            <div className="space-y-2">
+              <label className={LABEL}>Agentes participantes</label>
+              <div className="max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+                {agents.map(a => {
+                  const selected = Array.isArray(cfg.agentIds) ? cfg.agentIds as string[] : []
+                  return <label key={a.id} className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-primary-50">
+                    <input type="checkbox" className="accent-primary" checked={selected.includes(a.id)}
+                      onChange={e => set({agentIds: e.target.checked ? [...selected,a.id] : selected.filter(id => id !== a.id)})} />
+                    <span>{a.name}</span>
+                  </label>
+                })}
+                {!agents.length && <p className="p-3 text-xs text-slate-500">Cadastre agentes ativos na equipe para distribuir.</p>}
+              </div>
+              <p className="text-xs text-slate-500">Uma conversa por vez para cada participante, na ordem escolhida. Não exige departamento nem navegador aberto. Quem não atende o número fica fora daquela distribuição.</p>
+              <p className="text-xs text-primary-600 break-words">{(Array.isArray(cfg.agentIds) ? cfg.agentIds as string[] : []).map(id => agents.find(a => a.id === id)?.name ?? "Agente removido").join(" → ") || "Selecione ao menos um agente."}</p>
+            </div>
+          )}
           {target === "owner" && (
             <p className="text-[11px] text-slate-500 leading-relaxed">Volta pro atendente que já é dono deste cliente. Sem responsável ativo → cai na fila geral.</p>
           )}
           <div>
             <label className={LABEL}>Mensagem de transição <span className="text-slate-400 font-normal">(opcional)</span></label>
-            <input className={INPUT} value={String(cfg.handoff ?? "")} onChange={(e) => set({ handoff: e.target.value })} placeholder="Vou te passar pro time…" />
+            <input className={INPUT} value={String(cfg.handoff ?? "")} onChange={(e) => set({ handoff: e.target.value })} placeholder={target === "agent" || target === "round_robin" ? "Olá! Meu nome é {{agente}} e vou seguir com seu atendimento." : "Vou te passar pro time…"} maxLength={4000} />
+            {(target === "agent" || target === "round_robin") && <div className="mt-2 space-y-2">
+              <p className="text-xs text-slate-500">Use <code>{"{{agente}}"}</code> para o nome de atendimento de quem receber. Deixe vazio para não enviar. A apresentação só sai após a atribuição confirmada.</p>
+              {!!cfg.handoff && <div className="rounded-lg border border-primary-200 bg-primary-50 p-3">
+                <p className="mb-1 text-[10px] font-semibold uppercase text-primary-600">Exemplo da apresentação</p>
+                <p className="whitespace-pre-wrap break-words text-sm text-slate-900">{String(cfg.handoff).replaceAll("{{agente}}", agents.find(a => a.id === (target === "agent" ? cfg.agentId : (cfg.agentIds as string[] | undefined)?.[0]))?.name || "Nome do agente")}</p>
+              </div>}
+            </div>}
           </div>
           <div>
             <label className={LABEL}>Se ninguém estiver disponível</label>
@@ -556,7 +582,7 @@ export function ConfigPanel({
               { value: "wait_message", label: "Avisar o cliente e enfileirar" },
               { value: "keep_ai",      label: "Manter a IA atendendo" },
             ]} />
-            <p className="mt-1 text-[10.5px] text-slate-400 leading-relaxed">Vale quando o destino está fora do horário comercial ou sem gente ativa (pausada/ausente).</p>
+            <p className="mt-1 text-[10.5px] text-slate-400 leading-relaxed">Fora do horário ou sem agentes elegíveis. Enfileirar mantém a atribuição ao agente válido; sem elegíveis, a conversa vai para a fila geral e a gestão recebe um aviso.</p>
           </div>
           {(fallback === "wait_message" || fallback === "keep_ai") && (
             <div>
