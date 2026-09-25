@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import type { ChatMessage, ExternalAdReply } from "@/types/chat"
 import { sanitizeAdReply } from "@/lib/ad-reply"
+import { signatureBody } from "@/lib/atendimento/agent-signature"
 import { safeHref } from "@/lib/safe-href"
 import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { AudioPlayer } from "./audio-player"
@@ -372,6 +373,10 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
     )
   }
 
+  // Hide only the recorded automatic prefix; preserve manually typed names.
+  const displayContent = message.sender_type === "agent"
+    ? signatureBody(message.content ?? "", message.metadata)
+    : message.content
   const mediaIcon = getMediaIcon(message.content_type)
 
   const meta          = (message.metadata ?? {}) as MessageMeta
@@ -772,11 +777,11 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
           </div>
         )}
 
-        {message.content && message.content_type !== "location" && message.content_type !== "interactive" && (
+        {displayContent && message.content_type !== "location" && message.content_type !== "interactive" && (
           <p className={`text-[13px] whitespace-pre-wrap break-words leading-relaxed ${
             isIncoming ? "text-slate-800" : "text-slate-900"
           }`}>
-            {message.content}
+            {displayContent}
           </p>
         )}
 
