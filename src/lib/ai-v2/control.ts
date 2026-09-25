@@ -34,7 +34,7 @@ export async function beginStudioControl(ctx: ControlContext): Promise<void> {
   const current = await assertStudioControl(ctx)
   if (!current) return
   const metadata: Record<string, unknown> = { ...current.metadata, studio_entry: crypto.randomUUID() }
-  for (const key of ["ai_routed", "reopen_owner", "ai_pinned_flow", "campaign_engage", "ig_comment_engage"]) delete metadata[key]
+  for (const key of ["ai_routed", "reopen_owner", "ai_pinned_flow", "campaign_engage", "ig_comment_engage", "studio_first_inbound"]) delete metadata[key]
   const { data, error } = await supabaseAdmin.from("chat_conversations")
     .update({ ai_handling: true, metadata, updated_at: new Date().toISOString() })
     .eq("tenant_id", ctx.tenantId).eq("id", ctx.conversationId)

@@ -65,6 +65,8 @@ export type ToolConfig = Record<string, Record<string, unknown>>
  * shapes estáveis do v1 (ContactRow / instance) — não a lógica.
  */
 export interface ExecCtx {
+  /** Trusted runtime identity for an atomic transfer (never supplied by the LLM). */
+  transferExecution?: { flowId: string; nodeId: string; runKey: string }
   tenantId:             string
   conversationId:       string
   contact:              ContactRow

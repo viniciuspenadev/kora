@@ -6,6 +6,7 @@
 // Grava o grafo (nós+arestas) em studio_flows.graph. O runtime da
 // Fatia 4 lê e executa esse mesmo formato — sem conversão.
 
+import { validateTransferPublish } from "@/lib/studio/transfer-validation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
@@ -396,6 +397,13 @@ export async function saveFlow(
   // H-15: teto do grafo antes de gravar (JSONB é lido/executado a cada disparo).
   const gErr = checkFlowGraphLimits(patch.graph)
   if (gErr) return { error: gErr }
+  const { data: current, error: currentError } = await supabaseAdmin.from("studio_flows")
+    .select("status,active").eq("tenant_id", session.user.tenantId).eq("id", id).maybeSingle()
+  if (currentError || !current) return { error: "Não foi possível conferir o fluxo." }
+  if (current.status === "published" && current.active) {
+    const transferError = await validateTransferPublish(session.user.tenantId, patch.graph)
+    if (transferError) return { error: transferError }
+  }
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
     .update({
@@ -433,6 +441,9 @@ export async function publishFlow(
   // H-15: teto do grafo antes de gravar o publicado (JSONB lido/executado a cada disparo).
   const gErr = checkFlowGraphLimits(patch.graph)
   if (gErr) return { error: gErr }
+
+  const transferError = await validateTransferPublish(session.user.tenantId, patch.graph)
+  if (transferError) return { error: transferError }
 
   // Gatilho do Instagram: recusa ANTES de publicar. Publicar um fluxo que não tem como
   // capturar (sem licença, sem conta, sem post ou sem direct) é a armadilha silenciosa —
@@ -494,6 +505,13 @@ export async function publishFlow(
 
 export async function setFlowActive(id: string, active: boolean): Promise<{ error?: string }> {
   const session = await requireAdmin()
+  if (active) {
+    const {data:flow,error:readError}=await supabaseAdmin.from("studio_flows").select("graph")
+      .eq("tenant_id",session.user.tenantId).eq("id",id).maybeSingle()
+    if(readError||!flow) return {error:"Não foi possível conferir o fluxo."}
+    const transferError=await validateTransferPublish(session.user.tenantId,flow.graph as FlowGraph)
+    if(transferError) return {error:transferError}
+  }
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
     .update({ active, updated_at: new Date().toISOString() })

@@ -43,7 +43,8 @@ export function describeNode(node: FlowNode | null | undefined, graph: FlowGraph
   const s = (v: unknown) => (typeof v === "string" ? v.trim() : "")
   switch (node.type) {
     case "schedule":       return "Agendar horário"
-    case "transfer":       return s(c.target) === "owner" ? "Transferir → responsável"
+    case "transfer":       return s(c.target) === "round_robin" ? "Distribuir entre agentes"
+                                : s(c.target) === "owner" ? "Transferir → responsável"
                                 : s(c.target) === "pool"  ? "Transferir → fila"
                                 : s(c.target) === "agent" ? "Transferir → atendente"
                                 : s(c.department) ? `Transferir → ${s(c.department)}` : "Transferir"

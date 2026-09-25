@@ -1078,7 +1078,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // chama LLM nem finge "pela IA", apenas encaminha. collect_hint guia a EXTRAÇÃO
         // quando há campos do `collect` (mas não decide o byAI).
         const collectHint = Array.isArray(variables["__collect"]) ? (variables["__collect"] as string[]) : []
-        const r = await cap?.run(ctx, {
+        const r = await cap?.run({ ...ctx, transferExecution: { flowId: activeFlow.id, nodeId: node.id,
+          runKey: String(variables.__run_generation ?? run.id) } }, {
+          agent_ids:        cfg.agentIds ?? [],
           target:           cfg.target,               // undefined = nó legado (semântica clássica)
           department:       cfg.department,
           agent_id:         cfg.agentId ?? null,
@@ -1095,7 +1097,15 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           await persistRun(run, activeFlow, node.id, variables, callStack, "active")
           return { status: "responded", departmentId: null, error: null, agent: lastAgent }
         }
-        await finishRun(ctx.tenantId, run, "transfer", variables)
+        if (!r?.ok && (cfg.target === "round_robin" || cfg.target === "agent")) {
+          await supabaseAdmin.from("chat_messages").insert({
+            tenant_id: ctx.tenantId, conversation_id: ctx.conversationId,
+            sender_type: "system", content_type: "text", is_private_note: true, status: "delivered",
+            content: "Não foi possível confirmar a distribuição do Studio. Confira o atendimento e a configuração do nó Transferir.",
+            metadata: { studio: true, transfer_failed: true },
+          })
+        }
+        await finishRun(ctx.tenantId, run, r?.ok ? "transfer" : "transfer_failed", variables)
         await handBackToHuman(ctx)   // preserva destino explícito
         if (r?.ok) return { status: "routed", departmentId: r.routedDepartmentId ?? null, error: null, agent: lastAgent }
         // destino inválido na config → não encaminhou; nota interna já registrou pro admin.

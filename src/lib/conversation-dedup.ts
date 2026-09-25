@@ -178,6 +178,7 @@ export async function findOrReopenConversation(
     delete metadata.ai_routed
     delete metadata.reopen_owner
     delete metadata.ai_pinned_flow
+    delete metadata.studio_first_inbound
     delete metadata.studio_entry
     const policy = { assigned_to: input.assignTo ?? null, department_id: null, ai_handling: aiFirst, metadata }
 

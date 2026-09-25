@@ -5,6 +5,7 @@ const db = new MemoryDb()
 const execute = vi.fn()
 let licensed = true
 let decoupled = true
+let history: {role: "user" | "assistant"; content: string}[] = []
 vi.mock("@/lib/supabase", () => ({ supabaseAdmin: db }))
 vi.mock("@/auth", () => ({ auth: async () => null }))
 vi.mock("@/lib/modules", () => ({ hasModule: async () => licensed }))
@@ -12,7 +13,7 @@ vi.mock("@/lib/ai-v2/studio-config", () => ({ loadStudioConfig: async () => ({ a
 vi.mock("@/lib/ai-v2/flow/runtime", () => ({ runFlow: execute }))
 vi.mock("@/lib/campaigns/engine", () => ({}))
 vi.mock("@/lib/instagram/api", () => ({}))
-vi.mock("@/lib/llm/context", () => ({ gatherPromptContext: async () => ({ history: [] }), latestInboundAt: async () => null }))
+vi.mock("@/lib/llm/context", () => ({ gatherPromptContext: async () => ({ history }), latestInboundAt: async () => null }))
 vi.mock("@/lib/llm/pricing", () => ({ costOfTokens: () => 0 }))
 vi.mock("@/lib/atendimento/events", () => ({ logConversationEvent: async () => {} }))
 vi.mock("@/lib/commercial/entries", () => ({ emitCommercialEvent: async () => {} }))
@@ -21,7 +22,7 @@ const { assertStudioControl } = await import("@/lib/ai-v2/control")
 const conv = () => db.tables.chat_conversations[0]
 const input = { tenantId: "t", conversationId: "c", incomingText: "Olá", instance: {} }
 beforeEach(() => {
-  licensed = true; decoupled = true; execute.mockReset()
+  licensed = true; decoupled = true; history = []; execute.mockReset()
   vi.spyOn(console, "error").mockImplementation(() => {})
   db.reset({
     chat_conversations: [{ id: "c", tenant_id: "t", status: "open", contact_id: "contact", instance_id: null,
@@ -80,4 +81,45 @@ it("turno após debounce conserva o gatilho de retorno do ciclo", async () => {
   db.tables.studio_flow_runs[0].status="done"
   await runStudioTurn({...input,signals:{isReopened:false}})
   expect(execute.mock.calls[1][1].id).toBe("f")
+})
+
+function firstEntry() {
+  conv().assigned_to = null; conv().metadata = { studio_first_inbound: true }; conv().ai_handling = true
+  db.tables.studio_flow_runs = []
+  db.tables.studio_flows[0].trigger = { type: "new_contact" }
+  execute.mockResolvedValue({ status: "responded", error: null, agent: null, departmentId: null })
+}
+it.each(["whatsapp", "meta_cloud", "site", "instagram"])("primeira entrada %s sobrevive à rajada e eco externo", async channel => {
+  firstEntry(); conv().channel = channel
+  history = [{ role: "user", content: "Olá" }, { role: "user", content: "Quero orçamento" }, { role: "assistant", content: "Recebido" }]
+  expect((await runStudioTurn(input)).status).toBe("responded")
+  expect(execute).toHaveBeenCalledOnce()
+})
+it("primeira entrada já executada não redispara novo contato", async () => {
+  firstEntry(); await runStudioTurn(input)
+  db.tables.studio_flow_runs[0].status = "done"
+  expect((await runStudioTurn(input)).status).toBe("no_action")
+  expect(execute).toHaveBeenCalledOnce()
+})
+it.each(["cycle", "signal", "human"])("marcador antigo não transforma %s em novo contato", async reason => {
+  firstEntry()
+  if (reason === "cycle") conv().metadata.attendance_cycle = "returned"
+  if (reason === "human") conv().metadata.ai_routed = { via: "human_reply" }
+  await runStudioTurn({ ...input, signals: { isReopened: reason === "signal" } })
+  expect(execute).not.toHaveBeenCalled()
+})
+it("conversa legada sem marcador preserva a primeira mensagem", async () => {
+  firstEntry(); conv().metadata = {}; history = [{ role: "user", content: "Olá" }]
+  expect((await runStudioTurn(input)).status).toBe("responded")
+})
+it("histórico antigo sem marcador não vira novo contato", async () => {
+  firstEntry(); conv().metadata = {}
+  history = [{ role: "user", content: "Olá" }, { role: "assistant", content: "Atendido" }]
+  expect((await runStudioTurn(input)).status).toBe("no_action")
+  expect(execute).not.toHaveBeenCalled()
+})
+it("tomada humana continua vencendo o marcador de primeira entrada", async () => {
+  firstEntry(); conv().ai_handling = false; conv().assigned_to = "agent"
+  expect(await runStudioTurn(input)).toMatchObject({ status: "skipped", reason: "not_ai_controlled" })
+  expect(execute).not.toHaveBeenCalled()
 })

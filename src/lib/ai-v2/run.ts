@@ -203,6 +203,12 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
   if (convMeta.attendance_cycle && previousRun?.variables.__attendance_cycle !== convMeta.attendance_cycle) {
     matchSig.isReopened = true
   }
+  // First receptive entry is durable across debounce and outgoing device echoes.
+  // A previous run, a reopened cycle or a human destination can never be new.
+  // Historical rows without this marker keep their original first-message rule.
+  const isNewContact = !previousRun && !matchSig.isReopened && !convMeta.attendance_cycle
+    && !convMeta.ai_routed
+    && (convMeta.studio_first_inbound === true || history.length <= 1)
   let flowResult: FlowResult | null = null
   let activeFlowId: string | null = null
 
@@ -319,7 +325,6 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
     } else {
       // Abandona o run obsoleto e tenta começar um fluxo VÁLIDO (ou cai no agente).
       await updateFlowRun(tenantId, existingRun, { status: "done", resume_at: null })
-      const isNewContact = history.length <= 1
       const fresh = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
       if (fresh) {
         const run    = await startFlowRun(tenantId, conversationId, fresh, ctx.conversationMetadata)
@@ -328,9 +333,7 @@ async function doStudioRun(input: RunAITurnInput, opts?: StudioTurnOpts, remembe
       }
     }
   } else {
-    // Atendimento normal: gatilhos receptivos ("contato novo" = 1ª mensagem).
-    const isNewContact = history.length <= 1
-    const fresh = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
+    // Atendimento normal: gatilhos receptivos ("contato novo" = 1ª mensagem).    const fresh = await findFlowToStart(tenantId, incomingText, isNewContact, matchSig)
     if (fresh) {
       const run    = await startFlowRun(tenantId, conversationId, fresh, ctx.conversationMetadata)
       activeFlowId = fresh.id

@@ -19,6 +19,7 @@
 //
 // v2 grava a COLUNA real chat_conversations.department_id → conversa cai na FILA
 // DO SETOR com badge "Aguardando · <Setor>" (visibilidade aditiva).
+import { transferToSelectedAgents } from "./transfer-distribution"
 import { assertStudioControl } from "../control"
 import { responsibleDestination } from "@/lib/atendimento/human-routing"
 import { memberAttendsNumber } from "@/lib/visibility"
@@ -37,6 +38,7 @@ interface TransferArgs {
   target:           TransferTarget
   department:       string
   /** user_id do atendente (target=agent). */
+  agentIds:         string[]
   agentId:          string | null
   summary:          string
   handoffMessage:   string | null
@@ -102,12 +104,13 @@ export const transferCapability = defineCapability<TransferArgs>({
       : []
     const legacyTarget = p.target == null   // nó antigo / tool da IA — semântica clássica
     const target: TransferTarget =
-      p.target === "agent" || p.target === "owner" || p.target === "pool" ? p.target : "department"
+      p.target === "round_robin" || p.target === "agent" || p.target === "owner" || p.target === "pool" ? p.target : "department"
     const fallback: TransferFallback =
       p.when_unavailable === "wait_message" || p.when_unavailable === "keep_ai" ? p.when_unavailable : "queue"
     return {
       target,
       department:     typeof p.department === "string" ? p.department : "",
+      agentIds:       Array.isArray(p.agent_ids) ? p.agent_ids.filter((id): id is string => typeof id === "string") : [],
       agentId:        typeof p.agent_id === "string" && p.agent_id ? p.agent_id : null,
       summary:        typeof p.summary === "string" ? p.summary : "",
       handoffMessage: typeof p.handoff_message === "string" && p.handoff_message.trim() ? p.handoff_message.trim() : null,
@@ -127,6 +130,10 @@ export const transferCapability = defineCapability<TransferArgs>({
       ? (await supabaseAdmin.from("chat_conversations").select("*").eq("tenant_id", tenantId).eq("id", conversationId).maybeSingle()).data
       : await assertStudioControl(ctx)
     if (!convRow || convRow.status !== "open") return { ok: false, error: "Conversa não está aberta." }
+    if (args.target === "round_robin" || (args.target === "agent" && ctx.transferExecution)) {
+      return transferToSelectedAgents(ctx, { ...args, roundRobin: args.target === "round_robin",
+        agentIds: args.target === "round_robin" ? args.agentIds : args.agentId ? [args.agentId] : [] }, convRow)
+    }
     const prevOwner = (convRow as { assigned_to: string | null } | null)?.assigned_to ?? null
     const prevDept  = (convRow as { department_id: string | null } | null)?.department_id ?? null
 

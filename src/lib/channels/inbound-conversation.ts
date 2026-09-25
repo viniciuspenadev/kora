@@ -121,6 +121,8 @@ export async function createInboundConversation(
     stage_id:      stageId,
     assigned_to:   assignTo ?? null,
     ai_handling:   aiSeed,
+    // Persist before debounce: a second message must not erase the first entry.
+    metadata:      aiSeed ? { studio_first_inbound: true } : {},
     card_position: 0,
   }
   if (channel) insert.channel = channel

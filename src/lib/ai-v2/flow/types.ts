@@ -154,7 +154,7 @@ export interface WaitNodeConfig {
   unit:   "minutes" | "hours" | "days"
 }
 /** Destino da transferência (F1 do nó robusto — docs/transfer-node-design.md). */
-export type TransferTarget = "department" | "agent" | "owner" | "pool"
+export type TransferTarget = "department" | "agent" | "owner" | "pool" | "round_robin"
 /** Plano B quando o destino está indisponível (fora do horário / ninguém ativo). */
 export type TransferFallback = "queue" | "wait_message" | "keep_ai"
 export interface TransferNodeConfig {
@@ -164,6 +164,8 @@ export interface TransferNodeConfig {
   department: string
   /** user_id do atendente (target=agent). */
   agentId?:    string
+  /** Ordered selected-agent pool; no department required. */
+  agentIds?:   string[]
   summary?:   string
   handoff?:   string
   /** Plano B. Ausente = "queue" (enfileira mesmo assim — comportamento clássico). */

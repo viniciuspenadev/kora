@@ -154,3 +154,27 @@ it("fallback sem match de turno antigo preserva nova entrada manual",async()=>{
   await routeAutomationTurn(turn)
   expect(conv().ai_handling).toBe(true);expect(conv().metadata.studio_entry).toBe("new")
 })
+
+it("primeira entrada persiste antes da rajada e reaproveitamento conserva o marcador", async () => {
+  db.tables.chat_conversations = []
+  const first = await createInboundConversation(input)
+  expect(first.isNew).toBe(true)
+  expect(conv().metadata.studio_first_inbound).toBe(true)
+  conv().channel = "whatsapp"
+  const second = await createInboundConversation(input)
+  expect(second.isNew).toBe(false); expect(second.id).toBe(first.id)
+  expect(conv().metadata.studio_first_inbound).toBe(true)
+})
+it.each(["manual", "external", "disabled"])("origem %s não recebe marcador de nova entrada do Studio", async origin => {
+  db.tables.chat_conversations = []
+  if (origin === "disabled") studio = false
+  await createInboundConversation({ ...input, ...(origin === "manual" ? {assignTo: "manual"} : {}),
+    ...(origin === "external" ? {origin: "external_reply" as const} : {}) })
+  expect(conv().metadata.studio_first_inbound).toBeUndefined()
+})
+it("reabertura descarta o marcador da primeira entrada", async () => {
+  conv().metadata.studio_first_inbound = true
+  await findOrReopenConversation(input)
+  expect(conv().metadata.studio_first_inbound).toBeUndefined()
+  expect(conv().metadata.attendance_cycle).toBeTruthy()
+})

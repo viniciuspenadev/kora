@@ -88,7 +88,13 @@ describe("resposta aceita forma carteira; atribuição e destino são independen
     expect(contact().owner_id).toBeNull(); expect(db.tables.chat_messages[0].status).toBe("failed")
   })
   it.each(["pool", "error"])("config %s não autoriza carimbo", async binding => {
-    if (binding === "error") db.errors.tenant_config = "offline"
+    if (binding === "error") {
+      db.errors.tenant_config = "offline"
+      // Unknown signature policy prevents sending; it cannot authorize a stamp.
+      await expect(chat.sendMessage("c", "Olá")).rejects.toThrow("assinatura")
+      expect(contact().owner_id).toBeNull()
+      return
+    }
     else db.tables.tenant_config[0].handoff_binding = binding
     await chat.sendMessage("c", "Olá")
     expect(contact().owner_id).toBeNull(); expect(conv().assigned_to).toBe("agent")

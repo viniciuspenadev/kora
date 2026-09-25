@@ -120,6 +120,7 @@ export async function getOrCreateSiteConversation(
       assigned_to:   null,   // pool
       // Seed do decouple — DERIVADO (mesmo cérebro do inbound-conversation).
       ai_handling:   aiSeed,
+      metadata:      aiSeed ? { studio_first_inbound: true } : {},
       last_message_at: new Date().toISOString(),
     })
     .select("id")
