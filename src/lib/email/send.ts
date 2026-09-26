@@ -34,6 +34,8 @@ import { supabaseAdmin } from "@/lib/supabase"
 export type EmailSlug =
   | "signup_verification"
   | "login_verification"
+  | "password_recovery"
+  | "password_changed"
   | "new_device_login"
   | "invite"
   | "whatsapp_health_alert"
@@ -167,7 +169,10 @@ export async function sendEmail(input: SendInput): Promise<EmailResult> {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "")
-      const errorMsg = `Resend ${res.status}: ${text.slice(0, 200)}`
+      // Reset emails carry a bearer secret. Never persist provider echoes of their body.
+      const errorMsg = input.templateSlug === "password_recovery"
+        ? `Resend ${res.status}: envio de recuperação indisponível`
+        : `Resend ${res.status}: ${text.slice(0, 200)}`
       if (outboxId) {
         await supabaseAdmin
           .from("email_outbox")
@@ -199,7 +204,9 @@ export async function sendEmail(input: SendInput): Promise<EmailResult> {
     }
     return { ok: true, id: resendId }
   } catch (err) {
-    const errorMsg = `Falha de rede: ${(err as Error).message}`
+    const errorMsg = input.templateSlug === "password_recovery"
+      ? "Falha de rede no envio de recuperação"
+      : `Falha de rede: ${(err as Error).message}`
     if (outboxId) {
       await supabaseAdmin
         .from("email_outbox")

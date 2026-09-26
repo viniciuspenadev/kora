@@ -25,7 +25,7 @@ const IS_PROD = process.env.NODE_ENV === "production"
 const REVALIDATE_S = 300
 
 type AccessState =
-  | { status: "ok"; role: string; isPlatformAdmin: boolean }
+  | { status: "ok"; role: string; isPlatformAdmin: boolean; passwordChangedAt: string | null }
   | { status: "revoked" }
   | { status: "error" }
 
@@ -44,7 +44,7 @@ async function revalidateAccess(
   wasPlatformAdmin: boolean,
 ): Promise<AccessState> {
   try {
-    const [mem, pa, ten] = await Promise.all([
+    const [mem, pa, ten, profile] = await Promise.all([
       tenantId
         ? supabaseAdmin
             .from("tenant_users")
@@ -59,8 +59,10 @@ async function revalidateAccess(
       tenantId
         ? supabaseAdmin.from("tenants").select(COLUNAS_DE_ACESSO).eq("id", tenantId).maybeSingle()
         : Promise.resolve({ data: null as (AcessoDoTenant & { active: boolean }) | null, error: null }),
+      supabaseAdmin.from("profiles").select("password_changed_at").eq("id",userId).maybeSingle(),
     ])
 
+    if (profile.error || !profile.data) return { status: "error" }
     if (mem.error || pa.error) return { status: "error" }
 
     const isPlatformAdmin = wasPlatformAdmin && !!pa.data
@@ -85,7 +87,7 @@ async function revalidateAccess(
         isTenantBlockedForAccessAs(tenant, membership?.role, pastDueGraceDays))
 
     if (!isPlatformAdmin && (!membershipActive || tenantBlocked)) return { status: "revoked" }
-    return { status: "ok", role: membershipActive ? membership!.role : "", isPlatformAdmin }
+    return { status: "ok", passwordChangedAt: profile.data.password_changed_at, role: membershipActive ? membership!.role : "", isPlatformAdmin }
   } catch {
     return { status: "error" }
   }
@@ -93,9 +95,8 @@ async function revalidateAccess(
 
 /**
  * Gerenciador de sessões: grava esta sessão/device em `user_sessions` no login e
- * devolve o `sid` que vai no JWT. **Fire-and-forget seguro** — se a gravação falhar,
- * devolve null → o token fica SEM sid → o enforcement é pulado (a sessão funciona,
- * só não entra no gerenciador). Nunca bloqueia o login.
+ * devolve o `sid` que vai no JWT. Falha ao registrar nega o login: toda sessão
+ * nova precisa ser rastreável e revogável, inclusive após recuperar a senha.
  */
 async function recordSession(
   userId: string,
@@ -103,6 +104,7 @@ async function recordSession(
   ip: string | null,
   ua: string | null,
   deviceId: string | null,
+  credentialProvedAt: string,
 ): Promise<string | null> {
   try {
     const sid = randomUUID()
@@ -115,6 +117,7 @@ async function recordSession(
       // F1 do device trust: NULL = navegador sem cookie ainda (ou falha na
       // resolução). Não bloqueia nada aqui — o gate entra na F3.
       device_id:  deviceId,
+      credential_proved_at: credentialProvedAt,
     })
     return error ? null : sid
   } catch {
@@ -187,9 +190,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           getClientIp(request),
           request.headers.get("user-agent"),
           actor.deviceId,
+          actor.credentialProvedAt,
         )
+        if (!sid) return null
 
         return {
+          credentialProvedAt: actor.credentialProvedAt,
           id:              actor.userId,
           email:           actor.email,
           name:            actor.name,
@@ -205,14 +211,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
+        token.credentialProvedAt = user.credentialProvedAt
         token.userId          = user.id!
         token.tenantId        = user.tenantId
         token.role            = user.role
         token.isPlatformAdmin = user.isPlatformAdmin
         token.supabaseTokenExp = 0
         token.checkedAt        = Math.floor(Date.now() / 1000) // acabou de validar no authorize
-        token.sid              = user.sid ?? undefined // sessão no gerenciador (pode ser null se a gravação falhou)
+        token.sid              = user.sid ?? undefined
       }
+
+      // Freeze the original proof for legacy JWTs: Auth.js renews iat when encoding.
+      if (!token.credentialProvedAt) {
+        if (!token.iat || !Number.isFinite(token.iat)) return null
+        token.credentialProvedAt = new Date(token.iat * 1000).toISOString()
+      }
+      const credentialProvedAt = token.credentialProvedAt
+      if (typeof credentialProvedAt !== "string" || !Number.isFinite(Date.parse(credentialProvedAt))) return null
 
       const now = Math.floor(Date.now() / 1000)
 
@@ -225,6 +240,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         )
         if (acc.status === "revoked") return null            // expulso/inativo → apaga a sessão
         if (acc.status === "ok") {
+          let proof = Date.parse(credentialProvedAt)
           if (acc.role !== token.role) {
             token.role = acc.role
             token.supabaseTokenExp = 0                         // role mudou → regenera token RLS
@@ -242,9 +258,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             try {
               const sid = token.sid as string
               const { data, error } = await supabaseAdmin
-                .from("user_sessions").select("id").eq("sid", sid).maybeSingle()
+                .from("user_sessions").select("id, credential_proved_at").eq("sid", sid).maybeSingle()
               if (!error && !data) return null   // linha sumiu → sessão revogada → apaga o cookie
               if (!error && data) {
+                // 🔑 Re-prova gravada NO SERVIDOR: trocar a senha pelo perfil confirma a senha
+                //    NESTA sessão e carimba a linha dela (changeMyPassword). Nunca vem do cookie —
+                //    o `update()` do Auth.js aceita dados do navegador, a linha não.
+                const rowProof = Date.parse((data.credential_proved_at as string | null) ?? "")
+                if (Number.isFinite(rowProof) && rowProof > proof) {
+                  proof = rowProof
+                  token.credentialProvedAt = new Date(rowProof).toISOString()
+                }
                 await supabaseAdmin
                   .from("user_sessions")
                   .update({ last_seen_at: new Date(now * 1000).toISOString() })
@@ -257,6 +281,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               if (isGod) return null
             }
           }
+
+          // Senha trocada DEPOIS da última prova desta sessão (recuperação, ou perfil em OUTRO
+          // aparelho) → derruba. Fica depois da leitura da linha para enxergar a re-prova acima.
+          if (acc.passwordChangedAt && Date.parse(acc.passwordChangedAt) > proof) return null
 
           token.checkedAt = now
         }

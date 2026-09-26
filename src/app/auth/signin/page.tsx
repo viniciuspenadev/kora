@@ -4,6 +4,7 @@ import { signIn } from "next-auth/react"
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
+import Link from "next/link"
 import { Loader2, AlertCircle, Mail, Lock, ArrowRight, ShieldCheck, ArrowLeft } from "lucide-react"
 import { beginLogin, confirmLoginCode, resendLoginCode } from "@/lib/actions/login"
 import { Turnstile, TURNSTILE_SITE_KEY } from "@/components/ui/turnstile"
@@ -194,6 +195,8 @@ export default function SignInPage() {
               </div>
             )}
 
+            <div className="text-right"><Link href="/auth/forgot-password" className="text-sm font-medium text-primary hover:underline">Esqueci minha senha</Link></div>
+
             {/* Captcha escalonado (F3b): só aparece após falhas repetidas. */}
             {needCaptcha && TURNSTILE_SITE_KEY && <Turnstile onToken={setCaptchaToken} />}
 
@@ -309,13 +312,6 @@ export default function SignInPage() {
           )}
 
         </div>
-
-        <p className="text-center text-xs text-slate-500 mt-8">
-          Não possui uma conta?{" "}
-          <a href="/signup" className="font-medium text-indigo-600 hover:text-indigo-700 transition-colors">
-            Criar conta grátis
-          </a>
-        </p>
       </div>
 
     </div>

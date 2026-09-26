@@ -130,13 +130,14 @@ export async function beginLogin(
   // M6: platform_admin (God mode) SEMPRE faz step-up por e-mail, mesmo em
   // dispositivo confiável — MFA obrigatório pro maior blast radius do sistema.
   if (!trusted || v.isPlatformAdmin) {
-    const ch = await createLoginChallenge({ userId: v.userId, deviceId, ip, userAgent: ua })
+    const ch = await createLoginChallenge({ userId: v.userId, deviceId, ip, userAgent: ua, credentialProvedAt: v.credentialProvedAt })
     if (!ch.ok) return { ok: false, error: ch.error }
     return { ok: true, challenge: true }
   }
   touchTrust(v.userId, deviceId, ip)
 
   const ticket = await mintLoginTicket({
+    credentialProvedAt: v.credentialProvedAt,
     userId:   v.userId,
     tenantId: v.tenantId || null,
     deviceId,
@@ -182,7 +183,7 @@ export async function confirmLoginCode(
   if (!result.ok) return { ok: false, error: result.error }
 
   // Prova de posse do e-mail concluída → confiança (se a pessoa quis).
-  if (trustDevice) await grantTrust(actor.userId, actor.deviceId, ip)
+  if (trustDevice) await grantTrust(actor.userId, actor.deviceId, ip, result.credentialProvedAt)
 
   // F5 — aviso "novo acesso" com revogar em 1 clique. SEMPRE que um desafio é
   // concluído (o dispositivo era desconhecido por definição), confiado ou não.
@@ -193,6 +194,7 @@ export async function confirmLoginCode(
   // o desafio) — reusa o verify sem senha? Não: o ticket re-checa tudo no
   // resgate (redeemLoginTicket, trava 3). Aqui basta emitir pro tenant atual.
   const ticket = await mintLoginTicket({
+    credentialProvedAt: result.credentialProvedAt,
     userId:   actor.userId,
     tenantId: actor.tenantId,
     deviceId: actor.deviceId,

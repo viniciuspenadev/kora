@@ -115,6 +115,7 @@ async function issueDeviceToken(input: {
   userId:   string
   deviceId: string
   label?:   string | null
+  credentialProvedAt: string
 }): Promise<DeviceLogin> {
   const [{ data: prof }, { data: memberships }] = await Promise.all([
     supabaseAdmin.from("profiles").select("id, email, full_name").eq("id", input.userId).maybeSingle(),
@@ -162,6 +163,7 @@ async function issueDeviceToken(input: {
           token_hash: sha256(token),
           label:      String(input.label ?? "Chrome").slice(0, 80),
           device_id:  input.deviceId,
+          credential_proved_at: input.credentialProvedAt,
           expires_at: maxDays > 0 ? new Date(Date.now() + maxDays * 86_400_000).toISOString() : null,
         })
         if (error) throw new ExtError(500, "Falha ao criar o token. Tente de novo.")
@@ -229,6 +231,7 @@ export async function createDeviceToken(input: {
   const trusted = await hasValidTrust(v.userId, deviceId, v.passwordChangedAt)
   if (!trusted) {
     const ch = await createLoginChallenge({
+      credentialProvedAt: v.credentialProvedAt,
       userId:    v.userId,
       deviceId,
       ip:        input.ip ?? null,
@@ -238,7 +241,7 @@ export async function createDeviceToken(input: {
     throw new ExtError(403, "Enviamos um código de 6 dígitos pro seu e-mail. Digite pra confirmar este dispositivo.", "device_challenge")
   }
 
-  return issueDeviceToken({ userId: v.userId, deviceId, label: input.label })
+  return issueDeviceToken({ userId: v.userId, deviceId, label: input.label, credentialProvedAt: v.credentialProvedAt })
 }
 
 /**
@@ -273,7 +276,7 @@ export async function verifyExtChallenge(input: {
   if (!result.ok) throw new ExtError(400, result.error)
 
   // Extensão é ferramenta de trabalho: confiança sempre (30d).
-  await grantTrust(prof.id as string, device.id as string, input.ip ?? null)
+  await grantTrust(prof.id as string, device.id as string, input.ip ?? null, result.credentialProvedAt)
   notifyNewDeviceLogin({
     userId:    prof.id as string,
     deviceId:  device.id as string,
@@ -281,7 +284,7 @@ export async function verifyExtChallenge(input: {
     userAgent: input.userAgent ?? null,
   })
 
-  return issueDeviceToken({ userId: prof.id as string, deviceId: device.id as string, label: input.label })
+  return issueDeviceToken({ userId: prof.id as string, deviceId: device.id as string, credentialProvedAt: result.credentialProvedAt, label: input.label })
 }
 
 // ── Pipeline por-request ──────────────────────────────────────────
@@ -301,7 +304,7 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
 
   const { data: row } = await supabaseAdmin
     .from("device_tokens")
-    .select("id, tenant_id, user_id, revoked_at, last_used_at, created_at, expires_at")
+    .select("id, tenant_id, user_id, revoked_at, last_used_at, created_at, expires_at, credential_proved_at")
     .eq("token_hash", sha256(token))
     .maybeSingle()
   if (!row || row.revoked_at)
@@ -344,8 +347,13 @@ export async function requireExtViewer(req: Request): Promise<ExtViewer> {
       .eq("tenant_id", row.tenant_id)
       .eq("user_id", row.user_id)
       .maybeSingle(),
-    supabaseAdmin.from("profiles").select("full_name").eq("id", row.user_id).maybeSingle(),
+    supabaseAdmin.from("profiles").select("full_name, password_changed_at").eq("id", row.user_id).maybeSingle(),
   ])
+
+  const credentialProvedAt = row.credential_proved_at ?? row.created_at
+  if (!prof || !credentialProvedAt ||
+      (prof.password_changed_at && new Date(credentialProvedAt).getTime() < new Date(prof.password_changed_at).getTime()))
+    throw new ExtError(401, "Sessão expirada. Entre de novo.", "revoked")
 
   // Gates fail-closed — a ORDEM importa pra mensagem certa chegar na sidebar.
   const { pastDueGraceDays } = await getPlatformSettings()

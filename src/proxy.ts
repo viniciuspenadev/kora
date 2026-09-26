@@ -123,6 +123,12 @@ export function proxy(req: NextRequest) {
   res.headers.set("Referrer-Policy",          "strict-origin-when-cross-origin")
   res.headers.set("Strict-Transport-Security","max-age=63072000; includeSubDomains; preload")
 
+  if (path === "/auth/reset-password" || path === "/auth/forgot-password" || path.startsWith("/api/auth/password-recovery/")) {
+    res.headers.set("Referrer-Policy", "no-referrer")
+    res.headers.set("Cache-Control", "no-store")
+    res.headers.set("X-Robots-Tag", "noindex, nofollow")
+  }
+
   // ── Widget cross-origin (/w/*) e endpoints do widget (/api/site/*) ───
   // Esses servem JS/JSON pra ser embedded em sites terceiros. Pular CSP/XFO.
   const isWidgetRoute =

@@ -72,16 +72,44 @@ export async function changeMyPassword(
   if (pwErr) return { ok: false, error: pwErr }
 
   const { data: profile } = await supabaseAdmin
-    .from("profiles").select("password_hash").eq("id", session.user.id).maybeSingle()
+    .from("profiles").select("password_hash, password_changed_at").eq("id", session.user.id).maybeSingle()
   if (!profile?.password_hash) return { ok: false, error: "Perfil sem senha cadastrada." }
+
+  // 🔒 O JWT só é revalidado a cada 5 min (auth.ts). Uma sessão derrubada por recuperação de
+  //    senha em outro aparelho ainda chegaria aqui nesse intervalo — e quem só sabe a senha
+  //    ANTIGA trocaria a nova do dono. A linha da sessão é conferida AGORA.
+  if (session.user.sid) {
+    const { data: live, error: liveErr } = await supabaseAdmin.from("user_sessions")
+      .select("id").eq("sid", session.user.sid).eq("user_id", session.user.id).maybeSingle()
+    if (liveErr || !live) return { ok: false, error: "Sua sessão foi encerrada. Entre novamente." }
+  }
 
   const valid = await bcrypt.compare(current, profile.password_hash)
   if (!valid) return { ok: false, error: "Senha atual incorreta." }
 
   const hash = await bcrypt.hash(next, 10)
-  await supabaseAdmin.from("profiles")
-    .update({ password_hash: hash, password_changed_at: new Date().toISOString() })
+  const changedAt = new Date().toISOString()
+  // Compare-and-swap pela ÚLTIMA troca: se uma recuperação concluir entre a leitura e aqui,
+  // esta troca perde em vez de sobrescrever a senha nova. Compara o carimbo, não o hash —
+  // filtro do PostgREST vai na URL, e hash de senha não pode parar em log de requisição.
+  let swap = supabaseAdmin.from("profiles")
+    .update({ password_hash: hash, password_changed_at: changedAt })
     .eq("id", session.user.id)
+  swap = profile.password_changed_at
+    ? swap.eq("password_changed_at", profile.password_changed_at)
+    : swap.is("password_changed_at", null)
+  const { data: swapped, error: swapErr } = await swap.select("id").maybeSingle()
+  if (swapErr || !swapped) return { ok: false, error: "Sua senha foi alterada em outro lugar. Entre novamente." }
+
+  // A sessão ATUAL re-prova a senha no mesmo instante da troca. Sem isto a checagem de 5 min
+  // (auth.ts) a derrubaria junto com as outras — e a tela promete "os outros dispositivos
+  // foram desconectados". Gravado na linha do servidor, nunca no cookie. Vem DEPOIS do swap:
+  // se a troca perdeu, a sessão não ganha prova nova.
+  if (session.user.sid) {
+    await supabaseAdmin.from("user_sessions")
+      .update({ credential_proved_at: changedAt })
+      .eq("sid", session.user.sid).eq("user_id", session.user.id)
+  }
 
   // Cascata de troca de senha (device trust §7): TODA confiança de dispositivo
   // cai (trusted_at < password_changed_at já invalidaria; revogar explicita) —

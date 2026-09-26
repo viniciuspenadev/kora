@@ -92,7 +92,7 @@ export type VerifyResult =
   //    Sem a frase, o motivo cai no genérico e a pessoa lê "E-mail ou senha inválidos" —
   //    que é o defeito que `trial_ended` veio consertar.
   | { status: "blocked"; reason: "pending_approval" | "suspended" | "trial_ended" | "unpaid" | "indisponivel" }
-  | { status: "ok"; userId: string; tenantId: string; passwordChangedAt: string | null; isPlatformAdmin: boolean }
+  | { status: "ok"; userId: string; tenantId: string; passwordChangedAt: string | null; isPlatformAdmin: boolean; credentialProvedAt: string }
 
 /**
  * Valida senha e resolve o tenant acessível — os MESMOS gates que viviam no
@@ -100,6 +100,7 @@ export type VerifyResult =
  * ramo de aviso que vivia em getSigninNotice, agora num lugar só.
  */
 export async function verifyPassword(emailRaw: string, password: string): Promise<VerifyResult> {
+  const credentialProvedAt = new Date().toISOString()
   const email = String(emailRaw ?? "").toLowerCase().trim().slice(0, 254)
   if (!email || !password) return { status: "invalid" }
 
@@ -208,7 +209,7 @@ export async function verifyPassword(emailRaw: string, password: string): Promis
     userId:            profile.id,
     tenantId:          accessible[0]?.tenant_id ?? "",
     passwordChangedAt: (profile.password_changed_at as string | null) ?? null,
-    isPlatformAdmin,
+    isPlatformAdmin, credentialProvedAt,
   }
 }
 
@@ -225,6 +226,7 @@ export async function mintLoginTicket(input: {
   tenantId: string | null
   deviceId: string
   ip:       string | null
+  credentialProvedAt: string
 }): Promise<string | null> {
   try {
     const raw = randomBytes(32).toString("base64url")
@@ -233,6 +235,7 @@ export async function mintLoginTicket(input: {
       user_id:     input.userId,
       tenant_id:   input.tenantId || null,
       device_id:   input.deviceId,
+      credential_proved_at: input.credentialProvedAt,
       ip:          input.ip && input.ip !== "unknown" ? input.ip.slice(0, 64) : null,
       expires_at:  new Date(Date.now() + TICKET_TTL_MS).toISOString(),
     })
@@ -250,6 +253,7 @@ export interface TicketActor {
   role:            string
   isPlatformAdmin: boolean
   deviceId:        string
+  credentialProvedAt: string
 }
 
 /**
@@ -276,7 +280,7 @@ export async function redeemLoginTicket(
       .eq("ticket_hash", sha256(rawTicket))
       .is("consumed_at", null)
       .gt("expires_at", nowIso)
-      .select("user_id, tenant_id, device_id")
+      .select("user_id, tenant_id, device_id, credential_proved_at, created_at")
       .maybeSingle()
     if (!ticket) return null
 
@@ -293,7 +297,7 @@ export async function redeemLoginTicket(
     // + platform admin.
     const tenantId = (ticket.tenant_id as string | null) ?? ""
     const [{ data: prof }, tu, { data: pa }, ten] = await Promise.all([
-      supabaseAdmin.from("profiles").select("id, email, full_name").eq("id", ticket.user_id).maybeSingle(),
+      supabaseAdmin.from("profiles").select("id, email, full_name, password_changed_at").eq("id", ticket.user_id).maybeSingle(),
       tenantId
         ? supabaseAdmin
             .from("tenant_users")
@@ -308,6 +312,8 @@ export async function redeemLoginTicket(
         : Promise.resolve({ data: null as LinhaDeAcesso | null }),
     ])
     if (!prof) return null
+    const proof = ticket.credential_proved_at ?? ticket.created_at
+    if (!proof || (prof.password_changed_at && Date.parse(proof) < Date.parse(prof.password_changed_at))) return null
 
     const linha = ten.data as LinhaDeAcesso | null
     const { pastDueGraceDays } = await getPlatformSettings()
@@ -325,6 +331,7 @@ export async function redeemLoginTicket(
       role,
       isPlatformAdmin,
       deviceId:        ticket.device_id as string,
+      credentialProvedAt: proof,
     }
   } catch {
     return null

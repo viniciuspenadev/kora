@@ -50,13 +50,14 @@ export async function createLoginChallenge(input: {
   deviceId:  string
   ip:        string | null
   userAgent: string | null
+  credentialProvedAt?: string
 }): Promise<ChallengeCreate> {
   const nowMs = Date.now()
 
   // Throttle de reenvio (60s) — pelo último desafio aberto deste par.
   const { data: last } = await supabaseAdmin
     .from("login_challenges")
-    .select("created_at")
+    .select("created_at,credential_proved_at")
     .eq("user_id", input.userId)
     .eq("device_id", input.deviceId)
     .is("consumed_at", null)
@@ -85,11 +86,14 @@ export async function createLoginChallenge(input: {
     return { ok: false, error: "Muitos códigos enviados. Aguarde uma hora e tente de novo." }
   }
 
+  const proof = input.credentialProvedAt ?? last?.credential_proved_at
+  if (!proof) return { ok: false, error: "Faça login novamente para solicitar um código." }
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0")
   const { error: insErr } = await supabaseAdmin.from("login_challenges").insert({
     user_id:    input.userId,
     device_id:  input.deviceId,
     code_hash:  hashOtp(code),
+    credential_proved_at: proof,
     expires_at: new Date(nowMs + CODE_TTL_MIN * 60_000).toISOString(),
     ip:         input.ip && input.ip !== "unknown" ? input.ip.slice(0, 64) : null,
     user_agent: input.userAgent ? input.userAgent.slice(0, 400) : null,
@@ -125,7 +129,7 @@ export async function createLoginChallenge(input: {
 }
 
 export type ChallengeVerify =
-  | { ok: true; userId: string; deviceId: string }
+  | { ok: true; userId: string; deviceId: string; credentialProvedAt: string }
   | { ok: false; error: string }
 
 /**
@@ -143,7 +147,7 @@ export async function verifyLoginChallenge(input: {
 
   const { data: row } = await supabaseAdmin
     .from("login_challenges")
-    .select("id, code_hash, attempts, expires_at")
+    .select("id, code_hash, attempts, expires_at, credential_proved_at, created_at")
     .eq("user_id", input.userId)
     .eq("device_id", input.deviceId)
     .is("consumed_at", null)
@@ -184,7 +188,7 @@ export async function verifyLoginChallenge(input: {
     .maybeSingle()
   if (!claimed) return { ok: false, error: "Verificação já utilizada. Faça login de novo." }
 
-  return { ok: true, userId: input.userId, deviceId: input.deviceId }
+  return { ok: true, userId: input.userId, deviceId: input.deviceId, credentialProvedAt: row.credential_proved_at ?? row.created_at }
 }
 
 /**

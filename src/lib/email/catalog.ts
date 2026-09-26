@@ -21,6 +21,7 @@ import { buildInviteEmail, buildDailyReportEmail, buildNovidadesEmail, buildVeri
 //    foi por não estarem aqui que os quatro slugs de cobrança ficaram um ano declarados e
 //    invisíveis — sem template, sem preview no god mode e sem ninguém sentir falta.
 import { buildBillingConfirmedEmail, buildBillingCardFailedEmail, buildBillingOverdueEmail, buildBillingRestoredEmail } from "./billing-emails"
+import { buildPasswordRecoveryEmail, buildPasswordChangedEmail } from "./password-recovery"
 import { SUPORTE_WHATSAPP } from "@/lib/support"
 
 // 🔴 ERA UM NÚMERO HARDCODED E **DESATUALIZADO** (achado 07/08). Enquanto as telas do app
@@ -41,6 +42,8 @@ export interface EmailTemplateMeta {
 }
 
 export const EMAIL_CATALOG: EmailTemplateMeta[] = [
+  { slug: "password_recovery", name: "Recuperação de senha", description: "Link temporário de uso único para recuperar o acesso.", trigger: "Pedido pela tela Esqueci minha senha. Limite de solicitações por e-mail e IP.", variables: [{key:"resetUrl",description:"Link de uso único, válido por 30 minutos",example:"https://kora.bluedigitalhub.com.br/auth/reset-password"}], build: () => buildPasswordRecoveryEmail({resetUrl:"https://kora.bluedigitalhub.com.br/auth/reset-password#token=EXEMPLO_SEM_VALIDADE"}) },
+  { slug: "password_changed", name: "Senha redefinida", description: "Aviso de segurança depois da redefinição.", trigger: "Enviado após confirmar a troca e revogar os acessos anteriores.", variables: [], build: buildPasswordChangedEmail },
   {
     slug:        "signup_verification",
     name:        "Verificação de cadastro",

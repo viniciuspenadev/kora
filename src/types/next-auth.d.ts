@@ -22,6 +22,7 @@ declare module "next-auth" {
    *    `any` de lá caem sozinhos.
    */
   interface User {
+    credentialProvedAt: string
     id:              string
     tenantId:        string
     role:            string
@@ -32,6 +33,7 @@ declare module "next-auth" {
 
 declare module "next-auth/jwt" {
   interface JWT {
+    credentialProvedAt?: string
     userId:           string
     tenantId:         string
     role:             string

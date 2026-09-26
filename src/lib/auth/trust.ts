@@ -72,6 +72,7 @@ export async function grantTrust(
   userId: string,
   deviceId: string,
   ip: string | null,
+  credentialProvedAt = new Date().toISOString(),
 ): Promise<boolean> {
   try {
     const now = Date.now()
@@ -84,6 +85,7 @@ export async function grantTrust(
           trusted_at:   new Date(now).toISOString(),
           expires_at:   new Date(now + TRUST_MS).toISOString(),
           revoked_at:   null,
+          credential_proved_at: credentialProvedAt,
           last_seen_at: new Date(now).toISOString(),
           last_ip:      ip && ip !== "unknown" ? ip.slice(0, 64) : null,
         },
