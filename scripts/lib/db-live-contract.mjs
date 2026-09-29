@@ -22,6 +22,8 @@ export const EXPECTED_CHECKS = Object.freeze([
   // Prefixo gravado no documento (migration 20260929000100): docCode() lê `code_prefix`.
   "column:commercial_documents.code_prefix",
   "trigger:trg_commercial_documents_freeze_code_prefix/enabled",
+  // Detalhes por item (migration 20260929000200): a ficha e o orçamento leem `details`.
+  "column:tenant_deal_items.details",
 ])
 
 const functionCheck = (name, args) => `
@@ -199,6 +201,19 @@ WITH checks AS (
               AND (pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE')
                    OR pg_catalog.has_function_privilege('authenticated', p.oid, 'EXECUTE'))
          ) AS ok
+  UNION ALL
+  SELECT 'column:tenant_deal_items.details'::text AS objeto,
+         EXISTS (
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'tenant_deal_items' AND column_name = 'details'
+         )
+         AND EXISTS (
+           SELECT 1 FROM pg_catalog.pg_constraint c
+            WHERE c.conrelid = pg_catalog.to_regclass('public.tenant_deal_items')
+              AND c.conname = 'tenant_deal_items_details_len' AND c.contype = 'c' AND c.convalidated
+         )
+         AND NOT pg_catalog.has_column_privilege('anon', 'public.tenant_deal_items', 'details', 'SELECT')
+         AND NOT pg_catalog.has_column_privilege('authenticated', 'public.tenant_deal_items', 'details', 'SELECT') AS ok
 )
 SELECT objeto, ok FROM checks ORDER BY objeto;
 

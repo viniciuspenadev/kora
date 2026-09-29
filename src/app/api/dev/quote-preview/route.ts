@@ -58,10 +58,11 @@ export async function GET(_req: NextRequest) {
   // na linha) · mensal 6m limpo · produto kg · serviço avulso com desconto 100%
   // (Total R$ 0,00 + cheio riscado — regra uniforme, sem rótulo).
   const items: QuotePdfData["items"] = [
-    { name: "Setup & Implantação",       type: "service", qty: 1,   unit: "un", unit_price_cents: 300000, billing: "one_time", term_months: null, discount_cents: 0,     total_cents: 300000 },
+    { name: "Setup & Implantação",       type: "service", qty: 1,   unit: "un", unit_price_cents: 300000, billing: "one_time", term_months: null, discount_cents: 0,     total_cents: 300000,
+      details: "Configuração de 2 números de WhatsApp, importação de até 5.000 contatos e treinamento da equipe (2 sessões de 1h).\nEntrega em até 10 dias úteis após a assinatura." },
     { name: "Gestão de Marketing",       type: "service", qty: 1,   unit: "un", unit_price_cents: 200000, billing: "monthly",  term_months: 6,    discount_cents: 20000, total_cents: 1080000 },
     { name: "Tráfego pago (gestão)",     type: "service", qty: 1,   unit: "un", unit_price_cents: 100000, billing: "monthly",  term_months: 6,    discount_cents: 0,     total_cents: 600000 },
-    { name: "Camarão (teste medida)",    type: "product", qty: 3.5, unit: "kg", unit_price_cents: 14990,  billing: "one_time", term_months: null, discount_cents: 0,     total_cents: 52465 },
+    { name: "Camarão (teste medida)",    type: "product", qty: 3.5, unit: "kg", unit_price_cents: 14990,  billing: "one_time", term_months: null, discount_cents: 0,     total_cents: 52465, details: "Cinza, limpo, 31/35 peças por kg · congelado" },
     { name: "Diagnóstico inicial",       type: "service", qty: 1,   unit: "un", unit_price_cents: 50000,  billing: "one_time", term_months: null, discount_cents: 50000, total_cents: 0 },
   ]
   const total    = items.reduce((s, i) => s + i.total_cents, 0)                    // líquido

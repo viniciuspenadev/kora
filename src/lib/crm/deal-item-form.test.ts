@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseItemMoney, reviewDealItem, reviewManualItem, itemStartStep, MANUAL_NAME_MAX } from "./deal-item-form"
+import { parseItemMoney, reviewDealItem, reviewManualItem, itemStartStep, MANUAL_NAME_MAX, normalizeItemDetails, DEAL_ITEM_DETAILS_MAX } from "./deal-item-form"
 
 const base = { billing: "one_time" as const, listPrice: 100, maxPct: 20, price: "100,00", quantity: "2", discount: "", discountMode: "brl" as const, term: "" }
 describe("proposal item review", () => {
@@ -46,6 +46,23 @@ describe("first step of adding an item", () => {
     expect(itemStartStep({ hasCatalog: true, manualAllowed: false })).toBe("catalog")
     expect(itemStartStep({ hasCatalog: false, manualAllowed: true })).toBe("manual")
     expect(itemStartStep({ hasCatalog: false, manualAllowed: false })).toBe("none")
+  })
+})
+
+describe("item details (go to the quote)", () => {
+  it("keeps line breaks, trims edges and trailing spaces, collapses blank runs", () => {
+    expect(normalizeItemDetails("  1,20 × 1,50 m   \r\nAlumínio branco\n\n\n\nVidro 6 mm  ")).toEqual({ details: "1,20 × 1,50 m\nAlumínio branco\n\nVidro 6 mm" })
+  })
+  it("empty or blank becomes null (the database refuses empty text)", () => {
+    for (const v of ["", "   ", "\n \t \n", null, undefined]) expect(normalizeItemDetails(v)).toEqual({ details: null })
+  })
+  it("drops control characters but keeps accents and symbols", () => {
+    expect(normalizeItemDetails("cor\u0000 branca\u0007 · ç ✓")).toEqual({ details: "cor branca · ç ✓" })
+  })
+  it("enforces the same ceiling as the database", () => {
+    expect(normalizeItemDetails("a".repeat(DEAL_ITEM_DETAILS_MAX))).toEqual({ details: "a".repeat(DEAL_ITEM_DETAILS_MAX) })
+    expect(normalizeItemDetails("a".repeat(DEAL_ITEM_DETAILS_MAX + 1))).toEqual({ error: `Detalhes do item muito longos (máximo ${DEAL_ITEM_DETAILS_MAX} caracteres).` })
+    expect(normalizeItemDetails(42)).toEqual({ error: "Detalhes do item inválidos" })
   })
 })
 

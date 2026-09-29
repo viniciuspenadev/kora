@@ -15,7 +15,7 @@ import { recordDealEvent } from "@/lib/crm/deals"
 import { getPriceTable, getDefaultPriceTable } from "@/lib/crm/pricing"
 import { resolvePrice, fromCents } from "@/lib/commercial/entries"
 import { UNITS, DEFAULT_UNIT } from "@/lib/crm/units"
-import { MANUAL_NAME_MAX } from "@/lib/crm/deal-item-form"
+import { MANUAL_NAME_MAX, normalizeItemDetails } from "@/lib/crm/deal-item-form"
 export { MANUAL_NAME_MAX }
 
 type Billing = "one_time" | "monthly" | "yearly"
@@ -81,6 +81,8 @@ export interface CatalogLineInput {
   unitPrice?:    number | null
   discount?:     number | null
   termMonths?:   number | null
+  /** Detalhes visíveis ao cliente (saem no orçamento) — normalizados aqui. */
+  details?:      string | null
 }
 
 /** Linha pronta (sem `position`) a partir de um produto ATIVO do catálogo — a FOTO congelada:
@@ -88,6 +90,8 @@ export interface CatalogLineInput {
 export async function buildCatalogLine(
   tenantId: string, dealId: string, tableId: string | null, input: CatalogLineInput,
 ): Promise<{ row: Record<string, unknown>; name: string } | { error: string }> {
+  const det = normalizeItemDetails(input.details)
+  if ("error" in det) return det
   const { data: cat } = await supabaseAdmin.from("catalog_items")
     .select("id, name, type, billing, price, category, cost, max_discount_pct, unit")
     .eq("id", input.catalogItemId).eq("tenant_id", tenantId).eq("active", true).maybeSingle()
@@ -118,6 +122,7 @@ export async function buildCatalogLine(
       list_price: listPrice, category: ci.category, cost: ci.cost,
       max_discount_pct: maxPct,
       price_entry_id: resolved.entryId, price_table_label: tableLabel,
+      details: det.details,
     },
   }
 }
@@ -130,6 +135,8 @@ export interface ManualLineInput {
   quantity:    number
   unitPrice:   number
   termMonths?: number | null
+  /** Detalhes visíveis ao cliente (saem no orçamento) — normalizados aqui. */
+  details?:    string | null
 }
 
 /** Linha AVULSA (sem produto do catálogo) — decisão D1: sem desconto e sem piso; o preço
@@ -146,6 +153,8 @@ export function buildManualLine(
   if (input.unitPrice == null) return { error: "Informe o preço do item" }
   const nums = parseLineNumbers({ quantity: input.quantity, unitPrice: input.unitPrice, termMonths: input.termMonths })
   if ("error" in nums) return nums
+  const det = normalizeItemDetails(input.details)
+  if ("error" in det) return det
 
   return {
     name: named.name,
@@ -156,6 +165,7 @@ export function buildManualLine(
       term_months: input.billing === "one_time" ? null : nums.term,
       list_price: null, category: null, cost: null, max_discount_pct: 0,
       price_entry_id: null, price_table_label: null,
+      details: det.details,
     },
   }
 }

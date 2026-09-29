@@ -28,7 +28,7 @@ export default async function DealDetailPage({ params }: { params: Promise<{ id:
     ? { paymentTerms: null, validityDays: 7, defaultNotes: null }
     : quoteDefaultsRaw
 
-  // Gestor vê custo/margem e edita a validade da proposta (o server revalida tudo).
+  // Gestor tem ações a mais na ficha (o server revalida tudo). Custo/margem NÃO aparecem aqui.
   const isManager = ["owner", "admin"].includes(session.user.role)
 
   // Agentes do tenant pro seletor de participante.

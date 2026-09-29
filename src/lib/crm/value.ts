@@ -41,6 +41,12 @@ export function lineSubtotal(it: DealItemLike): number {
   return round2(Math.max(0, it.unit_price * it.quantity - it.discount))
 }
 
+/** Quantas vezes a linha entra no total: avulso 1×, mensal × prazo, anual × prazo/12. */
+export function termFactor(it: Pick<DealItemLike, "billing" | "term_months">): number {
+  const term = it.term_months ?? DEFAULT_TERM_MONTHS
+  return it.billing === "one_time" ? 1 : it.billing === "monthly" ? term : term / 12
+}
+
 export function computeDealValue(items: DealItemLike[]): DealValueSummary {
   let oneTime = 0, monthly = 0, yearly = 0, total = 0
   for (const it of items) {

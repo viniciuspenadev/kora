@@ -45,6 +45,11 @@ describe("foto da linha a partir do catálogo", () => {
       unit_price: 100, quantity: 2, discount: 0, unit: "m2", term_months: null, list_price: 100, category: "Vidros",
       cost: 40, max_discount_pct: 10, price_entry_id: "e-padrao", price_table_label: null } })
   })
+  it("detalhes do item vão para a linha; sem detalhes = null; longo demais recusado antes de ler o catálogo", async () => {
+    expect(await L.buildCatalogLine("t", "d", null, { catalogItemId: "vidro", quantity: 1, details: "Temperado 8 mm\nLapidado" })).toMatchObject({ row: { details: "Temperado 8 mm\nLapidado" } })
+    expect(await L.buildCatalogLine("t", "d", null, { catalogItemId: "vidro", quantity: 1 })).toMatchObject({ row: { details: null } })
+    expect(await L.buildCatalogLine("t", "d", null, { catalogItemId: "vidro", quantity: 1, details: "x".repeat(1001) })).toHaveProperty("error")
+  })
   it("tabela não-padrão leva o rótulo e o preço dela", async () => {
     const r = await L.buildCatalogLine("t", "d", "atacado", { catalogItemId: "vidro", quantity: 1 })
     expect(r).toMatchObject({ row: { unit_price: 80, list_price: 80, price_table_label: "Atacado", price_entry_id: "e-atacado" } })
@@ -101,7 +106,12 @@ describe("linha avulsa (sem produto do catálogo)", () => {
       tenant_id: "t", deal_id: "d", catalog_item_id: null, source: "manual", name: "Instalação especial",
       type: "service", billing: "one_time", unit_price: 350, quantity: 1, discount: 0, unit: "un",
       term_months: null, list_price: null, category: null, cost: null, max_discount_pct: 0,
-      price_entry_id: null, price_table_label: null } })
+      price_entry_id: null, price_table_label: null, details: null } })
+  })
+  it("detalhes do item (saem no orçamento) entram normalizados; longo demais é recusado", () => {
+    expect(L.buildManualLine("t", "d", { ...base, details: "  1,20 × 1,50 m  \r\nBranco  " })).toMatchObject({ row: { details: "1,20 × 1,50 m\nBranco" } })
+    expect(L.buildManualLine("t", "d", { ...base, details: "   " })).toMatchObject({ row: { details: null } })
+    expect(L.buildManualLine("t", "d", { ...base, details: "a".repeat(1001) })).toEqual({ error: "Detalhes do item muito longos (máximo 1000 caracteres)." })
   })
   it("recorrente guarda o prazo; único descarta", () => {
     expect(L.buildManualLine("t", "d", { ...base, billing: "monthly", termMonths: 12 })).toMatchObject({ row: { term_months: 12 } })

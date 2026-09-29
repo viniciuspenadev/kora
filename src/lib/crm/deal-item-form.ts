@@ -3,6 +3,26 @@ import { computeDealValue, DEFAULT_TERM_MONTHS } from "./value"
 /** Limite do nome de um item avulso (o servidor confere o mesmo — lib/crm/deal-lines). */
 export const MANUAL_NAME_MAX = 200
 
+/** Teto dos detalhes do item — o banco confere o mesmo (CHECK tenant_deal_items_details_len). */
+export const DEAL_ITEM_DETAILS_MAX = 1000
+
+/**
+ * Detalhes do item (medidas, cor, material…) — VISÍVEIS AO CLIENTE: saem no orçamento, abaixo
+ * do nome. Quebras de linha padronizadas, sem caracteres de controle, sem espaço sobrando no fim
+ * das linhas, no máximo uma linha em branco seguida; vazio vira `null` (o banco recusa texto vazio).
+ */
+export function normalizeItemDetails(value: unknown): { details: string | null } | { error: string } {
+  if (value == null) return { details: null }
+  if (typeof value !== "string") return { error: "Detalhes do item inválidos" }
+  const visible = Array.from(value.replace(/\r\n?/g, "\n"))
+    .filter((ch) => { const c = ch.codePointAt(0) ?? 0; return c === 9 || c === 10 || (c >= 32 && c !== 127) })
+    .join("")
+  const text = visible.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim()
+  if (!text) return { details: null }
+  if (text.length > DEAL_ITEM_DETAILS_MAX) return { error: `Detalhes do item muito longos (máximo ${DEAL_ITEM_DETAILS_MAX} caracteres).` }
+  return { details: text }
+}
+
 /** Primeira etapa de "Adicionar item": a escolha só aparece quando há duas opções de verdade;
  *  com uma só, vai direto a ela (escolher entre uma ativa e uma apagada é um clique a mais). */
 export type ItemStartStep = "choose" | "catalog" | "manual" | "none"

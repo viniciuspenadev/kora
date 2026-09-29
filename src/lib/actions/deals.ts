@@ -6,6 +6,7 @@ import { requireModule, hasModule } from "@/lib/modules"
 import { getViewerScope, canViewConversation, canOpenDeals, seesAllDeals, applyDealScope, seesAllContacts, reachableContactIds, canManageCatalog, type ViewerScope } from "@/lib/visibility"
 import { createDeal, syncContactLifecycleFromDeal, recordDealEvent, type DealFieldChange, type DealEventExtras } from "@/lib/crm/deals"
 import { lineFloorError, resolveLineTable, buildCatalogLine, buildManualLine, parseLineNumbers, parseManualName, manualItemsAllowed, nextLinePosition, insertDealLine, recomputeDealValue, type ManualLineInput } from "@/lib/crm/deal-lines"
+import { normalizeItemDetails } from "@/lib/crm/deal-item-form"
 import { dealWriteErrorMessage } from "@/lib/crm/win-lock"
 import { formatQuantityWithUnit } from "@/lib/crm/units"
 import { applyDealStock } from "@/lib/actions/inventory"
@@ -739,7 +740,7 @@ async function enforceLostReasonPolicy(tenantId: string, reason: string | null, 
 }
 
 /** Linha de item do negócio — SNAPSHOT (nome/preço/teto congelados na adição).
- *  `cost` NÃO sai por aqui (interno — margem de gestor é payload à parte). */
+ *  `cost` NÃO sai por aqui (interno — fica no banco e no catálogo, nunca na ficha). */
 export interface DealItemView {
   id:          string
   name:        string
@@ -758,10 +759,10 @@ export interface DealItemView {
   max_discount_pct: number
   /** Rótulo da tabela que preçou a linha (snapshot T2). Null = padrão/pré-T2. */
   price_table_label?: string | null
-  /** Custo snapshotado — SÓ presente pra owner/admin (margem); vendedor recebe undefined. */
-  cost?: number | null
   /** 'catalog' = tem produto · 'manual' = item avulso (sem desconto/piso; nome editável). */
   source: "catalog" | "manual"
+  /** Detalhes VISÍVEIS AO CLIENTE (medidas, cor…) — saem no orçamento, abaixo do nome. */
+  details: string | null
 }
 
 export async function getDeal(dealId: string): Promise<DealDetail | { error: string }> {
@@ -799,7 +800,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       ? supabaseAdmin.from("tenant_deals").select("id, name, status, estimated_value, won_at, lost_at").eq("tenant_id", t).eq("contact_id", contactId).neq("id", dealId).order("created_at", { ascending: false }).limit(20)
       : Promise.resolve({ data: [] as unknown[] }),
     supabaseAdmin.from("tenant_tasks").select("id, title, due_at").eq("tenant_id", t).eq("deal_id", dealId).eq("status", "pending").order("due_at", { ascending: true, nullsFirst: false }).limit(1),
-    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, unit, discount, term_months, category, list_price, max_discount_pct, cost, price_table_label, source").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
+    supabaseAdmin.from("tenant_deal_items").select("id, name, type, billing, unit_price, quantity, unit, discount, term_months, category, list_price, max_discount_pct, price_table_label, source, details").eq("tenant_id", t).eq("deal_id", dealId).order("position", { ascending: true }).order("created_at", { ascending: true }),
     // Tabelas do tenant (T2) pro switcher.
     supabaseAdmin.from("price_tables").select("id, name, is_default, active").eq("tenant_id", t).order("is_default", { ascending: false }).order("name"),
   ])
@@ -807,7 +808,6 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
   const priceTables = ((ptAll ?? []) as { id: string; name: string; is_default: boolean; active: boolean }[])
   const dealTableId = (deal.price_table_id as string | null) ?? null
   const priceTable = dealTableId ? (priceTables.find((p) => p.id === dealTableId) ?? null) : null
-  const isManager = ["owner", "admin"].includes(session.user.role)
   // Motivos de perda governados (fallback = lista padrão; gracioso sem migration).
   const { data: reasonRows } = await supabaseAdmin.from("deal_outcome_reasons")
     .select("label, require_note").eq("tenant_id", t).eq("kind", "lost").eq("active", true)
@@ -860,7 +860,8 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     const { data: tgs } = await supabaseAdmin.from("taggings").select("tag_id").eq("tenant_id", t).eq("taggable_type", "contact").eq("taggable_id", contactId)
     const ids = ((tgs ?? []) as { tag_id: string }[]).map((x) => x.tag_id)
     if (ids.length) {
-      const { data: tagRows } = await supabaseAdmin.from("tags").select("name, color").eq("tenant_id", t).in("id", ids).order("name").limit(4)
+      // Sem teto aqui: a tela mostra 6 e o resto vira "+N" (antes cortava em 4 sem avisar).
+      const { data: tagRows } = await supabaseAdmin.from("tags").select("name, color").eq("tenant_id", t).in("id", ids).order("name")
       contactTags = ((tagRows ?? []) as { name: string; color: string }[])
     }
   }
@@ -911,8 +912,8 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
       max_discount_pct: Number(i.max_discount_pct ?? 0),
       price_table_label: (i.price_table_label as string | null) ?? null,
       source: i.source === "manual" ? "manual" : "catalog",
-      // Custo é INTERNO: só gestor recebe (margem). Vendedor: campo ausente.
-      ...(isManager ? { cost: i.cost != null ? Number(i.cost) : null } : {}),
+      details: (i.details as string | null) ?? null,
+      // Custo NÃO sai daqui para ninguém: a margem saiu da ficha (dono, 29/09/2026) e era o único uso.
     })),
     manualItemsAllowed: manualAllowed,
     canManageCatalog: canManageCatalog(scope),
@@ -1164,7 +1165,7 @@ export async function getCatalogCategories(): Promise<string[]> {
  * `list_price × qtd × (1 − teto)`. O teto/tabela são SNAPSHOTS do dia da adição.
  * Vale pra desconto E pra preço negociado (senão baixar o unitário burlaria o teto).
  */
-export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; priceTableId?: string | null }): Promise<{ ok: true; id: string } | { error: string }> {
+export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; priceTableId?: string | null; details?: string | null }): Promise<{ ok: true; id: string } | { error: string }> {
   const gate = await dealItemGate(dealId)
   if ("error" in gate) return gate
   // Preço NEGOCIADO (verticais de orçamento): o do catálogo é sugestão; a linha manda.
@@ -1180,7 +1181,7 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
     return { error: `A tabela "${table.inactiveTable}" está desativada — troque a tabela do negócio ou reative-a em Configurações → Tabelas de preço.` }
 
   // Produto do catálogo (do tenant, ativo) → FOTO congelada na linha + piso de desconto.
-  const line = await buildCatalogLine(gate.t, dealId, table.tableId, { catalogItemId: input.catalogItemId, quantity: qty, unitPrice, discount, termMonths: term })
+  const line = await buildCatalogLine(gate.t, dealId, table.tableId, { catalogItemId: input.catalogItemId, quantity: qty, unitPrice, discount, termMonths: term, details: input.details })
   if ("error" in line) return line
 
   const saved = await insertDealLine(line.row, await nextLinePosition(gate.t, dealId))
@@ -1209,12 +1210,16 @@ export async function addManualDealItem(dealId: string, input: ManualLineInput):
   return { ok: true, id: saved.id }
 }
 
-export async function updateDealItem(dealId: string, itemId: string, input: { quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; name?: string }): Promise<{ ok: true } | { error: string }> {
+export async function updateDealItem(dealId: string, itemId: string, input: { quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; name?: string; details?: string | null }): Promise<{ ok: true } | { error: string }> {
   const gate = await dealItemGate(dealId)
   if ("error" in gate) return gate
   const nums = parseLineNumbers(input)
   if ("error" in nums) return nums
   const { qty, unitPrice, discount, term } = nums
+  // Detalhes (saem no orçamento): editáveis em qualquer linha, do catálogo ou avulsa.
+  // `undefined` = não mexe; vazio = limpa.
+  const det = input.details !== undefined ? normalizeItemDetails(input.details) : null
+  if (det && "error" in det) return det
 
   const { data: it } = await supabaseAdmin.from("tenant_deal_items")
     .select("id, name, billing, unit_price, list_price, max_discount_pct, quantity, unit, source").eq("id", itemId).eq("tenant_id", gate.t).eq("deal_id", dealId).maybeSingle()
@@ -1246,6 +1251,7 @@ export async function updateDealItem(dealId: string, itemId: string, input: { qu
   const patch: Record<string, unknown> = { quantity: qty, discount, term_months: item.billing === "one_time" ? null : term }
   if (unitPrice != null) patch.unit_price = unitPrice
   if (newName) patch.name = newName
+  if (det) patch.details = det.details
   const { error } = await supabaseAdmin.from("tenant_deal_items")
     .update(patch)
     .eq("id", itemId).eq("tenant_id", gate.t)

@@ -259,7 +259,7 @@ export async function exportPersonalData(contactId: string): Promise<
     const ids = dealIds.slice(start, start + 100)
     for (let offset = 0; ; offset += 500) {
       const { data, error } = await supabaseAdmin.from("tenant_deal_items")
-        .select("id, deal_id, source, name, type, billing, unit, quantity, unit_price, discount, term_months, created_at")
+        .select("id, deal_id, source, name, type, billing, unit, quantity, unit_price, discount, term_months, details, created_at")
         .eq("tenant_id", tenantId).in("deal_id", ids).order("id").range(offset, offset + 499)
       if (error) return { error: "Erro ao exportar itens dos negócios" }
       dealItems.push(...(data ?? []))

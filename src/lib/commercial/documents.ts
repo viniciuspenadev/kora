@@ -70,6 +70,9 @@ export interface QuoteItem {
   term_months:      number | null
   discount:         number      // centavos (desconto da linha, sem fator de prazo)
   total_cents:      number      // contribuição da linha ao valor do negócio (billing/prazo aplicados)
+  // Detalhes visíveis ao cliente (29/09/2026). SÓ presente quando a linha tem detalhes: item sem
+  // detalhes gera a mesma cópia (e o mesmo hash) de antes; documentos antigos não têm o campo.
+  details?:         string
 }
 export interface QuoteConditions {
   // RichDoc (compositor novo) OU string (docs legados congelados — back-compat).
@@ -220,7 +223,7 @@ async function resolveIssuer(tenantId: string, dealUnitId: string | null): Promi
 }
 
 // ── Snapshot ────────────────────────────────────────────────────────
-type ItemRow = { name: string; type: "product" | "service"; billing: Billing; unit_price: number; quantity: number; unit: string | null; discount: number; term_months: number | null }
+type ItemRow = { name: string; type: "product" | "service"; billing: Billing; unit_price: number; quantity: number; unit: string | null; discount: number; term_months: number | null; details: string | null }
 
 /** Fator de prazo do valor (espelha src/lib/crm/value.ts). */
 function termFactor(billing: Billing, termMonths: number | null): number {
@@ -306,7 +309,7 @@ export async function buildQuoteSnapshot(
   }
 
   const { data: rows } = await supabaseAdmin.from("tenant_deal_items")
-    .select("name, type, billing, unit_price, quantity, unit, discount, term_months")
+    .select("name, type, billing, unit_price, quantity, unit, discount, term_months, details")
     .eq("tenant_id", tenantId).eq("deal_id", dealId)
     .order("position", { ascending: true }).order("created_at", { ascending: true })
   const itemRows = (rows ?? []) as ItemRow[]
@@ -327,10 +330,12 @@ export async function buildQuoteSnapshot(
     subtotalCents += grossLineC
     totalCents    += netLineC
     discountCents += grossLineC - netLineC
+    const details = r.details?.trim()
     return {
       name: r.name, type: r.type, qty: quantity, unit: r.unit ?? "un",
       unit_price_cents: toCents(unit_price), billing, term_months: r.term_months ?? null,
       discount: toCents(discount), total_cents: netLineC,
+      ...(details ? { details } : {}),
     }
   })
 
@@ -388,6 +393,7 @@ async function snapshotToPdfData(snapshot: QuoteSnapshot, code: string, issuedAt
       unit_price_cents: i.unit_price_cents, billing: i.billing, term_months: i.term_months,
       discount_cents: i.discount ?? 0,   // ?? p/ snapshots muito antigos sem o campo
       total_cents: i.total_cents,
+      details: i.details ?? null,        // documentos de antes de 29/09/2026 não têm o campo
     })),
     totals: snapshot.totals,
     conditions: { payment_terms: snapshot.conditions.payment_terms, notes: snapshot.conditions.notes },

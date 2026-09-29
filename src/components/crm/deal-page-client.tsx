@@ -15,7 +15,7 @@ import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
-  Package, Wrench, Trash2, MoreHorizontal, Bot, ChevronDown, Building2, PackagePlus,
+  Package, Wrench, Trash2, MoreHorizontal, Bot, ChevronDown, Building2, PackagePlus, Lock,
 } from "lucide-react"
 import { maskCpfCnpj } from "@/lib/masks"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -32,7 +32,7 @@ import {
   addDealItem, addManualDealItem, updateDealItem, removeDealItem, promoteDealItemToCatalog,
   type DealDetail, type DealEventView, type DealItemView,
 } from "@/lib/actions/deals"
-import { computeDealValue, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
+import { computeDealValue, DEFAULT_TERM_MONTHS, termFactor } from "@/lib/crm/value"
 import { TaskDialog } from "@/components/crm/task-dialog"
 import { createTask, setTaskDone, type TaskRow } from "@/lib/actions/tasks"
 import { MoveDealDialog, type MoveDealResult } from "@/components/crm/move-deal-dialog"
@@ -123,7 +123,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   const [shown, setShown] = useState(8)
   const [openProtocol, setOpenProtocol] = useState<Protocol | null>(null)
   const [flowModal, setFlowModal] = useState<null | "handoff" | "reclass">(null)
-  const [activeModal, setActiveModal] = useState<"note" | "task" | null>(null)
+  const [activeModal, setActiveModal] = useState<"task" | null>(null)
   const [itemModal, setItemModal] = useState<null | { mode: "add" } | { mode: "edit"; item: DealItemView }>(null)
   const [promoteItem, setPromoteItem] = useState<DealItemView | null>(null)   // "Salvar no catálogo" (avulso)
   // Linhas recém-gravadas piscam na lista ao fechar a janela, para o olho achar onde entraram.
@@ -208,11 +208,32 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
     if ((v || null) === (deal.unit_id ?? null)) return
     run(() => updateDeal(deal.id, { unitId: v || null }))
   }
+  // Nota do negócio (interna — o cliente não vê): campo fixo no topo de Atividades. O texto só
+  // sai do campo depois de gravado; se falhar, fica lá para tentar de novo.
   function submitNote() {
-    if (!noteDraft.trim()) return
-    const text = noteDraft.trim(); setNoteDraft(""); setActiveModal(null)
-    run(() => convId ? addDealNote(convId, deal.id, text) : addDealNoteById(deal.id, text))
+    const text = noteDraft.trim()
+    if (!text || pending) return
+    start(async () => {
+      const r = convId ? await addDealNote(convId, deal.id, text) : await addDealNoteById(deal.id, text)
+      if ("error" in r) { toast.error(r.error); return }
+      setNoteDraft("")
+      router.refresh()
+    })
   }
+  // "⋯ → Registrar nota" leva ao campo (abre Atividades e põe o cursor nele).
+  const noteRef = useRef<HTMLTextAreaElement>(null)
+  const focusNoteOnTab = useRef(false)
+  function openNoteComposer() {
+    if (detailTab === "activity") { noteRef.current?.focus(); return }
+    focusNoteOnTab.current = true
+    changeDetailTab("activity")
+  }
+  useEffect(() => {
+    if (detailTab !== "activity" || !focusNoteOnTab.current) return
+    focusNoteOnTab.current = false
+    noteRef.current?.focus()
+    noteRef.current?.scrollIntoView({ block: "center", behavior: "smooth" })
+  }, [detailTab])
   function openTaskModal(preset: string | null) {
     setRescheduleOf(null); setTaskPreset(preset); setActiveModal("task")
   }
@@ -362,7 +383,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     {/* Registrar (referência: ações saíram do corpo pro menu, abrem modal) */}
-                    <DropdownMenuItem disabled={pending} onClick={() => { setNoteDraft(""); setActiveModal("note") }}>
+                    <DropdownMenuItem disabled={pending} onClick={openNoteComposer}>
                       <StickyNote className="size-3.5 text-slate-400" /> Registrar nota
                     </DropdownMenuItem>
                     <DropdownMenuItem disabled={pending} onClick={() => openTaskModal(null)}>
@@ -535,7 +556,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           <SectionCard flush className="shadow-none">
             <Tabs.Root value={detailTab} onValueChange={(v) => changeDetailTab(String(v))}>
               <Tabs.List aria-label="Conteúdo do negócio" className="flex justify-between gap-2 border-b border-slate-200 px-4 sm:justify-start sm:gap-6">{[["negotiation", "Negociação", deal.items.length], ["proposals", QUOTE_TERM.many, quotes.length], ["activity", "Atividades", feedAll.length]].map(([value, label, count]) => <Tabs.Tab key={value} value={value} className="inline-flex items-center gap-1.5 border-b-2 border-transparent py-3.5 text-xs font-medium text-slate-500 outline-offset-2 data-active:border-primary data-active:text-primary-700"><span>{label}</span><span className="text-[10px] font-normal text-slate-500">{count}</span></Tabs.Tab>)}</Tabs.List>
-              <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} isManager={isManager} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} onPromote={deal.canManageCatalog ? (item) => setPromoteItem(item) : undefined} highlightIds={flashIds} hasProposal={quotes.some((q) => q.status !== "void")} /></Tabs.Panel>
+              <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} onPromote={deal.canManageCatalog ? (item) => setPromoteItem(item) : undefined} highlightIds={flashIds} hasProposal={quotes.some((q) => q.status !== "void")} /></Tabs.Panel>
               <Tabs.Panel value="proposals" keepMounted className="data-hidden:hidden"><DealQuotes dealId={deal.id} quotes={quotes} defaults={quoteSettings} hasItems={hasItems} items={deal.items} genTick={quoteGenTick} embedded /></Tabs.Panel>
               <Tabs.Panel value="activity" keepMounted className="data-hidden:hidden">          <section className="bg-white p-4 sm:p-5">
             <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
@@ -546,8 +567,25 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                 ))}
               </div>
             </div>
+            {/* Nota do negócio — INTERNA (o cliente não vê; o que vai ao cliente são os detalhes do
+                item). Campo fixo aqui, em vez de escondido no menu ⋯. Ctrl/⌘ + Enter registra. */}
+            <div className="mb-5 rounded-xl border border-slate-200 bg-white transition-shadow focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary/15">
+              <label htmlFor="deal-note" className="sr-only">Nova nota do negócio</label>
+              <textarea id="deal-note" ref={noteRef} value={noteDraft} rows={2} maxLength={4000}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitNote() } }}
+                placeholder="Escreva uma nota para a equipe sobre este negócio…"
+                className="block max-h-60 min-h-16 w-full resize-none rounded-xl bg-transparent px-3.5 py-2.5 text-sm leading-relaxed text-slate-800 placeholder:text-slate-400 field-sizing-content focus:outline-none" />
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-3 py-2">
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500"><Lock className="size-3 text-slate-400" />Só a equipe vê · Ctrl + Enter para registrar</span>
+                <button type="button" onClick={submitNote} disabled={!noteDraft.trim() || pending}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-white hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50">
+                  {pending && noteDraft.trim() ? <Loader2 className="size-3.5 animate-spin" /> : <StickyNote className="size-3.5" />} Registrar nota
+                </button>
+              </div>
+            </div>
             {feed.length === 0 ? (
-              <p className="text-xs text-slate-400 py-10 text-center">Nada por aqui ainda. Movimentações, notas e tarefas aparecem nesta linha.</p>
+              <p className="text-xs text-slate-400 py-10 text-center">{filter === "notes" ? "Nenhuma nota ainda. Escreva a primeira no campo acima." : "Nada por aqui ainda. Movimentações, notas e tarefas aparecem nesta linha."}</p>
             ) : (
               <>
                 <ol>
@@ -570,7 +608,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           </SectionCard>
         </div>
         <SectionCard className="shadow-none" bodyClassName="p-4">
-          {deal.contact && <section><div className="flex items-center gap-3"><div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-slate-100"><ContactPic pic={deal.contact.profile_pic_url} imgClass="size-10 object-cover" fallback={<User className="size-4 text-slate-400" />} /></div><div className="min-w-0"><h2 className="break-words text-sm font-semibold text-slate-900">{contactName}</h2><p className="text-xs text-slate-500">{deal.company?.name}</p></div></div><div className="my-3 flex flex-wrap gap-1.5">{lc && <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">{lc.label}</span>}{(deal.contact.tags ?? []).map((t) => <span key={t.name} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">{t.name}</span>)}</div>{deal.contact.phone_number && <p className="text-xs text-slate-500">{deal.contact.phone_number}</p>}<button onClick={() => setSheetContact(deal.contact!.id)} className="mt-1 inline-flex min-h-9 items-center gap-1 text-xs font-semibold text-primary-700">Ver cliente 360 <ArrowRight className="size-3" /></button><div className="mt-2 grid grid-cols-2 gap-3"><div><p className="text-[11px] text-slate-500">Total comprado</p><p className="mt-1 text-xs font-semibold text-slate-900">{brl(contactWonTotal)}</p></div><div><p className="text-[11px] text-slate-500">Última compra</p><p className="mt-1 text-xs font-semibold text-slate-900">{contactLastWonDays != null ? `Há ${contactLastWonDays} dias` : "—"}</p></div></div></section>}
+          {deal.contact && <section><div className="flex items-center gap-3"><div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-full bg-slate-100"><ContactPic pic={deal.contact.profile_pic_url} imgClass="size-10 object-cover" fallback={<User className="size-4 text-slate-400" />} /></div><div className="min-w-0"><h2 className="break-words text-sm font-semibold text-slate-900">{contactName}</h2><p className="text-xs text-slate-500">{deal.company?.name}</p></div></div><div className="my-3 flex flex-wrap gap-1.5">{lc && <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">{lc.label}</span>}{(deal.contact.tags ?? []).slice(0, TAGS_SHOWN).map((t) => <TagChip key={t.name} name={t.name} color={t.color} />)}{(deal.contact.tags ?? []).length > TAGS_SHOWN && <span className="self-center text-[11px] font-semibold text-slate-400" title={(deal.contact.tags ?? []).slice(TAGS_SHOWN).map((t) => t.name).join(", ")}>+{(deal.contact.tags ?? []).length - TAGS_SHOWN}</span>}</div>{deal.contact.phone_number && <p className="text-xs text-slate-500">{deal.contact.phone_number}</p>}<button onClick={() => setSheetContact(deal.contact!.id)} className="mt-1 inline-flex min-h-9 items-center gap-1 text-xs font-semibold text-primary-700">Ver cliente 360 <ArrowRight className="size-3" /></button><div className="mt-2 grid grid-cols-2 gap-3"><div><p className="text-[11px] text-slate-500">Total comprado</p><p className="mt-1 text-xs font-semibold text-slate-900">{brl(contactWonTotal)}</p></div><div><p className="text-[11px] text-slate-500">Última compra</p><p className="mt-1 text-xs font-semibold text-slate-900">{contactLastWonDays != null ? `Há ${contactLastWonDays} dias` : "—"}</p></div></div></section>}
                     <Card title="Detalhes do negócio">
             <dl>
               <Row label="Responsável">
@@ -659,21 +697,6 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           onClose={() => { setActiveModal(null); setRescheduleOf(null); setTaskPreset(null) }} />
       )}
 
-      {/* Nota via modal (menu ⋯) — registra na linha do tempo com assinatura */}
-      {activeModal === "note" && (
-        <ModalShell title="Registrar nota" desc="Fica na linha do tempo do negócio, com sua assinatura." icon={StickyNote} accent="bg-primary-50 text-primary-600" onClose={() => setActiveModal(null)}>
-          <textarea autoFocus value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} rows={4}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitNote(); if (e.key === "Escape") setActiveModal(null) }}
-            placeholder="Escreva uma nota sobre este negócio…"
-            className="w-full px-3 py-2.5 text-xs border border-slate-200 rounded-lg bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
-          <div className="flex items-center justify-end gap-2 mt-3">
-            <button onClick={() => setActiveModal(null)} className="h-9 px-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">Cancelar</button>
-            <button onClick={submitNote} disabled={!noteDraft.trim() || pending}
-              className="h-9 px-4 text-xs font-semibold text-white bg-primary hover:bg-primary-700 rounded-lg disabled:opacity-50">Registrar nota</button>
-          </div>
-        </ModalShell>
-      )}
-
       {/* Contato 360 (mesma superfície do board/roster) */}
       <ContactSheet contactId={sheetContact} onClose={() => setSheetContact(null)} />
 
@@ -694,14 +717,14 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           onSubmit={async (p) => {
             const m = itemModal
             if (m.mode !== "edit") return false
-            const r = await updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, ...(p.name !== undefined ? { name: p.name } : {}) })
+            const r = await updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, details: p.details ?? null, ...(p.name !== undefined ? { name: p.name } : {}) })
             if ("error" in r) { toast.error(r.error); return false }
             router.refresh()
             return true
           }}
           onAdd={async (p) => {
             // Grava e devolve o id da linha (a ficha destaca as linhas novas ao concluir).
-            const r = await addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, priceTableId: p.priceTableId })
+            const r = await addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, priceTableId: p.priceTableId, details: p.details ?? null })
             if ("error" in r) { toast.error(r.error); return null }
             router.refresh()
             return r.id
@@ -1005,26 +1028,6 @@ function TaskBody({ t, pending, onToggle }: { t: TaskRow; pending: boolean; onTo
 
 
 
-function ModalShell({ title, desc, icon: Icon, accent, onClose, children }: {
-  title: string; desc?: string; icon: typeof Bell; accent: string; onClose: () => void; children: React.ReactNode
-}) {
-  return (
-    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} onKeyDown={(e) => { if (e.key === "Escape") onClose() }}>
-      <div className="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100">
-          <span className="size-9 rounded-full grid place-items-center shrink-0" style={{ backgroundColor: accent }}><Icon className="size-4 text-white" /></span>
-          <div className="min-w-0">
-            <p className="text-sm font-bold text-slate-900">{title}</p>
-            {desc && <p className="text-[11px] text-slate-400">{desc}</p>}
-          </div>
-        </div>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-
 // ── Documentos do Negócio — um protocolo por movimentação (evolução/regressão) ──
 type ProtocolKind = "abertura" | "evolucao" | "regressao" | "ganho" | "perda" | "cancelamento" | "reabertura" | "mudanca"
 interface Protocol {
@@ -1235,16 +1238,24 @@ function qtdTermLabel(billing: "monthly" | "yearly", termMonths: number | null):
   if (billing === "yearly") { const y = Math.round(t / 12); return `${y} ${y === 1 ? "ano" : "anos"}` }
   return `${t} ${t === 1 ? "mês" : "meses"}`
 }
+
+// Etiquetas do cliente na lateral: MESMA cor configurada em Etiquetas — mesmo chip do quadro
+// de negócios (deals-board.tsx). Até 6 à vista; o resto vira "+N" (nome no título).
+const TAGS_SHOWN = 6
+function TagChip({ name, color }: { name: string; color: string | null }) {
+  const c = color || "#64748b"
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ backgroundColor: `color-mix(in srgb, ${c} 16%, transparent)`, color: c }}>
+      <span className="size-1.5 rounded-full" style={{ backgroundColor: c }} />{name}
+    </span>
+  )
+}
+
 // ── NEGOCIAÇÃO — itens + resumo + termos da proposta (N2, spec do owner) ──
 
-/** Fator de contribuição no total (recorrente × prazo — mesma matemática da lib). */
-const termFactor = (it: DealItemView) =>
-  it.billing === "one_time" ? 1 : it.billing === "monthly" ? (it.term_months ?? DEFAULT_TERM_MONTHS) : (it.term_months ?? DEFAULT_TERM_MONTHS) / 12
-
-function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove, onPromote, highlightIds = [], hasProposal = false }: {
+function NegotiationCard({ deal, summary, pending, onAdd, onEdit, onRemove, onPromote, highlightIds = [], hasProposal = false }: {
   deal: DealDetail
   summary: ReturnType<typeof computeDealValue> | null
-  isManager: boolean
   pending: boolean
   onAdd: () => void
   onEdit: (item: DealItemView) => void
@@ -1269,10 +1280,6 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
   const final = summary?.total ?? 0
   const descTotal = Math.max(0, Math.round((bruto - final) * 100) / 100)
   const descPct = bruto > 0 ? (descTotal / bruto) * 100 : 0
-  // Margem (só gestor): final − custo total (custo × qtd × prazo). Só quando há custo em algum item.
-  const hasCost = isManager && items.some((it) => it.cost != null && it.cost > 0)
-  const custoTotal = hasCost ? items.reduce((s, it) => s + (it.cost ?? 0) * it.quantity * termFactor(it), 0) : 0
-  const margem = final - custoTotal
 
   const today = new Date().toISOString().slice(0, 10)
   const expired = !!deal.proposalExpiresAt && deal.proposalExpiresAt < today && deal.status === "open"
@@ -1339,6 +1346,8 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                             {it.max_discount_pct > 0 && <span className="text-slate-500"> · teto {it.max_discount_pct}%</span>}
                             {it.price_table_label && <span className="text-slate-500 font-medium"> · {it.price_table_label}</span>}
                           </p>
+                          {/* Detalhes do item — os mesmos que saem no orçamento (2 linhas; o resto no título). */}
+                          {it.details && <p title={it.details} className="mt-0.5 line-clamp-2 max-w-md whitespace-pre-line break-words text-[11px] leading-snug text-slate-500">{it.details}</p>}
                         </div>
                       </div>
                     </td>
@@ -1400,12 +1409,6 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
               <div className="flex justify-between items-baseline gap-8">
                 <span className="font-semibold text-slate-500">Receita mensal equivalente</span>
                 <span className="tabular-nums font-semibold text-slate-700">{brl(summary.mrr)}/mês</span>
-              </div>
-            )}
-            {hasCost && (
-              <div className="flex justify-between gap-8 pt-1.5 mt-0.5 border-t border-slate-200">
-                <span className="text-slate-400 inline-flex items-center gap-1">Margem <span className="text-[9px] font-bold uppercase bg-slate-200 text-slate-500 rounded px-1">gestor</span></span>
-                <span className={`tabular-nums font-bold ${margem >= 0 ? "text-emerald-600" : "text-red-600"}`}>{brl(margem)} <span className="text-[10px] font-medium text-slate-400">({final > 0 ? ((margem / final) * 100).toFixed(0) : 0}%)</span></span>
               </div>
             )}
           </div>

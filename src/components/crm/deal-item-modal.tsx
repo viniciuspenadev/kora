@@ -8,7 +8,7 @@ import { FormRow } from "@/components/ui/form-row"
 import { SimpleSelect } from "@/components/ui/select"
 import { EmptyState } from "@/components/ui/empty-state"
 import { getCatalogCategories, searchCatalogForPicker, type CatalogPickerItem, type CatalogPickerPage, type DealItemView } from "@/lib/actions/deals"
-import { reviewDealItem, reviewManualItem, itemStartStep, MANUAL_NAME_MAX } from "@/lib/crm/deal-item-form"
+import { reviewDealItem, reviewManualItem, itemStartStep, MANUAL_NAME_MAX, DEAL_ITEM_DETAILS_MAX, normalizeItemDetails } from "@/lib/crm/deal-item-form"
 import { formatQuantityWithUnit, unitSpec, UNITS } from "@/lib/crm/units"
 import { DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
 import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
@@ -23,11 +23,11 @@ const primary = "inline-flex h-10 items-center justify-center gap-2 rounded-lg b
 // brancos ao passar o mouse, focar pelo teclado ou tocar (o clique já avança).
 const choice = "group flex min-h-36 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-6 text-center transition-colors hover:border-primary hover:bg-primary active:bg-primary-700 focus-visible:border-primary focus-visible:bg-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
 const backLink = "mb-4 inline-flex h-8 items-center gap-1.5 text-xs font-semibold text-primary-700 disabled:opacity-50"
-type ItemPayload = { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null; name?: string }
+type ItemPayload = { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null; name?: string; details?: string | null }
 type Billing = "one_time" | "monthly" | "yearly"
-export type ManualItemPayload = { name: string; type: "product" | "service"; billing: Billing; unit: string; quantity: number; unitPrice: number; termMonths: number | null }
+export type ManualItemPayload = { name: string; type: "product" | "service"; billing: Billing; unit: string; quantity: number; unitPrice: number; termMonths: number | null; details: string | null }
 type Step = "choose" | "catalog" | "manual" | "done" | "none"
-type LastAdded = { name: string; quantity: number; unit: string; unitPrice: number; billing: Billing; total: number; expectedCount: number }
+type LastAdded = { name: string; quantity: number; unit: string; unitPrice: number; billing: Billing; total: number; details: string | null; expectedCount: number }
 
 /** Adicionar/editar item do negócio. Etapas: escolher a origem (só quando há duas) →
  *  catálogo ou avulso → "Pronto" (adicionar outro · concluir). O "Adicionar 1" do catálogo é
@@ -66,6 +66,8 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
   const [discount, setDiscount] = useState(edit?.discount ? decimal(edit.discount) : "")
   const [discountMode, setDiscountMode] = useState<"brl" | "pct">("brl")
   const [term, setTerm] = useState(edit?.term_months != null ? String(edit.term_months) : "")
+  // Detalhes visíveis ao cliente (saem no orçamento, abaixo do nome) — de qualquer item.
+  const [details, setDetails] = useState(edit?.details ?? "")
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState("")
   const [added, setAdded] = useState<Map<string, number>>(new Map())
@@ -131,12 +133,12 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
   }
 
   function pick(item: CatalogPickerItem) {
-    setPicked(item); setQuantity("1"); setPrice(decimal(item.price)); setDiscount(""); setDiscountMode("brl"); setTerm(""); setError(null)
+    setPicked(item); setQuantity("1"); setPrice(decimal(item.price)); setDiscount(""); setDiscountMode("brl"); setTerm(""); setDetails(""); setError(null)
   }
   function goCatalog() { setStep("catalog"); setPicked(null); setError(null); setNotice("") }
   function goManual(name = "") {
     setStep("manual"); setPicked(null); setMName(name); setMType("service"); setMBilling("one_time"); setMUnit("un")
-    setQuantity("1"); setPrice(""); setDiscount(""); setTerm(""); setError(null); setNotice("")
+    setQuantity("1"); setPrice(""); setDiscount(""); setTerm(""); setDetails(""); setError(null); setNotice("")
   }
   // "Adicionar outro item": volta à escolha, ou direto à única origem disponível.
   function addAnother() {
@@ -158,18 +160,21 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
   async function save(item?: CatalogPickerItem) {
     if (savingRef.current || pending) return
     if (!item && (!review || review.error)) { setError(review?.error ?? "Selecione um item."); return }
+    // O "Adicionar 1" do balcão não tem detalhes; nos demais, a mesma regra do servidor.
+    const det = item ? { details: null } : normalizeItemDetails(details)
+    if ("error" in det) { setError(det.error); return }
     savingRef.current = true; setSaving(true); setError(null); setNotice("")
     const countBefore = dealItemCount
     try {
       if (manualForm && !edit) {
         const name = mName.trim()
-        const id = await onAddManual({ name, type: mType, billing: mBilling, unit: mUnit, quantity: review!.quantity, unitPrice: review!.unitPrice!, termMonths: review!.termMonths })
+        const id = await onAddManual({ name, type: mType, billing: mBilling, unit: mUnit, quantity: review!.quantity, unitPrice: review!.unitPrice!, termMonths: review!.termMonths, details: det.details })
         if (!id) { setError("O item não foi salvo. Seus dados foram mantidos; tente novamente."); return }
-        finish(id, { name, quantity: review!.quantity, unit: mUnit, unitPrice: review!.unitPrice!, billing: mBilling, total: review!.summary?.total ?? 0 }, countBefore)
+        finish(id, { name, quantity: review!.quantity, unit: mUnit, unitPrice: review!.unitPrice!, billing: mBilling, total: review!.summary?.total ?? 0, details: det.details }, countBefore)
         return
       }
       const payload: ItemPayload = item ? { catalogItemId: item.id, quantity: 1, unitPrice: item.price, discount: null, termMonths: null, priceTableId: tableId || null }
-        : { catalogItemId: picked?.id, quantity: review!.quantity, unitPrice: review!.unitPrice, discount: manualForm ? null : review!.discount, termMonths: review!.termMonths, priceTableId: tableId || null, ...(editManual ? { name: mName.trim() } : {}) }
+        : { catalogItemId: picked?.id, quantity: review!.quantity, unitPrice: review!.unitPrice, discount: manualForm ? null : review!.discount, termMonths: review!.termMonths, priceTableId: tableId || null, details: det.details, ...(editManual ? { name: mName.trim() } : {}) }
       if (edit) {
         const ok = await onSubmit(payload)
         if (!ok) { setError("O item não foi salvo. Seus ajustes foram mantidos; tente novamente."); return }
@@ -184,7 +189,7 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
         setNotice(`${item.name} adicionado ao negócio.`)
         return
       }
-      finish(id, { name: picked!.name, quantity: review!.quantity, unit: picked!.unit, unitPrice: review!.unitPrice ?? picked!.price, billing: picked!.billing, total: review!.summary?.total ?? 0 }, countBefore)
+      finish(id, { name: picked!.name, quantity: review!.quantity, unit: picked!.unit, unitPrice: review!.unitPrice ?? picked!.price, billing: picked!.billing, total: review!.summary?.total ?? 0, details: det.details }, countBefore)
     } catch { setError("Não foi possível confirmar o salvamento. Confira os itens do negócio antes de tentar novamente.") }
     finally { savingRef.current = false; setSaving(false) }
   }
@@ -229,6 +234,7 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
                 <span className="grid size-12 place-items-center rounded-full bg-success-bg text-success"><Check className="size-6" /></span>
                 <h2 className="mt-3 text-base font-bold text-slate-900">Item adicionado</h2>
                 <p className="mt-1 max-w-full break-words text-sm text-slate-600">{last.name}</p>
+                {last.details && <p className="mt-1 max-w-full whitespace-pre-line break-words text-xs text-slate-500">{last.details}</p>}
               </div>
               <dl className="mt-5 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs">
                 <div className="flex justify-between gap-3"><dt className="text-slate-500">{formatQuantityWithUnit(last.quantity, last.unit)} × {money(last.unitPrice)}{billing[last.billing].suffix}</dt><dd className="font-semibold tabular-nums text-slate-900">{money(last.total)}</dd></div>
@@ -300,7 +306,19 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
                 {!manualForm && <FormRow label="Desconto na linha" htmlFor="deal-item-discount"><div className="flex gap-2"><input id="deal-item-discount" inputMode="decimal" placeholder="0,00" value={discount} onChange={(event) => setDiscount(event.target.value)} className={field} /><div className="flex shrink-0 rounded-lg border border-slate-200 p-1" aria-label="Tipo de desconto">{(["brl", "pct"] as const).map((mode) => <button key={mode} type="button" aria-pressed={discountMode === mode} aria-label={mode === "brl" ? "Desconto em reais" : "Desconto em percentual"} onClick={() => switchDiscount(mode)} className={`w-10 rounded-md text-xs font-semibold ${discountMode === mode ? "bg-primary text-white" : "text-slate-500 hover:bg-slate-50"}`}>{mode === "brl" ? "R$" : "%"}</button>)}</div></div><p className="text-xs leading-relaxed text-slate-500">{active.maxPct > 0 ? `Limite de ${active.maxPct}% sobre a tabela, considerando também o preço negociado.` : "Este item não permite desconto sobre a tabela."}</p></FormRow>}
                 {recurring && <FormRow label="Prazo em meses" htmlFor="deal-item-term" hint={`Sem prazo informado, o total considera ${DEFAULT_TERM_MONTHS} meses.`}><input id="deal-item-term" inputMode="numeric" value={term} placeholder={`${DEFAULT_TERM_MONTHS} (padrão)`} onChange={(event) => setTerm(event.target.value)} className={field} /></FormRow>}
               </fieldset>
-              <aside className="rounded-xl border border-slate-200 bg-slate-50 p-4" aria-label="Resumo do item"><h3 className="text-sm font-semibold text-slate-900">Resumo do item</h3><dl className="mt-4 space-y-3 text-xs"><div className="flex justify-between gap-3"><dt className="text-slate-500">Subtotal{recurring ? billing[active.billing].suffix : ""}</dt><dd className="font-medium tabular-nums">{review?.summary ? money(review.subtotal) : "—"}</dd></div>{!manualForm && <div className="flex justify-between gap-3"><dt className="text-slate-500">Desconto</dt><dd className="font-medium tabular-nums">{review?.summary ? `− ${money(review.discount ?? 0)}` : "—"}</dd></div>}{recurring && <div className="flex justify-between gap-3"><dt className="text-slate-500">Prazo considerado</dt><dd className="font-medium">{review?.effectiveTerm} meses</dd></div>}</dl><div className="mt-4 border-t border-slate-200 pt-4"><p className="text-xs text-slate-500">{recurring ? `Valor ${active.billing === "monthly" ? "mensal" : "anual"}` : "Total do item"}</p><p className="mt-1 break-words text-xl font-bold tabular-nums text-slate-900">{review?.periodTotal != null ? money(review.periodTotal) : "—"}</p>{recurring && <p className="mt-2 text-xs leading-relaxed text-slate-500">No prazo: <strong className="font-semibold text-slate-700">{review?.summary ? money(review.summary.total) : "—"}</strong></p>}</div></aside>
+              {/* Detalhes do item — VISÍVEIS AO CLIENTE: saem no orçamento, abaixo do nome. Logo depois das
+                  condições (no celular também antes do resumo); o resumo ocupa a coluna da direita. */}
+              <fieldset disabled={busy} className="min-w-0 md:col-start-1">
+                <legend className="sr-only">Detalhes do item</legend>
+                <FormRow label="Detalhes do item (opcional)" htmlFor="deal-item-details"
+                  hint={`Aparece ${qg("no", "na")} ${QUOTE_TERM.oneLower}, logo abaixo do nome do item · ${details.length}/${DEAL_ITEM_DETAILS_MAX}`}>
+                  <textarea id="deal-item-details" rows={3} maxLength={DEAL_ITEM_DETAILS_MAX} value={details}
+                    onChange={(event) => { setDetails(event.target.value); setError(null) }}
+                    placeholder="Ex.: 1,20 × 1,50 m · alumínio branco · vidro temperado 6 mm"
+                    className="field-sizing-content max-h-56 min-h-20 w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm leading-relaxed placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300 disabled:opacity-50" />
+                </FormRow>
+              </fieldset>
+              <aside className="rounded-xl border border-slate-200 bg-slate-50 p-4 md:col-start-2 md:row-span-2 md:row-start-1" aria-label="Resumo do item"><h3 className="text-sm font-semibold text-slate-900">Resumo do item</h3><dl className="mt-4 space-y-3 text-xs"><div className="flex justify-between gap-3"><dt className="text-slate-500">Subtotal{recurring ? billing[active.billing].suffix : ""}</dt><dd className="font-medium tabular-nums">{review?.summary ? money(review.subtotal) : "—"}</dd></div>{!manualForm && <div className="flex justify-between gap-3"><dt className="text-slate-500">Desconto</dt><dd className="font-medium tabular-nums">{review?.summary ? `− ${money(review.discount ?? 0)}` : "—"}</dd></div>}{recurring && <div className="flex justify-between gap-3"><dt className="text-slate-500">Prazo considerado</dt><dd className="font-medium">{review?.effectiveTerm} meses</dd></div>}</dl><div className="mt-4 border-t border-slate-200 pt-4"><p className="text-xs text-slate-500">{recurring ? `Valor ${active.billing === "monthly" ? "mensal" : "anual"}` : "Total do item"}</p><p className="mt-1 break-words text-xl font-bold tabular-nums text-slate-900">{review?.periodTotal != null ? money(review.periodTotal) : "—"}</p>{recurring && <p className="mt-2 text-xs leading-relaxed text-slate-500">No prazo: <strong className="font-semibold text-slate-700">{review?.summary ? money(review.summary.total) : "—"}</strong></p>}</div></aside>
             </div>
             {reviewError && <p role="alert" className="mt-4 rounded-lg border border-red-100 bg-danger-bg p-3 text-xs leading-relaxed text-danger">{reviewError}{reviewError.includes("limite") && review && Number.isFinite(review.minimum) ? ` Mínimo da linha: ${money(review.minimum)}${billing[active.billing].suffix}.` : ""}</p>}
           </div>

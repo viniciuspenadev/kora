@@ -3,7 +3,7 @@ import { registerPdfFonts } from "./fonts"
 import { formatQuantity, formatQuantityWithUnit, unitSpec } from "@/lib/crm/units"
 import type { Style } from "@react-pdf/types"
 import { RichView } from "./richdoc-pdf"
-import { isRichDoc, isEmptyRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
+import { isRichDoc, isEmptyRichDoc, richDocToPlain, type RichDoc } from "@/lib/commercial/richdoc"
 import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 // Cotação em PDF — espelha invoice-pdf.tsx (mesma paleta C, Inter embutida).
@@ -37,6 +37,8 @@ export interface QuotePdfItem {
    *  num mensal, é desconto POR MÊS. 0 = sem desconto. */
   discount_cents:   number
   total_cents:      number
+  /** Detalhes do item visíveis ao cliente (medidas, cor…) — logo abaixo do nome. Docs antigos: ausente. */
+  details?:         string | null
 }
 export interface QuotePdfAddress {
   zip_code: string | null; street: string | null; number: string | null
@@ -71,6 +73,15 @@ export interface QuotePdfData {
   paymentMethod: string | null
   installments:  number | null
   contentHash:  string
+}
+
+/** Até quantos caracteres as observações vão como bloco inteiro (sem partir entre páginas).
+ *  Uma página comporta ~5.000; acima deste teto o cartão pode quebrar (não caberia em lugar nenhum). */
+const NOTES_UNBREAKABLE_MAX = 2500
+/** Tamanho do texto de uma condição (RichDoc achatado ou string legada). */
+function condLength(v: RichDoc | string | null): number {
+  if (v == null) return 0
+  return typeof v === "string" ? v.length : richDocToPlain(v).length
 }
 
 /** Tem conteúdo? (string não-vazia ou RichDoc não-vazio). */
@@ -229,7 +240,7 @@ const s = StyleSheet.create({
   page: { fontFamily: "Inter", fontSize: 9, color: C.ink, paddingTop: 42, paddingBottom: 60, paddingHorizontal: 44 },
   band: { position: "absolute", top: 0, left: 0, right: 0, height: 6, backgroundColor: C.primary },
   // Header
-  headRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 26 },
+  headRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 },
   issuerCol: { flex: 1, paddingRight: 20 },
   // objectPosition ancora o logo no CANTO ESQUERDO do box (default centraliza →
   // logo "flutuava" desalinhado do texto do emissor — feedback do owner).
@@ -243,7 +254,7 @@ const s = StyleSheet.create({
   metaLabel: { fontSize: 8, color: C.slate500 },
   metaValue: { fontSize: 8, fontWeight: 600, color: C.ink },
   // Parties
-  parties: { flexDirection: "row", gap: 14, marginBottom: 24 },
+  parties: { flexDirection: "row", gap: 14, marginBottom: 18 },
   party: { flex: 1, borderWidth: 1, borderColor: C.line, borderRadius: 8, padding: 12 },
   partyLabel: { fontSize: 7, fontWeight: 700, color: C.primary, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 5 },
   partyName: { fontSize: 11, fontWeight: 700, color: C.ink, marginBottom: 2 },
@@ -251,9 +262,13 @@ const s = StyleSheet.create({
   // Tabela
   tHead: { flexDirection: "row", paddingBottom: 7, marginBottom: 2, borderBottomWidth: 2, borderBottomColor: C.navy },
   th: { fontSize: 7.5, fontWeight: 700, color: C.navy, textTransform: "uppercase", letterSpacing: 0.5 },
-  tRow: { flexDirection: "row", paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: C.line },
+  tRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line },
+  tCols: { flexDirection: "row" },
   itemName: { fontSize: 9.5, fontWeight: 600, color: C.ink, marginBottom: 2 },
   itemSub: { fontSize: 7.5, color: C.slate500 },
+  // Detalhes do item (medidas, cor…): abaixo das colunas, na largura da linha — texto longo não
+  // espreme a coluna do nome — e sem invadir a coluna Total (paddingRight = largura dela).
+  itemDetails: { fontSize: 8, color: C.slate600, lineHeight: 1.45, marginTop: 4, paddingRight: 106 },
   td: { fontSize: 9, color: C.ink },
   // Layout: Item (largura fixa, Qtd logo ao lado à ESQUERDA) → spacer flexível
   // absorve o vão → Preço e Total ancorados à DIREITA, com respiro entre eles.
@@ -268,7 +283,7 @@ const s = StyleSheet.create({
   totCaption: { fontSize: 7, color: C.slate500, textAlign: "right", marginTop: 1 },
   totStrike:  { textDecoration: "line-through", color: C.slate400 },
   // Totais
-  totalsWrap: { marginTop: 16, flexDirection: "row", justifyContent: "flex-end" },
+  totalsWrap: { marginTop: 12, flexDirection: "row", justifyContent: "flex-end" },
   totalsBox: { width: 236, backgroundColor: C.softBlue, borderRadius: 8, padding: 14 },
   totRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 2 },
   totLabel: { fontSize: 9, color: C.slate600 },
@@ -287,14 +302,16 @@ const s = StyleSheet.create({
   recurLabel: { fontSize: 9, fontWeight: 600, color: C.primary },
   recurVal: { fontSize: 11, fontWeight: 700, color: C.primary },
   // Cards de condições
-  cards: { flexDirection: "row", gap: 14, marginTop: 26 },
+  cards: { flexDirection: "row", gap: 14, marginTop: 20 },
   card: { flex: 1, backgroundColor: C.soft, borderRadius: 8, padding: 13 },
+  // Cartão de LARGURA INTEIRA (Observações, Contrato): sem `flex: 1` — na coluna da página o
+  // flex estica o cartão até o fim da folha quando ele cai sozinho numa página nova.
+  blockCard: { backgroundColor: C.soft, borderRadius: 8, padding: 13, marginTop: 14 },
   cardLabel: { fontSize: 7.5, fontWeight: 700, color: C.slate500, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 5 },
   // Resumo estruturado da forma de pagamento no topo do card Condições.
   payLine: { fontSize: 9.5, fontWeight: 600, color: C.ink, marginBottom: 4 },
   cardValue: { fontSize: 9.5, color: C.ink, lineHeight: 1.4 },
   cardMuted: { fontSize: 9.5, color: C.slate400 },
-  notes: { marginTop: 14, fontSize: 8.5, color: C.slate600, lineHeight: 1.4 },
   // Rodapé
   footer: { position: "absolute", bottom: 26, left: 44, right: 44, flexDirection: "row", justifyContent: "space-between", borderTopWidth: 1, borderTopColor: C.line, paddingTop: 8 },
   footText: { fontSize: 7.5, color: C.slate400 },
@@ -382,17 +399,20 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
           const disc = discountAnchor(it)
           return (
             <View key={i} style={s.tRow} wrap={false}>
-              <View style={s.cItem}>
-                <Text style={s.itemName}>{it.name}</Text>
-                <Text style={s.itemSub}>{itemSubtitle(it)}</Text>
+              <View style={s.tCols}>
+                <View style={s.cItem}>
+                  <Text style={s.itemName}>{it.name}</Text>
+                  <Text style={s.itemSub}>{itemSubtitle(it)}</Text>
+                </View>
+                <Text style={[s.td, s.cQty]}>{qtyLabel(it)}</Text>
+                <View style={s.cSpacer} />
+                <Text style={[s.td, s.cUnit]}>{rateLabel(it)}</Text>
+                <View style={s.cTot}>
+                  <Text style={[s.td, s.tdStrong, { textAlign: "right" }]}>{brl(it.total_cents)}</Text>
+                  {disc ? <Text style={[s.totCaption, s.totStrike]}>{disc}</Text> : null}
+                </View>
               </View>
-              <Text style={[s.td, s.cQty]}>{qtyLabel(it)}</Text>
-              <View style={s.cSpacer} />
-              <Text style={[s.td, s.cUnit]}>{rateLabel(it)}</Text>
-              <View style={s.cTot}>
-                <Text style={[s.td, s.tdStrong, { textAlign: "right" }]}>{brl(it.total_cents)}</Text>
-                {disc ? <Text style={[s.totCaption, s.totStrike]}>{disc}</Text> : null}
-              </View>
+              {it.details ? <Text style={s.itemDetails}>{it.details}</Text> : null}
             </View>
           )
         })}
@@ -452,13 +472,21 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
               : <Text style={s.cardMuted}>Sem prazo definido</Text>}
           </View>
         </View>
-        {condHasContent(data.conditions.notes)
-          ? <View style={s.notes}><CondValue value={data.conditions.notes!} textStyle={s.cardValue} /></View>
-          : null}
+        {/* Observações do orçamento inteiro — cartão COM TÍTULO, como os demais: com itens de
+            detalhes longos o bloco pode cair sozinho na página seguinte, e texto solto sem
+            rótulo não diz ao cliente o que é (visto na demonstração de 29/09/2026). */}
+        {condHasContent(data.conditions.notes) ? (
+          // Curto (o comum) não se parte entre páginas — vai inteiro para a próxima se não couber;
+          // longo pode quebrar (um cartão maior que a página não teria para onde ir).
+          <View style={s.blockCard} wrap={condLength(data.conditions.notes) > NOTES_UNBREAKABLE_MAX}>
+            <Text style={s.cardLabel}>Observações</Text>
+            <CondValue value={data.conditions.notes!} textStyle={s.cardValue} />
+          </View>
+        ) : null}
 
         {/* Bloco de contrato — texto único (mesma linguagem dos cartões cinza) */}
         {condHasContent(data.contract) ? (
-          <View style={[s.card, { marginTop: 14 }]}>
+          <View style={s.blockCard}>
             <Text style={s.cardLabel}>Contrato</Text>
             <CondValue value={data.contract!} textStyle={s.cardValue} />
           </View>
