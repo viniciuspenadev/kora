@@ -15,6 +15,10 @@ export const EXPECTED_CHECKS = Object.freeze([
   "fk:studio_knowledge_chunks/knowledge_tenant",
   "rls:invoice_payments",
   "trigger:trg_invoice_payments_recalc/enabled",
+  // Item avulso + trava do ganho (migration 20260928000100): a ficha e o quadro leem as colunas.
+  "column:tenant_deal_items.source",
+  "column:deal_pipelines.require_items_to_win",
+  "trigger:trg_crm_require_items_to_win/enabled",
 ])
 
 const functionCheck = (name, args) => `
@@ -130,6 +134,40 @@ WITH checks AS (
               AND t.tgname = 'trg_invoice_payments_recalc'
               AND NOT t.tgisinternal
               AND t.tgenabled = 'O'
+         ) AS ok
+  UNION ALL
+  SELECT 'column:tenant_deal_items.source'::text AS objeto,
+         EXISTS (
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'tenant_deal_items' AND column_name = 'source' AND is_nullable = 'NO'
+         )
+         AND EXISTS (
+           SELECT 1 FROM pg_catalog.pg_constraint c
+            WHERE c.conrelid = pg_catalog.to_regclass('public.tenant_deal_items')
+              AND c.conname = 'tenant_deal_items_source_link' AND c.contype = 'c' AND c.convalidated
+         ) AS ok
+  UNION ALL
+  SELECT 'column:deal_pipelines.require_items_to_win'::text AS objeto,
+         EXISTS (
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'deal_pipelines' AND column_name = 'require_items_to_win' AND is_nullable = 'NO'
+         ) AS ok
+  UNION ALL
+  SELECT 'trigger:trg_crm_require_items_to_win/enabled'::text AS objeto,
+         EXISTS (
+           SELECT 1 FROM pg_catalog.pg_trigger t
+            WHERE t.tgrelid = pg_catalog.to_regclass('public.tenant_deals')
+              AND t.tgname = 'trg_crm_require_items_to_win'
+              AND NOT t.tgisinternal
+              AND t.tgenabled = 'O'
+              AND t.tgfoid = pg_catalog.to_regprocedure('public.crm_require_items_to_win()')
+         )
+         -- Pelo catálogo (não pelo nome): sem a função, isto dá falso em vez de derrubar a consulta.
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_catalog.pg_proc p
+            WHERE p.oid = pg_catalog.to_regprocedure('public.crm_require_items_to_win()')
+              AND (pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE')
+                   OR pg_catalog.has_function_privilege('authenticated', p.oid, 'EXECUTE'))
          ) AS ok
 )
 SELECT objeto, ok FROM checks ORDER BY objeto;

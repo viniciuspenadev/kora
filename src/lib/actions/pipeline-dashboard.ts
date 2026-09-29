@@ -28,8 +28,9 @@ export interface DashDeal {
   responsible_id:   string | null
   lost_reason:      string | null
   unit_id:          string | null
-  /** Itens da composição (nome + contribuição no valor total + SKU se houver). */
-  items:            { name: string; total: number; sku: string | null }[]
+  /** Itens da composição (nome + contribuição no valor total + SKU se houver).
+   *  `manual` = item avulso (sem produto do catálogo) — o mix agrupa em "Itens avulsos". */
+  items:            { name: string; total: number; sku: string | null; manual: boolean }[]
   /** Entradas de etapa em ordem cronológica (created + stage_changed + reopened). */
   path:             { stage: string; at: string }[]
 }
@@ -116,7 +117,7 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
     pathMap.set(e.deal_id, arr)
   }
 
-  const itemMap = new Map<string, { name: string; total: number; sku: string | null }[]>()
+  const itemMap = new Map<string, DashDeal["items"]>()
   for (const i of (itemRows ?? []) as Record<string, unknown>[]) {
     const line = {
       billing: i.billing as "one_time" | "monthly" | "yearly",
@@ -127,7 +128,9 @@ export async function getPipelineDashboard(opts: { pipelineId?: string | null; f
     const term = line.term_months ?? DEFAULT_TERM_MONTHS
     const total = line.billing === "one_time" ? sub : line.billing === "monthly" ? sub * term : sub * (term / 12)
     const arr = itemMap.get(i.deal_id as string) ?? []
-    arr.push({ name: i.name as string, total: Math.round(total * 100) / 100, sku: i.catalog_item_id ? (skuMap.get(i.catalog_item_id as string) ?? null) : null })
+    // Sem produto = avulso (o CHECK tenant_deal_items_source_link amarra os dois; ler pelo
+    // vínculo em vez de `source` não depende da ordem migration × deploy).
+    arr.push({ name: i.name as string, total: Math.round(total * 100) / 100, sku: i.catalog_item_id ? (skuMap.get(i.catalog_item_id as string) ?? null) : null, manual: !i.catalog_item_id })
     itemMap.set(i.deal_id as string, arr)
   }
 

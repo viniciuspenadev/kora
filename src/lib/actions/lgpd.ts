@@ -23,9 +23,9 @@
 //                           OU adicionar .delete() explícito ANTES do delete do contato
 //   3. Atualizar lista de tabelas cobertas no comentário abaixo:
 //
-//   Tabelas cobertas no EXPORT (atualizado 2026-07-30):
+//   Tabelas cobertas no EXPORT (atualizado 2026-09-28):
 //     - chat_contacts, chat_conversations, chat_messages, taggings
-//     - contact_identities, tenant_deals, tenant_tasks, appointments,
+//     - contact_identities, tenant_deals, tenant_deal_items (sem `cost`), tenant_tasks, appointments,
 //       commercial_documents, contact_list_members, campaign_recipients,
 //       contact_import_items, keyword_trigger_runs, conversation_events,
 //       instagram_automation_runs, studio_runs (PARCIAL — ver abaixo)
@@ -250,6 +250,23 @@ export async function exportPersonalData(contactId: string): Promise<
     }
   }
 
+  // Itens dos negócios do contato (eliminação herda por deal_id ON DELETE CASCADE). Desde o
+  // item avulso (28/09/2026) o NOME da linha é texto livre digitado pelo atendente e pode
+  // conter dado do titular. Colunas explícitas: `cost` (custo interno da empresa) fica de fora.
+  const dealIds = (deals.data ?? []).map(d => d.id as string)
+  const dealItems: Record<string, unknown>[] = []
+  for (let start = 0; start < dealIds.length; start += 100) {
+    const ids = dealIds.slice(start, start + 100)
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabaseAdmin.from("tenant_deal_items")
+        .select("id, deal_id, source, name, type, billing, unit, quantity, unit_price, discount, term_months, created_at")
+        .eq("tenant_id", tenantId).in("deal_id", ids).order("id").range(offset, offset + 499)
+      if (error) return { error: "Erro ao exportar itens dos negócios" }
+      dealItems.push(...(data ?? []))
+      if ((data?.length ?? 0) < 500) break
+    }
+  }
+
   // 5c. Ledger de automações do Instagram (comment-to-DM & cia): guarda contact_id,
   //     from_igsid e o @ de quem comentou → é dado pessoal e entra no acesso (Art. 18 II).
   //     O texto do comentário nunca é guardado, então não há o que exportar dele.
@@ -332,6 +349,7 @@ export async function exportPersonalData(contactId: string): Promise<
     taggings:            taggings ?? [],
     contact_identities:  identities.data ?? [],
     deals:               deals.data ?? [],
+    deal_items:          dealItems,
     tasks:               tasks.data ?? [],
     task_events:         taskEvents,
     appointments:        appts.data ?? [],
@@ -350,6 +368,7 @@ export async function exportPersonalData(contactId: string): Promise<
       taggings:            taggings?.length ?? 0,
       contact_identities:  identities.data?.length ?? 0,
       deals:               deals.data?.length ?? 0,
+      deal_items:          dealItems.length,
       tasks:               tasks.data?.length ?? 0,
       task_events:         taskEvents.length,
       appointments:        appts.data?.length ?? 0,

@@ -21,9 +21,9 @@ import {
   Copy, ClipboardPaste, CopyPlus, Trash2,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
-import { nodeTypes, OrientationContext, TriggerSummaryContext, JourneyMetricsContext } from "./flow-nodes"
+import { nodeTypes, OrientationContext, TriggerSummaryContext, JourneyMetricsContext, TransferLookupContext, KanbanLookupContext } from "./flow-nodes"
 import { edgeTypes, EdgeActionsContext } from "./flow-edge"
-import { ConfigPanel, FlowSettingsPanel, type TagOpt } from "./config-panel"
+import { ConfigPanel, FlowSettingsPanel, type TagOpt, type StudioAgentOption, type StudioKanbanOption } from "./config-panel"
 import { NodePicker } from "./node-picker"
 import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
 import { outcomeLabel } from "@/lib/ai-v2/flow/describe"
@@ -39,7 +39,11 @@ import type { StudioFlowFull } from "@/types/studio"
 interface Props {
   flow:        StudioFlowFull
   departments: { id: string; name: string }[]
-  agents:      { id: string; name: string }[]
+  agents:      StudioAgentOption[]
+  /** Horário comercial ligado? Sem ele, o "fora do horário" do Transferir nunca acontece. */
+  businessHoursEnabled?: boolean
+  /** Kanbans de atendimento com as etapas — nó "Mover etapa". */
+  kanbans?:    StudioKanbanOption[]
   flows:       { id: string; name: string }[]
   stages:      { id: string; name: string }[]
   tags:        TagOpt[]
@@ -140,7 +144,11 @@ const MenuItem: React.FC<{
 
 type CtxMenu = { x: number; y: number; kind: "node" | "pane" | "edge"; id?: string } | null
 
-function EditorInner({ flow, departments, agents, flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads, ig }: Props) {
+function EditorInner({ flow, departments, agents, businessHoursEnabled = false, kanbans = [], flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads, ig }: Props) {
+  // Nomes pro card do Transferir mostrar o destino real ("→ Miuky"), não um genérico.
+  const transferLookup = useMemo(() => ({ agents }), [agents])
+  // Idem pro Mover etapa: "→ Vendas › Proposta".
+  const kanbanLookup = useMemo(() => ({ kanbans }), [kanbans])
   const router = useRouter()
   const { fitView, screenToFlowPosition } = useReactFlow()
   const updateNodeInternals = useUpdateNodeInternals()
@@ -632,6 +640,8 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
           <OrientationContext.Provider value={orientation}>
           <TriggerSummaryContext.Provider value={triggerSummary}>
           <JourneyMetricsContext.Provider value={journeyMetrics}>
+          <TransferLookupContext.Provider value={transferLookup}>
+          <KanbanLookupContext.Provider value={kanbanLookup}>
           <ReactFlow
             nodes={nodes}
             edges={displayEdges}
@@ -678,6 +688,8 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
               </Panel>
             )}
           </ReactFlow>
+          </KanbanLookupContext.Provider>
+          </TransferLookupContext.Provider>
           </JourneyMetricsContext.Provider>
           </TriggerSummaryContext.Provider>
           </OrientationContext.Provider>
@@ -711,7 +723,7 @@ function EditorInner({ flow, departments, agents, flows, stages, tags, services,
           {!selectedNode
             ? <NodePicker onPick={addNode} />
             : selectedNode.type !== "start"
-            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} outcomeLabels={agentOutcomeLabels} flowChannels={flowChannels} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} businessHoursEnabled={businessHoursEnabled} flowInstances={trigInstances} kanbans={kanbans} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} outcomeLabels={agentOutcomeLabels} flowChannels={flowChannels} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}
                 mode={mode} channels={trigChannels} instances={trigInstances}

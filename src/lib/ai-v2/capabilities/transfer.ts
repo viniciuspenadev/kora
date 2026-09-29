@@ -210,14 +210,15 @@ export const transferCapability = defineCapability<TransferArgs>({
         reason: avail.reason,
         meta: { action: planB, target: args.target },
       })
-      // Mensagem de espera (wait_message E keep_ai enviam, se configurada).
-      if (args.waitMessage && (planB === "wait_message" || planB === "keep_ai")) {
-        try { await sendBotText(ctx, args.waitMessage, { handoff: planB !== "keep_ai" }) }
-        catch (e) { console.error("[studio/transfer] falha na msg de espera:", e instanceof Error ? e.message : e) }
-      }
       if (planB === "keep_ai") {
         // NÃO transfere: a IA segue na frente (ai_handling intacto). O runtime
         // trata keptAI como turno respondido — senão o hand-back derrubaria a IA.
+        // Aqui não há transferência a confirmar, então a espera pode sair já. No
+        // "avisar e encaminhar" ela só sai DEPOIS do compare-and-swap (passo 3).
+        if (args.waitMessage) {
+          try { await sendBotText(ctx, args.waitMessage, { handoff: false }) }
+          catch (e) { console.error("[studio/transfer] falha na msg de espera:", e instanceof Error ? e.message : e) }
+        }
         await supabaseAdmin.from("chat_messages").insert({
           conversation_id: conversationId, tenant_id: tenantId,
           sender_type: "system", content_type: "text",
@@ -238,40 +239,16 @@ export const transferCapability = defineCapability<TransferArgs>({
               { tenantId: ctx.tenantId, conversationId: ctx.conversationId, kind: "dossier" })
           : [])
 
-    // 1) Nota interna (equipe vê; cliente não) — card "Dossiê da IA" (byAI) ou pílula.
-    const collectedLine = collected.length > 0
-      ? `\nColetado: ${collected.map((c) => `${c.label}: ${c.value}`).join(" · ")}` : ""
-    const planBLine = planB
-      ? `\n⏳ ${avail.reason === "off_hours" ? "Fora do horário comercial" : "Ninguém disponível agora"} — entrou na fila pro time ver quando voltar.` : ""
-    await supabaseAdmin.from("chat_messages").insert({
-      conversation_id: conversationId,
-      tenant_id:       tenantId,
-      sender_type:     "system",
-      content_type:    "text",
-      content:         `${args.byAI ? "🤖 Encaminhado pela IA" : "📋 Encaminhado"} → ${deptName ?? label}${args.summary ? `\nResumo: ${args.summary}` : ""}${collectedLine}${planBLine}`,
-      status:          "sent",
-      is_private_note: true,
-      // ai_routed=true só quando a IA esteve envolvida → renderiza o card "Dossiê da IA".
-      metadata: { ai_routed: args.byAI, studio: true, department_id: deptId, department_name: deptName, summary: args.summary, collected },
-    })
+    // 🔴 ORDEM: confirmar → registrar → falar. Antes a nota "Encaminhado" e a mensagem
+    //    ao cliente saíam ANTES do compare-and-swap; se um atendente assumisse no meio,
+    //    a transferência era cancelada mas a equipe lia "Encaminhado" e o cliente já tinha
+    //    recebido "vou te passar pro time". (A Distribuição já era atômica na RPC.)
 
-    // 2) Mensagem de transição pro cliente (se houver e ainda não mandou espera).
-    let sentText: string | null = null
-    if (args.handoffMessage && !(planB === "wait_message" && args.waitMessage)) {
-      try {
-        await sendBotText(ctx, args.handoffMessage, { handoff: true })
-        sentText = args.handoffMessage
-      } catch (e) {
-        console.error("[studio/transfer] falha ao enviar handoff:", e instanceof Error ? e.message : e)
-      }
-    } else if (planB === "wait_message" && args.waitMessage) {
-      sentText = args.waitMessage
-    }
-
-    // 3) Aplica o destino: dono/setor + solta a IA. Destino EXPLÍCITO define o
+    // 1) Aplica o destino: dono/setor + solta a IA. Destino EXPLÍCITO define o
     //    dono e mata o backup reopen_owner (a escolha do autor do fluxo vence o
     //    band-aid do restore); legado preserva ambos (comportamento clássico).
-    const preview = sentText ? sentText.substring(0, 100) : `Encaminhado para ${deptName ?? label}`
+    //    A prévia da lista é provisória: a mensagem ao cliente (passo 3) a substitui.
+    const preview = `Encaminhado para ${deptName ?? label}`
     // Lê o controle atual: uma tomada humana durante o nó vence a automação.
     const latest = ctx.dryRun
       ? (await supabaseAdmin.from("chat_conversations").select("*").eq("tenant_id", tenantId).eq("id", conversationId).maybeSingle()).data
@@ -296,8 +273,44 @@ export const transferCapability = defineCapability<TransferArgs>({
         last_message_dir: "out", metadata: nextMeta, updated_at: new Date().toISOString(),
       })
       .eq("id", conversationId).eq("tenant_id", tenantId)
-      .eq("status", "open").eq("updated_at", latest.updated_at).select("id")
+      .eq("status", "open").eq("updated_at", latest.updated_at).select("id, metadata")
     if (writeError || !changed?.length) return { ok: false, error: "A conversa mudou durante a transferência." }
+
+    // O nó acabou de gravar o novo estado de controle; quem fala com o cliente a seguir
+    // (sendBotText → assertStudioControl) compara contra ELE. Igual ao beginStudioControl.
+    // 🔴 Usa o metadata DEVOLVIDO pelo banco, não o `nextMeta`: o jsonb reordena as chaves
+    //    e a comparação é por JSON.stringify — o objeto local reprovaria só em produção.
+    ctx.conversationMetadata = (changed[0] as { metadata?: Record<string, unknown> | null }).metadata ?? nextMeta
+
+    // 2) Nota interna (equipe vê; cliente não) — card "Dossiê da IA" (byAI) ou pílula.
+    const collectedLine = collected.length > 0
+      ? `\nColetado: ${collected.map((c) => `${c.label}: ${c.value}`).join(" · ")}` : ""
+    const planBLine = planB
+      ? `\n⏳ ${avail.reason === "off_hours" ? "Fora do horário comercial" : "Ninguém disponível agora"} — entrou na fila pro time ver quando voltar.` : ""
+    await supabaseAdmin.from("chat_messages").insert({
+      conversation_id: conversationId,
+      tenant_id:       tenantId,
+      sender_type:     "system",
+      content_type:    "text",
+      content:         `${args.byAI ? "🤖 Encaminhado pela IA" : "📋 Encaminhado"} → ${deptName ?? label}${args.summary ? `\nResumo: ${args.summary}` : ""}${collectedLine}${planBLine}`,
+      status:          "sent",
+      is_private_note: true,
+      // ai_routed=true só quando a IA esteve envolvida → renderiza o card "Dossiê da IA".
+      metadata: { ai_routed: args.byAI, studio: true, department_id: deptId, department_name: deptName, summary: args.summary, collected },
+    })
+
+    // 3) Uma mensagem ao cliente: a de espera (Plano B "avisar e encaminhar") OU a de
+    //    transição. Falha no envio não desfaz a transferência — ela já está confirmada.
+    const customerText = planB === "wait_message" && args.waitMessage ? args.waitMessage : args.handoffMessage
+    let sentText: string | null = null
+    if (customerText) {
+      try {
+        await sendBotText(ctx, customerText, { handoff: true })
+        sentText = customerText
+      } catch (e) {
+        console.error("[studio/transfer] falha ao enviar mensagem ao cliente:", e instanceof Error ? e.message : e)
+      }
+    }
 
     // 4) Evento do ciclo (relatórios). Legado com dono preservado → to = dono.
     await logConversationEvent({

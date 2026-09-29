@@ -4,7 +4,9 @@ import { FileText } from "lucide-react"
 import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
 import { listQuoteTemplates } from "@/lib/actions/quote-templates"
+import { getCrmItemPolicies } from "@/lib/actions/crm-policies"
 import { TemplatesClient } from "./templates-client"
+import { ItemPolicyCard } from "./item-policy-card"
 
 export default async function QuoteTemplatesPage() {
   const session = await auth()
@@ -12,7 +14,7 @@ export default async function QuoteTemplatesPage() {
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
   if (!(await hasModule(session.user.tenantId, "crm"))) redirect("/inbox")
 
-  const templates = await listQuoteTemplates()
+  const [templates, policies] = await Promise.all([listQuoteTemplates(), getCrmItemPolicies()])
 
   return (
     <PageShell
@@ -20,6 +22,9 @@ export default async function QuoteTemplatesPage() {
       description="Modelos reutilizáveis de condições, observações e contrato. O time insere na cotação com 1 clique; você governa o que fica disponível."
       icon={FileText}
     >
+      {"error" in policies
+        ? <p role="alert" className="mb-6 rounded-lg bg-danger-bg p-3 text-xs text-danger">{policies.error}</p>
+        : <ItemPolicyCard manualItems={policies.manualItems} />}
       <TemplatesClient initial={templates} />
     </PageShell>
   )

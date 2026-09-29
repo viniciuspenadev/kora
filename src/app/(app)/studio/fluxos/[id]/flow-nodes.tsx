@@ -104,6 +104,12 @@ export interface TriggerSummary {
 }
 export const TriggerSummaryContext = createContext<TriggerSummary>({ type: "keyword", mode: "receptive", channels: [], keywords: "" })
 
+/** Nomes dos atendentes pro card do Transferir dizer PRA QUEM vai (não "escolha o departamento"). */
+export const TransferLookupContext = createContext<{ agents: { id: string; name: string }[] }>({ agents: [] })
+
+/** Kanbans de atendimento pro card do Mover etapa dizer "→ Vendas › Proposta". */
+export const KanbanLookupContext = createContext<{ kanbans: { id: string; name: string; stages: { id: string; name: string }[] }[] }>({ kanbans: [] })
+
 const TRIGGER_LABEL: Record<string, string> = {
   any_message: "qualquer mensagem", keyword: "palavra-chave",
   new_contact: "novo contato", reopened: "retornou", from_ad: "veio de anúncio",
@@ -794,11 +800,17 @@ function TagNode(p: NodeProps) {
 
 function MoveStageNode(p: NodeProps) {
   const cfg = cfgOf(p) as unknown as MoveStageNodeConfig
+  const { kanbans } = useContext(KanbanLookupContext)
+  const kanban = kanbans.find(k => k.id === cfg.pipelineId) ?? (cfg.stageId ? kanbans.find(k => k.stages.some(s => s.id === cfg.stageId)) : undefined)
+  const stage = cfg.stageId ? kanban?.stages.find(s => s.id === cfg.stageId) : undefined
+  const dest = cfg.stageId
+    ? (stage ? `→ ${kanbans.length > 1 && kanban ? `${kanban.name} › ` : ""}${stage.name}` : "etapa apagada — escolha de novo")
+    : cfg.stage ? `→ ${cfg.stage}` : "escolha o kanban e a etapa"
   return (
     <>
       <TargetHandle />
       <Card icon={Columns3} accent="bg-orange-100 text-orange-700" title="Mover etapa" selected={p.selected}>
-        {cfg.stage ? `→ ${cfg.stage}` : "escolha a etapa"}
+        {dest}
       </Card>
       <SourceHandle />
     </>
@@ -807,12 +819,22 @@ function MoveStageNode(p: NodeProps) {
 
 
 function TransferNode(p: NodeProps) {
-  const dept = String(cfgOf(p).department ?? "")
+  const cfg = cfgOf(p)
+  const { agents } = useContext(TransferLookupContext)
+  const nameOf = (id: unknown) => agents.find(a => a.id === id)?.name ?? "atendente desativado"
+  const target = String(cfg.target ?? "department")   // nó antigo sem destino salvo = departamento
+  const ids = Array.isArray(cfg.agentIds) ? (cfg.agentIds as string[]) : []
+  const dest =
+    target === "agent"       ? (cfg.agentId ? `→ ${nameOf(cfg.agentId)}` : "escolha o atendente")
+    : target === "round_robin" ? (ids.length ? `Distribuir: ${ids.slice(0, 3).map(nameOf).join(" → ")}${ids.length > 3 ? ` +${ids.length - 3}` : ""}` : "escolha os atendentes")
+    : target === "owner"     ? "→ responsável pelo cliente"
+    : target === "pool"      ? "→ fila geral"
+    : cfg.department         ? `→ ${String(cfg.department)}` : "escolha o departamento"
   return (
     <>
       <TargetHandle />
       <Card icon={ArrowRightLeft} accent="bg-blue-100 text-blue-700" title="Transferir" selected={p.selected}>
-        {dept ? `→ ${dept}` : "escolha o departamento"}
+        {dest}
       </Card>
     </>
   )

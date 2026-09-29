@@ -13,6 +13,7 @@ import { DashboardSkeletonBody } from "@/components/ui/page-skeleton"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { UserAvatar } from "@/components/ui/user-avatar"
 import { getPipelineDashboard, type PipelineDashboardData, type DashDeal, type DashStage } from "@/lib/actions/pipeline-dashboard"
+import { aggregateProductMix } from "@/lib/crm/product-mix"
 
 // ── formatação ───────────────────────────────────────────────────
 const brl  = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 })
@@ -174,16 +175,7 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
   }, [set, byQty, data.units])
 
   // ── produtos & atendentes (listas) ──────────────────────────────
-  const products = useMemo(() => {
-    const g = new Map<string, { sales: number; total: number; sku: string | null }>()
-    for (const d of set) for (const it of d.items) {
-      const cur = g.get(it.name) ?? { sales: 0, total: 0, sku: it.sku }
-      cur.sales += 1; cur.total += it.total
-      if (!cur.sku && it.sku) cur.sku = it.sku
-      g.set(it.name, cur)
-    }
-    return [...g.entries()].map(([name, x]) => ({ name, ...x })).sort((a, b) => b.total - a.total).slice(0, 6)
-  }, [set])
+  const products = useMemo(() => aggregateProductMix(set), [set])
 
   const agents = useMemo(() => {
     const meta = new Map(data.agentProfiles.map((p) => [p.id, p]))
@@ -314,11 +306,11 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
           <section className="bg-white rounded-xl border border-slate-200 p-4">
             <h2 className="text-sm font-bold text-slate-900">{lens === "won" ? "Produtos mais vendidos" : "Produtos com mais negócios"}</h2>
             {products.length === 0 ? (
-              <p className="text-xs text-slate-400 py-8 text-center">Sem itens de catálogo nos negócios da lente.</p>
+              <p className="text-xs text-slate-400 py-8 text-center">Sem itens nos negócios da lente.</p>
             ) : (
               <div className="mt-2 divide-y divide-slate-100">
                 {products.map((p) => (
-                  <div key={p.name} className={STAT_ROW}>
+                  <div key={p.manualHint ? "__manual__" : p.name} className={STAT_ROW}>
                     <div className="flex items-center gap-3 min-w-0">
                       <span className="size-9 rounded-lg grid place-items-center text-xs font-bold shrink-0"
                         style={{ background: `color-mix(in srgb, ${avaColor(p.name)} 16%, transparent)`, color: avaColor(p.name) }}>
@@ -326,7 +318,8 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
                       </span>
                       <div className="min-w-0">
                         <p className="text-xs font-bold text-slate-900 truncate">{p.name}</p>
-                        {p.sku && <p className="text-[10.5px] text-slate-400 truncate">SKU:{p.sku}</p>}
+                        {p.manualHint ? <p className="text-[10.5px] text-slate-400 truncate" title={p.manualHint}>{p.manualHint}</p>
+                          : p.sku && <p className="text-[10.5px] text-slate-400 truncate">SKU:{p.sku}</p>}
                       </div>
                     </div>
                     <StatCell label="Vendas"       value={String(p.sales)} />

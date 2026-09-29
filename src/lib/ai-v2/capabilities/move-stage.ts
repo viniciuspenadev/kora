@@ -1,9 +1,11 @@
 // ═══════════════════════════════════════════════════════════════
 // Capacidade: mover a conversa de etapa no pipeline
 // ═══════════════════════════════════════════════════════════════
-// Resolve a etapa por nome em pipeline_stages do tenant e grava
-// chat_conversations.stage_id (+ pipeline_id da etapa). NÃO afeta
-// visibilidade (etapa ≠ quem vê). Tenant-scoping em toda query.
+// Kanban de ATENDIMENTO (pipelines/pipeline_stages), não o funil de vendas.
+// Destino pelo ID quando o nó traz (`stage_id`); por nome só no legado e na
+// ferramenta da IA. Nome repete entre kanbans ("Proposta", "Triagem" — medido
+// 28/09), então o nome se resolve DENTRO do kanban informado ou, na falta, do
+// kanban em que a conversa já está. NÃO afeta visibilidade. Tenant em toda query.
 import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
 import { moveAttendanceConversation } from "@/lib/atendimento/move-conversation"
@@ -11,7 +13,8 @@ import { hasModule } from "@/lib/modules"
 
 export const MOVE_STAGE = "move_stage"
 
-interface MoveStageArgs { stage: string }
+interface MoveStageArgs { stage: string; stageId: string | null; pipelineId: string | null }
+type StageRow = { id: string; pipeline_id: string; name: string }
 
 export const moveStageCapability = defineCapability<MoveStageArgs>({
   id:           MOVE_STAGE,
@@ -43,22 +46,42 @@ export const moveStageCapability = defineCapability<MoveStageArgs>({
   },
   parseArgs: (raw) => {
     const p = (raw ?? {}) as Record<string, unknown>
-    return { stage: typeof p.stage === "string" ? p.stage.trim() : "" }
+    const id = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null)
+    return { stage: typeof p.stage === "string" ? p.stage.trim() : "", stageId: id(p.stage_id), pipelineId: id(p.pipeline_id) }
   },
   execute: async (ctx, args) => {
     const { tenantId, conversationId } = ctx
-    if (!args.stage) return { ok: false, error: "etapa vazia" }
+    if (!args.stageId && !args.stage) return { ok: false, error: "etapa vazia" }
 
     if (!(await hasModule(tenantId, "kanban"))) return { ok: false, error: "Kanban não habilitado." }
-    const { data: stages } = await supabaseAdmin
-      .from("pipeline_stages").select("id, pipeline_id, name, is_won, is_lost, is_triage").eq("tenant_id", tenantId)
-    const norm = (s: string) => s.trim().toLowerCase()
-    const matches = (stages ?? []).filter((s) => norm(s.name) === norm(args.stage))
-    if (matches.length > 1) return { ok: false, error: "Nome de etapa ambíguo entre Kanbans. Renomeie as etapas para identificar o destino." }
-    const st = matches[0]
-    if (!st) {
-      const opts = (stages ?? []).map((s) => s.name).join(", ") || "(nenhuma)"
-      return { ok: false, toolMessage: `Etapa "${args.stage}" não existe. Etapas válidas: ${opts}.` }
+
+    let st: StageRow | null = null
+    if (args.stageId) {
+      // Destino exato escolhido no nó. Sumiu (apagada) → erro claro, nunca "adivinhar" por nome.
+      const { data } = await supabaseAdmin.from("pipeline_stages").select("id, pipeline_id, name")
+        .eq("tenant_id", tenantId).eq("id", args.stageId).maybeSingle()
+      st = (data as StageRow | null) ?? null
+      if (!st) return { ok: false, error: "A etapa escolhida no nó Mover etapa não existe mais. Escolha de novo no Kora Studio." }
+    } else {
+      const { data: stages } = await supabaseAdmin
+        .from("pipeline_stages").select("id, pipeline_id, name").eq("tenant_id", tenantId)
+      const norm = (s: string) => s.trim().toLowerCase()
+      let matches = ((stages ?? []) as StageRow[]).filter((s) => norm(s.name) === norm(args.stage))
+      if (args.pipelineId) matches = matches.filter((s) => s.pipeline_id === args.pipelineId)
+      if (matches.length > 1) {
+        // Mesmo nome em vários kanbans: vale o kanban em que a conversa já está.
+        const { data: conv } = await supabaseAdmin.from("chat_conversations").select("pipeline_id")
+          .eq("tenant_id", tenantId).eq("id", conversationId).maybeSingle()
+        const here = (conv as { pipeline_id: string | null } | null)?.pipeline_id ?? null
+        const inHere = matches.filter((s) => s.pipeline_id === here)
+        if (inHere.length === 1) matches = inHere
+      }
+      if (matches.length > 1) return { ok: false, error: "Há mais de um kanban com uma etapa com esse nome. No nó Mover etapa, escolha o kanban." }
+      st = matches[0] ?? null
+      if (!st) {
+        const opts = ((stages ?? []) as StageRow[]).map((s) => s.name).join(", ") || "(nenhuma)"
+        return { ok: false, toolMessage: `Etapa "${args.stage}" não existe. Etapas válidas: ${opts}.` }
+      }
     }
 
     try {

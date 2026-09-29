@@ -14,7 +14,7 @@ import {
   ArrowLeft, Pencil, MessageSquare, User, RotateCcw, Loader2, Clock, Check, X,
   StickyNote, CheckSquare, Square, ArrowRight, Trophy, XCircle, Ban, Bell, FileText, Plus,
   TrendingUp, TrendingDown, Briefcase, Calendar, Route, ArrowRightLeft,
-  Package, Wrench, Trash2, MoreHorizontal, Bot, ChevronDown, Building2,
+  Package, Wrench, Trash2, MoreHorizontal, Bot, ChevronDown, Building2, PackagePlus,
 } from "lucide-react"
 import { maskCpfCnpj } from "@/lib/masks"
 import { lifecycleMeta } from "@/lib/lifecycle"
@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import {
   moveDeal, moveDealById, openDeal, cancelDeal, cancelDealById, reopenDeal, reopenDealById, updateDeal, addDealNote, addDealNoteById,
-  addDealItem, updateDealItem, removeDealItem,
+  addDealItem, addManualDealItem, updateDealItem, removeDealItem, promoteDealItemToCatalog,
   type DealDetail, type DealEventView, type DealItemView,
 } from "@/lib/actions/deals"
 import { computeDealValue, DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
@@ -39,10 +39,11 @@ import { dealEventStyle } from "@/components/crm/deal-event-style"
 import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
 import { DealQuotes } from "@/components/crm/deal-quotes"
 import { DealItemModal } from "@/components/crm/deal-item-modal"
+import { PromoteItemModal } from "@/components/crm/promote-item-modal"
 import type { DocumentRow, DocumentSettings } from "@/lib/commercial/documents"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
+const WIN_LOCK_HINT = "Este funil exige pelo menos um item para marcar o negócio como fechado. Adicione um item em Negociação."
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   open:     { label: "Em negociação", cls: "bg-primary-50 text-primary-700 border-primary-200" },
   won:      { label: "Ganho",         cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
@@ -122,6 +123,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   const [flowModal, setFlowModal] = useState<null | "handoff" | "reclass">(null)
   const [activeModal, setActiveModal] = useState<"note" | "task" | null>(null)
   const [itemModal, setItemModal] = useState<null | { mode: "add" } | { mode: "edit"; item: DealItemView }>(null)
+  const [promoteItem, setPromoteItem] = useState<DealItemView | null>(null)   // "Salvar no catálogo" (avulso)
   const [editPrev, setEditPrev]   = useState(false)                       // previsão inline
   const [sheetContact, setSheetContact] = useState<string | null>(null)   // Ver 360
   const [noteDraft, setNoteDraft]   = useState("")                        // modal de nota (menu ⋯)
@@ -131,6 +133,8 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   // Com itens, o valor é DERIVADO (composição do catálogo) — edição manual sai de cena.
   const hasItems = deal.items.length > 0
   const valueSummary = hasItems ? computeDealValue(deal.items) : null
+  // Trava do funil (o banco confere; aqui só explica): aberto, sem item, num funil que exige.
+  const winLocked = deal.status === "open" && !hasItems && !!pipeline?.require_items_to_win
 
   // ── Régua de gestão: probabilidade da etapa (chip) · saúde · jornada ──
   // (Valor ponderado removido por decisão do owner 2026-07-13.)
@@ -380,7 +384,8 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
         </div>
         <SectionCard flush className="mt-4 shadow-none">
           <div className="px-4 py-3"><div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500"><span>{deal.pipeline_name ?? pipeline?.name ?? "Funil"}</span><span>{deal.stage?.name ?? "Sem etapa"}{isOpen && curProb > 0 && <> · {curProb}% de probabilidade</>}</span></div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-3 sm:flex sm:flex-wrap" aria-label="Etapas do funil">{stepStages.map((s) => { const active = s.id === curStageId; const days = daysByStage.get(s.name); return <button key={s.id} aria-current={active ? "step" : undefined} disabled={pending || active} onClick={() => clickStage(s)} className={`min-w-0 border-t-[3px] pt-2 text-left text-xs transition-colors sm:min-w-20 sm:flex-1 ${active ? "border-primary font-semibold text-primary-700" : "border-slate-200 text-slate-500 hover:border-slate-400 hover:text-slate-800"}`}><span className="block break-words">{s.is_won ? "Negócio fechado" : s.is_lost ? "Perdido" : s.name}</span><span className="mt-1 block text-[11px] font-normal text-slate-500">{s.is_won || s.is_lost ? "Desfecho" : active ? `${stageAging ?? 0} dias nesta etapa` : days ? `${days} dias` : "A seguir"}</span></button> })}</div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-3 sm:flex sm:flex-wrap" aria-label="Etapas do funil">{stepStages.map((s) => { const active = s.id === curStageId; const days = daysByStage.get(s.name); const locked = s.is_won && winLocked; return <button key={s.id} aria-current={active ? "step" : undefined} disabled={pending || active || locked} title={locked ? WIN_LOCK_HINT : undefined} onClick={() => clickStage(s)} className={`min-w-0 border-t-[3px] pt-2 text-left text-xs transition-colors disabled:cursor-not-allowed sm:min-w-20 sm:flex-1 ${active ? "border-primary font-semibold text-primary-700" : locked ? "border-slate-200 text-slate-400" : "border-slate-200 text-slate-500 hover:border-slate-400 hover:text-slate-800"}`}><span className="block break-words">{s.is_won ? "Negócio fechado" : s.is_lost ? "Perdido" : s.name}</span><span className="mt-1 block text-[11px] font-normal text-slate-500">{locked ? "Exige item" : s.is_won || s.is_lost ? "Desfecho" : active ? `${stageAging ?? 0} dias nesta etapa` : days ? `${days} dias` : "A seguir"}</span></button> })}</div>
+            {winLocked && <p className="mt-3 text-[11px] text-slate-500">{WIN_LOCK_HINT}</p>}
           </div>
         </SectionCard>
         {!convId && <p className="mt-2 text-xs text-slate-500">Sem conversa vinculada. As ações comerciais continuam disponíveis.</p>}
@@ -518,7 +523,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           <SectionCard flush className="shadow-none">
             <Tabs.Root value={detailTab} onValueChange={(v) => changeDetailTab(String(v))}>
               <Tabs.List aria-label="Conteúdo do negócio" className="flex justify-between gap-2 border-b border-slate-200 px-4 sm:justify-start sm:gap-6">{[["negotiation", "Negociação", deal.items.length], ["proposals", "Propostas", quotes.length], ["activity", "Atividades", feedAll.length]].map(([value, label, count]) => <Tabs.Tab key={value} value={value} className="inline-flex items-center gap-1.5 border-b-2 border-transparent py-3.5 text-xs font-medium text-slate-500 outline-offset-2 data-active:border-primary data-active:text-primary-700"><span>{label}</span><span className="text-[10px] font-normal text-slate-500">{count}</span></Tabs.Tab>)}</Tabs.List>
-              <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} isManager={isManager} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} /></Tabs.Panel>
+              <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} isManager={isManager} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} onPromote={deal.canManageCatalog ? (item) => setPromoteItem(item) : undefined} /></Tabs.Panel>
               <Tabs.Panel value="proposals" keepMounted className="data-hidden:hidden"><DealQuotes dealId={deal.id} quotes={quotes} defaults={quoteSettings} hasItems={hasItems} items={deal.items} genTick={quoteGenTick} embedded /></Tabs.Panel>
               <Tabs.Panel value="activity" keepMounted className="data-hidden:hidden">          <section className="bg-white p-4 sm:p-5">
             <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
@@ -670,11 +675,12 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           dealItemCount={deal.items.length}
           dealTotal={valueSummary?.total ?? 0}
           dealMrr={valueSummary?.mrr ?? 0}
+          manualAllowed={deal.manualItemsAllowed}
           onClose={() => setItemModal(null)}
           onSubmit={async (p) => {
             const m = itemModal
             if (m.mode !== "edit") return false
-            const r = await updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths })
+            const r = await updateDealItem(deal.id, m.item.id, { quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, ...(p.name !== undefined ? { name: p.name } : {}) })
             if ("error" in r) { toast.error(r.error); return false }
             router.refresh()
             return true
@@ -686,7 +692,23 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
             router.refresh()
             return true
           }}
+          onAddManual={async (p) => {
+            const r = await addManualDealItem(deal.id, p)
+            if ("error" in r) { toast.error(r.error); return false }
+            router.refresh()
+            return true
+          }}
         />
+      )}
+
+      {promoteItem && (
+        <PromoteItemModal item={promoteItem} pending={pending} onClose={() => setPromoteItem(null)}
+          onConfirm={(extra) => start(async () => {
+            const r = await promoteDealItemToCatalog(deal.id, promoteItem.id, extra)
+            if ("error" in r) { toast.error(r.error); return }
+            toast.success(`${promoteItem.name} agora está no catálogo.`)
+            setPromoteItem(null); router.refresh()
+          })} />
       )}
     </div>
   )
@@ -1205,7 +1227,7 @@ function qtdTermLabel(billing: "monthly" | "yearly", termMonths: number | null):
 const termFactor = (it: DealItemView) =>
   it.billing === "one_time" ? 1 : it.billing === "monthly" ? (it.term_months ?? DEFAULT_TERM_MONTHS) : (it.term_months ?? DEFAULT_TERM_MONTHS) / 12
 
-function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove }: {
+function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove, onPromote }: {
   deal: DealDetail
   summary: ReturnType<typeof computeDealValue> | null
   isManager: boolean
@@ -1213,6 +1235,8 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
   onAdd: () => void
   onEdit: (item: DealItemView) => void
   onRemove: (item: DealItemView) => void
+  /** "Salvar no catálogo" de um avulso — só para quem gerencia o catálogo. */
+  onPromote?: (item: DealItemView) => void
 }) {
   const items = deal.items
   // Multi-tabela (T2): a escolha da tabela é POR ITEM, no modal de adicionar
@@ -1246,7 +1270,9 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
 
       {items.length === 0 ? (
         <p className="text-xs text-slate-400 px-4 pb-4 leading-relaxed">
-          Monte a oferta com produtos e serviços do catálogo — avulsos ou recorrentes (MRR). O valor do negócio passa a ser a soma dos itens.
+          {deal.manualItemsAllowed
+            ? "Monte a oferta com produtos e serviços do catálogo ou itens avulsos — pagamento único ou recorrente (MRR). O valor do negócio passa a ser a soma dos itens."
+            : "Monte a oferta com produtos e serviços do catálogo — pagamento único ou recorrente (MRR). O valor do negócio passa a ser a soma dos itens."}
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -1258,7 +1284,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                 <th className="text-right font-semibold py-2 px-2">Tabela</th>
                 <th className="text-right font-semibold py-2 px-2">Desconto</th>
                 <th className="text-right font-semibold py-2 px-3">Total</th>
-                <th className="w-14" />
+                <th className={onPromote && items.some((it) => it.source === "manual") ? "w-20" : "w-14"} />
               </tr>
             </thead>
             <tbody>
@@ -1276,7 +1302,10 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                           {it.type === "service" ? <Wrench className="size-3" /> : <Package className="size-3" />}
                         </span>
                         <div className="min-w-0">
-                          <p className="text-xs font-bold text-slate-900 truncate">{it.name}</p>
+                          <p className="flex min-w-0 items-center gap-1.5">
+                            <span className="text-xs font-bold text-slate-900 truncate">{it.name}</span>
+                            {it.source === "manual" && <span title="Fora do catálogo: sem desconto e sem baixa de estoque" className="shrink-0 text-[9px] font-bold uppercase bg-slate-100 text-slate-500 rounded px-1">Avulso</span>}
+                          </p>
                           <p className="text-[10px] text-slate-400 truncate">
                             {it.category ?? BILLING_PT[it.billing].label}
                             {it.billing !== "one_time" && ` · ${brl(lineVal)}${BILLING_PT[it.billing].suffix} · ${it.term_months ?? DEFAULT_TERM_MONTHS} meses`}
@@ -1313,6 +1342,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                     </td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center justify-end gap-0.5 transition-opacity">
+                        {it.source === "manual" && onPromote && <button onClick={() => onPromote(it)} disabled={pending} title="Salvar no catálogo" aria-label={`Salvar ${it.name} no catálogo`} className="size-6 grid place-items-center rounded text-slate-400 hover:text-primary-700 hover:bg-primary-50 disabled:opacity-50"><PackagePlus className="size-3" /></button>}
                         <button onClick={() => onEdit(it)} disabled={pending} title="Ajustar" aria-label={`Ajustar ${it.name}`} className="size-6 grid place-items-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50"><Pencil className="size-3" /></button>
                         <button onClick={() => onRemove(it)} disabled={pending} title="Remover" aria-label={`Remover ${it.name}`} className="size-6 grid place-items-center rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"><Trash2 className="size-3" /></button>
                       </div>

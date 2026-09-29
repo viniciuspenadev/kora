@@ -6,6 +6,7 @@ import { X, Briefcase, Loader2 } from "lucide-react"
 import { openDeal, type DealsPanel, type DealPipeline } from "@/lib/actions/deals"
 import { archiveCompany } from "@/lib/actions/companies"
 import { PersonClientCard, CompanyClientCard } from "@/components/crm/client-cards"
+import { parseItemMoney } from "@/lib/crm/deal-item-form"
 
 // Overlay LEVE "Novo negócio" da conversa (inbox). O contato JÁ é conhecido (a conversa) —
 // não busca. Se o contato tem empresa vinculada, ancora na EMPRESA (conta comercial) por
@@ -34,10 +35,14 @@ export function OpenDealConfirm({ conversationId, contactName, company, pipeline
   const [useCompany, setUseCompany] = useState(!!company)   // default: ancora na empresa vinculada
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  // Valor estimado opcional: o negócio pode nascer sem produto (itens entram depois na ficha).
+  const [value, setValue] = useState("")
 
   function confirm() {
     const stage = entryStage(pipelines)
-    if (!stage) { setError("Crie um funil de vendas primeiro (Configurações → Funis)."); return }
+    if (!stage) { setError("Crie um funil de vendas primeiro (Negócios → Funis)."); return }
+    const estimatedValue = value.trim() ? parseItemMoney(value) : null
+    if (value.trim() && estimatedValue == null) { setError("Informe um valor válido, como 1.500,00."); return }
     setError(null)
     start(async () => {
       // Empresa arquivada → reativa antes de abrir (mesma regra do resolvedor; não carimba negócio em arquivada).
@@ -48,6 +53,7 @@ export function OpenDealConfirm({ conversationId, contactName, company, pipeline
       const r = await openDeal({
         conversationId, pipelineId: stage.pipelineId, stageId: stage.stageId,
         companyId: useCompany && company ? company.id : null,
+        estimatedValue,
       })
       if ("error" in r) { setError(r.error); return }
       onCreated()
@@ -78,6 +84,13 @@ export function OpenDealConfirm({ conversationId, contactName, company, pipeline
               {useCompany ? "Abrir no nome da pessoa (sem empresa)" : `Abrir no nome da empresa · ${company.name}`}
             </button>
           )}
+          <label htmlFor="open-deal-value" className="block pt-1">
+            <span className="text-[11px] font-semibold text-slate-600">Valor estimado <span className="font-normal text-slate-400">(opcional)</span></span>
+            <input id="open-deal-value" inputMode="decimal" value={value} disabled={pending} placeholder="R$ 0,00"
+              onChange={(e) => { setValue(e.target.value); setError(null) }}
+              className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm tabular-nums placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300 disabled:opacity-50" />
+            <span className="mt-1 block text-[10px] leading-relaxed text-slate-400">Ao adicionar itens na ficha, o valor passa a ser a soma deles.</span>
+          </label>
           {error && <p className="text-[11px] text-red-600 bg-red-50 border border-red-100 px-3 py-2 rounded-lg">{error}</p>}
         </div>
 

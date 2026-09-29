@@ -7,6 +7,7 @@
 // Fatia 4 lê e executa esse mesmo formato — sem conversão.
 
 import { validateTransferPublish } from "@/lib/studio/transfer-validation"
+import { validateMoveStagePublish } from "@/lib/studio/move-stage-validation"
 import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { revalidatePath } from "next/cache"
@@ -403,6 +404,8 @@ export async function saveFlow(
   if (current.status === "published" && current.active) {
     const transferError = await validateTransferPublish(session.user.tenantId, patch.graph)
     if (transferError) return { error: transferError }
+    const moveStageError = await validateMoveStagePublish(session.user.tenantId, patch.graph)
+    if (moveStageError) return { error: moveStageError }
   }
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
@@ -444,6 +447,8 @@ export async function publishFlow(
 
   const transferError = await validateTransferPublish(session.user.tenantId, patch.graph)
   if (transferError) return { error: transferError }
+  const moveStageError = await validateMoveStagePublish(session.user.tenantId, patch.graph)
+  if (moveStageError) return { error: moveStageError }
 
   // Gatilho do Instagram: recusa ANTES de publicar. Publicar um fluxo que não tem como
   // capturar (sem licença, sem conta, sem post ou sem direct) é a armadilha silenciosa —

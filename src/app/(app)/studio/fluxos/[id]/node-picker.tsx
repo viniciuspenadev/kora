@@ -45,8 +45,8 @@ const GROUPS: Group[] = [
   ] },
   { key: "crm", label: "CRM & conversa", tint: "text-emerald-600 bg-emerald-50", items: [
     { type: "tag",        label: "Etiquetar",  desc: "adiciona ou remove uma etiqueta", icon: Tag },
-    { type: "move_stage", label: "Mover etapa", desc: "move o negócio no funil", icon: Columns3 },
-    { type: "transfer",   label: "Transferir",  desc: "encaminha pra um departamento", icon: ArrowRightLeft },
+    { type: "move_stage", label: "Mover etapa", desc: "move a conversa no kanban de atendimento", icon: Columns3 },
+    { type: "transfer",   label: "Transferir",  desc: "passa pra um atendente, setor ou fila", icon: ArrowRightLeft },
   ] },
   { key: "int", label: "Integração", tint: "text-cyan-600 bg-cyan-50", items: [
     { type: "http",      label: "Requisição HTTP", desc: "chama uma API externa e guarda a resposta", icon: Globe },

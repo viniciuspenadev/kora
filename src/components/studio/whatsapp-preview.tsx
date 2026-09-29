@@ -124,7 +124,9 @@ export function WhatsAppPreview({
   )
 }
 
-function Bubble({ children }: { children: React.ReactNode }) {
+/** Balão de mensagem recebida (visão do cliente). Exportado pra outras prévias do Studio
+ *  (ex.: Transferir) usarem o MESMO balão em vez de inventar outro. */
+export function Bubble({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative max-w-[85%] bg-white rounded-lg rounded-tl-none px-2.5 py-1.5 shadow-sm">
       {children}

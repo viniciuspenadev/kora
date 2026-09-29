@@ -2,14 +2,14 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { ArrowLeft, Check, Loader2, Package, Plus, Search, SearchX, Wrench, X } from "lucide-react"
+import { ArrowLeft, Check, Loader2, Package, PencilLine, Plus, Search, SearchX, Wrench, X } from "lucide-react"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import { FormRow } from "@/components/ui/form-row"
 import { SimpleSelect } from "@/components/ui/select"
 import { EmptyState } from "@/components/ui/empty-state"
 import { getCatalogCategories, searchCatalogForPicker, type CatalogPickerItem, type CatalogPickerPage, type DealItemView } from "@/lib/actions/deals"
-import { reviewDealItem } from "@/lib/crm/deal-item-form"
-import { unitSpec } from "@/lib/crm/units"
+import { reviewDealItem, reviewManualItem, MANUAL_NAME_MAX } from "@/lib/crm/deal-item-form"
+import { unitSpec, UNITS } from "@/lib/crm/units"
 import { DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
 
 const money = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -18,13 +18,19 @@ const billing = { one_time: { label: "Pagamento único", suffix: "" }, monthly: 
 const field = "h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm tabular-nums placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary-300 disabled:opacity-50"
 const secondary = "inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
 const primary = "inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-primary px-4 text-xs font-semibold text-white hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"
-type ItemPayload = { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null }
+type ItemPayload = { catalogItemId?: string; quantity: number; unitPrice: number | null; discount: number | null; termMonths: number | null; priceTableId?: string | null; name?: string }
+type Billing = "one_time" | "monthly" | "yearly"
+export type ManualItemPayload = { name: string; type: "product" | "service"; billing: Billing; unit: string; quantity: number; unitPrice: number; termMonths: number | null }
+const tabClass = (on: boolean) => `-mb-px inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-4 py-2 text-sm font-medium transition-colors ${on ? "border-primary text-primary-700" : "border-transparent text-slate-600 hover:text-slate-900"}`
 
-export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, dealItemCount, dealTotal, dealMrr, onClose, onSubmit, onAdd }: {
+export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, dealItemCount, dealTotal, dealMrr, manualAllowed, onClose, onSubmit, onAdd, onAddManual }: {
   dealId: string; edit: DealItemView | null;
   tables: { id: string; name: string; is_default: boolean; active: boolean }[];
   defaultTableId: string | null; pending: boolean; dealItemCount: number; dealTotal: number; dealMrr: number;
+  /** Empresa permite item avulso (o servidor confere de novo). */
+  manualAllowed: boolean;
   onClose: () => void; onSubmit: (payload: ItemPayload) => Promise<boolean>; onAdd: (payload: ItemPayload) => Promise<boolean>;
+  onAddManual: (payload: ManualItemPayload) => Promise<boolean>;
 }) {
   const visibleTables = tables.filter((table) => table.active || table.id === defaultTableId)
   const [tableId, setTableId] = useState(defaultTableId && visibleTables.some((table) => table.id === defaultTableId && !table.is_default) ? defaultTableId : "")
@@ -45,6 +51,14 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
   const [notice, setNotice] = useState("")
   const [added, setAdded] = useState<Map<string, number>>(new Map())
   const [saving, setSaving] = useState(false)
+  // Item avulso (fora do catálogo): aba própria ao adicionar; ao editar, o nome é editável.
+  const editManual = edit?.source === "manual"
+  const [mode, setMode] = useState<"catalog" | "manual">("catalog")
+  const [mName, setMName] = useState(editManual ? edit.name : "")
+  const [mType, setMType] = useState<"product" | "service">("service")
+  const [mBilling, setMBilling] = useState<Billing>("one_time")
+  const [mUnit, setMUnit] = useState("un")
+  const manualForm = editManual || (!edit && mode === "manual")
   const savingRef = useRef(false)
   const moreRef = useRef(false)
   const busy = pending || saving
@@ -52,8 +66,13 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
   const currentKey = useRef(key)
   useEffect(() => { currentKey.current = key }, [key])
   const fresh = list?.key === key
-  const active = edit ? { ...edit, listPrice: edit.list_price ?? edit.unit_price, maxPct: edit.max_discount_pct ?? 0 } : picked ? { ...picked, listPrice: picked.price, maxPct: picked.max_discount_pct ?? 0 } : null
-  const review = active ? reviewDealItem({ billing: active.billing, listPrice: active.listPrice, maxPct: active.maxPct, price, quantity, discount, discountMode, term }) : null
+  const active = manualForm
+    ? { name: mName.trim() || "Item avulso", type: edit?.type ?? mType, billing: edit?.billing ?? mBilling, unit: edit?.unit ?? mUnit, listPrice: 0, maxPct: 0 }
+    : edit ? { ...edit, listPrice: edit.list_price ?? edit.unit_price, maxPct: edit.max_discount_pct ?? 0 } : picked ? { ...picked, listPrice: picked.price, maxPct: picked.max_discount_pct ?? 0 } : null
+  const review = manualForm && active ? reviewManualItem({ name: mName, billing: active.billing, price, quantity, term })
+    : active ? reviewDealItem({ billing: active.billing, listPrice: active.listPrice, maxPct: active.maxPct, price, quantity, discount, discountMode, term }) : null
+  // Avulso novo nasce vazio: "falta nome/preço" só aparece ao tentar salvar (vai no rodapé).
+  const reviewError = review?.error && (!manualForm || (mName.trim() && price.trim())) ? review.error : null
   const recurring = active?.billing !== "one_time"
 
   useEffect(() => {
@@ -92,6 +111,11 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
   function pick(item: CatalogPickerItem) {
     setPicked(item); setQuantity("1"); setPrice(decimal(item.price)); setDiscount(""); setDiscountMode("brl"); setTerm(""); setError(null)
   }
+  function startManual(name = "") {
+    setMode("manual"); setPicked(null); setMName(name); setMType("service"); setMBilling("one_time"); setMUnit("un")
+    setQuantity("1"); setPrice(""); setDiscount(""); setTerm(""); setError(null)
+  }
+  function backToCatalog() { setMode("catalog"); setPicked(null); setError(null) }
   function switchDiscount(mode: "brl" | "pct") {
     if (mode === discountMode || busy) return
     if (discount.trim() && review?.discount != null && review.subtotal > 0) setDiscount(decimal(mode === "pct" ? review.discount / review.subtotal * 100 : review.discount))
@@ -101,8 +125,19 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
     if (savingRef.current || pending) return
     if (!item && (!review || review.error)) { setError(review?.error ?? "Selecione um item."); return }
     savingRef.current = true; setSaving(true); setError(null); setNotice("")
+    if (manualForm && !edit) {
+      try {
+        const name = mName.trim()
+        const ok = await onAddManual({ name, type: mType, billing: mBilling, unit: mUnit, quantity: review!.quantity, unitPrice: review!.unitPrice!, termMonths: review!.termMonths })
+        if (!ok) { setError("O item não foi salvo. Seus dados foram mantidos; tente novamente."); return }
+        setNotice(`${name} adicionado ao negócio.`)
+        setMName(""); setQuantity("1"); setPrice(""); setTerm("")
+      } catch { setError("Não foi possível confirmar o salvamento. Confira os itens do negócio antes de tentar novamente.") }
+      finally { savingRef.current = false; setSaving(false) }
+      return
+    }
     const payload: ItemPayload = item ? { catalogItemId: item.id, quantity: 1, unitPrice: item.price, discount: null, termMonths: null, priceTableId: tableId || null }
-      : { catalogItemId: picked?.id, quantity: review!.quantity, unitPrice: review!.unitPrice, discount: review!.discount, termMonths: review!.termMonths, priceTableId: tableId || null }
+      : { catalogItemId: picked?.id, quantity: review!.quantity, unitPrice: review!.unitPrice, discount: manualForm ? null : review!.discount, termMonths: review!.termMonths, priceTableId: tableId || null, ...(editManual ? { name: mName.trim() } : {}) }
     try {
       const ok = await (edit ? onSubmit(payload) : onAdd(payload))
       if (!ok) { setError("O item não foi salvo. Seus ajustes foram mantidos; tente novamente."); return }
@@ -117,13 +152,17 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
-      <DialogContent showCloseButton={false} className={`flex h-[min(850px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden rounded-2xl bg-white p-0 ${active ? "sm:max-w-3xl" : "sm:max-w-2xl"}`}>
+      <DialogContent showCloseButton={false} className={`flex h-[min(850px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden rounded-2xl bg-white p-0 ${edit || picked ? "sm:max-w-3xl" : "sm:max-w-2xl"}`}>
         <header className="flex shrink-0 items-start gap-3 border-b border-slate-200 px-4 py-4 sm:px-6">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary-50 text-primary-600"><Package className="size-5" /></span>
-          <div className="min-w-0 flex-1"><DialogTitle className="text-base font-bold text-slate-900">{edit ? "Editar item" : active ? "Configurar item" : "Adicionar produto ou serviço"}</DialogTitle><DialogDescription className="mt-1 text-xs text-slate-500">{active ? "Revise as condições e o valor antes de salvar." : "Escolha no catálogo ou configure as condições da venda."}</DialogDescription></div>
+          <div className="min-w-0 flex-1"><DialogTitle className="text-base font-bold text-slate-900">{edit ? "Editar item" : picked ? "Configurar item" : "Adicionar produto ou serviço"}</DialogTitle><DialogDescription className="mt-1 text-xs text-slate-500">{edit || picked ? "Revise as condições e o valor antes de salvar." : manualForm ? "Para o que não está no catálogo. O preço digitado é o valor final." : "Escolha no catálogo ou configure as condições da venda."}</DialogDescription></div>
           <button type="button" onClick={onClose} disabled={busy} aria-label="Fechar itens" className={`${secondary} size-9 shrink-0 p-0`}><X className="size-4" /></button>
         </header>
         <div className="sr-only" role="status" aria-live="polite">{notice}</div>
+        {!edit && !picked && manualAllowed && <div role="tablist" aria-label="Origem do item" className="flex shrink-0 gap-1 overflow-x-auto border-b border-slate-200 px-2 sm:px-4">
+          <button type="button" role="tab" aria-selected={mode === "catalog"} disabled={busy} onClick={backToCatalog} className={tabClass(mode === "catalog")}><Search className="size-3.5" />Do catálogo</button>
+          <button type="button" role="tab" aria-selected={mode === "manual"} disabled={busy} onClick={() => { if (mode !== "manual") startManual() }} className={tabClass(mode === "manual")}><PencilLine className="size-3.5" />Item avulso</button>
+        </div>}
         {!active ? <>
           <div className="shrink-0 space-y-3 border-b border-slate-200 px-4 py-4 sm:px-6">
             <div className="relative"><Search className="pointer-events-none absolute left-3 top-3 size-4 text-slate-400" /><input autoFocus type="search" aria-label="Buscar produto ou serviço" placeholder="Buscar por nome, código ou categoria" value={search} onChange={(event) => { setSearch(event.target.value); setPageError(null) }} className={`${field} pl-9`} /></div>
@@ -137,7 +176,10 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
             {error && <p role="alert" className="mb-3 rounded-lg bg-danger-bg p-3 text-xs text-danger">{error}</p>}
             {!fresh ? <div className="space-y-3" aria-label="Carregando catálogo">{Array.from({ length: 5 }, (_, index) => <div key={index} className="flex h-24 animate-pulse items-center gap-3 border-b border-slate-100"><div className="size-11 rounded-lg bg-slate-100" /><div className="flex-1 space-y-2"><div className="h-3 w-2/3 rounded bg-slate-100" /><div className="h-3 w-1/3 rounded bg-slate-100" /></div></div>)}</div>
               : list.error ? <EmptyState icon={SearchX} title="Catálogo indisponível" description={list.error} action={<button className={secondary} onClick={() => setRetry((value) => value + 1)}>Tentar novamente</button>} />
-                : list.items.length === 0 ? <EmptyState icon={SearchX} title={search || category ? "Nenhum item encontrado" : "Seu catálogo está vazio"} description={search || category ? "Tente outro termo ou remova a categoria selecionada." : "Cadastre produtos e serviços para compor esta negociação."} action={search || category ? <button className={secondary} onClick={() => { setSearch(""); setCategory("") }}>Limpar busca e categoria</button> : <Link href="/catalogo" className={secondary}>Abrir catálogo</Link>} />
+                : list.items.length === 0 ? <EmptyState icon={SearchX} title={search || category ? "Nenhum item encontrado" : "Seu catálogo está vazio"} description={search || category ? `Tente outro termo ou remova a categoria selecionada${manualAllowed ? ", ou adicione como item avulso" : ""}.` : manualAllowed ? "Cadastre produtos e serviços no catálogo ou adicione um item avulso a esta negociação." : "Cadastre produtos e serviços para compor esta negociação."} action={<div className="flex flex-wrap justify-center gap-2">
+                  {search || category ? <button className={secondary} onClick={() => { setSearch(""); setCategory("") }}>Limpar busca e categoria</button> : <Link href="/catalogo" className={secondary}>Abrir catálogo</Link>}
+                  {manualAllowed && <button className={`${secondary} border-primary-200 text-primary-700`} onClick={() => startManual(search.trim().slice(0, MANUAL_NAME_MAX))}><PencilLine className="size-3.5" />{search.trim() ? `Adicionar "${search.trim().slice(0, 40)}" como avulso` : "Adicionar item avulso"}</button>}
+                </div>} />
                   : <div className="divide-y divide-slate-100">{list.items.map((item) => <div key={item.id} className="py-4 first:pt-1">
                     <div className="flex items-start gap-3"><ItemIcon type={item.type} imageId={item.image_path ? item.id : undefined} /><div className="min-w-0 flex-1"><p className="text-sm font-semibold leading-snug text-slate-900">{item.name}</p><p className="mt-1 text-xs text-slate-500">{[item.type === "service" ? "Serviço" : "Produto", item.sku, item.category].filter(Boolean).join(" · ")}</p></div></div>
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 sm:ml-14"><div><p className="text-base font-bold tabular-nums text-slate-900">{money(item.price)}<span className="text-xs font-normal text-slate-500">{billing[item.billing].suffix}</span></p><p className="text-[11px] text-slate-500">{item.table_label ?? billing[item.billing].label}{item.max_discount_pct > 0 ? ` · desconto até ${item.max_discount_pct}%` : ""}</p></div><div className="flex items-center gap-2"><button type="button" disabled={busy} className={secondary} onClick={() => pick(item)} aria-label={`Configurar ${item.name}`}>Configurar</button><button type="button" disabled={busy} className={`${secondary} border-primary-200 text-primary-700`} onClick={() => save(item)} aria-label={`Adicionar 1 de ${item.name}`}><Plus className="size-3.5" />Adicionar 1</button></div></div>
@@ -148,20 +190,32 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
           <footer className="shrink-0 border-t border-slate-200 bg-slate-50 px-4 py-3 sm:px-6"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs text-slate-500">{dealItemCount} {dealItemCount === 1 ? "item no negócio" : "itens no negócio"} · valor total</p><p className="mt-1 text-lg font-bold tabular-nums text-slate-900">{money(dealTotal)}</p>{dealMrr > 0 && <p className="text-xs text-slate-500">Receita mensal equivalente: {money(dealMrr)}</p>}</div><button type="button" disabled={busy} onClick={onClose} className={primary}>{busy ? <><Loader2 className="size-4 animate-spin" />Salvando…</> : "Voltar ao negócio"}</button></div><p className="mt-2 text-[11px] text-slate-500">Cada adição é salva imediatamente no negócio.</p></footer>
         </> : <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => { event.preventDefault(); void save() }}>
           <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-            {!edit && <button type="button" disabled={busy} onClick={() => { setPicked(null); setError(null) }} className="mb-4 inline-flex h-8 items-center gap-1.5 text-xs font-semibold text-primary-700"><ArrowLeft className="size-3.5" />Voltar ao catálogo</button>}
-            <div className="mb-5 flex items-start gap-3 border-b border-slate-200 pb-5"><ItemIcon type={active.type} imageId={picked?.image_path ? picked.id : undefined} /><div className="min-w-0"><h2 className="text-base font-bold leading-snug text-slate-900">{active.name}</h2><p className="mt-1 text-xs text-slate-500">{billing[active.billing].label} · {picked?.table_label ?? edit?.price_table_label ?? "Preço de referência"}</p><p className="mt-1 text-sm font-semibold tabular-nums text-slate-700">{money(active.listPrice)}{billing[active.billing].suffix}</p></div></div>
+            {picked && <button type="button" disabled={busy} onClick={backToCatalog} className="mb-4 inline-flex h-8 items-center gap-1.5 text-xs font-semibold text-primary-700"><ArrowLeft className="size-3.5" />Voltar ao catálogo</button>}
+            {notice && manualForm && <p className="mb-4 flex items-center gap-2 rounded-lg bg-success-bg px-3 py-2 text-xs text-success"><Check className="size-4 shrink-0" />{notice}</p>}
+            {manualForm && !edit ? <fieldset disabled={busy} className="mb-5 min-w-0 space-y-4 border-b border-slate-200 pb-5">
+              <legend className="mb-3 text-sm font-semibold text-slate-900">Item</legend>
+              <FormRow label="Nome do item" htmlFor="deal-item-name" hint="Aparece assim na proposta."><input id="deal-item-name" autoFocus maxLength={MANUAL_NAME_MAX} value={mName} placeholder="Ex.: Instalação especial" onChange={(event) => { setMName(event.target.value); setError(null) }} className={field} /></FormRow>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <FormRow label="Tipo"><SimpleSelect value={mType} ariaLabel="Tipo" onChange={(value) => setMType(value as "product" | "service")} options={[{ value: "service", label: "Serviço" }, { value: "product", label: "Produto" }]} /></FormRow>
+                <FormRow label="Cobrança"><SimpleSelect value={mBilling} ariaLabel="Cobrança" onChange={(value) => { setMBilling(value as Billing); setTerm("") }} options={(Object.keys(billing) as Billing[]).map((value) => ({ value, label: billing[value].label }))} /></FormRow>
+                <FormRow label="Unidade"><SimpleSelect value={mUnit} ariaLabel="Unidade" onChange={setMUnit} options={UNITS.map((unit) => ({ value: unit.code, label: `${unit.label} (${unit.symbol})` }))} /></FormRow>
+              </div>
+              <p className="text-xs leading-relaxed text-slate-500">Fora do catálogo: sem desconto e sem baixa de estoque. Quem gerencia o catálogo pode salvá-lo como produto depois.</p>
+            </fieldset>
+            : editManual ? <div className="mb-5 flex items-start gap-3 border-b border-slate-200 pb-5"><ItemIcon type={active.type} /><div className="min-w-0 flex-1"><FormRow label="Nome do item" htmlFor="deal-item-name"><input id="deal-item-name" maxLength={MANUAL_NAME_MAX} disabled={busy} value={mName} onChange={(event) => { setMName(event.target.value); setError(null) }} className={field} /></FormRow><p className="mt-2 text-xs text-slate-500">Item avulso · {billing[active.billing].label} · {unitSpec(active.unit).label}</p></div></div>
+            : <div className="mb-5 flex items-start gap-3 border-b border-slate-200 pb-5"><ItemIcon type={active.type} imageId={picked?.image_path ? picked.id : undefined} /><div className="min-w-0"><h2 className="text-base font-bold leading-snug text-slate-900">{active.name}</h2><p className="mt-1 text-xs text-slate-500">{billing[active.billing].label} · {picked?.table_label ?? edit?.price_table_label ?? "Preço de referência"}</p><p className="mt-1 text-sm font-semibold tabular-nums text-slate-700">{money(active.listPrice)}{billing[active.billing].suffix}</p></div></div>}
             <div className="grid items-start gap-6 md:grid-cols-[1fr_250px]">
               <fieldset disabled={busy} className="min-w-0 space-y-4">
                 <legend className="mb-3 text-sm font-semibold text-slate-900">Condições da venda</legend>
-                <div className="grid gap-4 sm:grid-cols-2"><FormRow label="Quantidade" htmlFor="deal-item-quantity" hint={`Unidade: ${unitSpec(active.unit).symbol}`}><input id="deal-item-quantity" autoFocus inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} className={field} /></FormRow><FormRow label="Preço unitário (R$)" htmlFor="deal-item-price" hint={`Tabela: ${money(active.listPrice)}`}><input id="deal-item-price" inputMode="decimal" value={price} placeholder={decimal(active.listPrice)} onChange={(event) => setPrice(event.target.value)} className={field} /></FormRow></div>
-                <FormRow label="Desconto na linha" htmlFor="deal-item-discount"><div className="flex gap-2"><input id="deal-item-discount" inputMode="decimal" placeholder="0,00" value={discount} onChange={(event) => setDiscount(event.target.value)} className={field} /><div className="flex shrink-0 rounded-lg border border-slate-200 p-1" aria-label="Tipo de desconto">{(["brl", "pct"] as const).map((mode) => <button key={mode} type="button" aria-pressed={discountMode === mode} aria-label={mode === "brl" ? "Desconto em reais" : "Desconto em percentual"} onClick={() => switchDiscount(mode)} className={`w-10 rounded-md text-xs font-semibold ${discountMode === mode ? "bg-primary text-white" : "text-slate-500 hover:bg-slate-50"}`}>{mode === "brl" ? "R$" : "%"}</button>)}</div></div><p className="text-xs leading-relaxed text-slate-500">{active.maxPct > 0 ? `Limite de ${active.maxPct}% sobre a tabela, considerando também o preço negociado.` : "Este item não permite desconto sobre a tabela."}</p></FormRow>
+                <div className="grid gap-4 sm:grid-cols-2"><FormRow label="Quantidade" htmlFor="deal-item-quantity" hint={`Unidade: ${unitSpec(active.unit).symbol}`}><input id="deal-item-quantity" autoFocus={!(manualForm && !edit)} inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} className={field} /></FormRow><FormRow label="Preço unitário (R$)" htmlFor="deal-item-price" hint={manualForm ? "Valor final, sem desconto" : `Tabela: ${money(active.listPrice)}`}><input id="deal-item-price" inputMode="decimal" value={price} placeholder={manualForm ? "0,00" : decimal(active.listPrice)} onChange={(event) => { setPrice(event.target.value); if (manualForm) setError(null) }} className={field} /></FormRow></div>
+                {!manualForm && <FormRow label="Desconto na linha" htmlFor="deal-item-discount"><div className="flex gap-2"><input id="deal-item-discount" inputMode="decimal" placeholder="0,00" value={discount} onChange={(event) => setDiscount(event.target.value)} className={field} /><div className="flex shrink-0 rounded-lg border border-slate-200 p-1" aria-label="Tipo de desconto">{(["brl", "pct"] as const).map((mode) => <button key={mode} type="button" aria-pressed={discountMode === mode} aria-label={mode === "brl" ? "Desconto em reais" : "Desconto em percentual"} onClick={() => switchDiscount(mode)} className={`w-10 rounded-md text-xs font-semibold ${discountMode === mode ? "bg-primary text-white" : "text-slate-500 hover:bg-slate-50"}`}>{mode === "brl" ? "R$" : "%"}</button>)}</div></div><p className="text-xs leading-relaxed text-slate-500">{active.maxPct > 0 ? `Limite de ${active.maxPct}% sobre a tabela, considerando também o preço negociado.` : "Este item não permite desconto sobre a tabela."}</p></FormRow>}
                 {recurring && <FormRow label="Prazo em meses" htmlFor="deal-item-term" hint={`Sem prazo informado, o total considera ${DEFAULT_TERM_MONTHS} meses.`}><input id="deal-item-term" inputMode="numeric" value={term} placeholder={`${DEFAULT_TERM_MONTHS} (padrão)`} onChange={(event) => setTerm(event.target.value)} className={field} /></FormRow>}
               </fieldset>
-              <aside className="rounded-xl border border-slate-200 bg-slate-50 p-4" aria-label="Resumo do item"><h3 className="text-sm font-semibold text-slate-900">Resumo do item</h3><dl className="mt-4 space-y-3 text-xs"><div className="flex justify-between gap-3"><dt className="text-slate-500">Subtotal{recurring ? billing[active.billing].suffix : ""}</dt><dd className="font-medium tabular-nums">{review?.summary ? money(review.subtotal) : "—"}</dd></div><div className="flex justify-between gap-3"><dt className="text-slate-500">Desconto</dt><dd className="font-medium tabular-nums">{review?.summary ? `− ${money(review.discount ?? 0)}` : "—"}</dd></div>{recurring && <div className="flex justify-between gap-3"><dt className="text-slate-500">Prazo considerado</dt><dd className="font-medium">{review?.effectiveTerm} meses</dd></div>}</dl><div className="mt-4 border-t border-slate-200 pt-4"><p className="text-xs text-slate-500">{recurring ? `Valor ${active.billing === "monthly" ? "mensal" : "anual"}` : "Total do item"}</p><p className="mt-1 break-words text-xl font-bold tabular-nums text-slate-900">{review?.periodTotal != null ? money(review.periodTotal) : "—"}</p>{recurring && <p className="mt-2 text-xs leading-relaxed text-slate-500">No prazo: <strong className="font-semibold text-slate-700">{review?.summary ? money(review.summary.total) : "—"}</strong></p>}</div></aside>
+              <aside className="rounded-xl border border-slate-200 bg-slate-50 p-4" aria-label="Resumo do item"><h3 className="text-sm font-semibold text-slate-900">Resumo do item</h3><dl className="mt-4 space-y-3 text-xs"><div className="flex justify-between gap-3"><dt className="text-slate-500">Subtotal{recurring ? billing[active.billing].suffix : ""}</dt><dd className="font-medium tabular-nums">{review?.summary ? money(review.subtotal) : "—"}</dd></div>{!manualForm && <div className="flex justify-between gap-3"><dt className="text-slate-500">Desconto</dt><dd className="font-medium tabular-nums">{review?.summary ? `− ${money(review.discount ?? 0)}` : "—"}</dd></div>}{recurring && <div className="flex justify-between gap-3"><dt className="text-slate-500">Prazo considerado</dt><dd className="font-medium">{review?.effectiveTerm} meses</dd></div>}</dl><div className="mt-4 border-t border-slate-200 pt-4"><p className="text-xs text-slate-500">{recurring ? `Valor ${active.billing === "monthly" ? "mensal" : "anual"}` : "Total do item"}</p><p className="mt-1 break-words text-xl font-bold tabular-nums text-slate-900">{review?.periodTotal != null ? money(review.periodTotal) : "—"}</p>{recurring && <p className="mt-2 text-xs leading-relaxed text-slate-500">No prazo: <strong className="font-semibold text-slate-700">{review?.summary ? money(review.summary.total) : "—"}</strong></p>}</div></aside>
             </div>
-            {review?.error && <p role="alert" className="mt-4 rounded-lg border border-red-100 bg-danger-bg p-3 text-xs leading-relaxed text-danger">{review.error}{review?.error?.includes("limite") && Number.isFinite(review.minimum) ? ` Mínimo da linha: ${money(review.minimum)}${billing[active.billing].suffix}.` : ""}</p>}
+            {reviewError && <p role="alert" className="mt-4 rounded-lg border border-red-100 bg-danger-bg p-3 text-xs leading-relaxed text-danger">{reviewError}{reviewError.includes("limite") && review && Number.isFinite(review.minimum) ? ` Mínimo da linha: ${money(review.minimum)}${billing[active.billing].suffix}.` : ""}</p>}
           </div>
-          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-4 sm:px-6">{error && <p role="alert" className="w-full rounded-lg border border-red-100 bg-danger-bg p-3 text-xs text-danger">{error}</p>}<div><p className="text-xs text-slate-500">Valor deste item no negócio</p><p className="text-lg font-bold tabular-nums text-slate-900">{review?.summary ? money(review.summary.total) : "—"}</p></div><button type="submit" disabled={busy || !!review?.error} className={`${primary} w-full sm:w-auto`}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}{busy ? "Salvando…" : edit ? "Salvar alterações" : "Adicionar ao negócio"}</button></footer>
+          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-4 sm:px-6">{error && <p role="alert" className="w-full rounded-lg border border-red-100 bg-danger-bg p-3 text-xs text-danger">{error}</p>}<div><p className="text-xs text-slate-500">Valor deste item no negócio</p><p className="text-lg font-bold tabular-nums text-slate-900">{review?.summary ? money(review.summary.total) : "—"}</p></div><button type="submit" disabled={busy || !!reviewError} className={`${primary} w-full sm:w-auto`}>{busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}{busy ? "Salvando…" : edit ? "Salvar alterações" : "Adicionar ao negócio"}</button></footer>
         </form>}
       </DialogContent>
     </Dialog>

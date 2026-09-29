@@ -4,6 +4,7 @@ import { auth } from "@/auth"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule } from "@/lib/modules"
 import { revalidatePath } from "next/cache"
+import { logAudit } from "@/lib/audit"
 
 // ═══════════════════════════════════════════════════════════════
 // CRUD dos FUNIS DE VENDA (deal_pipelines / deal_pipeline_stages)
@@ -40,7 +41,11 @@ export interface DealFunnelSummary {
   id: string; name: string; color: string; is_default: boolean
   stageCount: number; stageColors: string[]; dealCount: number
 }
-export interface DealEditorPipeline { id: string; name: string; description: string | null; color: string; is_default: boolean }
+export interface DealEditorPipeline {
+  id: string; name: string; description: string | null; color: string; is_default: boolean
+  /** Trava: marcar como ganho exige ao menos um item (o banco confere — migration 20260928000100). */
+  require_items_to_win: boolean
+}
 export interface DealEditorStage {
   id: string; pipeline_id: string; name: string; color: string; position: number
   probability_pct: number; is_won: boolean; is_lost: boolean; is_triage: boolean; show_in_kanban: boolean
@@ -83,9 +88,9 @@ export async function getDealFunnel(id: string): Promise<{ pipeline: DealEditorP
   const t = session.user.tenantId
 
   const { data: p } = await supabaseAdmin.from("deal_pipelines")
-    .select("id, name, description, color, is_default").eq("id", id).eq("tenant_id", t).maybeSingle()
+    .select("id, name, description, color, is_default, require_items_to_win").eq("id", id).eq("tenant_id", t).maybeSingle()
   if (!p) return null
-  const pipe = p as { id: string; name: string; description: string | null; color: string | null; is_default: boolean }
+  const pipe = p as { id: string; name: string; description: string | null; color: string | null; is_default: boolean; require_items_to_win: boolean | null }
 
   const [{ data: st }, { data: deals }] = await Promise.all([
     supabaseAdmin.from("deal_pipeline_stages")
@@ -106,7 +111,7 @@ export async function getDealFunnel(id: string): Promise<{ pipeline: DealEditorP
   }))
 
   return {
-    pipeline: { id: pipe.id, name: pipe.name, description: pipe.description, color: pipe.color ?? "#3B82F6", is_default: pipe.is_default },
+    pipeline: { id: pipe.id, name: pipe.name, description: pipe.description, color: pipe.color ?? "#3B82F6", is_default: pipe.is_default, require_items_to_win: pipe.require_items_to_win === true },
     stages,
   }
 }
@@ -146,16 +151,29 @@ export async function createDealPipeline(name: string, color?: string): Promise<
   return { id: pid }
 }
 
-export async function updateDealPipeline(id: string, data: Partial<{ name: string; description: string | null; color: string }>) {
+export async function updateDealPipeline(id: string, data: Partial<{ name: string; description: string | null; color: string; require_items_to_win: boolean }>) {
   const session = await requireCrmAdmin()
+  const t = session.user.tenantId
   // A assinatura TS não protege a Server Action de payload JSON adulterado.
   const updates = {
-    ...pickDefined(data, ["name", "description", "color"] as const),
+    ...pickDefined(data, ["name", "description", "color", "require_items_to_win"] as const),
     updated_at: new Date().toISOString(),
   }
+  const lock = updates.require_items_to_win
+  if (lock !== undefined && typeof lock !== "boolean") throw new Error("Valor inválido para a trava de itens")
+  let before: boolean | null = null
+  if (lock !== undefined) {
+    const { data: cur } = await supabaseAdmin.from("deal_pipelines").select("require_items_to_win").eq("id", id).eq("tenant_id", t).maybeSingle()
+    if (!cur) throw new Error("Funil não encontrado")
+    before = (cur as { require_items_to_win: boolean | null }).require_items_to_win === true
+  }
   const { error } = await supabaseAdmin.from("deal_pipelines")
-    .update(updates).eq("id", id).eq("tenant_id", session.user.tenantId)
+    .update(updates).eq("id", id).eq("tenant_id", t)
   if (error) throw new Error(error.message)
+  // Regra de fechamento é configuração de gestão: fica na trilha de auditoria.
+  if (lock !== undefined && lock !== before) {
+    await logAudit({ tenantId: t, actorId: session.user.id, action: "crm.pipeline.require_items_to_win", targetType: "deal_pipeline", targetId: id, before: { require_items_to_win: before }, after: { require_items_to_win: lock } })
+  }
   revalidate()
 }
 

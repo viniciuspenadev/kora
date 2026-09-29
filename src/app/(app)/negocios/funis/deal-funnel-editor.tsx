@@ -13,6 +13,7 @@ import {
   type DealEditorPipeline, type DealEditorStage,
 } from "@/lib/actions/deal-pipelines"
 import { useConfirm } from "@/components/ui/confirm-dialog"
+import { Switch as UiSwitch } from "@/components/ui/switch"
 
 const PALETTE = ["#94A3B8", "#3B82F6", "#06B6D4", "#10B981", "#84CC16", "#F59E0B", "#F97316", "#EF4444", "#EC4899", "#8B5CF6"]
 
@@ -29,6 +30,7 @@ export function DealFunnelEditor({ pipeline, stages: initial }: { pipeline: Deal
   const [adding, setAdding]   = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [dragId, setDragId]   = useState<string | null>(null)
+  const [requireItems, setRequireItems] = useState(pipeline.require_items_to_win)
 
   function saveName() {
     setEditName(false)
@@ -37,6 +39,13 @@ export function DealFunnelEditor({ pipeline, stages: initial }: { pipeline: Deal
   function saveColor(c: string) {
     setColor(c); setShowColor(false)
     start(async () => { try { await updateDealPipeline(pipeline.id, { color: c }) } catch (e) { alert((e as Error).message) } })
+  }
+  function saveRequireItems(next: boolean) {
+    setRequireItems(next)
+    start(async () => {
+      try { await updateDealPipeline(pipeline.id, { require_items_to_win: next }) }
+      catch (e) { setRequireItems(!next); alert((e as Error).message) }
+    })
   }
   function makeDefault() { start(async () => { try { await setDefaultDealPipeline(pipeline.id) } catch (e) { alert((e as Error).message) } }) }
   async function archive() {
@@ -166,6 +175,17 @@ export function DealFunnelEditor({ pipeline, stages: initial }: { pipeline: Deal
               <Plus className="size-3.5" /> Adicionar etapa
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Regras de fechamento — quem confere é o banco (gatilho), aqui só a chave. */}
+      <div className="mt-4 bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100">
+          <h2 className="text-sm font-bold text-slate-900">Regras de fechamento</h2>
+        </div>
+        <div className="p-4">
+          <UiSwitch checked={requireItems} onChange={saveRequireItems} disabled={pending} label="Exigir item para marcar como ganho"
+            description="O negócio só é marcado como ganho com pelo menos um item — do catálogo ou avulso. Vale para a ficha, o quadro e o inbox. Negócios já ganhos não mudam." />
         </div>
       </div>
       {confirmDialog}

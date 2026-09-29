@@ -5,7 +5,9 @@ import { useRef, useState, useEffect } from "react"
 import {
   Trash2, Plus, Sparkles, Megaphone, BadgeCheck, Smartphone, Loader2,
   Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info, Lock, X,
+  Users, Building2, Shuffle, UserCheck, Inbox, ArrowRight, Check, ChevronUp, ChevronDown,
 } from "lucide-react"
+import { UserAvatar } from "@/components/ui/user-avatar"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { SimpleSelect } from "@/components/ui/select"
@@ -25,7 +27,8 @@ export interface ResOpt {
   id: string; name: string
   working_hours?: { day: number; intervals: [string, string][] }[] | null
 }
-import { WhatsAppPreview } from "@/components/studio/whatsapp-preview"
+import { WhatsAppPreview, Bubble } from "@/components/studio/whatsapp-preview"
+import { EmptyState } from "@/components/ui/empty-state"
 import { varsForContext } from "@/lib/variables/registry"
 import { MessageBalloons } from "@/components/studio/message-balloons"
 
@@ -67,7 +70,7 @@ function restrictiveChannel(channels: string[]): string {
 // cliente nunca digita chaves). Mostra os campos de contato + as variáveis que ele
 // criou no fluxo (Coletar/Definir/HTTP/Agendar). Espelha o editor de Templates.
 function VarField({
-  value, onChange, multiline = false, rows = 3, placeholder, flowVars = [],
+  value, onChange, multiline = false, rows = 3, placeholder, flowVars = [], extraVars = [],
 }: {
   value: string
   onChange: (v: string) => void
@@ -75,6 +78,8 @@ function VarField({
   rows?: number
   placeholder?: string
   flowVars?: string[]
+  /** Variáveis do próprio nó (ex.: `agente` no Transferir) — mesmo chip dos campos de contato. */
+  extraVars?: { token: string; label: string }[]
 }) {
   const ref = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null)
   function insertVar(token: string) {
@@ -94,7 +99,7 @@ function VarField({
         : <input ref={(el) => { ref.current = el }} className={INPUT} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />}
       <div className="flex flex-wrap items-center gap-1 mt-1.5">
         <span className="text-[10px] text-slate-400">Inserir:</span>
-        {CONTACT_VARS.map((v) => (
+        {[...extraVars, ...CONTACT_VARS].map((v) => (
           <button key={v.token} type="button" onClick={() => insertVar(v.token)} title={v.label}
             className="px-1.5 py-0.5 text-[10px] font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 rounded transition-colors">
             {`{{${v.token}}}`}
@@ -184,13 +189,19 @@ function RenderSelect({ value, onChange, kind, channels }: {
 }
 
 export function ConfigPanel({
-  node, departments, agents = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], outcomeLabels = {}, flowChannels = [], onChange, onDelete,
+  node, departments, agents = [], businessHoursEnabled = false, flowInstances = [], kanbans = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], outcomeLabels = {}, flowChannels = [], onChange, onDelete,
 }: {
   node: RFNode
   /** Canais que este fluxo alcanca (vazio = todos). Alimenta o quadro "como vai sair". */
   flowChannels?: string[]
   departments: { id: string; name: string }[]
-  agents?: { id: string; name: string }[]
+  agents?: StudioAgentOption[]
+  /** Horário comercial ligado? Sem ele o "fora do horário" do Transferir nunca acontece. */
+  businessHoursEnabled?: boolean
+  /** Números do gatilho deste fluxo (vazio = qualquer). Marca quem não atende o número. */
+  flowInstances?: string[]
+  /** Kanbans de atendimento com as etapas (nó Mover etapa). */
+  kanbans?: StudioKanbanOption[]
   flows: { id: string; name: string }[]
   stages: { id: string; name: string }[]
   tags: TagOpt[]
@@ -503,101 +514,391 @@ export function ConfigPanel({
         </div>
       )}
 
-      {type === "move_stage" && (
-        <div>
-          <label className={LABEL}>Mover para a etapa</label>
-          <SimpleSelect value={String(cfg.stage ?? "")} onChange={(v) => set({ stage: v })}
-            options={stages.map((s) => ({ value: s.name, label: s.name }))} />
-          {stages.length === 0 && <p className="text-[11px] text-amber-700 mt-1">Nenhuma etapa de pipeline configurada ainda.</p>}
-        </div>
-      )}
+      {type === "move_stage" && <MoveStageConfig key={node.id} cfg={cfg} set={set} kanbans={kanbans} />}
 
-      {type === "transfer" && (() => {
-        // Nó antigo (sem target salvo) mostra "department" mas SÓ grava target
-        // quando o autor mexe — publicado antigo continua com a semântica clássica.
-        const target = String(cfg.target ?? "department")
-        const fallback = String(cfg.whenUnavailable ?? "queue")
-        return (
-        <div className="space-y-3">
-          <div>
-            <label className={LABEL}>Pra quem vai</label>
-            <SimpleSelect value={target} onChange={(v) => set({ target: v })} options={[
-              { value: "department", label: "Fila do setor" },
-              { value: "agent",      label: "Atendente específico" },
-              { value: "round_robin", label: "Distribuir igualmente entre agentes" },
-              { value: "owner",      label: "Devolver ao responsável pelo cliente" },
-              { value: "pool",       label: "Fila geral" },
-            ]} />
-          </div>
-          {target === "department" && (
-            <div>
-              <label className={LABEL}>Departamento</label>
-              <SimpleSelect value={String(cfg.department ?? "")} onChange={(v) => set({ department: v })}
-                options={departments.map((d) => ({ value: d.name, label: d.name }))} />
-            </div>
-          )}
-          {target === "agent" && (
-            <div>
-              <label className={LABEL}>Atendente</label>
-              <SimpleSelect value={String(cfg.agentId ?? "")} onChange={(v) => set({ agentId: v })}
-                options={agents.map((a) => ({ value: a.id, label: a.name }))} />
-            </div>
-          )}
-          {target === "round_robin" && (
-            <div className="space-y-2">
-              <label className={LABEL}>Agentes participantes</label>
-              <div className="max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
-                {agents.map(a => {
-                  const selected = Array.isArray(cfg.agentIds) ? cfg.agentIds as string[] : []
-                  return <label key={a.id} className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-primary-50">
-                    <input type="checkbox" className="accent-primary" checked={selected.includes(a.id)}
-                      onChange={e => set({agentIds: e.target.checked ? [...selected,a.id] : selected.filter(id => id !== a.id)})} />
-                    <span>{a.name}</span>
-                  </label>
-                })}
-                {!agents.length && <p className="p-3 text-xs text-slate-500">Cadastre agentes ativos na equipe para distribuir.</p>}
-              </div>
-              <p className="text-xs text-slate-500">Uma conversa por vez para cada participante, na ordem escolhida. Não exige departamento nem navegador aberto. Quem não atende o número fica fora daquela distribuição.</p>
-              <p className="text-xs text-primary-600 break-words">{(Array.isArray(cfg.agentIds) ? cfg.agentIds as string[] : []).map(id => agents.find(a => a.id === id)?.name ?? "Agente removido").join(" → ") || "Selecione ao menos um agente."}</p>
-            </div>
-          )}
-          {target === "owner" && (
-            <p className="text-[11px] text-slate-500 leading-relaxed">Volta pro atendente que já é dono deste cliente. Sem responsável ativo → cai na fila geral.</p>
-          )}
-          <div>
-            <label className={LABEL}>Mensagem de transição <span className="text-slate-400 font-normal">(opcional)</span></label>
-            <input className={INPUT} value={String(cfg.handoff ?? "")} onChange={(e) => set({ handoff: e.target.value })} placeholder={target === "agent" || target === "round_robin" ? "Olá! Meu nome é {{agente}} e vou seguir com seu atendimento." : "Vou te passar pro time…"} maxLength={4000} />
-            {(target === "agent" || target === "round_robin") && <div className="mt-2 space-y-2">
-              <p className="text-xs text-slate-500">Use <code>{"{{agente}}"}</code> para o nome de atendimento de quem receber. Deixe vazio para não enviar. A apresentação só sai após a atribuição confirmada.</p>
-              {!!cfg.handoff && <div className="rounded-lg border border-primary-200 bg-primary-50 p-3">
-                <p className="mb-1 text-[10px] font-semibold uppercase text-primary-600">Exemplo da apresentação</p>
-                <p className="whitespace-pre-wrap break-words text-sm text-slate-900">{String(cfg.handoff).replaceAll("{{agente}}", agents.find(a => a.id === (target === "agent" ? cfg.agentId : (cfg.agentIds as string[] | undefined)?.[0]))?.name || "Nome do agente")}</p>
-              </div>}
-            </div>}
-          </div>
-          <div>
-            <label className={LABEL}>Se ninguém estiver disponível</label>
-            <SimpleSelect value={fallback} onChange={(v) => set({ whenUnavailable: v })} options={[
-              { value: "queue",        label: "Enfileirar mesmo assim (o time vê quando voltar)" },
-              { value: "wait_message", label: "Avisar o cliente e enfileirar" },
-              { value: "keep_ai",      label: "Manter a IA atendendo" },
-            ]} />
-            <p className="mt-1 text-[10.5px] text-slate-400 leading-relaxed">Fora do horário ou sem agentes elegíveis. Enfileirar mantém a atribuição ao agente válido; sem elegíveis, a conversa vai para a fila geral e a gestão recebe um aviso.</p>
-          </div>
-          {(fallback === "wait_message" || fallback === "keep_ai") && (
-            <div>
-              <label className={LABEL}>Mensagem de espera <span className="text-slate-400 font-normal">(opcional)</span></label>
-              <input className={INPUT} value={String(cfg.waitMessage ?? "")} onChange={(e) => set({ waitMessage: e.target.value })} placeholder="Estamos fora do horário — te respondo assim que o time voltar!" />
-            </div>
-          )}
-        </div>
-        )
-      })()}
+      {type === "transfer" && (
+        <TransferConfig key={node.id} cfg={cfg} set={set} departments={departments} agents={agents}
+          flowVars={flowVars} flowInstances={flowInstances} businessHoursEnabled={businessHoursEnabled} />
+      )}
 
       {type === "end" && (
         <div>
           <label className={LABEL}>Mensagem final <span className="text-slate-400 font-normal">(opcional)</span></label>
           <input className={INPUT} value={String(cfg.message ?? "")} onChange={(e) => set({ message: e.target.value })} placeholder="Até logo! 👋" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Atendente como o editor do Studio o conhece. `attendsAll`/`instanceIds` vêm do servidor,
+ *  calculados pela regra única de `visibility.ts` (memberAttendsNumber) — não recalcular aqui. */
+export interface StudioAgentOption {
+  id: string
+  name: string
+  departmentId?: string | null
+  /** Atende todos os números (owner/admin/supervisor/sem restrição). */
+  attendsAll?: boolean
+  instanceIds?: string[]
+}
+
+/** Kanban de ATENDIMENTO como o editor o conhece (pipelines + pipeline_stages). */
+export interface StudioKanbanOption {
+  id: string
+  name: string
+  color: string | null
+  isDefault: boolean
+  active: boolean
+  stages: { id: string; name: string; color: string | null; isWon: boolean; isLost: boolean; isTriage: boolean
+    /** Mesma regra do motor: etapa oculta no kanban (e não-triagem) é recusada. */
+    available: boolean }[]
+}
+
+const colorDot = (c: string | null) => (
+  <span aria-hidden="true" className="size-2.5 shrink-0 rounded-full border border-black/5" style={{ background: c || "var(--color-slate-300, #cbd5e1)" }} />
+)
+
+// Nomes de etapa se repetem entre kanbans ("Proposta", "Triagem" — medido 28/09): o nó guarda
+// o kanban e a etapa pelo ID. Mesma gramática do painel do Transferir (lista com check + resumo).
+export function MoveStageConfig({ cfg, set, kanbans }: {
+  cfg: Record<string, unknown>
+  set: (patch: Record<string, unknown>) => void
+  kanbans: StudioKanbanOption[]
+}) {
+  const stageId = typeof cfg.stageId === "string" ? cfg.stageId : null
+  const legacyName = !stageId && typeof cfg.stage === "string" && cfg.stage.trim() ? cfg.stage.trim() : null
+  const ownerOfStage = stageId ? kanbans.find(k => k.stages.some(s => s.id === stageId)) : undefined
+  const selected = kanbans.find(k => k.id === cfg.pipelineId) ?? ownerOfStage
+    ?? (kanbans.length === 1 ? kanbans[0] : undefined)
+  const stage = stageId ? selected?.stages.find(s => s.id === stageId) : undefined
+  const multi = kanbans.length > 1
+
+  if (!kanbans.length) {
+    return <EmptyState className="py-6" title="Nenhum kanban de atendimento"
+      description="Crie um kanban em Kanban para mover conversas por aqui." />
+  }
+
+  const effect = !stage ? null
+    : stage.isWon ? "A conversa fica marcada como ganha no kanban. Ela não é encerrada."
+    : stage.isLost ? "A conversa fica marcada como perdida no kanban. Ela não é encerrada."
+    : stage.isTriage ? "A conversa volta para a triagem deste kanban."
+    : null
+  const warning = stageId && !stage ? "A etapa escolhida não existe mais. Escolha de novo."
+    : legacyName ? `Este nó guarda só o nome “${legacyName}”. Escolha o kanban e a etapa para fixar o destino.`
+    : null
+
+  return (
+    <div className="space-y-4">
+      {multi && (
+        <fieldset className="min-w-0">
+          <legend className={LABEL}>Kanban</legend>
+          <div className="rounded-xl border border-slate-200 bg-white divide-y divide-slate-100">
+            {kanbans.map(k => {
+              const on = selected?.id === k.id
+              return (
+                <label key={k.id} className={`flex items-center gap-2.5 px-3 py-2 transition-colors has-focus-visible:ring-2 has-focus-visible:ring-inset has-focus-visible:ring-primary/40 ${k.active ? "cursor-pointer hover:bg-primary-50/60" : "cursor-not-allowed opacity-50"} ${on ? "bg-primary-50" : ""}`}>
+                  <input type="radio" name="move-kanban" className="sr-only" checked={on} disabled={!k.active}
+                    onChange={() => set({ pipelineId: k.id, stageId: undefined, stage: undefined })} />
+                  {colorDot(k.color)}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-slate-800">{k.name}</span>
+                    <span className="block text-[11px] text-slate-500">{k.active ? `${k.stages.length} ${k.stages.length === 1 ? "etapa" : "etapas"}` : "Inativo"}</span>
+                  </span>
+                  {k.isDefault && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">Padrão</span>}
+                  <span aria-hidden="true" className={`grid size-4 shrink-0 place-items-center rounded-full border ${on ? "border-primary bg-primary text-white" : "border-slate-300"}`}>{on && <Check className="size-3" />}</span>
+                </label>
+              )
+            })}
+          </div>
+        </fieldset>
+      )}
+
+      {selected ? (
+        <fieldset className="min-w-0">
+          <legend className={LABEL}>{multi ? `Etapa em ${selected.name}` : "Mover para a etapa"}</legend>
+          {selected.stages.length ? (
+            <ol className="rounded-xl border border-slate-200 bg-white divide-y divide-slate-100">
+              {selected.stages.map((s, i) => {
+                const on = stageId === s.id
+                return (
+                  <li key={s.id}>
+                    <label className={`flex items-center gap-2.5 px-3 py-2 transition-colors has-focus-visible:ring-2 has-focus-visible:ring-inset has-focus-visible:ring-primary/40 ${s.available ? "cursor-pointer hover:bg-primary-50/60" : "cursor-not-allowed opacity-50"} ${on ? "bg-primary-50" : ""}`}>
+                      <input type="radio" name="move-stage" className="sr-only" checked={on} disabled={!s.available}
+                        onChange={() => set({ pipelineId: selected.id, stageId: s.id, stage: s.name })} />
+                      <span className="w-4 text-[11px] font-bold tabular-nums text-slate-400">{i + 1}</span>
+                      {colorDot(s.color)}
+                      <span className="min-w-0 flex-1 truncate text-sm text-slate-800">{s.name}</span>
+                      {!s.available && <span className="text-[10px] text-slate-500">Oculta</span>}
+                      {s.isTriage && <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">Triagem</span>}
+                      {s.isWon && <span className="rounded-full bg-success-bg px-1.5 py-0.5 text-[10px] font-semibold text-success">Ganho</span>}
+                      {s.isLost && <span className="rounded-full bg-danger-bg px-1.5 py-0.5 text-[10px] font-semibold text-danger">Perdido</span>}
+                      <span aria-hidden="true" className={`grid size-4 shrink-0 place-items-center rounded-full border ${on ? "border-primary bg-primary text-white" : "border-slate-300"}`}>{on && <Check className="size-3" />}</span>
+                    </label>
+                  </li>
+                )
+              })}
+            </ol>
+          ) : (
+            <EmptyState className="py-5" title="Kanban sem etapas" description="Adicione etapas a este kanban em Kanban." />
+          )}
+        </fieldset>
+      ) : (
+        <p className={HINT}>Escolha o kanban para ver as etapas dele.</p>
+      )}
+
+      <div className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5" aria-live="polite">
+        <ArrowRight className={`mt-0.5 size-4 shrink-0 ${warning ? "text-warning" : "text-primary"}`} aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="break-words text-sm font-semibold text-slate-800">
+            {stage ? `${multi && selected ? `${selected.name} › ` : ""}${stage.name}` : "Selecione a etapa"}
+          </p>
+          {warning ? <p className={`mt-0.5 ${WARN}`}>{warning}</p>
+            : <p className={`mt-0.5 ${HINT}`}>{effect ?? "A conversa muda de coluna no kanban de atendimento. Quem vê a conversa não muda."}</p>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const TRANSFER_TARGETS = [
+  { value: "agent",       label: "Atendente",    icon: Users },
+  { value: "department",  label: "Departamento", icon: Building2 },
+  { value: "round_robin", label: "Distribuir",   icon: Shuffle },
+  { value: "owner",       label: "Responsável",  icon: UserCheck },
+  { value: "pool",        label: "Fila geral",   icon: Inbox },
+] as const
+
+const foldName = (v: string) => v.normalize("NFD").replace(/[̀-ͯ]/g, "").toLocaleLowerCase("pt-BR")
+const HINT = "text-[11px] text-slate-500 leading-relaxed"
+const WARN = "text-[11px] text-warning leading-relaxed"
+
+// Espelha o modal de transferência manual (transfer-dialog.tsx, aprovado em 21/09): destino
+// em botões com ícone, busca de atendente, resumo do destino. Cada escolha mostra o efeito
+// real, computado do cadastro — quantas pessoas no setor, quem não atende o número do fluxo.
+export function TransferConfig({ cfg, set, departments, agents, flowVars, flowInstances, businessHoursEnabled }: {
+  cfg: Record<string, unknown>
+  set: (patch: Record<string, unknown>) => void
+  departments: { id: string; name: string }[]
+  agents: StudioAgentOption[]
+  flowVars: string[]
+  flowInstances: string[]
+  businessHoursEnabled: boolean
+}) {
+  const [search, setSearch] = useState("")
+  // Nó antigo (sem target salvo) mostra "Departamento" mas SÓ grava target quando o autor
+  // mexe — publicado antigo continua com a semântica clássica.
+  const target = String(cfg.target ?? "department")
+  const fallback = String(cfg.whenUnavailable ?? "queue")
+  const picksPerson = target === "agent" || target === "round_robin"
+  const selectedIds = Array.isArray(cfg.agentIds) ? (cfg.agentIds as string[]) : []
+  const nameOf = (id: unknown) => agents.find(a => a.id === id)?.name
+  const deptNameOf = (id?: string | null) => departments.find(d => d.id === id)?.name
+  const membersOf = (id: string) => agents.filter(a => a.departmentId === id).length
+  // Mesmo casamento do motor (transfer.ts): nome sem espaços nas pontas, sem caixa.
+  const dept = departments.find(d => d.name.trim().toLowerCase() === String(cfg.department ?? "").trim().toLowerCase())
+  // Fluxo sem filtro de número alcança qualquer número — aí a checagem fica por conversa.
+  const attendsFlow = (a: StudioAgentOption) =>
+    !flowInstances.length || a.attendsAll !== false || flowInstances.some(i => (a.instanceIds ?? []).includes(i))
+  const shown = agents.filter(a => foldName(a.name).includes(foldName(search.trim())))
+
+  const move = (i: number, delta: number) => {
+    const next = [...selectedIds]; const j = i + delta
+    if (j < 0 || j >= next.length) return
+    ;[next[i], next[j]] = [next[j], next[i]]
+    set({ agentIds: next })
+  }
+
+  // Resumo do destino — o mesmo rodapé do modal manual.
+  const n = dept ? membersOf(dept.id) : 0
+  const destination =
+    target === "agent"         ? (nameOf(cfg.agentId) ?? (cfg.agentId ? "Atendente desativado" : "Selecione um atendente"))
+    : target === "round_robin" ? (selectedIds.length ? `Rodízio entre ${selectedIds.length} atendente${selectedIds.length > 1 ? "s" : ""}` : "Selecione os atendentes")
+    : target === "owner"       ? "Responsável pelo cliente"
+    : target === "pool"        ? "Fila geral"
+    : dept                     ? `Fila de ${dept.name}`
+    : cfg.department           ? "Departamento não encontrado" : "Selecione um departamento"
+  const agentPicked = agents.find(a => a.id === cfg.agentId)
+  const warning =
+    target === "agent" && cfg.agentId && !agentPicked ? "O atendente escolhido foi desativado. Escolha outra pessoa."
+    : target === "agent" && agentPicked && !attendsFlow(agentPicked) ? `${agentPicked.name} não atende o número deste fluxo — a transferência vai falhar.`
+    : target === "round_robin" && selectedIds.some(id => !nameOf(id)) ? "Há atendente desativado na distribuição. Remova da lista."
+    : target === "department" && cfg.department && !dept ? `O departamento “${String(cfg.department)}” não existe mais. Escolha outro.`
+    : target === "department" && dept && n === 0 ? "Ninguém neste departamento. A conversa fica sem dono e só aparece para quem vê a fila geral."
+    : null
+  const hint =
+    target === "pool"          ? "Sem atendente e sem departamento. Quem tem acesso à fila geral pode assumir."
+    : target === "owner"       ? "Volta para quem já é dono deste cliente. Sem responsável ativo, cai na fila geral."
+    : target === "round_robin" ? "Um por vez, na ordem abaixo. Quem não atende o número da conversa fica fora daquela vez."
+    : target === "agent"       ? (agentPicked ? deptNameOf(agentPicked.departmentId) ?? "Sem departamento" : null)
+    : dept && n > 0            ? `Fica sem atendente. ${n === 1 ? "A pessoa" : `As ${n} pessoas`} do departamento ${n === 1 ? "pode" : "podem"} assumir.`
+    : null
+
+  // Plano B só existe se algo pode "não estar disponível": horário ligado, ou setor sem gente.
+  const planBRelevant = businessHoursEnabled || target === "department" || fallback !== "queue"
+  const customerText = String(cfg.handoff ?? "").trim()
+  const waitText = String(cfg.waitMessage ?? "").trim()
+  const summaryText = String(cfg.summary ?? "").trim()
+  const firstPerson = target === "agent" ? nameOf(cfg.agentId) : nameOf(selectedIds[0])
+  const withAgent = (t: string) => picksPerson ? t.replaceAll("{{agente}}", firstPerson ?? "Nome do atendente") : t
+
+  return (
+    <div className="space-y-4">
+      <fieldset>
+        <legend className={LABEL}>Destino do atendimento</legend>
+        <div className="grid grid-cols-3 gap-2">
+          {TRANSFER_TARGETS.map(option => (
+            <label key={option.value} className={`relative flex min-w-0 cursor-pointer flex-col items-center gap-1.5 rounded-xl border py-2.5 text-center text-[11px] font-semibold transition-colors has-focus-visible:ring-2 has-focus-visible:ring-primary/40 ${target === option.value ? "border-primary-200 bg-primary-50 text-primary-700" : "border-slate-200 bg-white text-slate-600 hover:border-primary-200 hover:bg-primary-50/50"}`}>
+              <input type="radio" name="transfer-target" value={option.value} checked={target === option.value}
+                onChange={() => { set({ target: option.value }); setSearch("") }} className="sr-only" />
+              <option.icon className="size-4" aria-hidden="true" />{option.label}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      {target === "department" && (
+        <div>
+          <label className={LABEL}>Departamento</label>
+          <SimpleSelect value={dept?.name ?? String(cfg.department ?? "")} onChange={(v) => set({ department: v })} placeholder="Selecione um departamento"
+            options={departments.map((d) => { const k = membersOf(d.id); return { value: d.name, label: `${d.name} · ${k ? `${k} atendente${k > 1 ? "s" : ""}` : "ninguém"}` } })} />
+          {!departments.length && <p className={`mt-1 ${HINT}`}>Esta empresa ainda não tem departamentos. Cadastre em Configurações → Equipe.</p>}
+        </div>
+      )}
+
+      {picksPerson && (
+        <fieldset className="min-w-0">
+          <legend className={LABEL}>{target === "agent" ? "Quem vai atender?" : "Quem entra no rodízio?"}</legend>
+          <label className="relative mb-2 block">
+            <span className="sr-only">Buscar atendente</span>
+            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-slate-400" />
+            <input type="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar pelo nome" className={`${INPUT} pl-9`} />
+          </label>
+          {shown.length ? (
+            <div className="max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white divide-y divide-slate-100">
+              {shown.map(a => {
+                const ok = attendsFlow(a)
+                const checked = target === "agent" ? cfg.agentId === a.id : selectedIds.includes(a.id)
+                const disabled = !ok && !checked
+                return (
+                  <label key={a.id} className={`flex items-center gap-2.5 px-3 py-2 transition-colors has-focus-visible:ring-2 has-focus-visible:ring-inset has-focus-visible:ring-primary/40 ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer hover:bg-primary-50/60"} ${checked ? "bg-primary-50" : ""}`}>
+                    <input type={target === "agent" ? "radio" : "checkbox"} name="transfer-agent" className="sr-only" checked={checked} disabled={disabled}
+                      onChange={e => target === "agent"
+                        ? set({ agentId: a.id })
+                        : set({ agentIds: e.target.checked ? [...selectedIds, a.id] : selectedIds.filter(id => id !== a.id) })} />
+                    <UserAvatar userId={a.id} name={a.name} size={26} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-slate-800" title={a.name}>{a.name}</span>
+                      <span className={`block truncate text-[11px] ${ok ? "text-slate-500" : "text-warning"}`}>
+                        {ok ? deptNameOf(a.departmentId) ?? "Sem departamento" : "Não atende o número deste fluxo"}
+                      </span>
+                    </span>
+                    <span aria-hidden="true" className={`grid size-4 shrink-0 place-items-center border ${target === "agent" ? "rounded-full" : "rounded"} ${checked ? "border-primary bg-primary text-white" : "border-slate-300"}`}>{checked && <Check className="size-3" />}</span>
+                  </label>
+                )
+              })}
+            </div>
+          ) : (
+            <EmptyState className="py-5"
+              title={search.trim() ? "Nenhum atendente encontrado" : "Nenhum atendente ativo"}
+              description={search.trim() ? "Tente buscar por outro nome." : "Cadastre a equipe em Configurações → Equipe."} />
+          )}
+          {target === "round_robin" && selectedIds.length > 0 && (
+            <div className="mt-3">
+              <p className={LABEL}>Ordem do rodízio</p>
+              <ol className="rounded-xl border border-slate-200 bg-white divide-y divide-slate-100">
+                {selectedIds.map((id, i) => (
+                  <li key={id} className="flex items-center gap-2 px-3 py-1.5">
+                    <span className="w-4 text-[11px] font-bold tabular-nums text-slate-400">{i + 1}</span>
+                    <span className={`min-w-0 flex-1 truncate text-sm ${nameOf(id) ? "text-slate-800" : "text-warning"}`}>{nameOf(id) ?? "Atendente desativado"}</span>
+                    <button type="button" onClick={() => move(i, -1)} disabled={i === 0} aria-label="Subir na ordem" className="inline-flex size-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30"><ChevronUp className="size-3.5" /></button>
+                    <button type="button" onClick={() => move(i, 1)} disabled={i === selectedIds.length - 1} aria-label="Descer na ordem" className="inline-flex size-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30"><ChevronDown className="size-3.5" /></button>
+                    <button type="button" onClick={() => set({ agentIds: selectedIds.filter(x => x !== id) })} aria-label="Tirar do rodízio" className="inline-flex size-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-danger"><X className="size-3.5" /></button>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </fieldset>
+      )}
+
+      <div className="flex items-start gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5" aria-live="polite">
+        <ArrowRight className={`mt-0.5 size-4 shrink-0 ${warning ? "text-warning" : "text-primary"}`} aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="break-words text-sm font-semibold text-slate-800">{destination}</p>
+          {warning ? <p className={`mt-0.5 ${WARN}`}>{warning}</p> : hint ? <p className={`mt-0.5 ${HINT}`}>{hint}</p> : null}
+        </div>
+      </div>
+
+      <div>
+        <label className={LABEL}>Mensagem para o cliente <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <VarField multiline rows={2} value={String(cfg.handoff ?? "")} onChange={(v) => set({ handoff: v })} flowVars={flowVars}
+          extraVars={picksPerson ? [{ token: "agente", label: "Nome de quem vai atender" }] : []}
+          placeholder={picksPerson ? "Olá! Meu nome é {{agente}} e vou seguir com seu atendimento." : "Vou te passar para o time."} />
+        {picksPerson && <p className={`mt-1 ${HINT}`}>{"{{agente}}"} vira o nome de quem receber. A mensagem só sai depois que a atribuição é confirmada.</p>}
+      </div>
+
+      <div>
+        <label className={LABEL}>O que a equipe vê <span className="text-slate-400 font-normal">(opcional)</span></label>
+        <VarField multiline rows={2} value={String(cfg.summary ?? "")} onChange={(v) => set({ summary: v })} flowVars={flowVars}
+          placeholder="Ex.: Quer orçamento. Cidade: {{cidade}}" />
+        <p className={`mt-1 ${HINT}`}>Vai como nota interna na conversa, junto do aviso de encaminhado. O cliente não vê.</p>
+      </div>
+
+      <div>
+        <label className={LABEL}>{target === "department" ? "Fora do horário ou sem ninguém no departamento" : "Fora do horário comercial"}</label>
+        {planBRelevant ? (
+          <>
+            <SimpleSelect value={fallback === "wait_message" ? "wait_message" : fallback === "keep_ai" ? "" : "queue"} onChange={(v) => set({ whenUnavailable: v })}
+              placeholder="Escolha o que fazer" options={[
+                { value: "queue",        label: "Encaminhar mesmo assim" },
+                { value: "wait_message", label: "Avisar o cliente e encaminhar" },
+              ]} />
+            {fallback === "keep_ai"
+              ? <p className={`mt-1 ${WARN}`}>“Manter a IA atendendo” saiu deste nó: ela não punha a IA para conversar, só segurava o cliente. Escolha uma opção acima para poder publicar.</p>
+              : <p className={`mt-1 ${HINT}`}>
+                  {fallback === "wait_message" ? "O cliente recebe a mensagem de espera no lugar da mensagem acima; a conversa entra na fila." : "A conversa entra na fila e o time vê quando voltar."}
+                  {!businessHoursEnabled && " O horário comercial está desligado, então isso só vale quando o departamento não tiver ninguém."}
+                </p>}
+          </>
+        ) : (
+          <p className={HINT}>O horário comercial está desligado, então a conversa é sempre encaminhada na hora. <a href="/automacao/mensagens" className="font-medium text-primary-600 hover:underline">Configurar horário</a></p>
+        )}
+      </div>
+
+      {fallback === "wait_message" && (
+        <div>
+          <label className={LABEL}>Mensagem de espera <span className="text-slate-400 font-normal">(opcional)</span></label>
+          <VarField multiline rows={2} value={String(cfg.waitMessage ?? "")} onChange={(v) => set({ waitMessage: v })} flowVars={flowVars}
+            extraVars={picksPerson ? [{ token: "agente", label: "Nome de quem vai atender" }] : []}
+            placeholder="Estamos fora do horário. Te respondo assim que o time voltar!" />
+        </div>
+      )}
+
+      {(customerText || (fallback === "wait_message" && waitText) || summaryText) && (
+        // Mesma moldura/balão da prévia dos outros nós (whatsapp-preview.tsx): visão do cliente.
+        <div className="rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-100">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Pré-visualização</span>
+          </div>
+          {(customerText || (fallback === "wait_message" && waitText)) && (
+            <div className="p-3 space-y-1.5" style={{ background: "#e9edef" }}>
+              {customerText && (
+                <Bubble><p className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-slate-800">{withAgent(customerText)}</p></Bubble>
+              )}
+              {fallback === "wait_message" && waitText && (
+                <>
+                  <p className="pt-1 text-[10px] font-medium text-slate-500">Fora do horário, no lugar da mensagem acima:</p>
+                  <Bubble><p className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-slate-800">{withAgent(waitText)}</p></Bubble>
+                </>
+              )}
+            </div>
+          )}
+          <div className="border-t border-slate-100 bg-white px-3 py-2.5">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">A equipe vê · nota interna</p>
+            <p className="whitespace-pre-wrap break-words text-xs text-slate-700">
+              {`📋 Encaminhado → ${dept?.name ?? destination}${summaryText ? `\nResumo: ${summaryText}` : ""}`}
+            </p>
+          </div>
         </div>
       )}
     </div>
