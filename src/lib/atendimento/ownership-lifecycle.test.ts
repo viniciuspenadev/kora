@@ -127,6 +127,16 @@ it("keep_ai deixa execução viva e não dispara entrega humana", async () => {
   expect(db.tables.studio_flow_runs[0].status).toBe("active")
   expect(conv().ai_handling).toBe(true); expect(conv().assigned_to).toBeNull()
 })
+it("mensagem de transição troca as variáveis do fluxo e preserva {{agente}}", async () => {
+  Object.assign(conv(), { status: "open", assigned_to: null, metadata: {}, ai_handling: true })
+  Object.assign(db.tables.studio_flow_runs[0], { status: "active", variables: { cidade: "Recife" } })
+  const r = run()
+  const input = execution(); input.ctx.channel = "site"; input.ctx.contact.primary_channel = "site"
+  // `{{ agente }}` só existe depois da atribuição (a distribuição preenche) — fica, na forma canônica.
+  await runFlow(input, flow("transfer", { target: "pool", handoff: "Atendimento em {{cidade}}, {{ agente }}." }), r)
+  expect(db.tables.chat_messages.filter(m => m.sender_type === "bot").map(m => m.content))
+    .toEqual(["Atendimento em Recife, {{agente}}."])
+})
 it("nó resolver perde CAS para tomada humana", async () => {
   Object.assign(conv(), { status: "open", assigned_to: null, metadata: {}, ai_handling: true })
   db.beforeWrite = (table, patch) => { if (table === "chat_conversations" && patch.status === "resolved") {

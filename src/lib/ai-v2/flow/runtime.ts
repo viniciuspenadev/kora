@@ -305,9 +305,12 @@ async function descartarRascunhoDoSite(
   }
 }
 
-function interpolate(text: string, vars: Record<string, unknown>): string {
+/** `keep`: variáveis que outra etapa preenche depois (ex.: `agente` no Transferir) —
+ *  ficam como estão em vez de virar vazio. */
+function interpolate(text: string, vars: Record<string, unknown>, keep: string[] = []): string {
   if (!text.includes("{{")) return text
   return text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, path: string) => {
+    if (keep.includes(path)) return `{{${path}}}`   // forma canônica: quem preenche procura assim
     const v = resolvePath(vars, path)
     return v == null ? "" : typeof v === "string" ? v : JSON.stringify(v)
   })
@@ -1062,7 +1065,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
       }
       case "move_stage": {
         const cfg = node.config as unknown as MoveStageNodeConfig
-        const moved = await getCapability(MOVE_STAGE)?.run(ctx, { stage: cfg.stage })
+        const moved = await getCapability(MOVE_STAGE)?.run(ctx, { stage: cfg.stage ?? "", stage_id: cfg.stageId ?? null, pipeline_id: cfg.pipelineId ?? null })
         if (!moved?.ok) throw new Error(moved?.error ?? moved?.toolMessage ?? "Não foi possível mover a conversa de etapa.")
         currentId = edgeTarget(graph, node.id)
         break
@@ -1078,6 +1081,10 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // chama LLM nem finge "pela IA", apenas encaminha. collect_hint guia a EXTRAÇÃO
         // quando há campos do `collect` (mas não decide o byAI).
         const collectHint = Array.isArray(variables["__collect"]) ? (variables["__collect"] as string[]) : []
+        // Mensagens ao cliente trocam variáveis como o nó Mensagem ({{nome}} → nome).
+        // `{{agente}}` fica: só existe depois da atribuição (a RPC da distribuição preenche).
+        const handoff = cfg.handoff ? interpolate(cfg.handoff, variables, ["agente"]) : null
+        const wait    = cfg.waitMessage ? interpolate(cfg.waitMessage, variables, ["agente"]) : null
         const r = await cap?.run({ ...ctx, transferExecution: { flowId: activeFlow.id, nodeId: node.id,
           runKey: String(variables.__run_generation ?? run.id) } }, {
           agent_ids:        cfg.agentIds ?? [],
@@ -1085,9 +1092,9 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           department:       cfg.department,
           agent_id:         cfg.agentId ?? null,
           summary:          summary || undefined,
-          handoff_message:  cfg.handoff ?? null,
+          handoff_message:  handoff,
           when_unavailable: cfg.whenUnavailable,
-          wait_message:     cfg.waitMessage ?? null,
+          wait_message:     wait,
           collect_hint:     collectHint,
           byAI:             variables["__ai_touched"] === true,
         })

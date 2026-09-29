@@ -1,5 +1,8 @@
 import { computeDealValue, DEFAULT_TERM_MONTHS } from "./value"
 
+/** Limite do nome de um item avulso (o servidor confere o mesmo — lib/crm/deal-lines). */
+export const MANUAL_NAME_MAX = 200
+
 export function parseItemMoney(value: string): number | null {
   const text = value.trim()
   if (!text) return null
@@ -30,4 +33,15 @@ export function reviewDealItem(input: {
     : "Este item não permite reduzir o preço da tabela."
   const summary = !error ? computeDealValue([{ billing: input.billing, unit_price: unitPrice!, quantity, discount: discount!, term_months: termMonths }]) : null
   return { quantity, unitPrice, discount, termMonths, subtotal, minimum, error, summary, periodTotal: summary ? Math.round((subtotal - discount!) * 100) / 100 : null, effectiveTerm: termMonths ?? DEFAULT_TERM_MONTHS }
+}
+
+/** Item avulso: nome e preço obrigatórios; sem desconto nem piso (o preço digitado é o final). */
+export function reviewManualItem(input: { name: string; billing: "one_time" | "monthly" | "yearly"; price: string; quantity: string; term: string }) {
+  const base = reviewDealItem({ billing: input.billing, listPrice: 0, maxPct: 0, price: input.price, quantity: input.quantity, discount: "", discountMode: "brl", term: input.term })
+  const name = input.name.trim()
+  const error = !name ? "Dê um nome ao item."
+    : name.length > MANUAL_NAME_MAX ? `Nome muito longo (máximo ${MANUAL_NAME_MAX} caracteres).`
+      : !input.price.trim() ? "Informe o preço do item."
+        : base.error
+  return { ...base, name, error, summary: error ? null : base.summary, periodTotal: error ? null : base.periodTotal }
 }

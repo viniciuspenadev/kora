@@ -335,8 +335,13 @@ export interface TagNodeConfig {
   action: "add" | "remove"
 }
 export interface MoveStageNodeConfig {
-  /** Nome da etapa do pipeline (resolvido em pipeline_stages do tenant). */
-  stage: string
+  /** Kanban de ATENDIMENTO (pipelines) e etapa (pipeline_stages) escolhidos pelo ID —
+   *  nomes se repetem entre kanbans ("Proposta", "Triagem"…), então o ID é o destino. */
+  pipelineId?: string
+  stageId?:    string
+  /** Nome da etapa. Legado (nó salvo antes do ID) e rótulo de leitura; o motor só
+   *  resolve por nome quando não há `stageId`. */
+  stage?:      string
 }
 
 // ── Trigger (quando o fluxo dispara) ──

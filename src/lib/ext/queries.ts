@@ -21,8 +21,8 @@ import {
   type DocumentStatus,
 } from "@/lib/commercial/documents"
 import { lineSubtotal, computeDealValue, DEFAULT_TERM_MONTHS, type DealItemLike } from "@/lib/crm/value"
-import { resolveDealPricing, getPriceTable, getDefaultPriceTable } from "@/lib/crm/pricing"
-import { resolvePrice, fromCents } from "@/lib/commercial/entries"
+import { resolveDealPricing } from "@/lib/crm/pricing"
+import { resolveLineTable, buildCatalogLine, nextLinePosition, insertDealLine, recomputeDealValue } from "@/lib/crm/deal-lines"
 import { hasModule } from "@/lib/modules"
 import { availabilitySlots, bookAppointment, moveAppointment } from "@/lib/agenda/booking"
 import { recordAppointmentEvent } from "@/lib/agenda/events"
@@ -569,29 +569,6 @@ export async function catalogForComandaExt(
   })
 }
 
-/** Recalcula o valor do negócio a partir dos itens + audita (espelho do
- *  recompute das actions do app). Devolve o novo total (reais) ou null. */
-async function recomputeComandaValue(tenantId: string, dealId: string, userId: string, note: string, oldValue: number | null): Promise<number | null> {
-  const { data: rows } = await supabaseAdmin.from("tenant_deal_items")
-    .select("billing, unit_price, quantity, discount, term_months")
-    .eq("tenant_id", tenantId).eq("deal_id", dealId)
-  const likes = ((rows ?? []) as Record<string, unknown>[]).map((r) => ({
-    billing: r.billing as "one_time" | "monthly" | "yearly",
-    unit_price: Number(r.unit_price ?? 0), quantity: Number(r.quantity ?? 1),
-    discount: Number(r.discount ?? 0), term_months: (r.term_months as number | null) ?? null,
-  }))
-  const total = likes.length ? computeDealValue(likes).total : null
-  await supabaseAdmin.from("tenant_deals")
-    .update({ estimated_value: total, updated_at: new Date().toISOString() })
-    .eq("id", dealId).eq("tenant_id", tenantId)
-  const fmt = (v: number | null) => v != null ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }) : "—"
-  await recordDealEvent({
-    tenantId, dealId, type: "field_changed", by: userId, note,
-    change: { label: "Valor", from: fmt(oldValue), to: fmt(total) }, postCard: false,
-  })
-  return total
-}
-
 /** Remove UM item do negócio (espelho do removeDealItem do app). Só itens do
  *  próprio negócio/tenant (anti-IDOR); recalcula o valor e audita. */
 export async function removeComandaItemExt(
@@ -612,15 +589,15 @@ export async function removeComandaItemExt(
     .delete().eq("id", itemId).eq("tenant_id", scope.tenantId).eq("deal_id", dealId)
   if (error) return { error: error.message }
 
-  await recomputeComandaValue(scope.tenantId, dealId, scope.userId,
+  await recomputeDealValue(scope.tenantId, dealId, scope.userId,
     `Item removido via extensão: ${(it as { name: string }).name}`, oldValue != null ? Number(oldValue) : null)
   return { ok: true }
 }
 
-/** Lança a comanda: até 20 itens {catalogItemId, quantity} com o MESMO snapshot
- *  de linha do addDealItem do app (list_price/teto/custo/proveniência), preço =
- *  tabela (piso do teto passa trivialmente: linha == cheio). Recalcula o valor
- *  e audita 1 evento com autoria "via extensão". */
+/** Lança a comanda: até 20 itens {catalogItemId, quantity} pela MESMA fonte de linha da
+ *  ficha do negócio (`lib/crm/deal-lines`): foto do produto, piso e recálculo iguais.
+ *  Preço = tabela, desconto 0 (o piso passa trivialmente). Tabela desativada recusa a
+ *  comanda inteira; item que falhar é pulado. Audita 1 evento com autoria "via extensão". */
 export async function addComandaItemsExt(
   scope: ViewerScope, dealId: string, rawItems: { catalogItemId?: unknown; quantity?: unknown }[],
 ): Promise<{ added: number; skipped: number } | { error: string }> {
@@ -636,46 +613,24 @@ export async function addComandaItemsExt(
     .filter((it) => it.catalogItemId && Number.isFinite(it.quantity) && it.quantity > 0 && it.quantity <= 9999)
   if (!wanted.length) return { error: "Nenhum item válido na comanda." }
 
-  // Tabela do negócio: fail-closed se desativada (espelho do addDealItem).
   const { data: dRow } = await supabaseAdmin.from("tenant_deals")
-    .select("price_table_id, estimated_value").eq("id", dealId).eq("tenant_id", scope.tenantId).maybeSingle()
-  const tableId = (dRow as { price_table_id?: string | null } | null)?.price_table_id ?? null
+    .select("estimated_value").eq("id", dealId).eq("tenant_id", scope.tenantId).maybeSingle()
   const oldValue = (dRow as { estimated_value?: number | null } | null)?.estimated_value ?? null
-  if (tableId) {
-    const chosen = await getPriceTable(scope.tenantId, tableId)
-    if (chosen && !chosen.is_default && !chosen.active)
-      return { error: `A tabela "${chosen.name}" está desativada — ajuste o negócio no Kora.` }
-  }
-  const def = await getDefaultPriceTable(scope.tenantId)
+  // Tabela do negócio: fail-closed se desativada — a comanda inteira é recusada.
+  const table = await resolveLineTable(scope.tenantId, dealId, undefined)
+  if ("inactiveTable" in table) return { error: `A tabela "${table.inactiveTable}" está desativada — ajuste o negócio no Kora.` }
 
-  const { count } = await supabaseAdmin.from("tenant_deal_items")
-    .select("id", { count: "exact", head: true }).eq("tenant_id", scope.tenantId).eq("deal_id", dealId)
-  let pos = count ?? 0, added = 0
+  let pos = await nextLinePosition(scope.tenantId, dealId), added = 0
   const names: string[] = []
   for (const it of wanted) {
-    const { data: cat } = await supabaseAdmin.from("catalog_items")
-      .select("id, name, type, billing, price, category, cost, max_discount_pct, unit")
-      .eq("id", it.catalogItemId).eq("tenant_id", scope.tenantId).eq("active", true).maybeSingle()
-    if (!cat) continue
-    const ci = cat as { id: string; name: string; type: string; billing: string; category: string | null; cost: number | null; max_discount_pct: number | null; unit: string | null }
-    const resolved = await resolvePrice(scope.tenantId, { itemId: ci.id, tableId })
-    const listPrice = fromCents(resolved.cents)
-    const tableLabel = resolved.entryId && resolved.tableId && resolved.tableId !== def?.id ? resolved.tableName : null
-    const { error } = await supabaseAdmin.from("tenant_deal_items").insert({
-      tenant_id: scope.tenantId, deal_id: dealId, catalog_item_id: ci.id,
-      name: ci.name, type: ci.type, billing: ci.billing,
-      unit_price: listPrice, quantity: it.quantity, discount: 0,
-      unit: ci.unit ?? "un", term_months: null,
-      list_price: listPrice, category: ci.category, cost: ci.cost,
-      max_discount_pct: Number(ci.max_discount_pct ?? 0),
-      price_entry_id: resolved.entryId, price_table_label: tableLabel,
-      position: pos,
-    })
-    if (!error) { pos++; added++; names.push(it.quantity !== 1 ? `${it.quantity}× ${ci.name}` : ci.name) }
+    const line = await buildCatalogLine(scope.tenantId, dealId, table.tableId, { catalogItemId: it.catalogItemId, quantity: it.quantity })
+    if ("error" in line) continue
+    const saved = await insertDealLine(line.row, pos)
+    if ("ok" in saved) { pos++; added++; names.push(it.quantity !== 1 ? `${it.quantity}× ${line.name}` : line.name) }
   }
   if (!added) return { error: "Não deu pra adicionar os itens — confira o catálogo." }
 
-  await recomputeComandaValue(scope.tenantId, dealId, scope.userId,
+  await recomputeDealValue(scope.tenantId, dealId, scope.userId,
     `Itens adicionados via extensão: ${names.join(", ")}`, oldValue != null ? Number(oldValue) : null)
   return { added, skipped: wanted.length - added }
 }

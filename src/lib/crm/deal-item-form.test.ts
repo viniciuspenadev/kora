@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseItemMoney, reviewDealItem } from "./deal-item-form"
+import { parseItemMoney, reviewDealItem, reviewManualItem, MANUAL_NAME_MAX } from "./deal-item-form"
 
 const base = { billing: "one_time" as const, listPrice: 100, maxPct: 20, price: "100,00", quantity: "2", discount: "", discountMode: "brl" as const, term: "" }
 describe("proposal item review", () => {
@@ -37,5 +37,22 @@ describe("proposal item review", () => {
     expect(r.summary?.total).toBe(0)
     expect(r.quantity).toBe(1.5)
     expect(r.termMonths).toBeNull()
+  })
+})
+
+describe("manual item review", () => {
+  const manual = { name: "Instalação especial", billing: "one_time" as const, price: "350,00", quantity: "2", term: "" }
+  it("any typed price is final: no floor, no discount", () => {
+    const r = reviewManualItem({ ...manual, price: "1" })
+    expect(r.error).toBeNull()
+    expect(r.periodTotal).toBe(2)
+    expect(r.discount).toBe(0)
+  })
+  it("requires name and price; keeps quantity and term rules", () => {
+    expect(reviewManualItem({ ...manual, name: "  " }).error).toBe("Dê um nome ao item.")
+    expect(reviewManualItem({ ...manual, name: "x".repeat(MANUAL_NAME_MAX + 1) }).error).toContain("máximo")
+    expect(reviewManualItem({ ...manual, price: "" }).error).toBe("Informe o preço do item.")
+    expect(reviewManualItem({ ...manual, quantity: "0" }).summary).toBeNull()
+    expect(reviewManualItem({ ...manual, billing: "monthly", term: "12" }).summary?.total).toBe(8400)
   })
 })

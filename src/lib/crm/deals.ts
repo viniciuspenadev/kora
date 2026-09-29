@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { linkOwnerOnDeal } from "@/lib/carteira"
+import { dealWriteErrorMessage } from "@/lib/crm/win-lock"
 
 // ═══════════════════════════════════════════════════════════════
 // CRM Negócios — Fase 0 (fundação "shadow")
@@ -249,7 +250,8 @@ export async function createDeal(args: CreateDealArgs): Promise<{ id: string } |
     })
     .select("id")
     .single()
-  if (error || !data) return { error: error?.message ?? "Falha ao criar negócio" }
+  // Nascer ganho num funil com a trava "exigir item" é recusado pelo banco (sem item ainda).
+  if (error || !data) return { error: error ? dealWriteErrorMessage(error, true) : "Falha ao criar negócio" }
   const dealId = (data as { id: string }).id
 
   // Auto-dono (carteira): abrir o 1º negócio do contato torna o criador o DONO do
