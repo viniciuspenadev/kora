@@ -662,6 +662,8 @@ export interface DealDetail {
   manualItemsAllowed: boolean
   /** Pode "Salvar no catálogo" um avulso (gerenciar catálogo). A ação confere de novo. */
   canManageCatalog: boolean
+  /** Há produto ATIVO no catálogo — sem nenhum, a escolha "Do catálogo" não aparece. */
+  hasCatalog: boolean
   /** Motivos de perda GOVERNADOS (catálogo do tenant; fallback = lista padrão). */
   lostReasons: { label: string; requireNote: boolean }[]
   /** Termos da proposta (N2). Null = não definidos / migration pendente. */
@@ -791,7 +793,10 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     .select("label, require_note").eq("tenant_id", t).eq("kind", "lost").eq("active", true)
     .order("created_at", { ascending: false })
   const lostReasons = (reasonRows?.length ? (reasonRows as { label: string; require_note: boolean }[]).map((r) => ({ label: r.label, requireNote: r.require_note })) : FALLBACK_LOST_REASONS.map((label) => ({ label, requireNote: false })))
-  const manualAllowed = await manualItemsAllowed(t)
+  const [manualAllowed, { count: catalogCount }] = await Promise.all([
+    manualItemsAllowed(t),
+    supabaseAdmin.from("catalog_items").select("id", { count: "exact", head: true }).eq("tenant_id", t).eq("active", true),
+  ])
 
   const evRows   = (evs ?? []) as Record<string, unknown>[]
   const stageIds = Array.from(new Set(evRows.flatMap((e) => [e.from_stage, e.to_stage]).filter(Boolean))) as string[]
@@ -891,6 +896,7 @@ export async function getDeal(dealId: string): Promise<DealDetail | { error: str
     })),
     manualItemsAllowed: manualAllowed,
     canManageCatalog: canManageCatalog(scope),
+    hasCatalog: (catalogCount ?? 0) > 0,
     lostReasons,
     paymentMethod: termsD.payment_method ?? null,
     installments: termsD.installments ?? null,
@@ -1138,7 +1144,7 @@ export async function getCatalogCategories(): Promise<string[]> {
  * `list_price × qtd × (1 − teto)`. O teto/tabela são SNAPSHOTS do dia da adição.
  * Vale pra desconto E pra preço negociado (senão baixar o unitário burlaria o teto).
  */
-export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; priceTableId?: string | null }): Promise<{ ok: true } | { error: string }> {
+export async function addDealItem(dealId: string, input: { catalogItemId: string; quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; priceTableId?: string | null }): Promise<{ ok: true; id: string } | { error: string }> {
   const gate = await dealItemGate(dealId)
   if ("error" in gate) return gate
   // Preço NEGOCIADO (verticais de orçamento): o do catálogo é sugestão; a linha manda.
@@ -1161,13 +1167,13 @@ export async function addDealItem(dealId: string, input: { catalogItemId: string
   if ("error" in saved) return saved
 
   await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item adicionado: ${qty !== 1 ? `${qty}× ` : ""}${line.name}`, gate.oldValue)
-  return { ok: true }
+  return { ok: true, id: saved.id }
 }
 
 /** Item AVULSO (sem produto do catálogo) — docs/crm-item-avulso-mapa.md. Quem edita o
  *  negócio pode usar, salvo a empresa ter desligado (`crm_policies.manual_items`). Sem
  *  desconto nem piso (D1); estoque ignora a linha (não tem produto). */
-export async function addManualDealItem(dealId: string, input: ManualLineInput): Promise<{ ok: true } | { error: string }> {
+export async function addManualDealItem(dealId: string, input: ManualLineInput): Promise<{ ok: true; id: string } | { error: string }> {
   const gate = await dealItemGate(dealId)
   if ("error" in gate) return gate
   if (!(await manualItemsAllowed(gate.t)))
@@ -1180,7 +1186,7 @@ export async function addManualDealItem(dealId: string, input: ManualLineInput):
 
   const qty = Number(line.row.quantity)
   await recomputeDealValueFromItems(gate.t, dealId, gate.userId, `Item avulso adicionado: ${qty !== 1 ? `${qty}× ` : ""}${line.name}`, gate.oldValue)
-  return { ok: true }
+  return { ok: true, id: saved.id }
 }
 
 export async function updateDealItem(dealId: string, itemId: string, input: { quantity: number; unitPrice?: number | null; discount?: number | null; termMonths?: number | null; name?: string }): Promise<{ ok: true } | { error: string }> {

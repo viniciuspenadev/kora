@@ -4,9 +4,10 @@ import detailStyles from "./deal-detail.module.css"
 import { ContactPic } from "@/components/chat/contact-pic"
 import { SimpleSelect } from "@/components/ui/select"
 
-import { useState, useMemo, useTransition } from "react"
+import { useEffect, useRef, useState, useMemo, useTransition } from "react"
 import { Tabs } from "@base-ui/react/tabs"
 import { SectionCard } from "@/components/ui/section-card"
+import { EmptyState } from "@/components/ui/empty-state"
 import { useRouter, useSearchParams } from "next/navigation"
 import { dealListReturnHref } from "@/lib/crm/deal-list"
 import Link from "next/link"
@@ -124,6 +125,16 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
   const [activeModal, setActiveModal] = useState<"note" | "task" | null>(null)
   const [itemModal, setItemModal] = useState<null | { mode: "add" } | { mode: "edit"; item: DealItemView }>(null)
   const [promoteItem, setPromoteItem] = useState<DealItemView | null>(null)   // "Salvar no catálogo" (avulso)
+  // Linhas recém-gravadas piscam na lista ao fechar a janela, para o olho achar onde entraram.
+  const [flashIds, setFlashIds] = useState<string[]>([])
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function flashItems(ids: string[]) {
+    if (!ids.length) return
+    if (flashTimer.current) clearTimeout(flashTimer.current)
+    setFlashIds(ids)
+    flashTimer.current = setTimeout(() => setFlashIds([]), 2400)
+  }
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current) }, [])
   const [editPrev, setEditPrev]   = useState(false)                       // previsão inline
   const [sheetContact, setSheetContact] = useState<string | null>(null)   // Ver 360
   const [noteDraft, setNoteDraft]   = useState("")                        // modal de nota (menu ⋯)
@@ -523,7 +534,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           <SectionCard flush className="shadow-none">
             <Tabs.Root value={detailTab} onValueChange={(v) => changeDetailTab(String(v))}>
               <Tabs.List aria-label="Conteúdo do negócio" className="flex justify-between gap-2 border-b border-slate-200 px-4 sm:justify-start sm:gap-6">{[["negotiation", "Negociação", deal.items.length], ["proposals", "Propostas", quotes.length], ["activity", "Atividades", feedAll.length]].map(([value, label, count]) => <Tabs.Tab key={value} value={value} className="inline-flex items-center gap-1.5 border-b-2 border-transparent py-3.5 text-xs font-medium text-slate-500 outline-offset-2 data-active:border-primary data-active:text-primary-700"><span>{label}</span><span className="text-[10px] font-normal text-slate-500">{count}</span></Tabs.Tab>)}</Tabs.List>
-              <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} isManager={isManager} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} onPromote={deal.canManageCatalog ? (item) => setPromoteItem(item) : undefined} /></Tabs.Panel>
+              <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} isManager={isManager} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} onPromote={deal.canManageCatalog ? (item) => setPromoteItem(item) : undefined} highlightIds={flashIds} hasProposal={quotes.some((q) => q.status !== "void")} /></Tabs.Panel>
               <Tabs.Panel value="proposals" keepMounted className="data-hidden:hidden"><DealQuotes dealId={deal.id} quotes={quotes} defaults={quoteSettings} hasItems={hasItems} items={deal.items} genTick={quoteGenTick} embedded /></Tabs.Panel>
               <Tabs.Panel value="activity" keepMounted className="data-hidden:hidden">          <section className="bg-white p-4 sm:p-5">
             <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
@@ -676,7 +687,9 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           dealTotal={valueSummary?.total ?? 0}
           dealMrr={valueSummary?.mrr ?? 0}
           manualAllowed={deal.manualItemsAllowed}
-          onClose={() => setItemModal(null)}
+          hasCatalog={deal.hasCatalog}
+          canManageCatalog={deal.canManageCatalog}
+          onClose={(addedIds) => { setItemModal(null); flashItems(addedIds) }}
           onSubmit={async (p) => {
             const m = itemModal
             if (m.mode !== "edit") return false
@@ -686,17 +699,17 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
             return true
           }}
           onAdd={async (p) => {
-            // Quick-add: grava e MANTÉM o modal aberto (montar venda de vários itens de uma vez).
+            // Grava e devolve o id da linha (a ficha destaca as linhas novas ao concluir).
             const r = await addDealItem(deal.id, { catalogItemId: p.catalogItemId as string, quantity: p.quantity, unitPrice: p.unitPrice, discount: p.discount, termMonths: p.termMonths, priceTableId: p.priceTableId })
-            if ("error" in r) { toast.error(r.error); return false }
+            if ("error" in r) { toast.error(r.error); return null }
             router.refresh()
-            return true
+            return r.id
           }}
           onAddManual={async (p) => {
             const r = await addManualDealItem(deal.id, p)
-            if ("error" in r) { toast.error(r.error); return false }
+            if ("error" in r) { toast.error(r.error); return null }
             router.refresh()
-            return true
+            return r.id
           }}
         />
       )}
@@ -1227,7 +1240,7 @@ function qtdTermLabel(billing: "monthly" | "yearly", termMonths: number | null):
 const termFactor = (it: DealItemView) =>
   it.billing === "one_time" ? 1 : it.billing === "monthly" ? (it.term_months ?? DEFAULT_TERM_MONTHS) : (it.term_months ?? DEFAULT_TERM_MONTHS) / 12
 
-function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove, onPromote }: {
+function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onRemove, onPromote, highlightIds = [], hasProposal = false }: {
   deal: DealDetail
   summary: ReturnType<typeof computeDealValue> | null
   isManager: boolean
@@ -1237,8 +1250,17 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
   onRemove: (item: DealItemView) => void
   /** "Salvar no catálogo" de um avulso — só para quem gerencia o catálogo. */
   onPromote?: (item: DealItemView) => void
+  /** Linhas recém-gravadas (piscam por um instante). */
+  highlightIds?: string[]
+  /** Já existe proposta (não anulada) — some o "Gerar proposta" do próximo passo. */
+  hasProposal?: boolean
 }) {
   const items = deal.items
+  // Linha recém-gravada entra na tela: rola até ela (sem saltar se já estiver visível).
+  const firstHighlight = highlightIds.find((id) => items.some((it) => it.id === id))
+  useEffect(() => {
+    if (firstHighlight) document.getElementById(`deal-item-${firstHighlight}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+  }, [firstHighlight])
   // Multi-tabela (T2): a escolha da tabela é POR ITEM, no modal de adicionar
   // (decisão owner 2026-07-11). Aqui não há switcher — só a lista + resumo.
   // Bruto = preço de TABELA × qtd × prazo; Final = negociado (lib); Desconto = diferença.
@@ -1263,17 +1285,21 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
             <Clock className="size-2.5" /> Proposta vencida
           </span>
         )}
-        <button onClick={onAdd} disabled={pending} className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-          <Plus className="size-3" /> Adicionar item
-        </button>
+        {items.length > 0 && (
+          <button onClick={onAdd} disabled={pending} className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg border border-primary-200 bg-white px-3 text-xs font-semibold text-primary-700 hover:bg-primary-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50">
+            <Plus className="size-3.5" /> Adicionar item
+          </button>
+        )}
       </div>
 
       {items.length === 0 ? (
-        <p className="text-xs text-slate-400 px-4 pb-4 leading-relaxed">
-          {deal.manualItemsAllowed
-            ? "Monte a oferta com produtos e serviços do catálogo ou itens avulsos — pagamento único ou recorrente (MRR). O valor do negócio passa a ser a soma dos itens."
-            : "Monte a oferta com produtos e serviços do catálogo — pagamento único ou recorrente (MRR). O valor do negócio passa a ser a soma dos itens."}
-        </p>
+        <div className="px-4 pb-4">
+          <EmptyState icon={Package} title="Nenhum item neste negócio"
+            description={deal.manualItemsAllowed
+              ? "Adicione produtos e serviços do catálogo ou itens avulsos. O valor do negócio passa a ser a soma dos itens."
+              : "Adicione produtos e serviços do catálogo. O valor do negócio passa a ser a soma dos itens."}
+            action={<button onClick={onAdd} disabled={pending} className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-primary px-4 text-xs font-semibold text-white hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50"><Plus className="size-4" /> Adicionar item</button>} />
+        </div>
       ) : (
         <div className="overflow-x-auto">
           <table className={`${detailStyles.itemsTable} w-full text-sm md:min-w-[560px]`}>
@@ -1295,7 +1321,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
                 const dPct = lineBase > 0 ? Math.max(0, ((lineBase - lineVal) / lineBase) * 100) : 0
                 const f = termFactor(it)
                 return (
-                  <tr key={it.id} className="group border-b border-slate-50 last:border-0 even:bg-slate-50/50 hover:bg-primary-50/30 transition-colors">
+                  <tr key={it.id} id={`deal-item-${it.id}`} className={`group border-b border-slate-50 last:border-0 transition-colors duration-700 ${highlightIds.includes(it.id) ? "bg-primary-50" : "even:bg-slate-50/50 hover:bg-primary-50/30"}`}>
                     <td className="py-2 px-4">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className={`size-6 rounded-md grid place-items-center shrink-0 ${it.type === "service" ? "bg-slate-50 text-slate-500" : "bg-slate-50 text-slate-500"}`}>
@@ -1382,6 +1408,15 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
               </div>
             )}
           </div>
+          {/* Próximo passo natural depois de montar os itens: a proposta (mesmo destino do menu ⋯). */}
+          {deal.status === "open" && !hasProposal && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-3">
+              <p className="text-xs text-slate-500">Próximo passo: enviar a proposta ao cliente.</p>
+              <Link href={`/negocios/${deal.id}/cotacao/nova`} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-white hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40">
+                <FileText className="size-3.5" /> Gerar proposta
+              </Link>
+            </div>
+          )}
         </div>
       )}
     </section>

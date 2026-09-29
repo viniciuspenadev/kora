@@ -79,7 +79,8 @@ beforeEach(() => {
 
 describe("adicionar item avulso", () => {
   it("quem edita o negócio grava a linha avulsa e o valor vira a soma das linhas", async () => {
-    expect(await deals.addManualDealItem("d", manual)).toEqual({ ok: true })
+    const added = await deals.addManualDealItem("d", manual)
+    expect(added).toEqual({ ok: true, id: items()[0].id })
     expect(items()).toEqual([expect.objectContaining({ deal_id: "d", source: "manual", catalog_item_id: null, name: "Instalação especial", unit_price: 350, discount: 0, position: 0 })])
     expect(deal().estimated_value).toBe(350)
     expect(events).toHaveBeenCalledWith(expect.objectContaining({ note: "Item avulso adicionado: Instalação especial" }))
