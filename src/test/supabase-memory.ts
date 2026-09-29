@@ -1,0 +1,67 @@
+// Stateful fake: filters are evaluated at execution time, so competing CAS writes
+// really lose. No credentials or network; shared by attendance regression tests.
+/* eslint-disable @typescript-eslint/no-explicit-any -- test fake: rows have no schema, tests read fields freely */
+type Row = Record<string, any>
+export class MemoryDb {
+  tables: Record<string, Row[]> = {}
+  writes: { table: string; patch: Row; count: number }[] = []
+  errors: Record<string, string> = {}
+  beforeWrite?: (table: string, patch: Row) => void
+  /** Recusa de ESCRITA (gatilho/CHECK do banco): devolve a mensagem de erro, ou nada para gravar.
+   *  Recebe as linhas que seriam afetadas, já com o patch (update) ou como vão entrar (insert). */
+  writeError?: (table: string, rows: Row[], op: "insert" | "update") => string | null | undefined
+  reset(tables: Record<string, Row[]>) {
+    this.tables = structuredClone(tables); this.writes = []; this.errors = {}; this.beforeWrite = undefined; this.writeError = undefined
+  }
+  from = (table: string) => {
+    let patch: Row | undefined, inserts: Row[] | undefined, conflict: string | undefined, one = false, limit = Infinity
+    const filters: ((r: Row) => boolean)[] = []
+    const q = {
+      select: (_columns?: string) => q,
+      eq: (k: string, v: unknown) => { filters.push(r => typeof r[k] === "object" && r[k] !== null && typeof v === "string"
+        ? JSON.stringify(r[k]) === JSON.stringify(Array.isArray(r[k]) && v.startsWith("{") && v.endsWith("}")
+          ? v.slice(1, -1).split(",").filter(Boolean) : JSON.parse(v)) : r[k] === v); return q },
+      is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return q },
+      neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return q },
+      in: (k: string, values: unknown[]) => { filters.push(r => values.includes(r[k])); return q },
+      lte: (k: string, v: any) => { filters.push(r => r[k] <= v); return q },
+      gte: (k: string, v: any) => { filters.push(r => r[k] >= v); return q },
+      gt: (k: string, v: any) => { filters.push(r => r[k] > v); return q },
+      or: (_value: string) => q,
+      order: (_column: string, _opts?: unknown) => q,
+      limit: (n: number) => { limit = n; return q },
+      update: (value: Row) => { patch = value; return q },
+      insert: (value: Row | Row[]) => { inserts = Array.isArray(value) ? value : [value]; return q },
+      upsert: (value: Row, options: { onConflict: string }) => { inserts = [value]; conflict = options.onConflict; return q },
+      single: () => { one = true; return q },
+      maybeSingle: () => { one = true; return q },
+      then: (resolve: (value: any) => unknown, reject?: (error: unknown) => unknown) => Promise.resolve().then(() => {
+        if (this.errors[table]) return { data: null, error: { message: this.errors[table] } }
+        const rows = this.tables[table] ??= []
+        if (patch) this.beforeWrite?.(table, patch)
+        let matched = rows.filter(r => filters.every(f => f(r))).slice(0, limit)
+        const refusal = this.writeError && (inserts ? this.writeError(table, structuredClone(inserts), "insert")
+          : patch ? this.writeError(table, matched.map(r => ({ ...structuredClone(r), ...structuredClone(patch) })), "update") : null)
+        if (refusal) return { data: null, error: { message: refusal } }
+        if (inserts) {
+          matched = inserts.map((r) => {
+            const existing = conflict ? rows.find(row => row[conflict!] === r[conflict!]) : undefined
+            if (existing) return Object.assign(existing, structuredClone(r))
+            const created = { id: `msg-${rows.length}`, ...structuredClone(r) }; rows.push(created); return created
+          })
+        }
+        if (patch) {
+          matched.forEach(r => Object.assign(r, structuredClone(patch)))
+          this.writes.push({ table, patch: structuredClone(patch), count: matched.length })
+        }
+        // `count` como o PostgREST devolve em `select(..., { count: "exact", head: true })`.
+        return { data: structuredClone(one ? matched[0] ?? null : matched), error: null, count: matched.length }
+      }).then(resolve, reject),
+    }
+    return q
+  }
+  storage = { from: () => ({
+    upload: async () => ({ error: null }), remove: async () => ({ error: null }),
+    createSignedUrl: async () => ({ data: { signedUrl: "https://test.invalid/file" }, error: null }),
+  }) }
+}
