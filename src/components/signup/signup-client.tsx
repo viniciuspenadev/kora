@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { startSignup, confirmSignup, resendSignupCode } from "@/lib/actions/signup"
 import { Turnstile, TURNSTILE_SITE_KEY as SITE_KEY } from "@/components/ui/turnstile"
+import { CodeInput } from "@/components/auth/code-input"
 const PRIVACY_URL = "https://www.omnikora.com.br/privacidade"
 
 const INPUT =
@@ -52,6 +53,8 @@ export function SignupClient({ trialDays }: { trialDays: number | null }) {
   const [code, setCode]           = useState("")
   const [activated, setActivated] = useState(false)
   const [resentMsg, setResentMsg] = useState("")
+  const codeRef       = useRef<HTMLInputElement>(null)
+  const submittingRef = useRef(false)   // o 6º dígito e o botão confirmam — só uma vez
 
   const captchaOk = SITE_KEY ? !!captcha : true
 
@@ -64,14 +67,16 @@ export function SignupClient({ trialDays }: { trialDays: number | null }) {
     else setError(r.error ?? "Não foi possível continuar.")
   }
 
-  async function submitCode(e: React.FormEvent) {
-    e.preventDefault()
-    if (code.length !== 6) return
-    setError(""); setLoading(true)
-    const r = await confirmSignup(email, code)
+  // Chamado pelo 6º dígito (digitado, colado ou sugerido pelo celular) e pelo botão.
+  async function submitCode(value: string) {
+    if (value.length !== 6 || submittingRef.current) return
+    submittingRef.current = true
+    setError(""); setResentMsg(""); setLoading(true)
+    const r = await confirmSignup(email, value)
     setLoading(false)
+    submittingRef.current = false
     if (r.ok) { setActivated(!!r.activated); setStep("done") }
-    else setError(r.error ?? "Código inválido.")
+    else { setError(r.error ?? "Código inválido."); setCode(""); codeRef.current?.focus() }
   }
 
   async function resend() {
@@ -150,10 +155,13 @@ export function SignupClient({ trialDays }: { trialDays: number | null }) {
             )}
 
             {step === "verify" && (
-              <form onSubmit={submitCode} className="space-y-5 mt-6">
+              <form onSubmit={(e) => { e.preventDefault(); void submitCode(code) }} className="space-y-5 mt-6">
                 <Header title="Confirme seu email" subtitle={<>Enviamos um código de 6 dígitos para <strong className="text-slate-700">{email}</strong>.</>} />
 
-                <CodeInput value={code} onChange={(v) => { setCode(v); setError(""); setResentMsg("") }} disabled={loading} />
+                <label htmlFor="signup-code" className="sr-only">Código de verificação de 6 dígitos</label>
+                <CodeInput id="signup-code" inputRef={codeRef} value={code}
+                  onChange={(v) => { setCode(v); setError(""); setResentMsg("") }}
+                  onComplete={(v) => void submitCode(v)} busy={loading} />
 
                 {resentMsg && <p className="text-center text-xs text-emerald-600 font-medium">{resentMsg}</p>}
                 {error && <ErrorBox>{error}</ErrorBox>}
@@ -257,34 +265,6 @@ function SubmitButton({ loading, disabled, children }: { loading: boolean; disab
       className="w-full h-11 rounded-lg bg-primary hover:bg-primary-700 text-white font-semibold text-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
       {loading ? <><Loader2 className="size-4 animate-spin" /> Aguarde…</> : <>{children} <ArrowRight className="size-4" /></>}
     </button>
-  )
-}
-
-/** Código de 6 dígitos em caixas separadas, com auto-avanço e colar. */
-function CodeInput({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
-  const refs = useRef<(HTMLInputElement | null)[]>([])
-  const setAt = (i: number, ch: string) => {
-    const d = ch.replace(/\D/g, "")
-    const arr = value.padEnd(6).split("")
-    arr[i] = d.slice(-1) || " "
-    const next = arr.join("").replace(/\s/g, "").slice(0, 6)
-    onChange(next)
-    if (d && i < 5) refs.current[i + 1]?.focus()
-  }
-  return (
-    <div className="flex gap-2 justify-center"
-      onPaste={(e) => {
-        const d = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6)
-        if (d) { onChange(d); refs.current[Math.min(d.length, 5)]?.focus(); e.preventDefault() }
-      }}>
-      {Array.from({ length: 6 }).map((_, i) => (
-        <input key={i} ref={(el) => { refs.current[i] = el }} value={value[i] ?? ""}
-          onChange={(e) => setAt(i, e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Backspace" && !value[i] && i > 0) refs.current[i - 1]?.focus() }}
-          inputMode="numeric" maxLength={1} disabled={disabled} autoFocus={i === 0}
-          className="size-12 text-center text-xl font-bold text-slate-900 rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 disabled:opacity-50 transition-shadow" />
-      ))}
-    </div>
   )
 }
 

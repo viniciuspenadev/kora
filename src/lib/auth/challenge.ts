@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { sendEmail, buildLoginCodeEmail, buildNewDeviceEmail, getAppBaseUrl } from "@/lib/email/send"
 import { deviceLabel } from "@/lib/auth/device"
 import { mintRevokeToken } from "@/lib/auth/revoke-link"
+import { wrongCodeFeedback, type CodeFailReason } from "@/lib/auth/code-feedback"
 
 // ═══════════════════════════════════════════════════════════════
 // Desafio de login — OTP por e-mail  [F3]
@@ -128,9 +129,11 @@ export async function createLoginChallenge(input: {
   return { ok: true }
 }
 
+// `reason` escolhe a saída na tela (novo código × recomeçar); `attemptsLeft` só vem em código
+// errado. Nada disso é segredo: o teto de tentativas é fixo e o contador mora no banco.
 export type ChallengeVerify =
   | { ok: true; userId: string; deviceId: string; credentialProvedAt: string }
-  | { ok: false; error: string }
+  | { ok: false; error: string; reason: CodeFailReason; attemptsLeft?: number }
 
 /**
  * Valida o código do desafio deste par (usuário, dispositivo). Endereçamento
@@ -143,7 +146,7 @@ export async function verifyLoginChallenge(input: {
   code:     string
 }): Promise<ChallengeVerify> {
   const code = String(input.code ?? "").replace(/\D/g, "")
-  if (code.length !== 6) return { ok: false, error: "Código incorreto." }
+  if (code.length !== 6) return { ok: false, error: "Código incorreto.", reason: "wrong" }
 
   const { data: row } = await supabaseAdmin
     .from("login_challenges")
@@ -155,9 +158,9 @@ export async function verifyLoginChallenge(input: {
     .limit(1)
     .maybeSingle()
 
-  if (!row) return { ok: false, error: "Verificação não encontrada. Faça login de novo." }
+  if (!row) return { ok: false, error: "Verificação não encontrada. Faça login de novo.", reason: "missing" }
   if (new Date(row.expires_at).getTime() < Date.now()) {
-    return { ok: false, error: "O código expirou. Peça um novo." }
+    return { ok: false, error: "O código expirou. Peça um novo.", reason: "expired" }
   }
 
   // Incremento ATÔMICO do contador ANTES de comparar (o §7 chama attempts de "a
@@ -172,10 +175,10 @@ export async function verifyLoginChallenge(input: {
     .is("consumed_at", null)
     .select("attempts")
     .maybeSingle()
-  if (!bumped) return { ok: false, error: "Muitas tentativas. Peça um novo código." }
+  if (!bumped) return { ok: false, error: "Muitas tentativas. Peça um novo código.", reason: "exhausted", attemptsLeft: 0 }
 
   if (hashOtp(code) !== row.code_hash) {
-    return { ok: false, error: "Código incorreto." }
+    return { ok: false, ...wrongCodeFeedback(bumped.attempts as number, MAX_ATTEMPTS) }
   }
 
   // Consumo atômico: duas submissões simultâneas → uma só passa.
@@ -186,7 +189,7 @@ export async function verifyLoginChallenge(input: {
     .is("consumed_at", null)
     .select("id")
     .maybeSingle()
-  if (!claimed) return { ok: false, error: "Verificação já utilizada. Faça login de novo." }
+  if (!claimed) return { ok: false, error: "Verificação já utilizada. Faça login de novo.", reason: "used" }
 
   return { ok: true, userId: input.userId, deviceId: input.deviceId, credentialProvedAt: row.credential_proved_at ?? row.created_at }
 }

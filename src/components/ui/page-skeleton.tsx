@@ -4,8 +4,10 @@
 // zero fetch, zero client JS.
 // ═══════════════════════════════════════════════════════════════
 
+// `data-skeleton`: marca explícita de "ainda carregando" — a tela de entrada pós-login
+// (boot-splash.tsx) só sai quando não há mais nenhuma na página. Não usar em outra coisa.
 export function Pulse({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-lg bg-slate-200/70 ${className}`} />
+  return <div data-skeleton="" className={`animate-pulse rounded-lg bg-slate-200/70 ${className}`} />
 }
 
 /** Header padrão do PageShell (ícone + título + subtítulo). */

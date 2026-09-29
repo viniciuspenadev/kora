@@ -23,11 +23,15 @@ export const ENTERING_PHRASES = [
   "Preparando seu ambiente de trabalho…",
   "Quase lá…",
 ] as const
+/** Última frase, quando o conteúdo terminou de carregar (a barra completa antes de sair). */
+export const ENTERING_DONE = "Tudo pronto"
 export const ENTERING_STEP_MS = 1400
 /** Tempo mínimo total desde o acesso confirmado — a animação não pisca. */
 export const ENTERING_MIN_MS = 1500
 /** Teto depois de o sistema montar — a tela nunca prende a pessoa. */
 export const ENTERING_MAX_MS = 8000
+/** Quanto a barra cheia + "Tudo pronto" ficam na tela antes do fade. */
+export const ENTERING_DONE_HOLD_MS = 600
 
 /** Instante válido do cookie, ou null (ausente, malformado ou fora da janela). */
 export function parseEnteringCookie(value: string | null | undefined, now: number): number | null {

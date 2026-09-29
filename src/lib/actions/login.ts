@@ -7,6 +7,7 @@ import { verifyPassword, mintLoginTicket, firstAccessibleTenantId } from "@/lib/
 import { createLoginChallenge, verifyLoginChallenge, notifyNewDeviceLogin } from "@/lib/auth/challenge"
 import { hasValidTrust, touchTrust, grantTrust } from "@/lib/auth/trust"
 import { countLoginFailures, recordLoginFailure, clearLoginFailures } from "@/lib/auth/failures"
+import type { CodeFailReason } from "@/lib/auth/code-feedback"
 import { verifyTurnstile } from "@/lib/turnstile"
 import {
   DEVICE_COOKIE,
@@ -150,14 +151,17 @@ export async function beginLogin(
 
 // ── Etapa 2: código do desafio → ticket ───────────────────────────
 
+// `reason`/`attemptsLeft` (code-feedback.ts): a tela escolhe a saída pelo motivo, nunca pela frase.
+// Sem `reason` = falha passageira nossa (tentar de novo resolve).
 export type ConfirmLoginResult =
   | { ok: true; ticket: string }
-  | { ok: false; error: string }
+  | { ok: false; error: string; reason?: CodeFailReason; attemptsLeft?: number }
 
 /**
  * Valida o código enviado por e-mail e emite o ticket. O desafio é endereçado
  * pelo par (email → usuário, cookie → dispositivo): sem o cookie que iniciou o
- * login não há o que atacar. `trustDevice` = checkbox "confiar por 30 dias".
+ * login não há o que atacar. `trustDevice` = checkbox "Lembrar deste aparelho por 30 dias"
+ * (DESMARCADO por padrão desde 29/09/2026 — decisão do dono; ver docs/auth-device-trust-design.md §0).
  */
 export async function confirmLoginCode(
   emailRaw: string,
@@ -170,17 +174,17 @@ export async function confirmLoginCode(
   // Camada de UX em memória; a defesa real é o attempts persistente por desafio.
   const emailKey = String(emailRaw ?? "").toLowerCase().trim().slice(0, 254)
   if (!rateLimit(`auth:code:${emailKey}`, 10, 15 * 60_000).ok) {
-    return { ok: false, error: "Muitas tentativas. Aguarde alguns minutos." }
+    return { ok: false, error: "Muitas tentativas. Aguarde alguns minutos.", reason: "throttled" }
   }
   if (ip !== "unknown" && !rateLimit(`auth:code:ip:${ip}`, 30, 15 * 60_000).ok) {
-    return { ok: false, error: "Muitas tentativas. Aguarde alguns minutos." }
+    return { ok: false, error: "Muitas tentativas. Aguarde alguns minutos.", reason: "throttled" }
   }
 
   const actor = await resolveChallengeActor(emailKey)
-  if (!actor) return { ok: false, error: "Verificação não encontrada. Faça login de novo." }
+  if (!actor) return { ok: false, error: "Verificação não encontrada. Faça login de novo.", reason: "missing" }
 
   const result = await verifyLoginChallenge({ userId: actor.userId, deviceId: actor.deviceId, code })
-  if (!result.ok) return { ok: false, error: result.error }
+  if (!result.ok) return { ok: false, error: result.error, reason: result.reason, attemptsLeft: result.attemptsLeft }
 
   // Prova de posse do e-mail concluída → confiança (se a pessoa quis).
   if (trustDevice) await grantTrust(actor.userId, actor.deviceId, ip, result.credentialProvedAt)
@@ -206,7 +210,7 @@ export async function confirmLoginCode(
 }
 
 /** Reenvia o código — exige desafio aberto pro par (email, cookie). */
-export async function resendLoginCode(emailRaw: string): Promise<{ ok: boolean; error?: string }> {
+export async function resendLoginCode(emailRaw: string): Promise<{ ok: boolean; error?: string; reason?: CodeFailReason }> {
   const h  = await headers()
   const ip = getClientIpFromHeaders(h)
   const emailKey = String(emailRaw ?? "").toLowerCase().trim().slice(0, 254)
@@ -215,7 +219,7 @@ export async function resendLoginCode(emailRaw: string): Promise<{ ok: boolean; 
   }
 
   const actor = await resolveChallengeActor(emailKey)
-  if (!actor) return { ok: false, error: "Verificação não encontrada. Faça login de novo." }
+  if (!actor) return { ok: false, error: "Verificação não encontrada. Faça login de novo.", reason: "missing" }
 
   // createLoginChallenge já aplica o throttle de 60s e o cap de 5/hora.
   const ch = await createLoginChallenge({
