@@ -31,6 +31,7 @@ import {
   LEVEL_RANK, APPT_VISIBILITY_SELECT, type ApptVisibility, type ShareLevel,
 } from "@/lib/agenda/access"
 import { logAudit } from "@/lib/audit"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 // ═══════════════════════════════════════════════════════════════
 // Kora Companion — queries de leitura (F0)
@@ -637,7 +638,7 @@ export async function addComandaItemsExt(
 
 type QuoteDocRow = {
   id: string; deal_id: string | null; pdf_path: string | null
-  kind: DocumentKind; year: number; number: number; status: DocumentStatus
+  kind: DocumentKind; year: number; number: number; code_prefix: string | null; status: DocumentStatus
 }
 
 /** Documento no alcance do viewer (gate = o do NEGÓCIO dele; órfão = só gestor). */
@@ -645,7 +646,7 @@ async function quoteInScope(scope: ViewerScope, docId: string): Promise<QuoteDoc
   if (!(await canUseDeals(scope))) return null
   const { data } = await supabaseAdmin
     .from("commercial_documents")
-    .select("id, deal_id, pdf_path, kind, year, number, status")
+    .select("id, deal_id, pdf_path, kind, year, number, code_prefix, status")
     .eq("id", docId).eq("tenant_id", scope.tenantId).maybeSingle()
   const doc = (data as QuoteDocRow | null) ?? null
   if (!doc) return null
@@ -661,11 +662,11 @@ export async function quotePdfExt(
   docId: string,
 ): Promise<{ bytes: ArrayBuffer; fileName: string } | { error: string }> {
   const doc = await quoteInScope(scope, docId)
-  if (!doc) return { error: "Cotação não encontrada." }
-  if (!doc.pdf_path) return { error: "PDF da cotação indisponível." }
+  if (!doc) return { error: `${QUOTE_TERM.one} não ${qg("encontrado", "encontrada")}.` }
+  if (!doc.pdf_path) return { error: `PDF ${QUOTE_TERM.ofThe} indisponível.` }
   const { data: blob, error } = await supabaseAdmin.storage.from("chat-attachments").download(doc.pdf_path)
-  if (error || !blob) return { error: "Erro ao ler o PDF da cotação." }
-  const code = docCode(doc.kind, doc.number, doc.year)
+  if (error || !blob) return { error: `Erro ao ler o PDF ${QUOTE_TERM.ofThe}.` }
+  const code = docCode(doc.kind, doc.number, doc.year, doc.code_prefix)
   return { bytes: await blob.arrayBuffer(), fileName: `${code.replace("/", "-")}.pdf` }
 }
 
@@ -675,15 +676,15 @@ export async function markQuoteSentExt(
   docId: string,
 ): Promise<{ ok: true } | { error: string }> {
   const doc = await quoteInScope(scope, docId)
-  if (!doc) return { error: "Cotação não encontrada." }
+  if (!doc) return { error: `${QUOTE_TERM.one} não ${qg("encontrado", "encontrada")}.` }
   const r = await markDocumentSent(scope.tenantId, scope.userId, docId)
   if ("error" in r) return r
   if (doc.deal_id) {
-    const code = docCode(doc.kind, doc.number, doc.year)
+    const code = docCode(doc.kind, doc.number, doc.year, doc.code_prefix)
     await recordDealEvent({
       tenantId: scope.tenantId, dealId: doc.deal_id, type: "note",
       conversationId: await conversationOfDeal(scope.tenantId, doc.deal_id),
-      by: scope.userId, note: `Cotação ${code} enviada pelo WhatsApp Web (extensão)`, postCard: false,
+      by: scope.userId, note: `${QUOTE_TERM.one} ${code} ${qg("enviado", "enviada")} pelo WhatsApp Web (extensão)`, postCard: false,
     })
   }
   return { ok: true }
@@ -1084,12 +1085,12 @@ async function radarPendingQuotes(scope: ViewerScope): Promise<ExtRadar["pending
   const cutoff = new Date(Date.now() - 3 * 86_400_000).toISOString()
   const { data: docs } = await supabaseAdmin
     .from("commercial_documents")
-    .select("id, kind, year, number, deal_id, sent_at, snapshot")
+    .select("id, kind, year, number, code_prefix, deal_id, sent_at, snapshot")
     .eq("tenant_id", scope.tenantId).eq("kind", "quote").eq("status", "sent")
     .is("superseded_by", null).not("deal_id", "is", null).lt("sent_at", cutoff)
     .order("sent_at", { ascending: true }).limit(15)
   const rows = (docs ?? []) as {
-    id: string; kind: DocumentKind; year: number; number: number
+    id: string; kind: DocumentKind; year: number; number: number; code_prefix: string | null
     deal_id: string; sent_at: string; snapshot: { totals?: { total_cents?: number } } | null
   }[]
   if (!rows.length) return []
@@ -1113,7 +1114,7 @@ async function radarPendingQuotes(scope: ViewerScope): Promise<ExtRadar["pending
     const c = deal.chat_contacts as { custom_name: string | null; push_name: string | null; phone_number: string | null } | null
     const contactName = c?.custom_name || c?.push_name || null
     const first = firstName(contactName)
-    const code = docCode(r.kind, r.number, r.year)
+    const code = docCode(r.kind, r.number, r.year, r.code_prefix)
     out.push({
       id: r.id, code,
       totalCents: Number(r.snapshot?.totals?.total_cents ?? 0),
@@ -1121,7 +1122,7 @@ async function radarPendingQuotes(scope: ViewerScope): Promise<ExtRadar["pending
       dealName: (deal.name as string | null) ?? null,
       contactName,
       contactPhone: c?.phone_number ?? null,
-      draft: `Oi${first ? `, ${first}` : ""}! Sobre a cotação ${code} que te enviei — ficou alguma dúvida? Posso ajustar o que for preciso.`,
+      draft: `Oi${first ? `, ${first}` : ""}! Sobre ${QUOTE_TERM.the} ${code} que te enviei — ficou alguma dúvida? Posso ajustar o que for preciso.`,
     })
     if (out.length >= 10) break
   }

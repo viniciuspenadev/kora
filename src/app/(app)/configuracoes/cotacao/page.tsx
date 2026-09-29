@@ -7,6 +7,7 @@ import { listQuoteTemplates } from "@/lib/actions/quote-templates"
 import { getCrmItemPolicies } from "@/lib/actions/crm-policies"
 import { TemplatesClient } from "./templates-client"
 import { ItemPolicyCard } from "./item-policy-card"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 export default async function QuoteTemplatesPage() {
   const session = await auth()
@@ -18,8 +19,8 @@ export default async function QuoteTemplatesPage() {
 
   return (
     <PageShell
-      title="Cotação e Contrato"
-      description="Modelos reutilizáveis de condições, observações e contrato. O time insere na cotação com 1 clique; você governa o que fica disponível."
+      title={QUOTE_TERM.settings}
+      description={`Modelos reutilizáveis de condições, observações e contrato. O time insere ${qg("no", "na")} ${QUOTE_TERM.oneLower} com 1 clique; você governa o que fica disponível.`}
       icon={FileText}
     >
       {"error" in policies

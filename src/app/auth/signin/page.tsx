@@ -2,17 +2,18 @@
 
 import { signIn } from "next-auth/react"
 import { useEffect, useRef, useState } from "react"
-import { useRouter } from "next/navigation"
 import Image from "next/image"
 import Link from "next/link"
 import { Loader2, AlertCircle, Mail, Lock, ArrowRight, ShieldCheck, ArrowLeft } from "lucide-react"
 import { beginLogin, confirmLoginCode, resendLoginCode } from "@/lib/actions/login"
 import { Turnstile, TURNSTILE_SITE_KEY } from "@/components/ui/turnstile"
+import { EnteringSplash } from "@/components/auth/entering-splash"
+import { markEntering } from "@/lib/auth/entering"
 
 export default function SignInPage() {
-  const router = useRouter()
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+  const [enteringAt, setEnteringAt] = useState<number | null>(null)
 
   // Etapa 2 (device trust F3): dispositivo não reconhecido → código por e-mail.
   const [step, setStep] = useState<"credentials" | "code">("credentials")
@@ -47,7 +48,14 @@ export default function SignInPage() {
       setError("Não foi possível concluir o acesso. Tente de novo.")
       setLoading(false)
     } else {
-      router.push("/")
+      // Acesso confirmado → tela de entrada (logo + frases). O instante vai num cookie curto
+      // para o sistema já nascer com a MESMA tela por cima e continuar a frase (boot-splash).
+      // Página nova (não navegação interna): descarta da memória a página onde a senha foi
+      // digitada e abre o sistema do zero, já com a sessão nova.
+      const at = Date.now()
+      markEntering(at)
+      setEnteringAt(at)
+      window.location.assign("/")
     }
   }
 
@@ -108,6 +116,8 @@ export default function SignInPage() {
     setError("")
     setCode("")
   }
+
+  if (enteringAt !== null) return <EnteringSplash startedAt={enteringAt} stuckHelp />
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-canvas font-sans selection:bg-indigo-500/20">

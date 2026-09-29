@@ -36,7 +36,9 @@ const entLower = (e: Ent) => entLabel(e).toLowerCase()
 // ── Sugestões + campos padrões (referência estática por entidade) ─────────────
 const SUGGESTIONS: Record<Ent, { label: string; type: CustomFieldType }[]> = {
   contact: [{ label: "Convênio", type: "select" }, { label: "Profissão", type: "text" }, { label: "Cidade", type: "text" }, { label: "Instagram", type: "text" }],
-  deal:    [{ label: "Orçamento", type: "number" }, { label: "Motivo da perda", type: "select" }, { label: "Concorrente", type: "text" }, { label: "Nº da proposta", type: "text" }],
+  // "Orçamento" virou o nome do documento (29/09/2026) → a verba do cliente ganha nome próprio;
+  // o número do orçamento o sistema já gera — o campo útil é o pedido de compra do cliente.
+  deal:    [{ label: "Verba do cliente", type: "number" }, { label: "Motivo da perda", type: "select" }, { label: "Concorrente", type: "text" }, { label: "Nº do pedido de compra", type: "text" }],
   product: [{ label: "Garantia", type: "text" }, { label: "Material", type: "text" }, { label: "Fornecedor", type: "text" }, { label: "Peso", type: "number" }],
 }
 const DEFAULTS: Record<Ent, { label: string; sub: string }[]> = {

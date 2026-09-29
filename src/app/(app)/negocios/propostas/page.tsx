@@ -1,14 +1,8 @@
-import { getProposals, getProposalsSummary, getProposalAgents } from "@/lib/actions/proposals"
-import { PropostasClient } from "./propostas-client"
+import { redirect } from "next/navigation"
 
-// Propostas — lista transversal de cotações (acompanhamento/cobrança). Gate = gestor de
-// Negócios (a action fail-closa; o item de menu já é deals_manage). Defaults = as mesmas
-// do client (aberto + vencendo primeiro) pra a 1ª renderização casar.
-export default async function PropostasPage() {
-  const [initial, summary, agents] = await Promise.all([
-    getProposals({ filters: { status: "open" }, sort: { by: "valid", dir: "asc" }, limit: 30 }),
-    getProposalsSummary(),
-    getProposalAgents(),
-  ])
-  return <PropostasClient initial={initial} summary={summary} agents={agents} />
+// "Propostas" foi absorvida pela Lista de negócios (dono, 29/09/2026): a coluna "Orçamento"
+// mostra o PDF e a situação, e os atalhos cobram os vencidos. Aceitar/recusar, anular e o
+// histórico de versões ficam na aba de orçamentos do negócio. O endereço antigo segue vivo.
+export default function PropostasPage() {
+  redirect("/negocios?view=list&status=open&focus=with_quote")
 }

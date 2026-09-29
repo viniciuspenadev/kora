@@ -4,6 +4,7 @@ import { useEffect } from "react"
 import { FileText, Download, X } from "lucide-react"
 import { StatusChip } from "@/components/crm/quote-status"
 import type { DocumentStatus } from "@/lib/commercial/documents"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 
 // Viewer COMPACTO do PDF de cotação — modal em formato de DOCUMENTO (max-w 680px,
 // não tela cheia). Iframe da rota autenticada /api/documents/[id]/pdf (nada exposto).
@@ -37,7 +38,7 @@ export function QuoteViewer({ id, code, status, validUntil = null, onClose }: {
             </button>
           </div>
         </div>
-        <iframe src={`/api/documents/${id}/pdf`} title={`Proposta ${code}`} className="w-full flex-1 bg-slate-100" />
+        <iframe src={`/api/documents/${id}/pdf`} title={`${QUOTE_TERM.one} ${code}`} className="w-full flex-1 bg-slate-100" />
       </div>
     </div>
   )

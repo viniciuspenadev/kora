@@ -38,11 +38,11 @@ export default async function NewQuotePage({ params, searchParams }: {
   let installments: number | null = (deal.installments as number | null) ?? null
   if (from) {
     const { data: doc } = await supabaseAdmin.from("commercial_documents")
-      .select("id, kind, number, year, status, snapshot")
+      .select("id, kind, number, year, code_prefix, status, snapshot")
       .eq("id", from).eq("tenant_id", tenantId).eq("deal_id", dealId).eq("kind", "quote").maybeSingle()
     if (doc && (doc.status as string) !== "void") {
       const snap = doc.snapshot as QuoteSnapshot
-      fromDoc = { id: doc.id as string, code: docCode(doc.kind as DocumentKind, doc.number as number, doc.year as number) }
+      fromDoc = { id: doc.id as string, code: docCode(doc.kind as DocumentKind, doc.number as number, doc.year as number, doc.code_prefix as string | null) }
       const today = new Date().toISOString().slice(0, 10)
       initial = {
         terms:      snap.conditions?.payment_terms ?? null,

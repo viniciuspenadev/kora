@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { DealRow } from "@/lib/actions/deals"
-import { dealListReturnHref, dealStageDays, filterDealList, sortDealList, taskTiming, type DealListFilters } from "./deal-list"
+import { dealListCsvRows, dealListReturnHref, dealStageDays, filterDealList, pickDealQuote, quoteSituation, sortDealList, taskTiming, type DealListFilters, type DealQuoteDoc } from "./deal-list"
 
 const now = new Date(2026, 8, 3, 12).getTime()
 const filters: DealListFilters = { search: "", pipeline: "", stage: "", status: "", responsible: "", unit: "", focus: "" }
@@ -53,5 +53,44 @@ describe("deal list", () => {
     expect(dealStageDays(deal("a", { stage_entered_at: new Date(now - 4 * 86_400_000).toISOString() }), now)).toBe(4)
     expect(dealStageDays(deal("b", { stage_entered_at: "invalid" }), now)).toBeNull()
     expect(dealStageDays(deal("c", { stage_entered_at: new Date(now + 1000).toISOString() }), now)).toBe(0)
+  })
+})
+
+// Coluna "Orçamento" + atalhos de cobrança (a página Propostas foi absorvida pela Lista).
+describe("deal list quotes", () => {
+  const doc = (id: string, status: DealQuoteDoc["status"], createdAt: string, validUntil: string | null = null): DealQuoteDoc =>
+    ({ id, code: status === "draft" ? "Rascunho" : `COT-${id}/2026`, status, validUntil, createdAt })
+  it("represents the deal by its latest issued quote; a draft only when nothing was issued", () => {
+    expect(pickDealQuote([])).toBeNull()
+    expect(pickDealQuote([doc("1", "sent", "2026-09-01"), doc("2", "draft", "2026-09-05"), doc("3", "accepted", "2026-09-03")]))
+      .toMatchObject({ id: "3", status: "accepted", others: 1 })
+    expect(pickDealQuote([doc("9", "draft", "2026-09-05")])).toMatchObject({ id: "9", status: "draft", others: 0 })
+  })
+  it("tells expired, expiring and open apart by the local calendar day", () => {
+    const q = (validUntil: string | null, status: DealQuoteDoc["status"] = "sent") => ({ id: "q", code: "COT-0001/2026", status, validUntil, others: 0 })
+    expect(quoteSituation(q("2026-09-01"), now)).toMatchObject({ key: "expired", label: "Vencido há 2 dias", tone: "danger" })
+    expect(quoteSituation(q("2026-09-03"), now)).toMatchObject({ key: "soon", label: "Vence hoje" })
+    expect(quoteSituation(q("2026-09-10"), now)).toMatchObject({ key: "soon", label: "Vence em 7 dias" })
+    expect(quoteSituation(q("2026-09-30"), now)).toMatchObject({ key: "open", label: "Enviado · vence 30/09" })
+    expect(quoteSituation(q("2026-09-01", "accepted"), now)).toMatchObject({ key: "accepted", tone: "success" })
+    expect(quoteSituation(null, now).key).toBe("none")
+  })
+  it("quote shortcuts filter the list; draft-only counts as without a quote", () => {
+    const rows = [
+      deal("expired", { quote: { id: "a", code: "COT-1", status: "sent", validUntil: "2026-09-01", others: 0 } }),
+      deal("soon", { quote: { id: "b", code: "COT-2", status: "active", validUntil: "2026-09-05", others: 0 } }),
+      deal("draft", { quote: { id: "c", code: "Rascunho", status: "draft", validUntil: null, others: 0 } }),
+      deal("none"),
+    ]
+    const ids = (focus: DealListFilters["focus"]) => filterDealList(rows, { ...filters, focus }, now).map((d) => d.id)
+    expect(ids("quote_expired")).toEqual(["expired"])
+    expect(ids("quote_soon")).toEqual(["soon"])
+    expect(ids("with_quote")).toEqual(["expired", "soon"])
+    expect(ids("no_quote")).toEqual(["draft", "none"])
+  })
+  it("exports the visible rows with the quote code and situation", () => {
+    const [header, row] = dealListCsvRows([deal("x", { estimated_value: 1500, quote: { id: "a", code: "COT-0001/2026", status: "sent", validUntil: "2026-09-01", others: 0 } })], now)
+    expect(header).toContain("Orçamento")
+    expect(row).toEqual(expect.arrayContaining(["Plano comercial", "João", "Órbita", "Vendas", "COT-0001/2026", "Vencido há 2 dias"]))
   })
 })

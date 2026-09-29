@@ -69,7 +69,7 @@ export async function GET(_req: NextRequest) {
   const discount = subtotal - total
 
   const data: QuotePdfData = {
-    code:       "COT-0001/2026",
+    code:       "ORC-0001/2026",
     issuedAt:   new Date().toISOString(),
     validUntil: new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10),
     issuer: {

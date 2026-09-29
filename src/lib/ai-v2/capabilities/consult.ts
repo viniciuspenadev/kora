@@ -14,6 +14,8 @@ import { defineCapability } from "./registry"
 import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import { fmtFull } from "@/lib/agenda/format"
+import { docCode, type DocumentKind } from "@/lib/commercial/documents"
+import { QUOTE_TERM as Q, qg } from "@/lib/commercial/quote-terms"
 import { safeValue } from "../safe-text"
 import type { ExecCtx } from "./types"
 
@@ -224,10 +226,12 @@ export const consultDealsCapability = defineCapability<Record<string, never>>({
   },
 })
 
-// ── Consultar COTAÇÕES ─────────────────────────────────────────
+// ── Consultar ORÇAMENTOS ───────────────────────────────────────
+// O cliente chama de orçamento, proposta ou cotação — a descrição cobre os três; as
+// respostas usam o nome que a empresa usa (quote-terms.ts).
 export const consultQuotesCapability = defineCapability<Record<string, never>>({
   id:           CONSULT_QUOTES,
-  name:         "Consultar cotações",
+  name:         `Consultar ${Q.manyLower}`,
   category:     "crm",
   minPlanLevel: 0,
   isNode:       false,
@@ -235,16 +239,16 @@ export const consultQuotesCapability = defineCapability<Record<string, never>>({
     type: "function",
     function: {
       name:        CONSULT_QUOTES,
-      description: "Consulta as cotações/propostas já ENVIADAS a este cliente (status e validade). Use quando ele perguntar da proposta que recebeu.",
+      description: `Consulta ${qg("os", "as")} ${Q.manyLower} (o cliente pode chamar de orçamento, proposta ou cotação) já ${qg("ENVIADOS", "ENVIADAS")} a este cliente (status e validade). Use quando ele perguntar do que recebeu.`,
       parameters:  { type: "object", properties: {}, required: [], additionalProperties: false },
     },
   },
   playbook: () =>
-    "COTAÇÕES: se o cliente perguntar da proposta/cotação que recebeu, consulte com consult_quotes e responda status e validade — nunca invente valores. Proposta vencida → ofereça acionar o time pra atualizar.",
+    `${Q.many.toUpperCase()}: se o cliente perguntar ${Q.ofThe} (ou da proposta/cotação) que recebeu, consulte com consult_quotes e responda status e validade — nunca invente valores. ${Q.one} ${qg("vencido", "vencida")} → ofereça acionar o time pra atualizar.`,
   parseArgs: () => ({}),
   execute: async (ctx) => {
     if (!(await hasModule(ctx.tenantId, "crm"))) {
-      return { ok: true, toolMessage: "Consulta de cotações indisponível. Diga que vai verificar com o time." }
+      return { ok: true, toolMessage: `Consulta de ${Q.manyLower} indisponível. Diga que vai verificar com o time.` }
     }
     const gate3 = verifyGate(ctx, CONSULT_QUOTES)
     if (gate3) return { ok: true, toolMessage: gate3 }
@@ -257,34 +261,36 @@ export const consultQuotesCapability = defineCapability<Record<string, never>>({
     // Filtro de KIND obrigatório: o mesmo (ano, número) existe pra pedido/contrato —
     // sem ele a "Fonte Cotações" listaria pedido como proposta (auditoria A3).
     const { data } = await supabaseAdmin.from("commercial_documents")
-      .select("number, year, kind, status, valid_until, sent_at, accepted_at, snapshot")
+      .select("number, year, kind, code_prefix, status, valid_until, sent_at, accepted_at, snapshot")
       .eq("tenant_id", ctx.tenantId).eq("contact_id", ctx.contact.id)
       .eq("kind", "quote")
       .in("status", ["active", "sent", "accepted", "declined"])
       .order("sent_at", { ascending: false, nullsFirst: false }).limit(5)
-    type Doc = { number: number | null; year: number | null; status: string; valid_until: string | null; sent_at: string | null; snapshot: Record<string, unknown> | null }
+    type Doc = { number: number | null; year: number | null; kind: DocumentKind; code_prefix: string | null; status: string; valid_until: string | null; sent_at: string | null; snapshot: Record<string, unknown> | null }
     const docs = (data ?? []) as unknown as Doc[]
     if (docs.length === 0) {
-      return { ok: true, toolMessage: "Este cliente NÃO tem proposta. Se ele espera uma, avise que vai acionar o time." }
+      return { ok: true, toolMessage: `Este cliente NÃO tem ${Q.oneLower}. Se ele espera ${qg("um", "uma")}, avise que vai acionar o time.` }
     }
     const now = Date.now()
+    const expired = qg("VENCIDO", "VENCIDA")
     const lines = docs.map((d) => {
-      const num = d.number != null ? `COT-${String(d.number).padStart(3, "0")}/${d.year ?? ""}` : "proposta"
-      const st  = d.status === "accepted" ? "ACEITA"
-        // "recusada" ACUSA o cliente de algo que quem marcou foi o time (auditoria):
-        // trata como encerrada e oferece atualizar.
-        : d.status === "declined" ? "encerrada"
-        : d.valid_until && new Date(d.valid_until).getTime() < now ? "VENCIDA"
-        : d.status === "active" ? "pronta (ainda não enviada)"
+      // Número pela MESMA função do PDF (antes: 3 dígitos aqui × 4 no PDF).
+      const num = d.number != null && d.year != null ? docCode(d.kind, d.number, d.year, d.code_prefix) : Q.oneLower
+      const st  = d.status === "accepted" ? qg("ACEITO", "ACEITA")
+        // "recusado" ACUSA o cliente de algo que quem marcou foi o time (auditoria):
+        // trata como encerrado e oferece atualizar.
+        : d.status === "declined" ? qg("encerrado", "encerrada")
+        : d.valid_until && new Date(d.valid_until).getTime() < now ? expired
+        : d.status === "active" ? qg("pronto (ainda não enviado)", "pronta (ainda não enviada)")
         : "aguardando seu aceite"
-      const sent = d.sent_at ? ` enviada ${fmtFull(d.sent_at)}` : ""
-      const val  = d.valid_until && st !== "VENCIDA" ? `, válida até ${fmtFull(d.valid_until)}` : ""
+      const sent = d.sent_at ? ` ${qg("enviado", "enviada")} ${fmtFull(d.sent_at)}` : ""
+      const val  = d.valid_until && st !== expired ? `, ${qg("válido", "válida")} até ${fmtFull(d.valid_until)}` : ""
       // Total mora no snapshot imutável — shape defensivo (omite se não achar).
       const totals = (d.snapshot?.totals ?? d.snapshot) as Record<string, unknown> | null
       const cents  = typeof totals?.total_cents === "number" ? (totals.total_cents as number) : null
       const money  = showValue && cents != null ? ` — ${brl(cents / 100)}` : ""
       return `${num}${sent}: ${st}${val}${money}`
     })
-    return { ok: true, toolMessage: `Cotações deste cliente: ${lines.join("; ")}. Vencida ou dúvida no valor → ofereça acionar o time.` }
+    return { ok: true, toolMessage: `${Q.many} deste cliente: ${lines.join("; ")}. ${qg("Vencido", "Vencida")} ou dúvida no valor → ofereça acionar o time.` }
   },
 })

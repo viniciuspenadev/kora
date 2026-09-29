@@ -67,7 +67,8 @@ export function DealsBoard({ pipelines, deals: initial, allTags, pipeId }: {
   }
 
   // Navegar só quando foi CLIQUE — nunca no clique-fantasma após um drag.
-  function openDeal(id: string) { if (draggedRef.current) return; router.push(`/negocios/${id}`) }
+  // Volta da ficha para ESTE quadro (o endereço /negocios sozinho agora abre a Lista).
+  function openDeal(id: string) { if (draggedRef.current) return; router.push(`/negocios/${id}?returnTo=${encodeURIComponent(`/negocios?view=board&pipeline=${pipeId}`)}`) }
 
   function onDragStart(e: DragStartEvent) { draggedRef.current = true; setActiveId(String(e.active.id)) }
   function onDragEnd(e: DragEndEvent) {

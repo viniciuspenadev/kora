@@ -5,6 +5,7 @@ import { ArrowRight, Loader2, Bell, Clock, DollarSign, MessageSquareText, XCircl
 import { CurrencyInput } from "@/components/ui/currency-input"
 import { SimpleSelect } from "@/components/ui/select"
 import { getLostReasons } from "@/lib/actions/deals"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 
 export interface MoveDealResult {
   note:  string
@@ -125,7 +126,7 @@ export function MoveDealDialog({ dealName, fromStageName, fromStageDays, toStage
           <Field icon={Bell} tint="text-primary-500" label="Lembrete de follow-up" hint="evita a venda cair">
             <input value={fuTitle} onChange={(e) => setFuTitle(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit() } }}
-              placeholder="Ex: Ligar pra fechar a proposta"
+              placeholder={`Ex: Ligar pra fechar ${QUOTE_TERM.the}`}
               className="w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">
               {[["Hoje", 0], ["Amanhã", 1], ["+3 dias", 3]].map(([label, d]) => {

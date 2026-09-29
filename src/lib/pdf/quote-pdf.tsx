@@ -4,6 +4,7 @@ import { formatQuantity, formatQuantityWithUnit, unitSpec } from "@/lib/crm/unit
 import type { Style } from "@react-pdf/types"
 import { RichView } from "./richdoc-pdf"
 import { isRichDoc, isEmptyRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 // Cotação em PDF — espelha invoice-pdf.tsx (mesma paleta C, Inter embutida).
 // Mockup aprovado (docs/commercial-core-design.md §7.1): faixa primary no topo,
@@ -321,7 +322,7 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
   const paySummary = paymentSummary(data.paymentMethod, inst, instValueCents)
 
   return (
-    <Document title={`Cotação ${data.code}`}>
+    <Document title={`${QUOTE_TERM.one} ${data.code}`}>
       <Page size="A4" style={s.page}>
         <View style={s.band} fixed />
 
@@ -337,7 +338,7 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
             {issuer.email ? <Text style={s.issuerLine}>{issuer.email}</Text> : null}
           </View>
           <View style={s.metaCol}>
-            <Text style={s.metaKicker}>Cotação</Text>
+            <Text style={s.metaKicker}>{QUOTE_TERM.one}</Text>
             <Text style={s.metaCode}>{data.code}</Text>
             <View style={s.metaRow}>
               <Text style={s.metaLabel}>Emitida</Text>
@@ -447,7 +448,7 @@ export function QuotePdf({ data }: { data: QuotePdfData }) {
           <View style={s.card}>
             <Text style={s.cardLabel}>Validade</Text>
             {data.validUntil
-              ? <Text style={s.cardValue}>Proposta válida até {dt(data.validUntil)}</Text>
+              ? <Text style={s.cardValue}>{QUOTE_TERM.one} {qg("válido", "válida")} até {dt(data.validUntil)}</Text>
               : <Text style={s.cardMuted}>Sem prazo definido</Text>}
           </View>
         </View>

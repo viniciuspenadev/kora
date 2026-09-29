@@ -18,6 +18,7 @@ import { useKeyedSearch } from "@/lib/use-keyed-search"
 /** Identidade estável — exigência do `useKeyedSearch` (ver a doc do hook). */
 const SEM_CIDADE: string[] = []
 import { CnpjConsultaModal } from "@/components/crm/cnpj-consulta-modal"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 const UFS = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"]
 
@@ -161,7 +162,7 @@ export function UnitDialog({ unit, onClose, onFeedback }: Props) {
         open
         onClose={onClose}
         title={unit ? "Editar unidade" : "Nova unidade"}
-        description="Dados da empresa/filial — alimentam o cabeçalho de cotações e pedidos."
+        description={`Dados da empresa/filial — alimentam o cabeçalho de ${QUOTE_TERM.manyLower} e pedidos.`}
         width="md"
         footer={
           <>
@@ -213,7 +214,7 @@ export function UnitDialog({ unit, onClose, onFeedback }: Props) {
               />
             </FormRow>
 
-            <FormRow label="Logo" hint="Aparece nas cotações e documentos da unidade.">
+            <FormRow label="Logo" hint={`Aparece ${qg("nos", "nas")} ${QUOTE_TERM.manyLower} e documentos da unidade.`}>
               {unit ? (
                 <LogoBlock unit={unit} onFeedback={onFeedback} />
               ) : (

@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } fr
 import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
   Bot, Bell, MessageSquare, CalendarDays,
-  Wand2, BarChart3, Blocks, FileText,
+  Wand2, BarChart3, Blocks, Handshake,
   PanelLeftClose, PanelLeftOpen, Package, Boxes, ListChecks, Megaphone, Send, Funnel, Plus, Building2,
 } from "lucide-react"
 import { useAppShell } from "@/components/app/app-shell-context"
@@ -31,7 +31,7 @@ interface NavLeaf {
   /** Sobrescreve a detecção de ativo (ex: itens com querystring que o pathname não pega). */
   activeOverride?: boolean
   hasUnread?: boolean
-  /** "Funil de Vendas": link ao board + botão dedicado que expande os funis de venda ativos. */
+  /** "Funil" (Vendas): link ao quadro + botão dedicado que expande os funis de venda ativos. */
   dealSwitcher?: boolean
 }
 
@@ -87,16 +87,20 @@ const NAV: NavItem[] = [
   { href: "/empresas", label: "Empresas", icon: <Building2 className={topIcon} strokeWidth={1.75} />, module: "crm" },
   {
     key:        "negocios",
-    label:      "Negócios",
+    // "Vendas" (dono, 29/09/2026): antes o grupo "Negócios" tinha o item "Funil de Vendas", cuja
+    // página se chamava "Negócios" e cuja Lista mostrava TODOS os funis. Agora o menu separa o
+    // que se trabalha (Negócios = a lista) de como se enxerga (Funil = o quadro de um funil).
+    label:      "Vendas",
     icon:       <Briefcase className={topIcon} strokeWidth={1.75} />,
     // Grupo-CONTÊINER sem gate próprio (owner 2026-07-25): aparece se houver QUALQUER
     // filho visível — cada filho tem seu módulo+capability. Assim um atendente só de
     // Estoque/Catálogo ainda vê o item dele aqui, sem exigir acesso a Negócios.
     children: [
-      { href: "/negocios/painel",    label: "Painel",          icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_manage" },
-      { href: "/negocios/propostas", label: "Propostas",       icon: <FileText  className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_access" },
-      // "Funil de Vendas" = link ao board + botão dedicado que expande os funis ativos.
-      { href: "/negocios",        label: "Funil de Vendas", icon: <Funnel   className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_access", dealSwitcher: true },
+      // Mesma rota, visões diferentes (`?view=`): o destaque vem de isLeafActive → dealsViewActive.
+      { href: "/negocios?view=list",  label: "Negócios",   icon: <Handshake className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_access" },
+      // "Funil" = link ao quadro + botão dedicado que expande os funis ativos.
+      { href: "/negocios?view=board", label: "Funil",      icon: <Funnel    className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_access", dealSwitcher: true },
+      { href: "/negocios/painel",     label: "Relatórios", icon: <BarChart3 className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "deals_manage" },
       // Catálogo (serve Negócios e Estoque) + Estoque movidos pra CÁ (org do owner) —
       // cada um gateado pelo seu próprio módulo/capability (independentes de Negócios).
       { href: "/catalogo",        label: "Catálogo",        icon: <Package  className={subIcon} strokeWidth={1.75} />, module: "crm", capability: "catalog_access" },
@@ -156,7 +160,7 @@ interface Props {
   expanded?:       boolean
   /** Pipelines ativos → "Pipelines" vira sub-menu (switcher) quando há 2+. */
   pipelines?:      PipelineMini[]
-  /** Funis de VENDA ativos → "Funil de Vendas" (Negócios) ganha expander (1+). */
+  /** Funis de VENDA ativos → "Funil" (Vendas) ganha expander (1+). */
   dealPipelines?:  PipelineMini[]
   /** Sidebar desktop recolhido (só ícones). Undefined = não é o rail desktop (drawer). */
   collapsed?:      boolean
@@ -222,19 +226,23 @@ export function SidebarBody({
     return (pipelines.find((p) => p.is_default) ?? pipelines[0]).id
   }, [pathname, pipelines, searchParams])
 
-  // Funil de VENDA atual (destaque no sub-menu de Negócios): só no board /negocios.
+  // Visão de /negocios: Lista (padrão, item "Negócios") ou Quadro (item "Funil").
+  const dealsView = searchParams.get("view") === "board" ? "board" : "list"
+  const onDealsBoard = pathname === "/negocios" && dealsView === "board"
+
+  // Funil de VENDA atual (destaque no sub-menu de Vendas): só no quadro.
   const currentDealPipelineId = useMemo(() => {
-    if (pathname !== "/negocios") return null
+    if (!onDealsBoard) return null
     if (!dealPipelines?.length) return null
     const q = searchParams.get("pipeline")
     if (q && dealPipelines.some((p) => p.id === q)) return q
     return (dealPipelines.find((p) => p.is_default) ?? dealPipelines[0]).id
-  }, [pathname, dealPipelines, searchParams])
+  }, [onDealsBoard, dealPipelines, searchParams])
 
   // Injeta pipelines como switcher (só com 2+ → vale a pena; 1 continua link direto).
   // Vale pros dois boards: atendimento (/kanban) e vendas (/negocios).
   const nav = useMemo(() => {
-    // /negocios NÃO entra aqui: "Funil de Vendas" é link + expander dedicado (dealSwitcher).
+    // /negocios NÃO entra aqui: "Funil" é link + expander dedicado (dealSwitcher).
     const switchers = [
       { targetHref: "/kanban", key: "pipelines", list: pipelines, currentId: currentPipelineId, toHref: (p: PipelineMini) => `/kanban?pipeline=${p.id}` },
     ].filter((s) => (s.list?.length ?? 0) > 1)
@@ -274,8 +282,19 @@ export function SidebarBody({
     return out
   }, [])
 
+  // "Negócios" e "Funil" dividem /negocios: o destaque vem da visão. A ficha do negócio (e o
+  // compositor do orçamento) acende "Negócios"; a configuração de funis acende "Funil".
+  function dealsViewActive(want: string | null): boolean {
+    if (pathname === "/negocios") return want === dealsView
+    if (pathname.startsWith("/negocios/funis")) return want === "board"
+    if (/^\/negocios\/(?!painel(\/|$)|funis(\/|$)|propostas(\/|$))[^/]+/.test(pathname)) return want === "list"
+    return false
+  }
+
   function isLeafActive(href: string): boolean {
     if (!href) return false
+    const [path, query] = href.split("?")
+    if (query) return path === "/negocios" ? dealsViewActive(new URLSearchParams(query).get("view")) : pathname === path
     if (href === "/") return pathname === "/"
     if (pathname === href) return true
     if (!pathname.startsWith(href + "/")) return false
@@ -398,7 +417,7 @@ export function SidebarBody({
   )
   // Borda direita do rail (x) — âncora da aba fixa "expandir funis" (segue collapse/expand).
   const [railRight, setRailRight] = useState(0)
-  // Y do item "Funil de Vendas" — a aba fixa fica na MESMA altura dele (não no topo).
+  // Y do item "Funil" — a aba fixa fica na MESMA altura dele (não no topo).
   const dealItemRef = useRef<HTMLAnchorElement | null>(null)
   const [dealItemY, setDealItemY] = useState<number | null>(null)
   const setDealItemEl = useCallback((el: HTMLAnchorElement | null) => { dealItemRef.current = el }, [])
@@ -495,7 +514,7 @@ export function SidebarBody({
   function renderPipeLink(p: PipelineMini, inFlyout: boolean) {
     const pActive = p.id === currentDealPipelineId
     return (
-      <Link key={p.id} href={`/negocios?pipeline=${p.id}`}
+      <Link key={p.id} href={`/negocios?view=board&pipeline=${p.id}`}
         onClick={() => { if (inFlyout) setFlyoutKey(null); onNavigate?.() }} title={p.name}
         className={`group/sub flex items-center gap-2.5 rounded-lg ${inFlyout ? "px-2.5 py-2" : "pl-2 pr-3 py-1.5"} text-[13px] transition-colors overflow-hidden ${
           pActive ? "bg-nav-active text-nav-accent font-semibold" : "text-nav-text hover:bg-nav-hover hover:text-nav-strong"}`}>
@@ -505,7 +524,7 @@ export function SidebarBody({
     )
   }
 
-  // "Funil de Vendas" = link pro board. No DESKTOP o menu dedicado dos funis é aberto
+  // "Funil" = link pro quadro. No DESKTOP o menu dedicado dos funis é aberto
   // pela ABA FIXA na borda do rail (renderizada abaixo) — não por seta dentro do item.
   // No drawer MOBILE (sem flyout) fica o accordion inline com chevron. 0 funis = link.
   function renderDealSwitch(leaf: NavLeaf) {
@@ -807,7 +826,7 @@ export function SidebarBody({
               </button>
               <div className="flex items-center gap-2.5 h-14 px-4 border-b border-nav-line shrink-0">
                 <span className="flex size-8 items-center justify-center rounded-lg bg-nav-active text-nav-accent shrink-0"><Funnel className="size-4" strokeWidth={1.75} /></span>
-                <span className="text-sm font-bold text-nav-strong flex-1 truncate">Funis de Vendas</span>
+                <span className="text-sm font-bold text-nav-strong flex-1 truncate">Funis de venda</span>
               </div>
               <div className="p-2.5 border-b border-nav-line shrink-0">
                 <Link
@@ -868,7 +887,7 @@ export function SidebarBody({
 
       {/* ABA FIXA na borda do rail — abre o menu dedicado dos funis. Sempre visível
           no contexto de Negócios (desktop) com o painel recolhido; "›" pra expandir. */}
-      {isDesktopRail && (dealPipelines?.length ?? 0) > 0 && pathname === "/negocios" && flyoutKey !== "deal-pipes" && (
+      {isDesktopRail && (dealPipelines?.length ?? 0) > 0 && onDealsBoard && flyoutKey !== "deal-pipes" && (
         <button
           type="button"
           data-flyout-trigger="deal-pipes"

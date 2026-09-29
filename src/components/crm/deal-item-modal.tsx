@@ -11,6 +11,7 @@ import { getCatalogCategories, searchCatalogForPicker, type CatalogPickerItem, t
 import { reviewDealItem, reviewManualItem, itemStartStep, MANUAL_NAME_MAX } from "@/lib/crm/deal-item-form"
 import { formatQuantityWithUnit, unitSpec, UNITS } from "@/lib/crm/units"
 import { DEFAULT_TERM_MONTHS } from "@/lib/crm/value"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 const money = (value: number) => value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 const decimal = (value: number) => value.toLocaleString("pt-BR", { minimumFractionDigits: 2, useGrouping: false })
@@ -282,7 +283,7 @@ export function DealItemModal({ dealId, edit, tables, defaultTableId, pending, d
             {manualForm && !edit && !hasCatalog && <p className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600">Seu catálogo está vazio — cadastrar produtos reaproveita preço e estoque.{canManageCatalog && <> <Link href="/catalogo" className="font-semibold text-primary-700 hover:underline">Cadastrar</Link></>}</p>}
             {manualForm && !edit ? <fieldset disabled={busy} className="mb-5 min-w-0 space-y-4 border-b border-slate-200 pb-5">
               <legend className="mb-3 text-sm font-semibold text-slate-900">Item</legend>
-              <FormRow label="Nome do item" htmlFor="deal-item-name" hint="Aparece assim na proposta."><input id="deal-item-name" autoFocus maxLength={MANUAL_NAME_MAX} value={mName} placeholder="Ex.: Instalação especial" onChange={(event) => { setMName(event.target.value); setError(null) }} className={field} /></FormRow>
+              <FormRow label="Nome do item" htmlFor="deal-item-name" hint={`Aparece assim ${qg("no", "na")} ${QUOTE_TERM.oneLower}.`}><input id="deal-item-name" autoFocus maxLength={MANUAL_NAME_MAX} value={mName} placeholder="Ex.: Instalação especial" onChange={(event) => { setMName(event.target.value); setError(null) }} className={field} /></FormRow>
               <div className="grid gap-4 sm:grid-cols-3">
                 <FormRow label="Tipo"><SimpleSelect value={mType} ariaLabel="Tipo" onChange={(value) => setMType(value as "product" | "service")} options={[{ value: "service", label: "Serviço" }, { value: "product", label: "Produto" }]} /></FormRow>
                 <FormRow label="Cobrança"><SimpleSelect value={mBilling} ariaLabel="Cobrança" onChange={(value) => { setMBilling(value as Billing); setTerm("") }} options={(Object.keys(billing) as Billing[]).map((value) => ({ value, label: billing[value].label }))} /></FormRow>

@@ -14,6 +14,7 @@ import type { DocumentRow, DocumentSettings, DocumentStatus } from "@/lib/commer
 import type { DealItemView } from "@/lib/actions/deals"
 import { brlCents, shortDate, StatusChip } from "@/components/crm/quote-status"
 import { QuoteViewer } from "@/components/crm/quote-viewer"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 /** ativa/enviada aceitam marcar aceita/recusada (rascunho ainda nem foi gerado). */
 const canDecide = (s: DocumentStatus) => s === "active" || s === "sent"
@@ -57,7 +58,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
     start(async () => {
       const r = await (kind === "accept" ? markQuoteAccepted(doc.id) : markQuoteDeclined(doc.id))
       if ("error" in r) { toast.error(r.error); return }
-      toast.success(kind === "accept" ? "Proposta marcada como aceita" : "Proposta marcada como recusada")
+      toast.success(`${QUOTE_TERM.one} ${kind === "accept" ? qg("marcado como aceito", "marcada como aceita") : qg("marcado como recusado", "marcada como recusada")}`)
       router.refresh()
     })
   }
@@ -77,7 +78,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
     start(async () => {
       const r = await voidQuote(doc.id)
       if ("error" in r) { toast.error(r.error); return }
-      toast.success("Proposta cancelada")
+      toast.success(`${QUOTE_TERM.one} ${qg("cancelado", "cancelada")}`)
       router.refresh()
     })
   }
@@ -85,11 +86,11 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
   return (
     <section className={embedded ? "bg-white" : "bg-white rounded-xl border border-slate-200"}>
       <div className="flex flex-wrap items-center gap-3 px-4 py-4">
-        <h2 className="text-sm font-semibold text-slate-900">Propostas comerciais</h2>
+        <h2 className="text-sm font-semibold text-slate-900">{QUOTE_TERM.many}</h2>
         <span title={hasItems ? undefined : "Adicione produtos ou serviços primeiro"} className="ml-auto">
           <button onClick={() => router.push(`/negocios/${dealId}/cotacao/nova`)} disabled={!hasItems || pending}
             className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-white hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed">
-            <Plus className="size-3" /> Gerar proposta
+            <Plus className="size-3" /> {QUOTE_TERM.generate}
           </button>
         </span>
       </div>
@@ -98,7 +99,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
       {closedQ.length > 0 && (
         <div className="px-4 pb-2">
           <div className="inline-flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5">
-            {([["open", `Ativas · ${openQ.length}`], ["closed", `Encerradas · ${closedQ.length}`]] as const).map(([k, label]) => (
+            {([["open", `${qg("Ativos", "Ativas")} · ${openQ.length}`], ["closed", `${qg("Encerrados", "Encerradas")} · ${closedQ.length}`]] as const).map(([k, label]) => (
               <button key={k} type="button" onClick={() => setTab(k)}
                 className={`h-6 px-2.5 text-[11px] font-semibold rounded-md transition-colors ${
                   tab === k ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
@@ -112,12 +113,12 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
       {quotes.length === 0 ? (
         <p className="text-xs text-slate-400 px-4 pb-4 leading-relaxed">
           {hasItems
-            ? "Gere uma proposta em PDF a partir dos itens do negócio — envie no WhatsApp e acompanhe o aceite por aqui."
-            : "Adicione produtos ou serviços ao negócio para gerar a primeira proposta."}
+            ? `Gere ${qg("um", "uma")} ${QUOTE_TERM.oneLower} em PDF a partir dos itens do negócio — envie no WhatsApp e acompanhe o aceite por aqui.`
+            : `Adicione produtos ou serviços ao negócio para gerar ${qg("o primeiro", "a primeira")} ${QUOTE_TERM.oneLower}.`}
         </p>
       ) : shown.length === 0 ? (
         <p className="text-xs text-slate-400 px-4 pb-4 leading-relaxed">
-          {tab === "open" ? "Nenhuma proposta ativa — veja as encerradas na outra aba." : "Nenhuma proposta encerrada."}
+          {tab === "open" ? `${QUOTE_TERM.none} ${qg("ativo", "ativa")} — veja ${qg("os encerrados", "as encerradas")} na outra aba.` : `${QUOTE_TERM.none} ${qg("encerrado", "encerrada")}.`}
         </p>
       ) : (
         /* ~5 linhas visíveis (48px cada) — o resto rola dentro do card. */
@@ -145,7 +146,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
                   </span>
                 </button>
                 <DropdownMenu>
-                  <DropdownMenuTrigger title="Ações" aria-label={`Ações da proposta ${q.code}`} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 shrink-0 data-[popup-open]:opacity-100 data-[popup-open]:bg-slate-100 transition-opacity">
+                  <DropdownMenuTrigger title="Ações" aria-label={`Ações ${QUOTE_TERM.ofThe} ${q.code}`} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 shrink-0 data-[popup-open]:opacity-100 data-[popup-open]:bg-slate-100 transition-opacity">
                     <MoreVertical className="size-3.5" />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
@@ -178,10 +179,10 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
                       <>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem disabled={pending} onClick={() => decide(q, "accept")}>
-                          <Check className="size-3.5 text-emerald-500" /> Marcar como aceita
+                          <Check className="size-3.5 text-emerald-500" /> {QUOTE_TERM.markAccepted}
                         </DropdownMenuItem>
                         <DropdownMenuItem disabled={pending} onClick={() => decide(q, "decline")}>
-                          <X className="size-3.5 text-red-500" /> Marcar como recusada
+                          <X className="size-3.5 text-red-500" /> {QUOTE_TERM.markDeclined}
                         </DropdownMenuItem>
                       </>
                     )}
@@ -195,7 +196,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
                     )}
                     {q.status !== "void" && (
                       <DropdownMenuItem onClick={() => setVoiding(q)}>
-                        <Ban className="size-3.5 text-red-500" /> Cancelar proposta
+                        <Ban className="size-3.5 text-red-500" /> Cancelar {QUOTE_TERM.oneLower}
                       </DropdownMenuItem>
                     )}
                     </>
@@ -211,13 +212,13 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
       {viewer && <QuoteViewer id={viewer.id} code={viewer.code} status={viewer.status} onClose={() => setViewer(null)} />}
       {sendDoc && (
         <SendModal doc={sendDoc} onClose={() => setSendDoc(null)}
-          onSent={() => { setSendDoc(null); toast.success("Proposta enviada no WhatsApp"); router.refresh() }} />
+          onSent={() => { setSendDoc(null); toast.success(`${QUOTE_TERM.one} ${qg("enviado", "enviada")} no WhatsApp`); router.refresh() }} />
       )}
       {voiding && (
         <ConfirmModal
-          title="Cancelar proposta" icon={Ban}
-          desc={`A proposta ${voiding.code} será cancelada e não poderá mais ser aceita. Esta ação não pode ser desfeita.`}
-          confirmLabel="Cancelar proposta" pending={pending}
+          title={`Cancelar ${QUOTE_TERM.oneLower}`} icon={Ban}
+          desc={`${qg("O", "A")} ${QUOTE_TERM.oneLower} ${voiding.code} será ${qg("cancelado", "cancelada")} e não poderá mais ser ${qg("aceito", "aceita")}. Esta ação não pode ser desfeita.`}
+          confirmLabel={`Cancelar ${QUOTE_TERM.oneLower}`} pending={pending}
           onConfirm={doVoid} onClose={() => setVoiding(null)} />
       )}
       {discarding && (
@@ -232,7 +233,7 @@ export function DealQuotes({ dealId, quotes, hasItems, genTick = 0, embedded = f
 }
 
 // ── Modal: enviar no WhatsApp ─────────────────────────────────────
-const DEFAULT_CAPTION = "Segue a nossa proposta 😊 Qualquer dúvida me chama por aqui!"
+const DEFAULT_CAPTION = `Segue ${qg("o nosso", "a nossa")} ${QUOTE_TERM.oneLower} 😊 Qualquer dúvida me chama por aqui!`
 function SendModal({ doc, onClose, onSent }: { doc: DocumentRow; onClose: () => void; onSent: () => void }) {
   const [caption, setCaption] = useState(DEFAULT_CAPTION)
   const [pending, start] = useTransition()
@@ -249,7 +250,7 @@ function SendModal({ doc, onClose, onSent }: { doc: DocumentRow; onClose: () => 
   const brl = (cents: number) => brlCents(cents)
 
   return (
-    <ModalShell title="Enviar proposta no WhatsApp" desc="O PDF chega como documento na conversa do cliente." icon={Send} accent="#004add" onClose={onClose}>
+    <ModalShell title={`Enviar ${QUOTE_TERM.oneLower} no WhatsApp`} desc="O PDF chega como documento na conversa do cliente." icon={Send} accent="#004add" onClose={onClose}>
       <div className="px-5 py-4 space-y-3">
         <div className="flex items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2.5">
           <span className="size-8 rounded-lg bg-primary-50 text-primary-600 grid place-items-center shrink-0"><FileText className="size-4" /></span>

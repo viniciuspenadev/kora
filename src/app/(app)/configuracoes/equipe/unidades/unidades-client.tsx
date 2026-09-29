@@ -5,6 +5,7 @@ import { Plus, Store, Pencil, CheckCircle2, AlertCircle, Archive } from "lucide-
 import { SectionCard } from "@/components/ui/section-card"
 import { type Unit } from "@/lib/actions/team"
 import { UnitDialog } from "./unit-dialog"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 
 export function UnidadesClient({ units }: { units: Unit[] }) {
   const [editingUnit, setEditingUnit]   = useState<Unit | null>(null)
@@ -33,7 +34,7 @@ export function UnidadesClient({ units }: { units: Unit[] }) {
 
       <SectionCard
         title="Unidades"
-        description="Unidades de negócio (filiais, franquias, times de venda). Etiquetam os negócios pra você medir as vendas de cada uma — não mudam o que ninguém vê. Os dados da empresa alimentam o cabeçalho de cotações e pedidos."
+        description={`Unidades de negócio (filiais, franquias, times de venda). Etiquetam os negócios pra você medir as vendas de cada uma — não mudam o que ninguém vê. Os dados da empresa alimentam o cabeçalho de ${QUOTE_TERM.manyLower} e pedidos.`}
         icon={Store}
         flush
         actions={

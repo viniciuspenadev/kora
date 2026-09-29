@@ -8,6 +8,8 @@ import { Loader2, AlertCircle, Mail, Lock, User, ArrowRight, Check } from "lucid
 import { acceptInvite, rejectInvite } from "./actions"
 import { beginLogin } from "@/lib/actions/login"
 import { useConfirm } from "@/components/ui/confirm-dialog"
+import { EnteringSplash } from "@/components/auth/entering-splash"
+import { markEntering } from "@/lib/auth/entering"
 
 const ROLE_LABELS: Record<string, string> = {
   owner: "Owner",
@@ -60,6 +62,7 @@ export function AcceptInviteForm({
   const [rejecting, startReject]   = useTransition()
   const [rejected, setRejected]    = useState(false)
   const [awaitingApproval, setAwaitingApproval] = useState(false)
+  const [enteringAt, setEnteringAt] = useState<number | null>(null)
   const { confirm, confirmDialog } = useConfirm()
 
   const roleLabel = ROLE_LABELS[role] ?? role
@@ -96,7 +99,12 @@ export function AcceptInviteForm({
           setError("Convite aceito, mas falhou ao logar. Acesse /auth/signin.")
           return
         }
-        router.push("/")
+        // Primeira entrada do novo membro: a mesma tela de entrada do login (e página nova,
+        // pelo mesmo motivo: descarta da memória a página onde a senha foi digitada).
+        const at = Date.now()
+        markEntering(at)
+        setEnteringAt(at)
+        window.location.assign("/")
       } else {
         router.push("/auth/signin")
       }
@@ -115,6 +123,8 @@ export function AcceptInviteForm({
       setRejected(true)
     })
   }
+
+  if (enteringAt !== null) return <EnteringSplash startedAt={enteringAt} stuckHelp />
 
   if (awaitingApproval) return <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center">
     <Check className="mx-auto mb-4 size-8 text-primary" /><h1 className="text-xl font-semibold text-slate-900">Convite aceito</h1>

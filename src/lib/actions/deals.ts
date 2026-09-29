@@ -11,6 +11,9 @@ import { formatQuantityWithUnit } from "@/lib/crm/units"
 import { applyDealStock } from "@/lib/actions/inventory"
 import { createCatalogItem } from "@/lib/actions/catalog"
 import { resolveDealPricing } from "@/lib/crm/pricing"
+import { docCode, type DocumentKind, type DocumentStatus } from "@/lib/commercial/documents"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
+import { pickDealQuote, type DealQuoteDoc, type DealQuoteMini } from "@/lib/crm/deal-list"
 import { revalidatePath } from "next/cache"
 
 // ═══════════════════════════════════════════════════════════════
@@ -423,6 +426,8 @@ export interface DealRow {
   tags:             { id: string; name: string; color: string }[]
   /** Unidade (dimensão do CRM) carimbada no negócio. Null = sem unidade. */
   unit_id:          string | null
+  /** Orçamento que representa o negócio na Lista (só a Lista preenche). */
+  quote?:           DealQuoteMini | null
 }
 export interface DealsKpis {
   openValue: number; openCount: number
@@ -529,6 +534,21 @@ export async function getDealsPage(opts?: { from?: string; to?: string }): Promi
     for (const r of (tk ?? []) as { deal_id: string; title: string; due_at: string | null }[])
       if (r.deal_id && !nextMap.has(r.deal_id)) nextMap.set(r.deal_id, { title: r.title, due_at: r.due_at })
     for (const d of deals) d.next_task = nextMap.get(d.id) ?? null
+
+    // Orçamento de cada negócio (coluna "Orçamento" da Lista + atalhos vencido/vencendo/sem).
+    // Em lotes: a Lista carrega até 2.000 negócios e a lista de ids vai na URL.
+    const quoteDocs = new Map<string, DealQuoteDoc[]>()
+    for (let i = 0; i < dealIds.length; i += 150) {
+      const { data: qd } = await supabaseAdmin.from("commercial_documents")
+        .select("id, deal_id, kind, number, year, code_prefix, status, valid_until, created_at")
+        .eq("tenant_id", t).eq("kind", "quote").neq("status", "void").in("deal_id", dealIds.slice(i, i + 150))
+      for (const r of (qd ?? []) as { id: string; deal_id: string; kind: DocumentKind; number: number | null; year: number; code_prefix: string | null; status: DocumentStatus; valid_until: string | null; created_at: string }[]) {
+        const arr = quoteDocs.get(r.deal_id) ?? []
+        arr.push({ id: r.id, code: r.number != null ? docCode(r.kind, r.number, r.year, r.code_prefix) : QUOTE_TERM.status.draft, status: r.status, validUntil: r.valid_until, createdAt: r.created_at })
+        quoteDocs.set(r.deal_id, arr)
+      }
+    }
+    for (const d of deals) d.quote = pickDealQuote(quoteDocs.get(d.id) ?? [])
   }
 
   // Catálogo de tags do tenant (pro menu "adicionar" + join em memória — mesmo
@@ -970,12 +990,12 @@ export async function updateDeal(dealId: string, fields: { name?: string; estima
   }
   if (fields.proposalExpiresAt !== undefined) {
     // Validade é governança: só owner/admin altera (vendedor herda o default). Spec §5.
-    if (!["owner", "admin"].includes(session.user.role)) return { error: "Só gestores alteram a validade da proposta" }
+    if (!["owner", "admin"].includes(session.user.role)) return { error: `Só gestores alteram a validade ${QUOTE_TERM.ofThe}` }
     const next = fields.proposalExpiresAt || null
     if (next !== (dt.proposal_expires_at ?? null)) {
       patch.proposal_expires_at = next
       const fmtD = (v: string | null) => v ? new Date(v + "T12:00:00").toLocaleDateString("pt-BR") : "—"
-      changes.push({ label: "Validade da proposta", from: fmtD(dt.proposal_expires_at ?? null), to: fmtD(next) })
+      changes.push({ label: `Validade ${QUOTE_TERM.ofThe}`, from: fmtD(dt.proposal_expires_at ?? null), to: fmtD(next) })
     }
   }
   if (fields.priceTableId !== undefined) {

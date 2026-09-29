@@ -17,6 +17,7 @@ import {
   type DocumentKind, type DocumentStatus,
 } from "@/lib/commercial/documents"
 import { revalidatePath } from "next/cache"
+import { QUOTE_TERM as Q } from "@/lib/commercial/quote-terms"
 
 // ═══════════════════════════════════════════════════════════════
 // Documentos (cotações) — wrappers GATED do domínio commercial/documents.ts.
@@ -207,12 +208,12 @@ export async function sendQuoteInChat(
 
   const { data: docRow } = await supabaseAdmin
     .from("commercial_documents")
-    .select("contact_id, pdf_path, kind, year, number, status")
+    .select("contact_id, pdf_path, kind, year, number, code_prefix, status")
     .eq("id", docId).eq("tenant_id", tenantId).maybeSingle()
-  const doc = docRow as { contact_id: string | null; pdf_path: string | null; kind: DocumentKind; year: number; number: number; status: DocumentStatus } | null
+  const doc = docRow as { contact_id: string | null; pdf_path: string | null; kind: DocumentKind; year: number; number: number; code_prefix: string | null; status: DocumentStatus } | null
   if (!doc) return { error: "Documento não encontrado" }
-  if (!doc.pdf_path) return { error: "PDF da cotação indisponível." }
-  if (!doc.contact_id) return { error: "Cotação sem cliente vinculado." }
+  if (!doc.pdf_path) return { error: `PDF ${Q.ofThe} indisponível.` }
+  if (!doc.contact_id) return { error: `${Q.one} sem cliente vinculado.` }
 
   // Conversa do contato: a mais recente não-arquivada do tenant — mas SÓ das threads
   // da família WhatsApp (`channel` nulo = legado, nasceu WhatsApp).
@@ -229,7 +230,7 @@ export async function sendQuoteInChat(
     .eq("tenant_id", tenantId).eq("contact_id", doc.contact_id).is("archived_at", null)
     .or("channel.is.null,channel.in.(whatsapp,meta_cloud)")
     .order("last_message_at", { ascending: false }).limit(1).maybeSingle()
-  if (!convRow) return { error: "Abra uma conversa de WhatsApp com o cliente primeiro — a cotação em PDF só sai por esse canal." }
+  if (!convRow) return { error: `Abra uma conversa de WhatsApp com o cliente primeiro — ${Q.the} em PDF só sai por esse canal.` }
   const conv = convRow as unknown as {
     // `instance_id` é NULLABLE (canal sem número). Tipar como `string` aqui era um cast
     // que MENTIA pro compilador — ver o gate logo abaixo.
@@ -254,7 +255,7 @@ export async function sendQuoteInChat(
   const contact = (Array.isArray(conv.chat_contacts) ? conv.chat_contacts[0] : conv.chat_contacts) ?? null
   const channel = conv.channel ?? "whatsapp"
   if (!isWhatsAppChannel(channel)) {
-    return { error: `Envio de cotação disponível só no WhatsApp — esta conversa é do canal ${getChannelPolicy(channel).label}.` }
+    return { error: `Envio ${Q.ofThe} disponível só no WhatsApp — esta conversa é do canal ${getChannelPolicy(channel).label}.` }
   }
 
   // Sem número na thread não há por onde o PDF sair. O filtro de canal acima já deveria
@@ -263,7 +264,7 @@ export async function sendQuoteInChat(
   // envio explodia lá embaixo e deixava uma mensagem `failed` órfã na conversa.
   const instanceId = conv.instance_id
   if (!instanceId) {
-    return { error: "Esta conversa não está ligada a nenhum número de WhatsApp. Abra a conversa pelo número da empresa e reenvie a cotação." }
+    return { error: `Esta conversa não está ligada a nenhum número de WhatsApp. Abra a conversa pelo número da empresa e reenvie ${Q.the}.` }
   }
 
   // Gate fail-closed da janela de sessão (mesmo motor de canal do chat.ts).
@@ -277,12 +278,12 @@ export async function sendQuoteInChat(
 
   // PDF já congelado no storage — signed URL sobre o arquivo existente (sem re-upload).
   const { data: signed } = await supabaseAdmin.storage.from(CHAT_BUCKET).createSignedUrl(doc.pdf_path, 3600)
-  if (!signed?.signedUrl) return { error: "Erro ao ler o PDF da cotação." }
+  if (!signed?.signedUrl) return { error: `Erro ao ler o PDF ${Q.ofThe}.` }
 
   try { await prepareHumanReply(tenantId, conv.id, userId, assignedTo, scope) }
   catch (e) { return { error: (e as Error).message } }
 
-  const code = docCode(doc.kind, doc.number, doc.year)
+  const code = docCode(doc.kind, doc.number, doc.year, doc.code_prefix)
   const fileName = `${code.replace("/", "-")}.pdf`
   const text = caption?.trim() || null
 
@@ -313,13 +314,13 @@ export async function sendQuoteInChat(
     const m = (err as Error).message ?? ""
     // #131047 = janela de 24h fechada (verdade da Meta, sobrepõe nosso cálculo).
     if (m.includes("131047")) return { error: "A janela de 24h fechou — envie um template aprovado pra reabrir a conversa." }
-    return { error: `Não consegui enviar a cotação: ${m}` }
+    return { error: `Não consegui enviar ${Q.the}: ${m}` }
   }
 
   await claimAfterAcceptedReply(tenantId, conv.id, userId, conv.contact_id)
 
   await supabaseAdmin.from("chat_conversations").update({
-    last_message_at: now, last_message_preview: text?.slice(0, 100) || "📎 Cotação",
+    last_message_at: now, last_message_preview: text?.slice(0, 100) || `📎 ${Q.one}`,
     last_message_dir: "out", flagged_pending: false, updated_at: new Date().toISOString(),
   }).eq("id", conv.id).eq("tenant_id", tenantId)
 

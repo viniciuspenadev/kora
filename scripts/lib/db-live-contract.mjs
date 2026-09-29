@@ -19,6 +19,9 @@ export const EXPECTED_CHECKS = Object.freeze([
   "column:tenant_deal_items.source",
   "column:deal_pipelines.require_items_to_win",
   "trigger:trg_crm_require_items_to_win/enabled",
+  // Prefixo gravado no documento (migration 20260929000100): docCode() lê `code_prefix`.
+  "column:commercial_documents.code_prefix",
+  "trigger:trg_commercial_documents_freeze_code_prefix/enabled",
 ])
 
 const functionCheck = (name, args) => `
@@ -166,6 +169,33 @@ WITH checks AS (
          AND NOT EXISTS (
            SELECT 1 FROM pg_catalog.pg_proc p
             WHERE p.oid = pg_catalog.to_regprocedure('public.crm_require_items_to_win()')
+              AND (pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE')
+                   OR pg_catalog.has_function_privilege('authenticated', p.oid, 'EXECUTE'))
+         ) AS ok
+  UNION ALL
+  SELECT 'column:commercial_documents.code_prefix'::text AS objeto,
+         EXISTS (
+           SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'commercial_documents' AND column_name = 'code_prefix'
+         )
+         AND EXISTS (
+           SELECT 1 FROM pg_catalog.pg_constraint c
+            WHERE c.conrelid = pg_catalog.to_regclass('public.commercial_documents')
+              AND c.conname = 'commercial_documents_code_prefix_numbered' AND c.contype = 'c' AND c.convalidated
+         ) AS ok
+  UNION ALL
+  SELECT 'trigger:trg_commercial_documents_freeze_code_prefix/enabled'::text AS objeto,
+         EXISTS (
+           SELECT 1 FROM pg_catalog.pg_trigger t
+            WHERE t.tgrelid = pg_catalog.to_regclass('public.commercial_documents')
+              AND t.tgname = 'trg_commercial_documents_freeze_code_prefix'
+              AND NOT t.tgisinternal
+              AND t.tgenabled = 'O'
+              AND t.tgfoid = pg_catalog.to_regprocedure('public.commercial_documents_freeze_code_prefix()')
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_catalog.pg_proc p
+            WHERE p.oid = pg_catalog.to_regprocedure('public.commercial_documents_freeze_code_prefix()')
               AND (pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE')
                    OR pg_catalog.has_function_privilege('authenticated', p.oid, 'EXECUTE'))
          ) AS ok

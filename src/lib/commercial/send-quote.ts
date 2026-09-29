@@ -4,6 +4,7 @@ import { getProvider } from "@/lib/providers"
 import { isWindowOpen, isWhatsAppChannel, getChannelPolicy } from "@/lib/channels/policy"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { docCode, markDocumentSent, type DocumentKind, type DocumentStatus } from "./documents"
+import { QUOTE_TERM as Q, qg } from "./quote-terms"
 
 // ═══════════════════════════════════════════════════════════════
 // Envio de cotação numa conversa — NÚCLEO sem-sessão (reuso humano + IA)
@@ -32,14 +33,14 @@ export async function sendQuoteToConversation(params: {
   const { tenantId, docId, conversationId, actorUserId } = params
 
   const { data: docRow } = await supabaseAdmin.from("commercial_documents")
-    .select("contact_id, pdf_path, kind, year, number, status")
+    .select("contact_id, pdf_path, kind, year, number, code_prefix, status")
     .eq("id", docId).eq("tenant_id", tenantId).maybeSingle()
-  const doc = docRow as { contact_id: string | null; pdf_path: string | null; kind: DocumentKind; year: number; number: number | null; status: DocumentStatus } | null
+  const doc = docRow as { contact_id: string | null; pdf_path: string | null; kind: DocumentKind; year: number; number: number | null; code_prefix: string | null; status: DocumentStatus } | null
   if (!doc) return { error: "Documento não encontrado" }
   // Só o que o humano AUTORIZOU (active) ou já mandou (sent). Rascunho/anulada não saem.
-  if (doc.status !== "active" && doc.status !== "sent") return { error: "Esta cotação ainda não está pronta para envio." }
-  if (!doc.pdf_path || doc.number == null) return { error: "PDF da cotação indisponível." }
-  if (!doc.contact_id) return { error: "Cotação sem cliente vinculado." }
+  if (doc.status !== "active" && doc.status !== "sent") return { error: `${qg("Este", "Esta")} ${Q.oneLower} ainda não está ${qg("pronto", "pronta")} para envio.` }
+  if (!doc.pdf_path || doc.number == null) return { error: `PDF ${Q.ofThe} indisponível.` }
+  if (!doc.contact_id) return { error: `${Q.one} sem cliente vinculado.` }
 
   const { data: convRow } = await supabaseAdmin.from("chat_conversations")
     .select("id, contact_id, instance_id, assigned_to, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, primary_channel, bsuid)")
@@ -54,7 +55,7 @@ export async function sendQuoteToConversation(params: {
 
   // ⛔ ANTI-IDOR: a cotação PRECISA ser do contato desta conversa (o único elo que
   // impede a IA — ou um docId trocado — de vazar proposta de terceiro).
-  if (!conv.contact_id || conv.contact_id !== doc.contact_id) return { error: "A cotação não pertence a este cliente." }
+  if (!conv.contact_id || conv.contact_id !== doc.contact_id) return { error: `${Q.one} não pertence a este cliente.` }
   const contact = (Array.isArray(conv.chat_contacts) ? conv.chat_contacts[0] : conv.chat_contacts) ?? null
   // ⛔ Gate de CANAL — pelo canal da CONVERSA (o fio), nunca pelo primary_channel do
   // contato. O contato é hub multicanal: um `primary_channel = "whatsapp"` VENCIA o
@@ -65,7 +66,7 @@ export async function sendQuoteToConversation(params: {
   // send_quote da IA: aqui é onde a IA seria induzida a entregar no canal errado.
   const channel = conv.channel ?? "whatsapp"
   if (!isWhatsAppChannel(channel)) {
-    return { error: `Envio de cotação disponível só no WhatsApp — esta conversa é do canal ${getChannelPolicy(channel).label}. Peça o WhatsApp do cliente e envie por lá.` }
+    return { error: `Envio ${Q.ofThe} disponível só no WhatsApp — esta conversa é do canal ${getChannelPolicy(channel).label}. Peça o WhatsApp do cliente e envie por lá.` }
   }
 
   // ⚠️ Gate de NÚMERO **depois** do gate de canal, nunca antes. Invertido, uma conversa de
@@ -93,9 +94,9 @@ export async function sendQuoteToConversation(params: {
   }
 
   const { data: signed } = await supabaseAdmin.storage.from(CHAT_BUCKET).createSignedUrl(doc.pdf_path, 3600)
-  if (!signed?.signedUrl) return { error: "Erro ao ler o PDF da cotação." }
+  if (!signed?.signedUrl) return { error: `Erro ao ler o PDF ${Q.ofThe}.` }
 
-  const code = docCode(doc.kind, doc.number, doc.year)
+  const code = docCode(doc.kind, doc.number, doc.year, doc.code_prefix)
   const fileName = `${code.replace("/", "-")}.pdf`
   const text = params.caption?.trim() || null
 
@@ -121,11 +122,11 @@ export async function sendQuoteToConversation(params: {
     await supabaseAdmin.from("chat_messages").update({ status: "failed" }).eq("id", msg.id)
     const m = (err as Error).message ?? ""
     if (m.includes("131047")) return { error: "A janela de 24h fechou — precisa de um template pra reabrir." }
-    return { error: `Não consegui enviar a cotação: ${m}` }
+    return { error: `Não consegui enviar ${Q.the}: ${m}` }
   }
 
   await supabaseAdmin.from("chat_conversations").update({
-    last_message_at: now, last_message_preview: text?.slice(0, 100) || "📎 Cotação",
+    last_message_at: now, last_message_preview: text?.slice(0, 100) || `📎 ${Q.one}`,
     last_message_dir: "out", flagged_pending: false, updated_at: now,
   }).eq("id", conv.id)
 

@@ -281,3 +281,10 @@
 @media (prefers-reduced-motion: reduce) {
   .group\/item:hover svg { animation: none !important; }
 }
+
+/* Tela de entrada (após o login): rede de segurança SEM JavaScript — se o sistema não
+   hidratar, a camada some sozinha e nunca prende a pessoa (src/components/auth/boot-splash.tsx). */
+@keyframes kora-boot-failsafe {
+  to { opacity: 0; visibility: hidden; }
+}
+.kora-boot-failsafe { animation: kora-boot-failsafe 400ms ease-in 12s forwards; }

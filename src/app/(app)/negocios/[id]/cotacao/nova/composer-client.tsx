@@ -10,6 +10,7 @@ import { toRichDoc, richDocToPlain, isEmptyRichDoc, type RichDoc } from "@/lib/c
 import { generateQuote, generateQuoteVersion, saveQuoteDraftAction, activateQuoteDraftAction } from "@/lib/actions/documents"
 import type { DocumentSettings } from "@/lib/commercial/documents"
 import type { QuoteTemplate, TemplateContext } from "@/lib/actions/quote-templates"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 function addDays(days: number): string {
   const d = new Date(); d.setDate(d.getDate() + Math.max(0, days))
@@ -121,7 +122,7 @@ export function QuoteComposer({
   }, [hasItems, refreshPreview])
 
   function openConfirm() {
-    if (!hasItems) { toast.error("Adicione itens ao negócio antes de gerar a proposta."); return }
+    if (!hasItems) { toast.error(`Adicione itens ao negócio antes de gerar ${QUOTE_TERM.the}.`); return }
     setConfirmOpen(true)
   }
   const condOf = () => ({
@@ -142,7 +143,7 @@ export function QuoteComposer({
         ? await activateQuoteDraftAction(draftId, { dealId, ...cond })
         : await generateQuote({ dealId, ...cond })
       if ("error" in r) { toast.error(r.error); return }
-      toast.success(fromDoc ? `Proposta ${r.code} gerada — ${fromDoc.code} anulada` : `Proposta ${r.code} gerada`)
+      toast.success(fromDoc ? `${QUOTE_TERM.one} ${r.code} ${qg("gerado", "gerada")} — ${fromDoc.code} ${qg("cancelado", "cancelada")}` : `${QUOTE_TERM.one} ${r.code} ${qg("gerado", "gerada")}`)
       router.push(`/negocios/${dealId}?tab=proposals`)
     })
   }
@@ -169,13 +170,13 @@ export function QuoteComposer({
         </Link>
         <div className="min-w-0">
           <h1 className="text-sm font-bold text-slate-900 leading-tight truncate">
-            {fromDoc ? <>Nova versão <span className="text-slate-400 font-semibold">de {fromDoc.code}</span></> : draftId ? "Retomar rascunho" : "Nova proposta"}
+            {fromDoc ? <>Nova versão <span className="text-slate-400 font-semibold">de {fromDoc.code}</span></> : draftId ? "Retomar rascunho" : QUOTE_TERM.new}
           </h1>
           <p className="text-[11px] text-slate-400 truncate leading-tight">{dealName}</p>
         </div>
         {fromDoc && (
           <span className="hidden sm:inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 shrink-0">
-            {fromDoc.code} será anulada
+            {fromDoc.code} será {qg("cancelado", "cancelada")}
           </span>
         )}
         {draftId && (
@@ -193,7 +194,7 @@ export function QuoteComposer({
           )}
           <button onClick={openConfirm} disabled={pending || !hasItems}
             className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-700 text-white transition-colors disabled:opacity-50">
-            {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />} Gerar proposta
+            {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />} {QUOTE_TERM.generate}
           </button>
         </div>
       </header>
@@ -205,7 +206,7 @@ export function QuoteComposer({
           <div className="space-y-5">
             {!hasItems && (
               <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                Este negócio ainda não tem itens — adicione itens na negociação antes de gerar a proposta.
+                Este negócio ainda não tem itens — adicione itens na negociação antes de gerar {QUOTE_TERM.the}.
               </div>
             )}
 
@@ -241,7 +242,7 @@ export function QuoteComposer({
               menu={<InsertTemplateMenu items={byCtx("condicoes")} onPick={(t) => insertTemplate("terms", t)} />} />
 
             <CollapsibleField label="Observações" optional value={notes} onChange={setNotes}
-              placeholder="Notas visíveis ao cliente na proposta…" editorKey={fieldRev.notes}
+              placeholder={`Notas visíveis ao cliente ${qg("no", "na")} ${QUOTE_TERM.oneLower}…`} editorKey={fieldRev.notes}
               menu={<InsertTemplateMenu items={byCtx("observacoes")} onPick={(t) => insertTemplate("notes", t)} />} />
 
             {/* Contrato — campo único grande (o texto inteiro do contrato) */}
@@ -280,7 +281,7 @@ export function QuoteComposer({
           </div>
           <div className="flex-1 min-h-0 p-3">
             {hasItems
-              ? <iframe ref={iframeRef} title="Prévia da proposta" className="w-full h-full rounded-lg border border-slate-200 bg-white" />
+              ? <iframe ref={iframeRef} title={`Prévia ${QUOTE_TERM.ofThe}`} className="w-full h-full rounded-lg border border-slate-200 bg-white" />
               : <div className="h-full grid place-items-center text-xs text-slate-400 px-6 text-center">A prévia aparece quando o negócio tiver itens.</div>}
           </div>
         </div>
@@ -309,10 +310,10 @@ function fmtDate(d: string): string {
   return new Date(d + "T12:00:00").toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })
 }
 function validityInfo(v: string): { tone: "ok" | "warn" | "muted"; text: string } {
-  if (!v) return { tone: "muted", text: "Sem prazo de validade — a proposta não vence." }
+  if (!v) return { tone: "muted", text: `Sem prazo de validade — ${QUOTE_TERM.the} não vence.` }
   const today = new Date(); today.setHours(0, 0, 0, 0)
   const days = Math.round((new Date(v + "T12:00:00").getTime() - today.getTime()) / 86_400_000)
-  if (days < 0) return { tone: "warn", text: "Data no passado — a proposta nasce vencida." }
+  if (days < 0) return { tone: "warn", text: `Data no passado — ${QUOTE_TERM.the} nasce ${qg("vencido", "vencida")}.` }
   if (days === 0) return { tone: "ok", text: `Válida só hoje — até ${fmtDate(v)}.` }
   return { tone: "ok", text: `Válida por ${days} dia${days === 1 ? "" : "s"} — até ${fmtDate(v)}.` }
 }
@@ -330,7 +331,7 @@ function ConfirmModal({ dealName, itemCount, validUntil, setValidUntil, filled, 
         <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b border-slate-100">
           <div className="size-9 rounded-lg bg-primary-50 grid place-items-center shrink-0"><FileText className="size-4 text-primary-600" /></div>
           <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-bold text-slate-900">Confirmar e gerar proposta</h3>
+            <h3 className="text-sm font-bold text-slate-900">Confirmar e gerar {QUOTE_TERM.oneLower}</h3>
             <p className="text-xs text-slate-400 truncate">{dealName}</p>
           </div>
           <button onClick={onCancel} className="size-7 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100"><X className="size-4" /></button>
@@ -493,14 +494,14 @@ function PdfViewerOverlay({ url, onClose }: { url: string; onClose: () => void }
       >
         <div className="flex items-center justify-between pl-4 pr-2 h-11 border-b border-slate-200 bg-white shrink-0">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 inline-flex items-center gap-2">
-            <FileText className="size-3.5 text-primary" /> Prévia da proposta
+            <FileText className="size-3.5 text-primary" /> Prévia {QUOTE_TERM.ofThe}
           </p>
           <button type="button" onClick={onClose} title="Fechar"
             className="size-8 grid place-items-center rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors">
             <X className="size-4" />
           </button>
         </div>
-        <iframe title="Prévia da proposta (ampliada)" src={`${url}#view=FitH`} className="flex-1 w-full bg-slate-100" />
+        <iframe title={`Prévia ${QUOTE_TERM.ofThe} (ampliada)`} src={`${url}#view=FitH`} className="flex-1 w-full bg-slate-100" />
       </div>
     </div>
   )

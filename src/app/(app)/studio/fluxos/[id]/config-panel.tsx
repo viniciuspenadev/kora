@@ -8,6 +8,7 @@ import {
   Users, Building2, Shuffle, UserCheck, Inbox, ArrowRight, Check, ChevronUp, ChevronDown,
 } from "lucide-react"
 import { UserAvatar } from "@/components/ui/user-avatar"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
 import { SourceLogo } from "@/components/chat/source-logo"
 import { SimpleSelect } from "@/components/ui/select"
@@ -1168,7 +1169,7 @@ function ConditionConfig({ cfg, set, tags }: { cfg: Record<string, unknown>; set
 const DS_SOURCES = [
   { v: "agenda", label: "Agenda", always: "serviço · data/hora · status" },
   { v: "deals",  label: "Negócios", always: "que há negócio em andamento (sem nome nem etapa)" },
-  { v: "quotes", label: "Cotações", always: "número · status · validade" },
+  { v: "quotes", label: QUOTE_TERM.many, always: "número · status · validade" },
 ] as const
 // 🔴 Nunca (sem toggle, doutrina no server): nome do negócio, etapa do funil, previsão
 // de fechamento, custo/margem, motivo de perda, notas, quem atende — não aparecem aqui.
@@ -1237,8 +1238,8 @@ function DataSourceConfig({ cfg, set, dealFields }: {
           <label className="flex items-start gap-2 text-[11px] text-slate-600 cursor-pointer mt-1">
             <input type="checkbox" className="mt-0.5" checked={resendQuote} onChange={() => set({ resendQuote: !resendQuote })} />
             <span>
-              <b className="text-slate-700">Reenviar a proposta pronta ao cliente</b>
-              <span className="block text-slate-400 mt-0.5">Se o cliente pedir a proposta de novo, a IA reenvia o PDF de uma cotação <b>já gerada</b>. Nunca cria nem edita — só reenvia o que existe.</span>
+              <b className="text-slate-700">Reenviar {QUOTE_TERM.the} {qg("pronto", "pronta")} ao cliente</b>
+              <span className="block text-slate-400 mt-0.5">Se o cliente pedir de novo, a IA reenvia o PDF de {qg("um", "uma")} {QUOTE_TERM.oneLower} <b>já {qg("gerado", "gerada")}</b>. Nunca cria nem edita — só reenvia o que existe.</span>
             </span>
           </label>
         </div>

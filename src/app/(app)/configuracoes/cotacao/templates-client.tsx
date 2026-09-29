@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { FileText, MessageSquare, ScrollText, Plus, Pencil, Trash2, Check, Loader2, X } from "lucide-react"
 import { RichEditor } from "@/components/commercial/rich-editor"
 import { richDocToPlain, isEmptyRichDoc, type RichDoc } from "@/lib/commercial/richdoc"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 import {
   createQuoteTemplate, updateQuoteTemplate, setTemplateActive, setTemplateAlwaysInclude,
   deleteQuoteTemplate, type QuoteTemplate, type TemplateContext,
@@ -162,7 +163,7 @@ function TemplateRow({ tpl, onPatch, onRemove }: {
       {/* Governança: Ativo · Sempre incluir */}
       <div className="flex items-center gap-4 mt-2.5 pt-2.5 border-t border-slate-100">
         <Toggle on={tpl.active} onClick={toggleActive} label="Ativo" hint="Disponível pro time inserir" />
-        <Toggle on={tpl.always_include} onClick={toggleAlways} label="Sempre incluir" hint="Entra sozinho em toda cotação" />
+        <Toggle on={tpl.always_include} onClick={toggleAlways} label="Sempre incluir" hint={`Entra sozinho em ${qg("todo", "toda")} ${QUOTE_TERM.oneLower}`} />
       </div>
     </div>
   )

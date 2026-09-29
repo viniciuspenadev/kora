@@ -629,7 +629,7 @@ export async function getCompanyCockpit(companyId: string): Promise<CompanyCockp
   const noRows = Promise.resolve({ data: [] as unknown[] })
   const [{ data: propRows }, { data: convRows }, { data: taskRows }, { data: evRows }, { data: ownerRow }] = await Promise.all([
     dealIds.length ? supabaseAdmin.from("commercial_documents")
-      .select("id, kind, year, number, status, total_cents, valid_until, deal_id, created_at")
+      .select("id, kind, year, number, code_prefix, status, total_cents, valid_until, deal_id, created_at")
       .eq("tenant_id", t).eq("kind", "quote").in("deal_id", dealIds)
       .order("created_at", { ascending: false }).limit(50) : noRows,
     contactIds.length ? supabaseAdmin.from("chat_conversations")
@@ -646,7 +646,7 @@ export async function getCompanyCockpit(companyId: string): Promise<CompanyCockp
 
   const proposals: CompanyProposalLite[] = ((propRows ?? []) as Record<string, unknown>[]).map((p) => ({
     id: p.id as string,
-    code: p.number != null ? docCode("quote", p.number as number, p.year as number) : "Rascunho",
+    code: p.number != null ? docCode("quote", p.number as number, p.year as number, p.code_prefix as string | null) : "Rascunho",
     dealId: (p.deal_id as string | null) ?? null,
     dealName: p.deal_id ? (dealName.get(p.deal_id as string) ?? null) : null,
     status: p.status as DocumentStatus,

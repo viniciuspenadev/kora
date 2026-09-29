@@ -12,6 +12,8 @@ import { Topbar } from "@/components/app/topbar"
 import { OnboardingBanner } from "@/components/app/onboarding-banner"
 import { UpdateBanner } from "@/components/app/update-banner"
 import { Toaster } from "@/components/ui/sonner"
+import { BootSplash } from "@/components/auth/boot-splash"
+import { ENTERING_COOKIE, enteringFromCookie, greetingName } from "@/lib/auth/entering"
 import { getSetupState } from "@/lib/onboarding"
 import { getEnabledModuleSlugs } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
@@ -250,7 +252,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   // Estado do rail (recolhido/expandido) persistido em cookie — lido no server
   // pra o Sidebar já renderizar na largura certa (sem flash no load).
-  const initialCollapsed = (await cookies()).get("kora_sb_collapsed")?.value === "1"
+  const cookieStore = await cookies()
+  const initialCollapsed = cookieStore.get("kora_sb_collapsed")?.value === "1"
+  // Tela de entrada logo após o login (continuidade — ver lib/auth/entering.ts). Só um instante
+  // validado; qualquer outro valor é ignorado. Montada aqui = DEPOIS da sessão validada acima.
+  const entering = enteringFromCookie(cookieStore.get(ENTERING_COOKIE)?.value)
 
   const navProps = {
     userName:       session.user.name ?? "Usuário",
@@ -337,6 +343,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           simplesmente não tem onde renderizar. Falha silenciosa clássica — o código
           parecia certo em revisão e o produto ficava mudo. Montado uma vez, aqui. */}
       <Toaster position="top-right" richColors closeButton />
+      {entering && <BootSplash startedAt={entering.startedAt} initialIndex={entering.initialIndex} name={greetingName(session.user.name)} />}
     </AppShellProvider>
   )
 }

@@ -21,6 +21,7 @@ import { AnimatedLogoKoraVetor } from "@/components/app/logo-kora-vetor"
 import { SimpleSelect } from "@/components/ui/select"
 import { PersonClientCard, CompanyClientCard } from "@/components/crm/client-cards"
 import { useKeyedSearch } from "@/lib/use-keyed-search"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 
 /** Listas vazias com identidade FIXA — `useKeyedSearch` devolve isto enquanto não há
  *  resposta, e um `[]` novo a cada render viraria prop nova pra quem consome. */
@@ -275,8 +276,8 @@ export function NovaPropostaWizard({ onClose, target }: { onClose: () => void; t
     })
   }
 
-  // Vindo do funil (target) o CTA é "Adicionar negócio" → fala "Novo negócio"; senão "Nova proposta".
-  const baseWord = target ? "Novo negócio" : "Nova proposta"
+  // Vindo do funil (target) o CTA é "Adicionar negócio" → fala "Novo negócio"; senão "Novo orçamento".
+  const baseWord = target ? "Novo negócio" : QUOTE_TERM.new
   const title =
     step === "search" ? `${baseWord} · Quem é o cliente?`
     : step === "person" ? `${baseWord} · ${personNew ? "Nova pessoa" : "Cliente"}`
@@ -317,7 +318,7 @@ export function NovaPropostaWizard({ onClose, target }: { onClose: () => void; t
                 Ache um cliente existente ou cadastre um novo
                 {target?.stageName
                   ? <> — o negócio nasce em <span className="font-semibold text-slate-500">{target.stageName}</span>.</>
-                  : <> — os itens da proposta vêm depois, no negócio.</>}
+                  : <> — os itens {QUOTE_TERM.ofThe} vêm depois, no negócio.</>}
               </p>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />

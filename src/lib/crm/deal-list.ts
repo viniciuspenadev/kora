@@ -1,6 +1,48 @@
 import type { DealRow } from "@/lib/actions/deals"
+import type { DocumentStatus } from "@/lib/commercial/documents"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 
-export type DealListFocus = "" | "overdue" | "today" | "no_task"
+export type DealListFocus = "" | "overdue" | "today" | "no_task" | "quote_expired" | "quote_soon" | "with_quote" | "no_quote"
+
+/** Orçamento que representa o negócio na Lista (coluna "Orçamento"): o emitido mais recente;
+ *  sem nenhum emitido, o rascunho. `others` = outros emitidos não anulados (o "+N"). */
+export interface DealQuoteMini {
+  id: string; code: string; status: DocumentStatus; validUntil: string | null; others: number
+}
+export interface DealQuoteDoc { id: string; code: string; status: DocumentStatus; validUntil: string | null; createdAt: string }
+
+/** Anulados já vêm fora. Emitido = qualquer status que não seja rascunho. */
+export function pickDealQuote(docs: DealQuoteDoc[]): DealQuoteMini | null {
+  if (!docs.length) return null
+  const recent = [...docs].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+  const issued = recent.filter((d) => d.status !== "draft")
+  const pick = issued[0] ?? recent[0]
+  return { id: pick.id, code: pick.code, status: pick.status, validUntil: pick.validUntil, others: issued.length ? issued.length - 1 : 0 }
+}
+
+/** Dias entre hoje (fuso local) e a validade `yyyy-mm-dd`: negativo = vencido. */
+function daysUntil(validUntil: string, now: number): number | null {
+  const [y, m, d] = validUntil.split("-").map(Number)
+  if (!y || !m || !d) return null
+  const today = new Date(now)
+  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())) / 86_400_000)
+}
+
+export type QuoteSituationKey = "none" | "draft" | "expired" | "soon" | "open" | "accepted" | "declined" | "signed"
+export function quoteSituation(q: DealQuoteMini | null | undefined, now: number): { key: QuoteSituationKey; label: string; tone: "danger" | "warning" | "success" | "neutral" | "muted" } {
+  if (!q) return { key: "none", label: "—", tone: "muted" }
+  if (q.status === "draft") return { key: "draft", label: QUOTE_TERM.status.draft, tone: "muted" }
+  if (q.status === "accepted") return { key: "accepted", label: QUOTE_TERM.status.accepted, tone: "success" }
+  if (q.status === "signed") return { key: "signed", label: QUOTE_TERM.status.signed, tone: "success" }
+  if (q.status === "declined") return { key: "declined", label: QUOTE_TERM.status.declined, tone: "neutral" }
+  const status = QUOTE_TERM.status[q.status]
+  const days = q.validUntil ? daysUntil(q.validUntil, now) : null
+  if (days === null) return { key: "open", label: status, tone: "neutral" }
+  if (days < 0) return { key: "expired", label: `${QUOTE_TERM.expiredState} há ${-days} ${days === -1 ? "dia" : "dias"}`, tone: "danger" }
+  if (days <= 7) return { key: "soon", label: days === 0 ? "Vence hoje" : `Vence em ${days} ${days === 1 ? "dia" : "dias"}`, tone: "warning" }
+  const [, m, d] = q.validUntil!.split("-")
+  return { key: "open", label: `${status} · vence ${d}/${m}`, tone: "neutral" }
+}
 export type DealListSort = "updated_desc" | "updated_asc" | "value_desc" | "value_asc" | "name_asc" | "next_action"
 export interface DealListFilters {
   search: string
@@ -49,6 +91,13 @@ export function filterDealList(deals: DealRow[], filters: DealListFilters, now: 
     if (filters.focus === "overdue" && timing !== "overdue") return false
     if (filters.focus === "today" && timing !== "today" && !(timing === "overdue" && new Date(d.next_task!.due_at!).toDateString() === new Date(now).toDateString())) return false
     if (filters.focus === "no_task" && timing !== "none") return false
+    if (filters.focus.startsWith("quote_") || filters.focus === "with_quote" || filters.focus === "no_quote") {
+      const key = quoteSituation(d.quote, now).key
+      if (filters.focus === "quote_expired" && key !== "expired") return false
+      if (filters.focus === "quote_soon" && key !== "soon") return false
+      if (filters.focus === "with_quote" && (key === "none" || key === "draft")) return false
+      if (filters.focus === "no_quote" && key !== "none" && key !== "draft") return false
+    }
     return true
   })
 }
@@ -72,6 +121,22 @@ export function dealStageDays(deal: DealRow, now: number): number | null {
 }
 
 export function dealListReturnHref(value: string | null): string {
-  // The detail backlink may only return to this local list, never an arbitrary URL.
+  // The detail backlink may only return to this local list or board, never an arbitrary URL.
   return value?.startsWith("/negocios?") ? value : "/negocios"
+}
+
+/** Planilha da Lista: as mesmas linhas filtradas/ordenadas que a pessoa está vendo. */
+export function dealListCsvRows(deals: DealRow[], now: number): string[][] {
+  const day = (iso: string | null | undefined) => iso ? new Date(iso).toLocaleDateString("pt-BR") : ""
+  const status: Record<string, string> = { open: "Aberto", won: "Ganho", lost: "Perdido", canceled: "Cancelado" }
+  const header = ["Negócio", "Cliente", "Empresa", "Funil", "Etapa", "Situação", "Valor", "Responsável", "Próxima ação", "Prazo da ação",
+    QUOTE_TERM.one, `Situação ${QUOTE_TERM.ofThe}`, "Validade", "Atualizado"]
+  return [header, ...deals.map((d) => [
+    d.name?.trim() || "Negócio sem nome", d.contact_name ?? "", d.company_name ?? "", d.pipeline_name ?? "", d.stage?.name ?? "",
+    status[d.status] ?? d.status,
+    d.estimated_value == null ? "" : Number(d.estimated_value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }),
+    d.assigned_to ? d.responsible ?? "" : "", d.next_task?.title ?? "", day(d.next_task?.due_at),
+    d.quote?.code ?? "", d.quote ? quoteSituation(d.quote, now).label : "", d.quote?.validUntil ? day(`${d.quote.validUntil}T12:00:00`) : "",
+    day(d.updated_at),
+  ])]
 }

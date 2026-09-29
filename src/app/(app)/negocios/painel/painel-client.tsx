@@ -222,10 +222,10 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
       <div className="px-4 sm:px-6 pt-10 pb-10 flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <Link href="/negocios" className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white transition-colors shrink-0 -ml-1.5" title="Voltar ao pipeline">
+            <Link href="/negocios?view=board" className="size-7 grid place-items-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-white transition-colors shrink-0 -ml-1.5" title="Voltar ao Funil">
               <ArrowLeft className="size-4" />
             </Link>
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">Painel de Vendas</h1>
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight truncate">Relatórios de vendas</h1>
             {pending && <Loader2 className="size-4 animate-spin text-slate-400 shrink-0" />}
           </div>
           <p className="text-xs text-slate-400 mt-0.5 ml-7">Visão geral do desempenho · negócios criados no período</p>
@@ -392,7 +392,7 @@ export function PainelClient({ initial, initialPeriod }: { initial: PipelineDash
             </table>
           </div>
           {set.length > listDeals.length && (
-            <p className="text-[11px] text-slate-400 text-center py-2 border-t border-slate-100">Mostrando {listDeals.length} de {set.length} — veja tudo no <Link href="/negocios" className="text-primary-600 font-semibold hover:underline">pipeline</Link>.</p>
+            <p className="text-[11px] text-slate-400 text-center py-2 border-t border-slate-100">Mostrando {listDeals.length} de {set.length} — veja tudo em <Link href="/negocios?view=list" className="text-primary-600 font-semibold hover:underline">Negócios</Link>.</p>
           )}
         </section>
       </div>

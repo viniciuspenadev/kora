@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 import {
   Search, User, Users, Gauge, CreditCard, Headset, Tag as TagIcon, IdCard, Building2,
   SlidersHorizontal, FileText, ClipboardList, Mail, Plug,
@@ -98,7 +99,7 @@ const GROUPS: { key: string; label: string; items: Item[] }[] = [
     { href: "/configuracoes/cadastro",    label: "Campos do cadastro",  icon: IdCard },
   ] },
   { key: "vendas", label: "Vendas", items: [
-    { href: "/configuracoes/cotacao", label: "Cotação e Contrato", icon: FileText,      module: "crm" },
+    { href: "/configuracoes/cotacao", label: QUOTE_TERM.settings, icon: FileText,      module: "crm" },
     { href: "/configuracoes/motivos", label: "Motivos de perda",   icon: ClipboardList, module: "crm" },
   ] },
   { key: "sistema", label: "Sistema", items: [

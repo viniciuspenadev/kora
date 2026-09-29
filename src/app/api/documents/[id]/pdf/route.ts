@@ -40,12 +40,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // ── 2. Lookup (tenant_id explícito previne IDOR) ────────────
   const { data: doc } = await supabaseAdmin
     .from("commercial_documents")
-    .select("id, kind, year, number, pdf_path, deal_id")
+    .select("id, kind, year, number, code_prefix, pdf_path, deal_id")
     .eq("id", id)
     .eq("tenant_id", tenantId)
     .maybeSingle()
 
-  const row = doc as { kind: DocumentKind; year: number; number: number; pdf_path: string | null; deal_id: string | null } | null
+  const row = doc as { kind: DocumentKind; year: number; number: number; code_prefix: string | null; pdf_path: string | null; deal_id: string | null } | null
   if (!row || !row.pdf_path) {
     return NextResponse.json({ error: "Não encontrado" }, { status: 404 })
   }
@@ -69,8 +69,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: "Falha ao baixar o documento" }, { status: 500 })
   }
 
-  // "COT-0001/2026" → filename seguro "COT-0001-2026.pdf"
-  const fileName = `${docCode(row.kind, row.number, row.year).replace("/", "-")}.pdf`
+  // "ORC-0012/2026" → filename seguro "ORC-0012-2026.pdf" (prefixo GRAVADO no documento).
+  const fileName = `${docCode(row.kind, row.number, row.year, row.code_prefix).replace("/", "-")}.pdf`
   const download = req.nextUrl.searchParams.get("download") === "1"
 
   return new NextResponse(blob, {

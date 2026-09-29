@@ -17,6 +17,7 @@ import { maskCpfCnpj } from "@/lib/masks"
 import { archiveCompany, type CompanyRosterItem } from "@/lib/actions/companies"
 import { startQuoteFirstForCompany } from "@/lib/actions/deals"
 import { CompanyFormDialog } from "./company-form-dialog"
+import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 
 // Compacto pra célula (igual ao roster de /contatos): sem centavos acima de 100.
 const brlFmt = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: v >= 100 ? 0 : 2 })
@@ -159,7 +160,7 @@ export function EmpresasClient({ companies, canManage }: { companies: CompanyRos
               <p className="text-xs text-slate-400 max-w-sm mx-auto">
                 {isFiltering
                   ? "Ajuste a busca ou os filtros para ver outras empresas."
-                  : "Empresas nascem quando você cria uma proposta para um cliente PJ (CNPJ) — ou cadastre uma agora pelo botão “Nova empresa”."}
+                  : `Empresas nascem quando você cria ${qg("um", "uma")} ${QUOTE_TERM.oneLower} para um cliente PJ (CNPJ) — ou cadastre uma agora pelo botão “Nova empresa”.`}
               </p>
             </div>
           ) : (

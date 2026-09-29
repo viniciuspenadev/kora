@@ -9,6 +9,8 @@ import { recordDealEvent } from "@/lib/crm/deals"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { QuotePdf, type QuotePdfData } from "@/lib/pdf/quote-pdf"
 import { normalizeRichDoc, isEmptyRichDoc, richDocToPlain, type RichDoc } from "@/lib/commercial/richdoc"
+import { QUOTE_TERM as Q, qg } from "@/lib/commercial/quote-terms"
+const QUOTE_TERM_PREFIX = Q.codePrefix
 
 // ═══════════════════════════════════════════════════════════════════
 // Commercial Core — F4: DOCUMENTOS (docs/commercial-core-design.md §7.1).
@@ -143,9 +145,16 @@ export interface DocumentSettings {
 }
 
 // ── Numeração / código ──────────────────────────────────────────────
-const KIND_PREFIX: Record<DocumentKind, string> = { quote: "COT", order: "PED", contract: "CTR" }
-export function docCode(kind: DocumentKind, number: number, year: number): string {
-  return `${KIND_PREFIX[kind]}-${String(number).padStart(4, "0")}/${year}`
+// O prefixo é GRAVADO no documento ao numerar (`code_prefix`, migration 20260929000100):
+// documento emitido não muda de identidade quando o nome muda (COT → ORC em 29/09/2026 —
+// os já enviados seguem COT-000X, os novos saem ORC-000N na MESMA sequência).
+// ⚠️ Toda leitura que monta o código precisa selecionar `code_prefix` (guarda em teste).
+/** Prefixo dos documentos NOVOS (o do orçamento acompanha o nome, em quote-terms.ts). */
+export const NEW_PREFIX: Record<DocumentKind, string> = { quote: QUOTE_TERM_PREFIX, order: "PED", contract: "CTR" }
+/** Prefixo de antes de existir a coluna — só como rede para linha sem `code_prefix`. */
+const LEGACY_PREFIX: Record<DocumentKind, string> = { quote: "COT", order: "PED", contract: "CTR" }
+export function docCode(kind: DocumentKind, number: number, year: number, prefix: string | null | undefined): string {
+  return `${prefix || LEGACY_PREFIX[kind]}-${String(number).padStart(4, "0")}/${year}`
 }
 /** Ano corrente em America/Sao_Paulo (base da sequência tenant+kind+ano). */
 function currentYear(): number {
@@ -301,7 +310,7 @@ export async function buildQuoteSnapshot(
     .eq("tenant_id", tenantId).eq("deal_id", dealId)
     .order("position", { ascending: true }).order("created_at", { ascending: true })
   const itemRows = (rows ?? []) as ItemRow[]
-  if (itemRows.length === 0) return { error: "Adicione itens ao negócio antes de gerar a cotação." }
+  if (itemRows.length === 0) return { error: `Adicione itens ao negócio antes de gerar ${Q.the}.` }
 
   let subtotalCents = 0, discountCents = 0, totalCents = 0
   const items: QuoteItem[] = itemRows.map((r) => {
@@ -399,7 +408,7 @@ async function renderQuoteBuffer(snapshot: QuoteSnapshot, code: string, issuedAt
 /**
  * Renderiza o PDF de PRÉVIA do estado atual do compositor (NÃO persiste, NÃO
  * numera). Reusa buildQuoteSnapshot (que já escopa o deal por tenant_id). Código
- * fictício "COT-PRÉVIA"; hash real do snapshot pro rodapé ficar coerente.
+ * fictício "ORC-PRÉVIA" (prefixo dos novos); hash real do snapshot pro rodapé ficar coerente.
  */
 export async function renderQuotePreviewBuffer(
   tenantId: string, dealId: string, cond: DocumentConditionsInput,
@@ -407,14 +416,14 @@ export async function renderQuotePreviewBuffer(
   const built = await buildQuoteSnapshot(tenantId, dealId, cond)
   if ("error" in built) return { error: built.error }
   const hash = snapshotHash(built.snapshot)
-  const buffer = await renderQuoteBuffer(built.snapshot, "COT-PRÉVIA", new Date().toISOString(), hash)
+  const buffer = await renderQuoteBuffer(built.snapshot, `${NEW_PREFIX.quote}-PRÉVIA`, new Date().toISOString(), hash)
   return { buffer }
 }
 
 // ── Linha do client ─────────────────────────────────────────────────
-const DOC_COLS = "id, kind, year, number, status, snapshot, valid_until, pdf_path, superseded_by, created_at, sent_at, accepted_at, declined_at, voided_at"
+const DOC_COLS = "id, kind, year, number, code_prefix, status, snapshot, valid_until, pdf_path, superseded_by, created_at, sent_at, accepted_at, declined_at, voided_at"
 interface RawDoc {
-  id: string; kind: DocumentKind; year: number; number: number | null; status: DocumentStatus
+  id: string; kind: DocumentKind; year: number; number: number | null; code_prefix: string | null; status: DocumentStatus
   snapshot: QuoteSnapshot; valid_until: string | null; pdf_path: string | null; superseded_by: string | null
   created_at: string; sent_at: string | null; accepted_at: string | null; declined_at: string | null; voided_at: string | null
 }
@@ -422,7 +431,7 @@ function mapDoc(r: RawDoc): DocumentRow {
   return {
     // Rascunho não tem número → code "Rascunho" (o chip na UI já distingue pelo status).
     id: r.id, kind: r.kind, year: r.year, number: r.number,
-    code: r.number != null ? docCode(r.kind, r.number, r.year) : "Rascunho",
+    code: r.number != null ? docCode(r.kind, r.number, r.year, r.code_prefix) : "Rascunho",
     status: r.status, totalCents: Number(r.snapshot?.totals?.total_cents ?? 0),
     // pdf_path NÃO trafega pro client (exposição mínima — só a rota /api/documents lê do banco).
     validUntil: r.valid_until, supersededBy: r.superseded_by,
@@ -473,18 +482,18 @@ export async function createQuote(
   let code = ""
   for (let attempt = 0; attempt < 3; attempt++) {
     const number = await nextNumber(tenantId, "quote", year)
-    code = docCode("quote", number, year)
+    code = docCode("quote", number, year, NEW_PREFIX.quote)
     const { data, error } = await supabaseAdmin.from("commercial_documents").insert({
-      tenant_id: tenantId, kind: "quote", year, number,
+      tenant_id: tenantId, kind: "quote", year, number, code_prefix: NEW_PREFIX.quote,
       deal_id: input.dealId, contact_id: contactId, unit_id: unitId,
       snapshot, content_hash: contentHash,
       status: "active", valid_until: snapshot.conditions.valid_until, created_by: userId,
     }).select("id").single()
     if (!error && data) { docId = (data as { id: string }).id; break }
     if (error?.code === "23505") continue   // número tomado → renumera
-    return { error: error?.message ?? "Falha ao gerar cotação" }
+    return { error: error?.message ?? `Falha ao gerar ${Q.the}` }
   }
-  if (!docId) return { error: "Não foi possível numerar a cotação. Tente novamente." }
+  if (!docId) return { error: `Não foi possível numerar ${Q.the}. Tente novamente.` }
 
   // PDF (prova do enviado) — gerado UMA vez. Falha → remove o rascunho órfão.
   try {
@@ -496,13 +505,13 @@ export async function createQuote(
   } catch (e) {
     await supabaseAdmin.from("commercial_documents").delete().eq("id", docId).eq("tenant_id", tenantId)
     console.error("[documents.createQuote] pdf:", (e as Error).message)
-    return { error: "Falha ao gerar o PDF da cotação" }
+    return { error: `Falha ao gerar o PDF ${Q.ofThe}` }
   }
 
   // Espinha + timeline do negócio (type genérico 'note' — tenant_deal_events.type
   // é texto livre, sem enum; postCard=false = só auditoria, não polui o chat).
   await emitCommercialEvent(tenantId, "doc_created", { subject: { deal_id: input.dealId, document_id: docId }, actorId: userId })
-  await recordDealEvent({ tenantId, dealId: input.dealId, type: "note", by: userId, note: `Cotação ${code} gerada`, postCard: false })
+  await recordDealEvent({ tenantId, dealId: input.dealId, type: "note", by: userId, note: `${Q.one} ${code} ${qg("gerado", "gerada")}`, postCard: false })
 
   // Write-back: a cotação EMITIDA é a fonte da verdade — grava pagamento/parcelas/
   // validade de volta no deal (armazenamento; a UI única é o compositor). Mantém
@@ -563,7 +572,7 @@ export async function saveQuoteDraft(
     // Só rascunho pode ser sobrescrito — documento numerado é imutável.
     const cur = await loadDocStatus(tenantId, draftId)
     if (!cur) return { error: "Rascunho não encontrado" }
-    if (cur.status !== "draft") return { error: "Esta cotação já foi gerada — não é mais um rascunho." }
+    if (cur.status !== "draft") return { error: `${qg("Este", "Esta")} ${Q.oneLower} já foi ${qg("gerado", "gerada")} — não é mais um rascunho.` }
     // dealId vem do RASCUNHO carregado (auditoria 2026-07-24), não de input.dealId —
     // senão um client forjado gravaria o snapshot (total/itens) de OUTRO deal do tenant.
     const dealId = cur.deal_id ?? input.dealId
@@ -601,7 +610,7 @@ export async function activateQuoteDraft(
 ): Promise<{ id: string; code: string } | { error: string }> {
   const cur = await loadDocStatus(tenantId, draftId)
   if (!cur) return { error: "Rascunho não encontrado" }
-  if (cur.status !== "draft") return { error: "Esta cotação já foi gerada." }
+  if (cur.status !== "draft") return { error: `${qg("Este", "Esta")} ${Q.oneLower} já foi ${qg("gerado", "gerada")}.` }
   const dealId = cur.deal_id ?? input.dealId
   const cond = condFromInput(input)
   const built = await buildQuoteSnapshot(tenantId, dealId, cond)
@@ -618,19 +627,19 @@ export async function activateQuoteDraft(
   let claimed = false
   for (let attempt = 0; attempt < 3; attempt++) {
     const number = await nextNumber(tenantId, "quote", year)
-    code = docCode("quote", number, year)
+    code = docCode("quote", number, year, NEW_PREFIX.quote)
     const { data: rows, error } = await supabaseAdmin.from("commercial_documents")
-      .update({ number, year, snapshot, content_hash: contentHash, status: "active", valid_until: snapshot.conditions.valid_until, updated_at: new Date().toISOString() })
+      .update({ number, year, code_prefix: NEW_PREFIX.quote, snapshot, content_hash: contentHash, status: "active", valid_until: snapshot.conditions.valid_until, updated_at: new Date().toISOString() })
       .eq("id", draftId).eq("tenant_id", tenantId).eq("status", "draft")
       .select("id")
     if (error) {
       if ((error as { code?: string }).code === "23505") continue   // número tomado → renumera
       return { error: error.message }
     }
-    if (!rows?.length) return { error: "Esta cotação já foi gerada." }   // perdeu a corrida → aborta
+    if (!rows?.length) return { error: `${qg("Este", "Esta")} ${Q.oneLower} já foi ${qg("gerado", "gerada")}.` }   // perdeu a corrida → aborta
     claimed = true; break
   }
-  if (!claimed) return { error: "Não foi possível numerar a cotação. Tente novamente." }
+  if (!claimed) return { error: `Não foi possível numerar ${Q.the}. Tente novamente.` }
 
   // PDF (prova) — falha reverte pra rascunho. O revert só toca ESTA linha SE ainda for
   // deste ativar (guarda por status=active + number setado — nunca derruba uma ativa alheia).
@@ -645,11 +654,11 @@ export async function activateQuoteDraft(
       .update({ status: "draft", number: null, updated_at: new Date().toISOString() })
       .eq("id", draftId).eq("tenant_id", tenantId).eq("status", "active").is("pdf_path", null)
     console.error("[documents.activateQuoteDraft] pdf:", (e as Error).message)
-    return { error: "Falha ao gerar o PDF da cotação" }
+    return { error: `Falha ao gerar o PDF ${Q.ofThe}` }
   }
 
   await emitCommercialEvent(tenantId, "doc_created", { subject: { deal_id: dealId, document_id: draftId }, actorId: userId })
-  await recordDealEvent({ tenantId, dealId, type: "note", by: userId, note: `Cotação ${code} gerada`, postCard: false })
+  await recordDealEvent({ tenantId, dealId, type: "note", by: userId, note: `${Q.one} ${code} ${qg("gerado", "gerada")}`, postCard: false })
   await supabaseAdmin.from("tenant_deals").update({
     payment_method: snapshot.conditions.payment_method, installments: snapshot.conditions.installments,
     proposal_expires_at: snapshot.conditions.valid_until,
@@ -696,7 +705,7 @@ export async function markDocumentSent(tenantId: string, userId: string | null, 
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
   // Rascunho NÃO é enviável (não tem número nem PDF) — só documento ATIVO/já enviado.
-  if (doc.status !== "active" && doc.status !== "sent") return { error: "Só uma cotação gerada (ativa) pode ser enviada." }
+  if (doc.status !== "active" && doc.status !== "sent") return { error: `Só ${qg("um", "uma")} ${Q.oneLower} ${qg("emitido", "emitida")} pode ser ${qg("enviado", "enviada")}.` }
   await supabaseAdmin.from("commercial_documents")
     .update({ status: "sent", sent_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", docId).eq("tenant_id", tenantId)
@@ -707,7 +716,7 @@ export async function markDocumentSent(tenantId: string, userId: string | null, 
 export async function markDocumentAccepted(tenantId: string, userId: string, docId: string): Promise<{ ok: true } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
-  if (doc.status !== "active" && doc.status !== "sent") return { error: "Esta cotação não pode ser marcada como aceita." }
+  if (doc.status !== "active" && doc.status !== "sent") return { error: `${qg("Este", "Esta")} ${Q.oneLower} não pode ser ${qg("marcado como aceito", "marcada como aceita")}.` }
   await supabaseAdmin.from("commercial_documents")
     .update({ status: "accepted", accepted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", docId).eq("tenant_id", tenantId)
@@ -718,7 +727,7 @@ export async function markDocumentAccepted(tenantId: string, userId: string, doc
 export async function markDocumentDeclined(tenantId: string, userId: string, docId: string): Promise<{ ok: true } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
-  if (doc.status !== "active" && doc.status !== "sent") return { error: "Esta cotação não pode ser marcada como recusada." }
+  if (doc.status !== "active" && doc.status !== "sent") return { error: `${qg("Este", "Esta")} ${Q.oneLower} não pode ser ${qg("marcado como recusado", "marcada como recusada")}.` }
   await supabaseAdmin.from("commercial_documents")
     .update({ status: "declined", declined_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", docId).eq("tenant_id", tenantId)
@@ -729,7 +738,7 @@ export async function markDocumentDeclined(tenantId: string, userId: string, doc
 export async function voidDocument(tenantId: string, _userId: string, docId: string): Promise<{ ok: true } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
-  if (doc.status === "void") return { error: "Cotação já anulada." }
+  if (doc.status === "void") return { error: `${Q.one} já ${qg("cancelado", "cancelada")}.` }
   await supabaseAdmin.from("commercial_documents")
     .update({ status: "void", voided_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", docId).eq("tenant_id", tenantId)
@@ -745,8 +754,8 @@ export async function createNewVersion(
 ): Promise<{ id: string; code: string } | { error: string }> {
   const doc = await loadDocStatus(tenantId, docId)
   if (!doc) return { error: "Documento não encontrado" }
-  if (doc.status === "void") return { error: "Não é possível versionar uma cotação anulada." }
-  if (!doc.deal_id) return { error: "Cotação sem negócio de origem." }
+  if (doc.status === "void") return { error: `Não é possível versionar ${qg("um", "uma")} ${Q.oneLower} ${qg("cancelado", "cancelada")}.` }
+  if (!doc.deal_id) return { error: `${Q.one} sem negócio de origem.` }
 
   // CLAIM atômico ANTES de gerar (auditoria F4): o `.neq status void` garante que
   // só UMA chamada concorrente vence — a perdedora recebe zero linhas e sai.
@@ -756,7 +765,7 @@ export async function createNewVersion(
     .update({ status: "void", voided_at: now, updated_at: now })
     .eq("id", docId).eq("tenant_id", tenantId).neq("status", "void")
     .select("id")
-  if (!claimed?.length) return { error: "Esta cotação já foi versionada ou anulada." }
+  if (!claimed?.length) return { error: `${qg("Este", "Esta")} ${Q.oneLower} já foi ${qg("versionado ou cancelado", "versionada ou cancelada")}.` }
 
   const created = await createQuote(tenantId, userId, {
     dealId: doc.deal_id, validUntil: cond.validUntil ?? null, paymentTerms: cond.paymentTerms ?? null, notes: cond.notes ?? null,

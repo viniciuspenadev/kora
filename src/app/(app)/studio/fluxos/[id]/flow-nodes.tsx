@@ -10,6 +10,7 @@
 import { createContext, useContext, useMemo, useState } from "react"
 import { Handle, Position, useNodeId, useStore, type NodeProps } from "@xyflow/react"
 import { describeNode, outcomeTarget } from "@/lib/ai-v2/flow/describe"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 import type { FlowGraph, MessageNodeConfig, RichMessage } from "@/lib/ai-v2/flow/types"
 import { baloesDe, baloesBotoes } from "@/lib/ai-v2/flow/message-balloons"
 import { Play, MessageSquare, ListChecks, GitBranch, Globe, ClipboardList, Bot, ArrowRightLeft, Flag, GitFork, Workflow, CornerUpLeft, Braces, Split, Clock, Timer, Tag, Columns3, Image as ImageIcon, CalendarPlus, Sparkles, FileBadge, CheckCircle2, Send, Database, ShieldCheck, Link2 } from "lucide-react"
@@ -863,7 +864,7 @@ function ResolveNode(p: NodeProps) {
   )
 }
 
-const DS_LABEL: Record<string, string> = { agenda: "Agenda", deals: "Negócios", quotes: "Cotações" }
+const DS_LABEL: Record<string, string> = { agenda: "Agenda", deals: "Negócios", quotes: QUOTE_TERM.many }
 /** Fonte de Consulta: nó REDONDO — linguagem de "ferramenta plugada" (MCP/n8n), distinta
  *  dos passos retangulares do fluxo. Borda tracejada indigo antecipa o fio de dados (F2).
  *  Só SAÍDA (liga no Agente IA por um fio de dados). Não recebe fluxo. */

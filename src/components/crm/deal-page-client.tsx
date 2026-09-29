@@ -41,6 +41,7 @@ import { PickPipelineModal } from "@/components/crm/pick-pipeline-modal"
 import { DealQuotes } from "@/components/crm/deal-quotes"
 import { DealItemModal } from "@/components/crm/deal-item-modal"
 import { PromoteItemModal } from "@/components/crm/promote-item-modal"
+import { QUOTE_TERM } from "@/lib/commercial/quote-terms"
 import type { DocumentRow, DocumentSettings } from "@/lib/commercial/documents"
 
 const brl = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -375,7 +376,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem disabled={!hasItems} onClick={() => { changeDetailTab("proposals"); setQuoteGenTick((t) => t + 1) }}>
-                      <FileText className="size-3.5 text-slate-400" /> Gerar proposta
+                      <FileText className="size-3.5 text-slate-400" /> {QUOTE_TERM.generate}
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     {deal.pipelines.length > 1 && isOpen && (
@@ -473,7 +474,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
                     Por que está reabrindo? {deal.status === "won" ? <span className="text-red-500">*</span> : <span className="text-slate-300 font-normal">(opcional)</span>}
                   </label>
                   <textarea autoFocus value={reopenNote} onChange={(e) => setReopenNote(e.target.value)} rows={2}
-                    placeholder={deal.status === "won" ? "Obrigatório — ex: pagamento estornado, fechamento por engano…" : "Ex: cliente voltou a responder, retomamos a proposta…"}
+                    placeholder={deal.status === "won" ? "Obrigatório — ex: pagamento estornado, fechamento por engano…" : `Ex: cliente voltou a responder, retomamos ${QUOTE_TERM.the}…`}
                     className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40" />
                   <p className="text-[10px] text-slate-400">Fica registrado na linha do tempo, junto do desfecho anterior.</p>
                 </div>
@@ -533,7 +534,7 @@ export function DealPageClient({ deal, tasks, isManager = false, dealFields = []
           </SectionCard>
           <SectionCard flush className="shadow-none">
             <Tabs.Root value={detailTab} onValueChange={(v) => changeDetailTab(String(v))}>
-              <Tabs.List aria-label="Conteúdo do negócio" className="flex justify-between gap-2 border-b border-slate-200 px-4 sm:justify-start sm:gap-6">{[["negotiation", "Negociação", deal.items.length], ["proposals", "Propostas", quotes.length], ["activity", "Atividades", feedAll.length]].map(([value, label, count]) => <Tabs.Tab key={value} value={value} className="inline-flex items-center gap-1.5 border-b-2 border-transparent py-3.5 text-xs font-medium text-slate-500 outline-offset-2 data-active:border-primary data-active:text-primary-700"><span>{label}</span><span className="text-[10px] font-normal text-slate-500">{count}</span></Tabs.Tab>)}</Tabs.List>
+              <Tabs.List aria-label="Conteúdo do negócio" className="flex justify-between gap-2 border-b border-slate-200 px-4 sm:justify-start sm:gap-6">{[["negotiation", "Negociação", deal.items.length], ["proposals", QUOTE_TERM.many, quotes.length], ["activity", "Atividades", feedAll.length]].map(([value, label, count]) => <Tabs.Tab key={value} value={value} className="inline-flex items-center gap-1.5 border-b-2 border-transparent py-3.5 text-xs font-medium text-slate-500 outline-offset-2 data-active:border-primary data-active:text-primary-700"><span>{label}</span><span className="text-[10px] font-normal text-slate-500">{count}</span></Tabs.Tab>)}</Tabs.List>
               <Tabs.Panel value="negotiation" keepMounted className="data-hidden:hidden"><NegotiationCard deal={deal} summary={valueSummary} isManager={isManager} pending={pending} onAdd={() => setItemModal({ mode: "add" })} onEdit={(item) => setItemModal({ mode: "edit", item })} onRemove={(item) => run(() => removeDealItem(deal.id, item.id))} onPromote={deal.canManageCatalog ? (item) => setPromoteItem(item) : undefined} highlightIds={flashIds} hasProposal={quotes.some((q) => q.status !== "void")} /></Tabs.Panel>
               <Tabs.Panel value="proposals" keepMounted className="data-hidden:hidden"><DealQuotes dealId={deal.id} quotes={quotes} defaults={quoteSettings} hasItems={hasItems} items={deal.items} genTick={quoteGenTick} embedded /></Tabs.Panel>
               <Tabs.Panel value="activity" keepMounted className="data-hidden:hidden">          <section className="bg-white p-4 sm:p-5">
@@ -1282,7 +1283,7 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
         <h2 className="text-sm font-bold text-slate-900">Itens do negócio</h2>
         {expired && (
           <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">
-            <Clock className="size-2.5" /> Proposta vencida
+            <Clock className="size-2.5" /> {QUOTE_TERM.expired}
           </span>
         )}
         {items.length > 0 && (
@@ -1411,9 +1412,9 @@ function NegotiationCard({ deal, summary, isManager, pending, onAdd, onEdit, onR
           {/* Próximo passo natural depois de montar os itens: a proposta (mesmo destino do menu ⋯). */}
           {deal.status === "open" && !hasProposal && (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-3">
-              <p className="text-xs text-slate-500">Próximo passo: enviar a proposta ao cliente.</p>
+              <p className="text-xs text-slate-500">Próximo passo: enviar {QUOTE_TERM.the} ao cliente.</p>
               <Link href={`/negocios/${deal.id}/cotacao/nova`} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-white hover:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40">
-                <FileText className="size-3.5" /> Gerar proposta
+                <FileText className="size-3.5" /> {QUOTE_TERM.generate}
               </Link>
             </div>
           )}
