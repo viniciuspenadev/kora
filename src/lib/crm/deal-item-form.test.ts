@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseItemMoney, reviewDealItem, reviewManualItem, MANUAL_NAME_MAX } from "./deal-item-form"
+import { parseItemMoney, reviewDealItem, reviewManualItem, itemStartStep, MANUAL_NAME_MAX } from "./deal-item-form"
 
 const base = { billing: "one_time" as const, listPrice: 100, maxPct: 20, price: "100,00", quantity: "2", discount: "", discountMode: "brl" as const, term: "" }
 describe("proposal item review", () => {
@@ -37,6 +37,15 @@ describe("proposal item review", () => {
     expect(r.summary?.total).toBe(0)
     expect(r.quantity).toBe(1.5)
     expect(r.termMonths).toBeNull()
+  })
+})
+
+describe("first step of adding an item", () => {
+  it("only asks when both sources exist; otherwise goes straight to the one available", () => {
+    expect(itemStartStep({ hasCatalog: true, manualAllowed: true })).toBe("choose")
+    expect(itemStartStep({ hasCatalog: true, manualAllowed: false })).toBe("catalog")
+    expect(itemStartStep({ hasCatalog: false, manualAllowed: true })).toBe("manual")
+    expect(itemStartStep({ hasCatalog: false, manualAllowed: false })).toBe("none")
   })
 })
 

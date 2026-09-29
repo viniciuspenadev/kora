@@ -176,9 +176,10 @@ export async function nextLinePosition(tenantId: string, dealId: string): Promis
   return count ?? 0
 }
 
-export async function insertDealLine(row: Record<string, unknown>, position: number): Promise<{ ok: true } | { error: string }> {
-  const { error } = await supabaseAdmin.from("tenant_deal_items").insert({ ...row, position }).select("id").single()
-  return error ? { error: error.message } : { ok: true }
+export async function insertDealLine(row: Record<string, unknown>, position: number): Promise<{ ok: true; id: string } | { error: string }> {
+  const { data, error } = await supabaseAdmin.from("tenant_deal_items").insert({ ...row, position }).select("id").single()
+  if (error || !data) return { error: error?.message ?? "Falha ao gravar o item" }
+  return { ok: true, id: (data as { id: string }).id }
 }
 
 /** Recalcula o valor a partir das linhas (com linhas, `estimated_value` é cópia DERIVADA;

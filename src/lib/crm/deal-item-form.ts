@@ -3,6 +3,16 @@ import { computeDealValue, DEFAULT_TERM_MONTHS } from "./value"
 /** Limite do nome de um item avulso (o servidor confere o mesmo — lib/crm/deal-lines). */
 export const MANUAL_NAME_MAX = 200
 
+/** Primeira etapa de "Adicionar item": a escolha só aparece quando há duas opções de verdade;
+ *  com uma só, vai direto a ela (escolher entre uma ativa e uma apagada é um clique a mais). */
+export type ItemStartStep = "choose" | "catalog" | "manual" | "none"
+export function itemStartStep(input: { hasCatalog: boolean; manualAllowed: boolean }): ItemStartStep {
+  if (input.hasCatalog && input.manualAllowed) return "choose"
+  if (input.hasCatalog) return "catalog"
+  if (input.manualAllowed) return "manual"
+  return "none"
+}
+
 export function parseItemMoney(value: string): number | null {
   const text = value.trim()
   if (!text) return null
