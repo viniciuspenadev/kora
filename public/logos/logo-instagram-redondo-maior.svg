@@ -1,0 +1,19 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="instagramGradient" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(150 500) rotate(-55) scale(620)">
+      <stop offset="0" stop-color="#FFD600"/>
+      <stop offset="0.25" stop-color="#FF7A00"/>
+      <stop offset="0.5" stop-color="#FF0069"/>
+      <stop offset="0.75" stop-color="#D300C5"/>
+      <stop offset="1" stop-color="#7638FA"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Fundo redondo mantido no mesmo tamanho -->
+  <circle cx="256" cy="256" r="256" fill="url(#instagramGradient)"/>
+
+  <!-- Ícone da câmera maior -->
+  <rect x="120" y="120" width="272" height="272" rx="78" stroke="white" stroke-width="30"/>
+  <circle cx="256" cy="256" r="70" stroke="white" stroke-width="30"/>
+  <circle cx="338" cy="174" r="18" fill="white"/>
+</svg>

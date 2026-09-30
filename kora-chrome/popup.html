@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="head">
+    <img src="assets/logo.svg" alt="Kora" class="wm" />
+    <div class="title">Conecte sua conta do Kora<br />para começar</div>
+  </div>
+
+  <!-- estado: deslogado -->
+  <form id="form" class="form" hidden>
+    <label>E-mail<input id="email" type="email" placeholder="exemplo@email.com" autocomplete="username" required /></label>
+    <label>Senha<input id="password" type="password" placeholder="Digite sua senha" autocomplete="current-password" required /></label>
+    <details class="adv"><summary>Servidor</summary>
+      <input id="base" type="url" placeholder="http://localhost:3000" />
+    </details>
+    <div id="err" class="err" hidden></div>
+    <button id="submit" class="btn" type="submit">Conectar</button>
+    <div class="hint">Cria um <b>token de dispositivo</b> revogável a qualquer momento em Configurações → Dispositivos.</div>
+  </form>
+
+  <!-- estado: dispositivo novo → código do e-mail (device trust F6) -->
+  <form id="code-form" class="form" hidden>
+    <div class="hint" style="text-align:center;">Não reconhecemos esta instalação. Enviamos um código de 6 dígitos para <b id="code-email"></b>.</div>
+    <label>Código<input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" required style="text-align:center;letter-spacing:8px;font-weight:700;" /></label>
+    <div id="code-err" class="err" hidden></div>
+    <button id="code-submit" class="btn" type="submit">Confirmar dispositivo</button>
+    <div class="hint" style="text-align:center;"><a href="#" id="code-back" class="lnk">Voltar pro login</a></div>
+  </form>
+
+  <!-- estado: logado -->
+  <div id="logged" class="logged" hidden>
+    <div class="who"><span class="dot"></span><div><b id="who-name"></b><small id="who-tenant"></small></div></div>
+    <div class="hint">Abra o <b>WhatsApp Web</b> e use o puxador azul na borda direita.</div>
+    <button id="logout" class="btn btn-white" type="button">Sair deste dispositivo</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
