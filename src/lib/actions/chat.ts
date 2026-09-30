@@ -16,6 +16,11 @@ import { getInstagramSender, sendInstagramText } from "@/lib/instagram/api"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import { classifyAttachment, cleanAttachmentName, contentMismatch, fileExtension, type AttachmentKind } from "@/lib/chat/attachments"
 import type { UploadAuthorization } from "@/lib/chat/direct-upload"
+import {
+  FORWARD_MAX_MESSAGES, FORWARD_MAX_TARGETS, forwardContacts, forwardProblem, forwardStoragePath, forwardText,
+  isVoiceNote, parseLocation, storagePathBelongsTo, type ForwardedFrom,
+} from "@/lib/chat/message-forward"
+import type { ChatMessage } from "@/types/chat"
 import { randomBytes } from "node:crypto"
 import { assertSafeUrl } from "@/lib/ai-v2/http-guard"
 import { rateLimit } from "@/lib/rate-limit"
@@ -1185,6 +1190,228 @@ export async function sendUploadedChatMedia(
     caption, signature, isVoiceNote: false, fileSize: storedSize,
     replyTo: typeof input.replyTo === "string" && input.replyTo ? input.replyTo : undefined,
   })
+}
+
+// ── Encaminhar mensagens ─────────────────────────────────────────────────────────────────────
+// Decisão do dono (30/09/2026): encaminhar SÓ ENTREGA. A conversa de destino NÃO muda de
+// responsável, carteira, IA nem fluxo — por isso este caminho NÃO passa por
+// `prepareHumanReply`/`claimAfterAcceptedReply` (que são o "assumir" de quem responde).
+// As travas continuam as mesmas de qualquer envio: conversa do tenant e visível para quem
+// encaminha (origem e cada destino), canal WhatsApp com número, janela aberta no Oficial.
+// Regra de "o que pode ir" em lib/chat/message-forward.ts (a mesma que a tela usa).
+
+export type ForwardTargetResult = { conversationId: string; sent: number; failed: number; error?: string }
+export type ForwardResult = { ok: true; results: ForwardTargetResult[]; skipped: number } | { error: string }
+
+type ForwardableRow = Pick<ChatMessage, "id" | "conversation_id" | "sender_type" | "sender_id" | "content_type" | "content"
+  | "media_mime_type" | "media_file_name" | "status" | "is_private_note" | "metadata" | "deleted_at" | "created_at">
+
+const FORWARD_PREVIEW: Record<string, string> = {
+  image: "📷 Imagem", video: "📹 Vídeo", audio: "🎤 Áudio", document: "📎 Documento", sticker: "Figurinha",
+  location: "📍 Localização", contact: "👤 Contato",
+}
+
+/** Uma mensagem, uma conversa de destino. Falha aqui não interrompe as outras. */
+async function forwardOneMessage(a: {
+  tenantId: string; userId: string; targetId: string; targetProvider: string | null
+  phone: string; provider: WhatsAppProvider; signature: SignatureStamp | null
+  m: ForwardableRow; forwardedFrom: ForwardedFrom
+}): Promise<{ ok: true; preview: string; recipientJid?: string | null } | { ok: false }> {
+  const { m } = a
+  const bucket = supabaseAdmin.storage.from(CHAT_BUCKET)
+  const fwd = { forwarded: true, forwarded_from: a.forwardedFrom }
+  const base = { conversation_id: a.targetId, tenant_id: a.tenantId, sender_type: "agent", sender_id: a.userId, status: "pending", is_private_note: false }
+  let rowId: string | null = null
+  let copiedPath: string | null = null
+
+  const insertPending = async (row: Record<string, unknown>) => {
+    const { data, error } = await supabaseAdmin.from("chat_messages").insert({ ...base, ...row }).select("id").single()
+    if (error || !data) throw new Error(error?.message ?? "insert")
+    rowId = data.id
+  }
+  const markSent = async (result: { messageId: string }) => {
+    await supabaseAdmin.from("chat_messages").update({ status: "sent", whatsapp_msg_id: result.messageId || null })
+      .eq("tenant_id", a.tenantId).eq("id", rowId!)
+  }
+
+  try {
+    if (m.content_type === "text") {
+      const content = signedContent(forwardText(m), a.signature)
+      await insertPending({ content_type: "text", content, metadata: { ...fwd, ...(a.signature ? { agent_signature: a.signature } : {}) } })
+      const result = await a.provider.sendText(a.phone, content)
+      await markSent(result)
+      return { ok: true, preview: content, recipientJid: result.recipientJid }
+    }
+
+    if (m.content_type === "location") {
+      const point = parseLocation(m.content)!
+      const meta = (m.metadata ?? {}) as { location_name?: string | null; location_address?: string | null }
+      if (!a.provider.sendLocation) throw new Error("Localização não suportada neste canal.")
+      await insertPending({ content_type: "location", content: `${point.latitude},${point.longitude}`,
+        metadata: { ...fwd, location_name: meta.location_name ?? null, location_address: meta.location_address ?? null } })
+      const result = await a.provider.sendLocation(a.phone, { ...point, name: meta.location_name ?? undefined, address: meta.location_address ?? undefined })
+      await markSent(result)
+      return { ok: true, preview: FORWARD_PREVIEW.location, recipientJid: result.recipientJid }
+    }
+
+    if (m.content_type === "contact") {
+      const cards = forwardContacts(m)
+      if (!a.provider.sendContacts) throw new Error("Contato não suportado neste canal.")
+      await insertPending({ content_type: "contact", content: cards.map((c) => c.name).join(", "),
+        metadata: { ...fwd, contacts: cards.map((c) => ({ name: c.name, vcard: c.vcard })) } })
+      const result = await a.provider.sendContacts(a.phone, cards.map((c) => ({ name: c.name, phones: c.phones })))
+      await markSent(result)
+      return { ok: true, preview: FORWARD_PREVIEW.contact, recipientJid: result.recipientJid }
+    }
+
+    // Arquivo: COPIADO para a pasta da conversa de destino (cada conversa é dona dos seus
+    // arquivos — apagar os dados de um cliente nunca quebra a mensagem de outro).
+    const kind = m.content_type as MediaKind | "sticker"
+    let fileName = cleanAttachmentName(m.media_file_name || `${kind}`)
+    let mime = m.media_mime_type || "application/octet-stream"
+    const safeName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, "_").slice(-120) || "arquivo"
+    copiedPath = `${a.tenantId}/${a.targetId}/f_${Date.now()}_${randomBytes(4).toString("hex")}_${safeName}`
+    const { error: copyErr } = await bucket.copy(forwardStoragePath(m)!, copiedPath)
+    if (copyErr) throw new Error(`copy: ${copyErr.message}`)
+    const voice = isVoiceNote(m)
+    // WhatsApp Oficial: formato que a Meta não aceita (ou nota de voz, que ela só toca em
+    // ogg/opus) é convertido — mesma regra do envio normal.
+    if (a.targetProvider === "meta_cloud" && kind !== "document" && kind !== "sticker" && (voice || !metaAcceptsMedia(kind, mime))) {
+      const { data: blob, error: dlErr } = await bucket.download(copiedPath)
+      if (dlErr || !blob) throw new Error(dlErr?.message ?? "download")
+      const tc = await transcodeForMeta(Buffer.from(await blob.arrayBuffer()), kind)
+      if (!tc) throw new Error(metaFormatMessage(kind))
+      const converted = `${copiedPath.replace(/\.[^./]+$/, "")}_tc.${tc.ext}`
+      const up = await bucket.upload(converted, tc.buffer, { contentType: tc.mime, upsert: false })
+      if (up.error) throw new Error(up.error.message)
+      await bucket.remove([copiedPath]).catch(() => {})
+      copiedPath = converted
+      mime = tc.mime
+      fileName = `${fileName.replace(/\.[^.]+$/, "")}.${tc.ext}`
+    }
+    const { data: signed, error: urlErr } = await bucket.createSignedUrl(copiedPath, 3600)
+    if (urlErr || !signed) throw new Error("signed url")
+    const body = kind === "audio" || kind === "sticker" ? "" : forwardText(m)
+    const caption = body.trim() ? signedContent(body, a.signature, 1024) : ""
+    const size = Number((m.metadata as { file_size?: unknown } | null)?.file_size)
+    await insertPending({
+      content_type: kind, content: caption || null,
+      media_url: signed.signedUrl, media_mime_type: mime, media_file_name: fileName,
+      metadata: { storage_path: copiedPath, ...fwd,
+        ...(Number.isFinite(size) && size > 0 ? { file_size: size } : {}),
+        ...(voice ? { is_voice_note: true } : {}),
+        ...(caption && a.signature ? { agent_signature: a.signature } : {}) },
+    })
+    if (kind === "sticker" && !a.provider.sendSticker) throw new Error("Figurinha não suportada neste canal.")
+    const result = kind === "sticker" ? await a.provider.sendSticker!(a.phone, signed.signedUrl)
+      : voice ? await a.provider.sendVoiceNote(a.phone, signed.signedUrl)
+      : await a.provider.sendMedia(a.phone, signed.signedUrl, kind, caption || undefined, fileName)
+    await markSent(result)
+    return { ok: true, preview: caption || FORWARD_PREVIEW[kind] || "Mídia", recipientJid: result.recipientJid }
+  } catch (err) {
+    console.error("[forwardMessages] mensagem não entregue:", JSON.stringify({ targetId: a.targetId, messageId: m.id, error: (err as Error).message }))
+    if (rowId) await supabaseAdmin.from("chat_messages").update({ status: "failed" }).eq("tenant_id", a.tenantId).eq("id", rowId)
+    else if (copiedPath) await bucket.remove([copiedPath]).catch(() => {})   // cópia sem mensagem = lixo
+    return { ok: false }
+  }
+}
+
+/** Todas as mensagens escolhidas, em ordem, para UMA conversa de destino. */
+async function forwardToConversation(a: {
+  tenantId: string; userId: string; scope: Awaited<ReturnType<typeof getViewerScope>>
+  source: { id: string; contact_id: string | null }; targetId: string; items: ForwardableRow[]
+}): Promise<ForwardTargetResult> {
+  const fail = (error: string): ForwardTargetResult => ({ conversationId: a.targetId, sent: 0, failed: 0, error })
+  const { data: target } = await supabaseAdmin.from("chat_conversations")
+    .select("id, contact_id, instance_id, assigned_to, participants, department_id, channel, last_inbound_at, whatsapp_instances!instance_id(provider), chat_contacts(phone_number, bsuid)")
+    .eq("id", a.targetId).eq("tenant_id", a.tenantId).eq("is_group", false).maybeSingle()
+  if (!target || !canViewConversation(a.scope, target)) return fail("Conversa não encontrada.")
+  if (!isWhatsAppChannel(target.channel)) return fail("Encaminhar está disponível só para conversas de WhatsApp.")
+  if (!target.instance_id) return fail("Conversa sem número de WhatsApp.")
+  const inst = target.whatsapp_instances as unknown as { provider: string | null } | { provider: string | null }[] | null
+  const targetProvider = Array.isArray(inst) ? (inst[0]?.provider ?? null) : (inst?.provider ?? null)
+  if (!isWindowOpen(target.channel, targetProvider, target.last_inbound_at)) return fail("Janela de atendimento fechada — só template aprovado.")
+  const contact = target.chat_contacts as unknown as { phone_number: string | null; bsuid: string | null } | null
+  const phone = contact?.phone_number ?? contact?.bsuid ?? ""
+  if (!phone) return fail("Contato sem número de WhatsApp.")
+
+  let signature: SignatureStamp | null
+  let provider: WhatsAppProvider
+  try {
+    signature = await resolveManualSignature(a.tenantId, a.userId, target.department_id)
+    provider = await getProviderForInstance(target.instance_id, a.tenantId)
+  } catch (e) { return fail((e as Error).message) }
+
+  const at = new Date().toISOString()
+  let sent = 0, failed = 0, lastPreview = "", recipientJid: string | null | undefined
+  for (const m of a.items) {
+    const r = await forwardOneMessage({
+      tenantId: a.tenantId, userId: a.userId, targetId: target.id, targetProvider, phone, provider, signature, m,
+      forwardedFrom: { conversation_id: a.source.id, message_id: m.id, contact_id: a.source.contact_id, sender_type: m.sender_type, by: a.userId, at },
+    })
+    if (r.ok) { sent++; lastPreview = r.preview; recipientJid ??= r.recipientJid } else failed++
+  }
+  if (sent) {
+    // A conversa ganha a mensagem na lista — e SÓ isso (sem responsável, IA, pendência ou status).
+    const now = new Date().toISOString()
+    await supabaseAdmin.from("chat_conversations").update({
+      last_message_at: now, last_message_preview: lastPreview.slice(0, 100), last_message_dir: "out", updated_at: now,
+    }).eq("id", target.id).eq("tenant_id", a.tenantId)
+    await supabaseAdmin.from("whatsapp_instances").update({ last_outbound_message_at: now }).eq("id", target.instance_id)
+    // A rede diz QUEM recebeu (mesma troca de identidade palpitada do envio normal).
+    if (target.contact_id) await adoptRecipientJid(a.tenantId, target.contact_id, recipientJid ?? null)
+  }
+  return { conversationId: target.id, sent, failed, ...(!sent ? { error: "Não foi possível entregar agora. Tente de novo." } : {}) }
+}
+
+export async function forwardMessages(input: {
+  sourceConversationId: string; messageIds: string[]; targetConversationIds: string[]
+}): Promise<ForwardResult> {
+  const session = await auth()
+  if (!session?.user?.tenantId) return { error: "Não autenticado." }
+  const tenantId = session.user.tenantId
+  const userId = session.user.id
+  if (atendimentoBloqueado(await checkTenantStatus(tenantId))) {
+    return { error: "O acesso desta conta está pausado até a regularização do pagamento." }
+  }
+  const ids = (list: unknown) => Array.isArray(list) ? [...new Set(list.filter((v): v is string => typeof v === "string" && UUID_RE.test(v)))] : []
+  const messageIds = ids(input?.messageIds)
+  const targetIds = ids(input?.targetConversationIds)
+  const sourceId = input?.sourceConversationId
+  if (typeof sourceId !== "string" || !UUID_RE.test(sourceId)) return { error: "Conversa não encontrada." }
+  if (!messageIds.length) return { error: "Selecione ao menos uma mensagem." }
+  if (!targetIds.length) return { error: "Escolha para quem encaminhar." }
+  if (messageIds.length > FORWARD_MAX_MESSAGES) return { error: `Encaminhe até ${FORWARD_MAX_MESSAGES} mensagens por vez.` }
+  if (targetIds.length > FORWARD_MAX_TARGETS) return { error: `Encaminhe para até ${FORWARD_MAX_TARGETS} conversas por vez.` }
+  if (!rateLimit(`chat:forward:${userId}`, 30, 10 * 60_000).ok) {
+    return { error: "Muitos encaminhamentos em pouco tempo. Aguarde alguns minutos." }
+  }
+
+  const scope = await getViewerScope()
+  const { data: source } = await supabaseAdmin.from("chat_conversations")
+    .select("id, contact_id, assigned_to, participants, department_id, instance_id")
+    .eq("id", sourceId).eq("tenant_id", tenantId).eq("is_group", false).maybeSingle()
+  if (!source || !canViewConversation(scope, source)) return { error: "Conversa não encontrada." }
+
+  const { data: rows, error: readErr } = await supabaseAdmin.from("chat_messages")
+    .select("id, conversation_id, sender_type, sender_id, content_type, content, media_mime_type, media_file_name, status, is_private_note, metadata, deleted_at, created_at")
+    .eq("tenant_id", tenantId).eq("conversation_id", source.id).in("id", messageIds)
+  if (readErr) return { error: "Não foi possível ler as mensagens. Tente de novo." }
+  const items = ((rows ?? []) as ForwardableRow[])
+    .filter((m) => {
+      if (forwardProblem({ ...m, id: m.id })) return false
+      const path = forwardStoragePath(m)
+      return !path || storagePathBelongsTo(path, tenantId)
+    })
+    .sort((x, y) => x.created_at.localeCompare(y.created_at) || x.id.localeCompare(y.id))   // ordem original
+  if (!items.length) return { error: "Nenhuma das mensagens selecionadas pode ser encaminhada." }
+
+  const results: ForwardTargetResult[] = []
+  for (const targetId of targetIds) {
+    results.push(await forwardToConversation({ tenantId, userId, scope, source, targetId, items }))
+  }
+  revalidatePath("/inbox")
+  return { ok: true, results, skipped: messageIds.length - items.length }
 }
 
 // ── Mensagens ricas: reação / localização / contato ─────────

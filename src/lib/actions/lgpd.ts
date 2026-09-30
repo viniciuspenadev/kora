@@ -500,6 +500,28 @@ export async function deletePersonalData(contactId: string): Promise<
     storagePathSet.add(path)
   }
 
+  // 4b. CÓPIAS ENCAMINHADAS do que ESTE contato mandou, que hoje moram em conversas de
+  //     OUTROS contatos (Encaminhar, 30/09/2026). O cascade do passo 6 não as alcança — a
+  //     conversa delas é de outra pessoa. O vínculo está na própria cópia
+  //     (`metadata.forwarded_from.contact_id` + `sender_type`): só sai o conteúdo de AUTORIA
+  //     do titular. O que a EMPRESA mandou e foi encaminhado (catálogo, orçamento) fica.
+  const forwardedRes = await fetchAllPages<{ id: string; metadata: unknown }>("cópias encaminhadas", (from, to) =>
+    supabaseAdmin
+      .from("chat_messages")
+      .select("id, metadata")
+      .eq("tenant_id", tenantId)
+      .eq("metadata->forwarded_from->>contact_id", contactId)
+      .eq("metadata->forwarded_from->>sender_type", "contact")
+      .order("id", { ascending: true })
+      .range(from, to),
+  )
+  if ("error" in forwardedRes) return { error: forwardedRes.error }
+  const forwardedCopyIds = forwardedRes.rows.map((row) => row.id)
+  for (const row of forwardedRes.rows) {
+    const path = (row.metadata as { storage_path?: unknown } | null)?.storage_path
+    if (typeof path === "string" && path.length > 0) storagePathSet.add(path)
+  }
+
   const storagePaths = [...storagePathSet]
 
   // 5. Mídia PRIMEIRO, banco depois.
@@ -566,6 +588,29 @@ export async function deletePersonalData(contactId: string): Promise<
     anonymizedIgRuns = anonymized?.length ?? 0
   }
 
+  // 5c. As cópias encaminhadas (passo 4b) — ANTES do contato: se falhar, nada do titular foi
+  //     apagado do banco e a operação é re-tentável (os arquivos já saíram no passo 5).
+  let removedForwardedCopies = 0
+  for (let i = 0; i < forwardedCopyIds.length; i += REMOVE_CHUNK) {
+    const chunk = forwardedCopyIds.slice(i, i + REMOVE_CHUNK)
+    const { data: gone, error: fwdErr } = await supabaseAdmin
+      .from("chat_messages")
+      .delete()
+      .eq("tenant_id", tenantId)
+      .in("id", chunk)
+      .select("id")
+    if (fwdErr) {
+      console.error("[lgpd] exclusão das cópias encaminhadas falhou", JSON.stringify({
+        contactId, tenantId, expected: forwardedCopyIds.length, removedSoFar: removedForwardedCopies, error: fwdErr.message,
+      }))
+      return {
+        error: `Não consegui apagar as cópias encaminhadas das mensagens do contato: ${fwdErr.message}. ` +
+               `O contato ainda NÃO foi apagado — a exclusão parou aqui de propósito. Tente de novo.`,
+      }
+    }
+    removedForwardedCopies += gone?.length ?? 0
+  }
+
   // 6. DELETE — cascade apaga conversations + messages + taggings + ai_suggestions
   const { error: deleteErr } = await supabaseAdmin
     .from("chat_contacts")
@@ -602,6 +647,8 @@ export async function deletePersonalData(contactId: string): Promise<
       media_files_missing:    missingFiles,          // já não estavam no bucket
       // Linhas do ledger de cobrança que sobreviveram SEM PII (não foram apagadas).
       anonymized_ig_automation_runs: anonymizedIgRuns,
+      // Cópias do que o titular mandou, encaminhadas a outras conversas (passo 4b/5c).
+      forwarded_copies_removed:      removedForwardedCopies,
     },
   })
 

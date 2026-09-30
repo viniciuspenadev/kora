@@ -3,6 +3,9 @@
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, applyVisibilityFilter, type ViewerScope } from "@/lib/visibility"
 import type { ChatConversation } from "@/types/chat"
+import { isWindowOpen } from "@/lib/channels/policy"
+import { displayContactName } from "@/lib/contact"
+import { formatPhoneDisplay } from "@/lib/phone-utils"
 
 /**
  * Actions de listagem do inbox com paginação por cursor + filtros server-side.
@@ -224,6 +227,70 @@ async function resolveTargets(s: ViewerScope, f: ConversationFilters): Promise<{
 }
 
 // ── Public actions ──────────────────────────────────────────
+
+/** Destino possível de um encaminhamento (janela "Encaminhar para…"). */
+export interface ForwardTarget {
+  id: string
+  name: string
+  phone: string | null
+  pic: string | null
+  /** Nome do número que atende a conversa (quando a empresa tem mais de um). */
+  numberName: string | null
+  status: string
+  /** Arquivada entra como destino (dono, 30/09/2026) e CONTINUA arquivada — encaminhar só
+   *  entrega. Se o cliente responder, o recebimento desarquiva como sempre. */
+  archived: boolean
+  /** `null` = pode receber agora; texto = por que não (a tela mostra e desabilita). */
+  blocked: string | null
+}
+
+/**
+ * Conversas de WhatsApp que o atendente pode ver — as recentes primeiro — para escolher a
+ * quem encaminhar. Mesma regra de visibilidade do inbox (`applyVisibilityFilter`). É só a
+ * VITRINE: `forwardMessages` confere tudo de novo, conversa por conversa.
+ */
+export async function searchForwardTargets(query: string): Promise<ForwardTarget[]> {
+  const s = await getViewerScope()
+  const q = typeof query === "string" ? query.trim().replace(/[,()]/g, " ").slice(0, 60) : ""
+  let contactIds: string[] | null = null
+  if (q) {
+    const term = `%${q.replace(/[%_\\]/g, (m) => "\\" + m)}%`
+    const { data, error } = await supabaseAdmin.from("chat_contacts").select("id").eq("tenant_id", s.tenantId)
+      .or(`custom_name.ilike.${term},push_name.ilike.${term},phone_number.ilike.${term}`).limit(300)
+    if (error) throw new Error("Não foi possível buscar agora. Tente de novo.")
+    contactIds = (data ?? []).map((c) => (c as { id: string }).id)
+    if (!contactIds.length) return []
+  }
+  let req = supabaseAdmin.from("chat_conversations")
+    .select("id, status, channel, instance_id, last_inbound_at, archived_at, whatsapp_instances!instance_id(provider, display_name), chat_contacts(custom_name, push_name, phone_number, bsuid, profile_pic_url)")
+    .eq("tenant_id", s.tenantId).eq("is_group", false)
+    .or("channel.is.null,channel.in.(whatsapp,meta_cloud)")
+  if (contactIds) req = req.in("contact_id", contactIds)
+  req = applyVisibilityFilter(req, s)
+  const { data, error } = await req.order("last_message_at", { ascending: false, nullsFirst: false }).limit(30)
+  if (error) throw new Error("Não foi possível buscar agora. Tente de novo.")
+  return (data ?? []).map((row) => {
+    const r = row as unknown as {
+      id: string; status: string; channel: string | null; instance_id: string | null; last_inbound_at: string | null; archived_at: string | null
+      whatsapp_instances: { provider: string | null; display_name: string | null } | { provider: string | null; display_name: string | null }[] | null
+      chat_contacts: { custom_name: string | null; push_name: string | null; phone_number: string | null; bsuid: string | null; profile_pic_url: string | null } | null
+    }
+    const inst = Array.isArray(r.whatsapp_instances) ? r.whatsapp_instances[0] ?? null : r.whatsapp_instances
+    const contact = r.chat_contacts
+    const blocked = !r.instance_id ? "Sem número de WhatsApp"
+      : !isWindowOpen(r.channel, inst?.provider ?? null, r.last_inbound_at) ? "Janela fechada — só template aprovado"
+      : !(contact?.phone_number ?? contact?.bsuid) ? "Contato sem número"
+      : null
+    return {
+      id: r.id, status: r.status, archived: !!r.archived_at,
+      name: contact ? displayContactName(contact) : "Contato",
+      phone: contact?.phone_number ? formatPhoneDisplay(contact.phone_number) : null,
+      pic: contact?.profile_pic_url ?? null,
+      numberName: inst?.display_name?.trim() || null,
+      blocked,
+    }
+  })
+}
 
 export async function getConversations(opts: {
   filters?: ConversationFilters

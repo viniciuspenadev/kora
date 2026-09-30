@@ -6,7 +6,7 @@
 // é uma ação que manda mensagens ao cliente, então nunca dispara num clique só.
 
 import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react"
-import { Reply, Copy, Megaphone, Loader2, Check, AlertTriangle, CalendarPlus, Pencil, Trash2 } from "lucide-react"
+import { Reply, Copy, Megaphone, Loader2, Check, AlertTriangle, CalendarPlus, Pencil, Trash2, Forward } from "lucide-react"
 import { toast } from "sonner"
 import type { ChatMessage } from "@/types/chat"
 import { listActiveFlows, triggerFlowInConversation } from "@/lib/actions/studio/flows"
@@ -22,6 +22,8 @@ interface Props {
   /** Disparar fluxo não faz sentido em grupo (sem contato único). */
   canTriggerFlow?: boolean
   onReply?: (m: ChatMessage) => void
+  /** Encaminhar — só passado quando a mensagem pode ir (lib/chat/message-forward). */
+  onForward?: (m: ChatMessage) => void
   onDelete?: (m: ChatMessage) => void
   onEdit?: (m: ChatMessage) => void
   onReact?: (m: ChatMessage, emoji: string) => void
@@ -31,7 +33,7 @@ interface Props {
 }
 
 export function MessageContextMenu({
-  x, y, message, conversationId, canTriggerFlow = true, onReply, onEdit, onDelete, onReact, onSchedule, onClose,
+  x, y, message, conversationId, canTriggerFlow = true, onReply, onForward, onEdit, onDelete, onReact, onSchedule, onClose,
 }: Props) {
   // 🔴 SUBMENU, não troca de tela. Antes o clique em "Disparar fluxo" SUBSTITUÍA o menu
   //    inteiro pela lista (com um "‹ voltar"): a pessoa perdia de vista Responder /
@@ -160,6 +162,10 @@ export function MessageContextMenu({
             {onReply && message && (
               <MenuItem icon={Reply} label="Responder" onMouseEnter={() => setSubOpen(false)}
                 onClick={() => { onReply(message); onClose() }} />
+            )}
+            {onForward && message && (
+              <MenuItem icon={Forward} label="Encaminhar" onMouseEnter={() => setSubOpen(false)}
+                onClick={() => { onForward(message); onClose() }} />
             )}
             {message?.content && (
               <MenuItem icon={Copy} label="Copiar texto" onMouseEnter={() => setSubOpen(false)} onClick={copyText} />

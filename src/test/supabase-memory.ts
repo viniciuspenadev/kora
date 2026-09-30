@@ -2,8 +2,15 @@
 // really lose. No credentials or network; shared by attendance regression tests.
 /* eslint-disable @typescript-eslint/no-explicit-any -- test fake: rows have no schema, tests read fields freely */
 type Row = Record<string, any>
-// `coluna->>chave` (campo de JSON, como o PostgREST aceita em filtro).
-const val = (r: Row, k: string) => { const [col, key] = k.split("->>"); return key === undefined ? r[col] : r[col]?.[key] }
+// `coluna->>chave` e `coluna->objeto->>chave` (campo de JSON, como o PostgREST aceita em filtro).
+const val = (r: Row, k: string) => {
+  const cut = k.lastIndexOf("->>")
+  const [path, last] = cut < 0 ? [k, undefined] : [k.slice(0, cut), k.slice(cut + 3)]
+  const [col, ...inner] = path.split("->")
+  let v = r[col]
+  for (const key of inner) v = v?.[key]
+  return last === undefined ? v : v?.[last]
+}
 export class MemoryDb {
   tables: Record<string, Row[]> = {}
   writes: { table: string; patch: Row; count: number }[] = []
@@ -13,10 +20,12 @@ export class MemoryDb {
    *  Recebe as linhas que seriam afetadas, já com o patch (update) ou como vão entrar (insert). */
   writeError?: (table: string, rows: Row[], op: "insert" | "update") => string | null | undefined
   reset(tables: Record<string, Row[]>) {
-    this.tables = structuredClone(tables); this.writes = []; this.errors = {}; this.beforeWrite = undefined; this.writeError = undefined
+    this.tables = structuredClone(tables); this.writes = []; this.deletes = []; this.errors = {}; this.beforeWrite = undefined; this.writeError = undefined
   }
+  deletes: { table: string; count: number }[] = []
   from = (table: string) => {
     let patch: Row | undefined, inserts: Row[] | undefined, conflict: string | undefined, one = false, limit = Infinity
+    let removing = false, rangeFrom = 0
     const filters: ((r: Row) => boolean)[] = []
     const q = {
       select: (_columns?: string) => q,
@@ -30,8 +39,12 @@ export class MemoryDb {
       gte: (k: string, v: any) => { filters.push(r => r[k] >= v); return q },
       gt: (k: string, v: any) => { filters.push(r => r[k] > v); return q },
       or: (_value: string) => q,
+      // Só `not(col, "is", null)` — é o único uso nos caminhos testados.
+      not: (k: string, op: string, v: unknown) => { if (op === "is") filters.push(r => (val(r, k) ?? null) !== v); return q },
       order: (_column: string, _opts?: unknown) => q,
       limit: (n: number) => { limit = n; return q },
+      range: (from: number, to: number) => { rangeFrom = from; limit = to - from + 1; return q },
+      delete: () => { removing = true; return q },
       update: (value: Row) => { patch = value; return q },
       insert: (value: Row | Row[]) => { inserts = Array.isArray(value) ? value : [value]; return q },
       upsert: (value: Row, options: { onConflict: string }) => { inserts = [value]; conflict = options.onConflict; return q },
@@ -41,7 +54,12 @@ export class MemoryDb {
         if (this.errors[table]) return { data: null, error: { message: this.errors[table] } }
         const rows = this.tables[table] ??= []
         if (patch) this.beforeWrite?.(table, patch)
-        let matched = rows.filter(r => filters.every(f => f(r))).slice(0, limit)
+        let matched = rows.filter(r => filters.every(f => f(r))).slice(rangeFrom, rangeFrom + limit)
+        if (removing) {
+          this.tables[table] = rows.filter(r => !matched.includes(r))
+          this.deletes.push({ table, count: matched.length })
+          return { data: structuredClone(matched), error: null, count: matched.length }
+        }
         const refusal = this.writeError && (inserts ? this.writeError(table, structuredClone(inserts), "insert")
           : patch ? this.writeError(table, matched.map(r => ({ ...structuredClone(r), ...structuredClone(patch) })), "update") : null)
         if (refusal) return { data: null, error: { message: refusal } }

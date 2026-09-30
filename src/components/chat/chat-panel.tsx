@@ -9,6 +9,8 @@ import { MessageInput } from "./message-input"
 import { MessageDeleteDialog } from "./message-delete-dialog"
 import { messageDeleteProblem } from "@/lib/chat/message-delete"
 import type { MediaSendOptions } from "@/lib/chat/attachment-tray"
+import { FORWARD_MAX_MESSAGES, forwardProblem } from "@/lib/chat/message-forward"
+import { ForwardDialog, ForwardSelectionBar } from "./forward-dialog"
 import { MessageEditComposer } from "./message-edit-composer"
 import { messageEditProblem } from "@/lib/chat/message-edit"
 import { MessageContextMenu } from "./message-context-menu"
@@ -20,7 +22,7 @@ import { toast } from "sonner"
 import {
   Phone, CheckCircle2, Clock, XCircle,
   RotateCcw, Loader2, Megaphone, ExternalLink, AlarmClock,
-  ArrowLeft, Info, UsersRound,
+  ArrowLeft, Info, UsersRound, Check,
 } from "lucide-react"
 import { SourceChip } from "@/components/chat/source-chip"
 import { SourceLogo, channelToSource } from "@/components/chat/source-logo"
@@ -146,9 +148,34 @@ export function ChatPanel({
     const timer = setInterval(() => setEditClock(Date.now()), 5000)
     return () => clearInterval(timer)
   }, [editClockActive])
+  // Encaminhar: modo de seleção (quais mensagens) + janela de destino (para quem).
+  const [selection, setSelection] = useState<Set<string> | null>(null)
+  const [forwardOpen, setForwardOpen] = useState(false)
   const [editConversation, setEditConversation] = useState(conversation.id)
   if (editConversation !== conversation.id) {
     setEditConversation(conversation.id); setEditTarget(null); setDeleteTarget(null); setCtxMenu(null)
+    setSelection(null); setForwardOpen(false)
+  }
+  useEffect(() => {
+    if (!selection || forwardOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelection(null) }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [selection, forwardOpen])
+  function startForward(message: ChatMessage) {
+    setCtxMenu(null)
+    setSelection(new Set([message.id]))
+  }
+  function toggleSelected(message: ChatMessage) {
+    if (forwardProblem(message)) return
+    setSelection((current) => {
+      if (!current) return current
+      const next = new Set(current)
+      if (next.has(message.id)) next.delete(message.id)
+      else if (next.size >= FORWARD_MAX_MESSAGES) { toast.info(`Encaminhe até ${FORWARD_MAX_MESSAGES} mensagens por vez.`); return current }
+      else next.add(message.id)
+      return next
+    })
   }
   function editProblem(message: ChatMessage) {
     return messageEditProblem(message, { userId: currentUserId, channel: conversation.channel,
@@ -311,6 +338,8 @@ export function ChatPanel({
   // Clique direito em QUALQUER ponto do chat → menu de contexto. Se caiu numa
   // bolha (data-msg-id), traz as ações de mensagem; no vazio, só as da conversa.
   function openContextMenu(e: React.MouseEvent<HTMLDivElement>) {
+    // Escolhendo o que encaminhar: clique direito não abre menu (o clique normal marca).
+    if (selection) { e.preventDefault(); return }
     const el = (e.target as HTMLElement).closest("[data-msg-id]") as HTMLElement | null
     const msg = el?.dataset.msgId ? (msgById.get(el.dataset.msgId) ?? null) : null
     if (!msg && workflow) {
@@ -553,14 +582,18 @@ export function ChatPanel({
                 item.kind === "divider" ? (
                   <TimelineDivider key={item.id} icon={item.icon} label={item.label} time={item.time} />
                 ) : (
-                  <div key={item.id} id={`msg-${item.msg.id}`} data-msg-id={item.msg.id}>
+                  <div key={item.id} id={`msg-${item.msg.id}`} data-msg-id={item.msg.id}
+                    className={selection ? `relative flex items-center gap-2 rounded-lg transition-colors ${selection.has(item.msg.id) ? "bg-primary-50/80" : ""}` : undefined}>
+                  {selection && <SelectBox checked={selection.has(item.msg.id)} problem={forwardProblem(item.msg)} />}
+                  <div className={selection ? `min-w-0 flex-1 ${forwardProblem(item.msg) ? "opacity-50" : ""}` : undefined}>
                   <MessageBubble
                     message={item.msg}
-                    onOpenMenu={(msg, position) => { setEditClock(Date.now()); setCtxMenu({ ...position, msg }) }}
+                    // Escolhendo o que encaminhar: sem "…", responder ou reagir na bolha (o toque marca).
+                    onOpenMenu={selection ? undefined : (msg, position) => { setEditClock(Date.now()); setCtxMenu({ ...position, msg }) }}
                     agentName={item.msg.sender_type === "agent" ? (agentsById.get(item.msg.sender_id ?? "") ?? item.msg.profiles?.full_name) : null}
                     reactions={item.msg.whatsapp_msg_id ? reactionsByTarget.get(item.msg.whatsapp_msg_id) : undefined}
-                    onReply={onReply}
-                    onReact={onReact}
+                    onReply={selection ? undefined : onReply}
+                    onReact={selection ? undefined : onReact}
                     senderLabel={
                       item.msg.sender_type !== "contact"
                         ? null
@@ -574,6 +607,14 @@ export function ChatPanel({
                     }
                   />
                   </div>
+                  {/* Camada por cima da bolha: no modo de seleção o clique MARCA (não abre foto,
+                      não toca áudio, não abre menu). */}
+                  {selection && <button type="button" aria-pressed={selection.has(item.msg.id)} disabled={!!forwardProblem(item.msg)}
+                    aria-label={forwardProblem(item.msg) ?? (selection.has(item.msg.id) ? "Desmarcar mensagem" : "Marcar mensagem para encaminhar")}
+                    title={forwardProblem(item.msg) ?? undefined}
+                    onClick={() => toggleSelected(item.msg)}
+                    className="absolute inset-0 z-10 cursor-pointer rounded-lg focus-visible:outline-2 focus-visible:outline-primary disabled:cursor-not-allowed" />}
+                  </div>
                 )
               )}
             </section>
@@ -586,6 +627,13 @@ export function ChatPanel({
         key={deleteTarget.id} message={deleteTarget} onClose={() => setDeleteTarget(null)}
         onDeleted={patch => { onMessageEdited?.(patch); toast.success("Exclusão confirmada pelo WhatsApp") }} />}
 
+      {selection && <ForwardSelectionBar count={selection.size} onCancel={() => setSelection(null)} onForward={() => setForwardOpen(true)} />}
+      {selection && forwardOpen && <ForwardDialog sourceConversationId={conversation.id} messageIds={[...selection]}
+        onClose={() => setForwardOpen(false)} onDone={() => { setForwardOpen(false); setSelection(null) }} />}
+
+      {/* Escondido (não desmontado) durante a seleção: o texto digitado e os anexos em
+          preparação continuam lá quando a pessoa volta. */}
+      <div className={selection ? "hidden" : "contents"}>
       <MessageInput
         onEditAvailabilityChange={setComposerAvailable}
         editComposer={editTarget && editTarget.conversation_id === conversation.id ? <MessageEditComposer
@@ -616,6 +664,7 @@ export function ChatPanel({
         replyTarget={replyTarget}
         onCancelReply={onCancelReply}
       />
+      </div>
 
       {followUpOpen && (
       <FollowUpDialog
@@ -675,6 +724,7 @@ export function ChatPanel({
           conversationId={conversation.id}
           canTriggerFlow
           onReply={onReply}
+          onForward={ctxMenu.msg && ctxMenu.msg.conversation_id === conversation.id && !conversation.is_group && !forwardProblem(ctxMenu.msg) ? startForward : undefined}
           onReact={onReact}
           onSchedule={agendaEnabled && conversation.contact_id ? openSchedule : undefined}
           onClose={() => setCtxMenu(null)}
@@ -682,6 +732,14 @@ export function ChatPanel({
       )}
     </div>
   )
+}
+
+/** Caixinha de marcação do modo de seleção (visual; o clique é da camada sobre a bolha). */
+function SelectBox({ checked, problem }: { checked: boolean; problem: string | null }) {
+  return <span aria-hidden="true" className={`ml-1 grid size-5 shrink-0 place-items-center rounded-md border transition-colors ${
+    problem ? "border-slate-200 bg-slate-100" : checked ? "border-primary bg-primary text-white" : "border-slate-300 bg-white"}`}>
+    {checked && <Check className="size-3.5" />}
+  </span>
 }
 
 /**
