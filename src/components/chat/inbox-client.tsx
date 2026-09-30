@@ -14,6 +14,7 @@ import { useConversationAccess } from "@/components/chat/use-conversation-access
 import { MessageCircle } from "lucide-react"
 import { toast } from "sonner"
 import { MediaSendBlockedError, type MediaSendOptions } from "@/lib/chat/attachment-tray"
+import { confirmOptimistic, matchesOptimistic } from "@/lib/chat/optimistic"
 import { uploadDirect, UploadAbortedError, SERVER_PATH_MAX_BYTES } from "@/lib/chat/direct-upload"
 import { validateMediaFile } from "@/lib/chat/media-validation"
 import Link from "next/link"
@@ -406,7 +407,15 @@ export function InboxClient({
         if (newMsgs.length > 0 && activeIdRef.current === messageConversationId && accessEpoch === accessEpochRef.current && accessAllowedRef.current) {
           setActiveMessages((prev) => {
             const byId = new Map(prev.map((m) => [m.id, m]))
-            for (const m of newMsgs) byId.set(m.id, m)
+            for (const m of newMsgs) {
+              // Mensagem nova que confirma uma bolha provisória: toma o lugar dela (mesma
+              // regra do tempo real — lib/chat/optimistic), em vez de virar uma segunda bolha.
+              if (!byId.has(m.id)) {
+                const temp = Array.from(byId.values()).find((x) => matchesOptimistic(x, m))
+                if (temp) byId.delete(temp.id)
+              }
+              byId.set(m.id, m)
+            }
             return Array.from(byId.values()).sort(
               (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
             )
@@ -732,14 +741,9 @@ export function InboxClient({
           setActiveMessages((prev) => {
             const idx = prev.findIndex((m) => m.id === row.id)
             if (idx < 0) {
-              // Msg nova — dedup contra optimistic (status=pending, id temp-*)
-              // que ainda não foi swap-ada. Match por content + sender + created_at proximate.
-              const tempIdx = prev.findIndex((m) =>
-                m.id.startsWith("temp-") &&
-                m.sender_type === row.sender_type &&
-                m.content === row.content &&
-                Math.abs(new Date(m.created_at).getTime() - new Date(row.created_at).getTime()) < 30_000
-              )
+              // Msg nova — é a confirmação de uma bolha provisória (id temp-*) ainda não trocada?
+              // Regra única em lib/chat/optimistic (reconhece também o texto com assinatura).
+              const tempIdx = prev.findIndex((m) => matchesOptimistic(m, row))
               if (tempIdx >= 0) {
                 const next = [...prev]
                 next[tempIdx] = { ...next[tempIdx], ...row, profiles: prev[tempIdx].profiles }
@@ -847,9 +851,10 @@ export function InboxClient({
 
     try {
       const result = await sendMessage(convId, content, isPrivate, reply?.id)
-      setActiveMessages((prev) =>
-        prev.map((m) => m.id === temp.id ? { ...m, id: result.id, content: result.content, metadata: { ...m.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) }, status: "sent" } : m)
-      )
+      setActiveMessages((prev) => confirmOptimistic(prev, temp.id, {
+        id: result.id, content: result.content, status: "sent",
+        metadata: { ...temp.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) },
+      }))
     } catch (err) {
       setActiveMessages((prev) =>
         prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m)
@@ -868,7 +873,10 @@ export function InboxClient({
       : c).sort(sortByLastMessage))
     try {
       const result = await sendGroupText(convId, content)
-      setActiveMessages(prev => prev.map(m => m.id === temp.id ? { ...m, id: result.id, content: result.content, metadata: { ...m.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) }, status: "sent" } : m))
+      setActiveMessages(prev => confirmOptimistic(prev, temp.id, {
+        id: result.id, content: result.content, status: "sent",
+        metadata: { ...temp.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) },
+      }))
     } catch (err) {
       setActiveMessages(prev => prev.map(m => m.id === temp.id ? { ...m, status: "failed" } : m))
       throw err
@@ -963,9 +971,10 @@ export function InboxClient({
       }
       // Swap id. Mantém blob URL até o próximo poll/realtime trazer o real
       // (com storage_path no metadata → resolveMediaUrl passa a usar /api/media/<id>).
-      setActiveMessages((prev) =>
-        prev.map((m) => m.id === temp.id ? { ...m, id: result.id, content: result.content, metadata: { ...m.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) }, status: "sent" } : m)
-      )
+      setActiveMessages((prev) => confirmOptimistic(prev, temp.id, {
+        id: result.id, content: result.content, status: "sent",
+        metadata: { ...temp.metadata, ...(result.signature ? { agent_signature: result.signature } : {}) },
+      }))
     } catch (err) {
       URL.revokeObjectURL(blobUrl)
       setActiveMessages((prev) =>
@@ -1013,7 +1022,7 @@ export function InboxClient({
       toast.error(result.error)
       return
     }
-    setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+    setActiveMessages((prev) => confirmOptimistic(prev, temp.id, { id: result.id, status: "sent" }))
   }, [makeTempMessage])
 
   const handleSendLocation = useCallback(async (loc: { latitude: number; longitude: number; name?: string; address?: string }) => {
@@ -1031,7 +1040,7 @@ export function InboxClient({
       toast.error(result.error)
       return
     }
-    setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+    setActiveMessages((prev) => confirmOptimistic(prev, temp.id, { id: result.id, status: "sent" }))
   }, [makeTempMessage])
 
   const handleSendContact = useCallback(async (card: { name: string; phone: string }) => {
@@ -1050,7 +1059,7 @@ export function InboxClient({
       toast.error(result.error)
       return
     }
-    setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+    setActiveMessages((prev) => confirmOptimistic(prev, temp.id, { id: result.id, status: "sent" }))
   }, [makeTempMessage])
 
   const handleSendSticker = useCallback(async (file: File) => {
@@ -1072,7 +1081,7 @@ export function InboxClient({
         toast.error(result.error)
         return
       }
-      setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, id: result.id, status: "sent" } : m))
+      setActiveMessages((prev) => confirmOptimistic(prev, temp.id, { id: result.id, status: "sent" }))
     } catch {
       URL.revokeObjectURL(blobUrl)
       setActiveMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, status: "failed" } : m))
