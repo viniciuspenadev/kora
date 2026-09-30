@@ -1,5 +1,0 @@
-# Canal de reporte de vulnerabilidades do Kora (RFC 9116).
-# ⚠️ Confirme que o e-mail abaixo é uma caixa monitorada antes de manter em prod.
-Contact: mailto:contato@bluedigitalhub.com.br
-Preferred-Languages: pt-BR, en
-Expires: 2027-01-01T00:00:00.000Z
