@@ -28,7 +28,8 @@
 //     - contact_identities, tenant_deals, tenant_deal_items (sem `cost`), tenant_tasks, appointments,
 //       commercial_documents, contact_list_members, campaign_recipients,
 //       contact_import_items, keyword_trigger_runs, conversation_events,
-//       instagram_automation_runs, studio_runs (PARCIAL — ver abaixo)
+//       instagram_automation_runs, studio_runs (PARCIAL — ver abaixo),
+//       outreach_log (pelo TELEFONE do titular — o livro não guarda contato; 01/10/2026)
 //   ⚠️ studio_runs entra SEM `compiled_prompt` (decisão do dono, 2026-07-30): o prompt
 //      compilado mistura dado do titular com a ENGENHARIA do produto (persona, instruções,
 //      regras). O titular tem direito aos dados DELE — que já vão, mais legíveis, em
@@ -48,6 +49,7 @@ import { auth } from "@/auth"
 import { storagePathsForOwner } from "@/lib/storage/paths"
 import { supabaseAdmin } from "@/lib/supabase"
 import { logAudit, sanitizeForAudit } from "@/lib/audit"
+import { outreachKeysForContact } from "@/lib/outreach/phone-key"
 import { revalidatePath } from "next/cache"
 
 async function requireAdmin() {
@@ -88,6 +90,14 @@ const MAX_PAGES = 200
  * Depois de aplicada, some daqui: a partir daí 42P01 vira sintoma de outra coisa.
  */
 const TOLERATE_MISSING_TABLE = ["42P01"] as const
+
+/** País-base do tenant — o MESMO que o Disparar usa para normalizar o número antes de
+ *  gravar no livro (`runOutreach`). Normalizar diferente aqui = não achar a linha. */
+async function tenantCountry(tenantId: string): Promise<string> {
+  const { data } = await supabaseAdmin.from("tenant_config")
+    .select("default_country").eq("tenant_id", tenantId).maybeSingle()
+  return ((data as { default_country?: string | null } | null)?.default_country) ?? "BR"
+}
 
 /**
  * Lê TODAS as páginas de uma query. Falha alto: qualquer erro do PostgREST
@@ -292,6 +302,30 @@ export async function exportPersonalData(contactId: string): Promise<
   if ("error" in igRunsRes) return { error: igRunsRes.error }
   const igAutomationRuns = igRunsRes.rows
 
+  // 5c-bis. Livro de disparos do "Disparar no WhatsApp" (trava anti-canhão, 01/10/2026).
+  //     Guarda o TELEFONE (não o contato): acha-se pelas chaves dos números do titular.
+  //     Colunas explícitas pelo mesmo motivo do 5d. TOLERA 42P01: o livro só existe depois
+  //     da migration 20261001000100 — sem ela não há linha, e o acesso não pode cair.
+  const outreachKeys = outreachKeysForContact(contact as { phone_number?: string | null; whatsapp_id?: string | null; phone_secondary?: string | null },
+    await tenantCountry(tenantId))
+  let outreachLog: Record<string, unknown>[] = []
+  if (outreachKeys.length > 0) {
+    const outreachRes = await fetchAllPages<Record<string, unknown>>(
+      "disparos no WhatsApp",
+      (from, to) =>
+        supabaseAdmin
+          .from("outreach_log")
+          .select("id, created_at, settled_at, origin, outcome, reason, phone_e164, conversation_id, flow_id")
+          .eq("tenant_id", tenantId)
+          .in("phone_key", outreachKeys)
+          .order("id", { ascending: true })
+          .range(from, to),
+      { tolerateCodes: TOLERATE_MISSING_TABLE },
+    )
+    if ("error" in outreachRes) return { error: outreachRes.error }
+    outreachLog = outreachRes.rows
+  }
+
   // 5d. Execuções de IA nas conversas do contato (`studio_runs`).
   //
   //     🔴 SELEÇÃO EXPLÍCITA DE COLUNAS, e o `compiled_prompt` fica DE FORA — decisão do
@@ -359,6 +393,7 @@ export async function exportPersonalData(contactId: string): Promise<
     import_items:        importItems.data ?? [],
     trigger_runs:        triggerRuns.data ?? [],
     instagram_automation_runs: igAutomationRuns,
+    outreach_log:        outreachLog,
     // Rastro do tratamento automatizado (Art. 20). SEM o prompt de sistema — ver 5d.
     ai_runs:             aiRuns,
     timeline_events:     timelineEvents,
@@ -378,6 +413,7 @@ export async function exportPersonalData(contactId: string): Promise<
       import_items:        importItems.data?.length ?? 0,
       trigger_runs:        triggerRuns.data?.length ?? 0,
       instagram_automation_runs: igAutomationRuns.length,
+      outreach_log:        outreachLog.length,
       ai_runs:             aiRuns.length,
       timeline_events:     timelineEvents.length,
     },
@@ -611,6 +647,32 @@ export async function deletePersonalData(contactId: string): Promise<
     removedForwardedCopies += gone?.length ?? 0
   }
 
+  // 5d. Livro de disparos (trava anti-canhão) — guarda o TELEFONE, não o contato, então o
+  //     cascade não o alcança. Apaga pelas chaves dos números do titular, ANTES do contato
+  //     (depois não há mais de onde tirar os números). Falha aborta; 42P01 = migration
+  //     ainda não aplicada, não há linha.
+  let removedOutreachRows = 0
+  {
+    const keys = outreachKeysForContact(contact as { phone_number?: string | null; whatsapp_id?: string | null; phone_secondary?: string | null },
+      await tenantCountry(tenantId))
+    if (keys.length > 0) {
+      const { data: gone, error: outErr } = await supabaseAdmin
+        .from("outreach_log")
+        .delete()
+        .eq("tenant_id", tenantId)
+        .in("phone_key", keys)
+        .select("id")
+      if (outErr && outErr.code !== "42P01") {
+        console.error("[lgpd] exclusão do livro de disparos falhou", JSON.stringify({ contactId, tenantId, code: outErr.code }))
+        return {
+          error: `Não consegui apagar o registro de disparos no WhatsApp do contato: ${outErr.message}. ` +
+                 `O contato ainda NÃO foi apagado — a exclusão parou aqui de propósito. Tente de novo.`,
+        }
+      }
+      removedOutreachRows = gone?.length ?? 0
+    }
+  }
+
   // 6. DELETE — cascade apaga conversations + messages + taggings + ai_suggestions
   const { error: deleteErr } = await supabaseAdmin
     .from("chat_contacts")
@@ -649,6 +711,8 @@ export async function deletePersonalData(contactId: string): Promise<
       anonymized_ig_automation_runs: anonymizedIgRuns,
       // Cópias do que o titular mandou, encaminhadas a outras conversas (passo 4b/5c).
       forwarded_copies_removed:      removedForwardedCopies,
+      // Linhas do livro de disparos no WhatsApp com os números do titular (passo 5d).
+      outreach_log_removed:          removedOutreachRows,
     },
   })
 

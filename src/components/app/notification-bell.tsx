@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, AlarmClock, type LucideIcon } from "lucide-react"
+import { Bell, BellRing, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, AlarmClock, ShieldAlert, type LucideIcon } from "lucide-react"
 import { getRealtimeClient } from "@/lib/realtime"
 import {
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,
@@ -35,6 +35,10 @@ const ICONS: Record<string, LucideIcon> = {
   // payload (hrefFor) — é o que abre A CONVERSA em vez de cair no fallback /agenda.
   followup_due:         AlarmClock,
   task_due:             CalendarCheck,
+  // Disparar no WhatsApp: o cliente pediu de novo e a conversa já está com você · a trava
+  // anti-canhão segurou disparos (aviso a donos e admins, 1 por hora).
+  outreach_held:        BellRing,
+  outreach_cap_hit:     ShieldAlert,
 }
 
 function timeAgo(iso: string): string {

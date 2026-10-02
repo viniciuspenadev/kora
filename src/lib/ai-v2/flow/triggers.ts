@@ -242,8 +242,14 @@ export async function startFlowRun(tenantId: string, conversationId: string, flo
 }
 
 /** Como startFlowRun, mas começa num nó específico (campanha-por-fluxo: retoma DEPOIS
- *  do template de acionamento, já enviado a frio — sem duplicar o opener). */
-export async function startFlowRunAt(tenantId: string, conversationId: string, flow: FlowRow, nodeId: string | null, metadata?: Record<string, unknown>): Promise<FlowRunRow> {
+ *  do template de acionamento, já enviado a frio — sem duplicar o opener).
+ *  `seed` = bastão do Disparar: o run nasce no fio WhatsApp com as variáveis e a pilha
+ *  do fluxo que o chamou. As chaves internas (`__run_*`, ciclo, entrada) são SEMPRE as
+ *  deste fio — vêm depois do seed e o sobrescrevem. */
+export async function startFlowRunAt(
+  tenantId: string, conversationId: string, flow: FlowRow, nodeId: string | null, metadata?: Record<string, unknown>,
+  seed?: { variables?: Record<string, unknown>; callStack?: FlowRunRow["call_stack"] },
+): Promise<FlowRunRow> {
   const row = {
     tenant_id: tenantId,
     conversation_id: conversationId,
@@ -254,9 +260,10 @@ export async function startFlowRunAt(tenantId: string, conversationId: string, f
     // variables (jsonb EXISTENTE → zero migration; família __* protegida do LLM). Por
     // estar no payload do upsert, é SOBRESCRITO a cada novo disparo na MESMA conversa
     // (o run é 1-por-conversa) → o recorrente que volta ganha régua NOVA = "da casa" ✓.
-    variables: { __run_started_at: new Date().toISOString(), __run_generation: crypto.randomUUID(),
+    variables: { ...(seed?.variables ?? {}),
+      __run_started_at: new Date().toISOString(), __run_generation: crypto.randomUUID(),
       __attendance_cycle: metadata?.attendance_cycle ?? null, __studio_entry: metadata?.studio_entry ?? null },
-    call_stack: [],
+    call_stack: seed?.callStack ?? [],
     status: "active" as const,
     resume_at: null,
     updated_at: new Date().toISOString(),

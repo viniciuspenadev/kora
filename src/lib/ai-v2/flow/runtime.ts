@@ -12,7 +12,8 @@
 // (1 por conversa). Bounded por MAX_HOPS (anti-ciclo) + MAX_DEPTH (anti-recursão).
 
 import "server-only"
-import { assertStudioControl } from "../control"
+import { assertStudioControl, beginStudioControl } from "../control"
+import { StudioControlChangedError } from "../control-error"
 import { updateFlowRun } from "./run-state"
 import { supabaseAdmin } from "@/lib/supabase"
 import { isPlausiblePhone } from "@/lib/phone-utils"
@@ -25,7 +26,8 @@ import { runAgentTurn, type AgentTurnResult } from "../agent"
 import { hasModule } from "@/lib/modules"
 import { baloesDe, baloesBotoes, baloesEsperam, temBaloesRicos } from "./message-balloons"
 import type { PersonaInput } from "../prompt"
-import { loadFlow } from "./triggers"
+import { loadFlow, startFlowRunAt } from "./triggers"
+import type { InstanceForProvider } from "@/types/automation"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { routeToHumanDefault } from "@/lib/atendimento/human-routing"
 import { classifyIntent } from "./router"
@@ -459,6 +461,104 @@ async function handBackToHuman(ctx: ExecCtx): Promise<void> {
   // Nunca restaura snapshot de dono: uma escolha explícita do Studio ou de um
   // humano (inclusive fila sem assigned_to) é autoritativa.
   await routeToHumanDefault(ctx.tenantId, ctx.conversationId, "studio_finished", ctx.conversationMetadata)
+}
+
+/**
+ * Bastão do Disparar (F2b, docs/forms-design.md §4.3): o resto do fluxo passa para o fio
+ * WhatsApp que acabou de receber a mensagem.
+ *
+ *   1. O Studio vira a linha de frente do fio WhatsApp (`beginStudioControl`: entrada
+ *      nova, `ai_handling`). Ele só chega aqui se a conversa NÃO estava com um atendente
+ *      (o Disparar recusa antes de enviar, `holdForHuman`).
+ *   2. O run nasce no fio WhatsApp JÁ no nó seguinte, com as variáveis do fluxo (sem o
+ *      estado interno `__*` do fio de origem). É um run de verdade, não um carimbo: um
+ *      "Esperar" logo depois grava o prazo e o "cliente voltou antes" funciona como em
+ *      qualquer fluxo — o carimbo da campanha não sabe contar o "sem resposta".
+ *   3. O fio de origem termina (`outreach_handoff`) e segue o destino de sempre.
+ *   4. O fluxo continua agora, no fio novo, até a próxima espera.
+ *
+ * Devolve `null` quando não deu para passar (o chamador para com nota interna, e o fio de
+ * origem termina normalmente). A ordem é "cria o novo, depois fecha o velho": se algo
+ * falhar no meio, o pior caso é o fio de origem seguir o destino de sempre — nunca o
+ * fluxo perdido nos dois.
+ */
+async function handOffToConversation(
+  input: FlowExecInput,
+  args: {
+    flow: FlowRow; run: FlowRunRow; variables: Record<string, unknown>; callStack: CallFrame[]
+    nextId: string; targetConversationId: string; fromNodeId: string
+  },
+): Promise<FlowResult | null> {
+  const { ctx } = input
+  let waCtx: ExecCtx
+  let waRun: FlowRunRow
+  try {
+    const { data: target } = await supabaseAdmin.from("chat_conversations")
+      .select("id, channel, instance_id, contact_id, metadata")
+      .eq("tenant_id", ctx.tenantId).eq("id", args.targetConversationId).maybeSingle()
+    const t = target as { id: string; channel: string | null; instance_id: string | null; contact_id: string | null; metadata: Record<string, unknown> | null } | null
+    // O fio tem que ser DESTE contato e ter número: é a mesma pessoa, no WhatsApp.
+    if (!t || t.contact_id !== ctx.contact.id || !t.instance_id) return null
+    const { data: inst } = await supabaseAdmin.from("whatsapp_instances").select("*")
+      .eq("tenant_id", ctx.tenantId).eq("id", t.instance_id).maybeSingle()
+    if (!inst) return null
+
+    waCtx = {
+      ...ctx,
+      conversationId:       t.id,
+      channel:              t.channel ?? "whatsapp",
+      instance:             inst as InstanceForProvider,
+      conversationMetadata: t.metadata ?? {},
+      history:              [],
+      inboundMsgId:         null,
+      transferExecution:    undefined,
+      pace:                 { usedMs: 0 },
+    }
+    await beginStudioControl(waCtx)
+
+    const seed: Record<string, unknown> = Object.fromEntries(
+      Object.entries(args.variables).filter(([k]) => !k.startsWith("__")))
+    seed.__handoff_from = {
+      conversation_id: ctx.conversationId, run_id: args.run.id, node_id: args.fromNodeId, at: new Date().toISOString(),
+    }
+    waRun = await startFlowRunAt(ctx.tenantId, t.id, args.flow, args.nextId, waCtx.conversationMetadata,
+      { variables: seed, callStack: args.callStack })
+  } catch (e) {
+    console.error(JSON.stringify({
+      src: "studio-runtime", kind: "outreach-handoff-failed",
+      control: e instanceof StudioControlChangedError, message: (e as Error)?.message ?? "erro",
+    }))
+    return null
+  }
+
+  // O fio de origem termina aqui; o fluxo agora é do WhatsApp.
+  // ⚠️ Falhar em encerrar a ORIGEM não pode travar o WhatsApp: a mensagem já saiu e o run
+  //    novo já existe. Se a origem mudou no meio (outro turno a substituiu), ela é de quem
+  //    a substituiu — só registra e segue.
+  try {
+    await finishRun(ctx.tenantId, args.run, "outreach_handoff", args.variables)
+    await handBackToHuman(ctx)   // o fio de origem (ex.: chat do site) segue o destino de sempre
+  } catch (e) {
+    console.error(JSON.stringify({
+      src: "studio-runtime", kind: "outreach-handoff-origin-close-failed",
+      control: e instanceof StudioControlChangedError, message: (e as Error)?.message ?? "erro",
+    }))
+  }
+
+  try {
+    const result = await runFlow({ ...input, ctx: waCtx, history: [], incomingText: "", optionId: undefined }, args.flow, waRun)
+    // A mensagem do Disparar JÁ saiu: este turno (do fio de ORIGEM) respondeu, mesmo que o
+    // resto só espere. Um "encaminhado" lá no WhatsApp é do fio WhatsApp — já foi aplicado
+    // nele pelo Transferir — e não pode voltar como roteamento do fio de origem.
+    return { ...result, status: result.status === "error" ? "error" : "responded", departmentId: null }
+  } catch (e) {
+    if (e instanceof StudioControlChangedError) return { status: "responded", departmentId: null, error: null, agent: null }
+    console.error(JSON.stringify({ src: "studio-runtime", kind: "outreach-continuation-failed", message: (e as Error)?.message ?? "erro" }))
+    await noteFlowSkip(waCtx,
+      "⚠️ O fluxo parou logo depois de chamar esta pessoa no WhatsApp. A mensagem saiu; confira o fluxo no Kora Studio.",
+      { node: "outreach", reason: "continuation_failed", flow_id: args.flow.id })
+    return { status: "responded", departmentId: null, error: null, agent: null }
+  }
 }
 
 // ── execução ────────────────────────────────────────────────────
@@ -1052,9 +1152,40 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
           templateLanguage: cfg.template?.language,
           templateParams:   (cfg.template?.params ?? []).map((p) => interpolate(p ?? "", variables)),
           text:             cfg.text ? interpolate(cfg.text, variables) : undefined,
+          origin:           ctx.channel === "site" ? "site" : "flow",
+          flowId:           activeFlow.id,
         })
+        // O motivo fica à mão do autor (Condição/Definir variável) e do diagnóstico.
+        variables[`outreach:${node.id}`] = { branch: out.branch, reason: out.reason ?? null }
         if (out.branch === "sent") responded = true
-        currentId = edgeTarget(graph, node.id, out.branch)
+        const next = edgeTarget(graph, node.id, out.branch)
+
+        /**
+         * 🔑 BASTÃO (F2b). A mensagem saiu num fio WhatsApp DIFERENTE do fio onde o fluxo
+         *    roda (ex.: o fluxo está no chat do site). O que vem depois do Disparar —
+         *    "Esperar resposta", "Transferir", a próxima mensagem — é conversa com a
+         *    pessoa NO WHATSAPP. Então o run passa para aquele fio, já no nó seguinte, e
+         *    o fio de origem termina aqui.
+         *
+         * ⚠️ Só com nó seguinte. Sem nada depois do Disparar (o único fluxo em produção,
+         *    medido em 01/10) o comportamento é o de sempre: o fluxo de origem termina.
+         * ⚠️ Se a passagem falhar, o resto NÃO roda no fio de origem: aqueles nós foram
+         *    desenhados para o WhatsApp, e mandar "Oi, recebeu?" no chat do site seria
+         *    pior que parar. Para com nota interna.
+         */
+        if (out.branch === "sent" && next && out.conversationId && out.conversationId !== ctx.conversationId && !ctx.dryRun) {
+          const handed = await handOffToConversation(input, {
+            flow: activeFlow, run, variables, callStack, nextId: next,
+            targetConversationId: out.conversationId, fromNodeId: node.id,
+          })
+          if (handed) return handed
+          await noteFlowSkip(ctx,
+            "⚠️ A mensagem saiu no WhatsApp, mas o fluxo não conseguiu continuar na conversa de lá. Confira a conversa do WhatsApp desta pessoa.",
+            { node: "outreach", reason: "handoff_failed", flow_id: activeFlow.id, node_id: node.id })
+          currentId = null
+          break
+        }
+        currentId = next
         break
       }
       case "tag": {

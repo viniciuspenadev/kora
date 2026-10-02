@@ -23,6 +23,8 @@ export type NotificationType =
                         // ⚠️ O payload leva `conversation_id` — é o que faz o clique
                         //    abrir A CONVERSA. Sem ele o roteador cai no fallback e
                         //    manda pra /agenda (é o defeito D2, vivo no task_due).
+  | "outreach_held"     // Disparar no WhatsApp não mandou por cima de conversa em atendimento (responsável)
+  | "outreach_cap_hit"  // trava anti-canhão segurou disparos na última hora (donos e admins, 1×/hora)
   | (string & {})       // extensível p/ futuros produtores (transfer_received, …)
 
 export interface CreateNotificationInput {

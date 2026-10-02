@@ -447,6 +447,10 @@ export function ConfigPanel({
           {(cfg.channel ?? "auto") === "auto" && (
             <p className="text-[11px] text-slate-400">Em <b>Automático</b>: usa o Oficial (template) se houver número oficial; senão o não-oficial (texto).</p>
           )}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 space-y-1.5">
+            <p className="text-[11px] text-slate-600"><b>Depois do envio, o fluxo continua no WhatsApp.</b> O que estiver ligado na saída <b>Enviado</b> (ex.: <b>Esperar</b> com &quot;cliente voltou&quot;, <b>Transferir</b>) acontece na conversa do WhatsApp da pessoa.</p>
+            <p className="text-[11px] text-slate-600"><b>Proteção do seu número:</b> no máximo 1 mensagem automática por pessoa a cada 24 h, e um teto por hora para a empresa. Se a conversa da pessoa já estiver com um atendente, o Kora não manda por cima: avisa quem atende. Nesses casos o fluxo sai por <b>Bloqueado</b>.</p>
+          </div>
         </div>
       )}
 

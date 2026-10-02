@@ -15,14 +15,22 @@ export class MemoryDb {
   tables: Record<string, Row[]> = {}
   writes: { table: string; patch: Row; count: number }[] = []
   errors: Record<string, string> = {}
+  /** Código PostgREST/Postgres do erro da tabela (ex.: "42P01" = tabela não existe). */
+  errorCodes: Record<string, string> = {}
   beforeWrite?: (table: string, patch: Row) => void
   /** Recusa de ESCRITA (gatilho/CHECK do banco): devolve a mensagem de erro, ou nada para gravar.
    *  Recebe as linhas que seriam afetadas, já com o patch (update) ou como vão entrar (insert). */
   writeError?: (table: string, rows: Row[], op: "insert" | "update") => string | null | undefined
   reset(tables: Record<string, Row[]>) {
-    this.tables = structuredClone(tables); this.writes = []; this.deletes = []; this.errors = {}; this.beforeWrite = undefined; this.writeError = undefined
+    this.tables = structuredClone(tables); this.writes = []; this.deletes = []; this.errors = {}; this.beforeWrite = undefined; this.writeError = undefined; this.rpcs = {}; this.errorCodes = {}
   }
   deletes: { table: string; count: number }[] = []
+  /** RPC: cada teste registra o que a função do banco responde (sem handler = erro, como
+   *  uma função que não existe — PGRST202). */
+  rpcs: Record<string, (args: Row) => { data: any; error: any }> = {}
+  rpc = (name: string, args: Row) => Promise.resolve().then(() =>
+    this.rpcs[name] ? this.rpcs[name](structuredClone(args))
+      : { data: null, error: { code: "PGRST202", message: `função ${name} não existe` } })
   from = (table: string) => {
     let patch: Row | undefined, inserts: Row[] | undefined, conflict: string | undefined, one = false, limit = Infinity
     let removing = false, rangeFrom = 0
@@ -51,7 +59,7 @@ export class MemoryDb {
       single: () => { one = true; return q },
       maybeSingle: () => { one = true; return q },
       then: (resolve: (value: any) => unknown, reject?: (error: unknown) => unknown) => Promise.resolve().then(() => {
-        if (this.errors[table]) return { data: null, error: { message: this.errors[table] } }
+        if (this.errors[table]) return { data: null, error: { message: this.errors[table], code: this.errorCodes[table] } }
         const rows = this.tables[table] ??= []
         if (patch) this.beforeWrite?.(table, patch)
         let matched = rows.filter(r => filters.every(f => f(r))).slice(rangeFrom, rangeFrom + limit)
