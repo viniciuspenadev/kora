@@ -32,6 +32,11 @@ export const QUESTION_TYPE_LABEL: Record<QuestionType, string> = {
   nps:        "Nota de 0 a 10",
 }
 
+/** Rótulo curto (lista de passos, onde o caminho recua e o espaço aperta). */
+export const QUESTION_TYPE_SHORT: Record<QuestionType, string> = {
+  ...QUESTION_TYPE_LABEL, cards: "Cartões", chips: "Faixas", nps: "Nota 0–10",
+}
+
 /** Tipos que têm opções (e podem ser referência do "mostrar só se"). */
 export const CHOICE_TYPES = ["cards", "chips", "multi"] as const
 export function isChoiceType(t: QuestionType): t is (typeof CHOICE_TYPES)[number] {
@@ -48,6 +53,8 @@ export type FormIcon = (typeof FORM_ICONS)[number]
 // ── Limites (o banco segura o tamanho total; estes seguram cada pedaço) ──
 export const FORM_LIMITS = {
   questions: 20, options: 12, minOptions: 2,
+  /** Caminho dentro de caminho: até 3 níveis (regra aprovada pelo dono em 02/10/2026). */
+  pathLevels: 3,
   key: 40, title: 140, help: 240, optionLabel: 60, optionDescription: 120, placeholder: 80, unknownLabel: 40,
   eyebrow: 40, formTitle: 120, intro: 300, buttonLabel: 40,
   consent: 600, marketing: 300, reviewTitle: 80, endingTitle: 120, endingMessage: 600,
@@ -285,8 +292,8 @@ function readQuestion(raw: unknown): FormQuestion | null {
 
 /**
  * Lê qualquer coisa como definição VÁLIDA: o que falta ganha o padrão, o que passa do limite
- * é cortado, tipo desconhecido some. Depois, `pruneDependencies` limpa "mostrar só se" que
- * aponta para pergunta/opção que não existe mais (apagar uma pergunta não deixa lixo).
+ * é cortado, tipo desconhecido some. Depois, `tidyDefinition` arruma os caminhos (ordem e
+ * condições que não valem mais).
  */
 export function normalizeDefinition(raw: unknown): FormDefinition {
   const base = emptyDefinition()
@@ -300,7 +307,7 @@ export function normalizeDefinition(raw: unknown): FormDefinition {
   const e = isObj(raw.ending) ? raw.ending : {}
   const r = isObj(raw.review) ? raw.review : {}
   const accent = typeof a.accent === "string" && HEX_RE.test(a.accent) ? a.accent.toLowerCase() : base.appearance.accent
-  return pruneDependencies({
+  return tidyDefinition({
     version:   FORM_DEFINITION_VERSION,
     questions,
     contact: {
@@ -330,10 +337,19 @@ export function normalizeDefinition(raw: unknown): FormDefinition {
   })
 }
 
+// ── Caminhos ─────────────────────────────────────────────────────
+// O formulário continua UMA lista (a mesma da prévia e da página pública). Caminho é a pergunta
+// com "mostrar só se": ela pertence à resposta que a abre. Regras (docs/forms-design.md §4.5):
+//   • as perguntas de um caminho ficam LOGO ABAIXO da pergunta que o abre (ordem canônica);
+//   • até FORM_LIMITS.pathLevels níveis de caminho dentro de caminho;
+//   • condição que deixa de valer SOBE para o caminho de cima — nunca vira "para todos" calada.
+
 /**
  * "Mostrar só se" só vale apontando para uma pergunta de ESCOLHA que vem ANTES, e só com
- * opções que existem nela. Qualquer outra coisa é removida (nunca vira pergunta escondida
- * para sempre por causa de uma referência quebrada).
+ * opções que existem nela. Quando a condição deixa de valer mas a pergunta de cima existe
+ * (opção apagada, tipo trocado para texto, "Não sei" desligado), a pergunta SOBE para o caminho
+ * da de cima — continua só para quem estava naquele caminho. Referência quebrada de verdade
+ * (pergunta que não existe ou vem depois) cai para "todos": nunca fica escondida para sempre.
  */
 export function pruneDependencies(def: FormDefinition): FormDefinition {
   const seen = new Map<string, FormQuestion>()
@@ -341,11 +357,12 @@ export function pruneDependencies(def: FormDefinition): FormDefinition {
     let showIf = q.showIf
     if (showIf) {
       const ref = seen.get(showIf.questionId)
-      if (!ref || !isChoiceType(ref.type)) showIf = null
+      if (!ref) showIf = null
+      else if (!isChoiceType(ref.type)) showIf = ref.showIf
       else {
         const valid = new Set([...ref.options.map((o) => o.id), ...(ref.allowUnknown ? [UNKNOWN_OPTION_ID] : [])])
         const optionIds = [...new Set(showIf.optionIds.filter((id) => valid.has(id)))]
-        showIf = optionIds.length ? { questionId: showIf.questionId, optionIds } : null
+        showIf = optionIds.length ? { questionId: showIf.questionId, optionIds } : ref.showIf
       }
     }
     const next = showIf === q.showIf ? q : { ...q, showIf }
@@ -353,6 +370,62 @@ export function pruneDependencies(def: FormDefinition): FormDefinition {
     return next
   })
   return { ...def, questions }
+}
+
+/** Ordem das respostas da pergunta de cima ("Não sei" por último) — define a ordem dos caminhos. */
+function optionRank(parent: FormQuestion, optionIds: string[]): number {
+  const idx = optionIds.map((id) => (id === UNKNOWN_OPTION_ID ? parent.options.length : parent.options.findIndex((o) => o.id === id)))
+    .filter((i) => i >= 0)
+  return idx.length ? Math.min(...idx) : parent.options.length + 1
+}
+
+/** Chave do grupo de um caminho: as respostas que o abrem, em ordem fixa. */
+export function pathGroupKey(showIf: ShowIf): string {
+  return `${showIf.questionId}:${[...showIf.optionIds].sort().join(",")}`
+}
+
+/**
+ * Ordem canônica: cada pergunta seguida das perguntas dos caminhos dela (por ordem de resposta;
+ * dentro do mesmo caminho, a ordem atual). Assim a lista que o editor desenha em árvore é
+ * EXATAMENTE a ordem que a pessoa vê. Ciclo (só em dado corrompido) é quebrado: a pergunta vai
+ * para o fim sem condição.
+ */
+export function arrangePaths(def: FormDefinition): FormDefinition {
+  const byId = new Map(def.questions.map((q) => [q.id, q]))
+  const kids = new Map<string, FormQuestion[]>()
+  const roots: FormQuestion[] = []
+  for (const q of def.questions) {
+    const parent = q.showIf && q.showIf.questionId !== q.id ? byId.get(q.showIf.questionId) : undefined
+    if (parent) kids.set(parent.id, [...(kids.get(parent.id) ?? []), q])
+    else roots.push(q)
+  }
+  const out: FormQuestion[] = []
+  const visited = new Set<string>()
+  const visit = (q: FormQuestion) => {
+    if (visited.has(q.id)) return
+    visited.add(q.id)
+    out.push(q)
+    const list = kids.get(q.id) ?? []
+    const rank = (c: FormQuestion) => optionRank(q, c.showIf!.optionIds)
+    // sort é estável: dentro do mesmo caminho, fica a ordem atual.
+    ;[...list].sort((a, b) => rank(a) - rank(b) || pathGroupKey(a.showIf!).localeCompare(pathGroupKey(b.showIf!))).forEach(visit)
+  }
+  roots.forEach(visit)
+  for (const q of def.questions) if (!visited.has(q.id)) { visited.add(q.id); out.push({ ...q, showIf: null }) }
+  return out.every((q, i) => q === def.questions[i]) ? def : { ...def, questions: out }
+}
+
+/** Ordem canônica + condições válidas. Toda definição que sai de leitura ou edição passa aqui. */
+export function tidyDefinition(def: FormDefinition): FormDefinition {
+  return arrangePaths(pruneDependencies(arrangePaths(def)))
+}
+
+/** Em quantos caminhos (um dentro do outro) a pergunta está: 0 = todos respondem. */
+export function pathDepth(def: FormDefinition, id: string): number {
+  const byId = new Map(def.questions.map((q) => [q.id, q]))
+  let depth = 0
+  for (let q = byId.get(id); q?.showIf && depth <= FORM_LIMITS.questions; q = byId.get(q.showIf.questionId)) depth++
+  return depth
 }
 
 // ── Checagens ────────────────────────────────────────────────────
@@ -383,6 +456,7 @@ export function publishProblems(def: FormDefinition): string[] {
   def.questions.forEach((q, i) => {
     const n = i + 1
     if (!q.title.trim()) out.push(`Pergunta ${n}: escreva a pergunta.`)
+    if (pathDepth(def, q.id) > FORM_LIMITS.pathLevels) out.push(`Pergunta ${n}: passa de ${FORM_LIMITS.pathLevels} níveis de caminho dentro de caminho.`)
     if (isChoiceType(q.type)) {
       const labels = q.options.map((o) => o.label.trim())
       if (q.options.length < FORM_LIMITS.minOptions) out.push(`Pergunta ${n}: precisa de pelo menos ${FORM_LIMITS.minOptions} opções.`)
@@ -403,17 +477,46 @@ export type LocationAnswer = { city: string; district: string }
 export type AnswerValue = string | string[] | LocationAnswer | null
 export type Answers = Record<string, AnswerValue>
 
-/** A pergunta aparece para esta pessoa, dadas as respostas até aqui? */
-export function isQuestionVisible(q: FormQuestion, answers: Answers): boolean {
+/** A condição DIRETA da pergunta casa com a resposta de quem ela depende? (Não olha se essa
+ *  outra pergunta está no caminho — para isso, `visibleQuestions`/`isQuestionShown`.) */
+export function conditionMet(q: FormQuestion, answers: Answers): boolean {
   if (!q.showIf) return true
   const v = answers[q.showIf.questionId]
   const picked = Array.isArray(v) ? v : typeof v === "string" ? [v] : []
   return picked.some((id) => q.showIf!.optionIds.includes(id))
 }
 
-/** Perguntas que esta pessoa vê, na ordem. */
+/**
+ * Perguntas que esta pessoa vê, na ordem — os CAMINHOS em cascata: uma pergunta só aparece
+ * se a pergunta de que ela depende TAMBÉM aparece. Sem a cascata, quem foi pelo caminho A,
+ * voltou e trocou para B continuava vendo perguntas do caminho A (a resposta antiga ficava
+ * guardada). Achado em 02/10/2026, teste "caminho em 2 níveis".
+ */
 export function visibleQuestions(def: FormDefinition, answers: Answers): FormQuestion[] {
-  return def.questions.filter((q) => isQuestionVisible(q, answers))
+  const shown = new Set<string>()
+  const out: FormQuestion[] = []
+  for (const q of def.questions) {
+    if (!q.showIf || (shown.has(q.showIf.questionId) && conditionMet(q, answers))) {
+      shown.add(q.id)
+      out.push(q)
+    }
+  }
+  return out
+}
+
+/** Esta pergunta está no caminho desta pessoa? */
+export function isQuestionShown(def: FormDefinition, q: FormQuestion, answers: Answers): boolean {
+  return visibleQuestions(def, answers).includes(q)
+}
+
+/**
+ * Só as respostas das perguntas que estão no caminho. O que a pessoa respondeu num caminho e
+ * depois abandonou (voltou e trocou) NÃO vai para o comprovante, a ficha nem o Studio.
+ */
+export function visibleAnswers(def: FormDefinition, answers: Answers): Answers {
+  const out: Answers = {}
+  for (const q of visibleQuestions(def, answers)) if (answers[q.id] !== undefined) out[q.id] = answers[q.id]
+  return out
 }
 
 /** A resposta está preenchida o bastante para seguir (só olha obrigatoriedade e forma). */

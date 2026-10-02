@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   normalizeDefinition, draftProblems, publishProblems, pruneDependencies, emptyDefinition, newQuestion,
-  keyFromText, uniqueKey, isValidKey, visibleQuestions, answerProblem, answerLabel, fillPlaceholders,
+  keyFromText, uniqueKey, isValidKey, visibleQuestions, visibleAnswers, isQuestionShown, conditionMet, answerProblem, answerLabel, fillPlaceholders,
   targetAllowed, UNKNOWN_OPTION_ID, FORM_LIMITS, type FormDefinition,
 } from "./definition"
 import { TEMPLATE_KEYS, TEMPLATES, templateDefinition, isTemplateKey } from "./templates"
@@ -97,7 +97,7 @@ describe("mostrar só se", () => {
     expect(visibleQuestions(def, { servico: "a", largura: UNKNOWN_OPTION_ID }).map((q) => q.id)).toEqual(["servico", "largura", "cidade"])
     expect(visibleQuestions(def, { servico: ["b", "a"] }).map((q) => q.id)).toEqual(["servico", "largura"])
   })
-  it("referência para pergunta POSTERIOR, inexistente ou que não é de escolha é removida", () => {
+  it("caminho de pergunta POSTERIOR vai para baixo dela; de pergunta que não é de escolha SOBE; de pergunta inexistente cai para todos", () => {
     const def = normalizeDefinition({
       questions: [
         { id: "x", type: "short_text", title: "t", showIf: { questionId: "y", optionIds: ["a"] } },
@@ -106,12 +106,65 @@ describe("mostrar só se", () => {
         { id: "w", type: "short_text", title: "t", showIf: { questionId: "fantasma", optionIds: ["a"] } },
       ],
     })
-    expect(def.questions.map((q) => q.showIf)).toEqual([null, null, null, null])
+    expect(def.questions.map((q) => q.id)).toEqual(["y", "x", "z", "w"])
+    expect(def.questions.map((q) => q.showIf)).toEqual([null, { questionId: "y", optionIds: ["a"] }, { questionId: "y", optionIds: ["a"] }, null])
+  })
+  it("ciclo (dado corrompido) é quebrado: nenhuma pergunta fica escondida para sempre", () => {
+    const def = normalizeDefinition({
+      questions: [
+        { id: "a", type: "cards", title: "t", options: [{ id: "o", label: "O" }], showIf: { questionId: "b", optionIds: ["o"] } },
+        { id: "b", type: "cards", title: "t", options: [{ id: "o", label: "O" }], showIf: { questionId: "a", optionIds: ["o"] } },
+      ],
+    })
+    expect(visibleQuestions(def, {}).map((q) => q.id).sort()).toEqual(["a", "b"])
   })
   it("apagar a opção referenciada limpa a condição (não esconde a pergunta para sempre)", () => {
     const def = base()
     def.questions[0].options = def.questions[0].options.filter((o) => o.id !== "a")
     expect(pruneDependencies(def).questions[1].showIf).toBeNull()
+  })
+})
+
+describe("caminhos (cada resposta abre a sua sequência)", () => {
+  // servico: Sacada → largura → (Mais de 2 m) → trilho · servico: Box → box_tipo · todos → cidade
+  const def = normalizeDefinition({ questions: [
+    { id: "servico", type: "cards", title: "O quê?", options: [{ id: "sacada", label: "Sacada" }, { id: "box", label: "Box" }] },
+    { id: "largura", type: "chips", title: "Largura?", options: [{ id: "p", label: "Até 2 m" }, { id: "g", label: "Mais de 2 m" }], showIf: { questionId: "servico", optionIds: ["sacada"] } },
+    { id: "trilho", type: "chips", title: "Trilho?", options: [{ id: "s", label: "Simples" }, { id: "d", label: "Duplo" }], showIf: { questionId: "largura", optionIds: ["g"] } },
+    { id: "box_tipo", type: "chips", title: "Tipo de box?", options: [{ id: "f", label: "Frontal" }, { id: "c", label: "Canto" }], showIf: { questionId: "servico", optionIds: ["box"] } },
+    { id: "cidade", type: "location", title: "Onde?" },
+  ] })
+  const ids = (a: Record<string, unknown>) => visibleQuestions(def, a as never).map((q) => q.id)
+  it("cada resposta abre o próprio caminho; o que é de todos aparece sempre", () => {
+    expect(ids({})).toEqual(["servico", "cidade"])
+    expect(ids({ servico: "sacada" })).toEqual(["servico", "largura", "cidade"])
+    expect(ids({ servico: "sacada", largura: "g" })).toEqual(["servico", "largura", "trilho", "cidade"])
+    expect(ids({ servico: "box" })).toEqual(["servico", "box_tipo", "cidade"])
+  })
+  it("🔴 voltar e trocar fecha o caminho INTEIRO (resposta antiga não reabre o 2º nível)", () => {
+    expect(ids({ servico: "box", largura: "g", trilho: "d" })).toEqual(["servico", "box_tipo", "cidade"])
+  })
+  it("o envio leva só as respostas do caminho escolhido", () => {
+    expect(visibleAnswers(def, { servico: "box", largura: "g", trilho: "d", box_tipo: "c" }))
+      .toEqual({ servico: "box", box_tipo: "c" })
+  })
+  it("condição direta × estar no caminho são coisas diferentes", () => {
+    const trilho = def.questions[2]
+    expect(conditionMet(trilho, { servico: "box", largura: "g" })).toBe(true)
+    expect(isQuestionShown(def, trilho, { servico: "box", largura: "g" })).toBe(false)
+  })
+  it("ordem canônica: o caminho fica logo abaixo da pergunta que o abre (a lista do editor é a ordem real)", () => {
+    const shuffled = normalizeDefinition({ questions: [def.questions[0], def.questions[4], def.questions[3], def.questions[2], def.questions[1]] })
+    expect(shuffled.questions.map((q) => q.id)).toEqual(["servico", "largura", "trilho", "box_tipo", "cidade"])
+    expect(normalizeDefinition(JSON.parse(JSON.stringify(shuffled)))).toEqual(shuffled)
+  })
+  it(`até ${FORM_LIMITS.pathLevels} níveis de caminho dentro de caminho (mais que isso não publica)`, () => {
+    const chain = (n: number) => normalizeDefinition({ questions: Array.from({ length: n }, (_, i) => ({
+      id: `q${i}`, type: "chips", title: `P${i}`, options: [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+      showIf: i ? { questionId: `q${i - 1}`, optionIds: ["a"] } : null,
+    })), appearance: { title: "T" } })
+    expect(publishProblems(chain(FORM_LIMITS.pathLevels + 1)).filter((p) => /níveis/.test(p))).toEqual([])
+    expect(publishProblems(chain(FORM_LIMITS.pathLevels + 2))).toContain(`Pergunta ${FORM_LIMITS.pathLevels + 2}: passa de ${FORM_LIMITS.pathLevels} níveis de caminho dentro de caminho.`)
   })
 })
 

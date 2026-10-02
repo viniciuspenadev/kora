@@ -41,7 +41,7 @@ export function Toolbar({ search, filters, actions, className }: ToolbarProps) {
           )}
         </div>
       )}
-      {filters && <div className="flex items-center gap-2">{filters}</div>}
+      {filters && <div className="flex items-center gap-2 flex-wrap">{filters}</div>}
       {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
     </div>
   )
@@ -59,7 +59,7 @@ export function FilterChip({ active, onClick, children }: FilterChipProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        "h-9 px-3 text-xs font-medium rounded-lg border transition-colors",
+        "h-9 px-3 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap",
         active
           ? "bg-primary-50 border-primary-200 text-primary-700"
           : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900",
