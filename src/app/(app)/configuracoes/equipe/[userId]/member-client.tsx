@@ -5,13 +5,13 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   Loader2, Check, Power, RotateCcw, CalendarDays, BadgeCheck, Smartphone, Puzzle,
-  User, Contact, ShieldCheck, LayoutGrid, Settings2, Building2, Boxes, Briefcase, Megaphone, Package, Landmark, FileText, AlertTriangle, Store,
+  User, Contact, ShieldCheck, LayoutGrid, Settings2, Building2, Boxes, Briefcase, Megaphone, Package, Landmark, FileText, AlertTriangle, Store, ClipboardList,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
   
-  setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberCompanionAccess, setMemberUnit, updateMemberProfile,
+  setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberFormsAccess, setMemberCompanionAccess, setMemberUnit, updateMemberProfile,
   type TeamMember, type Department, type UnitOption, type TenantRole,
 } from "@/lib/actions/team"
 import { UserDevices } from "@/components/app/user-devices"
@@ -29,9 +29,9 @@ const inputCls = "w-full h-10 px-3 text-sm border border-slate-200 rounded-lg bg
 
 type Tab = "perfil" | "acesso" | "modulos" | "agenda" | "conta"
 
-export function MemberProfileClient({ member, departments, numbers, units = [], currentUserId, currentUserRole, hasInventory = false, hasCrm = false, hasContacts = false, hasMarketing = false, hasCatalog = false }: {
+export function MemberProfileClient({ member, departments, numbers, units = [], currentUserId, currentUserRole, hasInventory = false, hasCrm = false, hasContacts = false, hasMarketing = false, hasForms = false, hasCatalog = false }: {
   member: TeamMember; departments: Department[]; numbers: { id: string; label: string; provider: string | null }[]; units?: UnitOption[]
-  currentUserId: string; currentUserRole: string; hasInventory?: boolean; hasCrm?: boolean; hasContacts?: boolean; hasMarketing?: boolean; hasCatalog?: boolean
+  currentUserId: string; currentUserRole: string; hasInventory?: boolean; hasCrm?: boolean; hasContacts?: boolean; hasMarketing?: boolean; hasForms?: boolean; hasCatalog?: boolean
 }) {
   const router = useRouter()
   const [tab, setTab] = useState<Tab>("perfil")
@@ -51,6 +51,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
   const [contactsAccess, setContactsAccess] = useState<InventoryAccessLevel>(member.contacts_access)
   const [marketingAccess, setMarketingAccess] = useState<InventoryAccessLevel>(member.marketing_access)
   const [catalogAccess, setCatalogAccess] = useState<InventoryAccessLevel>(member.catalog_access)
+  const [formsAccess, setFormsAccess] = useState<InventoryAccessLevel>(member.forms_access)
   const [companionAccess, setCompanionAccess] = useState<boolean>(member.companion_access)
   const [instanceIds, setInstanceIds] = useState<string[]>(member.instance_ids ?? [])
 
@@ -71,7 +72,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
   const dirty =
     fullName.trim() !== (member.full_name ?? "") || role !== member.role ||
     (departmentId || null) !== member.department_id || (unitId || null) !== member.unit_id || (supMode === "all") !== member.view_all ||
-    seePool !== member.see_pool || invAccess !== member.inventory_access || dealsAccess !== member.deals_access || contactsAccess !== member.contacts_access || marketingAccess !== member.marketing_access || catalogAccess !== member.catalog_access || companionAccess !== member.companion_access ||
+    seePool !== member.see_pool || invAccess !== member.inventory_access || dealsAccess !== member.deals_access || contactsAccess !== member.contacts_access || marketingAccess !== member.marketing_access || catalogAccess !== member.catalog_access || formsAccess !== member.forms_access || companionAccess !== member.companion_access ||
     !sameSet(supMode === "scoped" ? supDepts : [], member.supervises_departments) ||
     !sameSet(instanceIds, member.instance_ids ?? [])
 
@@ -96,6 +97,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
       if (contactsAccess !== member.contacts_access) await run(setMemberContactsAccess(member.user_id, contactsAccess))
       if (marketingAccess !== member.marketing_access) await run(setMemberMarketingAccess(member.user_id, marketingAccess))
       if (catalogAccess !== member.catalog_access) await run(setMemberCatalogAccess(member.user_id, catalogAccess))
+      if (formsAccess !== member.forms_access) await run(setMemberFormsAccess(member.user_id, formsAccess))
       if (companionAccess !== member.companion_access) await run(setMemberCompanionAccess(member.user_id, companionAccess))
 
       if (err) { setFlash("error", err); return }
@@ -144,6 +146,12 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
     if (!canEditOther) return
     if (INV_ORDER[catalogAccess] >= INV_ORDER[tier]) setCatalogAccess(tier === "manage" ? "view" : "none")
     else setCatalogAccess(tier)
+  }
+  // Formulários: Ver = ver formulários e respostas · Gerenciar = criar, editar, publicar e exportar.
+  function formsClick(tier: InventoryAccessLevel) {
+    if (!canEditOther) return
+    if (INV_ORDER[formsAccess] >= INV_ORDER[tier]) setFormsAccess(tier === "manage" ? "view" : "none")
+    else setFormsAccess(tier)
   }
 
   const TABS: { id: Tab; label: string; icon: typeof User }[] = [
@@ -341,6 +349,15 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
                         <div className="flex gap-2">
                           {([{ lvl: "view", l: "Ver" }, { lvl: "manage", l: "Gerenciar" }] as const).map(({ lvl, l }) => (
                             <PermBox key={lvl} label={l} on={INV_ORDER[marketingAccess] >= INV_ORDER[lvl]} disabled={!canEditOther} onClick={() => marketingClick(lvl)} />
+                          ))}
+                        </div>
+                      </ModuleRow>
+                    )}
+                    {hasForms && (
+                      <ModuleRow icon={ClipboardList} iconCls="bg-primary-50 text-primary" name="Formulários" desc="Ver = ver formulários e respostas · Gerenciar = criar, editar, publicar e exportar.">
+                        <div className="flex gap-2">
+                          {([{ lvl: "view", l: "Ver" }, { lvl: "manage", l: "Gerenciar" }] as const).map(({ lvl, l }) => (
+                            <PermBox key={lvl} label={l} on={INV_ORDER[formsAccess] >= INV_ORDER[lvl]} disabled={!canEditOther} onClick={() => formsClick(lvl)} />
                           ))}
                         </div>
                       </ModuleRow>

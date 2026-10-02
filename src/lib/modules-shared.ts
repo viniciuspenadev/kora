@@ -52,7 +52,10 @@ export const CATEGORIA_LABEL: Record<string, string> = {
   atendimento:  "Atendimento",
   crm:          "Comercial",
   agenda:       "Agenda",
-  campanhas:    "Campanhas",
+  // "Marketing" (dono, 02/10/2026): é o nome do grupo no menu, e ali moram DOIS módulos
+  // independentes — Disparos em massa (`broadcasts`) e Formulários (`forms`). O slug da
+  // categoria continua `campanhas` (rótulo muda, slug não).
+  campanhas:    "Marketing",
   studio:       "Automação e IA",
   multichannel: "Canais",
   operational:  "Operacional",

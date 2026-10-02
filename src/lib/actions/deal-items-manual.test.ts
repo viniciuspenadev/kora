@@ -41,7 +41,7 @@ const { REQUIRES_ITEMS_ON_MOVE } = await import("@/lib/crm/win-lock")
 const agentScope = (over: Partial<ViewerScope> = {}): ViewerScope => ({
   tenantId: "t", userId: "agent", isAdmin: false, viewAll: false, seePool: true, departmentId: null, instanceIds: null,
   supervisesDepartments: [], inventoryAccess: "none", dealsAccess: "view", contactsAccess: "none", marketingAccess: "none",
-  catalogAccess: "none", ...over,
+  catalogAccess: "none", formsAccess: "none", ...over,
 })
 const manual = { name: "Instalação especial", type: "service" as const, billing: "one_time" as const, quantity: 1, unitPrice: 350 }
 const items = () => db.tables.tenant_deal_items

@@ -9,7 +9,7 @@ import {
   LogOut, Inbox, Workflow, Contact, Settings, ChevronDown, ChevronRight, ChevronLeft, Briefcase,
   Bot, Bell, MessageSquare, CalendarDays,
   Wand2, BarChart3, Blocks, Handshake,
-  PanelLeftClose, PanelLeftOpen, Package, Boxes, ListChecks, Megaphone, Send, Funnel, Plus, Building2,
+  PanelLeftClose, PanelLeftOpen, Package, Boxes, ListChecks, Megaphone, Send, Funnel, Plus, Building2, ClipboardList,
 } from "lucide-react"
 import { useAppShell } from "@/components/app/app-shell-context"
 import { AnimatedLogoKoraVetor } from "@/components/app/logo-kora-vetor"
@@ -111,11 +111,14 @@ const NAV: NavItem[] = [
     key:        "marketing",
     label:      "Marketing",
     icon:       <Megaphone className={topIcon} strokeWidth={1.75} />,
-    module:     "broadcasts",
-    capability: "marketing_access",   // owner/admin OU atendente com Ver+ de Marketing
+    // Grupo-CONTÊINER sem gate próprio (02/10/2026): moram aqui DOIS módulos independentes —
+    // Disparos em massa (`broadcasts` + `marketing_access`) e Formulários (`forms` +
+    // `forms_access`). Com o gate no grupo, quem tem só Formulários não veria nada. Cada
+    // filho carrega o próprio módulo+capability; o grupo aparece se houver filho visível.
     children: [
-      { href: "/campanhas",            label: "Campanhas", icon: <Send       className={subIcon} strokeWidth={1.75} /> },
-      { href: "/configuracoes/listas", label: "Listas",    icon: <ListChecks className={subIcon} strokeWidth={1.75} />, capability: "marketing_manage" },
+      { href: "/campanhas",            label: "Campanhas",   icon: <Send          className={subIcon} strokeWidth={1.75} />, module: "broadcasts", capability: "marketing_access" },
+      { href: "/configuracoes/listas", label: "Listas",      icon: <ListChecks    className={subIcon} strokeWidth={1.75} />, module: "broadcasts", capability: "marketing_manage" },
+      { href: "/formularios",          label: "Formulários", icon: <ClipboardList className={subIcon} strokeWidth={1.75} />, module: "forms",      capability: "forms_access" },
     ],
   },
   { href: "/agenda",     label: "Agenda",     icon: <CalendarDays className={topIcon} strokeWidth={1.75} />, module: "agenda"  },

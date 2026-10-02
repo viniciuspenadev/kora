@@ -27,7 +27,8 @@ const CATEGORIES: Record<string, { label: string; icon: typeof Boxes; color: str
   crm:          { label: "CRM · Vendas",   icon: Workflow,     color: "text-blue-700",    bg: "bg-blue-50"     },
   agenda:       { label: "Agenda",         icon: Clock,        color: "text-primary-700", bg: "bg-primary-50"  },
   studio:       { label: "Kora Studio & IA", icon: Bot,        color: "text-violet-700",  bg: "bg-violet-50"   },
-  campanhas:    { label: "Campanhas",      icon: Megaphone,    color: "text-pink-700",    bg: "bg-pink-50"     },
+  // "Marketing" = o grupo do menu: Disparos em massa + Formulários, cada um com seu liga/desliga.
+  campanhas:    { label: "Marketing",      icon: Megaphone,    color: "text-pink-700",    bg: "bg-pink-50"     },
   multichannel: { label: "Multi-canal",    icon: Plug,         color: "text-cyan-700",    bg: "bg-cyan-50"     },
   operational:  { label: "Operacional",    icon: SettingsIcon, color: "text-amber-700",   bg: "bg-amber-50"    },
   billing:      { label: "Cobrança",       icon: CreditCard,   color: "text-rose-700",    bg: "bg-rose-50"     },

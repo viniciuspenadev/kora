@@ -44,6 +44,7 @@ export interface ViewerScope {
   contactsAccess:  AccessLevel  // Contatos: none|view|manage (view=por relação; manage=base toda)
   marketingAccess: AccessLevel  // Marketing: none|view|manage (view=ver campanhas; manage=criar/disparar)
   catalogAccess:   AccessLevel  // Catálogo (módulo independente): none|view|manage (view=vitrine/tabelas; manage=produto/preço/ativo-por-tabela)
+  formsAccess:     AccessLevel  // Formulários: none|view|manage (view=ver formulários e respostas; manage=criar/editar/publicar/exportar)
 }
 
 /** Normaliza o valor cru (aceita o boolean legado durante a transição). */
@@ -144,6 +145,18 @@ export function canManageMarketing(scope: ViewerScope): boolean {
   return scope.isAdmin || INV_ORDER[scope.marketingAccess] >= INV_ORDER.manage
 }
 
+// ── Formulários (capability por-atendente; recurso compartilhado com dado pessoal) ──
+// Módulo próprio (`forms`), irmão de Disparos em massa dentro de Marketing — a permissão
+// também é própria: ter Marketing NÃO abre Formulários, e vice-versa. Default `none`.
+/** Abre Formulários (ver os formulários; a partir da Fase 4, respostas e resultados). = Ver. */
+export function canViewForms(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.formsAccess] >= INV_ORDER.view
+}
+/** Cria/edita/publica/pausa/exclui/exporta. = Gerenciar. */
+export function canManageForms(scope: ViewerScope): boolean {
+  return scope.isAdmin || INV_ORDER[scope.formsAccess] >= INV_ORDER.manage
+}
+
 export interface ConvVisibilityFields {
   assigned_to:    string | null
   participants?:  string[] | null
@@ -157,7 +170,7 @@ export interface ConvVisibilityFields {
 /** Select dos campos de escopo em tenant_users — compartilhado entre a sessão do
  *  app (getViewerScope) e o token de dispositivo da extensão (ext-auth). */
 export const SCOPE_TU_SELECT =
-  "view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access"
+  "view_all, see_pool, department_id, instance_ids, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, forms_access"
 
 /** Linha crua de tenant_users com os campos do SCOPE_TU_SELECT. */
 export type ScopeTenantUserRow = {
@@ -171,6 +184,7 @@ export type ScopeTenantUserRow = {
   contacts_access?: unknown
   marketing_access?: unknown
   catalog_access?: unknown
+  forms_access?: unknown
 } | null
 
 /**
@@ -200,6 +214,7 @@ export function scopeFromTenantUserRow(
     contactsAccess:  isAdmin ? "none" : normAccessLevel(tu?.contacts_access),
     marketingAccess: isAdmin ? "none" : normAccessLevel(tu?.marketing_access),
     catalogAccess:   isAdmin ? "none" : normAccessLevel(tu?.catalog_access),
+    formsAccess:     isAdmin ? "none" : normAccessLevel(tu?.forms_access),
   }
 }
 

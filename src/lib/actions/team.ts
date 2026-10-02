@@ -98,6 +98,7 @@ export interface TeamMember {
   contacts_access:  AccessLevel            // Contatos: none | view | manage
   marketing_access: AccessLevel            // Marketing: none | view | manage
   catalog_access:   AccessLevel            // Catálogo: none | view | manage
+  forms_access:     AccessLevel            // Formulários: none | view | manage
   companion_access: boolean                // Extensão Chrome (Kora Companion): pode usar sobre o WhatsApp Web
   department:    { id: string; name: string; color: string } | null
   unit_id:       string | null
@@ -205,7 +206,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, companion_access, unit_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, forms_access, companion_access, unit_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color ),
       tenant_units ( id, name, color )
@@ -236,6 +237,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       contacts_access: normAccessLevel(row.contacts_access),
       marketing_access: normAccessLevel(row.marketing_access),
       catalog_access: normAccessLevel(row.catalog_access),
+      forms_access: normAccessLevel(row.forms_access),
       companion_access: (row.companion_access as boolean | null) !== false,
       department:    dept,
       unit_id:       row.unit_id,
@@ -251,7 +253,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
   const { data } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, companion_access, unit_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, forms_access, companion_access, unit_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color ),
       tenant_units ( id, name, color )
@@ -278,6 +280,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
     contacts_access: normAccessLevel(row.contacts_access),
     marketing_access: normAccessLevel(row.marketing_access),
     catalog_access: normAccessLevel(row.catalog_access),
+    forms_access: normAccessLevel(row.forms_access),
     companion_access: (row.companion_access as boolean | null) !== false,
     department:    dept,
     unit_id:       (row.unit_id as string | null) ?? null,
@@ -642,6 +645,30 @@ export async function setMemberMarketingAccess(userId: string, level: AccessLeve
   if (error) return { error: error.message }
 
   await auditTeam(session, "access.marketing", userId, { level })
+  revalidatePath("/configuracoes/equipe")
+  return {}
+}
+
+/**
+ * Nível de acesso a Formulários do atendente (Ver = ver formulários e, a partir da Fase 4,
+ * respostas · Gerenciar = criar/editar/publicar/exportar). Owner/admin = via role. Separado
+ * de Marketing de propósito: quem dispara campanha não vê respostas por tabela, e vice-versa.
+ */
+export async function setMemberFormsAccess(userId: string, level: AccessLevel): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  const guard = await assertCanManageTarget(session, userId)
+  if (guard.error) return { error: guard.error }
+  if (!["none", "view", "edit", "manage"].includes(level)) return { error: "Nível inválido" }
+
+  const { error } = await supabaseAdmin
+    .from("tenant_users")
+    .update({ forms_access: level })
+    .eq("tenant_id", session.user.tenantId)
+    .eq("user_id", userId)
+
+  if (error) return { error: error.message }
+
+  await auditTeam(session, "access.forms", userId, { level })
   revalidatePath("/configuracoes/equipe")
   return {}
 }

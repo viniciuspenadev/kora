@@ -47,6 +47,9 @@ export type ModuleSlug =
   // ⚠️ `sequences` removido em 2026-08-05: não gateava nada e apontava pra rota
   //    inexistente. Sequência de follow-up, quando existir, mora dentro de `broadcasts`.
   | "broadcasts" | "chatbot_builder"
+  // Formulários (02/10/2026) — irmão de `broadcasts` dentro de Marketing (categoria
+  // `campanhas`), módulo e permissão PRÓPRIOS. Desenho: docs/forms-design.md.
+  | "forms"
   // Multi-channel
   | "multi_instance" | "meta_cloud" | "instagram_direct"
   // Operational
