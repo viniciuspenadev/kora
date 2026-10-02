@@ -29,7 +29,9 @@
 //       commercial_documents, contact_list_members, campaign_recipients,
 //       contact_import_items, keyword_trigger_runs, conversation_events,
 //       instagram_automation_runs, studio_runs (PARCIAL — ver abaixo),
-//       outreach_log (pelo TELEFONE do titular — o livro não guarda contato; 01/10/2026)
+//       outreach_log (pelo TELEFONE do titular — o livro não guarda contato; 01/10/2026),
+//       form_submissions (pelo contato E pelo telefone; contact_id é SET NULL — o delete é
+//       explícito, passo 5e; 02/10/2026)
 //   ⚠️ studio_runs entra SEM `compiled_prompt` (decisão do dono, 2026-07-30): o prompt
 //      compilado mistura dado do titular com a ENGENHARIA do produto (persona, instruções,
 //      regras). O titular tem direito aos dados DELE — que já vão, mais legíveis, em
@@ -326,6 +328,30 @@ export async function exportPersonalData(contactId: string): Promise<
     outreachLog = outreachRes.rows
   }
 
+  // 5c-ter. Respostas de formulário (Kora Formulários, 02/10/2026). Pelo contato E pelo
+  //     telefone: o comprovante guarda o número digitado, e `contact_id` é SET NULL (uma
+  //     resposta pode ter ficado sem ficha). Colunas explícitas (o hash do IP fica de fora:
+  //     não diz nada ao titular). TOLERA 42P01 (migration 20261002000200).
+  const formRows = new Map<string, Record<string, unknown>>()
+  {
+    const cols = "id, created_at, form_id, version_id, contact_name, phone_e164, answers, consent, source, outcome, contact_conflicts"
+    const byContact = await fetchAllPages<Record<string, unknown>>("respostas de formulário", (from, to) =>
+      supabaseAdmin.from("form_submissions").select(cols).eq("tenant_id", tenantId).eq("contact_id", contactId)
+        .order("id", { ascending: true }).range(from, to),
+      { tolerateCodes: TOLERATE_MISSING_TABLE })
+    if ("error" in byContact) return { error: byContact.error }
+    for (const r of byContact.rows) formRows.set(r.id as string, r)
+    if (outreachKeys.length > 0) {
+      const byPhone = await fetchAllPages<Record<string, unknown>>("respostas de formulário", (from, to) =>
+        supabaseAdmin.from("form_submissions").select(cols).eq("tenant_id", tenantId).in("phone_key", outreachKeys)
+          .order("id", { ascending: true }).range(from, to),
+        { tolerateCodes: TOLERATE_MISSING_TABLE })
+      if ("error" in byPhone) return { error: byPhone.error }
+      for (const r of byPhone.rows) formRows.set(r.id as string, r)
+    }
+  }
+  const formSubmissions = [...formRows.values()]
+
   // 5d. Execuções de IA nas conversas do contato (`studio_runs`).
   //
   //     🔴 SELEÇÃO EXPLÍCITA DE COLUNAS, e o `compiled_prompt` fica DE FORA — decisão do
@@ -394,6 +420,7 @@ export async function exportPersonalData(contactId: string): Promise<
     trigger_runs:        triggerRuns.data ?? [],
     instagram_automation_runs: igAutomationRuns,
     outreach_log:        outreachLog,
+    form_submissions:    formSubmissions,
     // Rastro do tratamento automatizado (Art. 20). SEM o prompt de sistema — ver 5d.
     ai_runs:             aiRuns,
     timeline_events:     timelineEvents,
@@ -414,6 +441,7 @@ export async function exportPersonalData(contactId: string): Promise<
       trigger_runs:        triggerRuns.data?.length ?? 0,
       instagram_automation_runs: igAutomationRuns.length,
       outreach_log:        outreachLog.length,
+      form_submissions:    formSubmissions.length,
       ai_runs:             aiRuns.length,
       timeline_events:     timelineEvents.length,
     },
@@ -673,6 +701,31 @@ export async function deletePersonalData(contactId: string): Promise<
     }
   }
 
+  // 5e. Respostas de formulário — `contact_id` é SET NULL (a fusão de contatos não pode
+  //     apagar comprovante), então o cascade NÃO as leva: apaga explícito, pelo contato e
+  //     pelos telefones do titular (cobre resposta que ficou sem ficha). ANTES do contato.
+  //     Falha aborta; 42P01 = migration 20261002000200 ainda não aplicada, não há linha.
+  let removedFormSubmissions = 0
+  {
+    const keys = outreachKeysForContact(contact as { phone_number?: string | null; whatsapp_id?: string | null; phone_secondary?: string | null },
+      await tenantCountry(tenantId))
+    const passes = [
+      supabaseAdmin.from("form_submissions").delete().eq("tenant_id", tenantId).eq("contact_id", contactId).select("id"),
+      ...(keys.length > 0 ? [supabaseAdmin.from("form_submissions").delete().eq("tenant_id", tenantId).in("phone_key", keys).select("id")] : []),
+    ]
+    for (const pass of passes) {
+      const { data: gone, error: fsErr } = await pass
+      if (fsErr && fsErr.code !== "42P01") {
+        console.error("[lgpd] exclusão das respostas de formulário falhou", JSON.stringify({ contactId, tenantId, code: fsErr.code }))
+        return {
+          error: `Não consegui apagar as respostas de formulário do contato: ${fsErr.message}. ` +
+                 `O contato ainda NÃO foi apagado — a exclusão parou aqui de propósito. Tente de novo.`,
+        }
+      }
+      removedFormSubmissions += gone?.length ?? 0
+    }
+  }
+
   // 6. DELETE — cascade apaga conversations + messages + taggings + ai_suggestions
   const { error: deleteErr } = await supabaseAdmin
     .from("chat_contacts")
@@ -713,6 +766,8 @@ export async function deletePersonalData(contactId: string): Promise<
       forwarded_copies_removed:      removedForwardedCopies,
       // Linhas do livro de disparos no WhatsApp com os números do titular (passo 5d).
       outreach_log_removed:          removedOutreachRows,
+      // Respostas de formulário do titular, pelo contato e pelos telefones (passo 5e).
+      form_submissions_removed:      removedFormSubmissions,
     },
   })
 

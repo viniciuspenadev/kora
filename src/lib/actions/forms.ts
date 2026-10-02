@@ -13,19 +13,25 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule } from "@/lib/modules"
 import { getViewerScope, canViewForms, canManageForms } from "@/lib/visibility"
 import { logAudit } from "@/lib/audit"
-import { normalizeDefinition, draftProblems, type FormDefinition } from "@/lib/forms/definition"
+import { normalizeDefinition, draftProblems, publishProblems, answerLabel, type Answers, type FormDefinition } from "@/lib/forms/definition"
+import { canonicalJson } from "@/lib/forms/canonical"
+import { definitionHash } from "@/lib/forms/server"
+import { formatPhoneDisplay } from "@/lib/phone-utils"
 import { isTemplateKey, templateDefinition, templateInfo } from "@/lib/forms/templates"
 import { newPublicId, formSlugFrom, uniqueSlug, uniqueName, isUuid, cleanFormName } from "@/lib/forms/identity"
 
 export type FormStatus = "draft" | "published" | "paused"
 
 export interface FormListItem {
-  id:            string
-  name:          string
-  status:        FormStatus
-  templateKey:   string | null
-  questionCount: number
-  updatedAt:     string
+  id:             string
+  name:           string
+  status:         FormStatus
+  templateKey:    string | null
+  questionCount:  number
+  updatedAt:      string
+  responses30d:   number
+  responsesTotal: number
+  lastResponseAt: string | null
 }
 
 export interface FormDetail {
@@ -39,7 +45,29 @@ export interface FormDetail {
   revision:    number
   updatedAt:   string
   canManage:   boolean
+  /** O que está no ar (null = nunca publicado). O editor compara com o rascunho. */
+  published:   { version: number; publishedAt: string; definition: FormDefinition } | null
+  /** Caminho do link próprio (`/f/<empresa>/<formulário>`); o domínio a tela completa. */
+  publicPath:  string
+  responsesTotal: number
 }
+
+export interface SubmissionItem {
+  id:          string
+  createdAt:   string
+  name:        string
+  phone:       string
+  contactId:   string | null
+  /** Pergunta → resposta legível, na ordem da versão que a pessoa viu. */
+  answers:     { title: string; value: string }[]
+  source:      { kind: string; page: string | null; utm: Record<string, string> }
+  consentAt:   string | null
+  marketing:   boolean | null
+  outcome:     string
+  conflicts:   number
+}
+
+export type SubmissionCursor = { createdAt: string; id: string }
 
 /** Teto do rascunho no app (o banco segura 256 KB; aqui recusa antes, com mensagem clara). */
 const DRAFT_MAX_CHARS = 200_000
@@ -76,18 +104,34 @@ export async function listForms(): Promise<{ items: FormListItem[]; canManage: b
     .order("updated_at", { ascending: false }).order("id", { ascending: false })
     .limit(200)
   if (error) return { error: "Não foi possível carregar os formulários." }
+  const stats = await formStats(g.tenantId)
   const items = ((data ?? []) as Record<string, unknown>[]).map((r) => {
     const qs = r.questions ?? (r.draft as { questions?: unknown } | undefined)?.questions
+    const st = stats.get(r.id as string)
     return {
-      id:            r.id as string,
-      name:          r.name as string,
-      status:        asStatus(r.status),
-      templateKey:   (r.template_key as string | null) ?? null,
-      questionCount: Array.isArray(qs) ? qs.length : 0,
-      updatedAt:     r.updated_at as string,
+      id:             r.id as string,
+      name:           r.name as string,
+      status:         asStatus(r.status),
+      templateKey:    (r.template_key as string | null) ?? null,
+      questionCount:  Array.isArray(qs) ? qs.length : 0,
+      updatedAt:      r.updated_at as string,
+      responses30d:   st?.responses30d ?? 0,
+      responsesTotal: st?.responsesTotal ?? 0,
+      lastResponseAt: st?.lastAt ?? null,
     }
   })
   return { items, canManage: g.canManage }
+}
+
+/** Contagem por formulário (no banco). Falhou = zeros: a lista continua de pé. */
+async function formStats(tenantId: string): Promise<Map<string, { responses30d: number; responsesTotal: number; lastAt: string | null }>> {
+  const out = new Map<string, { responses30d: number; responsesTotal: number; lastAt: string | null }>()
+  const { data, error } = await supabaseAdmin.rpc("form_list_stats", { p_tenant_id: tenantId })
+  if (error) { console.error("[forms] números da lista:", error.code, error.message); return out }
+  for (const r of (data ?? []) as { form_id: string; responses_30d: number | string; responses_total: number | string; last_at: string | null }[]) {
+    out.set(r.form_id, { responses30d: Number(r.responses_30d) || 0, responsesTotal: Number(r.responses_total) || 0, lastAt: r.last_at })
+  }
+  return out
 }
 
 export async function getForm(id: string): Promise<FormDetail | { error: string }> {
@@ -95,12 +139,24 @@ export async function getForm(id: string): Promise<FormDetail | { error: string 
   if ("error" in g) return g
   if (!isUuid(id)) return { error: "Formulário não encontrado." }
   const { data, error } = await supabaseAdmin.from("forms")
-    .select("id, name, status, slug, public_id, template_key, draft, draft_revision, updated_at")
+    .select("id, name, status, slug, public_id, template_key, draft, draft_revision, updated_at, published_version_id")
     .eq("tenant_id", g.tenantId).eq("id", id).is("archived_at", null).maybeSingle()
   if (error) return { error: "Não foi possível carregar o formulário." }
   if (!data) return { error: "Formulário não encontrado." }
   const r = data as Record<string, unknown>
+  const [{ data: ver }, { data: tenant }, stats] = await Promise.all([
+    r.published_version_id
+      ? supabaseAdmin.from("form_versions").select("version, published_at, definition")
+          .eq("tenant_id", g.tenantId).eq("form_id", id).eq("id", r.published_version_id as string).maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabaseAdmin.from("tenants").select("slug").eq("id", g.tenantId).maybeSingle(),
+    formStats(g.tenantId),
+  ])
+  const v = ver as { version: number; published_at: string; definition: unknown } | null
   return {
+    published:   v ? { version: v.version, publishedAt: v.published_at, definition: normalizeDefinition(v.definition) } : null,
+    publicPath:  `/f/${(tenant as { slug?: string } | null)?.slug ?? ""}/${r.slug as string}`,
+    responsesTotal: stats.get(id)?.responsesTotal ?? 0,
     id:          r.id as string,
     name:        r.name as string,
     status:      asStatus(r.status),
@@ -245,4 +301,167 @@ export async function deleteForm(id: string): Promise<{ error?: string }> {
     before: { name: (data[0] as { name: string }).name } })
   revalidatePath("/formularios")
   return {}
+}
+
+// ── Publicar (Fase 2) ────────────────────────────────────────────
+/**
+ * Publica o rascunho: tira um RETRATO novo (form_versions, append-only) e aponta o formulário
+ * para ele. O que já está no ar nunca é reescrito — quem respondeu a versão 1 continua
+ * apontando para a versão 1. Sem mudança desde a última publicação, não cria versão nova
+ * (e, se estava pausado, volta ao ar).
+ */
+export async function publishForm(id: string): Promise<{ version: number } | { error: string; problems?: string[] }> {
+  const g = await gate("manage")
+  if ("error" in g) return g
+  if (!isUuid(id)) return { error: "Formulário não encontrado." }
+  const { data: cur } = await supabaseAdmin.from("forms").select("id, status, draft, published_version_id")
+    .eq("tenant_id", g.tenantId).eq("id", id).is("archived_at", null).maybeSingle()
+  if (!cur) return { error: "Formulário não encontrado." }
+  const c = cur as { status: string; draft: unknown; published_version_id: string | null }
+  const def = normalizeDefinition(c.draft)
+  const problems = publishProblems(def)
+  if (problems.length) return { error: "Falta ajustar antes de publicar.", problems }
+  if (JSON.stringify(def).length > DRAFT_MAX_CHARS) return { error: "O formulário ficou grande demais para publicar." }
+
+  if (c.published_version_id) {
+    const { data: pv } = await supabaseAdmin.from("form_versions").select("version, definition")
+      .eq("tenant_id", g.tenantId).eq("form_id", id).eq("id", c.published_version_id).maybeSingle()
+    const p = pv as { version: number; definition: unknown } | null
+    if (p && canonicalJson(normalizeDefinition(p.definition)) === canonicalJson(def)) {
+      if (c.status !== "published") {
+        const r = await resumeForm(id)
+        if (r.error) return { error: r.error }
+      }
+      return { version: p.version }
+    }
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data: last } = await supabaseAdmin.from("form_versions").select("version")
+      .eq("tenant_id", g.tenantId).eq("form_id", id).order("version", { ascending: false }).limit(1).maybeSingle()
+    const version = ((last as { version?: number } | null)?.version ?? 0) + 1
+    const { data: ins, error } = await supabaseAdmin.from("form_versions").insert({
+      tenant_id: g.tenantId, form_id: id, version, definition: def, hash: definitionHash(def), published_by: g.userId,
+    }).select("id").single()
+    if (error) {
+      if ((error as { code?: string }).code === "23505") continue   // outra aba publicou junto: próximo número
+      console.error("[forms] publicar (versão):", (error as { code?: string }).code, error.message)
+      return { error: "Não foi possível publicar." }
+    }
+    const { error: upErr } = await supabaseAdmin.from("forms").update({
+      status: "published", published_version_id: (ins as { id: string }).id, updated_by: g.userId, updated_at: new Date().toISOString(),
+    }).eq("tenant_id", g.tenantId).eq("id", id).is("archived_at", null)
+    if (upErr) {
+      console.error("[forms] publicar (formulário):", (upErr as { code?: string }).code, upErr.message)
+      return { error: "Não foi possível publicar." }
+    }
+    await logAudit({ tenantId: g.tenantId, actorId: g.userId, action: "form.publish", targetType: "form", targetId: id, metadata: { version } })
+    revalidatePath("/formularios")
+    return { version }
+  }
+  return { error: "Não foi possível publicar agora. Tente de novo." }
+}
+
+/** Para de receber respostas (o link mostra "não está recebendo respostas agora"). */
+export async function pauseForm(id: string): Promise<{ error?: string }> {
+  const g = await gate("manage")
+  if ("error" in g) return g
+  if (!isUuid(id)) return { error: "Formulário não encontrado." }
+  const { data, error } = await supabaseAdmin.from("forms")
+    .update({ status: "paused", updated_by: g.userId, updated_at: new Date().toISOString() })
+    .eq("tenant_id", g.tenantId).eq("id", id).eq("status", "published").is("archived_at", null).select("id")
+  if (error) return { error: "Não foi possível pausar." }
+  if (!data?.length) return { error: "Só dá para pausar um formulário publicado." }
+  await logAudit({ tenantId: g.tenantId, actorId: g.userId, action: "form.pause", targetType: "form", targetId: id })
+  revalidatePath("/formularios")
+  return {}
+}
+
+/** Volta a receber respostas, com a mesma versão que estava no ar. */
+export async function resumeForm(id: string): Promise<{ error?: string }> {
+  const g = await gate("manage")
+  if ("error" in g) return g
+  if (!isUuid(id)) return { error: "Formulário não encontrado." }
+  const { data, error } = await supabaseAdmin.from("forms")
+    .update({ status: "published", updated_by: g.userId, updated_at: new Date().toISOString() })
+    .eq("tenant_id", g.tenantId).eq("id", id).eq("status", "paused").not("published_version_id", "is", null)
+    .is("archived_at", null).select("id")
+  if (error) return { error: "Não foi possível retomar." }
+  if (!data?.length) return { error: "Só dá para retomar um formulário pausado." }
+  await logAudit({ tenantId: g.tenantId, actorId: g.userId, action: "form.resume", targetType: "form", targetId: id })
+  revalidatePath("/formularios")
+  return {}
+}
+
+// ── Respostas (Fase 2: leitura; a tela completa é a Fase 4) ──────
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}:?\d{2})?$/
+const SUBMISSIONS_PAGE = 30
+
+/**
+ * Respostas de um formulário, mais novas primeiro (cursor com desempate por id — padrão do
+ * inbox). Respostas são DADO PESSOAL: exige Ver formulários. Busca por nome ou telefone.
+ */
+export async function listFormSubmissions(formId: string, opts: { cursor?: SubmissionCursor | null; q?: string } = {}): Promise<{ items: SubmissionItem[]; nextCursor: SubmissionCursor | null; hasMore: boolean } | { error: string }> {
+  const g = await gate("view")
+  if ("error" in g) return g
+  if (!isUuid(formId)) return { error: "Formulário não encontrado." }
+  const { data: form } = await supabaseAdmin.from("forms").select("id").eq("tenant_id", g.tenantId).eq("id", formId).maybeSingle()
+  if (!form) return { error: "Formulário não encontrado." }
+
+  let query = supabaseAdmin.from("form_submissions")
+    .select("id, created_at, version_id, contact_id, contact_name, phone_e164, answers, source, consent, outcome, contact_conflicts")
+    .eq("tenant_id", g.tenantId).eq("form_id", formId)
+  const c = opts.cursor
+  if (c) {
+    if (!ISO_RE.test(c.createdAt) || !isUuid(c.id)) return { error: "Página inválida." }
+    query = query.or(`created_at.lt.${c.createdAt},and(created_at.eq.${c.createdAt},id.lt.${c.id})`)
+  }
+  // Busca: só letras, números e espaço (nada que mexa no filtro do PostgREST).
+  const term = (opts.q ?? "").replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 60)
+  if (term) {
+    const digits = term.replace(/\D/g, "")
+    query = digits.length >= 3
+      ? query.or(`contact_name.ilike.*${term}*,phone_e164.like.*${digits}*`)
+      : query.ilike("contact_name", `%${term}%`)
+  }
+  const { data, error } = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(SUBMISSIONS_PAGE + 1)
+  if (error) return { error: "Não foi possível carregar as respostas." }
+  const rows = (data ?? []) as Record<string, unknown>[]
+  const page = rows.slice(0, SUBMISSIONS_PAGE)
+
+  // Cada resposta é lida com a VERSÃO que a pessoa viu (títulos e opções daquela época).
+  const versionIds = [...new Set(page.map((r) => r.version_id as string))]
+  const defs = new Map<string, FormDefinition>()
+  if (versionIds.length) {
+    const { data: vs } = await supabaseAdmin.from("form_versions").select("id, definition")
+      .eq("tenant_id", g.tenantId).eq("form_id", formId).in("id", versionIds)
+    for (const v of (vs ?? []) as { id: string; definition: unknown }[]) defs.set(v.id, normalizeDefinition(v.definition))
+  }
+
+  const items: SubmissionItem[] = page.map((r) => {
+    const def = defs.get(r.version_id as string)
+    const answers = (r.answers ?? {}) as Answers
+    const consent = (r.consent ?? {}) as { at?: string; marketing?: { checked?: boolean } | null }
+    const source = (r.source ?? {}) as { kind?: string; page?: string | null; utm?: Record<string, string> }
+    return {
+      id:        r.id as string,
+      createdAt: r.created_at as string,
+      name:      r.contact_name as string,
+      phone:     formatPhoneDisplay(r.phone_e164 as string),
+      contactId: (r.contact_id as string | null) ?? null,
+      answers:   def ? def.questions.filter((q) => answers[q.id] !== undefined)
+        .map((q) => ({ title: q.title.trim() || "Pergunta", value: answerLabel(q, answers[q.id]) })).filter((a) => a.value) : [],
+      source:    { kind: source.kind ?? "link", page: source.page ?? null, utm: source.utm ?? {} },
+      consentAt: consent.at ?? null,
+      marketing: consent.marketing ? !!consent.marketing.checked : null,
+      outcome:   (r.outcome as string) || "received",
+      conflicts: Array.isArray(r.contact_conflicts) ? (r.contact_conflicts as unknown[]).length : 0,
+    }
+  })
+  const last = page.at(-1)
+  return {
+    items,
+    hasMore:    rows.length > SUBMISSIONS_PAGE,
+    nextCursor: rows.length > SUBMISSIONS_PAGE && last ? { createdAt: last.created_at as string, id: last.id as string } : null,
+  }
 }

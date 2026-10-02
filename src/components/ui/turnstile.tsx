@@ -9,7 +9,11 @@ export const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? 
  * e o captcha escalonado do login (device trust F3b). O CSP do proxy precisa
  * liberar challenges.cloudflare.com na rota que o renderiza.
  */
-export function Turnstile({ onToken }: { onToken: (t: string) => void }) {
+/**
+ * `appearance="interaction-only"`: invisível para quem passa direto (formulário público — o
+ * cliente não marca nada); o quadro só aparece se o Cloudflare pedir interação.
+ */
+export function Turnstile({ onToken, appearance = "always" }: { onToken: (t: string) => void; appearance?: "always" | "interaction-only" }) {
   const ref = useRef<HTMLDivElement>(null)
 
   /**
@@ -37,7 +41,7 @@ export function Turnstile({ onToken }: { onToken: (t: string) => void }) {
       const el = ref.current
       if (w && el && !el.dataset.rendered) {
         el.dataset.rendered = "1"
-        w.render(el, { sitekey: TURNSTILE_SITE_KEY, callback: cb, "error-callback": () => cb(""), "expired-callback": () => cb("") })
+        w.render(el, { sitekey: TURNSTILE_SITE_KEY, appearance, callback: cb, "error-callback": () => cb(""), "expired-callback": () => cb("") })
       }
     }
     if (!document.getElementById(SCRIPT_ID)) {
@@ -47,6 +51,6 @@ export function Turnstile({ onToken }: { onToken: (t: string) => void }) {
       s.async = true; s.defer = true; s.onload = render
       document.head.appendChild(s)
     } else { render() }
-  }, [cb])
-  return <div ref={ref} className="flex justify-center min-h-[65px] items-center" />
+  }, [cb, appearance])
+  return <div ref={ref} className={appearance === "interaction-only" ? "flex justify-center" : "flex justify-center min-h-[65px] items-center"} />
 }

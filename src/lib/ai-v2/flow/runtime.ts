@@ -265,12 +265,13 @@ async function descartarRascunhoDoSite(
   if (rascunho.notes?.trim()) return
 
   // Tudo que, se existir, torna a ficha valiosa demais pra sumir. As 6 primeiras somem
-  // junto (CASCADE); as 4 últimas ficariam órfãs (SET NULL) — as duas coisas são perda.
+  // junto (CASCADE); as 5 últimas ficariam órfãs (SET NULL) — as duas coisas são perda.
+  // `form_submissions` = comprovante de formulário (Kora Formulários, 02/10/2026).
   const vinculos = [
     "chat_conversations", "appointments", "tenant_deals", "tenant_tasks",
     "contact_list_members", "contact_import_items",
     "campaign_recipients", "commercial_documents", "instagram_automation_runs",
-    "tenant_storage_objects",
+    "tenant_storage_objects", "form_submissions",
   ] as const
 
   try {

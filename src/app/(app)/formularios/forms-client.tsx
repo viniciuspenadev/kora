@@ -3,8 +3,8 @@
 // Lista de Formulários — espelha a tela 1 do canvas aprovado pelo dono ("Kora Formulários"):
 // título + "Ver modelos"/"Novo formulário", 4 números do topo, busca + 4 filtros, tabela com
 // Respostas · Conclusão · Conversas · Automação no Studio · Última resposta.
-// Enquanto um número não existe (respostas chegam na Fase 2, automação na Fase 3) a tela mostra
-// "0" ou "—" — como o próprio desenho mostra para rascunho —, nunca esconde a coluna.
+// Respostas são reais desde a Fase 2. Enquanto um número não existe (automação na Fase 3,
+// conclusão na Fase 4) a tela mostra "0" ou "—", como o desenho mostra para rascunho — nunca esconde a coluna.
 
 import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -18,14 +18,9 @@ import { useConfirm } from "@/components/ui/confirm-dialog"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu"
 import { TemplateGallery } from "@/components/forms/template-gallery"
 import { TemplateIcon } from "@/components/forms/template-icons"
+import { FormStatusChip } from "@/components/forms/status-chip"
 import { duplicateForm, deleteForm, type FormListItem, type FormStatus } from "@/lib/actions/forms"
 import { isTemplateKey, templateInfo } from "@/lib/forms/templates"
-
-const STATUS: Record<FormStatus, { label: string; cls: string }> = {
-  published: { label: "● Publicado", cls: "bg-emerald-50 text-emerald-700" },
-  draft:     { label: "Rascunho",    cls: "bg-slate-100 text-slate-600" },
-  paused:    { label: "Pausado",     cls: "bg-amber-50 text-amber-700" },
-}
 
 function ago(iso: string): string {
   const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000)
@@ -69,6 +64,7 @@ export function FormsClient({ items, canManage, businessName }: { items: FormLis
   ) : undefined
 
   const published = counts.published
+  const responses30d = items.reduce((n, i) => n + i.responses30d, 0)
   return (
     <PageShell variant="list" title="Formulários" actions={actions}
       description="Capte pedidos no seu site e no seu link. Cada envio pode disparar um fluxo do Kora Studio.">
@@ -82,7 +78,7 @@ export function FormsClient({ items, canManage, businessName }: { items: FormLis
         <div className="space-y-5">
           {/* Números do topo — zerados até existirem respostas (Fase 2). */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <KpiTile icon={FileText} label="Respostas · 30 dias" value="0" caption={`em ${published} formulário${published === 1 ? "" : "s"} publicado${published === 1 ? "" : "s"}`} />
+            <KpiTile icon={FileText} label="Respostas · 30 dias" value={responses30d.toLocaleString("pt-BR")} caption={`em ${published} formulário${published === 1 ? "" : "s"} publicado${published === 1 ? "" : "s"}`} />
             <KpiTile icon={CheckCircle2} iconClass="text-sky-600" label="Taxa de conclusão" value="—" caption="de quem começou, terminou" />
             <KpiTile icon={MessageCircle} iconClass="text-emerald-700" label="Viraram conversa" value="0" caption="responderam a mensagem do Kora" />
             <KpiTile icon={Clock} iconClass="text-amber-700" label="Até a 1ª mensagem" value="—" caption="em média, depois do envio" />
@@ -132,7 +128,6 @@ function Row({ f, canManage }: { f: FormListItem; canManage: boolean }) {
   const router = useRouter()
   const [busy, start] = useTransition()
   const { confirm, confirmDialog } = useConfirm()
-  const st = STATUS[f.status]
   const origin = f.templateKey && isTemplateKey(f.templateKey) ? templateInfo(f.templateKey).name : "Formulário"
   const open = () => router.push(`/formularios/${f.id}`)
   const live = f.status !== "draft"   // rascunho nunca recebeu resposta: "—" (como no desenho)
@@ -170,8 +165,9 @@ function Row({ f, canManage }: { f: FormListItem; canManage: boolean }) {
           </div>
         </div>
       </td>
-      <td className="py-3.5 px-3 whitespace-nowrap"><span className={`inline-flex items-center h-[22px] px-2 rounded-full text-[11px] font-semibold ${st.cls}`}>{st.label}</span></td>
-      <td className="py-3.5 px-3 text-right tabular-nums font-semibold text-slate-800 hidden md:table-cell">{live ? "0" : dash}</td>
+      <td className="py-3.5 px-3"><FormStatusChip status={f.status} /></td>
+      <td className="py-3.5 px-3 text-right tabular-nums font-semibold text-slate-800 hidden md:table-cell">{live ? f.responsesTotal.toLocaleString("pt-BR") : dash}</td>
+      {/* Conclusão (quem começou × quem enviou) e Conversas chegam com os números da Fase 4 e o Studio. */}
       <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">{dash}</td>
       <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">{live ? "0" : dash}</td>
       <td className="py-3.5 px-3 text-xs hidden lg:table-cell whitespace-nowrap">
@@ -180,7 +176,10 @@ function Row({ f, canManage }: { f: FormListItem; canManage: boolean }) {
       </td>
       <td className="py-3.5 px-3 text-xs text-slate-500 hidden lg:table-cell whitespace-nowrap">
         {/* Tempo relativo: servidor e navegador calculam em instantes diferentes. */}
-        <time dateTime={f.updatedAt} title={new Date(f.updatedAt).toLocaleString("pt-BR")} suppressHydrationWarning>editado {ago(f.updatedAt)}</time>
+        {f.lastResponseAt
+          ? <time dateTime={f.lastResponseAt} title={new Date(f.lastResponseAt).toLocaleString("pt-BR")} suppressHydrationWarning>{ago(f.lastResponseAt)}</time>
+          : live ? <span className="text-slate-400">sem respostas</span>
+          : <time dateTime={f.updatedAt} title={new Date(f.updatedAt).toLocaleString("pt-BR")} suppressHydrationWarning>editado {ago(f.updatedAt)}</time>}
       </td>
       <td className="py-3.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
         <DropdownMenu>

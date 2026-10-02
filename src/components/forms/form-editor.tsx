@@ -17,7 +17,6 @@ import {
 import { toast } from "sonner"
 import { SimpleSelect } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { StatusDot } from "@/components/ui/status-dot"
 import { useConfirm, type ConfirmOptions } from "@/components/ui/confirm-dialog"
 import {
   QUESTION_TYPES, QUESTION_TYPE_LABEL, QUESTION_TYPE_SHORT, CONTACT_FIELDS_BY_TYPE, CONTACT_FIELD_LABEL, FORM_ICONS, FORM_LIMITS, UNKNOWN_OPTION_ID,
@@ -31,11 +30,15 @@ import {
   afterEachAnswer, answerChoices, canOpenPath, childrenOf, descendantsOf, pathGroups, pathSlots, pathSummary, pathTrail,
   questionLabel, routeKeyOf, testRoutes, trailAnswers,
 } from "@/lib/forms/paths"
-import { saveFormDraft, renameForm, type FormDetail } from "@/lib/actions/forms"
+import { saveFormDraft, renameForm, publishForm, type FormDetail } from "@/lib/actions/forms"
+import { canonicalJson } from "@/lib/forms/canonical"
+import { FormStatusChip } from "./status-chip"
+import { PublishPanel } from "./publish-panel"
+import { ResponsesPanel } from "./responses-panel"
 import { FormRenderer } from "./form-renderer"
 import { FORM_ICON_LABEL } from "./form-icons"
 
-type Tab = "perguntas" | "aparencia" | "final"
+type Tab = "perguntas" | "aparencia" | "final" | "publicar" | "respostas"
 type Sel = { kind: "question"; id: string } | { kind: "contact" } | { kind: "review" }
 type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict"
 type Edit = (fn: (d: FormDefinition) => FormDefinition) => void
@@ -54,7 +57,6 @@ const TYPE_ICON: Record<QuestionType, typeof Type> = {
 
 const ACCENTS = ["#1e3a8a", "#004add", "#0f766e", "#15803d", "#b45309", "#be123c", "#7c3aed", "#0f172a"]
 
-const STATUS = { draft: { label: "Rascunho", tone: "neutral" }, published: { label: "Publicado", tone: "success" }, paused: { label: "Pausado", tone: "warning" } } as const
 
 const LABEL = "block text-xs font-semibold text-slate-700 mb-1.5"
 const INPUT = "w-full h-9 px-3 text-xs border border-slate-200 rounded-lg bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 disabled:bg-slate-50 disabled:text-slate-500"
@@ -86,17 +88,18 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
   // grava de novo antes de dizer "Salvo".
   const revision = useRef(form.revision)
   const latest = useRef(def)
-  const inFlight = useRef(false)
+  // A gravação em andamento (quem chega no meio espera ESTA — ela relê `latest` ao terminar).
+  const running = useRef<Promise<boolean> | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => { latest.current = def }, [def])
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
 
-  const flush = useCallback(async () => {
-    if (inFlight.current) return          // quem está gravando relê `latest` ao terminar
-    inFlight.current = true
-    setSave("saving")
-    try {
+  /** Grava o rascunho até ele bater com a tela. `true` = salvo (publicar depende disso). */
+  const flush = useCallback((): Promise<boolean> => {
+    if (running.current) return running.current
+    const job = (async () => {
+      setSave("saving")
       for (;;) {
         const snapshot = latest.current
         const r = await saveFormDraft(form.id, snapshot, revision.current)
@@ -104,16 +107,17 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
         if ("error" in r) {
           setSave(r.error.includes("outra aba") ? "conflict" : "error")
           setSaveError(r.error)
-          return
+          return false
         }
         revision.current = r.revision
         if (latest.current === snapshot) break
       }
       setSaveError(null)
       setSave("saved")
-    } finally {
-      inFlight.current = false
-    }
+      return true
+    })()
+    running.current = job
+    return job.finally(() => { running.current = null })
   }, [form.id])
 
   useEffect(() => {
@@ -130,6 +134,27 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
     timer.current = setTimeout(() => { void flush() }, 800)
   }
   const missing = useMemo(() => publishProblems(def), [def])
+  // O que está na tela ≠ o que está no ar? (mesma regra do carimbo da versão, `canonicalJson`)
+  const changed = useMemo(() => !form.published || canonicalJson(def) !== canonicalJson(form.published.definition), [def, form.published])
+  const [publishing, setPublishing] = useState(false)
+
+  /** Publicar = gravar o rascunho da tela e tirar o retrato no servidor (que confere de novo). */
+  async function publish() {
+    if (!canEdit || publishing) return
+    if (missing.length) { setShowMissing(true); return }
+    setPublishing(true)
+    try {
+      if (timer.current) { clearTimeout(timer.current); timer.current = null }
+      if (!(await flush())) { toast.error("Salve o rascunho antes de publicar (veja o aviso no topo)."); return }
+      const r = await publishForm(form.id)
+      if ("error" in r) { toast.error(r.problems?.[0] ?? r.error); return }
+      toast.success(form.published ? `Alterações no ar · versão ${r.version}` : "Publicado! O link próprio está na aba Publicar.")
+      setTab("publicar")
+      router.refresh()
+    } finally {
+      setPublishing(false)
+    }
+  }
 
   // Seleção sempre válida (apagar/renomear a pergunta selecionada cai na primeira) — derivada
   // na renderização, sem efeito.
@@ -198,25 +223,29 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
           onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") { setName(form.name); (e.target as HTMLInputElement).blur() } }}
           aria-label="Nome do formulário"
           className="min-w-[7rem] flex-1 max-w-sm h-8 px-2 -ml-2 rounded-md text-sm font-semibold text-slate-900 bg-transparent hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:hover:bg-transparent" />
-        <StatusDot tone={STATUS[form.status].tone} label={STATUS[form.status].label} size="sm" className="hidden sm:inline-flex shrink-0" />
+        <FormStatusChip status={form.status} className="hidden sm:inline-flex shrink-0" />
         <span className="flex-1" />
         <SaveIndicator state={save} canEdit={canEdit} />
-        <div className="relative shrink-0">
-          <button type="button" onClick={() => setShowMissing((v) => !v)}
-            className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-semibold ${missing.length ? "border-amber-200 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-            {missing.length ? <AlertTriangle className="size-3.5" /> : <Check className="size-3.5" />}
-            {missing.length
-              ? <><span className="hidden sm:inline">Falta ajustar · </span>{missing.length}</>
-              : <><span className="hidden sm:inline">Pronto para publicar</span><span className="sm:hidden">Pronto</span></>}
+        {missing.length > 0 ? (
+          <div className="relative shrink-0">
+            <button type="button" onClick={() => setShowMissing((v) => !v)}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border text-xs font-semibold border-amber-200 bg-amber-50 text-amber-800">
+              <AlertTriangle className="size-3.5" /><span className="hidden sm:inline">Falta ajustar · </span>{missing.length}
+            </button>
+            {showMissing && (
+              <div className="absolute right-0 top-10 z-30 w-80 rounded-xl border border-slate-200 bg-white shadow-xl shadow-slate-900/10 p-3">
+                <p className="text-xs font-semibold text-slate-800 mb-2">Para publicar, falta:</p>
+                <ul className="space-y-1.5 text-xs text-slate-600 list-disc pl-4">{missing.slice(0, 12).map((m) => <li key={m}>{m}</li>)}</ul>
+              </div>
+            )}
+          </div>
+        ) : canEdit && (changed || form.status === "draft") ? (
+          <button type="button" onClick={() => void publish()} disabled={publishing || save === "conflict"}
+            className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-primary hover:bg-primary-700 disabled:opacity-60 text-white text-xs font-semibold shrink-0">
+            {publishing && <Loader2 className="size-3.5 animate-spin" />}
+            <span className="hidden sm:inline">{form.published ? "Publicar alterações" : "Publicar formulário"}</span><span className="sm:hidden">Publicar</span>
           </button>
-          {showMissing && (
-            <div className="absolute right-0 top-10 z-30 w-80 rounded-xl border border-slate-200 bg-white shadow-xl shadow-slate-900/10 p-3">
-              <p className="text-xs font-semibold text-slate-800 mb-2">{missing.length ? "Para publicar, falta:" : "Tudo certo para publicar."}</p>
-              {missing.length > 0 && <ul className="space-y-1.5 text-xs text-slate-600 list-disc pl-4">{missing.slice(0, 12).map((m) => <li key={m}>{m}</li>)}</ul>}
-              <p className="mt-2.5 pt-2.5 border-t border-slate-100 text-[11px] text-slate-400">Publicar no site e no link próprio chega na próxima etapa.</p>
-            </div>
-          )}
-        </div>
+        ) : null}
       </div>
 
       {/* Abas (mesma gramática do SectionTabs; aqui por estado, não por rota) */}
@@ -225,11 +254,15 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
           <button key={k} type="button" onClick={() => setTab(k)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors ${tab === k ? "text-primary-700 border-primary" : "text-slate-600 border-transparent hover:text-slate-900"}`}>{l}</button>
         ))}
-        {["Publicar", "Respostas", "Resultados"].map((l) => (
-          <span key={l} className="px-4 py-2.5 text-sm font-medium text-slate-400 inline-flex items-center gap-1.5 whitespace-nowrap cursor-not-allowed" aria-disabled>
-            {l}<span className="text-[9px] font-semibold bg-slate-100 text-slate-500 px-1 py-0.5 rounded uppercase">em breve</span>
-          </span>
+        {([["publicar", "Publicar"], ["respostas", "Respostas"]] as const).map(([k, l]) => (
+          <button key={k} type="button" onClick={() => setTab(k)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors inline-flex items-center gap-1.5 ${tab === k ? "text-primary-700 border-primary" : "text-slate-600 border-transparent hover:text-slate-900"}`}>
+            {l}{k === "respostas" && form.responsesTotal > 0 && <span className="text-[11px] font-semibold bg-slate-100 text-slate-600 rounded-full px-1.5 tabular-nums">{form.responsesTotal}</span>}
+          </button>
         ))}
+        <span className="px-4 py-2.5 text-sm font-medium text-slate-400 inline-flex items-center gap-1.5 whitespace-nowrap cursor-not-allowed" aria-disabled>
+          Resultados<span className="text-[9px] font-semibold bg-slate-100 text-slate-500 px-1 py-0.5 rounded uppercase">em breve</span>
+        </span>
       </div>
 
       {(save === "conflict" || save === "error" || !canEdit) && (
@@ -241,6 +274,14 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
         </div>
       )}
 
+      {tab === "publicar" && (
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <PublishPanel form={form} changed={changed} missing={missing} publishing={publishing} onPublish={() => void publish()} />
+        </div>
+      )}
+      {tab === "respostas" && <ResponsesPanel formId={form.id} total={form.responsesTotal} />}
+
+      {(tab === "perguntas" || tab === "aparencia" || tab === "final") && (
       <div className={`flex-1 min-h-0 grid grid-cols-1 overflow-y-auto lg:overflow-hidden ${tab === "perguntas" ? "lg:grid-cols-[300px_minmax(0,1fr)_340px]" : "lg:grid-cols-[minmax(0,1fr)_380px]"}`}>
         {/* Passos */}
         {tab === "perguntas" && (
@@ -407,6 +448,7 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
           )}
         </aside>
       </div>
+      )}
       {confirmDialog}
       {pathAsk && <PathAskDialog ask={pathAsk} onClose={() => setPathAsk(null)} />}
     </div>

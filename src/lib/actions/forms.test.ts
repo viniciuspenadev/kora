@@ -38,7 +38,9 @@ beforeEach(() => {
   moduleOn = true
   scope = admin()
   audit.mockClear()
-  db.reset({ forms: [row(), row({ id: FX, tenant_id: OTHER, slug: "de-outra-empresa", name: "Da outra empresa" })] })
+  db.reset({ forms: [row(), row({ id: FX, tenant_id: OTHER, slug: "de-outra-empresa", name: "Da outra empresa" })],
+    tenants: [{ id: T, slug: "vitra" }], form_versions: [], form_submissions: [] })
+  db.rpcs.form_list_stats = () => ({ data: [], error: null })
 })
 
 describe("portão", () => {
@@ -150,5 +152,90 @@ describe("renomear, duplicar, excluir", () => {
     expect(await actions.deleteForm(F1)).toEqual({})
     expect(db.tables.forms.map((f) => f.id)).toEqual([FX])
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: "form.delete", targetId: F1 }))
+  })
+})
+
+describe("publicar, pausar, retomar (Fase 2)", () => {
+  it("Ver não publica; Gerenciar tira o retrato v1 e aponta o formulário para ele", async () => {
+    scope = agent("view")
+    expect(await actions.publishForm(F1)).toEqual({ error: "Sem permissão para gerenciar formulários." })
+    scope = admin()
+    expect(await actions.publishForm(F1)).toEqual({ version: 1 })
+    const v = db.tables.form_versions[0]
+    expect(v).toMatchObject({ tenant_id: T, form_id: F1, version: 1, published_by: "u-admin" })
+    expect(v.hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(db.tables.forms[0]).toMatchObject({ status: "published", published_version_id: v.id })
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: "form.publish", metadata: { version: 1 } }))
+  })
+  it("com o que falta, não publica e diz o quê", async () => {
+    db.tables.forms[0].draft = { ...templateDefinition("quote_guided"), appearance: { ...templateDefinition("quote_guided").appearance, title: "" } }
+    expect(await actions.publishForm(F1)).toMatchObject({ error: "Falta ajustar antes de publicar.", problems: ["Dê um título ao formulário (aba Aparência)."] })
+    expect(db.tables.form_versions).toHaveLength(0)
+  })
+  it("sem mudança não cria versão; com mudança cria a v2 e a v1 fica intacta", async () => {
+    await actions.publishForm(F1)
+    expect(await actions.publishForm(F1)).toEqual({ version: 1 })
+    expect(db.tables.form_versions).toHaveLength(1)
+    const changed = templateDefinition("quote_guided")
+    changed.questions[0].title = "Do que você precisa?"
+    db.tables.forms[0].draft = changed
+    expect(await actions.publishForm(F1)).toEqual({ version: 2 })
+    expect(db.tables.form_versions.map((v) => v.definition.questions[0].title)).toEqual(["O que você precisa?", "Do que você precisa?"])
+  })
+  it("pausar e retomar; publicar pausado sem mudança só retoma", async () => {
+    expect(await actions.pauseForm(F1)).toEqual({ error: "Só dá para pausar um formulário publicado." })
+    await actions.publishForm(F1)
+    expect(await actions.pauseForm(F1)).toEqual({})
+    expect(db.tables.forms[0].status).toBe("paused")
+    expect(await actions.publishForm(F1)).toEqual({ version: 1 })
+    expect(db.tables.forms[0].status).toBe("published")
+    await actions.pauseForm(F1)
+    expect(await actions.resumeForm(F1)).toEqual({})
+    expect(await actions.resumeForm(F1)).toEqual({ error: "Só dá para retomar um formulário pausado." })
+    expect(db.tables.form_versions).toHaveLength(1)
+  })
+  it("formulário de outra empresa não publica nem pausa", async () => {
+    expect(await actions.publishForm(FX)).toEqual({ error: "Formulário não encontrado." })
+    db.tables.forms[1].status = "published"
+    expect(await actions.pauseForm(FX)).toEqual({ error: "Só dá para pausar um formulário publicado." })
+    expect(db.tables.forms[1].status).toBe("published")
+  })
+  it("o editor recebe o que está no ar e o link próprio", async () => {
+    await actions.publishForm(F1)
+    const f = await actions.getForm(F1)
+    expect(f).toMatchObject({ status: "published", publicPath: "/f/vitra/orcamento-guiado", published: { version: 1 } })
+  })
+})
+
+describe("respostas (Fase 2)", () => {
+  const V1 = "55555555-5555-4555-8555-555555555555"
+  const V2 = "66666666-6666-4666-8666-666666666666"
+  const sub = (id: string, versionId: string, at: string) => ({
+    id, tenant_id: T, form_id: F1, version_id: versionId, contact_id: null, contact_name: "Marina", phone_e164: "5547998124471",
+    answers: { servico: "orcamento_novo" }, source: { kind: "link" }, consent: { accepted: true, at }, outcome: "received", contact_conflicts: [], created_at: at,
+  })
+  beforeEach(() => {
+    const v2 = templateDefinition("quote_guided")
+    v2.questions[0].title = "Do que você precisa?"
+    db.tables.form_versions.push({ id: V1, tenant_id: T, form_id: F1, version: 1, definition: templateDefinition("quote_guided") },
+      { id: V2, tenant_id: T, form_id: F1, version: 2, definition: v2 })
+    db.tables.form_submissions.push(sub("77777777-7777-4777-8777-777777777777", V2, "2026-10-02T15:00:00Z"),
+      sub("88888888-8888-4888-8888-888888888888", V1, "2026-10-01T15:00:00Z"),
+      { ...sub("99999999-9999-4999-8999-999999999999", V1, "2026-10-01T16:00:00Z"), tenant_id: OTHER, form_id: FX })
+  })
+  it("cada resposta é lida com a versão que a pessoa viu; dado de outra empresa não aparece", async () => {
+    const r = await actions.listFormSubmissions(F1)
+    expect("items" in r && r.items.map((i) => [i.answers[0].title, i.answers[0].value, i.phone])).toEqual([
+      ["Do que você precisa?", "Orçamento novo", "+55 (47) 99812-4471"],
+      ["O que você precisa?", "Orçamento novo", "+55 (47) 99812-4471"],
+    ])
+    expect(await actions.listFormSubmissions(FX)).toEqual({ error: "Formulário não encontrado." })
+  })
+  it("respostas são dado pessoal: sem permissão não lê; cursor torto é recusado", async () => {
+    scope = agent("none")
+    expect(await actions.listFormSubmissions(F1)).toEqual({ error: "Sem acesso a formulários." })
+    scope = agent("view")
+    expect(await actions.listFormSubmissions(F1, { cursor: { createdAt: "2026),id.gt.(0", id: "x" } })).toEqual({ error: "Página inválida." })
+    expect("items" in (await actions.listFormSubmissions(F1, { q: "ma,ri(a)" }))).toBe(true)
   })
 })

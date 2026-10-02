@@ -150,7 +150,8 @@ export function proxy(req: NextRequest) {
   res.headers.set("Permissions-Policy",   PERMISSIONS_POLICY)
   // /auth/* também: o captcha escalonado do login (F3b) renderiza o Turnstile
   // depois de N falhas de senha — mesma CSP do signup.
-  const isSignup   = path === "/signup" || path.startsWith("/signup/") || path.startsWith("/auth/")
+  // /f/* (link próprio dos Formulários): antirrobô invisível no envio público — mesma CSP.
+  const isSignup   = path === "/signup" || path.startsWith("/signup/") || path.startsWith("/auth/") || path.startsWith("/f/")
   // Página da integração oficial carrega o FB SDK do Embedded Signup → CSP com Meta.
   const isOfficial = path.startsWith("/integracoes/whatsapp-oficial")
   res.headers.set("Content-Security-Policy", isSignup ? CSP_SIGNUP : isOfficial ? CSP_META : CSP_APP)

@@ -47,6 +47,11 @@ export class MemoryDb {
       gte: (k: string, v: any) => { filters.push(r => r[k] >= v); return q },
       gt: (k: string, v: any) => { filters.push(r => r[k] > v); return q },
       or: (_value: string) => q,
+      // `ilike(col, "%termo%")` do PostgREST: sem caixa, `%` = qualquer coisa.
+      ilike: (k: string, pattern: string) => {
+        const re = new RegExp(`^${pattern.split("%").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "i")
+        filters.push(r => re.test(String(val(r, k) ?? ""))); return q
+      },
       // Só `not(col, "is", null)` — é o único uso nos caminhos testados.
       not: (k: string, op: string, v: unknown) => { if (op === "is") filters.push(r => (val(r, k) ?? null) !== v); return q },
       order: (_column: string, _opts?: unknown) => q,
