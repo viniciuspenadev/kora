@@ -11,7 +11,7 @@
 import { useMemo, useRef, useState } from "react"
 import { Check, ChevronLeft, ChevronRight, Loader2, Lock } from "lucide-react"
 import {
-  visibleQuestions, isQuestionVisible, answerProblem, answerLabel, fillPlaceholders, UNKNOWN_OPTION_ID,
+  visibleQuestions, visibleAnswers, isQuestionShown, answerProblem, answerLabel, fillPlaceholders, UNKNOWN_OPTION_ID,
   type Answers, type AnswerValue, type FormDefinition, type FormQuestion, type LocationAnswer,
 } from "@/lib/forms/definition"
 import { isPlausiblePhone } from "@/lib/phone-utils"
@@ -33,6 +33,9 @@ interface Props {
   focusQuestionId?: string | null
   /** Editor: mostra um passo fixo. */
   focusStep?:   "contact" | "review" | "ending" | null
+  /** Editor: respostas já marcadas (o caminho da pergunta em foco, ou o "Testar o caminho").
+   *  Quando muda, a prévia recomeça com elas — e a pergunta do caminho aparece de verdade. */
+  presetAnswers?: Answers | null
   onSubmit?:    (s: FormSubmission) => Promise<{ ok: true } | { error: string }>
 }
 
@@ -48,9 +51,9 @@ function maskBrPhone(raw: string): string {
 
 const EMPTY_CONTACT: ContactAnswer = { name: "", whatsapp: "", consent: false, marketing: false }
 
-export function FormRenderer({ definition, businessName, mode = "preview", focusQuestionId = null, focusStep = null, onSubmit }: Props) {
+export function FormRenderer({ definition, businessName, mode = "preview", focusQuestionId = null, focusStep = null, presetAnswers = null, onSubmit }: Props) {
   const def = definition
-  const [answers, setAnswers] = useState<Answers>({})
+  const [answers, setAnswers] = useState<Answers>(() => presetAnswers ?? {})
   const [contact, setContact] = useState<ContactAnswer>(EMPTY_CONTACT)
   const [problem, setProblem] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
@@ -82,14 +85,21 @@ export function FormRenderer({ definition, businessName, mode = "preview", focus
 
   // Editor mudou o foco → pula para o passo dele. Ajuste DURANTE a renderização, guardado
   // pela mudança da chave (padrão do React para "reagir a uma prop"; sem efeito em cascata).
-  const focusKey = `${focusQuestionId ?? ""}|${focusStep ?? ""}`
+  // Respostas pré-marcadas novas recomeçam a prévia com elas (sem foco: do primeiro passo).
+  const presetKey = presetAnswers ? JSON.stringify(presetAnswers) : ""
+  const focusKey = `${focusQuestionId ?? ""}|${focusStep ?? ""}|${presetKey}`
   const [lastFocus, setLastFocus] = useState(focusKey)
+  const [lastPreset, setLastPreset] = useState(presetKey)
   if (focusKey !== lastFocus) {
     setLastFocus(focusKey)
     setProblem(null)
     setDone(focusStep === "ending")
-    const i = indexForFocus(steps)
+    const presetChanged = presetKey !== lastPreset
+    const nextAnswers = presetChanged ? presetAnswers ?? {} : answers
+    if (presetChanged) { setLastPreset(presetKey); setAnswers(nextAnswers) }
+    const i = indexForFocus(buildSteps(nextAnswers))
     if (i !== null) setIndex(i)
+    else if (presetChanged) setIndex(0)
   }
 
   const safeIndex = Math.min(index, steps.length - 1)
@@ -132,13 +142,14 @@ export function FormRenderer({ definition, businessName, mode = "preview", focus
   async function submit() {
     if (mode === "preview" || !onSubmit) { setDone(true); return }
     setSending(true)
-    const r = await onSubmit({ answers, contact })
+    // Só o que está no caminho: resposta de caminho abandonado não vai junto.
+    const r = await onSubmit({ answers: visibleAnswers(def, answers), contact })
     setSending(false)
     if ("error" in r) { setProblem(r.error); return }
     setDone(true)
   }
 
-  function restart() { setAnswers({}); setContact(EMPTY_CONTACT); setIndex(0); setDone(false); setProblem(null) }
+  function restart() { setAnswers(presetAnswers ?? {}); setContact(EMPTY_CONTACT); setIndex(0); setDone(false); setProblem(null) }
 
   const primaryBtn = "w-full h-12 rounded-xl text-[15px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60 inline-flex items-center justify-center gap-2"
   const inputCls = "w-full h-12 rounded-xl border border-slate-200 bg-white px-4 text-[15px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-[var(--fa)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fa)_20%,transparent)]"
@@ -177,7 +188,7 @@ export function FormRenderer({ definition, businessName, mode = "preview", focus
       <div className="mt-5">
         {step.kind === "question" && (
           <QuestionStep q={step.question} first={safeIndex === 0} titleFont={titleFont} value={answers[step.question.id]}
-            hiddenByRule={!isQuestionVisible(step.question, answers)}
+            hiddenByRule={!isQuestionShown(def, step.question, answers)}
             inputCls={inputCls}
             onChange={(v) => setAnswer(step.question, v)}
             onPick={(v) => { const a = { ...answers, [step.question.id]: v }; setAnswers(a); next(a) }}

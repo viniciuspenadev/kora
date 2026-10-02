@@ -1,6 +1,5 @@
 import { auth } from "@/auth"
 import { redirect } from "next/navigation"
-import { PageShell } from "@/components/ui/page-shell"
 import { hasModule } from "@/lib/modules"
 import { getViewerScope, canViewForms } from "@/lib/visibility"
 import { supabaseAdmin } from "@/lib/supabase"
@@ -23,10 +22,6 @@ export default async function FormulariosPage() {
   ])
   if ("error" in result) redirect("/inbox")
 
-  return (
-    <PageShell variant="list" title="Formulários"
-      description="Capte pedidos no seu site, na sua página e no seu link. Cada envio pode chamar a pessoa no WhatsApp pelo Kora Studio.">
-      <FormsClient items={result.items} canManage={result.canManage} businessName={(tenant as { name?: string } | null)?.name ?? ""} />
-    </PageShell>
-  )
+  // O cabeçalho (com "Ver modelos"/"Novo formulário") mora no client: os botões abrem a galeria.
+  return <FormsClient items={result.items} canManage={result.canManage} businessName={(tenant as { name?: string } | null)?.name ?? ""} />
 }

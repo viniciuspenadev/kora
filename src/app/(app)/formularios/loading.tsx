@@ -1,5 +1,5 @@
 import { ListPageSkeleton } from "@/components/ui/page-skeleton"
 
 export default function Loading() {
-  return <ListPageSkeleton rows={5} />
+  return <ListPageSkeleton kpis={4} rows={5} />
 }

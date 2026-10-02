@@ -5,16 +5,12 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { ClipboardList, X, Loader2, LayoutGrid, MessageCircle, CalendarDays, Gauge, Download, Plus, CircleHelp, Star } from "lucide-react"
+import { ClipboardList, X, Loader2, CircleHelp, Star } from "lucide-react"
 import { toast } from "sonner"
 import { TEMPLATES, templateDefinition, type TemplateKey } from "@/lib/forms/templates"
 import { createForm } from "@/lib/actions/forms"
 import { FormRenderer } from "./form-renderer"
-
-const TEMPLATE_ICON: Record<TemplateKey, typeof LayoutGrid> = {
-  quote_guided: LayoutGrid, contact_us: MessageCircle, scheduling: CalendarDays,
-  prequalification: Gauge, lead_magnet: Download, blank: Plus,
-}
+import { TEMPLATE_ICON } from "./template-icons"
 
 export function TemplateGallery({ businessName, onClose }: { businessName: string; onClose: () => void }) {
   const router = useRouter()
