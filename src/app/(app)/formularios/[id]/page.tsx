@@ -8,7 +8,7 @@ import { FormEditor } from "@/components/forms/form-editor"
 
 export const dynamic = "force-dynamic"
 
-export default async function FormEditorPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function FormEditorPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ aba?: string }> }) {
   const session = await auth()
   if (!session) redirect("/auth/signin")
   if (!(await hasModule(session.user.tenantId, "forms"))) redirect("/inbox")
@@ -21,6 +21,9 @@ export default async function FormEditorPage({ params }: { params: Promise<{ id:
     supabaseAdmin.from("tenants").select("name").eq("id", session.user.tenantId).maybeSingle(),
   ])
   if ("error" in form) notFound()
+  // `?aba=respostas`: o aviso "precisa de contato" abre direto nas respostas.
+  const { aba } = await searchParams
+  const initialTab = aba === "respostas" || aba === "publicar" ? aba : undefined
 
-  return <FormEditor form={form} businessName={(tenant as { name?: string } | null)?.name ?? ""} />
+  return <FormEditor form={form} businessName={(tenant as { name?: string } | null)?.name ?? ""} initialTab={initialTab} />
 }

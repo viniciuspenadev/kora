@@ -102,6 +102,8 @@ export interface TriggerSummary {
   /** Só p/ `ig_comment`: snapshot congelado do post + o direct, pra desenhar o card. */
   igPosts?: Array<{ id: string; thumbUrl: string | null; caption: string | null }>
   igDm?:    string
+  /** Só p/ `form_submitted`: nome do formulário escolhido ("" = ainda não escolheu). */
+  formName?: string
 }
 export const TriggerSummaryContext = createContext<TriggerSummary>({ type: "keyword", mode: "receptive", channels: [], keywords: "" })
 
@@ -201,6 +203,22 @@ function StartNode(p: NodeProps) {
   // + palavra), em vez de existir um nó solto. É assim que o "nó dedicado" acontece sem
   // criar um segundo motor — docs/instagram-studio-node-design.md §8.3.
   if (t.type === "ig_comment") return <IgCommentStartCard t={t} kw={kw} selected={p.selected} />
+
+  // Formulário: o Início vira o bloco "Formulário" do desenho aprovado — quem envia ainda
+  // não falou com a empresa, então o próximo passo é chamar no WhatsApp.
+  if (t.type === "form_submitted") return (
+    <>
+      <Card icon={ClipboardList} accent="bg-teal-100 text-teal-700" title="Formulário" selected={p.selected}>
+        <p className="text-[11px] text-slate-600">
+          {t.formName
+            ? <>Quando alguém enviar <span className="font-semibold text-slate-800">{t.formName}</span></>
+            : <span className="italic text-slate-400">Escolha o formulário no gatilho</span>}
+        </p>
+        <p className="mt-1 text-[10px] text-slate-400">nome, WhatsApp e as respostas</p>
+      </Card>
+      <SourceHandle />
+    </>
+  )
 
   return (
     <>

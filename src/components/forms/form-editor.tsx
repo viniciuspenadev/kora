@@ -63,12 +63,18 @@ const INPUT = "w-full h-9 px-3 text-xs border border-slate-200 rounded-lg bg-whi
 const SECTION = "text-[11px] font-semibold uppercase tracking-wider text-slate-500"
 const PILL = (on: boolean) => `h-8 px-3 rounded-full border text-xs font-medium transition-colors ${on ? "bg-primary text-white border-primary" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`
 
-export function FormEditor({ form, businessName }: { form: FormDetail; businessName: string }) {
+export function FormEditor({ form, businessName, initialTab }: { form: FormDetail; businessName: string; initialTab?: "respostas" | "publicar" }) {
   const router = useRouter()
   const canEdit = form.canManage
   const [def, setDef] = useState<FormDefinition>(form.draft)
   const [name, setName] = useState(form.name)
-  const [tab, setTab] = useState<Tab>("perguntas")
+  const [tab, setTab] = useState<Tab>(initialTab ?? "perguntas")
+  // Aberto já numa aba (ex.: aviso "precisa de contato" → Respostas): no celular a barra rola
+  // e a aba ativa ficaria fora da tela.
+  const tabBar = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (initialTab) tabBar.current?.querySelector<HTMLElement>("[data-active='true']")?.scrollIntoView({ block: "nearest", inline: "center" })
+  }, [initialTab])
   const [sel, setSel] = useState<Sel>(form.draft.questions[0] ? { kind: "question", id: form.draft.questions[0].id } : { kind: "contact" })
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop")
   const [save, setSave] = useState<SaveState>("saved")
@@ -249,13 +255,13 @@ export function FormEditor({ form, businessName }: { form: FormDetail; businessN
       </div>
 
       {/* Abas (mesma gramática do SectionTabs; aqui por estado, não por rota) */}
-      <div className="bg-white border-b border-slate-200 px-4 sm:px-5 flex items-center gap-1 overflow-x-auto shrink-0">
+      <div ref={tabBar} className="bg-white border-b border-slate-200 px-4 sm:px-5 flex items-center gap-1 overflow-x-auto shrink-0">
         {([["perguntas", "Perguntas"], ["aparencia", "Aparência"], ["final", "Tela final"]] as const).map(([k, l]) => (
-          <button key={k} type="button" onClick={() => setTab(k)}
+          <button key={k} type="button" onClick={() => setTab(k)} data-active={tab === k}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors ${tab === k ? "text-primary-700 border-primary" : "text-slate-600 border-transparent hover:text-slate-900"}`}>{l}</button>
         ))}
         {([["publicar", "Publicar"], ["respostas", "Respostas"]] as const).map(([k, l]) => (
-          <button key={k} type="button" onClick={() => setTab(k)}
+          <button key={k} type="button" onClick={() => setTab(k)} data-active={tab === k}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors inline-flex items-center gap-1.5 ${tab === k ? "text-primary-700 border-primary" : "text-slate-600 border-transparent hover:text-slate-900"}`}>
             {l}{k === "respostas" && form.responsesTotal > 0 && <span className="text-[11px] font-semibold bg-slate-100 text-slate-600 rounded-full px-1.5 tabular-nums">{form.responsesTotal}</span>}
           </button>

@@ -489,6 +489,12 @@ export interface FlowTrigger {
               //    `channel_connections.meta.webhook_follow`; a tela mostra "a Meta não
               //    liberou" em vez de deixar o gatilho parecendo ligado.
               | "ig_follow"
+              // Formulário do Kora (docs/forms-design.md §4.3): alguém ENVIOU o formulário
+              // `formId`. NÃO é mensagem — a pessoa ainda não falou com a empresa, então não
+              // existe conversa. Nunca casa no inbound (`matchesTrigger` → default:false):
+              // quem dispara é o envio público (`startFormAutomation`), e o trecho até o
+              // Disparar roda na hora, sem conversa (`runFormEntry`).
+              | "form_submitted"
   keywords?:  string[]
   /** Match da palavra-chave: "contains" (default, substring) | "exact" (palavra inteira). Ambos ignoram acento. */
   keywordMatch?: "contains" | "exact"
@@ -510,6 +516,8 @@ export interface FlowTrigger {
   ig?:        IgCommentTrigger
   /** Só p/ type "ig_story_reply": quais stories + palavra na resposta. */
   story?:     IgStoryTrigger
+  /** Só p/ type "form_submitted": qual formulário (forms.id) começa este fluxo. */
+  formId?:    string
 }
 
 // ── Linhas do banco ──

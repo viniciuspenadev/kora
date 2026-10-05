@@ -9,6 +9,7 @@ import { parseSubmission, parseSource } from "@/lib/forms/submission"
 import { SUBMIT_LIMITS } from "@/lib/forms/limits"
 import { verifyRenderToken, hashIp } from "@/lib/forms/server"
 import { linkSubmissionContact } from "@/lib/forms/contact-link"
+import { startFormAutomation } from "@/lib/forms/automation"
 import { outreachPhoneKey } from "@/lib/outreach/phone-key"
 
 // ═══════════════════════════════════════════════════════════════
@@ -132,7 +133,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pub
     }
   }
 
-  // A pessoa não espera a ficha: a resposta já está gravada. Ligar à ficha depois da resposta.
+  // A pessoa não espera: a resposta já está gravada. Depois de responder, liga à ficha e
+  // aciona o fluxo do Studio (o Kora chama no WhatsApp) — nessa ordem: o fluxo precisa da ficha.
   const submissionId = r.id!
   after(async () => {
     try {
@@ -142,6 +144,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pub
       })
     } catch (e) {
       console.error("[forms submit] resposta gravada sem ficha:", submissionId, (e as Error).message)
+    }
+    try {
+      await startFormAutomation(form.tenant_id, submissionId)
+    } catch (e) {
+      console.error("[forms submit] fluxo do formulário falhou:", submissionId, (e as Error).message)
     }
   })
   return NextResponse.json({ ok: true }, { headers: NO_STORE })

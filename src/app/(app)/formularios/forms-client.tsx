@@ -3,8 +3,8 @@
 // Lista de Formulários — espelha a tela 1 do canvas aprovado pelo dono ("Kora Formulários"):
 // título + "Ver modelos"/"Novo formulário", 4 números do topo, busca + 4 filtros, tabela com
 // Respostas · Conclusão · Conversas · Automação no Studio · Última resposta.
-// Respostas são reais desde a Fase 2. Enquanto um número não existe (automação na Fase 3,
-// conclusão na Fase 4) a tela mostra "0" ou "—", como o desenho mostra para rascunho — nunca esconde a coluna.
+// Respostas e conversas são reais (Fases 2 e 3). Enquanto um número não existe (conclusão e
+// tempo até a 1ª mensagem, na Fase 4) a tela mostra "—", como o desenho mostra para rascunho — nunca esconde a coluna.
 
 import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -19,6 +19,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { TemplateGallery } from "@/components/forms/template-gallery"
 import { TemplateIcon } from "@/components/forms/template-icons"
 import { FormStatusChip } from "@/components/forms/status-chip"
+import { FormFlowLink } from "@/components/forms/form-flow-link"
 import { duplicateForm, deleteForm, type FormListItem, type FormStatus } from "@/lib/actions/forms"
 import { isTemplateKey, templateInfo } from "@/lib/forms/templates"
 
@@ -39,7 +40,9 @@ const stepsLabel = (n: number) => `${n + 1} passo${n + 1 === 1 ? "" : "s"}`
 
 const HEADER_BTN = "inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold rounded-lg transition-colors"
 
-export function FormsClient({ items, canManage, businessName }: { items: FormListItem[]; canManage: boolean; businessName: string }) {
+export function FormsClient({ items, canManage, canCreateFlow = false, replied30d = 0, businessName }: {
+  items: FormListItem[]; canManage: boolean; canCreateFlow?: boolean; replied30d?: number; businessName: string
+}) {
   const [gallery, setGallery] = useState(false)
   const [q, setQ] = useState("")
   const [filter, setFilter] = useState<FormStatus | "all">("all")
@@ -80,7 +83,7 @@ export function FormsClient({ items, canManage, businessName }: { items: FormLis
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KpiTile icon={FileText} label="Respostas · 30 dias" value={responses30d.toLocaleString("pt-BR")} caption={`em ${published} formulário${published === 1 ? "" : "s"} publicado${published === 1 ? "" : "s"}`} />
             <KpiTile icon={CheckCircle2} iconClass="text-sky-600" label="Taxa de conclusão" value="—" caption="de quem começou, terminou" />
-            <KpiTile icon={MessageCircle} iconClass="text-emerald-700" label="Viraram conversa" value="0" caption="responderam a mensagem do Kora" />
+            <KpiTile icon={MessageCircle} iconClass="text-emerald-700" label="Viraram conversa" value={replied30d.toLocaleString("pt-BR")} caption="responderam a mensagem do Kora" />
             <KpiTile icon={Clock} iconClass="text-amber-700" label="Até a 1ª mensagem" value="—" caption="em média, depois do envio" />
           </div>
 
@@ -109,7 +112,7 @@ export function FormsClient({ items, canManage, businessName }: { items: FormLis
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {shown.map((f) => <Row key={f.id} f={f} canManage={canManage} />)}
+                {shown.map((f) => <Row key={f.id} f={f} canManage={canManage} canCreateFlow={canCreateFlow} />)}
                 {shown.length === 0 && (
                   <tr><td colSpan={8} className="px-5 py-8 text-center text-xs text-slate-400">Nenhum formulário com esse filtro.</td></tr>
                 )}
@@ -124,7 +127,7 @@ export function FormsClient({ items, canManage, businessName }: { items: FormLis
   )
 }
 
-function Row({ f, canManage }: { f: FormListItem; canManage: boolean }) {
+function Row({ f, canManage, canCreateFlow }: { f: FormListItem; canManage: boolean; canCreateFlow: boolean }) {
   const router = useRouter()
   const [busy, start] = useTransition()
   const { confirm, confirmDialog } = useConfirm()
@@ -167,12 +170,12 @@ function Row({ f, canManage }: { f: FormListItem; canManage: boolean }) {
       </td>
       <td className="py-3.5 px-3"><FormStatusChip status={f.status} /></td>
       <td className="py-3.5 px-3 text-right tabular-nums font-semibold text-slate-800 hidden md:table-cell">{live ? f.responsesTotal.toLocaleString("pt-BR") : dash}</td>
-      {/* Conclusão (quem começou × quem enviou) e Conversas chegam com os números da Fase 4 e o Studio. */}
+      {/* Conclusão (quem começou × quem enviou) chega com os números da Fase 4. */}
       <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">{dash}</td>
-      <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">{live ? "0" : dash}</td>
-      <td className="py-3.5 px-3 text-xs hidden lg:table-cell whitespace-nowrap">
-        {/* O bloco Formulário do Studio chega na Fase 3 — até lá, nenhum formulário tem fluxo. */}
-        <span className="font-semibold text-amber-700" title="O bloco Formulário do Kora Studio chega na próxima etapa.">Sem fluxo</span>
+      {/* Conversas = respostas em que a pessoa respondeu a mensagem do Kora. */}
+      <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">{live ? f.conversations.toLocaleString("pt-BR") : dash}</td>
+      <td className="py-3.5 px-3 hidden lg:table-cell" onClick={(e) => e.stopPropagation()}>
+        <FormFlowLink formId={f.id} flow={f.flow} canCreate={canCreateFlow} />
       </td>
       <td className="py-3.5 px-3 text-xs text-slate-500 hidden lg:table-cell whitespace-nowrap">
         {/* Tempo relativo: servidor e navegador calculam em instantes diferentes. */}

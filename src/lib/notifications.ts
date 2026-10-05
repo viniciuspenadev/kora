@@ -25,6 +25,8 @@ export type NotificationType =
                         //    manda pra /agenda (é o defeito D2, vivo no task_due).
   | "outreach_held"     // Disparar no WhatsApp não mandou por cima de conversa em atendimento (responsável)
   | "outreach_cap_hit"  // trava anti-canhão segurou disparos na última hora (donos e admins, 1×/hora)
+  | "form_needs_contact" // formulário enviado e o Kora NÃO chamou (sem fluxo/sem WhatsApp/segurado/parou) —
+                        // donos e admins; payload.url abre a aba Respostas do formulário
   | (string & {})       // extensível p/ futuros produtores (transfer_received, …)
 
 export interface CreateNotificationInput {

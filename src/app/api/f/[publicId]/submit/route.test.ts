@@ -18,6 +18,8 @@ let tenantStatus = { degraded: false, canAccess: true, canSpend: true, inPaywall
 vi.mock("@/lib/auth/tenant-serviceable", () => ({ checkTenantStatus: async () => tenantStatus }))
 const link = vi.fn(async () => ({ contactId: "c-1", created: true, conflicts: [] }))
 vi.mock("@/lib/forms/contact-link", () => ({ linkSubmissionContact: link }))
+const automation = vi.fn(async () => "sent")
+vi.mock("@/lib/forms/automation", () => ({ startFormAutomation: automation }))
 
 process.env.AUTH_SECRET = "segredo-de-teste"
 const { POST } = await import("./route")
@@ -48,7 +50,7 @@ const valid = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   captchaOk = true; moduleOn = true; rpcArgs = null
   tenantStatus = { degraded: false, canAccess: true, canSpend: true, inPaywall: false }
-  link.mockClear(); pending.length = 0
+  link.mockClear(); automation.mockClear(); pending.length = 0
   db.reset({
     forms: [{ id: F, tenant_id: T, public_id: PID, status: "published", archived_at: null, published_version_id: V }],
     form_versions: [{ id: V, tenant_id: T, form_id: F, definition: templateDefinition("quote_guided") }],
@@ -72,6 +74,8 @@ describe("envio público", () => {
     expect(rpcArgs!.p_ip_hash).toMatch(/^[0-9a-f]{32}$/)
     await Promise.all(pending)
     expect(link).toHaveBeenCalledWith(expect.objectContaining({ tenantId: T, submissionId: "s-1", phoneE164: "5547998124471" }))
+    // Depois da ficha, o fluxo do Studio (o Kora chama no WhatsApp).
+    expect(automation).toHaveBeenCalledWith(T, "s-1")
   })
   it("S4: a empresa vem do public_id — tenant no corpo é ignorado", async () => {
     await request(valid({ tenant_id: "22222222-2222-4222-8222-222222222222", tenantId: "x" }))

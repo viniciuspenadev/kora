@@ -27,6 +27,7 @@ const CHANNEL_LABEL: Record<string, string> = {
 const TRIGGER_LABEL: Record<string, string> = {
   keyword: "Palavra-chave", any_message: "Qualquer mensagem", new_contact: "Contato novo",
   reopened: "Retornou", from_ad: "Veio de anúncio", ig_comment: "Comentário", inactivity: "Após inatividade",
+  ig_story_reply: "Respondeu story", form_submitted: "Formulário enviado",
 }
 
 type FlowState = "published" | "paused" | "draft"
@@ -56,6 +57,8 @@ const purposeOf = (f: StudioFlowSummary): Purpose => f.purpose ?? "atendimento"
  */
 function flowChannels(t: FlowTrigger | null): string[] {
   if (t?.type === "ig_comment") return ["instagram"]
+  // Formulário: a 1ª conversa é sempre no WhatsApp (o Disparar abre o fio).
+  if (t?.type === "form_submitted") return ["whatsapp"]
   return t?.channels ?? []
 }
 

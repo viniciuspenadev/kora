@@ -10,6 +10,7 @@ import { Link2, Code2, MousePointerClick, Copy, ExternalLink, Loader2, ShieldChe
 import { toast } from "sonner"
 import { pauseForm, resumeForm, type FormDetail } from "@/lib/actions/forms"
 import { FormStatusChip } from "./status-chip"
+import { FormFlowLink } from "./form-flow-link"
 
 const CARD = "rounded-xl border border-slate-200 bg-white p-5"
 const BTN = "inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
@@ -124,6 +125,20 @@ export function PublishPanel({ form, changed, missing, publishing, onPublish }: 
               )}
             </div>
           )}
+        </section>
+
+        {/* O Kora chama: o fluxo do Studio que recebe cada envio deste formulário. */}
+        <section className={CARD}>
+          <h3 className="text-sm font-semibold text-slate-900">Chamar no WhatsApp</h3>
+          <p className="mt-1 text-[13px] text-slate-500 leading-relaxed">
+            {form.flow
+              ? form.flow.live
+                ? "Cada envio começa este fluxo do Kora Studio, que chama a pessoa no WhatsApp."
+                : "O fluxo existe, mas não está no ar: publique-o no Kora Studio para o Kora chamar quem enviar."
+              : "Nenhum fluxo chama quem envia. Crie um: ele já vem com a mensagem para você revisar e publicar."}
+          </p>
+          <div className="mt-3"><FormFlowLink formId={form.id} flow={form.flow} canCreate={form.canCreateFlow} /></div>
+          <p className="mt-3 text-[11px] text-slate-400 leading-relaxed">Se o Kora não conseguir chamar (número sem WhatsApp, trava de segurança, sem fluxo), os donos e admins são avisados na hora e a resposta aparece como “precisa de contato”.</p>
         </section>
 
         <section className={CARD}>

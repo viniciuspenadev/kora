@@ -5,8 +5,9 @@ import { useRef, useState, useEffect } from "react"
 import {
   Trash2, Plus, Sparkles, Megaphone, BadgeCheck, Smartphone, Loader2,
   Search, ChevronRight, MessageSquareText, MessagesSquare, UserPlus, RotateCcw, Zap, Clock, CalendarClock, Gift, Info, Lock, X,
-  Users, Building2, Shuffle, UserCheck, Inbox, ArrowRight, Check, ChevronUp, ChevronDown,
+  Users, Building2, Shuffle, UserCheck, Inbox, ArrowRight, Check, ChevronUp, ChevronDown, ClipboardList, ExternalLink,
 } from "lucide-react"
+import { formTriggerVariables, type FormTriggerOption } from "@/lib/forms/flow-variables"
 import { UserAvatar } from "@/components/ui/user-avatar"
 import { QUOTE_TERM, qg } from "@/lib/commercial/quote-terms"
 import { getInboxTemplates, type InboxTemplate } from "@/lib/actions/whatsapp-official"
@@ -32,6 +33,7 @@ import { WhatsAppPreview, Bubble } from "@/components/studio/whatsapp-preview"
 import { EmptyState } from "@/components/ui/empty-state"
 import { varsForContext } from "@/lib/variables/registry"
 import { MessageBalloons } from "@/components/studio/message-balloons"
+import { NODE_TITLE } from "@/lib/ai-v2/flow/node-titles"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
@@ -1842,6 +1844,7 @@ export function FlowSettingsPanel({
   onType, onKeywords, onMode, onChannels, onInstances, onKeywordMatch, onAds, onInactivity,
   igConfig, onIgConfig, igUsername, igLicensed = false, igFollowAvailable = false, igPro = false,
   storyConfig, onStoryConfig,
+  formsLicensed = false, formOptions = [], formId = "", onFormId,
 }: {
   triggerType: string
   keywords: string
@@ -1878,6 +1881,11 @@ export function FlowSettingsPanel({
   igFollowAvailable?: boolean
   /** Nível PRO do módulo — libera o ❤️ automático no gatilho de story. */
   igPro?: boolean
+  /** Gatilho "Formulário enviado": módulo Formulários + os formulários da empresa. */
+  formsLicensed?: boolean
+  formOptions?:   FormTriggerOption[]
+  formId?:        string
+  onFormId?:      (id: string) => void
 }) {
   const [q, setQ] = useState("")
   const [storyModal, setStoryModal] = useState(false)
@@ -1942,6 +1950,12 @@ export function FlowSettingsPanel({
       { id: "ig_follow", label: "Começou a te seguir", desc: "alguém segue a conta e o fluxo manda o primeiro direct",
         icon: IgTriggerIcon, soon: true,
         ...(!igLicensed ? { locked: "no plano" } : !igFollowAvailable ? { locked: "a Meta não liberou" } : {}) },
+    ] },
+    // Formulário do Kora: a pessoa NÃO mandou mensagem — enviou um formulário. Grupo próprio
+    // pelo mesmo motivo do Instagram: não existe conversa quando o envio chega.
+    { key: "form", label: "Formulário", tint: "text-teal-700 bg-teal-50", items: [
+      { id: "form_submitted", label: "Formulário enviado", desc: "alguém envia um formulário do Kora e o fluxo chama no WhatsApp",
+        icon: ClipboardList, ...(formsLicensed ? {} : { locked: "no plano" }) },
     ] },
     { key: "act", label: "Você dispara", tint: "text-violet-600 bg-violet-50", items: [
       { id: "manual", label: "No chat ou por campanha", desc: "um agente aciona, ou uma campanha dispara", icon: Zap },
@@ -2062,6 +2076,43 @@ export function FlowSettingsPanel({
               Conecte uma conta do Instagram em Integrações para configurar este gatilho.
             </p>
           )}
+        </div>
+      )
+    }
+    if (id === "form_submitted") {
+      const picked = formOptions.find((f) => f.id === formId) ?? null
+      const vars = formTriggerVariables(picked)
+      return (
+        <div className={box}>
+          <div>
+            <label className={LABEL}>Qual formulário?</label>
+            {formOptions.length === 0 ? (
+              <p className="text-[11px] text-slate-400 leading-relaxed">Nenhum formulário ainda. Crie um em Marketing → Formulários.</p>
+            ) : (
+              <SimpleSelect value={formId} onChange={(v) => onFormId?.(v)} placeholder="Escolha o formulário"
+                options={formOptions.map((f) => ({ value: f.id, label: f.status === "draft" ? `${f.name} (rascunho)` : f.status === "paused" ? `${f.name} (pausado)` : f.name }))} />
+            )}
+            {picked && (
+              <a href={`/formularios/${picked.id}`} target="_blank" rel="noopener noreferrer"
+                className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-primary-700 hover:underline">
+                <ExternalLink className="size-3" /> Abrir o formulário
+              </a>
+            )}
+            {picked?.status === "draft" && <p className="text-[11px] text-amber-700 mt-1">Este formulário ainda não foi publicado: o fluxo só começa quando ele receber respostas.</p>}
+          </div>
+          <div>
+            <p className={LABEL}>O que o fluxo recebe</p>
+            <div className="flex flex-wrap gap-1">
+              {vars.map((v) => (
+                <span key={v.token} title={v.label} className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10.5px] text-slate-600">{`{{${v.token}}}`}</span>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">Para separar por resposta (ex.: Box vai para outro vendedor), use o Desviar logo depois.</p>
+          </div>
+          <div className="flex items-start gap-2 rounded-lg bg-white border border-slate-200 px-3 py-2 text-[11px] text-slate-500 leading-relaxed">
+            <Info className="size-3.5 shrink-0 mt-0.5 text-slate-400" />
+            <span>Quem enviou o formulário ainda não falou com você. Por isso o primeiro envio deste fluxo é sempre o <b className="text-slate-700 font-semibold">Disparar no WhatsApp</b> — o Studio não publica uma Mensagem ou Menu antes dele. Se o Kora não conseguir chamar, os donos e admins são avisados na hora.</span>
+          </div>
         </div>
       )
     }
@@ -2200,7 +2251,7 @@ export function FlowSettingsPanel({
                         )}
                       </span>
                       <span className="block text-[11.5px] text-slate-400 mt-0.5 leading-snug">
-                        {!it.soon && it.locked ? "Disponível no plano com automação de Instagram." : it.desc}
+                        {!it.soon && it.locked ? (g.key === "form" ? "Disponível no plano com Formulários." : "Disponível no plano com automação de Instagram.") : it.desc}
                       </span>
                     </span>
                     {!dead && <ChevronRight className={`size-4 self-center shrink-0 transition ${on ? "text-primary-600 rotate-90" : "text-slate-300 opacity-0 group-hover/it:opacity-100"}`} />}
@@ -2216,13 +2267,5 @@ export function FlowSettingsPanel({
   )
 }
 
-const TITLE: Record<string, string> = {
-  start: "Início", message: "Mensagem", send_media: "Enviar mídia", menu: "Menu", condition: "Condição",
-  set_variable: "Definir variável", switch: "Desviar (switch)", business_hours: "Horário comercial",
-  wait: "Esperar",
-  http: "Requisição HTTP", collect: "Coletar dado", schedule: "Agendar", ai_agent: "Agente IA",
-  ai_router: "Roteador IA", call_flow: "Executar fluxo", template: "Enviar template",
-  outreach: "Disparar no WhatsApp",
-  tag: "Etiquetar", move_stage: "Mover etapa",
-  transfer: "Transferir", resolve: "Concluir", return: "Voltar", end: "Encerrar",
-}
+// Nome de cada nó: fonte única em lib/ai-v2/flow/node-titles.ts (o servidor usa a mesma).
+const TITLE: Record<string, string> = NODE_TITLE

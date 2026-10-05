@@ -25,7 +25,8 @@ async function assertAutomationQuota(tenantId: string): Promise<string | null> {
   if (!info.ok) return `Limite de automações atingido (${info.used}/${info.max}). Fale com o administrador da plataforma pra aumentar.`
   return null
 }
-import type { FlowGraph, FlowTrigger, MessageNodeConfig } from "@/lib/ai-v2/flow/types"
+import type { FlowGraph, FlowTrigger, MessageNodeConfig, OutreachNodeConfig } from "@/lib/ai-v2/flow/types"
+import { formFlowProblems, preConversationNodes } from "@/lib/ai-v2/flow/form-entry-rules"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import { checkFlowGraphLimits } from "@/lib/ai-v2/flow/limits"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
@@ -274,6 +275,62 @@ function validateMessagePublish(graph: FlowGraph): string | null {
   return null
 }
 
+/**
+ * Recusa publicar (ou religar) um fluxo de FORMULÁRIO que não teria como chamar a pessoa
+ * (fail-closed, mesma doutrina do `validateIgPublish`). docs/forms-design.md §4.3.
+ *
+ *   1. módulo Formulários ligado e formulário escolhido, desta empresa e não arquivado;
+ *   2. um fluxo por formulário — dois chamariam a mesma pessoa duas vezes (a trava seguraria
+ *      o segundo, mas o cliente veria "Segurada" sem entender por quê);
+ *   3. antes do Disparar, só nós que rodam sem conversa (`formFlowProblems`, a MESMA regra
+ *      que o motor obedece);
+ *   4. o Disparar tem com o que chamar NO NÚMERO QUE VAI USAR: o número oficial só aceita
+ *      modelo aprovado para quem ainda não falou com a empresa.
+ */
+async function validateFormFlowPublish(tenantId: string, flowId: string, trigger: FlowTrigger, graph: FlowGraph): Promise<string | null> {
+  if (trigger?.type !== "form_submitted") return null
+  if (!(await hasModule(tenantId, "forms"))) return "O módulo Formulários não está habilitado nesta conta. Fale com o suporte pra liberar."
+  const formId = trigger.formId ?? ""
+  if (!UUID_RE.test(formId)) return "Escolha no gatilho qual formulário começa este fluxo."
+  const { data: form } = await supabaseAdmin.from("forms").select("id, name, archived_at")
+    .eq("tenant_id", tenantId).eq("id", formId).maybeSingle()
+  const f = form as { id: string; name: string; archived_at: string | null } | null
+  if (!f || f.archived_at) return "O formulário escolhido no gatilho não existe mais. Escolha outro."
+  const { data: others, error: othersErr } = await supabaseAdmin.from("studio_flows").select("id, name")
+    .eq("tenant_id", tenantId).eq("status", "published").eq("active", true)
+    .eq("trigger->>type", "form_submitted").eq("trigger->>formId", formId).neq("id", flowId).limit(1)
+  if (othersErr) return "Não foi possível conferir os fluxos deste formulário. Tente de novo."
+  const other = (others ?? [])[0] as { name: string } | undefined
+  if (other) return `O formulário “${f.name}” já chama pelo fluxo “${other.name}”. Pause aquele fluxo ou escolha outro formulário.`
+
+  const problems = formFlowProblems(graph)
+  if (problems.length) return problems[0]
+
+  const outreachNodes = preConversationNodes(graph).filter((n) => n.type === "outreach")
+  if (outreachNodes.length) {
+    const { data: insts } = await supabaseAdmin.from("whatsapp_instances").select("id, provider").eq("tenant_id", tenantId)
+    const list = (insts ?? []) as { id: string; provider: string | null }[]
+    for (const n of outreachNodes) {
+      const cfg = n.config as unknown as OutreachNodeConfig
+      const channel = cfg.channel ?? "auto"
+      // O mesmo critério do Disparar (`pickInstance`): número escolhido → o do canal → no
+      // "automático", o oficial vem primeiro.
+      const inst = cfg.instanceId ? list.find((i) => i.id === cfg.instanceId)
+        : channel === "official" ? list.find((i) => i.provider === "meta_cloud")
+        : channel === "baileys" ? list.find((i) => i.provider === "baileys")
+        : list.find((i) => i.provider === "meta_cloud") ?? list.find((i) => i.provider === "baileys")
+      if (!inst) return "O Disparar no WhatsApp não tem número para sair. Conecte um número em Integrações ou escolha outro no nó."
+      if (inst.provider === "meta_cloud" && !cfg.template?.name?.trim()) {
+        return "O Disparar no WhatsApp vai sair pelo número oficial, que só aceita modelo aprovado para chamar quem ainda não falou com você. Escolha um modelo no nó ou use o número comum."
+      }
+      if (inst.provider !== "meta_cloud" && !cfg.text?.trim()) return "Escreva a mensagem do Disparar no WhatsApp."
+    }
+  }
+  return null
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function listFlows(): Promise<StudioFlowSummary[]> {
   const session = await requireAdmin()
   const { data, error } = await supabaseAdmin
@@ -355,6 +412,57 @@ export async function createFlow(
   return { id: data?.id }
 }
 
+/** 1ª mensagem do fluxo pronto de formulário (número comum). O dono troca no nó. */
+const FORM_FLOW_DEFAULT_TEXT = "Oi, {{primeiro_nome}}! Recebemos o seu pedido pelo nosso formulário. Já já alguém da equipe fala com você por aqui 😊"
+
+/**
+ * "Criar fluxo" na lista de Formulários: um RASCUNHO pronto para revisar e publicar —
+ * Formulário enviado → Disparar no WhatsApp. Com número comum, já vem com a mensagem; só com
+ * o oficial, vem pedindo o modelo aprovado (a publicação recusa sem ele). Se o formulário já
+ * tem fluxo (não arquivado), devolve aquele — nunca cria dois.
+ */
+export async function createFormFlow(formId: string): Promise<{ id?: string; error?: string }> {
+  const session = await requireAdmin()
+  const tenantId = session.user.tenantId
+  if (!(await hasModule(tenantId, "forms"))) return { error: "O módulo Formulários não está habilitado nesta conta." }
+  if (!UUID_RE.test(formId)) return { error: "Formulário não encontrado." }
+  const { data: form } = await supabaseAdmin.from("forms").select("id, name")
+    .eq("tenant_id", tenantId).eq("id", formId).is("archived_at", null).maybeSingle()
+  const f = form as { id: string; name: string } | null
+  if (!f) return { error: "Formulário não encontrado." }
+
+  const { data: existing } = await supabaseAdmin.from("studio_flows").select("id")
+    .eq("tenant_id", tenantId).neq("status", "archived")
+    .eq("trigger->>type", "form_submitted").eq("trigger->>formId", formId)
+    .order("updated_at", { ascending: true }).limit(1)
+  const found = (existing ?? [])[0] as { id: string } | undefined
+  if (found) return { id: found.id }
+
+  const quota = await assertAutomationQuota(tenantId)
+  if (quota) return { error: quota }
+  const { data: insts } = await supabaseAdmin.from("whatsapp_instances").select("provider").eq("tenant_id", tenantId)
+  const providers = ((insts ?? []) as { provider: string | null }[]).map((i) => i.provider)
+  const outreach: OutreachNodeConfig = providers.includes("baileys")
+    ? { channel: "baileys", text: FORM_FLOW_DEFAULT_TEXT }
+    : { channel: "official", template: { name: "", language: "pt_BR", params: [] } }
+  const graph: FlowGraph = {
+    nodes: [
+      { id: "start", type: "start", config: {}, position: { x: 0, y: 0 } },
+      { id: "chamar", type: "outreach", config: outreach as unknown as Record<string, unknown>, position: { x: 0, y: 180 } },
+    ],
+    edges: [{ from: "start", to: "chamar" }],
+  }
+  const trigger: FlowTrigger = { type: "form_submitted", formId, mode: "receptive" }
+  const { data, error } = await supabaseAdmin.from("studio_flows").insert({
+    tenant_id: tenantId, name: `${f.name.slice(0, 80)} → chamar no WhatsApp`, status: "draft", version: 1,
+    active: false, purpose: "automacao", trigger, graph,
+  }).select("id").maybeSingle()
+  if (error || !data) return { error: "Não foi possível criar o fluxo." }
+  revalidatePath("/studio/fluxos")
+  revalidatePath("/formularios")
+  return { id: (data as { id: string }).id }
+}
+
 /**
  * Copilot (Engine §Pilar 3): gera um fluxo a partir de uma descrição em linguagem
  * natural → cria como RASCUNHO pro cliente revisar (nunca auto-publica).
@@ -406,6 +514,9 @@ export async function saveFlow(
     if (transferError) return { error: transferError }
     const moveStageError = await validateMoveStagePublish(session.user.tenantId, patch.graph)
     if (moveStageError) return { error: moveStageError }
+    // Salvar um fluxo de formulário NO AR muda o que roda no próximo envio.
+    const formError = await validateFormFlowPublish(session.user.tenantId, id, patch.trigger, patch.graph)
+    if (formError) return { error: formError }
   }
   const { data, error } = await supabaseAdmin
     .from("studio_flows")
@@ -464,6 +575,10 @@ export async function publishFlow(
   const msgErr = validateMessagePublish(patch.graph)
   if (msgErr) return { error: msgErr }
 
+  // Gatilho de formulário: o caminho até o Disparar tem que rodar sem conversa.
+  const formErr = await validateFormFlowPublish(session.user.tenantId, id, patch.trigger, patch.graph)
+  if (formErr) return { error: formErr }
+
   // Pega a versão atual pra incrementar + snapshot.
   const { data: cur } = await supabaseAdmin
     .from("studio_flows")
@@ -511,11 +626,17 @@ export async function publishFlow(
 export async function setFlowActive(id: string, active: boolean): Promise<{ error?: string }> {
   const session = await requireAdmin()
   if (active) {
-    const {data:flow,error:readError}=await supabaseAdmin.from("studio_flows").select("graph")
+    const {data:flow,error:readError}=await supabaseAdmin.from("studio_flows").select("graph, trigger")
       .eq("tenant_id",session.user.tenantId).eq("id",id).maybeSingle()
     if(readError||!flow) return {error:"Não foi possível conferir o fluxo."}
     const transferError=await validateTransferPublish(session.user.tenantId,flow.graph as FlowGraph)
     if(transferError) return {error:transferError}
+    // Religar um fluxo de formulário confere de novo: o formulário pode ter sido arquivado ou
+    // outro fluxo pode ter assumido o mesmo formulário enquanto este estava pausado.
+    const formError = flow.trigger
+      ? await validateFormFlowPublish(session.user.tenantId, id, flow.trigger as FlowTrigger, flow.graph as FlowGraph)
+      : null
+    if (formError) return { error: formError }
   }
   const { data, error } = await supabaseAdmin
     .from("studio_flows")

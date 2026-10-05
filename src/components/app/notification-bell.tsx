@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, BellRing, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, AlarmClock, ShieldAlert, type LucideIcon } from "lucide-react"
+import { Bell, BellRing, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, AlarmClock, ShieldAlert, ClipboardList, type LucideIcon } from "lucide-react"
 import { getRealtimeClient } from "@/lib/realtime"
 import {
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,
@@ -39,6 +39,9 @@ const ICONS: Record<string, LucideIcon> = {
   // anti-canhão segurou disparos (aviso a donos e admins, 1 por hora).
   outreach_held:        BellRing,
   outreach_cap_hit:     ShieldAlert,
+  // Formulário: o Kora não conseguiu chamar quem enviou — alguém da equipe precisa falar
+  // com a pessoa (abre a aba Respostas do formulário pelo `url` do payload).
+  form_needs_contact:   ClipboardList,
 }
 
 function timeAgo(iso: string): string {

@@ -58,6 +58,9 @@ export interface OutreachInput {
   /** De onde veio o pedido (trava por origem no livro). */
   origin:            OutreachOrigin
   flowId?:           string | null
+  /** Formulário que pediu (livro de disparos liga a linha ao comprovante). */
+  formId?:           string | null
+  submissionId?:     string | null
 }
 
 const ORIGIN_LABEL: Record<OutreachOrigin, string> = { site: "chat do site", form: "formulário", flow: "fluxo" }
@@ -141,6 +144,7 @@ export async function runOutreach(ctx: ExecCtx, input: OutreachInput): Promise<O
   const claim = await claimOutreach({
     tenantId, phoneE164: phone, origin: input.origin,
     flowId: input.flowId ?? null, sourceConversationId: ctx.conversationId || null,
+    formId: input.formId ?? null, submissionId: input.submissionId ?? null,
   })
   if (!claim.allowed) {
     const reason = claim.reason ?? "guard_unavailable"

@@ -36,6 +36,7 @@ import { startSchedule, resumeSchedule, type ScheduleStash } from "./schedule"
 import { deferralConcepts } from "./boundary"
 import { resolveConnectedSources } from "./data-sources"
 import { outcomeLabel } from "./describe"
+import { PRE_CONVERSATION_NODES } from "./form-entry-rules"
 import type {
   FlowGraph, FlowNode, FlowRow, FlowRunRow, CallFrame,
   RichMessage,
@@ -403,6 +404,79 @@ async function contactHasTag(ctx: ExecCtx, tagName: string): Promise<boolean> {
   return !!(tg && tg.length)
 }
 
+// ── regra de cada nó "instantâneo" — UMA implementação para os dois modos ──────────
+// O fluxo normal (`runFlow`) e o trecho do formulário antes da conversa (`runFormEntry`)
+// executam estes nós pelas MESMAS funções. Duas cópias divergiriam no primeiro ajuste.
+
+function applySetVariable(cfg: SetVariableNodeConfig, variables: Record<string, unknown>): void {
+  for (const a of cfg.assignments ?? []) {
+    const key = a.key?.trim()
+    if (key) variables[key] = interpolate(a.value ?? "", variables)
+  }
+}
+
+/** Saída escolhida por um nó Desviar (switch): id do caso que casou, ou "else". */
+function switchBranch(cfg: SwitchNodeConfig, ctx: ExecCtx, variables: Record<string, unknown>): string {
+  const raw = cfg.source === "channel"
+    ? (ctx.channel ?? ctx.contact.primary_channel ?? "")
+    : cfg.source === "lifecycle"
+      ? normalizeLifecycle(ctx.contact.lifecycle_stage)   // vocabulário novo (doc §5)
+      : resolvePath(variables, (cfg.variable ?? "").trim())
+  const val = String(raw ?? "").trim().toLowerCase()
+  const matched = (cfg.cases ?? []).find((c) => String(c.equals ?? "").trim().toLowerCase() === val)
+  return matched ? matched.id : "else"
+}
+
+/** Horário comercial aberto agora? Fuso inválido → fail-open (aberto) pra não travar o fluxo. */
+function businessOpen(cfg: BusinessHoursNodeConfig): boolean {
+  const now = nowInZone(cfg.timezone || "America/Sao_Paulo")
+  return now === null
+    ? true
+    : (cfg.days ?? []).includes(now.weekday)
+      && now.hhmm >= (cfg.open ?? "")
+      && now.hhmm <= (cfg.close ?? "")
+}
+
+/** Nó Requisição HTTP: interpola {{variáveis}} na URL/corpo/cabeçalhos, chama e guarda a resposta. */
+async function runHttpNode(cfg: HttpNodeConfig, ctx: ExecCtx, variables: Record<string, unknown>): Promise<void> {
+  const cap = getCapability(HTTP_REQUEST)
+  // Interpola {{variaveis}} do fluxo na URL/body/headers ANTES de chamar —
+  // destrava ENVIAR dado coletado pra a API externa. Genérico: vale pra
+  // qualquer integração (frete, CRM, estoque…), não só este caso.
+  const resolved = {
+    ...cfg,
+    url:  interpolate(cfg.url ?? "", variables),
+    body: typeof cfg.body === "string" ? interpolate(cfg.body, variables) : cfg.body,
+    headers: cfg.headers
+      ? Object.fromEntries(Object.entries(cfg.headers).map(([k, v]) => [k, interpolate(String(v), variables)]))
+      : cfg.headers,
+  }
+  const r = await cap?.run(ctx, resolved)
+  const saveAs = cfg.saveAs?.trim() || "http_response"
+  variables[saveAs] = r?.ok && r.data !== undefined ? r.data : { error: r?.error ?? "falha" }
+}
+
+/** Entrada do Disparar já resolvida (telefone lido, texto e parâmetros interpolados). */
+function outreachInputFrom(
+  cfg: OutreachNodeConfig, ctx: ExecCtx, variables: Record<string, unknown>,
+  origin: { origin: "form" | "site" | "flow"; flowId: string; formId?: string | null; submissionId?: string | null },
+) {
+  const phoneRaw = cfg.toVar?.trim()
+    ? String(resolvePath(variables, cfg.toVar.trim()) ?? "")
+    : (ctx.contact.phone_number ?? "")
+  return {
+    channel:          cfg.channel ?? "auto",
+    instanceId:       cfg.instanceId,
+    phoneRaw,
+    marketing:        cfg.marketing,
+    templateName:     cfg.template?.name,
+    templateLanguage: cfg.template?.language,
+    templateParams:   (cfg.template?.params ?? []).map((p) => interpolate(p ?? "", variables)),
+    text:             cfg.text ? interpolate(cfg.text, variables) : undefined,
+    ...origin,
+  }
+}
+
 // Dia da semana (0=dom…6=sáb) + "HH:MM" no fuso dado. Fail-open: fuso inválido → null.
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
@@ -491,6 +565,43 @@ async function handOffToConversation(
   },
 ): Promise<FlowResult | null> {
   const { ctx } = input
+  const opened = await openRunOnWhatsApp(input, {
+    flow: args.flow, variables: args.variables, callStack: args.callStack, nextId: args.nextId,
+    targetConversationId: args.targetConversationId,
+    from: { conversation_id: ctx.conversationId, run_id: args.run.id, node_id: args.fromNodeId, at: new Date().toISOString() },
+  })
+  if (!opened) return null
+
+  // O fio de origem termina aqui; o fluxo agora é do WhatsApp.
+  // ⚠️ Falhar em encerrar a ORIGEM não pode travar o WhatsApp: a mensagem já saiu e o run
+  //    novo já existe. Se a origem mudou no meio (outro turno a substituiu), ela é de quem
+  //    a substituiu — só registra e segue.
+  try {
+    await finishRun(ctx.tenantId, args.run, "outreach_handoff", args.variables)
+    await handBackToHuman(ctx)   // o fio de origem (ex.: chat do site) segue o destino de sempre
+  } catch (e) {
+    console.error(JSON.stringify({
+      src: "studio-runtime", kind: "outreach-handoff-origin-close-failed",
+      control: e instanceof StudioControlChangedError, message: (e as Error)?.message ?? "erro",
+    }))
+  }
+  return continueOnWhatsApp(input, opened.waCtx, opened.waRun, args.flow)
+}
+
+/**
+ * Passos 1–2 do bastão: o Studio vira a linha de frente do fio WhatsApp e o run nasce lá,
+ * já no nó seguinte, com as variáveis do fluxo (sem o estado interno `__*` de quem passou).
+ * `from` = de onde veio o bastão (fio de origem ou formulário) — fica em `__handoff_from`.
+ * `null` = não deu para passar (o fio não é deste contato, sem número, ou falhou).
+ */
+async function openRunOnWhatsApp(
+  input: FlowExecInput,
+  args: {
+    flow: FlowRow; variables: Record<string, unknown>; callStack: CallFrame[]
+    nextId: string; targetConversationId: string; from: Record<string, unknown>
+  },
+): Promise<{ waCtx: ExecCtx; waRun: FlowRunRow } | null> {
+  const { ctx } = input
   let waCtx: ExecCtx
   let waRun: FlowRunRow
   try {
@@ -519,9 +630,7 @@ async function handOffToConversation(
 
     const seed: Record<string, unknown> = Object.fromEntries(
       Object.entries(args.variables).filter(([k]) => !k.startsWith("__")))
-    seed.__handoff_from = {
-      conversation_id: ctx.conversationId, run_id: args.run.id, node_id: args.fromNodeId, at: new Date().toISOString(),
-    }
+    seed.__handoff_from = args.from
     waRun = await startFlowRunAt(ctx.tenantId, t.id, args.flow, args.nextId, waCtx.conversationMetadata,
       { variables: seed, callStack: args.callStack })
   } catch (e) {
@@ -531,23 +640,13 @@ async function handOffToConversation(
     }))
     return null
   }
+  return { waCtx, waRun }
+}
 
-  // O fio de origem termina aqui; o fluxo agora é do WhatsApp.
-  // ⚠️ Falhar em encerrar a ORIGEM não pode travar o WhatsApp: a mensagem já saiu e o run
-  //    novo já existe. Se a origem mudou no meio (outro turno a substituiu), ela é de quem
-  //    a substituiu — só registra e segue.
+/** Passo 4 do bastão: o fluxo continua agora, no fio WhatsApp, até a próxima espera. */
+async function continueOnWhatsApp(input: FlowExecInput, waCtx: ExecCtx, waRun: FlowRunRow, flow: FlowRow): Promise<FlowResult> {
   try {
-    await finishRun(ctx.tenantId, args.run, "outreach_handoff", args.variables)
-    await handBackToHuman(ctx)   // o fio de origem (ex.: chat do site) segue o destino de sempre
-  } catch (e) {
-    console.error(JSON.stringify({
-      src: "studio-runtime", kind: "outreach-handoff-origin-close-failed",
-      control: e instanceof StudioControlChangedError, message: (e as Error)?.message ?? "erro",
-    }))
-  }
-
-  try {
-    const result = await runFlow({ ...input, ctx: waCtx, history: [], incomingText: "", optionId: undefined }, args.flow, waRun)
+    const result = await runFlow({ ...input, ctx: waCtx, history: [], incomingText: "", optionId: undefined }, flow, waRun)
     // A mensagem do Disparar JÁ saiu: este turno (do fio de ORIGEM) respondeu, mesmo que o
     // resto só espere. Um "encaminhado" lá no WhatsApp é do fio WhatsApp — já foi aplicado
     // nele pelo Transferir — e não pode voltar como roteamento do fio de origem.
@@ -557,7 +656,7 @@ async function handOffToConversation(
     console.error(JSON.stringify({ src: "studio-runtime", kind: "outreach-continuation-failed", message: (e as Error)?.message ?? "erro" }))
     await noteFlowSkip(waCtx,
       "⚠️ O fluxo parou logo depois de chamar esta pessoa no WhatsApp. A mensagem saiu; confira o fluxo no Kora Studio.",
-      { node: "outreach", reason: "continuation_failed", flow_id: args.flow.id })
+      { node: "outreach", reason: "continuation_failed", flow_id: flow.id })
     return { status: "responded", departmentId: null, error: null, agent: null }
   }
 }
@@ -869,36 +968,16 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         break
       }
       case "set_variable": {
-        const cfg = node.config as unknown as SetVariableNodeConfig
-        for (const a of cfg.assignments ?? []) {
-          const key = a.key?.trim()
-          if (key) variables[key] = interpolate(a.value ?? "", variables)
-        }
+        applySetVariable(node.config as unknown as SetVariableNodeConfig, variables)
         currentId = edgeTarget(graph, node.id)
         break
       }
       case "switch": {
-        const cfg = node.config as unknown as SwitchNodeConfig
-        const raw = cfg.source === "channel"
-          ? (ctx.channel ?? ctx.contact.primary_channel ?? "")
-          : cfg.source === "lifecycle"
-            ? normalizeLifecycle(ctx.contact.lifecycle_stage)   // vocabulário novo (doc §5)
-            : resolvePath(variables, (cfg.variable ?? "").trim())
-        const val = String(raw ?? "").trim().toLowerCase()
-        const matched = (cfg.cases ?? []).find((c) => String(c.equals ?? "").trim().toLowerCase() === val)
-        currentId = edgeTarget(graph, node.id, matched ? matched.id : "else")
+        currentId = edgeTarget(graph, node.id, switchBranch(node.config as unknown as SwitchNodeConfig, ctx, variables))
         break
       }
       case "business_hours": {
-        const cfg = node.config as unknown as BusinessHoursNodeConfig
-        const now = nowInZone(cfg.timezone || "America/Sao_Paulo")
-        // Fuso inválido → fail-open (trata como aberto) pra não travar o fluxo.
-        const isOpen = now === null
-          ? true
-          : (cfg.days ?? []).includes(now.weekday)
-            && now.hhmm >= (cfg.open ?? "")
-            && now.hhmm <= (cfg.close ?? "")
-        currentId = edgeTarget(graph, node.id, isOpen ? "open" : "closed")
+        currentId = edgeTarget(graph, node.id, businessOpen(node.config as unknown as BusinessHoursNodeConfig) ? "open" : "closed")
         break
       }
       case "wait": {
@@ -942,22 +1021,7 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         return { status: responded ? "responded" : "no_action", departmentId: null, error: null, agent: lastAgent }
       }
       case "http": {
-        const cfg = node.config as unknown as HttpNodeConfig
-        const cap = getCapability(HTTP_REQUEST)
-        // Interpola {{variaveis}} do fluxo na URL/body/headers ANTES de chamar —
-        // destrava ENVIAR dado coletado pra a API externa. Genérico: vale pra
-        // qualquer integração (frete, CRM, estoque…), não só este caso.
-        const resolved = {
-          ...cfg,
-          url:  interpolate(cfg.url ?? "", variables),
-          body: typeof cfg.body === "string" ? interpolate(cfg.body, variables) : cfg.body,
-          headers: cfg.headers
-            ? Object.fromEntries(Object.entries(cfg.headers).map(([k, v]) => [k, interpolate(String(v), variables)]))
-            : cfg.headers,
-        }
-        const r = await cap?.run(ctx, resolved)
-        const saveAs = cfg.saveAs?.trim() || "http_response"
-        variables[saveAs] = r?.ok && r.data !== undefined ? r.data : { error: r?.error ?? "falha" }
+        await runHttpNode(node.config as unknown as HttpNodeConfig, ctx, variables)
         currentId = edgeTarget(graph, node.id)
         break
       }
@@ -1141,21 +1205,8 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
         // canal de origem). Interpola aqui (onde vivem as variáveis); o helper
         // só executa. Ramifica sent/no_whatsapp/blocked.
         const cfg = node.config as unknown as OutreachNodeConfig
-        const phoneRaw = cfg.toVar?.trim()
-          ? String(resolvePath(variables, cfg.toVar.trim()) ?? "")
-          : (ctx.contact.phone_number ?? "")
-        const out = await runOutreach(ctx, {
-          channel:          cfg.channel ?? "auto",
-          instanceId:       cfg.instanceId,
-          phoneRaw,
-          marketing:        cfg.marketing,
-          templateName:     cfg.template?.name,
-          templateLanguage: cfg.template?.language,
-          templateParams:   (cfg.template?.params ?? []).map((p) => interpolate(p ?? "", variables)),
-          text:             cfg.text ? interpolate(cfg.text, variables) : undefined,
-          origin:           ctx.channel === "site" ? "site" : "flow",
-          flowId:           activeFlow.id,
-        })
+        const out = await runOutreach(ctx, outreachInputFrom(cfg, ctx, variables,
+          { origin: ctx.channel === "site" ? "site" : "flow", flowId: activeFlow.id }))
         // O motivo fica à mão do autor (Condição/Definir variável) e do diagnóstico.
         variables[`outreach:${node.id}`] = { branch: out.branch, reason: out.reason ?? null }
         if (out.branch === "sent") responded = true
@@ -1345,4 +1396,106 @@ export async function runFlow(input: FlowExecInput, flow: FlowRow, run: FlowRunR
   await finishRun(ctx.tenantId, run, motivoFim, variables)
   await handBackToHuman(ctx)   // fim sem destino → responsável elegível ou fila
   return done()
+}
+
+// ── formulário: o trecho ANTES de existir conversa ──────────────────────────────
+
+export interface FormEntryResult {
+  /** sent = a mensagem saiu (e o fluxo seguiu no WhatsApp) · no_whatsapp/blocked = o Disparar
+   *  não enviou · ended = o fluxo acabou sem Disparar · stopped = parou num nó que não roda sem
+   *  conversa (a publicação recusa; só chega aqui fluxo antigo/importado). */
+  outcome:         "sent" | "no_whatsapp" | "blocked" | "ended" | "stopped"
+  reason?:         string | null
+  conversationId?: string | null
+}
+
+/**
+ * Roda o fluxo de um FORMULÁRIO enviado (docs/forms-design.md §4.3).
+ *
+ * Quem enviou ainda não falou com a empresa: não há conversa, e nada aqui grava run nem
+ * nota interna. Só os nós instantâneos (`PRE_CONVERSATION_NODES`) executam, pelas MESMAS
+ * funções do `runFlow`. O Disparar no WhatsApp abre o fio e passa o bastão: o run NASCE no
+ * WhatsApp, já no nó seguinte, e dali é um fluxo comum (Esperar, Transferir, Agente IA…).
+ *
+ * `ctx.conversationId` vem vazio (sem conversa) e `ctx.contact.phone_number` traz o número
+ * DIGITADO no formulário — é para ele que o Disparar manda.
+ */
+export async function runFormEntry(
+  input: FlowExecInput, flow: FlowRow, seed: { variables: Record<string, unknown>; formId: string; submissionId: string },
+): Promise<FormEntryResult> {
+  ensureCapabilitiesRegistered()
+  const { ctx } = input
+  const graph = flow.graph
+  const variables = structuredClone(seed.variables)
+  // Mesmo semeio do `runFlow`: {{nome}}/{{empresa}}… do contato, sem passar por cima do fluxo.
+  const cName = ctx.contact.custom_name?.trim() || ctx.contact.push_name?.trim() || ""
+  for (const [k, v] of Object.entries({ nome: cName, contato: cName, cliente: cName, empresa: ctx.contact.company ?? "",
+    email: ctx.contact.email ?? "", telefone: ctx.contact.phone_number ?? "", id_contato: ctx.contact.id ?? "" })) {
+    if (v && !variables[k]) variables[k] = v
+  }
+  const pseudoRun = { variables } as unknown as FlowRunRow   // só para a Condição "É novo" ler a régua
+  let currentId: string | null = startNodeOf(graph)?.id ?? null
+  let hops = 0
+  let last: FormEntryResult = { outcome: "ended" }
+
+  while (currentId && hops < MAX_HOPS) {
+    hops++
+    const node = nodeById(graph, currentId)
+    if (!node) return { ...last, reason: last.reason ?? "dangling_edge" }
+    if (!PRE_CONVERSATION_NODES.has(node.type)) return { outcome: "stopped", reason: `node:${node.type}` }
+    switch (node.type) {
+      case "start":
+        currentId = edgeTarget(graph, node.id)
+        break
+      case "condition":
+        currentId = edgeTarget(graph, node.id, (await evalCondition(node, ctx, pseudoRun)) ? "true" : "false")
+        break
+      case "set_variable":
+        applySetVariable(node.config as unknown as SetVariableNodeConfig, variables)
+        currentId = edgeTarget(graph, node.id)
+        break
+      case "switch":
+        currentId = edgeTarget(graph, node.id, switchBranch(node.config as unknown as SwitchNodeConfig, ctx, variables))
+        break
+      case "business_hours":
+        currentId = edgeTarget(graph, node.id, businessOpen(node.config as unknown as BusinessHoursNodeConfig) ? "open" : "closed")
+        break
+      case "tag": {
+        const cfg = node.config as unknown as TagNodeConfig
+        await getCapability(TAG)?.run(ctx, { tag: cfg.tag, action: cfg.action })
+        currentId = edgeTarget(graph, node.id)
+        break
+      }
+      case "http":
+        await runHttpNode(node.config as unknown as HttpNodeConfig, ctx, variables)
+        currentId = edgeTarget(graph, node.id)
+        break
+      case "outreach": {
+        const cfg = node.config as unknown as OutreachNodeConfig
+        const out = await runOutreach(ctx, outreachInputFrom(cfg, ctx, variables,
+          { origin: "form", flowId: flow.id, formId: seed.formId, submissionId: seed.submissionId }))
+        variables[`outreach:${node.id}`] = { branch: out.branch, reason: out.reason ?? null }
+        const next = edgeTarget(graph, node.id, out.branch)
+        if (out.branch === "sent") {
+          // Bastão: o resto do fluxo é conversa com a pessoa NO WHATSAPP.
+          if (next && out.conversationId && !ctx.dryRun) {
+            const opened = await openRunOnWhatsApp(input, {
+              flow, variables, callStack: [], nextId: next, targetConversationId: out.conversationId,
+              from: { form_submission_id: seed.submissionId, node_id: node.id, at: new Date().toISOString() },
+            })
+            if (opened) await continueOnWhatsApp(input, opened.waCtx, opened.waRun, flow)
+            else console.error(JSON.stringify({ src: "studio-runtime", kind: "form-handoff-failed", flow_id: flow.id }))
+          }
+          return { outcome: "sent", conversationId: out.conversationId ?? null }
+        }
+        last = { outcome: out.branch, reason: out.reason ?? null }
+        currentId = next
+        break
+      }
+      case "end":
+      case "return":
+        return last
+    }
+  }
+  return hops >= MAX_HOPS ? { ...last, reason: last.reason ?? "hop_limit" } : last
 }

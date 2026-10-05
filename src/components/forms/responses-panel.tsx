@@ -3,16 +3,25 @@
 // Aba Respostas do editor — espelha a tela "Respostas" do canvas: tabela (quando · contato ·
 // respostas · origem · depois do envio) e, ao lado, a resposta aberta (respostas, de onde veio,
 // o que aconteceu). Busca por nome ou telefone no servidor, paginação por cursor.
-// "Depois do envio" ganha os passos do fluxo quando o bloco Formulário do Studio chegar (Fase 3);
-// exportar planilha e resultados chegam na Fase 4.
+// "Depois do envio" (Fase 3): o que o fluxo do Studio fez (rótulos em forms/outcomes.ts) e se a
+// pessoa respondeu no WhatsApp. Exportar planilha e a linha do tempo completa chegam na Fase 4.
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { Search, Loader2, Inbox, ExternalLink, X } from "lucide-react"
+import { Search, Loader2, Inbox, ExternalLink, X, MessageCircle } from "lucide-react"
 import { listFormSubmissions, type SubmissionCursor, type SubmissionItem } from "@/lib/actions/forms"
+import { FORM_OUTCOME_LABEL, NEEDS_CONTACT, NEEDS_CONTACT_REASON } from "@/lib/forms/outcomes"
 
 const SOURCE_LABEL: Record<string, string> = { link: "Link próprio", embed: "Site", popup: "Pop-up", qr: "QR" }
-const OUTCOME_LABEL: Record<string, string> = { received: "Recebida" }
+
+/** "Depois do envio": o que o Kora fez + se a pessoa respondeu (rótulos em forms/outcomes.ts). */
+function afterSend(s: SubmissionItem): { main: string; sub: string; tone: string } {
+  if (s.replied) return { main: "Respondeu", sub: "conversa no atendimento", tone: "text-emerald-700" }
+  if (NEEDS_CONTACT.has(s.outcome)) return { main: FORM_OUTCOME_LABEL[s.outcome], sub: "precisa de contato", tone: "text-amber-700" }
+  if (s.outcome === "sent") return { main: FORM_OUTCOME_LABEL.sent, sub: "aguardando resposta", tone: "text-slate-700" }
+  if (s.outcome === "in_attendance") return { main: FORM_OUTCOME_LABEL.in_attendance, sub: "o responsável foi avisado", tone: "text-slate-700" }
+  return { main: FORM_OUTCOME_LABEL[s.outcome], sub: "", tone: "text-slate-500" }
+}
 
 function when(iso: string): string {
   const d = new Date(iso)
@@ -99,6 +108,7 @@ export function ResponsesPanel({ formId, total }: { formId: string; total: numbe
               <tbody className="divide-y divide-slate-100">
                 {items.map((s) => {
                   const o = origin(s.source)
+                  const a = afterSend(s)
                   const on = s.id === openId
                   return (
                     <tr key={s.id} onClick={() => setOpenId(on ? null : s.id)} className={`cursor-pointer ${on ? "bg-primary-50/50" : "hover:bg-slate-50/70"}`}>
@@ -106,6 +116,8 @@ export function ResponsesPanel({ formId, total }: { formId: string; total: numbe
                       <td className="py-3 px-3 align-top min-w-0">
                         <p className="text-sm font-semibold text-slate-800 truncate max-w-[14rem]">{s.name}</p>
                         <p className="text-xs text-slate-500 tabular-nums whitespace-nowrap">{s.phone}</p>
+                        {/* No celular a coluna "Depois do envio" some — e o aviso "precisa de contato" chega justo pelo celular. */}
+                        <p className={`sm:hidden mt-0.5 text-xs font-semibold ${a.tone}`}>{a.main}{a.sub && <span className="font-normal text-slate-400"> · {a.sub}</span>}</p>
                       </td>
                       <td className="py-3 px-3 text-xs text-slate-700 hidden md:table-cell align-top max-w-0 w-full">
                         <p className="truncate">{s.answers.map((a) => a.value).join(" · ") || "—"}</p>
@@ -114,8 +126,7 @@ export function ResponsesPanel({ formId, total }: { formId: string; total: numbe
                         <p className="text-slate-700">{o.main}</p>{o.sub && <p className="text-slate-400">{o.sub}</p>}
                       </td>
                       <td className="py-3 px-3 text-xs hidden sm:table-cell align-top whitespace-nowrap">
-                        <span className="font-semibold text-slate-700">{OUTCOME_LABEL[s.outcome] ?? s.outcome}</span>
-                        <span className="block text-slate-400">sem fluxo no Studio</span>
+                        <span className={`font-semibold ${a.tone}`}>{a.main}</span>{a.sub && <span className="block text-slate-400">{a.sub}</span>}
                       </td>
                     </tr>
                   )
@@ -194,8 +205,22 @@ function Detail({ s, onClose }: { s: SubmissionItem; onClose: () => void }) {
         <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">O que aconteceu</p>
         <ol className="space-y-1.5 text-xs">
           <li className="flex gap-2"><span className="text-slate-400 tabular-nums shrink-0">{new Date(s.createdAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span><span className="text-slate-700">Formulário enviado</span></li>
+          {s.outcome !== "received" && (() => {
+            const a = afterSend({ ...s, replied: false })
+            return <li className="flex gap-2"><span className="w-[2.6rem] shrink-0" /><span className={a.tone}>{a.main}{a.sub && a.sub !== "aguardando resposta" ? ` · ${a.sub}` : ""}</span></li>
+          })()}
+          {s.replied && <li className="flex gap-2"><span className="w-[2.6rem] shrink-0" /><span className="text-emerald-700">Respondeu no WhatsApp</span></li>}
         </ol>
-        <p className="text-[11px] text-slate-400 leading-relaxed">Quando o formulário estiver ligado a um fluxo do Kora Studio, os passos seguintes (mensagem entregue, resposta, transferência) aparecem aqui.</p>
+        {s.conversationId && (
+          <Link href={`/inbox?conversation=${s.conversationId}`} className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary-700">
+            <MessageCircle className="size-3.5" /> Abrir a conversa
+          </Link>
+        )}
+        {NEEDS_CONTACT.has(s.outcome) && (
+          <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800 leading-relaxed">
+            O Kora não chamou esta pessoa ({NEEDS_CONTACT_REASON[s.outcome]}). Os donos e admins foram avisados — ligue ou mande mensagem pelo número acima.
+          </p>
+        )}
       </section>
     </>
   )

@@ -11,7 +11,7 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }))
 const audit = vi.fn(async () => {})
 vi.mock("@/lib/audit", () => ({ logAudit: audit }))
 let moduleOn = true
-vi.mock("@/lib/modules", () => ({ requireModule: async () => { if (!moduleOn) throw new Error("Módulo não habilitado") } }))
+vi.mock("@/lib/modules", () => ({ requireModule: async () => { if (!moduleOn) throw new Error("Módulo não habilitado") }, hasModule: async () => moduleOn }))
 let scope: Record<string, unknown> = {}
 vi.mock("@/lib/visibility", async (orig) => ({ ...(await orig<typeof import("@/lib/visibility")>()), getViewerScope: async () => scope }))
 

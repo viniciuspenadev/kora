@@ -7,6 +7,7 @@ import { memberAttendsNumber } from "@/lib/visibility"
 import { FlowEditorCanvas } from "./editor-canvas"
 import type { StudioAgentOption, StudioKanbanOption } from "./config-panel"
 import type { StudioFlowFull } from "@/types/studio"
+import type { FormTriggerOption } from "@/lib/forms/flow-variables"
 
 // Número que nenhum atendente tem na lista: `memberAttendsNumber` só devolve true para ele
 // quando a pessoa atende TODOS os números (owner/admin/supervisor/sem restrição).
@@ -73,7 +74,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
   // + estado do Instagram pro gatilho de comentário: conexão ATIVA (senão não há o que
   //   configurar) e licença do módulo `instagram_automation` (filho do Kora Studio —
   //   `hasModule` já exige o pai recursivamente, fail-closed no banco).
-  const [ownerRouting, channels, instances, ads, igLicensed, igPro, { data: igConn }, { data: hoursCfg }, { data: pipelineRows }] = await Promise.all([
+  const [ownerRouting, channels, instances, ads, igLicensed, igPro, { data: igConn }, { data: hoursCfg }, { data: pipelineRows }, formsLicensed] = await Promise.all([
     hasModule(tenantId, "agenda_owner_routing"),
     loadTenantChannels(tenantId),
     loadTenantInstances(tenantId),
@@ -90,7 +91,23 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
     supabaseAdmin.from("tenant_config").select("business_hours_enabled").eq("tenant_id", tenantId).maybeSingle(),
     // Kanbans de atendimento pro nó "Mover etapa" (nomes de etapa repetem entre eles).
     supabaseAdmin.from("pipelines").select("id, name, color, is_default, active, position").eq("tenant_id", tenantId).order("position"),
+    // Gatilho "Formulário enviado" (módulo Formulários).
+    hasModule(tenantId, "forms"),
   ])
+
+  // Formulários da empresa pro gatilho — com as perguntas (viram {{resposta.<chave>}}).
+  const { data: formRows } = formsLicensed
+    ? await supabaseAdmin.from("forms").select("id, name, status, questions:draft->questions")
+        .eq("tenant_id", tenantId).is("archived_at", null).order("name")
+    : { data: [] }
+  const formOptions: FormTriggerOption[] = ((formRows ?? []) as { id: string; name: string; status: string; questions: unknown }[])
+    .map((f) => ({
+      id: f.id, name: f.name,
+      status: f.status === "published" || f.status === "paused" ? f.status : "draft",
+      questions: (Array.isArray(f.questions) ? f.questions : [])
+        .filter((q): q is { id: string; title?: string } => !!q && typeof (q as { id?: unknown }).id === "string")
+        .map((q) => ({ id: q.id, title: typeof q.title === "string" ? q.title : "" })),
+    }))
 
   type StageRow = { id: string; name: string; pipeline_id: string; color: string | null; is_won: boolean | null; is_lost: boolean | null; is_triage: boolean | null; show_in_kanban: boolean | null }
   const stageRows = (stageList ?? []) as StageRow[]
@@ -133,6 +150,7 @@ export default async function FlowEditorPage({ params }: { params: Promise<{ id:
         //    sem aviso — sem este flag o gatilho apareceria normal e nunca dispararia.
         followAvailable: !!(igConn?.[0]?.meta as { webhook_follow?: boolean } | null)?.webhook_follow,
       }}
+      forms={{ licensed: formsLicensed, options: formOptions }}
     />
   )
 }

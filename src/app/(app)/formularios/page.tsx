@@ -23,5 +23,6 @@ export default async function FormulariosPage() {
   if ("error" in result) redirect("/inbox")
 
   // O cabeçalho (com "Ver modelos"/"Novo formulário") mora no client: os botões abrem a galeria.
-  return <FormsClient items={result.items} canManage={result.canManage} businessName={(tenant as { name?: string } | null)?.name ?? ""} />
+  return <FormsClient items={result.items} canManage={result.canManage} canCreateFlow={result.canCreateFlow}
+    replied30d={result.replied30d} businessName={(tenant as { name?: string } | null)?.name ?? ""} />
 }

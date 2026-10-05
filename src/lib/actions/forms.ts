@@ -10,7 +10,8 @@
 
 import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
-import { requireModule } from "@/lib/modules"
+import { requireModule, hasModule } from "@/lib/modules"
+import { asFormOutcome, type FormOutcome } from "@/lib/forms/outcomes"
 import { getViewerScope, canViewForms, canManageForms } from "@/lib/visibility"
 import { logAudit } from "@/lib/audit"
 import { normalizeDefinition, draftProblems, publishProblems, answerLabel, type Answers, type FormDefinition } from "@/lib/forms/definition"
@@ -32,7 +33,13 @@ export interface FormListItem {
   responses30d:   number
   responsesTotal: number
   lastResponseAt: string | null
+  /** Fluxo do Studio que chama quem envia este formulário (null = nenhum). */
+  flow:           FormFlowLink | null
+  /** Respostas que viraram conversa (a pessoa respondeu a mensagem do Kora). */
+  conversations:  number
 }
+
+export interface FormFlowLink { id: string; name: string; live: boolean }
 
 export interface FormDetail {
   id:          string
@@ -50,6 +57,9 @@ export interface FormDetail {
   /** Caminho do link próprio (`/f/<empresa>/<formulário>`); o domínio a tela completa. */
   publicPath:  string
   responsesTotal: number
+  flow:        FormFlowLink | null
+  /** Pode criar o fluxo no Studio daqui (dono/admin com o módulo Kora Studio). */
+  canCreateFlow: boolean
 }
 
 export interface SubmissionItem {
@@ -63,7 +73,10 @@ export interface SubmissionItem {
   source:      { kind: string; page: string | null; utm: Record<string, string> }
   consentAt:   string | null
   marketing:   boolean | null
-  outcome:     string
+  outcome:     FormOutcome
+  /** A pessoa respondeu no WhatsApp depois de enviar (a conversa tem mensagem dela). */
+  replied:     boolean
+  conversationId: string | null
   conflicts:   number
 }
 
@@ -72,7 +85,7 @@ export type SubmissionCursor = { createdAt: string; id: string }
 /** Teto do rascunho no app (o banco segura 256 KB; aqui recusa antes, com mensagem clara). */
 const DRAFT_MAX_CHARS = 200_000
 
-type Gate = { tenantId: string; userId: string; canManage: boolean } | { error: string }
+type Gate = { tenantId: string; userId: string; canManage: boolean; isAdmin: boolean } | { error: string }
 
 async function gate(level: "view" | "manage"): Promise<Gate> {
   let scope: Awaited<ReturnType<typeof getViewerScope>>
@@ -82,7 +95,64 @@ async function gate(level: "view" | "manage"): Promise<Gate> {
   if (level === "manage" ? !canManage : !canViewForms(scope)) {
     return { error: level === "manage" ? "Sem permissão para gerenciar formulários." : "Sem acesso a formulários." }
   }
-  return { tenantId: scope.tenantId, userId: scope.userId, canManage }
+  return { tenantId: scope.tenantId, userId: scope.userId, canManage, isAdmin: scope.isAdmin === true }
+}
+
+/** Criar fluxo no Studio é de dono/admin com o módulo (a mesma régua do Studio). */
+async function canCreateFlowFor(g: { tenantId: string; isAdmin: boolean }): Promise<boolean> {
+  return g.isAdmin && (await hasModule(g.tenantId, "ai_studio"))
+}
+
+/** Fluxo do Studio ligado a cada formulário. O que está no ar vence; senão o mais antigo. */
+async function formFlows(tenantId: string): Promise<Map<string, FormFlowLink>> {
+  const out = new Map<string, FormFlowLink>()
+  const { data, error } = await supabaseAdmin.from("studio_flows").select("id, name, status, active, trigger, updated_at")
+    .eq("tenant_id", tenantId).neq("status", "archived").eq("trigger->>type", "form_submitted")
+    .order("updated_at", { ascending: true })
+  if (error) { console.error("[forms] fluxos ligados:", error.code, error.message); return out }
+  for (const f of (data ?? []) as { id: string; name: string; status: string; active: boolean; trigger: { formId?: string } | null }[]) {
+    const formId = f.trigger?.formId
+    if (!formId) continue
+    const link = { id: f.id, name: f.name, live: f.status === "published" && f.active === true }
+    const cur = out.get(formId)
+    if (!cur || (!cur.live && link.live)) out.set(formId, link)
+  }
+  return out
+}
+
+/** Ids de conversa → a pessoa mandou mensagem depois de `since`? (respondeu o Kora) */
+async function repliedConversations(tenantId: string, rows: { conversation_id: string | null; created_at: string }[]): Promise<Set<string>> {
+  const ids = [...new Set(rows.map((r) => r.conversation_id).filter((v): v is string => !!v))]
+  const lastIn = new Map<string, string | null>()
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data } = await supabaseAdmin.from("chat_conversations").select("id, last_inbound_at")
+      .eq("tenant_id", tenantId).in("id", ids.slice(i, i + 150))
+    for (const c of (data ?? []) as { id: string; last_inbound_at: string | null }[]) lastIn.set(c.id, c.last_inbound_at)
+  }
+  const out = new Set<string>()
+  for (const r of rows) {
+    const at = r.conversation_id ? lastIn.get(r.conversation_id) : null
+    if (r.conversation_id && at && Date.parse(at) > Date.parse(r.created_at)) out.add(`${r.conversation_id}|${r.created_at}`)
+  }
+  return out
+}
+
+/** "Viraram conversa": por formulário (total) e na empresa (30 dias). Até 5.000 respostas chamadas. */
+async function conversationStats(tenantId: string): Promise<{ byForm: Map<string, number>; replied30d: number }> {
+  const byForm = new Map<string, number>()
+  const { data, error } = await supabaseAdmin.from("form_submissions").select("form_id, conversation_id, created_at")
+    .eq("tenant_id", tenantId).not("conversation_id", "is", null).order("created_at", { ascending: false }).limit(5000)
+  if (error) return { byForm, replied30d: 0 }
+  const rows = (data ?? []) as { form_id: string; conversation_id: string | null; created_at: string }[]
+  const replied = await repliedConversations(tenantId, rows)
+  const since = Date.now() - 30 * 86_400_000
+  let replied30d = 0
+  for (const r of rows) {
+    if (!replied.has(`${r.conversation_id}|${r.created_at}`)) continue
+    byForm.set(r.form_id, (byForm.get(r.form_id) ?? 0) + 1)
+    if (Date.parse(r.created_at) >= since) replied30d++
+  }
+  return { byForm, replied30d }
 }
 
 const asStatus = (v: unknown): FormStatus => (v === "published" || v === "paused" ? v : "draft")
@@ -95,7 +165,7 @@ async function takenNamesAndSlugs(tenantId: string, exceptId?: string): Promise<
 }
 
 // ── Leitura ──────────────────────────────────────────────────────
-export async function listForms(): Promise<{ items: FormListItem[]; canManage: boolean } | { error: string }> {
+export async function listForms(): Promise<{ items: FormListItem[]; canManage: boolean; canCreateFlow: boolean; replied30d: number } | { error: string }> {
   const g = await gate("view")
   if ("error" in g) return g
   const { data, error } = await supabaseAdmin.from("forms")
@@ -104,7 +174,9 @@ export async function listForms(): Promise<{ items: FormListItem[]; canManage: b
     .order("updated_at", { ascending: false }).order("id", { ascending: false })
     .limit(200)
   if (error) return { error: "Não foi possível carregar os formulários." }
-  const stats = await formStats(g.tenantId)
+  const [stats, flows, conv, canCreateFlow] = await Promise.all([
+    formStats(g.tenantId), formFlows(g.tenantId), conversationStats(g.tenantId), canCreateFlowFor(g),
+  ])
   const items = ((data ?? []) as Record<string, unknown>[]).map((r) => {
     const qs = r.questions ?? (r.draft as { questions?: unknown } | undefined)?.questions
     const st = stats.get(r.id as string)
@@ -118,9 +190,11 @@ export async function listForms(): Promise<{ items: FormListItem[]; canManage: b
       responses30d:   st?.responses30d ?? 0,
       responsesTotal: st?.responsesTotal ?? 0,
       lastResponseAt: st?.lastAt ?? null,
+      flow:           flows.get(r.id as string) ?? null,
+      conversations:  conv.byForm.get(r.id as string) ?? 0,
     }
   })
-  return { items, canManage: g.canManage }
+  return { items, canManage: g.canManage, canCreateFlow, replied30d: conv.replied30d }
 }
 
 /** Contagem por formulário (no banco). Falhou = zeros: a lista continua de pé. */
@@ -144,19 +218,23 @@ export async function getForm(id: string): Promise<FormDetail | { error: string 
   if (error) return { error: "Não foi possível carregar o formulário." }
   if (!data) return { error: "Formulário não encontrado." }
   const r = data as Record<string, unknown>
-  const [{ data: ver }, { data: tenant }, stats] = await Promise.all([
+  const [{ data: ver }, { data: tenant }, stats, flows, canCreateFlow] = await Promise.all([
     r.published_version_id
       ? supabaseAdmin.from("form_versions").select("version, published_at, definition")
           .eq("tenant_id", g.tenantId).eq("form_id", id).eq("id", r.published_version_id as string).maybeSingle()
       : Promise.resolve({ data: null }),
     supabaseAdmin.from("tenants").select("slug").eq("id", g.tenantId).maybeSingle(),
     formStats(g.tenantId),
+    formFlows(g.tenantId),
+    canCreateFlowFor(g),
   ])
   const v = ver as { version: number; published_at: string; definition: unknown } | null
   return {
     published:   v ? { version: v.version, publishedAt: v.published_at, definition: normalizeDefinition(v.definition) } : null,
     publicPath:  `/f/${(tenant as { slug?: string } | null)?.slug ?? ""}/${r.slug as string}`,
     responsesTotal: stats.get(id)?.responsesTotal ?? 0,
+    flow:        flows.get(id) ?? null,
+    canCreateFlow,
     id:          r.id as string,
     name:        r.name as string,
     status:      asStatus(r.status),
@@ -409,7 +487,7 @@ export async function listFormSubmissions(formId: string, opts: { cursor?: Submi
   if (!form) return { error: "Formulário não encontrado." }
 
   let query = supabaseAdmin.from("form_submissions")
-    .select("id, created_at, version_id, contact_id, contact_name, phone_e164, answers, source, consent, outcome, contact_conflicts")
+    .select("id, created_at, version_id, contact_id, contact_name, phone_e164, answers, source, consent, outcome, conversation_id, contact_conflicts")
     .eq("tenant_id", g.tenantId).eq("form_id", formId)
   const c = opts.cursor
   if (c) {
@@ -438,6 +516,10 @@ export async function listFormSubmissions(formId: string, opts: { cursor?: Submi
     for (const v of (vs ?? []) as { id: string; definition: unknown }[]) defs.set(v.id, normalizeDefinition(v.definition))
   }
 
+  // Respondeu? = a conversa aberta pelo Kora tem mensagem da pessoa depois do envio.
+  const replied = await repliedConversations(g.tenantId,
+    page.map((r) => ({ conversation_id: (r.conversation_id as string | null) ?? null, created_at: r.created_at as string })))
+
   const items: SubmissionItem[] = page.map((r) => {
     const def = defs.get(r.version_id as string)
     const answers = (r.answers ?? {}) as Answers
@@ -454,7 +536,9 @@ export async function listFormSubmissions(formId: string, opts: { cursor?: Submi
       source:    { kind: source.kind ?? "link", page: source.page ?? null, utm: source.utm ?? {} },
       consentAt: consent.at ?? null,
       marketing: consent.marketing ? !!consent.marketing.checked : null,
-      outcome:   (r.outcome as string) || "received",
+      outcome:   asFormOutcome(r.outcome),
+      replied:   replied.has(`${r.conversation_id as string}|${r.created_at as string}`),
+      conversationId: (r.conversation_id as string | null) ?? null,
       conflicts: Array.isArray(r.contact_conflicts) ? (r.contact_conflicts as unknown[]).length : 0,
     }
   })

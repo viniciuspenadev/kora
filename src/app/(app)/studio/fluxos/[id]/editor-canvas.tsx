@@ -24,6 +24,7 @@ import { SimpleSelect } from "@/components/ui/select"
 import { nodeTypes, OrientationContext, TriggerSummaryContext, JourneyMetricsContext, TransferLookupContext, KanbanLookupContext } from "./flow-nodes"
 import { edgeTypes, EdgeActionsContext } from "./flow-edge"
 import { ConfigPanel, FlowSettingsPanel, type TagOpt, type StudioAgentOption, type StudioKanbanOption } from "./config-panel"
+import { formTriggerVariables, type FormTriggerOption } from "@/lib/forms/flow-variables"
 import { NodePicker } from "./node-picker"
 import { toRF, fromRF, newRFNode, genId, autoLayout, type RFNode, type RFEdge, type Orientation } from "./graph-sync"
 import { outcomeLabel } from "@/lib/ai-v2/flow/describe"
@@ -57,6 +58,8 @@ interface Props {
   /** Estado do Instagram pro gatilho de comentário: conexão ativa + licença do módulo
    *  `instagram_automation`. Sem conexão não há o que configurar; sem licença, cadeado. */
   ig:          { connected: boolean; username: string | null; licensed: boolean; followAvailable?: boolean; pro?: boolean }
+  /** Gatilho "Formulário enviado": licença do módulo Formulários + os formulários da empresa. */
+  forms?:      { licensed: boolean; options: FormTriggerOption[] }
 }
 
 /** Config vazia do gatilho `ig_comment` — fluxo que nunca configurou o Instagram. */
@@ -144,7 +147,7 @@ const MenuItem: React.FC<{
 
 type CtxMenu = { x: number; y: number; kind: "node" | "pane" | "edge"; id?: string } | null
 
-function EditorInner({ flow, departments, agents, businessHoursEnabled = false, kanbans = [], flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads, ig }: Props) {
+function EditorInner({ flow, departments, agents, businessHoursEnabled = false, kanbans = [], flows, stages, tags, services, resources, dealFields, ownerRouting, channels, instances, ads, ig, forms = { licensed: false, options: [] } }: Props) {
   // Nomes pro card do Transferir mostrar o destino real ("→ Miuky"), não um genérico.
   const transferLookup = useMemo(() => ({ agents }), [agents])
   // Idem pro Mover etapa: "→ Vendas › Proposta".
@@ -187,6 +190,9 @@ function EditorInner({ flow, departments, agents, businessHoursEnabled = false, 
   const [storyCfg, setStoryCfg]     = useState<IgStoryTrigger>(
     flow.trigger?.story ?? { storyIds: [], keywords: [], keywordMatch: "contains" },
   )
+  // Gatilho "Formulário enviado": qual formulário começa este fluxo.
+  const [formId, setFormId]         = useState<string>(flow.trigger?.formId ?? "")
+  const pickedForm = forms.options.find((f) => f.id === formId) ?? null
   const [orientation, setOrientation] = useState<Orientation>(flow.graph.orientation ?? "vertical")
   const [addCount, setAddCount]     = useState(0)
   const [pending, startTransition]  = useTransition()
@@ -262,12 +268,18 @@ function EditorInner({ flow, departments, agents, businessHoursEnabled = false, 
       ...(triggerType === "ig_story_reply"
         ? { keywords: storyCfg.keywords.join(", ") }
         : {}),
+      // Formulário: o card de Início diz QUAL formulário dispara.
+      ...(triggerType === "form_submitted" ? { formName: pickedForm?.name ?? "" } : {}),
     }),
-    [triggerType, mode, trigChannels, keywords, inactValue, inactUnit, igCfg, storyCfg],
+    [triggerType, mode, trigChannels, keywords, inactValue, inactUnit, igCfg, storyCfg, pickedForm],
   )
   // Variáveis que o cliente CRIOU no fluxo (Coletar/Definir/HTTP/Agendar/IA) → viram
   // chips no editor, junto dos campos de contato. Atualiza ao vivo conforme monta.
-  const flowVars = useMemo(() => collectFlowVars(nodes), [nodes])
+  // Fluxo de formulário: + o que o formulário entrega (cada pergunta e a origem).
+  const flowVars = useMemo(() => [
+    ...collectFlowVars(nodes),
+    ...(triggerType === "form_submitted" ? formTriggerVariables(pickedForm).map((v) => v.token) : []),
+  ], [nodes, triggerType, pickedForm])
 
   // Derivação de saídas (owner 2026-07-25): o rótulo de cada saída do Agente IA vem do NÓ
   // ligado nela (describeNode). Computado aqui (onde vivem nodes+edges) e passado ao painel
@@ -565,6 +577,7 @@ function EditorInner({ flow, departments, agents, businessHoursEnabled = false, 
       // `instagram_comment_rules` — o fluxo continua sendo a fonte de edição.
       ...(triggerType === "ig_comment" ? { ig: igCfg } : {}),
       ...(triggerType === "ig_story_reply" ? { story: storyCfg } : {}),
+      ...(triggerType === "form_submitted" ? { formId } : {}),
       ...(mode !== "receptive" ? { mode } : {}),       // receptivo é o default → não polui o JSON
       ...(mode === "auto" ? { inactivityValue: inactValue, inactivityUnit: inactUnit } : {}),
       ...(trigChannels.length  ? { channels: trigChannels }   : {}),
@@ -740,7 +753,8 @@ function EditorInner({ flow, departments, agents, businessHoursEnabled = false, 
                 // é o contrato do FlowSettingsPanel: sem `onIgConfig`, gatilho não editável.
                 onIgConfig={ig.connected ? setIgCfg : undefined}
                 storyConfig={storyCfg}
-                onStoryConfig={ig.connected ? setStoryCfg : undefined} />}
+                onStoryConfig={ig.connected ? setStoryCfg : undefined}
+                formsLicensed={forms.licensed} formOptions={forms.options} formId={formId} onFormId={setFormId} />}
         </div>
       </div>
     </div>
