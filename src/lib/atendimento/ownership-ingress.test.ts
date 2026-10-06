@@ -42,7 +42,7 @@ vi.mock("@/lib/rate-limit", () => ({ rateLimit: () => ({ ok: true }), getClientI
 vi.mock("@/lib/site/domain-guard", () => ({ isOriginAllowed: () => true }))
 vi.mock("@/lib/limits", () => ({ requireLimit: async () => {} }))
 vi.mock("@/lib/notifications", () => ({ createNotification: async () => {} }))
-vi.mock("@/lib/push/send", () => ({ notifyInboundMessage: async () => {} }))
+vi.mock("@/lib/atendimento/notices", () => ({ notifyInbound: async () => {}, notifyDelivered: async () => {}, notifyQueue: async () => {}, pushUnassigned: async () => {} }))
 
 const { createManualConversation } = await import("@/lib/actions/chat")
 const { processInstagramWebhook } = await import("@/lib/channels/instagram-inbound")

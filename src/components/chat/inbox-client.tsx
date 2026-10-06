@@ -55,6 +55,8 @@ import {
 import { applyTag, removeTag } from "@/lib/actions/tags"
 import { markGroupRead, sendGroupText } from "@/lib/actions/groups"
 import { getRealtimeClient } from "@/lib/realtime"
+import { setActiveConversation } from "@/lib/chat/active-conversation"
+import { markConversationNotificationsRead } from "@/lib/actions/notifications"
 import type {
   ChatConversation,
   ChatMessage,
@@ -213,6 +215,13 @@ export function InboxClient({
 
   // ── Conv ativa + msgs ───────────────────────────────────────
   const [activeId, setActiveId]                 = useState<string | null>(null)
+  // Avisa o sininho qual conversa está aberta (aviso dela não toca) e, ao abrir, dá como
+  // vistos os avisos pendentes dela — como a bolinha azul, abrir zera.
+  useEffect(() => {
+    setActiveConversation(activeId)
+    if (activeId) markConversationNotificationsRead(activeId).catch(() => {})
+    return () => setActiveConversation(null)
+  }, [activeId])
   // Mobile: ficha do contato como sheet (no desktop é coluna fixa, sempre visível).
   const [contactSheetOpen, setContactSheetOpen] = useState(false)
   const [activeMessages, setActiveMessages]     = useState<ChatMessage[]>([])

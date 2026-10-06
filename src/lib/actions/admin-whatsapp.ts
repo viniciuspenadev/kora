@@ -132,6 +132,10 @@ export async function adminForceDisconnect(id: string) {
 
   if (!instance) return { error: "Instância não encontrada" }
 
+  // Marca o gesto ANTES do logout (o webhook da queda chega antes do fim desta função):
+  // desconexão proposital não é "o número caiu" (atendimento/notices.ts).
+  await supabaseAdmin.from("whatsapp_instances").update({ user_disconnected: true }).eq("id", id)
+
   try {
     const provider = getProvider(instance)
     await provider.logout()

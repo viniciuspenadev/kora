@@ -14,7 +14,7 @@ import { transcribeStoredAudio } from "@/lib/llm/transcribe"
 import { dispatchAutomations } from "@/lib/automation/dispatch"
 import { evaluateKeywordTriggers } from "@/lib/automation/keyword-engine"
 import { handleAgendaReply } from "@/lib/agenda/interceptor"
-import { notifyInboundMessage } from "@/lib/push/send"
+import { notifyInbound } from "@/lib/atendimento/notices"
 import { upsertTemplateCache, logTemplateEvent } from "@/lib/channels/template-cache"
 import { HEALTH_FIELDS, processHealthWebhook } from "@/lib/channels/health"
 import { slimAdMeta } from "@/lib/ad-reply"
@@ -570,14 +570,11 @@ async function processMessage(instance: InstanceRow, msg: MetaMessage, pushName:
     })
   } catch (e) { console.error("[meta agenda-interceptor]", e) }
 
-  // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o
-  // atendente atribuído (ou todo o pool se ninguém assumiu ainda).
+  // Aviso (sininho + celular) — regras em atendimento/notices.ts: o dono ("respondeu"), ou quem
+  // atende a fila; nada com o robô atendendo. Depois da resposta HTTP; nunca falha o webhook.
+  // Resposta consumida pela Agenda não é "mensagem nova" (o aviso é o da agenda).
   if (!agendaHandled) {
-    const notifyTitle = pushName || (phone ? `+${phone}` : "Novo contato")
-    const notifyPreview = preview
-    after(() => notifyInboundMessage({
-      tenantId: instance.tenant_id, conversationId: conv.id, title: notifyTitle, preview: notifyPreview,
-    }))
+    after(() => notifyInbound({ tenantId: instance.tenant_id, conversationId: conv.id }))
   }
 
   // CTWA — registra atribuição (first-touch) no contato + denormaliza na conversa.

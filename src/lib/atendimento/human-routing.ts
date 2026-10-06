@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { carteiraOwner } from "@/lib/carteira"
 import { memberAttendsNumber } from "@/lib/visibility"
 import { logConversationEvent } from "./events"
+import { notifyDelivered, notifyQueue } from "./notices"
 
 /** Preferência de atendimento, nunca formação de carteira. Não lê handoff_binding. */
 export async function responsibleDestination(tenantId: string, contactId: string | null, instanceId: string | null) {
@@ -47,4 +48,10 @@ export async function routeToHumanDefault(tenantId: string, conversationId: stri
   await logConversationEvent({ tenantId, conversationId, type: "ai_handback", actorKind: "system",
     toAgentId: destination?.agentId ?? null, departmentId: destination?.departmentId ?? null,
     reason, meta: { destination: destination ? "responsible" : "pool" } })
+  // Aviso (regras em ./notices): cliente da carteira → o responsável; sem dono → quem atende a fila.
+  if (destination?.agentId && destination.agentId !== conv.assigned_to) {
+    await notifyDelivered({ tenantId, conversationId, agentId: destination.agentId, via: "carteira" })
+  } else if (!destination) {
+    await notifyQueue({ tenantId, conversationId })
+  }
 }

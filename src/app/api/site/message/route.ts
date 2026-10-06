@@ -8,7 +8,7 @@ import { getOrCreateSiteContact, getOrCreateSiteConversation } from "@/lib/chann
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { routeAutomationTurn } from "@/lib/ai-v2/dispatch"
 import { siteAiWithinBudget } from "@/lib/ai-v2/site-budget"
-import { notifyInboundMessage } from "@/lib/push/send"
+import { notifyInbound } from "@/lib/atendimento/notices"
 
 /**
  * POST /api/site/message
@@ -122,14 +122,9 @@ export async function POST(req: NextRequest) {
       preview:        text.substring(0, 100),
     })
 
-    // Mesmo produtor e mesma seleção de destinatários dos outros canais. O envio
-    // acontece depois da resposta HTTP e independe do sucesso da automação.
-    after(() => notifyInboundMessage({
-      tenantId: tenant.id,
-      conversationId: convId,
-      title: "Nova mensagem pelo site",
-      preview: text.substring(0, 100),
-    }))
+    // Mesma regra de aviso dos outros canais (atendimento/notices.ts). Depois da resposta
+    // HTTP e independente do sucesso da automação.
+    after(() => notifyInbound({ tenantId: tenant.id, conversationId: convId }))
 
     // Dispara a IA fora do request (a resposta cai como mensagem 'bot', o
     // widget pega via polling). Sem debounce: chat ao vivo quer resposta já.

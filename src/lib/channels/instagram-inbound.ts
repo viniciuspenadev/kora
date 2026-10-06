@@ -17,6 +17,7 @@ import { saveContactAvatarFromUrl } from "@/lib/contacts/avatar"
 import { claimIgAutomation } from "@/lib/instagram/automation-quota"
 import { slimAdMeta } from "@/lib/ad-reply"
 import { renderVars, withAliases } from "@/lib/variables/registry"
+import { notifyInbound } from "@/lib/atendimento/notices"
 import type { ExternalAdReply } from "@/types/chat"
 
 /**
@@ -399,6 +400,8 @@ async function handleDm(igAccountId: string | null, m: IgMessaging): Promise<voi
 
   await bumpConv(ctx.tenantId, ctx.convId, preview)
   log("dm-ok", { tenantId: ctx.tenantId, convId: ctx.convId, kind: dec.contentType })
+  // Aviso (atendimento/notices.ts) — o Instagram não avisava ninguém. Reação não é mensagem: só aqui.
+  await notifyInbound({ tenantId: ctx.tenantId, conversationId: ctx.convId })
 
   // 🔴 F0 — a chamada que faltava. Até 2026-07-28 o ingestor do Instagram gravava a
   // mensagem e PARAVA: `routeAutomationTurn` nunca era chamado, então nenhum fluxo do

@@ -28,7 +28,7 @@ import { requireLimit } from "@/lib/limits"
 import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { resolveOrCreateContact, adoptRecipientJid } from "@/lib/contacts/identity"
 import { normalizeWhatsAppPhone } from "@/lib/phone-utils"
-import { createNotification } from "@/lib/notifications"
+import { notifyDelivered, notifyQueue } from "@/lib/atendimento/notices"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { assertAtendimentoLiberado, atendimentoBloqueado, checkTenantStatus } from "@/lib/auth/tenant-serviceable"
 import { requireModule } from "@/lib/modules"
@@ -358,6 +358,10 @@ export async function disconnectWhatsApp(instanceId?: string) {
   const instance = await resolveBaileysInstance(session.user.tenantId, instanceId)
   if (!instance) throw new Error("WhatsApp não configurado. Acesse Configurações → WhatsApp.")
   const provider = getProvider(instance)
+
+  // Marca o gesto ANTES do logout: a Evolution avisa a queda pelo webhook antes desta função
+  // terminar, e desconexão pedida pelo cliente não é "o número caiu" (atendimento/notices.ts).
+  await supabaseAdmin.from("whatsapp_instances").update({ user_disconnected: true }).eq("id", instance.id)
 
   // Resiliente: se a sessão na Evolution já não existe (número meio-desconectado),
   // o logout estoura — mas o "desconectar" local NÃO pode falhar por isso. Best-effort.
@@ -1869,44 +1873,13 @@ export async function transferConversation(
     is_private_note: false,
   })
 
-  // ── Notifica o destino (sininho + push) — ADITIVO, best-effort ──────────
-  // Não toca o motor de roteamento; só avisa quem recebeu. Nunca derruba o transfer.
-  // Agente-alvo → notifica ele. Fila do setor → notifica os ativos do depto.
-  // Pool (fila geral) → sem destino específico, não notifica.
-  try {
-    const embed = (conv as { chat_contacts?: unknown }).chat_contacts
-    const c = (Array.isArray(embed) ? embed[0] : embed) as { custom_name?: string | null; push_name?: string | null } | null
-    const contactName = c?.custom_name?.trim() || c?.push_name?.trim() || "um cliente"
-
-    let recipients: string[] = []
-    if (nextAssigned) {
-      recipients = [nextAssigned]
-    } else if (opts.mode === "department" && nextDepartment) {
-      const { data: deptMembers } = await supabaseAdmin
-        .from("tenant_users")
-        .select("user_id")
-        .eq("tenant_id", tenantId)
-        .eq("department_id", nextDepartment)
-        .eq("active", true)
-      recipients = (deptMembers ?? []).map((m) => (m as { user_id: string }).user_id)
-    }
-    recipients = recipients.filter((id) => id && id !== session.user.id)
-
-    if (recipients.length > 0) {
-      const isQueue = !nextAssigned && opts.mode === "department"
-      await Promise.all(recipients.map((rid) =>
-        createNotification({
-          tenantId,
-          recipientId: rid,
-          type:        "transfer_received",
-          title:       isQueue ? `Nova conversa em ${nextDepartmentName ?? "seu setor"}` : "Conversa transferida pra você",
-          body:        `${who} • ${contactName}`,
-          payload:     { conversation_id: conversationId, by: session.user.id, department_id: nextDepartment },
-        }),
-      ))
-    }
-  } catch (e) {
-    console.error("[transfer notify] falhou:", e)
+  // ── Aviso a quem recebeu (sininho + celular) — a MESMA regra do Studio (atendimento/notices.ts).
+  // Atendente → ele, com quem transferiu. Fila do setor ou fila geral → quem atende aquela fila.
+  // Quem transferiu não é avisado do próprio gesto. Best-effort: nunca derruba o transfer.
+  if (nextAssigned) {
+    await notifyDelivered({ tenantId, conversationId, agentId: nextAssigned, via: "manual", byUserId: session.user.id, byName: who })
+  } else {
+    await notifyQueue({ tenantId, conversationId, departmentName: nextDepartmentName, excludeUserId: session.user.id })
   }
 
   revalidatePath("/inbox")

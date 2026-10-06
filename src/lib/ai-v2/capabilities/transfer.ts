@@ -29,6 +29,7 @@ import { sendBotText } from "../outbound"
 import { extractDossier } from "../flow/dossier"
 import { logConversationEvent } from "@/lib/atendimento/events"
 import { checkDestinationAvailability } from "@/lib/atendimento/availability"
+import { notifyDelivered, notifyQueue } from "@/lib/atendimento/notices"
 import type { TransferTarget, TransferFallback } from "../flow/types"
 
 export const TRANSFER = "transfer"
@@ -321,6 +322,14 @@ export const transferCapability = defineCapability<TransferArgs>({
       departmentId: deptId,
       reason:       args.summary || args.target,
     })
+
+    // 5) Aviso a quem recebeu (sininho + celular; regras em atendimento/notices.ts). Mesmo dono
+    //    de antes (legado que só trocou o setor) não é entrega nova.
+    if (!ctx.dryRun) {
+      const owner = touchAssigned ? assignTo : prevOwner
+      if (owner && owner !== prevOwner) await notifyDelivered({ tenantId, conversationId, agentId: owner, via: "studio" })
+      else if (!owner) await notifyQueue({ tenantId, conversationId, departmentName: deptName })
+    }
 
     // routedDepartmentId pode ser null (pool/owner/agent sem setor) — o runtime
     // usa `ok` pra saber que encaminhou; o tool path (IA) é sempre department.

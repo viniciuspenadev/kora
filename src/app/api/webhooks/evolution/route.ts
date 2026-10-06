@@ -17,7 +17,7 @@ import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { applyExternalReply, evolutionSentAt } from "@/lib/channels/external-reply"
 import { handleCampaignInbound } from "@/lib/campaigns/engine"
 import { resolveOrCreateContact } from "@/lib/contacts/identity"
-import { notifyInboundMessage } from "@/lib/push/send"
+import { notifyInbound, notifyNumberDown, clearNumberDown } from "@/lib/atendimento/notices"
 import { isEvolutionGroupJid, recordEvolutionGroupMessage } from "@/lib/channels/evolution-group-inbound"
 import { slimAdMeta } from "@/lib/ad-reply"
 import type { EvolutionMessageData, ExternalAdReply } from "@/types/chat"
@@ -632,15 +632,12 @@ async function handleMessageUpsert(
       }
     }
 
-    // Push (PWA mobile) — fire-and-forget, nunca falha o webhook. Notifica o atendente
-    // atribuído (ou todo o pool se ninguém assumiu). NÃO empurra quando a Agenda consumiu
-    // a mensagem (resposta de menu "1"/"2" não é "nova mensagem" — o push relevante é o do
-    // sininho de agenda, evitando push dobrado). fromMe/grupos sem nome caem no fallback.
+    // Aviso (sininho + celular; regras em atendimento/notices.ts) — depois da resposta HTTP,
+    // nunca falha o webhook: o dono ("respondeu") ou quem atende a fila; nada com o robô
+    // atendendo. NÃO avisa quando a Agenda consumiu a mensagem (resposta de menu "1"/"2" não é
+    // "mensagem nova" — o aviso relevante é o da agenda, sem aviso dobrado).
     if (!agendaHandled) {
-      const notifyTitle = pushName || `+${jidToPhone(jid)}`
-      after(() => notifyInboundMessage({
-        tenantId, conversationId: conversation.id, title: notifyTitle, preview,
-      }))
+      after(() => notifyInbound({ tenantId, conversationId: conversation.id }))
     }
 
     // Camada 1 — keyword triggers (sempre avaliados, independente de AI estar ligada).
@@ -767,6 +764,9 @@ async function handleMessageUpdate(instance: { id: string; tenant_id: string }, 
   }
 }
 
+/** Motivos de "close" em que a Evolution NÃO reconecta sozinha (deslogado/bloqueado): queda de vez. */
+const CLOSED_FOR_GOOD = new Set([401, 402, 403, 406])
+
 async function handleConnectionUpdate(instanceId: string, data: unknown) {
   const d = data as { state?: string }
   if (!d.state) return
@@ -790,10 +790,25 @@ async function handleConnectionUpdate(instanceId: string, data: unknown) {
     update.last_error         = null
   }
 
+  const { data: before } = await supabaseAdmin.from("whatsapp_instances")
+    .select("tenant_id, status, display_name, phone_number, instance_name, user_disconnected").eq("id", instanceId).maybeSingle()
   await supabaseAdmin
     .from("whatsapp_instances")
     .update(update)
     .eq("id", instanceId)
+
+  // Aviso aos donos e admins (atendimento/notices.ts) só na TRANSIÇÃO de número já pareado
+  // (tem telefone). Aqui, só o desligamento DE VEZ (401 = o WhatsApp deslogou: precisa do
+  // QR). "close" comum também chega nas piscadas em que a Evolution reconecta sozinha em
+  // segundos — esse quem confirma é a checagem de 5 min (cron ping-evolution). Voltou → some.
+  const b = before as { tenant_id: string; status: string | null; display_name: string | null; phone_number: string | null; instance_name: string | null; user_disconnected: boolean | null } | null
+  if (b && b.status !== newStatus) {
+    if (newStatus === "disconnected" && b.phone_number && !b.user_disconnected && CLOSED_FOR_GOOD.has(Number((data as { statusReason?: unknown }).statusReason))) {
+      await notifyNumberDown({ tenantId: b.tenant_id, instanceId, label: b.display_name || b.phone_number || b.instance_name || "do WhatsApp", reason: "logged_out" })
+    } else if (newStatus === "connected") {
+      await clearNumberDown(b.tenant_id, instanceId)
+    }
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────

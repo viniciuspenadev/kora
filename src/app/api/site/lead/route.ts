@@ -7,7 +7,7 @@ import { findOrReopenConversation } from "@/lib/conversation-dedup"
 import { routeToHumanDefault } from "@/lib/atendimento/human-routing"
 import { bumpConversationInbound } from "@/lib/channels/inbound-bump"
 import { syncContactIdentities } from "@/lib/contacts/identity"
-import { notifyInboundMessage } from "@/lib/push/send"
+import { notifyInbound } from "@/lib/atendimento/notices"
 
 /**
  * POST /api/site/lead
@@ -379,14 +379,9 @@ export async function POST(req: NextRequest) {
       return cors(NextResponse.json({ error: "erro criando mensagens" }, { status: 500 }))
     }
 
-    // Não expõe as respostas do formulário na tela bloqueada. O destinatário abre
-    // a conversa para consultar os dados segundo a autorização normal do Inbox.
-    after(() => notifyInboundMessage({
-      tenantId: tenant.id,
-      conversationId: conv.id,
-      title: "Novo lead pelo site",
-      preview: "Um novo formulário foi recebido.",
-    }))
+    // Aviso (regras em atendimento/notices.ts). A tela bloqueada mostra só nome e origem —
+    // as respostas do formulário ficam dentro do Kora, sob a autorização normal do Inbox.
+    after(() => notifyInbound({ tenantId: tenant.id, conversationId: conv.id }))
 
     // ── Aplica tag/departamento default se configurados ───────
     if (cfg.default_tag_id) {

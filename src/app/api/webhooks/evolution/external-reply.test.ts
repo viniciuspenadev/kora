@@ -18,7 +18,7 @@ vi.mock("@/lib/atendimento/human-routing", () => ({ routeToHumanDefault: vi.fn()
 vi.mock("@/lib/conversation-dedup", () => ({ findOrReopenConversation: vi.fn() }))
 vi.mock("@/lib/campaigns/engine", () => ({ handleCampaignInbound: vi.fn() }))
 vi.mock("@/lib/contacts/identity", () => ({ resolveOrCreateContact: async () => ({ id: "contact" }) }))
-vi.mock("@/lib/push/send", () => ({ notifyInboundMessage: vi.fn() }))
+vi.mock("@/lib/atendimento/notices", () => ({ notifyInbound: vi.fn(), notifyNumberDown: vi.fn(), clearNumberDown: vi.fn() }))
 const { dispatchEvolutionEvent } = await import("./route")
 const at = "2026-09-12T14:02:00.000Z"
 const now = "2026-09-12T14:05:00.000Z"

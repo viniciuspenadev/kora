@@ -1,6 +1,7 @@
 import "server-only"
 import { supabaseAdmin } from "@/lib/supabase"
 import { sendPushToUsers } from "@/lib/push/send"
+import { presentUserIds } from "@/lib/atendimento/presence"
 
 // ═══════════════════════════════════════════════════════════════
 // Central de notificações (GENÉRICA) — o "plano do atendente" (sininho)
@@ -27,6 +28,11 @@ export type NotificationType =
   | "outreach_cap_hit"  // trava anti-canhão segurou disparos na última hora (donos e admins, 1×/hora)
   | "form_needs_contact" // formulário enviado e o Kora NÃO chamou (sem fluxo/sem WhatsApp/segurado/parou) —
                         // donos e admins; payload.url abre a aba Respostas do formulário
+  // Avisos do atendimento (regras em lib/atendimento/notices.ts — docs/notifications-design.md)
+  | "conversation_delivered" // conversa entregue a uma pessoa (Studio, carteira, rodízio ou à mão)
+  | "conversation_queue"     // conversa sem dono na fila (do setor ou geral) — some quando alguém assume
+  | "client_replied"         // o cliente respondeu numa conversa que é de alguém (rajada = 1 aviso)
+  | "number_down"            // número comum desconectou (donos e admins)
   | (string & {})       // extensível p/ futuros produtores (transfer_received, …)
 
 export interface CreateNotificationInput {
@@ -36,6 +42,12 @@ export interface CreateNotificationInput {
   title:       string
   body?:       string
   payload?:    Record<string, unknown>  // { appointment_id, conversation_id, … }
+  /**
+   * O celular. Padrão: mesmo título/texto do sininho, sempre. Avisos do atendimento passam
+   * um texto PRÓPRIO (tela bloqueada: só nome e origem, sem conteúdo — LGPD) e `when:
+   * "if_absent"` (quem está com o Kora aberto ouve o sininho; o celular fica quieto).
+   */
+  push?: { title?: string; body?: string; when?: "always" | "if_absent" | "never" }
 }
 
 /**
@@ -59,6 +71,9 @@ export async function createNotification(input: CreateNotificationInput): Promis
   // o app fechado. Ponto único — agenda agora, transfer/lead/briefing depois, de graça.
   // Reusa a mesma subscription/permissão das mensagens. No-op sem VAPID; nunca lança.
   try {
+    const when = input.push?.when ?? "always"
+    if (when === "never") return
+    if (when === "if_absent" && (await presentUserIds([input.recipientId])).has(input.recipientId)) return
     const p = input.payload ?? {}
     const convId = typeof p.conversation_id === "string" ? p.conversation_id : null
     const apptId = typeof p.appointment_id === "string" ? p.appointment_id : null
@@ -67,8 +82,8 @@ export async function createNotification(input: CreateNotificationInput): Promis
     // URL absoluta viraria redirect pra fora do app a partir de um dado gravado no banco.
     const rawUrl = typeof p.url === "string" && p.url.startsWith("/") && !p.url.startsWith("//") ? p.url : null
     await sendPushToUsers(input.tenantId, [input.recipientId], {
-      title: input.title,
-      body:  input.body ?? "",
+      title: input.push?.title ?? input.title,
+      body:  input.push?.body ?? input.body ?? "",
       url:   rawUrl ?? (convId ? `/inbox?conversation=${convId}` : "/agenda"),
       tag:   `${input.type}:${apptId ?? convId ?? input.recipientId}`,
     })

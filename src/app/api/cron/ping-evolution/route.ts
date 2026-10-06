@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { requireCronSecret } from "@/lib/cron-auth"
 import { executarJob } from "@/lib/cron/run"
 import { decryptSecret } from "@/lib/crypto/secrets"
+import { notifyNumberDown, clearNumberDown } from "@/lib/atendimento/notices"
 
 /**
  * GET /api/cron/ping-evolution
@@ -22,10 +23,15 @@ const TIMEOUT_MS = 8_000
 
 interface Instance {
   id:            string
+  tenant_id:     string
   evolution_url: string
   evolution_key: string
   instance_name: string
   webhook_url:   string | null
+  phone_number:  string | null
+  display_name:  string | null
+  last_connection_state: string | null
+  user_disconnected:     boolean | null
 }
 
 /** `5511999998888@s.whatsapp.net` → `+55 11 99999-8888`. Devolve null se não parecer BR. */
@@ -159,7 +165,7 @@ async function varrerEvolution() {
   // ── 2. Por instância (state + webhook config) ───────────────
   const { data: instances } = await supabaseAdmin
     .from("whatsapp_instances")
-    .select("id, evolution_url, evolution_key, instance_name, webhook_url")
+    .select("id, tenant_id, evolution_url, evolution_key, instance_name, webhook_url, phone_number, display_name, last_connection_state, user_disconnected")
     .not("evolution_url", "is", null)
     .not("instance_name", "is", null)
 
@@ -202,6 +208,15 @@ async function varrerEvolution() {
       last_connection_state:    connState,
       webhook_url_matches:      urlMatches,
     }).eq("id", i.id)
+
+    // Aviso "número caiu" (atendimento/notices.ts): fora do ar em DUAS checagens seguidas
+    // (~5 min) — piscada de reconexão não avisa. Só número já pareado (tem telefone); servidor
+    // fora ("error") não é queda do número. Voltou → o aviso pendente some.
+    if (connState === "close" && i.last_connection_state === "close" && i.phone_number && !i.user_disconnected) {
+      await notifyNumberDown({ tenantId: i.tenant_id, instanceId: i.id, label: i.display_name || i.phone_number, reason: "offline" })
+    } else if (connState === "open" && i.last_connection_state !== "open") {
+      await clearNumberDown(i.tenant_id, i.id)
+    }
 
     instResults.push({ id: i.id, state: connState, urlMatches })
   }

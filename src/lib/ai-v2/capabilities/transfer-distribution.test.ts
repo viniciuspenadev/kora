@@ -16,12 +16,14 @@ vi.mock("@/lib/supabase",()=>({supabaseAdmin:db}))
 vi.mock("@/lib/channels/reply",()=>({sendChannelText:send}))
 vi.mock("@/lib/atendimento/availability",()=>({checkDestinationAvailability:async()=>({available:true,reason:null})}))
 vi.mock("@/lib/ai-v2/outbound",()=>({sendBotText:vi.fn()}))
+const notices=vi.hoisted(()=>({notifyDelivered:vi.fn(),notifyQueue:vi.fn(),pushUnassigned:vi.fn()}))
+vi.mock("@/lib/atendimento/notices",()=>notices)
 const {transferToSelectedAgents,deliverPresentation}=await import("./transfer-distribution")
 const agent="00000000-0000-0000-0000-000000000001"
 const ctx:any={tenantId:"tenant",conversationId:"conv",contact:{phone_number:"test"},instance:{},departments:[],
  conversationMetadata:{},transferExecution:{flowId:"flow",nodeId:"node",runKey:"run"}}
 beforeEach(()=>{
- send.mockReset().mockResolvedValue({messageId:"provider-id"});rpc.mockReset()
+ send.mockReset().mockResolvedValue({messageId:"provider-id"});rpc.mockReset();Object.values(notices).forEach(f=>f.mockClear())
  rows=[{id:"message",tenant_id:"tenant",conversation_id:"conv",content:"Olá Agente",status:"pending",metadata:{delivery_state:"ready",transfer_receipt:"receipt"}}]
  conversation={id:"conv",tenant_id:"tenant",assigned_to:agent,status:"open",metadata:{ai_routed:{receipt_id:"receipt"}},updated_at:"initial"}
 })
@@ -59,4 +61,23 @@ it("destino de outro tenant não é carregado pelo envio",async()=>{
  rows[0].tenant_id="other"
  await deliverPresentation(ctx,"message","receipt",agent)
  expect(send).not.toHaveBeenCalled()
+})
+it("rodízio avisa a pessoa escolhida uma vez; repetição do passo não avisa de novo",async()=>{
+ const args={agentIds:[agent],roundRobin:true,handoffMessage:"Olá {{agente}}",waitMessage:null,whenUnavailable:"queue" as const}
+ rpc.mockResolvedValue({data:{assigned_to:agent},error:null})
+ await transferToSelectedAgents(ctx,args,{assigned_to:null})
+ expect(notices.notifyDelivered).toHaveBeenCalledWith(expect.objectContaining({agentId:agent,via:"rodizio"}))
+ notices.notifyDelivered.mockClear()
+ rpc.mockResolvedValue({data:{assigned_to:agent,replayed:true},error:null})
+ await transferToSelectedAgents(ctx,args,{assigned_to:null})
+ expect(notices.notifyDelivered).not.toHaveBeenCalled()
+})
+it("rodízio sem ninguém disponível: celular dos donos + fila; simulação não avisa",async()=>{
+ const args={agentIds:[agent],roundRobin:true,handoffMessage:"Olá {{agente}}",waitMessage:null,whenUnavailable:"queue" as const}
+ rpc.mockResolvedValue({data:{assigned_to:null,fallback:true},error:null})
+ await transferToSelectedAgents({...ctx,dryRun:true,captured:[]},args,{assigned_to:null})
+ expect(notices.pushUnassigned).not.toHaveBeenCalled()
+ await transferToSelectedAgents(ctx,args,{assigned_to:null})
+ expect(notices.pushUnassigned).toHaveBeenCalledWith("tenant","conv");expect(notices.notifyQueue).toHaveBeenCalledTimes(1)
+ expect(notices.notifyDelivered).not.toHaveBeenCalled()
 })

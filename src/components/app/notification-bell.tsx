@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, BellRing, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, AlarmClock, ShieldAlert, ClipboardList, type LucideIcon } from "lucide-react"
+import { Bell, BellRing, CalendarCheck, CalendarX, CalendarClock, UserCheck, Sun, Check, X, Loader2, Gauge, AlarmClock, ShieldAlert, ClipboardList, Inbox, MessageCircle, WifiOff, Users, type LucideIcon } from "lucide-react"
 import { getRealtimeClient } from "@/lib/realtime"
+import { armNotifySound, onNotifySoundLock, playNotifySound } from "@/lib/notify-sound"
+import { getActiveConversation } from "@/lib/chat/active-conversation"
 import {
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,
   type NotificationItem,
@@ -42,6 +44,12 @@ const ICONS: Record<string, LucideIcon> = {
   // Formulário: o Kora não conseguiu chamar quem enviou — alguém da equipe precisa falar
   // com a pessoa (abre a aba Respostas do formulário pelo `url` do payload).
   form_needs_contact:   ClipboardList,
+  // Avisos do atendimento (lib/atendimento/notices.ts).
+  conversation_delivered: UserCheck,
+  conversation_queue:     Inbox,
+  client_replied:         MessageCircle,
+  number_down:            WifiOff,
+  transfer_unassigned:    Users,
 }
 
 function timeAgo(iso: string): string {
@@ -79,6 +87,13 @@ export function NotificationBell({
   const panelRef = useRef<HTMLDivElement>(null)
 
   const refreshCount = useCallback(() => { getUnreadCount().then(setUnread).catch(() => {}) }, [])
+  // Som dos avisos: o primeiro clique/tecla na página libera (regra do navegador).
+  const [soundLocked, setSoundLocked] = useState(false)
+  useEffect(() => {
+    const disarm = armNotifySound()
+    const off = onNotifySoundLock(setSoundLocked)
+    return () => { disarm(); off() }
+  }, [])
 
   // Contagem inicial + Realtime (insert/update das MINHAS notificações).
   useEffect(() => {
@@ -96,11 +111,23 @@ export function NotificationBell({
           const row = (payload.new ?? payload.old) as NotificationItem | undefined
           if (!row?.id) return
           if (payload.eventType === "INSERT") {
+            // Aviso da conversa que a pessoa JÁ está vendo: não toca e não fica como não-lido.
+            const convId = typeof row.payload?.conversation_id === "string" ? row.payload.conversation_id : null
+            const watching = !!convId && convId === getActiveConversation() && document.visibilityState === "visible"
+            if (watching && !row.read_at) {
+              markNotificationRead(row.id).catch(() => {})
+              setItems((prev) => [{ ...row, read_at: new Date().toISOString() }, ...prev.filter((i) => i.id !== row.id)].slice(0, 30))
+              return
+            }
             setItems((prev) => [row, ...prev.filter((i) => i.id !== row.id)].slice(0, 30))
-            if (!row.read_at) setUnread((u) => u + 1)
+            if (!row.read_at) { setUnread((u) => u + 1); playNotifySound() }
           } else {
-            // UPDATE (ex: lida em outro device) → reconcilia contador.
-            setItems((prev) => prev.map((i) => (i.id === row.id ? row : i)))
+            // UPDATE: lida em outro aparelho, ou "+1 mensagem" (rajada — sobe para o topo, sem tocar de novo).
+            setItems((prev) => {
+              const old = prev.find((i) => i.id === row.id)
+              const grew = !!old && !row.read_at && (Number(row.payload?.more) || 0) > (Number(old.payload?.more) || 0)
+              return grew ? [row, ...prev.filter((i) => i.id !== row.id)] : prev.map((i) => (i.id === row.id ? row : i))
+            })
             refreshCount()
           }
         },
@@ -183,6 +210,13 @@ export function NotificationBell({
         )}
       </button>
 
+      {/* Chegou aviso antes do 1º clique: o navegador segurou o som. Some no primeiro clique. */}
+      {soundLocked && (
+        <p role="status" className="fixed bottom-4 left-4 right-4 sm:left-auto z-50 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 shadow-sm">
+          <BellRing className="size-3.5 shrink-0" /> Clique em qualquer lugar do Kora para ativar o som dos avisos.
+        </p>
+      )}
+
       {open && (
         <div
           role="dialog"
@@ -241,11 +275,11 @@ export function NotificationBell({
                             <Icon className="size-3.5" strokeWidth={2} />
                           </span>
                           <span className="min-w-0 flex-1">
-                            <span className="flex items-center gap-2">
-                              <span className={`min-w-0 flex-1 truncate text-sm ${isUnread ? "font-semibold text-slate-900" : "font-medium text-slate-600"}`}>
+                            <span className="flex items-start gap-2">
+                              <span className={`min-w-0 flex-1 line-clamp-2 text-sm leading-snug ${isUnread ? "font-semibold text-slate-900" : "font-medium text-slate-600"}`}>
                                 {n.title}
                               </span>
-                              <span className="shrink-0 text-[10px] text-slate-400 tabular-nums">{timeAgo(n.created_at)}</span>
+                              <span className="shrink-0 pt-0.5 text-[10px] text-slate-400 tabular-nums">{timeAgo(n.created_at)}</span>
                             </span>
                             {n.body && <span className="mt-0.5 block line-clamp-2 text-xs leading-relaxed text-slate-400">{n.body}</span>}
                           </span>

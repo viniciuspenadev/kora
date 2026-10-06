@@ -40,7 +40,7 @@ export class MemoryDb {
       eq: (k: string, v: unknown) => { filters.push(r => typeof r[k] === "object" && r[k] !== null && typeof v === "string"
         ? JSON.stringify(r[k]) === JSON.stringify(Array.isArray(r[k]) && v.startsWith("{") && v.endsWith("}")
           ? v.slice(1, -1).split(",").filter(Boolean) : JSON.parse(v)) : val(r, k) === v); return q },
-      is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return q },
+      is: (k: string, v: unknown) => { filters.push(r => (val(r, k) ?? null) === v); return q },
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return q },
       in: (k: string, values: unknown[]) => { filters.push(r => values.includes(val(r, k))); return q },
       lte: (k: string, v: any) => { filters.push(r => r[k] <= v); return q },

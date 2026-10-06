@@ -9,6 +9,7 @@ import {
 import type { MyProfile } from "@/lib/actions/profile"
 import { uploadMyAvatar, removeMyAvatar, changeMyPassword } from "@/lib/actions/profile"
 import { UserDevices } from "@/components/app/user-devices"
+import { MyAlertsCard } from "@/components/app/my-alerts-card"
 
 export interface ProfileSecurity {
   passwordChangedAt: string | null
@@ -78,6 +79,8 @@ export function ProfileClient({ profile, role, security }: {
       </div>
 
       <PasswordCard />
+
+      <MyAlertsCard />
 
       {/* Dispositivos unificados (device trust F4): navegadores + extensão, agrupados por
           aparelho, com confiança de 30d e revogação em cascata. */}

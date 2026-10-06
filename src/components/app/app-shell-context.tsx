@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from "react"
 import { getNavigationUnread } from "@/lib/actions/navigation-unread"
+import { touchPresence } from "@/lib/actions/presence"
 
 interface AppShell {
   /** Drawer de navegação mobile (md:hidden) aberto. */
@@ -42,6 +43,27 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       cancelled = true
       clearInterval(id)
       document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [])
+
+  // Presença (avisos: com o Kora em uso, toca o sininho e o celular fica quieto). Marca a cada
+  // minuto só se a aba está à vista ou a pessoa mexeu nos últimos 10 min — aba esquecida
+  // aberta à noite não "segura" o aviso do celular. Leitura em lib/atendimento/presence.ts.
+  useEffect(() => {
+    let lastActivity = Date.now()
+    const mark = () => { lastActivity = Date.now() }
+    const beat = () => {
+      if (document.visibilityState === "visible" || Date.now() - lastActivity < 10 * 60_000) touchPresence().catch(() => {})
+    }
+    for (const ev of ["pointerdown", "keydown", "scroll"] as const) window.addEventListener(ev, mark, { passive: true })
+    beat()
+    const id = setInterval(beat, 60_000)
+    const onVisible = () => { if (document.visibilityState === "visible") { mark(); beat() } }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener("visibilitychange", onVisible)
+      for (const ev of ["pointerdown", "keydown", "scroll"] as const) window.removeEventListener(ev, mark)
     }
   }, [])
 

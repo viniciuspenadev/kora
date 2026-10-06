@@ -5,6 +5,7 @@ import { sendChannelText } from "@/lib/channels/reply"
 import { sendBotText } from "../outbound"
 import type { ExecCtx } from "./types"
 import { StudioControlChangedError } from "../control"
+import { notifyDelivered, notifyQueue, pushUnassigned } from "@/lib/atendimento/notices"
 
 export async function transferToSelectedAgents(ctx: ExecCtx, args: {
   agentIds: string[]; roundRobin: boolean; handoffMessage: string | null;
@@ -38,6 +39,18 @@ export async function transferToSelectedAgents(ctx: ExecCtx, args: {
   if (data.message_id) {
     try { await deliverPresentation(ctx, data.message_id, data.receipt_id, data.assigned_to) }
     catch { console.warn('[studio-transfer] Atribuição confirmada; apresentação aguarda recuperação.') }
+  }
+  // Aviso (regras em atendimento/notices.ts), depois da apresentação ao cliente: só na
+  // distribuição de verdade — repetição do mesmo passo (`replayed`) não avisa de novo. Sem
+  // ninguém elegível a SQL já pôs o aviso no sininho dos donos; aqui ele vai também ao
+  // celular, e a fila geral fica sabendo.
+  if (!ctx.dryRun && !data.replayed) {
+    if (data.assigned_to && data.assigned_to !== current.assigned_to) {
+      await notifyDelivered({ tenantId: ctx.tenantId, conversationId: ctx.conversationId, agentId: data.assigned_to, via: "rodizio" })
+    } else if (!data.assigned_to) {
+      await pushUnassigned(ctx.tenantId, ctx.conversationId)
+      await notifyQueue({ tenantId: ctx.tenantId, conversationId: ctx.conversationId })
+    }
   }
   return { ok: true, routedDepartmentId: data.department_id ?? null }
 }
