@@ -12,6 +12,7 @@ import { revalidatePath } from "next/cache"
 import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
 import { asFormOutcome, type FormOutcome } from "@/lib/forms/outcomes"
+import { normalizeAllowedDomain, normalizeAllowedDomains, MAX_ALLOWED_DOMAINS } from "@/lib/forms/embed"
 import { getViewerScope, canViewForms, canManageForms } from "@/lib/visibility"
 import { logAudit } from "@/lib/audit"
 import { normalizeDefinition, draftProblems, publishProblems, answerLabel, type Answers, type FormDefinition } from "@/lib/forms/definition"
@@ -60,6 +61,8 @@ export interface FormDetail {
   flow:        FormFlowLink | null
   /** Pode criar o fluxo no Studio daqui (dono/admin com o módulo Kora Studio). */
   canCreateFlow: boolean
+  /** Sites que podem mostrar o formulário na página (vazio = nenhum; regra em forms/embed.ts). */
+  allowedDomains: string[]
 }
 
 export interface SubmissionItem {
@@ -213,7 +216,7 @@ export async function getForm(id: string): Promise<FormDetail | { error: string 
   if ("error" in g) return g
   if (!isUuid(id)) return { error: "Formulário não encontrado." }
   const { data, error } = await supabaseAdmin.from("forms")
-    .select("id, name, status, slug, public_id, template_key, draft, draft_revision, updated_at, published_version_id")
+    .select("id, name, status, slug, public_id, template_key, draft, draft_revision, updated_at, published_version_id, allowed_domains")
     .eq("tenant_id", g.tenantId).eq("id", id).is("archived_at", null).maybeSingle()
   if (error) return { error: "Não foi possível carregar o formulário." }
   if (!data) return { error: "Formulário não encontrado." }
@@ -235,6 +238,7 @@ export async function getForm(id: string): Promise<FormDetail | { error: string 
     responsesTotal: stats.get(id)?.responsesTotal ?? 0,
     flow:        flows.get(id) ?? null,
     canCreateFlow,
+    allowedDomains: normalizeAllowedDomains(r.allowed_domains),
     id:          r.id as string,
     name:        r.name as string,
     status:      asStatus(r.status),
@@ -453,6 +457,27 @@ export async function pauseForm(id: string): Promise<{ error?: string }> {
   await logAudit({ tenantId: g.tenantId, actorId: g.userId, action: "form.pause", targetType: "form", targetId: id })
   revalidatePath("/formularios")
   return {}
+}
+
+/**
+ * Sites autorizados a mostrar o formulário na página (Fase 2b). Quem impõe é o navegador
+ * (`frame-ancestors`, no proxy); vazio = nenhum site. A lista volta já normalizada.
+ */
+export async function saveFormAllowedDomains(id: string, domains: string[]): Promise<{ domains?: string[]; error?: string }> {
+  const g = await gate("manage")
+  if ("error" in g) return g
+  if (!isUuid(id)) return { error: "Formulário não encontrado." }
+  if (!Array.isArray(domains)) return { error: "Lista de sites inválida." }
+  const clean = normalizeAllowedDomains(domains)
+  if (domains.some((d) => !normalizeAllowedDomain(d))) return { error: "Algum endereço não parece um site (ex.: seusite.com.br)." }
+  if (domains.length > MAX_ALLOWED_DOMAINS) return { error: `Até ${MAX_ALLOWED_DOMAINS} sites por formulário.` }
+  const { data, error } = await supabaseAdmin.from("forms")
+    .update({ allowed_domains: clean, updated_by: g.userId, updated_at: new Date().toISOString() })
+    .eq("tenant_id", g.tenantId).eq("id", id).is("archived_at", null).select("id")
+  if (error) return { error: "Não foi possível salvar os sites." }
+  if (!data?.length) return { error: "Formulário não encontrado." }
+  await logAudit({ tenantId: g.tenantId, actorId: g.userId, action: "form.allowed_domains", targetType: "form", targetId: id, metadata: { domains: clean } })
+  return { domains: clean }
 }
 
 /** Volta a receber respostas, com a mesma versão que estava no ar. */

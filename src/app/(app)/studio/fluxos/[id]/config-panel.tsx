@@ -34,6 +34,7 @@ import { EmptyState } from "@/components/ui/empty-state"
 import { varsForContext } from "@/lib/variables/registry"
 import { MessageBalloons } from "@/components/studio/message-balloons"
 import { NODE_TITLE } from "@/lib/ai-v2/flow/node-titles"
+import { outreachInstanceFits } from "@/lib/ai-v2/flow/form-entry-rules"
 
 const INPUT = "w-full h-9 px-3 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200"
 const AREA  = "w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary-200 resize-y"
@@ -192,9 +193,11 @@ function RenderSelect({ value, onChange, kind, channels }: {
 }
 
 export function ConfigPanel({
-  node, departments, agents = [], businessHoursEnabled = false, flowInstances = [], kanbans = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], outcomeLabels = {}, flowChannels = [], onChange, onDelete,
+  node, departments, agents = [], businessHoursEnabled = false, flowInstances = [], tenantInstances = [], kanbans = [], flows, stages, tags, services, resources, dealFields = [], ownerRouting, flowVars = [], outcomeLabels = {}, flowChannels = [], onChange, onDelete,
 }: {
   node: RFNode
+  /** Todos os números da empresa — o Disparar escolhe por qual chama. */
+  tenantInstances?: { id: string; label: string; provider: "meta_cloud" | "baileys" }[]
   /** Canais que este fluxo alcanca (vazio = todos). Alimenta o quadro "como vai sair". */
   flowChannels?: string[]
   departments: { id: string; name: string }[]
@@ -410,12 +413,30 @@ export function ConfigPanel({
           <p className="text-xs text-slate-400">Envia uma mensagem no <b>WhatsApp</b> para o número do contato — não responde no canal atual (ex.: site). A conversa do WhatsApp é aberta e a resposta do cliente cai nela.</p>
           <div>
             <label className={LABEL}>Número de saída</label>
-            <SimpleSelect value={String(cfg.channel ?? "auto")} onChange={(v) => set({ channel: v })} options={[
+            <SimpleSelect value={String(cfg.channel ?? "auto")} onChange={(v) => {
+              // Número escolhido de outro tipo não serve mais (oficial × comum).
+              const keep = tenantInstances.find((i) => i.id === cfg.instanceId && outreachInstanceFits(i.provider, v))
+              set({ channel: v, instanceId: keep ? keep.id : undefined })
+            }} options={[
               { value: "auto",     label: "Automático (prefere Oficial)" },
               { value: "official", label: "WhatsApp Oficial — template" },
               { value: "baileys",  label: "WhatsApp não-oficial — texto" },
             ]} />
           </div>
+          {(() => {
+            // Mais de um número do tipo escolhido: o dono diz por qual o Kora chama (senão vai o mais antigo).
+            const fits = tenantInstances.filter((i) => outreachInstanceFits(i.provider, String(cfg.channel ?? "auto")))
+            if (fits.length < 2) return null
+            return (
+              <div>
+                <label className={LABEL}>Por qual número o Kora chama?</label>
+                <SimpleSelect value={String(cfg.instanceId ?? "")} onChange={(v) => set({ instanceId: v || undefined })}
+                  placeholder="Escolha o número"
+                  options={[{ value: "", label: "Padrão: o número mais antigo" }, ...fits.map((i) => ({ value: i.id, label: i.label }))]} />
+                {!cfg.instanceId && <p className="text-[11px] text-amber-700 mt-1">Esta conta tem {fits.length} números. Escolha por qual a pessoa recebe a mensagem — é por ele que ela vai responder.</p>}
+              </div>
+            )
+          })()}
           <div>
             <label className={LABEL}>Enviar para qual número?</label>
             <SimpleSelect value={String(cfg.toVar ?? "")} onChange={(v) => set({ toVar: v || undefined })} options={[

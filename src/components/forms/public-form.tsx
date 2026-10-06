@@ -1,6 +1,6 @@
 "use client"
 
-// O formulário publicado, como a pessoa usa (link próprio; a moldura do site usa o mesmo).
+// O formulário publicado, como a pessoa usa (link próprio; a moldura do site — embed-form.tsx — usa o mesmo).
 // A tela é o MESMO renderer da prévia do editor — o que o dono vê é o que vai ao ar. Aqui só
 // entra o envio: bilhete da página, antirrobô invisível, campo-isca e a origem (página + UTM).
 
@@ -37,17 +37,23 @@ export function PublicFormUnavailable({ businessName }: { businessName: string }
   )
 }
 
-function currentSource(kind: "link" | "embed" | "popup") {
-  const url = new URL(window.location.href)
+/** De onde veio. No site do cliente (`hostPage`), a origem é a página DELE (com as UTMs dela),
+ *  não o endereço da moldura do Kora. */
+function currentSource(kind: "link" | "embed" | "popup", hostPage?: string | null) {
+  const url = new URL(hostPage || window.location.href)
   const utm: Record<string, string> = {}
   for (const k of UTM_KEYS) { const v = url.searchParams.get(`utm_${k}`); if (v) utm[k] = v.slice(0, 100) }
   // O QR baixado na aba Publicar leva `?origem=qr`.
-  const fromQr = url.searchParams.get("origem") === "qr"
-  return { kind: fromQr ? "qr" : kind, page: url.toString(), referrer: document.referrer || null, utm }
+  const fromQr = !hostPage && url.searchParams.get("origem") === "qr"
+  return { kind: fromQr ? "qr" : kind, page: url.toString(), referrer: hostPage ? null : document.referrer || null, utm }
 }
 
-export function PublicForm({ publicId, definition, businessName, renderToken, kind = "link" }: {
+export function PublicForm({ publicId, definition, businessName, renderToken, kind = "link", hostPage = null, onSent }: {
   publicId: string; definition: FormDefinition; businessName: string; renderToken: string; kind?: "link" | "embed" | "popup"
+  /** Página do site onde o formulário está (já conferida contra os sites autorizados). */
+  hostPage?: string | null
+  /** Pedido gravado — a moldura avisa o site (ex.: conversão do Google Ads). */
+  onSent?: () => void
 }) {
   const [captcha, setCaptcha] = useState("")
   const trap = useRef<HTMLInputElement>(null)
@@ -60,11 +66,12 @@ export function PublicForm({ publicId, definition, businessName, renderToken, ki
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           renderToken, turnstileToken: captcha, website: trap.current?.value ?? "",
-          answers: s.answers, contact: s.contact, source: currentSource(kind),
+          answers: s.answers, contact: s.contact, source: currentSource(kind, hostPage),
         }),
       })
       const j = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
-      return res.ok && j.ok ? { ok: true } : { error: j.error ?? "Não foi possível enviar agora. Tente de novo em instantes." }
+      if (res.ok && j.ok) { onSent?.(); return { ok: true } }
+      return { error: j.error ?? "Não foi possível enviar agora. Tente de novo em instantes." }
     } catch {
       return { error: "Sem conexão. Confira a internet e tente de novo." }
     }

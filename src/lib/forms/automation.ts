@@ -7,7 +7,7 @@ import { runFormEntry } from "@/lib/ai-v2/flow/runtime"
 import { createNotification } from "@/lib/notifications"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import type { Answers } from "./definition"
-import { buildFormFlowVariables } from "./flow-variables"
+import { buildFormFlowVariables, formAnswersNote } from "./flow-variables"
 import { outcomeFromEntry, NEEDS_CONTACT, NEEDS_CONTACT_REASON, type FormOutcome } from "./outcomes"
 import type { FlowRow } from "@/lib/ai-v2/flow/types"
 import type { ExecCtx } from "@/lib/ai-v2/capabilities"
@@ -23,7 +23,7 @@ import type { InstanceForProvider } from "@/types/automation"
 //      quem GASTA fora de sessão pergunta sempre (memória tenant-status-gate).
 //   3. Um disparo por resposta: `received → flow_started` num UPDATE condicional.
 //   4. `runFormEntry`: o trecho antes do Disparar roda sem conversa; o Disparar passa a
-//      conversa para o WhatsApp.
+//      conversa para o WhatsApp. Chegou a uma conversa = nota interna com o pedido inteiro.
 //   5. Grava a situação no comprovante. Se o Kora NÃO chamou, avisa donos e admins
 //      (sininho + celular) — o pedido nunca fica parado calado.
 
@@ -31,7 +31,7 @@ const CONTACT_COLS = "id, custom_name, push_name, phone_number, email, company, 
 
 type SubmissionRow = {
   id: string; form_id: string; version_id: string; contact_id: string | null; contact_name: string
-  phone_e164: string; answers: Answers; source: { kind?: string; utm?: Record<string, string> } | null
+  phone_e164: string; answers: Answers; source: { kind?: string; page?: string | null; utm?: Record<string, string> } | null
   outcome: string; created_at: string
 }
 
@@ -69,6 +69,17 @@ async function notifyNeedsContact(tenantId: string, sub: SubmissionRow, formName
   } catch (e) {
     console.error(JSON.stringify({ src: "forms-automation", kind: "notify-failed", message: (e as Error)?.message ?? "erro" }))
   }
+}
+
+/** Nota interna com o pedido (o cliente não vê). Texto em flow-variables.ts (`formAnswersNote`). */
+async function noteRequest(tenantId: string, conversationId: string, sub: SubmissionRow, formName: string, definition: unknown): Promise<void> {
+  const { error } = await supabaseAdmin.from("chat_messages").insert({
+    conversation_id: conversationId, tenant_id: tenantId,
+    sender_type: "system", content_type: "text", status: "delivered", is_private_note: true,
+    content: formAnswersNote({ formName, definition, answers: sub.answers, source: sub.source }),
+    metadata: { form: { form_id: sub.form_id, submission_id: sub.id } },
+  })
+  if (error) console.error(JSON.stringify({ src: "forms-automation", kind: "note-failed", code: error.code }))
 }
 
 /** Variáveis que o fluxo recebe (catálogo e valores em flow-variables.ts) + estado interno. */
@@ -147,10 +158,15 @@ export async function startFormAutomation(tenantId: string, submissionId: string
       name: config.ai_name, tone: config.ai_tone, language: config.ai_language, identityText: config.identity_text,
       communicationStyle: config.communication_style_text, antiPatterns: config.anti_patterns_text,
     }
+    const definition = (ver as { definition?: unknown } | null)?.definition
     const result = await runFormEntry(
       { ctx, model: config.ai_model, persona, history: [], incomingText: "" },
       flow,
-      { variables: formFlowVariables(sub, formName, (ver as { definition?: unknown } | null)?.definition), formId: sub.form_id, submissionId: sub.id },
+      {
+        variables: formFlowVariables(sub, formName, definition), formId: sub.form_id, submissionId: sub.id,
+        // Quem atende vê o pedido inteiro na conversa (enviada agora ou já com um atendente).
+        onConversation: (conversationId) => noteRequest(tenantId, conversationId, sub, formName, definition),
+      },
     )
     outcome = outcomeFromEntry(result)
     conversationId = result.conversationId ?? null

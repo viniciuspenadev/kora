@@ -101,6 +101,25 @@ describe("formulário enviado → o Kora chama no WhatsApp", () => {
     expect(db.tables.studio_flow_runs).toHaveLength(0)
     expect(db.tables.chat_messages).toHaveLength(0)
   })
+  it("a nota do pedido entra na conversa ANTES de o fluxo seguir lá (vem antes de um Transferir)", async () => {
+    const order: string[] = []
+    const onConversation = vi.fn(async (id: string) => { order.push(`nota:${id}`) })
+    runOutreach.mockImplementation(async () => { order.push("enviou"); return { branch: "sent", conversationId: "wa" } })
+    await runFormEntry(input(), flow(), { ...seed(), onConversation })
+    expect(order).toEqual(["enviou", "nota:wa"])
+    expect(runOf("wa")).toBeDefined()
+  })
+  it("já com atendente: nada é enviado, mas o pedido é anotado na conversa dele", async () => {
+    runOutreach.mockResolvedValue({ branch: "blocked", reason: "human_attendance", conversationId: "wa-ana" })
+    const onConversation = vi.fn(async () => {})
+    expect(await runFormEntry(input(), flow(), { ...seed(), onConversation }))
+      .toEqual({ outcome: "blocked", reason: "human_attendance", conversationId: "wa-ana" })
+    expect(onConversation).toHaveBeenCalledWith("wa-ana")
+  })
+  it("nota que falha não para o fluxo", async () => {
+    await runFormEntry(input(), flow(), { ...seed(), onConversation: async () => { throw new Error("banco") } })
+    expect(runOf("wa")).toMatchObject({ status: "waiting" })
+  })
   it("trava segurou: o motivo volta para a situação do comprovante", async () => {
     runOutreach.mockResolvedValue({ branch: "blocked", reason: "phone_window" })
     expect(await runFormEntry(input(), flow(), seed())).toEqual({ outcome: "blocked", reason: "phone_window" })

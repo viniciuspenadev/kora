@@ -63,6 +63,23 @@ describe("o Kora chama quem enviou", () => {
     expect(db.tables.form_submissions[0]).toMatchObject({ outcome: "sent", conversation_id: "wa-1" })
     expect(notify).not.toHaveBeenCalled()
   })
+  it("quem atende vê o pedido inteiro: nota interna na conversa, que o cliente não vê", async () => {
+    runFormEntry.mockImplementation(async (_i: unknown, _f: unknown, s: { onConversation: (id: string) => Promise<void> }) => {
+      await s.onConversation("wa-1")
+      return { outcome: "sent", conversationId: "wa-1" }
+    })
+    db.tables.chat_messages = []
+    await startFormAutomation(T, "s-1")
+    expect(db.tables.chat_messages).toHaveLength(1)
+    expect(db.tables.chat_messages[0]).toMatchObject({ conversation_id: "wa-1", tenant_id: T, is_private_note: true, sender_type: "system",
+      metadata: { form: { form_id: F, submission_id: "s-1" } } })
+    expect(db.tables.chat_messages[0].content).toContain("📝 Pedido pelo formulário “Orçamento guiado”")
+  })
+  it("já em atendimento: a resposta guarda a conversa do atendente (para abrir dali)", async () => {
+    runFormEntry.mockResolvedValue({ outcome: "blocked", reason: "human_attendance", conversationId: "wa-ana" })
+    expect(await startFormAutomation(T, "s-1")).toBe("in_attendance")
+    expect(db.tables.form_submissions[0]).toMatchObject({ outcome: "in_attendance", conversation_id: "wa-ana" })
+  })
   it("cada resposta dispara uma vez só (a segunda chamada não faz nada)", async () => {
     await startFormAutomation(T, "s-1")
     expect(await startFormAutomation(T, "s-1")).toBeNull()

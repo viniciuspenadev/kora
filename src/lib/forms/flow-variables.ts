@@ -28,6 +28,39 @@ export function formTriggerVariables(form: FormTriggerOption | null): FormFlowVa
   ]
 }
 
+/**
+ * Nota interna na conversa do WhatsApp (o cliente não vê): o pedido inteiro, para quem atende
+ * saber o que a pessoa pediu sem abrir o formulário. Respostas na ordem das perguntas, pelo
+ * mesmo rótulo legível das variáveis.
+ */
+export function formAnswersNote(input: {
+  formName: string; definition: unknown; answers: Answers
+  source: { kind?: string; page?: string | null; utm?: Record<string, string> } | null
+}): string {
+  const def = normalizeDefinition(input.definition)
+  const lines = [`📝 Pedido pelo formulário “${input.formName}”`]
+  for (const q of def.questions) {
+    const v = input.answers?.[q.id]
+    if (v === undefined) continue
+    const label = answerLabel(q, v)
+    if (label) lines.push(`• ${q.title.trim() || q.id}: ${label}`)
+  }
+  const from: string[] = [SOURCE_LABEL[input.source?.kind ?? "link"] ?? "link próprio"]
+  const page = input.source?.page ? pageLabel(input.source.page) : ""
+  if (page && input.source?.kind !== "link") from.push(page)
+  if (input.source?.utm?.campaign) from.push(`campanha ${input.source.utm.campaign}`)
+  lines.push(`Veio de: ${from.join(" · ")}`)
+  return lines.join("\n").slice(0, 3000)
+}
+
+/** "https://www.site.com.br/lp/?utm=x" → "site.com.br/lp" */
+function pageLabel(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.hostname.replace(/^www\./, "")}${u.pathname.replace(/\/$/, "")}`.slice(0, 120)
+  } catch { return "" }
+}
+
 /** Os valores, a partir do comprovante. As respostas entram pelo RÓTULO legível ("Box"),
  *  que é o que a mensagem precisa e o que o Desviar compara. */
 export function buildFormFlowVariables(input: {

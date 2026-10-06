@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { outcomeFromEntry, asFormOutcome, NEEDS_CONTACT, FORM_OUTCOMES, FORM_OUTCOME_LABEL, NEEDS_CONTACT_REASON } from "./outcomes"
-import { buildFormFlowVariables, formTriggerVariables } from "./flow-variables"
+import { buildFormFlowVariables, formTriggerVariables, formAnswersNote } from "./flow-variables"
 import { normalizeDefinition } from "./definition"
 
 describe("situação depois do envio", () => {
@@ -40,6 +40,20 @@ describe("o que o fluxo recebe", () => {
       nome: "Marina  Lopes", primeiro_nome: "Marina", telefone: "+55 (47) 99812-4471",
       resposta: { servico: "Box", obra: "Itajaí · Fazenda" }, formulario: "Orçamento", origem: "QR", campanha: "verao",
     })
+  })
+  it("a nota na conversa traz o pedido inteiro, na ordem, e de onde veio", () => {
+    const note = formAnswersNote({ formName: "Orçamento", definition: def,
+      answers: { servico: "sacada", obra: { city: "Santo André", district: "Vila Assunção" } },
+      source: { kind: "embed", page: "https://www.bernardotecnoglass.com.br/envidracamento-de-sacadas/?utm_campaign=verao", utm: { campaign: "verao" } } })
+    expect(note).toBe([
+      "📝 Pedido pelo formulário “Orçamento”",
+      "• O que você precisa?: Sacada",
+      "• Onde é a obra?: Santo André · Vila Assunção",
+      "Veio de: site · bernardotecnoglass.com.br/envidracamento-de-sacadas · campanha verao",
+    ].join("\n"))
+    // Pergunta de outro caminho (não respondida) não entra; link próprio não repete o endereço.
+    expect(formAnswersNote({ formName: "x", definition: def, answers: { servico: "box" }, source: { kind: "link", page: "https://kora/f/a/b" } }))
+      .toBe("📝 Pedido pelo formulário “x”\n• O que você precisa?: Box\nVeio de: link próprio")
   })
   it("o catálogo do painel lista exatamente as chaves que o motor preenche", () => {
     const tokens = formTriggerVariables({ id: "f", name: "x", status: "published", questions: [{ id: "servico", title: "O que você precisa?" }] }).map((t) => t.token)

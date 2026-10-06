@@ -207,6 +207,27 @@ describe("publicar, pausar, retomar (Fase 2)", () => {
   })
 })
 
+describe("sites autorizados (formulário na página do site)", () => {
+  it("grava só o domínio, sem repetir, com trilha — e o editor recebe", async () => {
+    const r = await actions.saveFormAllowedDomains(F1, ["https://www.bernardotecnoglass.com.br/envidracamento-de-sacadas/", "bernardotecnoglass.com.br"])
+    expect(r).toEqual({ domains: ["bernardotecnoglass.com.br"] })
+    expect(db.tables.forms[0].allowed_domains).toEqual(["bernardotecnoglass.com.br"])
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: "form.allowed_domains", targetId: F1 }))
+    expect(await actions.getForm(F1)).toMatchObject({ allowedDomains: ["bernardotecnoglass.com.br"] })
+  })
+  it("endereço que não é site é recusado inteiro (nada gravado pela metade)", async () => {
+    expect(await actions.saveFormAllowedDomains(F1, ["site.com", "isso não"])).toMatchObject({ error: expect.stringContaining("não parece um site") })
+    expect(db.tables.forms[0].allowed_domains).toBeUndefined()
+  })
+  it("🔒 Ver não autoriza site; outra empresa não", async () => {
+    scope = agent("view")
+    expect(await actions.saveFormAllowedDomains(F1, ["site.com"])).toMatchObject({ error: expect.any(String) })
+    scope = admin()
+    expect(await actions.saveFormAllowedDomains(FX, ["site.com"])).toEqual({ error: "Formulário não encontrado." })
+    expect(db.tables.forms[1].allowed_domains).toBeUndefined()
+  })
+})
+
 describe("respostas (Fase 2)", () => {
   const V1 = "55555555-5555-4555-8555-555555555555"
   const V2 = "66666666-6666-4666-8666-666666666666"

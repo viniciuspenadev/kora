@@ -19,6 +19,11 @@ export function newPublicId(): string {
   return out
 }
 
+/** Tem a forma de um public_id? (o resto do caminho nem consulta o banco) */
+export function isPublicId(v: unknown): v is string {
+  return typeof v === "string" && /^[a-z0-9]{20}$/.test(v)
+}
+
 /** "Orçamento de Sacada!" → "orcamento-de-sacada" (≤60). Vazio → "formulario". */
 export function formSlugFrom(name: string): string {
   const s = name.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()

@@ -10,6 +10,7 @@ import { SUBMIT_LIMITS } from "@/lib/forms/limits"
 import { verifyRenderToken, hashIp } from "@/lib/forms/server"
 import { linkSubmissionContact } from "@/lib/forms/contact-link"
 import { startFormAutomation } from "@/lib/forms/automation"
+import { isPublicId } from "@/lib/forms/identity"
 import { outreachPhoneKey } from "@/lib/outreach/phone-key"
 
 // ═══════════════════════════════════════════════════════════════
@@ -43,7 +44,7 @@ function sameOrigin(req: NextRequest): boolean {
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ publicId: string }> }) {
   const { publicId } = await params
-  if (!/^[a-z0-9]{20}$/.test(publicId)) return fail(404, "Formulário não encontrado.")
+  if (!isPublicId(publicId)) return fail(404, "Formulário não encontrado.")
   if (!sameOrigin(req)) return fail(403, "Envio não autorizado.")
 
   const ip = getClientIp(req)

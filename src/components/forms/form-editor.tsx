@@ -447,7 +447,10 @@ export function FormEditor({ form, businessName, initialTab }: { form: FormDetai
                 <Switch checked={def.ending.showOpenWhatsApp} disabled={!canEdit} onChange={(v) => edit((d) => ({ ...d, ending: { ...d.ending, showOpenWhatsApp: v } }))}
                   label="Botão para a pessoa abrir o WhatsApp" description="Opcional. O padrão é o Kora chamar a pessoa — este botão é para quem prefere puxar a conversa." />
                 {def.ending.showOpenWhatsApp && (
-                  <input className={INPUT} disabled={!canEdit} value={def.ending.openWhatsAppLabel} maxLength={FORM_LIMITS.buttonLabel} onChange={(e) => edit((d) => ({ ...d, ending: { ...d.ending, openWhatsAppLabel: e.target.value } }))} />
+                  <>
+                    <input className={INPUT} disabled={!canEdit} value={def.ending.openWhatsAppLabel} maxLength={FORM_LIMITS.buttonLabel} onChange={(e) => edit((d) => ({ ...d, ending: { ...d.ending, openWhatsAppLabel: e.target.value } }))} />
+                    <p className="text-[11px] text-amber-700 leading-relaxed">Por enquanto o botão aparece só nesta prévia: no formulário publicado ele volta quando der para escolher qual número ele abre.</p>
+                  </>
                 )}
               </div>
             </div>

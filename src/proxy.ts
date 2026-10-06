@@ -15,11 +15,16 @@
 //  WEBHOOKS (/api/webhooks/*):
 //    sem UI, headers mínimos
 //
+//  FORMULÁRIO NO SITE DO CLIENTE (/embed/*):
+//    CSP do envio público com frame-ancestors = os sites que o dono autorizou; sem XFO
+//
 // CSP atual usa 'unsafe-inline'/'unsafe-eval' por necessidades de Next 16 + React 19
 // (hydration scripts, styled-jsx). Tightening pra nonces fica em S2.1.
 
 import { NextResponse, type NextRequest } from "next/server"
 import { randomBytes } from "crypto"
+import { frameAncestors, normalizeAllowedDomains } from "@/lib/forms/embed"
+import { isPublicId } from "@/lib/forms/identity"
 
 // ── Cookie de dispositivo (device trust — F1) ─────────────────────
 // Doc: docs/auth-device-trust-design.md §2. Identidade PERSISTENTE do navegador,
@@ -45,7 +50,7 @@ const TURNSTILE = "https://challenges.cloudflare.com"
 const META_SCRIPT = "https://connect.facebook.net"
 const META_FRAME  = "https://www.facebook.com"
 
-function buildCsp(opts: { turnstile?: boolean; meta?: boolean } = {}): string {
+function buildCsp(opts: { turnstile?: boolean; meta?: boolean; ancestors?: string } = {}): string {
   const cf = opts.turnstile ? ` ${TURNSTILE}` : ""
   const mS = opts.meta ? ` ${META_SCRIPT}` : ""                       // script-src
   const mF = opts.meta ? ` ${META_FRAME}` : ""                        // frame-src
@@ -66,8 +71,9 @@ function buildCsp(opts: { turnstile?: boolean; meta?: boolean } = {}): string {
     // preview de email no admin; blob: p/ a prévia do PDF da cotação (compositor).
     `frame-src 'self' blob:${cf}${mF}`,
     // 'self' permite iframes da própria app (ex: preview de email em /admin/emails).
-    // Mantém proteção anti-clickjacking de origens externas.
-    "frame-ancestors 'self'",
+    // Mantém proteção anti-clickjacking de origens externas. Exceção: o formulário dentro
+    // do site do cliente (/embed/*), que abre SÓ nos sites que o dono autorizou.
+    `frame-ancestors ${opts.ancestors ?? "'self'"}`,
     "base-uri 'self'",
     "form-action 'self'",
     "object-src 'none'",
@@ -78,6 +84,39 @@ const CSP_APP    = buildCsp()
 const CSP_SIGNUP = buildCsp({ turnstile: true })
 const CSP_META   = buildCsp({ meta: true })
 
+// ── Formulário dentro do site do cliente (/embed/<public_id>) ─────
+// A moldura só abre nos sites que o dono autorizou na aba Publicar, e quem impõe é o
+// NAVEGADOR (`frame-ancestors`; docs/forms-design.md S5). A lista vem do banco pela API
+// REST com a chave do servidor (o proxy não importa módulo server-only) e fica 60 s na
+// memória. Leitura que falhou = nenhum site (fail-closed), guardada só 5 s.
+const EMBED_TTL_MS      = 60_000
+const EMBED_FAIL_TTL_MS = 5_000
+const embedCache = new Map<string, { until: number; domains: string[] }>()
+
+async function embedDomains(publicId: string): Promise<string[]> {
+  const hit = embedCache.get(publicId)
+  if (hit && hit.until > Date.now()) return hit.domains
+  let domains: string[] | null = null
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key  = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (base && key) {
+    try {
+      const r = await fetch(`${base}/rest/v1/forms?select=allowed_domains&public_id=eq.${publicId}&limit=1`, {
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+        signal:  AbortSignal.timeout(2500),
+        cache:   "no-store",
+      })
+      if (r.ok) {
+        const rows = (await r.json()) as { allowed_domains?: unknown }[]
+        domains = normalizeAllowedDomains(rows[0]?.allowed_domains)
+      }
+    } catch { /* fora do ar: fail-closed abaixo */ }
+  }
+  if (embedCache.size > 2000) embedCache.clear()
+  embedCache.set(publicId, { until: Date.now() + (domains ? EMBED_TTL_MS : EMBED_FAIL_TTL_MS), domains: domains ?? [] })
+  return domains ?? []
+}
+
 const PERMISSIONS_POLICY = [
   "camera=()",
   // self = inbox grava voice notes via getUserMedia. Sem iframes/cross-origin.
@@ -87,7 +126,7 @@ const PERMISSIONS_POLICY = [
   "browsing-topics=()",
 ].join(", ")
 
-export function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   // Métodos perigosos/sem uso: TRACE/TRACK habilitam Cross-Site Tracing (XST).
   // A app só usa GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS → rejeita explícito (405).
   if (req.method === "TRACE" || req.method === "TRACK") {
@@ -139,6 +178,17 @@ export function proxy(req: NextRequest) {
   const isWebhookRoute = path.startsWith("/api/webhooks/")
 
   if (isWidgetRoute || isWebhookRoute) {
+    return res
+  }
+
+  // ── Formulário dentro do site do cliente ────────────────
+  // Sem X-Frame-Options (não sabe dizer "só estes sites"); o `frame-ancestors` manda.
+  if (path.startsWith("/embed/")) {
+    const publicId = path.split("/")[2] ?? ""
+    const domains = isPublicId(publicId) ? await embedDomains(publicId) : []
+    res.headers.set("Permissions-Policy", PERMISSIONS_POLICY)
+    res.headers.set("Content-Security-Policy", buildCsp({ turnstile: true, ancestors: frameAncestors(domains, { dev: !IS_PROD }) }))
+    res.headers.set("X-Robots-Tag", "noindex, nofollow")
     return res
   }
 

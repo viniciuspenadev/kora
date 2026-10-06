@@ -249,7 +249,8 @@ export function FormRenderer({ definition, businessName, mode = "preview", focus
             </span>
             <h3 className={`${titleFont} text-[24px] leading-tight`}>{fillPlaceholders(def.ending.title, vars) || "Pedido recebido!"}</h3>
             {def.ending.message && <p className="text-[14px] text-slate-600 leading-relaxed max-w-sm">{fillPlaceholders(def.ending.message, vars)}</p>}
-            {def.ending.showOpenWhatsApp && (
+            {/* Só na prévia: o botão ainda não tem número para abrir — no ar seria um botão morto. */}
+            {def.ending.showOpenWhatsApp && mode === "preview" && (
               <span className="mt-2 w-full h-11 rounded-xl border border-slate-300 grid place-items-center text-[14px] font-semibold" style={{ color: accent }}>
                 {def.ending.openWhatsAppLabel || "Abrir o WhatsApp"}
               </span>
@@ -326,7 +327,7 @@ function QuestionStep({ q, first, titleFont, value, hiddenByRule, inputCls, onCh
           {q.options.map((o) => {
             const Icon = o.icon ? FORM_ICON[o.icon] : null
             return (
-              <button key={o.id} type="button" onClick={() => onPick(o.id)} className={`w-full flex items-center gap-3 px-4 py-3 ${optBase} ${selected.includes(o.id) ? optOn : optOff}`}>
+              <button key={o.id} type="button" onClick={() => onPick(o.id)} aria-pressed={selected.includes(o.id)} className={`w-full flex items-center gap-3 px-4 py-3 ${optBase} ${selected.includes(o.id) ? optOn : optOff}`}>
                 {Icon && <span className="size-9 rounded-lg grid place-items-center shrink-0 bg-[color-mix(in_srgb,var(--fa)_10%,white)] text-[var(--fa)]"><Icon className="size-4.5" /></span>}
                 <span className="min-w-0 flex-1">
                   <span className="block text-[14px] font-semibold text-[var(--fa)]">{o.label || "Opção sem texto"}</span>
@@ -344,7 +345,7 @@ function QuestionStep({ q, first, titleFont, value, hiddenByRule, inputCls, onCh
           {q.options.map((o) => {
             const on = selected.includes(o.id)
             return (
-              <button key={o.id} type="button"
+              <button key={o.id} type="button" aria-pressed={on}
                 onClick={() => onChange(q.type === "multi" ? (on ? selected.filter((x) => x !== o.id) : [...selected, o.id]) : o.id)}
                 className={`min-h-12 px-3 py-2 text-[14px] font-semibold text-[var(--fa)] text-center ${optBase} ${on ? optOn : optOff}`}>
                 {q.type === "multi" && <span className={`mr-1.5 inline-block size-3.5 rounded border align-[-2px] ${on ? "bg-[var(--fa)] border-[var(--fa)]" : "border-slate-300"}`} />}
@@ -353,7 +354,7 @@ function QuestionStep({ q, first, titleFont, value, hiddenByRule, inputCls, onCh
             )
           })}
           {q.type === "chips" && q.allowUnknown && (
-            <button type="button" onClick={() => onChange(UNKNOWN_OPTION_ID)}
+            <button type="button" onClick={() => onChange(UNKNOWN_OPTION_ID)} aria-pressed={selected.includes(UNKNOWN_OPTION_ID)}
               className={`min-h-12 px-3 py-2 text-[13px] font-medium text-slate-600 text-center rounded-xl border border-dashed ${selected.includes(UNKNOWN_OPTION_ID) ? "border-[var(--fa)] bg-[color-mix(in_srgb,var(--fa)_7%,white)]" : "border-slate-300"}`}>
               {q.unknownLabel || "Não sei"}
             </button>
@@ -387,7 +388,7 @@ function QuestionStep({ q, first, titleFont, value, hiddenByRule, inputCls, onCh
         <div>
           <div className="grid grid-cols-11 gap-1">
             {Array.from({ length: 11 }, (_, n) => String(n)).map((n) => (
-              <button key={n} type="button" onClick={() => onChange(n)}
+              <button key={n} type="button" onClick={() => onChange(n)} aria-pressed={selected.includes(n)}
                 className={`h-11 rounded-lg border text-[14px] font-semibold tabular-nums ${selected.includes(n) ? "border-[var(--fa)] bg-[var(--fa)] text-white" : "border-slate-200 text-slate-700 hover:border-slate-300"}`}>{n}</button>
             ))}
           </div>

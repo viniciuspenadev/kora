@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { preConversationNodes, formFlowProblems, outreachContentProblem } from "./form-entry-rules"
+import { preConversationNodes, formFlowProblems, outreachContentProblem, resolveOutreachInstance, outreachInstanceFits } from "./form-entry-rules"
 
 // O que a publicação recusa num fluxo de formulário — a MESMA regra que o motor obedece.
 const n = (id: string, type: string, config: Record<string, unknown> = {}) => ({ id, type, config }) as never
@@ -34,6 +34,24 @@ describe("antes do Disparar: só o que roda sem conversa", () => {
     const graph = g([n("start", "start"), n("a", "set_variable"), n("b", "condition")],
       [{ from: "start", to: "a" }, { from: "a", to: "b" }, { from: "b", to: "a", branch: "true" }])
     expect(formFlowProblems(graph)).toEqual([])
+  })
+})
+
+describe("por qual número o Disparar sai", () => {
+  // Mais antigo primeiro (como o envio ordena).
+  const posVenda = { id: "pos", provider: "baileys" }, leads = { id: "leads", provider: "baileys" }, oficial = { id: "of", provider: "meta_cloud" }
+  it("o escolhido no nó vence; escolhido que sumiu é 'missing'", () => {
+    expect(resolveOutreachInstance({ channel: "baileys", instanceId: "leads" }, [posVenda, leads])).toEqual({ instance: leads, ambiguous: false, missing: false })
+    expect(resolveOutreachInstance({ channel: "baileys", instanceId: "apagado" }, [posVenda, leads]).missing).toBe(true)
+  })
+  it("🔴 dois números comuns e ninguém escolheu: sairia pelo mais antigo (Pós venda) — é ambíguo", () => {
+    expect(resolveOutreachInstance({ channel: "baileys" }, [posVenda, leads])).toEqual({ instance: posVenda, ambiguous: true, missing: false })
+    expect(resolveOutreachInstance({ channel: "baileys" }, [leads]).ambiguous).toBe(false)
+  })
+  it("automático prefere o oficial; com um oficial só, não é ambíguo", () => {
+    expect(resolveOutreachInstance({ channel: "auto" }, [posVenda, oficial, leads])).toEqual({ instance: oficial, ambiguous: false, missing: false })
+    expect(outreachInstanceFits("meta_cloud", "baileys")).toBe(false)
+    expect(outreachInstanceFits("baileys", "auto")).toBe(true)
   })
 })
 

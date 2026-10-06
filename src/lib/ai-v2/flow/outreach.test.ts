@@ -86,7 +86,8 @@ describe("Disparar no WhatsApp — trava e atendimento", () => {
     db.tables.chat_conversations.push({ id: "wa-old", tenant_id: "t", contact_id: "contact", instance_id: "i1",
       channel: "whatsapp", status: "open", assigned_to: "ana", ai_handling: false })
     const out = await runOutreach(ctx(), input)
-    expect(out).toEqual({ branch: "blocked", reason: "human_attendance" })
+    // Devolve a conversa do atendente: o formulário anota o pedido nela (nada é enviado).
+    expect(out).toEqual({ branch: "blocked", reason: "human_attendance", conversationId: "wa-old" })
     expect(sendText).not.toHaveBeenCalled()
     expect(db.tables.outreach_log).toHaveLength(0)   // nem reservou vaga
     const notedIn = note.mock.calls.map((c) => ((c as unknown[])[0] as { conversationId: string }).conversationId).sort()

@@ -51,6 +51,31 @@ export function preConversationNodes(graph: FlowGraph): FlowNode[] {
   return out
 }
 
+/** O número serve ao tipo escolhido no Disparar? (oficial = meta_cloud · comum = baileys · automático = qualquer) */
+export function outreachInstanceFits(provider: string | null | undefined, channel: string): boolean {
+  if (channel === "official") return provider === "meta_cloud"
+  if (channel === "baileys") return provider === "baileys"
+  return provider === "meta_cloud" || provider === "baileys"
+}
+
+/**
+ * Por qual número o Disparar sai — o MESMO critério do envio (`pickInstance`): o escolhido no
+ * nó; senão o do tipo (no automático, o oficial primeiro), o mais antigo. `ambiguous` = há
+ * mais de um candidato e ninguém escolheu (o fluxo de formulário exige a escolha).
+ */
+export function resolveOutreachInstance<T extends { id: string; provider: string | null }>(
+  cfg: Pick<OutreachNodeConfig, "channel" | "instanceId">, oldestFirst: readonly T[],
+): { instance: T | null; ambiguous: boolean; missing: boolean } {
+  if (cfg.instanceId) {
+    const inst = oldestFirst.find((i) => i.id === cfg.instanceId) ?? null
+    return { instance: inst, ambiguous: false, missing: !inst }
+  }
+  const channel = cfg.channel ?? "auto"
+  const fits = oldestFirst.filter((i) => outreachInstanceFits(i.provider, channel))
+  const pool = channel === "auto" && fits.some((i) => i.provider === "meta_cloud") ? fits.filter((i) => i.provider === "meta_cloud") : fits
+  return { instance: pool[0] ?? null, ambiguous: pool.length > 1, missing: false }
+}
+
 /** O Disparar tem com o que chamar? (o que depende dos números da empresa a publicação confere) */
 export function outreachContentProblem(cfg: OutreachNodeConfig): string | null {
   const hasText = !!cfg.text?.trim()

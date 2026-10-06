@@ -736,7 +736,7 @@ function EditorInner({ flow, departments, agents, businessHoursEnabled = false, 
           {!selectedNode
             ? <NodePicker onPick={addNode} />
             : selectedNode.type !== "start"
-            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} businessHoursEnabled={businessHoursEnabled} flowInstances={trigInstances} kanbans={kanbans} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} outcomeLabels={agentOutcomeLabels} flowChannels={flowChannels} onChange={updateConfig} onDelete={deleteSelected} />
+            ? <ConfigPanel node={selectedNode} departments={departments} agents={agents} businessHoursEnabled={businessHoursEnabled} flowInstances={trigInstances} tenantInstances={instances} kanbans={kanbans} flows={flows} stages={stages} tags={tags} services={services} resources={resources} dealFields={dealFields} ownerRouting={ownerRouting} flowVars={flowVars} outcomeLabels={agentOutcomeLabels} flowChannels={flowChannels} onChange={updateConfig} onDelete={deleteSelected} />
             : <FlowSettingsPanel
                 triggerType={triggerType} keywords={keywords}
                 mode={mode} channels={trigChannels} instances={trigInstances}

@@ -1,16 +1,17 @@
 "use client"
 
 // Aba Publicar do editor — espelha a tela "Publicar" do canvas aprovado: à esquerda, onde o
-// formulário aparece (link próprio agora; site e pop-up na próxima entrega); à direita, a
+// formulário aparece (link próprio e na página do site; pop-up depois); à direita, a
 // situação (publicar · pausar · retomar) e as proteções que já vêm ligadas.
 
 import { useState, useSyncExternalStore, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { Link2, Code2, MousePointerClick, Copy, ExternalLink, Loader2, ShieldCheck, Check } from "lucide-react"
+import { Link2, MousePointerClick, Copy, ExternalLink, Loader2, ShieldCheck, Check } from "lucide-react"
 import { toast } from "sonner"
 import { pauseForm, resumeForm, type FormDetail } from "@/lib/actions/forms"
 import { FormStatusChip } from "./status-chip"
 import { FormFlowLink } from "./form-flow-link"
+import { SiteEmbedCard } from "./site-embed-card"
 
 const CARD = "rounded-xl border border-slate-200 bg-white p-5"
 const BTN = "inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
@@ -79,8 +80,9 @@ export function PublishPanel({ form, changed, missing, publishing, onPublish }: 
           </div>
         </section>
 
+        <SiteEmbedCard formId={form.id} publicId={form.publicId} live={live} canEdit={canEdit} initialDomains={form.allowedDomains} />
+
         {[
-          { icon: Code2, title: "Na página do site", text: "Uma linha de código para colar onde o formulário deve aparecer. Ele ocupa o espaço e ajusta a altura sozinho." },
           { icon: MousePointerClick, title: "Pop-up por cima da página", text: "O mesmo código, abrindo ao clicar num botão, depois de alguns segundos, ao rolar ou ao sair." },
         ].map((s) => (
           <section key={s.title} className={`${CARD} flex gap-4 bg-slate-50/60`}>
@@ -149,6 +151,7 @@ export function PublishPanel({ form, changed, missing, publishing, onPublish }: 
               "WhatsApp conferido (DDD e 9º dígito) antes de enviar",
               "Aceite de contato pelo WhatsApp, com registro de data e texto aceito",
               "Limite de envios repetidos do mesmo aparelho e número",
+              "No site, só aparece nos endereços que você autorizou",
             ].map((t) => (
               <li key={t} className="flex items-start gap-2 text-[13px] text-slate-700"><ShieldCheck className="size-4 text-emerald-600 shrink-0 mt-px" />{t}</li>
             ))}

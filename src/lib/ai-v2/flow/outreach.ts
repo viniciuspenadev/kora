@@ -39,7 +39,8 @@ export type OutreachReason =
 
 export interface OutreachResult {
   branch:          OutreachBranch
-  /** Fio WhatsApp onde a mensagem foi gravada (só quando `sent`, fora do simulador). */
+  /** Fio WhatsApp onde a mensagem foi gravada (`sent`, fora do simulador) — ou, em
+   *  `human_attendance`, a conversa que já está com o atendente (nada foi enviado nela). */
   conversationId?: string
   reason?:         OutreachReason
 }
@@ -137,7 +138,7 @@ export async function runOutreach(ctx: ExecCtx, input: OutreachInput): Promise<O
   const human = live as { id: string; assigned_to: string | null; ai_handling: boolean | null } | null
   if (human && human.id !== ctx.conversationId && human.assigned_to && !human.ai_handling) {
     await holdForHuman(ctx, human.id, human.assigned_to, input.origin)
-    return { branch: "blocked", reason: "human_attendance" }
+    return { branch: "blocked", reason: "human_attendance", conversationId: human.id }
   }
 
   // 5. Trava anti-canhão: reserva a vaga ANTES de abrir conversa ou enviar.

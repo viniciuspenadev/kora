@@ -26,7 +26,7 @@ async function assertAutomationQuota(tenantId: string): Promise<string | null> {
   return null
 }
 import type { FlowGraph, FlowTrigger, MessageNodeConfig, OutreachNodeConfig } from "@/lib/ai-v2/flow/types"
-import { formFlowProblems, preConversationNodes } from "@/lib/ai-v2/flow/form-entry-rules"
+import { formFlowProblems, preConversationNodes, resolveOutreachInstance } from "@/lib/ai-v2/flow/form-entry-rules"
 import type { AgendaBinding } from "@/lib/ai-v2/capabilities/types"
 import { checkFlowGraphLimits } from "@/lib/ai-v2/flow/limits"
 import type { StudioFlowSummary, StudioFlowFull } from "@/types/studio"
@@ -308,18 +308,17 @@ async function validateFormFlowPublish(tenantId: string, flowId: string, trigger
 
   const outreachNodes = preConversationNodes(graph).filter((n) => n.type === "outreach")
   if (outreachNodes.length) {
-    const { data: insts } = await supabaseAdmin.from("whatsapp_instances").select("id, provider").eq("tenant_id", tenantId)
+    const { data: insts } = await supabaseAdmin.from("whatsapp_instances").select("id, provider")
+      .eq("tenant_id", tenantId).order("created_at", { ascending: true })
     const list = (insts ?? []) as { id: string; provider: string | null }[]
     for (const n of outreachNodes) {
       const cfg = n.config as unknown as OutreachNodeConfig
-      const channel = cfg.channel ?? "auto"
-      // O mesmo critério do Disparar (`pickInstance`): número escolhido → o do canal → no
-      // "automático", o oficial vem primeiro.
-      const inst = cfg.instanceId ? list.find((i) => i.id === cfg.instanceId)
-        : channel === "official" ? list.find((i) => i.provider === "meta_cloud")
-        : channel === "baileys" ? list.find((i) => i.provider === "baileys")
-        : list.find((i) => i.provider === "meta_cloud") ?? list.find((i) => i.provider === "baileys")
+      // O mesmo critério do envio (`pickInstance`), em regra única (form-entry-rules.ts).
+      const { instance: inst, ambiguous, missing } = resolveOutreachInstance(cfg, list)
+      if (missing) return "O número escolhido no Disparar no WhatsApp não existe mais. Escolha outro no nó."
       if (!inst) return "O Disparar no WhatsApp não tem número para sair. Conecte um número em Integrações ou escolha outro no nó."
+      // Mais de um número e nenhum escolhido: a pessoa responderia por um número que ninguém escolheu.
+      if (ambiguous) return "Esta conta tem mais de um número: escolha no Disparar no WhatsApp por qual o Kora chama quem enviou o formulário."
       if (inst.provider === "meta_cloud" && !cfg.template?.name?.trim()) {
         return "O Disparar no WhatsApp vai sair pelo número oficial, que só aceita modelo aprovado para chamar quem ainda não falou com você. Escolha um modelo no nó ou use o número comum."
       }

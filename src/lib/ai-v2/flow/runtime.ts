@@ -1413,7 +1413,7 @@ export interface FormEntryResult {
  * Roda o fluxo de um FORMULÁRIO enviado (docs/forms-design.md §4.3).
  *
  * Quem enviou ainda não falou com a empresa: não há conversa, e nada aqui grava run nem
- * nota interna. Só os nós instantâneos (`PRE_CONVERSATION_NODES`) executam, pelas MESMAS
+ * nota interna (quem chama anota pelo `onConversation`). Só os nós instantâneos (`PRE_CONVERSATION_NODES`) executam, pelas MESMAS
  * funções do `runFlow`. O Disparar no WhatsApp abre o fio e passa o bastão: o run NASCE no
  * WhatsApp, já no nó seguinte, e dali é um fluxo comum (Esperar, Transferir, Agente IA…).
  *
@@ -1421,7 +1421,12 @@ export interface FormEntryResult {
  * DIGITADO no formulário — é para ele que o Disparar manda.
  */
 export async function runFormEntry(
-  input: FlowExecInput, flow: FlowRow, seed: { variables: Record<string, unknown>; formId: string; submissionId: string },
+  input: FlowExecInput, flow: FlowRow,
+  seed: {
+    variables: Record<string, unknown>; formId: string; submissionId: string
+    /** O Disparar chegou a uma conversa do WhatsApp (ex.: anotar o pedido nela). Falhar não para o fluxo. */
+    onConversation?: (conversationId: string) => Promise<void>
+  },
 ): Promise<FormEntryResult> {
   ensureCapabilitiesRegistered()
   const { ctx } = input
@@ -1476,6 +1481,12 @@ export async function runFormEntry(
           { origin: "form", flowId: flow.id, formId: seed.formId, submissionId: seed.submissionId }))
         variables[`outreach:${node.id}`] = { branch: out.branch, reason: out.reason ?? null }
         const next = edgeTarget(graph, node.id, out.branch)
+        // Chegou a uma conversa (enviou, ou ela já estava com um atendente): quem chamou anota
+        // ali o que precisa — ANTES do bastão, para a nota vir antes de um Transferir.
+        if (out.conversationId && seed.onConversation && !ctx.dryRun) {
+          try { await seed.onConversation(out.conversationId) }
+          catch (e) { console.error(JSON.stringify({ src: "studio-runtime", kind: "form-note-failed", message: (e as Error)?.message ?? "erro" })) }
+        }
         if (out.branch === "sent") {
           // Bastão: o resto do fluxo é conversa com a pessoa NO WHATSAPP.
           if (next && out.conversationId && !ctx.dryRun) {
@@ -1488,7 +1499,7 @@ export async function runFormEntry(
           }
           return { outcome: "sent", conversationId: out.conversationId ?? null }
         }
-        last = { outcome: out.branch, reason: out.reason ?? null }
+        last = { outcome: out.branch, reason: out.reason ?? null, ...(out.conversationId ? { conversationId: out.conversationId } : {}) }
         currentId = next
         break
       }
