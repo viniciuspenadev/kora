@@ -13,6 +13,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { requireModule, hasModule } from "@/lib/modules"
 import { asFormOutcome, type FormOutcome } from "@/lib/forms/outcomes"
 import { normalizeAllowedDomain, normalizeAllowedDomains, MAX_ALLOWED_DOMAINS } from "@/lib/forms/embed"
+import { buildFormResults, periodStart, asResultPeriod, TRACK_STEP, type FormResults, type ResultPeriod, type ResultsSubmission } from "@/lib/forms/results"
 import { getViewerScope, canViewForms, canManageForms } from "@/lib/visibility"
 import { logAudit } from "@/lib/audit"
 import { normalizeDefinition, draftProblems, publishProblems, answerLabel, type Answers, type FormDefinition } from "@/lib/forms/definition"
@@ -38,6 +39,8 @@ export interface FormListItem {
   flow:           FormFlowLink | null
   /** Respostas que viraram conversa (a pessoa respondeu a mensagem do Kora). */
   conversations:  number
+  /** Quantos começaram a responder nos últimos 30 dias (contador sem dado pessoal). */
+  starts30d:      number
 }
 
 export interface FormFlowLink { id: string; name: string; live: boolean }
@@ -168,7 +171,39 @@ async function takenNamesAndSlugs(tenantId: string, exceptId?: string): Promise<
 }
 
 // ── Leitura ──────────────────────────────────────────────────────
-export async function listForms(): Promise<{ items: FormListItem[]; canManage: boolean; canCreateFlow: boolean; replied30d: number } | { error: string }> {
+/**
+ * Números da Fase 4 para a lista (30 dias): quantos COMEÇARAM cada formulário (contador sem dado
+ * pessoal → "Conclusão") e quanto o Kora leva, em média, do envio até chamar ("Até a 1ª mensagem").
+ * Falhou = vazio: a lista continua de pé, com "—".
+ */
+async function listFunnelStats(tenantId: string): Promise<{ starts: Map<string, number>; avgSecondsToCall: number | null }> {
+  const since = periodStart(30)
+  const starts = new Map<string, number>()
+  const [{ data: rows, error }, { data: calls }] = await Promise.all([
+    supabaseAdmin.from("form_step_stats").select("form_id, reached")
+      .eq("tenant_id", tenantId).eq("step", TRACK_STEP.start).gte("day", since.day).limit(10000),
+    supabaseAdmin.from("outreach_log").select("submission_id, created_at")
+      .eq("tenant_id", tenantId).eq("origin", "form").eq("outcome", "sent").gte("created_at", since.iso)
+      .not("submission_id", "is", null).limit(2000),
+  ])
+  if (error) console.error("[forms] começaram (lista):", error.code)
+  for (const r of (rows ?? []) as { form_id: string; reached: number }[]) starts.set(r.form_id, (starts.get(r.form_id) ?? 0) + (r.reached || 0))
+
+  const sent = (calls ?? []) as { submission_id: string; created_at: string }[]
+  const created = new Map<string, string>()
+  for (let i = 0; i < sent.length; i += 150) {
+    const { data } = await supabaseAdmin.from("form_submissions").select("id, created_at")
+      .eq("tenant_id", tenantId).in("id", sent.slice(i, i + 150).map((c) => c.submission_id))
+    for (const s of (data ?? []) as { id: string; created_at: string }[]) created.set(s.id, s.created_at)
+  }
+  const secs = sent.map((c) => {
+    const at = created.get(c.submission_id)
+    return at ? (Date.parse(c.created_at) - Date.parse(at)) / 1000 : NaN
+  }).filter((x) => Number.isFinite(x) && x >= 0)
+  return { starts, avgSecondsToCall: secs.length ? Math.round(secs.reduce((a, b) => a + b, 0) / secs.length) : null }
+}
+
+export async function listForms(): Promise<{ items: FormListItem[]; canManage: boolean; canCreateFlow: boolean; replied30d: number; starts30d: number; avgSecondsToCall: number | null } | { error: string }> {
   const g = await gate("view")
   if ("error" in g) return g
   const { data, error } = await supabaseAdmin.from("forms")
@@ -177,8 +212,8 @@ export async function listForms(): Promise<{ items: FormListItem[]; canManage: b
     .order("updated_at", { ascending: false }).order("id", { ascending: false })
     .limit(200)
   if (error) return { error: "Não foi possível carregar os formulários." }
-  const [stats, flows, conv, canCreateFlow] = await Promise.all([
-    formStats(g.tenantId), formFlows(g.tenantId), conversationStats(g.tenantId), canCreateFlowFor(g),
+  const [stats, flows, conv, canCreateFlow, funnel] = await Promise.all([
+    formStats(g.tenantId), formFlows(g.tenantId), conversationStats(g.tenantId), canCreateFlowFor(g), listFunnelStats(g.tenantId),
   ])
   const items = ((data ?? []) as Record<string, unknown>[]).map((r) => {
     const qs = r.questions ?? (r.draft as { questions?: unknown } | undefined)?.questions
@@ -195,9 +230,11 @@ export async function listForms(): Promise<{ items: FormListItem[]; canManage: b
       lastResponseAt: st?.lastAt ?? null,
       flow:           flows.get(r.id as string) ?? null,
       conversations:  conv.byForm.get(r.id as string) ?? 0,
+      starts30d:      funnel.starts.get(r.id as string) ?? 0,
     }
   })
-  return { items, canManage: g.canManage, canCreateFlow, replied30d: conv.replied30d }
+  const starts30d = [...funnel.starts.values()].reduce((a, b) => a + b, 0)
+  return { items, canManage: g.canManage, canCreateFlow, replied30d: conv.replied30d, starts30d, avgSecondsToCall: funnel.avgSecondsToCall }
 }
 
 /** Contagem por formulário (no banco). Falhou = zeros: a lista continua de pé. */
@@ -573,4 +610,62 @@ export async function listFormSubmissions(formId: string, opts: { cursor?: Submi
     hasMore:    rows.length > SUBMISSIONS_PAGE,
     nextCursor: rows.length > SUBMISSIONS_PAGE && last ? { createdAt: last.created_at as string, id: last.id as string } : null,
   }
+}
+
+// ── Resultados (Fase 4; docs/forms-design.md §13) ────────────────
+/** Teto de respostas lidas por período (acima disso a aba avisa que o número é parcial). */
+const RESULTS_MAX_SUBMISSIONS = 5000
+
+/**
+ * Números da aba Resultados num período (7/30/90 dias, horário de Brasília). Contadores de
+ * passo (form_step_stats, sem dado pessoal) + comprovantes do período (situação, origem,
+ * respostas) + livro de disparos (quanto o Kora levou para chamar). Exige Ver formulários.
+ */
+export async function getFormResults(formId: string, days: unknown): Promise<
+  { results: FormResults; period: ResultPeriod; partial: boolean; published: boolean } | { error: string }
+> {
+  const g = await gate("view")
+  if ("error" in g) return g
+  if (!isUuid(formId)) return { error: "Formulário não encontrado." }
+  const period = asResultPeriod(days)
+  const { data: form } = await supabaseAdmin.from("forms").select("id, published_version_id")
+    .eq("tenant_id", g.tenantId).eq("id", formId).maybeSingle()
+  const f = form as { id: string; published_version_id: string | null } | null
+  if (!f) return { error: "Formulário não encontrado." }
+  const since = periodStart(period)
+
+  const [{ data: ver }, { data: stats, error: statsErr }, { data: subs, error: subsErr }, { data: calls }] = await Promise.all([
+    f.published_version_id
+      ? supabaseAdmin.from("form_versions").select("definition").eq("tenant_id", g.tenantId).eq("id", f.published_version_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabaseAdmin.from("form_step_stats").select("step, reached, exits")
+      .eq("tenant_id", g.tenantId).eq("form_id", formId).gte("day", since.day),
+    supabaseAdmin.from("form_submissions").select("id, created_at, outcome, conversation_id, source, answers")
+      .eq("tenant_id", g.tenantId).eq("form_id", formId).gte("created_at", since.iso)
+      .order("created_at", { ascending: false }).limit(RESULTS_MAX_SUBMISSIONS),
+    supabaseAdmin.from("outreach_log").select("submission_id, created_at")
+      .eq("tenant_id", g.tenantId).eq("form_id", formId).eq("outcome", "sent").gte("created_at", since.iso)
+      .limit(RESULTS_MAX_SUBMISSIONS),
+  ])
+  if (statsErr) console.error("[forms] resultados (contadores):", statsErr.code)
+  if (subsErr) return { error: "Não foi possível carregar os resultados." }
+
+  const rows = (subs ?? []) as { id: string; created_at: string; outcome: string; conversation_id: string | null; source: ResultsSubmission["source"]; answers: Answers }[]
+  const replied = await repliedConversations(g.tenantId, rows)
+  const calledAt = new Map<string, string>()
+  for (const c of (calls ?? []) as { submission_id: string | null; created_at: string }[]) if (c.submission_id) calledAt.set(c.submission_id, c.created_at)
+
+  const results = buildFormResults({
+    definition: (ver as { definition?: unknown } | null)?.definition ?? {},
+    stats: ((stats ?? []) as { step: string; reached: number; exits: number }[]),
+    submissions: rows.map((r) => {
+      const at = calledAt.get(r.id)
+      return {
+        created_at: r.created_at, outcome: r.outcome, source: r.source, answers: r.answers ?? {},
+        replied: replied.has(`${r.conversation_id}|${r.created_at}`),
+        secondsToCall: at ? Math.max(0, Math.round((Date.parse(at) - Date.parse(r.created_at)) / 1000)) : null,
+      }
+    }),
+  })
+  return { results, period, partial: rows.length >= RESULTS_MAX_SUBMISSIONS, published: !!f.published_version_id }
 }

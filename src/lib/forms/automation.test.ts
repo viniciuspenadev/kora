@@ -72,7 +72,8 @@ describe("o Kora chama quem enviou", () => {
     await startFormAutomation(T, "s-1")
     expect(db.tables.chat_messages).toHaveLength(1)
     expect(db.tables.chat_messages[0]).toMatchObject({ conversation_id: "wa-1", tenant_id: T, is_private_note: true, sender_type: "system",
-      metadata: { form: { form_id: F, submission_id: "s-1" } } })
+      metadata: { form: { form_id: F, submission_id: "s-1", formName: "Orçamento guiado",
+        items: [expect.objectContaining({ value: "Orçamento novo" })], origin: { label: "link próprio", page: "", campaign: "" } } } })
     expect(db.tables.chat_messages[0].content).toContain("📝 Pedido pelo formulário “Orçamento guiado”")
   })
   it("já em atendimento: a resposta guarda a conversa do atendente (para abrir dali)", async () => {

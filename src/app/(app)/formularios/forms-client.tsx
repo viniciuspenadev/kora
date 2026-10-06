@@ -3,8 +3,8 @@
 // Lista de Formulários — espelha a tela 1 do canvas aprovado pelo dono ("Kora Formulários"):
 // título + "Ver modelos"/"Novo formulário", 4 números do topo, busca + 4 filtros, tabela com
 // Respostas · Conclusão · Conversas · Automação no Studio · Última resposta.
-// Respostas e conversas são reais (Fases 2 e 3). Enquanto um número não existe (conclusão e
-// tempo até a 1ª mensagem, na Fase 4) a tela mostra "—", como o desenho mostra para rascunho — nunca esconde a coluna.
+// Respostas e conversas são reais (Fases 2 e 3); conclusão e tempo até a 1ª mensagem, da Fase 4.
+// Sem dado (rascunho, ninguém começou), a tela mostra "—", como o desenho — nunca esconde a coluna.
 
 import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -22,6 +22,7 @@ import { FormStatusChip } from "@/components/forms/status-chip"
 import { FormFlowLink } from "@/components/forms/form-flow-link"
 import { duplicateForm, deleteForm, type FormListItem, type FormStatus } from "@/lib/actions/forms"
 import { isTemplateKey, templateInfo } from "@/lib/forms/templates"
+import { completionPct, formatDuration } from "@/lib/forms/results"
 
 function ago(iso: string): string {
   const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000)
@@ -40,8 +41,11 @@ const stepsLabel = (n: number) => `${n + 1} passo${n + 1 === 1 ? "" : "s"}`
 
 const HEADER_BTN = "inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold rounded-lg transition-colors"
 
-export function FormsClient({ items, canManage, canCreateFlow = false, replied30d = 0, businessName }: {
-  items: FormListItem[]; canManage: boolean; canCreateFlow?: boolean; replied30d?: number; businessName: string
+export function FormsClient({ items, canManage, canCreateFlow = false, replied30d = 0, starts30d = 0, avgSecondsToCall = null, businessName }: {
+  items: FormListItem[]; canManage: boolean; canCreateFlow?: boolean; replied30d?: number
+  /** Fase 4: quantos começaram (30 dias) e quanto o Kora leva para chamar. */
+  starts30d?: number; avgSecondsToCall?: number | null
+  businessName: string
 }) {
   const [gallery, setGallery] = useState(false)
   const [q, setQ] = useState("")
@@ -82,9 +86,10 @@ export function FormsClient({ items, canManage, canCreateFlow = false, replied30
           {/* Números do topo — zerados até existirem respostas (Fase 2). */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KpiTile icon={FileText} label="Respostas · 30 dias" value={responses30d.toLocaleString("pt-BR")} caption={`em ${published} formulário${published === 1 ? "" : "s"} publicado${published === 1 ? "" : "s"}`} />
-            <KpiTile icon={CheckCircle2} iconClass="text-sky-600" label="Taxa de conclusão" value="—" caption="de quem começou, terminou" />
+            <KpiTile icon={CheckCircle2} iconClass="text-sky-600" label="Taxa de conclusão"
+              value={(() => { const c = completionPct(responses30d, starts30d); return c === null ? "—" : `${c}%` })()} caption="de quem começou, terminou" />
             <KpiTile icon={MessageCircle} iconClass="text-emerald-700" label="Viraram conversa" value={replied30d.toLocaleString("pt-BR")} caption="responderam a mensagem do Kora" />
-            <KpiTile icon={Clock} iconClass="text-amber-700" label="Até a 1ª mensagem" value="—" caption="em média, depois do envio" />
+            <KpiTile icon={Clock} iconClass="text-amber-700" label="Até a 1ª mensagem" value={formatDuration(avgSecondsToCall)} caption="em média, depois do envio" />
           </div>
 
           <Toolbar
@@ -170,8 +175,10 @@ function Row({ f, canManage, canCreateFlow }: { f: FormListItem; canManage: bool
       </td>
       <td className="py-3.5 px-3"><FormStatusChip status={f.status} /></td>
       <td className="py-3.5 px-3 text-right tabular-nums font-semibold text-slate-800 hidden md:table-cell">{live ? f.responsesTotal.toLocaleString("pt-BR") : dash}</td>
-      {/* Conclusão (quem começou × quem enviou) chega com os números da Fase 4. */}
-      <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">{dash}</td>
+      {/* Conclusão (30 dias): de quem começou, quantos enviaram (Fase 4). */}
+      <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">
+        {(() => { const c = live ? completionPct(f.responses30d, f.starts30d) : null; return c === null ? dash : `${c}%` })()}
+      </td>
       {/* Conversas = respostas em que a pessoa respondeu a mensagem do Kora. */}
       <td className="py-3.5 px-3 text-right tabular-nums text-slate-700 hidden md:table-cell">{live ? f.conversations.toLocaleString("pt-BR") : dash}</td>
       <td className="py-3.5 px-3 hidden lg:table-cell" onClick={(e) => e.stopPropagation()}>

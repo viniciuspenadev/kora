@@ -8,7 +8,8 @@
 // Regras (visibilidade, validação, rótulos) vêm de `@/lib/forms/definition` — aqui é só tela.
 // Uma pergunta por tela → "Seus dados" (WhatsApp + aceite) → resumo → tela final.
 
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { TRACK_STEP } from "@/lib/forms/results"
 import { Check, ChevronLeft, ChevronRight, Loader2, Lock } from "lucide-react"
 import {
   visibleQuestions, visibleAnswers, isQuestionShown, answerProblem, answerLabel, fillPlaceholders, UNKNOWN_OPTION_ID,
@@ -37,6 +38,9 @@ interface Props {
    *  Quando muda, a prévia recomeça com elas — e a pergunta do caminho aparece de verdade. */
   presetAnswers?: Answers | null
   onSubmit?:    (s: FormSubmission) => Promise<{ ok: true } | { error: string }>
+  /** Só no ar (Resultados): "começou" (1ª resposta) e cada passo que aparece. Chave do passo =
+   *  chave da pergunta · "__contact" · "__review" (lib/forms/results.ts). */
+  onTrack?:     (e: { type: "start" | "step"; step: string }) => void
 }
 
 /** "(47) 99812-4471" enquanto digita. Começou com "+": número de fora, não mexe. */
@@ -51,7 +55,7 @@ function maskBrPhone(raw: string): string {
 
 const EMPTY_CONTACT: ContactAnswer = { name: "", whatsapp: "", consent: false, marketing: false }
 
-export function FormRenderer({ definition, businessName, mode = "preview", focusQuestionId = null, focusStep = null, presetAnswers = null, onSubmit }: Props) {
+export function FormRenderer({ definition, businessName, mode = "preview", focusQuestionId = null, focusStep = null, presetAnswers = null, onSubmit, onTrack }: Props) {
   const def = definition
   const [answers, setAnswers] = useState<Answers>(() => presetAnswers ?? {})
   const [contact, setContact] = useState<ContactAnswer>(EMPTY_CONTACT)
@@ -111,8 +115,23 @@ export function FormRenderer({ definition, businessName, mode = "preview", focus
   const titleFont = def.appearance.titleFont === "serif" ? "font-serif" : "font-sans font-semibold"
   const vars = { nome: contact.name.split(" ")[0], empresa: businessName }
 
+  // Resultados (só no ar): o passo na tela e o "começou" (1ª resposta, em qualquer passo).
+  const stepKey = step.kind === "question" ? step.question.id : step.kind === "contact" ? TRACK_STEP.contact : step.kind === "review" ? TRACK_STEP.review : null
+  const trackRef = useRef(onTrack)
+  const started = useRef(false)
+  useEffect(() => { trackRef.current = onTrack })
+  useEffect(() => {
+    if (mode === "live" && stepKey) trackRef.current?.({ type: "step", step: stepKey })
+  }, [mode, stepKey])
+  function markStarted() {
+    if (mode !== "live" || started.current || !stepKey) return
+    started.current = true
+    trackRef.current?.({ type: "start", step: stepKey })
+  }
+
   function setAnswer(q: FormQuestion, v: AnswerValue) {
     setProblem(null)
+    markStarted()
     setAnswers((a) => ({ ...a, [q.id]: v }))
   }
 
@@ -191,7 +210,7 @@ export function FormRenderer({ definition, businessName, mode = "preview", focus
             hiddenByRule={!isQuestionShown(def, step.question, answers)}
             inputCls={inputCls}
             onChange={(v) => setAnswer(step.question, v)}
-            onPick={(v) => { const a = { ...answers, [step.question.id]: v }; setAnswers(a); next(a) }}
+            onPick={(v) => { markStarted(); const a = { ...answers, [step.question.id]: v }; setAnswers(a); next(a) }}
             onEnter={() => next()} />
         )}
 
@@ -204,12 +223,12 @@ export function FormRenderer({ definition, businessName, mode = "preview", focus
             <label className="block">
               <span className="block text-xs font-semibold text-slate-700 mb-1.5">Seu nome</span>
               <input className={inputCls} value={contact.name} autoComplete="name" maxLength={80}
-                onChange={(e) => { setProblem(null); setContact({ ...contact, name: e.target.value }) }} />
+                onChange={(e) => { setProblem(null); markStarted(); setContact({ ...contact, name: e.target.value }) }} />
             </label>
             <label className="block">
               <span className="block text-xs font-semibold text-slate-700 mb-1.5">WhatsApp</span>
               <input className={inputCls} value={contact.whatsapp} inputMode="tel" autoComplete="tel" placeholder="(00) 00000-0000"
-                onChange={(e) => { setProblem(null); setContact({ ...contact, whatsapp: maskBrPhone(e.target.value) }) }}
+                onChange={(e) => { setProblem(null); markStarted(); setContact({ ...contact, whatsapp: maskBrPhone(e.target.value) }) }}
                 onKeyDown={(e) => { if (e.key === "Enter") next() }} />
             </label>
             <Consent checked={contact.consent} accent={accent} onChange={(v) => { setProblem(null); setContact({ ...contact, consent: v }) }}

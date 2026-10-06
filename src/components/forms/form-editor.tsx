@@ -35,10 +35,11 @@ import { canonicalJson } from "@/lib/forms/canonical"
 import { FormStatusChip } from "./status-chip"
 import { PublishPanel } from "./publish-panel"
 import { ResponsesPanel } from "./responses-panel"
+import { ResultsPanel } from "./results-panel"
 import { FormRenderer } from "./form-renderer"
 import { FORM_ICON_LABEL } from "./form-icons"
 
-type Tab = "perguntas" | "aparencia" | "final" | "publicar" | "respostas"
+type Tab = "perguntas" | "aparencia" | "final" | "publicar" | "respostas" | "resultados"
 type Sel = { kind: "question"; id: string } | { kind: "contact" } | { kind: "review" }
 type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict"
 type Edit = (fn: (d: FormDefinition) => FormDefinition) => void
@@ -63,7 +64,7 @@ const INPUT = "w-full h-9 px-3 text-xs border border-slate-200 rounded-lg bg-whi
 const SECTION = "text-[11px] font-semibold uppercase tracking-wider text-slate-500"
 const PILL = (on: boolean) => `h-8 px-3 rounded-full border text-xs font-medium transition-colors ${on ? "bg-primary text-white border-primary" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`
 
-export function FormEditor({ form, businessName, initialTab }: { form: FormDetail; businessName: string; initialTab?: "respostas" | "publicar" }) {
+export function FormEditor({ form, businessName, initialTab }: { form: FormDetail; businessName: string; initialTab?: "respostas" | "publicar" | "resultados" }) {
   const router = useRouter()
   const canEdit = form.canManage
   const [def, setDef] = useState<FormDefinition>(form.draft)
@@ -260,15 +261,12 @@ export function FormEditor({ form, businessName, initialTab }: { form: FormDetai
           <button key={k} type="button" onClick={() => setTab(k)} data-active={tab === k}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors ${tab === k ? "text-primary-700 border-primary" : "text-slate-600 border-transparent hover:text-slate-900"}`}>{l}</button>
         ))}
-        {([["publicar", "Publicar"], ["respostas", "Respostas"]] as const).map(([k, l]) => (
+        {([["publicar", "Publicar"], ["respostas", "Respostas"], ["resultados", "Resultados"]] as const).map(([k, l]) => (
           <button key={k} type="button" onClick={() => setTab(k)} data-active={tab === k}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors inline-flex items-center gap-1.5 ${tab === k ? "text-primary-700 border-primary" : "text-slate-600 border-transparent hover:text-slate-900"}`}>
             {l}{k === "respostas" && form.responsesTotal > 0 && <span className="text-[11px] font-semibold bg-slate-100 text-slate-600 rounded-full px-1.5 tabular-nums">{form.responsesTotal}</span>}
           </button>
         ))}
-        <span className="px-4 py-2.5 text-sm font-medium text-slate-400 inline-flex items-center gap-1.5 whitespace-nowrap cursor-not-allowed" aria-disabled>
-          Resultados<span className="text-[9px] font-semibold bg-slate-100 text-slate-500 px-1 py-0.5 rounded uppercase">em breve</span>
-        </span>
       </div>
 
       {(save === "conflict" || save === "error" || !canEdit) && (
@@ -286,6 +284,7 @@ export function FormEditor({ form, businessName, initialTab }: { form: FormDetai
         </div>
       )}
       {tab === "respostas" && <ResponsesPanel formId={form.id} total={form.responsesTotal} />}
+      {tab === "resultados" && <ResultsPanel formId={form.id} />}
 
       {(tab === "perguntas" || tab === "aparencia" || tab === "final") && (
       <div className={`flex-1 min-h-0 grid grid-cols-1 overflow-y-auto lg:overflow-hidden ${tab === "perguntas" ? "lg:grid-cols-[300px_minmax(0,1fr)_340px]" : "lg:grid-cols-[minmax(0,1fr)_380px]"}`}>

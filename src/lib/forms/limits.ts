@@ -18,3 +18,13 @@ export const SUBMIT_LIMITS = {
   /** Tamanho máximo do corpo do envio. */
   maxBodyBytes: 64 * 1024,
 } as const
+
+/** Contadores dos Resultados (viu · começou · chegou a cada passo · saiu). Sem dado pessoal. */
+export const TRACK_LIMITS = {
+  /** Na memória do servidor: marcas por IP a cada 10 min (quem preenche gera ~10). */
+  ipBurst:         240,
+  ipBurstWindowMs: 10 * 60_000,
+  /** Teto por passo e dia em cada formulário (a função do banco aceita até 1.000.000). */
+  dailyPerStep:    50_000,
+  maxBodyBytes:    512,
+} as const

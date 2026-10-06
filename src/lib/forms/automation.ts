@@ -7,7 +7,7 @@ import { runFormEntry } from "@/lib/ai-v2/flow/runtime"
 import { createNotification } from "@/lib/notifications"
 import { formatPhoneDisplay } from "@/lib/phone-utils"
 import type { Answers } from "./definition"
-import { buildFormFlowVariables, formAnswersNote } from "./flow-variables"
+import { buildFormFlowVariables, formAnswersNote, formRequestSummary } from "./flow-variables"
 import { outcomeFromEntry, NEEDS_CONTACT, NEEDS_CONTACT_REASON, type FormOutcome } from "./outcomes"
 import type { FlowRow } from "@/lib/ai-v2/flow/types"
 import type { ExecCtx } from "@/lib/ai-v2/capabilities"
@@ -77,7 +77,9 @@ async function noteRequest(tenantId: string, conversationId: string, sub: Submis
     conversation_id: conversationId, tenant_id: tenantId,
     sender_type: "system", content_type: "text", status: "delivered", is_private_note: true,
     content: formAnswersNote({ formName, definition, answers: sub.answers, source: sub.source }),
-    metadata: { form: { form_id: sub.form_id, submission_id: sub.id } },
+    // O cartão da conversa lê os dados daqui (o texto acima fica para busca e para telas antigas).
+    metadata: { form: { form_id: sub.form_id, submission_id: sub.id,
+      ...formRequestSummary({ formName, definition, answers: sub.answers, source: sub.source }) } },
   })
   if (error) console.error(JSON.stringify({ src: "forms-automation", kind: "note-failed", code: error.code }))
 }

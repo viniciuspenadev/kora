@@ -33,24 +33,42 @@ export function formTriggerVariables(form: FormTriggerOption | null): FormFlowVa
  * saber o que a pessoa pediu sem abrir o formulário. Respostas na ordem das perguntas, pelo
  * mesmo rótulo legível das variáveis.
  */
-export function formAnswersNote(input: {
+export function formAnswersNote(input: FormRequestInput): string {
+  const s = formRequestSummary(input)
+  const lines = [`📝 Pedido pelo formulário “${s.formName}”`, ...s.items.map((i) => `• ${i.label}: ${i.value}`)]
+  const from = [s.origin.label, s.origin.page, s.origin.campaign ? `campanha ${s.origin.campaign}` : ""].filter(Boolean)
+  lines.push(`Veio de: ${from.join(" · ")}`)
+  return lines.join("\n").slice(0, 3000)
+}
+
+type FormRequestInput = {
   formName: string; definition: unknown; answers: Answers
   source: { kind?: string; page?: string | null; utm?: Record<string, string> } | null
-}): string {
+}
+
+/** O pedido em dados — o cartão "Pedido pelo formulário" da conversa (message-bubble) e o texto da nota leem daqui. */
+export interface FormRequestSummary {
+  formName: string
+  items:    { label: string; value: string }[]
+  origin:   { label: string; page: string; campaign: string }
+}
+
+export function formRequestSummary(input: FormRequestInput): FormRequestSummary {
   const def = normalizeDefinition(input.definition)
-  const lines = [`📝 Pedido pelo formulário “${input.formName}”`]
+  const items: FormRequestSummary["items"] = []
   for (const q of def.questions) {
     const v = input.answers?.[q.id]
     if (v === undefined) continue
-    const label = answerLabel(q, v)
-    if (label) lines.push(`• ${q.title.trim() || q.id}: ${label}`)
+    const value = answerLabel(q, v)
+    if (value) items.push({ label: (q.title.trim() || q.id).slice(0, 200), value: value.slice(0, 500) })
   }
-  const from: string[] = [SOURCE_LABEL[input.source?.kind ?? "link"] ?? "link próprio"]
-  const page = input.source?.page ? pageLabel(input.source.page) : ""
-  if (page && input.source?.kind !== "link") from.push(page)
-  if (input.source?.utm?.campaign) from.push(`campanha ${input.source.utm.campaign}`)
-  lines.push(`Veio de: ${from.join(" · ")}`)
-  return lines.join("\n").slice(0, 3000)
+  const kind = input.source?.kind ?? "link"
+  const page = input.source?.page && kind !== "link" ? pageLabel(input.source.page) : ""
+  return {
+    formName: input.formName,
+    items:    items.slice(0, 40),
+    origin:   { label: SOURCE_LABEL[kind] ?? "link próprio", page, campaign: (input.source?.utm?.campaign ?? "").slice(0, 100) },
+  }
 }
 
 /** "https://www.site.com.br/lp/?utm=x" → "site.com.br/lp" */

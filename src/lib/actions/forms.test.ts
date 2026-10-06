@@ -228,6 +228,63 @@ describe("sites autorizados (formulário na página do site)", () => {
   })
 })
 
+describe("resultados (Fase 4)", () => {
+  const V1 = "55555555-5555-4555-8555-555555555555"
+  const now = Date.now()
+  const iso = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString()
+  const today = new Date(now - 3 * 3_600_000).toISOString().slice(0, 10)
+  const sub = (id: string, over: Record<string, unknown> = {}) => ({
+    id, tenant_id: T, form_id: F1, version_id: V1, contact_id: null, contact_name: "Marina", phone_e164: "5547998124471",
+    answers: { servico: "orcamento_novo" }, source: { kind: "embed", device: "mobile", elapsedS: 40 }, consent: { accepted: true },
+    outcome: "sent", conversation_id: null, contact_conflicts: [], created_at: iso(30), ...over,
+  })
+  beforeEach(() => {
+    db.tables.forms[0].published_version_id = V1
+    db.tables.form_versions.push({ id: V1, tenant_id: T, form_id: F1, version: 1, definition: templateDefinition("quote_guided") })
+    db.tables.form_step_stats = [
+      { tenant_id: T, form_id: F1, day: today, step: "__view", reached: 20, exits: 0 },
+      { tenant_id: T, form_id: F1, day: today, step: "__start", reached: 4, exits: 0 },
+      { tenant_id: T, form_id: F1, day: "2020-01-01", step: "__view", reached: 999, exits: 0 },        // fora do período
+      { tenant_id: OTHER, form_id: FX, day: today, step: "__start", reached: 50, exits: 0 },          // outra empresa
+    ]
+    db.tables.form_submissions.push(
+      sub("77777777-7777-4777-8777-777777777777", { conversation_id: "wa-1" }),
+      sub("88888888-8888-4888-8888-888888888888", { outcome: "no_whatsapp", source: { kind: "link", device: "desktop" } }),
+      sub("99999999-9999-4999-8999-999999999999", { tenant_id: OTHER, form_id: FX }),
+    )
+    db.tables.chat_conversations = [{ id: "wa-1", tenant_id: T, last_inbound_at: iso(10) }]
+    db.tables.outreach_log = [
+      { tenant_id: T, form_id: F1, submission_id: "77777777-7777-4777-8777-777777777777", outcome: "sent", origin: "form", created_at: new Date(Date.parse(iso(30)) + 7_000).toISOString() },
+    ]
+  })
+  it("junta contadores (só do período e da empresa) e comprovantes no mesmo funil", async () => {
+    const r = await actions.getFormResults(F1, 30)
+    if ("error" in r) throw new Error(r.error)
+    expect(r.period).toBe(30)
+    expect(r.results.funnel).toEqual({ views: 20, starts: 4, submits: 2, called: 1, replied: 1, avgSecondsToCall: 7 })
+    expect(r.results.needsContact).toBe(1)
+    expect(r.results.medianFillSeconds).toBe(40)
+  })
+  it("🔒 sem permissão não vê; formulário de outra empresa não existe; período torto vira 30 dias", async () => {
+    expect(await actions.getFormResults(FX, 30)).toEqual({ error: "Formulário não encontrado." })
+    expect(await actions.getFormResults("não-é-id", 30)).toEqual({ error: "Formulário não encontrado." })
+    const r = await actions.getFormResults(F1, "999")
+    expect("period" in r && r.period).toBe(30)
+    scope = agent("none")
+    expect(await actions.getFormResults(F1, 30)).toEqual({ error: "Sem acesso a formulários." })
+    scope = agent("view")
+    expect("results" in (await actions.getFormResults(F1, 7))).toBe(true)
+  })
+  it("a lista ganha a conclusão (quem começou) e o tempo até o Kora chamar", async () => {
+    db.tables.forms[0].status = "published"
+    const r = await actions.listForms()
+    if ("error" in r) throw new Error(r.error)
+    expect(r.starts30d).toBe(4)
+    expect(r.items.find((i) => i.id === F1)?.starts30d).toBe(4)
+    expect(r.avgSecondsToCall).toBe(7)
+  })
+})
+
 describe("respostas (Fase 2)", () => {
   const V1 = "55555555-5555-4555-8555-555555555555"
   const V2 = "66666666-6666-4666-8666-666666666666"

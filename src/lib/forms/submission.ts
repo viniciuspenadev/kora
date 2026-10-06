@@ -18,6 +18,8 @@ export interface SubmissionSource {
   referrer:  string | null
   utm:       Partial<Record<"source" | "medium" | "campaign" | "content" | "term", string>>
   device:    "mobile" | "desktop"
+  /** Segundos da 1ª resposta até o envio (Resultados: "tempo para preencher"). null = não informado. */
+  elapsedS:  number | null
 }
 
 export interface ParsedSubmission {
@@ -172,5 +174,6 @@ export function parseSource(raw: unknown, userAgent: string | null): SubmissionS
     referrer: cleanUrl(s.referrer),
     utm,
     device:   /Mobi|Android|iPhone|iPad/i.test(userAgent ?? "") ? "mobile" : "desktop",
+    elapsedS: typeof s.elapsedS === "number" && Number.isFinite(s.elapsedS) && s.elapsedS >= 0 && s.elapsedS <= 86_400 ? Math.round(s.elapsedS) : null,
   }
 }

@@ -93,8 +93,12 @@ describe("origem", () => {
     expect(cleanUrl("javascript:alert(1)")).toBeNull()
     expect(cleanUrl("https://user:senha@site.com/p?a=1")).toBe("https://site.com/p?a=1")
     const s = parseSource({ kind: "hack", page: "https://site.com/sacadas", utm: { source: "google", campaign: "x".repeat(300), evil: "1" } }, "Mozilla/5.0 (iPhone)")
-    expect(s).toEqual({ kind: "link", page: "https://site.com/sacadas", referrer: null, utm: { source: "google", campaign: "x".repeat(100) }, device: "mobile" })
+    expect(s).toEqual({ kind: "link", page: "https://site.com/sacadas", referrer: null, utm: { source: "google", campaign: "x".repeat(100) }, device: "mobile", elapsedS: null })
     expect(parseSource(null, null)).toMatchObject({ kind: "link", device: "desktop", utm: {} })
+  })
+  it("tempo para preencher: só número são (0 a 24 h), arredondado", () => {
+    expect(parseSource({ elapsedS: 47.6 }, null).elapsedS).toBe(48)
+    for (const bad of [-1, 90_000, Number.NaN, "30", null]) expect(parseSource({ elapsedS: bad }, null).elapsedS).toBeNull()
   })
   it("cleanLine aceita só texto", () => {
     expect(cleanLine(42, 10)).toBe("")

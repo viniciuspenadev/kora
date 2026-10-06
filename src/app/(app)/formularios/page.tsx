@@ -24,5 +24,5 @@ export default async function FormulariosPage() {
 
   // O cabeçalho (com "Ver modelos"/"Novo formulário") mora no client: os botões abrem a galeria.
   return <FormsClient items={result.items} canManage={result.canManage} canCreateFlow={result.canCreateFlow}
-    replied30d={result.replied30d} businessName={(tenant as { name?: string } | null)?.name ?? ""} />
+    replied30d={result.replied30d} starts30d={result.starts30d} avgSecondsToCall={result.avgSecondsToCall} businessName={(tenant as { name?: string } | null)?.name ?? ""} />
 }

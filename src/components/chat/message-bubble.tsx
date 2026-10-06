@@ -21,6 +21,7 @@ import { resolveMediaUrl, inAppPreviewFor, messageFileSize } from "@/lib/media"
 import { fileKind } from "@/lib/chat/file-kind"
 import { formatFileSize } from "@/lib/chat/attachments"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
+import { FormRequestCard, type FormRequestMeta } from "./form-request-card"
 
 interface QuotedMeta {
   msg_id:       string | null
@@ -312,6 +313,10 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
       </div>
     )
   }
+
+  // ── Cartão do PEDIDO PELO FORMULÁRIO — nota interna (system + is_private_note), antes da pílula.
+  const formRequest = (message.metadata as { form?: FormRequestMeta } | null)?.form
+  if (formRequest && isNote) return <FormRequestCard form={formRequest} content={message.content ?? ""} time={time} />
 
   if (isSystem) {
     return (

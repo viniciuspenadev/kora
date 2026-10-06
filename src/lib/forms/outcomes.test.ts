@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { outcomeFromEntry, asFormOutcome, NEEDS_CONTACT, FORM_OUTCOMES, FORM_OUTCOME_LABEL, NEEDS_CONTACT_REASON } from "./outcomes"
-import { buildFormFlowVariables, formTriggerVariables, formAnswersNote } from "./flow-variables"
+import { buildFormFlowVariables, formTriggerVariables, formAnswersNote, formRequestSummary } from "./flow-variables"
 import { normalizeDefinition } from "./definition"
 
 describe("situação depois do envio", () => {
@@ -54,6 +54,16 @@ describe("o que o fluxo recebe", () => {
     // Pergunta de outro caminho (não respondida) não entra; link próprio não repete o endereço.
     expect(formAnswersNote({ formName: "x", definition: def, answers: { servico: "box" }, source: { kind: "link", page: "https://kora/f/a/b" } }))
       .toBe("📝 Pedido pelo formulário “x”\n• O que você precisa?: Box\nVeio de: link próprio")
+  })
+  it("o cartão da conversa recebe o pedido em dados (o mesmo conteúdo do texto)", () => {
+    expect(formRequestSummary({ formName: "Orçamento", definition: def,
+      answers: { servico: "sacada", obra: { city: "Santo André", district: "Vila Assunção" } },
+      source: { kind: "embed", page: "https://www.bernardotecnoglass.com.br/envidracamento-de-sacadas/", utm: { campaign: "verao" } } }))
+      .toEqual({
+        formName: "Orçamento",
+        items: [{ label: "O que você precisa?", value: "Sacada" }, { label: "Onde é a obra?", value: "Santo André · Vila Assunção" }],
+        origin: { label: "site", page: "bernardotecnoglass.com.br/envidracamento-de-sacadas", campaign: "verao" },
+      })
   })
   it("o catálogo do painel lista exatamente as chaves que o motor preenche", () => {
     const tokens = formTriggerVariables({ id: "f", name: "x", status: "published", questions: [{ id: "servico", title: "O que você precisa?" }] }).map((t) => t.token)

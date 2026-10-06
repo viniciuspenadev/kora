@@ -23,7 +23,7 @@ export default async function FormEditorPage({ params, searchParams }: { params:
   if ("error" in form) notFound()
   // `?aba=respostas`: o aviso "precisa de contato" abre direto nas respostas.
   const { aba } = await searchParams
-  const initialTab = aba === "respostas" || aba === "publicar" ? aba : undefined
+  const initialTab = aba === "respostas" || aba === "publicar" || aba === "resultados" ? aba : undefined
 
   return <FormEditor form={form} businessName={(tenant as { name?: string } | null)?.name ?? ""} initialTab={initialTab} />
 }
