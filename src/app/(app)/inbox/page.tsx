@@ -4,6 +4,7 @@ import { InboxClient } from "@/components/chat/inbox-client"
 import { getConversations, getConversationViewCounts } from "@/lib/actions/conversations"
 import { hasModule } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
+import { blueVoiceConfig } from "@/lib/voice/blue"
 import type { ChatMessage, ChatContact, ChatQuickReply } from "@/types/chat"
 
 const INITIAL_LIMIT       = 25
@@ -15,6 +16,8 @@ export default async function InboxPage() {
   if (!session) return null
 
   const tenantId = session.user.tenantId
+  const blueVoice = blueVoiceConfig()
+  const blueVoiceInstanceId = blueVoice?.tenantId === tenantId && blueVoice.userId === session.user.id ? blueVoice.instanceId : null
   const viewer = await getViewerScope()
   const kanbanEnabled = await hasModule(tenantId, "kanban")
   const quickRepliesOn = await hasModule(tenantId, "quick_replies")
@@ -40,6 +43,7 @@ export default async function InboxPage() {
     return (
       <div className="h-[calc(100dvh-3.5rem)]">
         <InboxClient kanbanEnabled={kanbanEnabled}
+          blueVoiceInstanceId={blueVoiceInstanceId}
           conversations={[]}
           messages={{}}
           contacts={{}}
@@ -149,6 +153,7 @@ export default async function InboxPage() {
   return (
     <div className="h-[calc(100dvh-3.5rem)]">
       <InboxClient kanbanEnabled={kanbanEnabled}
+        blueVoiceInstanceId={blueVoiceInstanceId}
         conversations={conversations}
         messages={messagesByConv}
         contacts={contactsMap}

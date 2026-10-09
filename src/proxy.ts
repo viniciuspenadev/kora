@@ -50,7 +50,15 @@ const TURNSTILE = "https://challenges.cloudflare.com"
 const META_SCRIPT = "https://connect.facebook.net"
 const META_FRAME  = "https://www.facebook.com"
 
-function buildCsp(opts: { turnstile?: boolean; meta?: boolean; ancestors?: string } = {}): string {
+const BLUE_VOICE_WS = (() => {
+  try {
+    if (process.env.BLUE_VOICE_ENABLED !== "true") return ""
+    const url = new URL(process.env.BLUE_VOICE_URL ?? "")
+    return url.protocol === "https:" ? ` wss://${url.host}` : ""
+  } catch { return "" }
+})()
+
+function buildCsp(opts: { turnstile?: boolean; meta?: boolean; voice?: boolean; ancestors?: string } = {}): string {
   const cf = opts.turnstile ? ` ${TURNSTILE}` : ""
   const mS = opts.meta ? ` ${META_SCRIPT}` : ""                       // script-src
   const mF = opts.meta ? ` ${META_FRAME}` : ""                        // frame-src
@@ -66,7 +74,7 @@ function buildCsp(opts: { turnstile?: boolean; meta?: boolean; ancestors?: strin
     // Áudio/vídeo do Supabase Storage (signed URLs) — sem media-src cai em default-src e bloqueia
     `media-src 'self' blob: ${SUPABASE_HTTPS}`.trim(),
     // Supabase REST + Realtime + Storage; OpenAI direto não chamamos do client
-    `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}${mC}`.trim(),
+    `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}${mC}${opts.voice ? BLUE_VOICE_WS : ""}`.trim(),
     // iframe do widget Turnstile (/signup) ou do FB SDK (integração oficial); 'self' p/
     // preview de email no admin; blob: p/ a prévia do PDF da cotação (compositor).
     `frame-src 'self' blob:${cf}${mF}`,
@@ -81,6 +89,7 @@ function buildCsp(opts: { turnstile?: boolean; meta?: boolean; ancestors?: strin
 }
 
 const CSP_APP    = buildCsp()
+const CSP_VOICE  = buildCsp({ voice: true })
 const CSP_SIGNUP = buildCsp({ turnstile: true })
 const CSP_META   = buildCsp({ meta: true })
 
@@ -204,7 +213,7 @@ export async function proxy(req: NextRequest) {
   const isSignup   = path === "/signup" || path.startsWith("/signup/") || path.startsWith("/auth/") || path.startsWith("/f/")
   // Página da integração oficial carrega o FB SDK do Embedded Signup → CSP com Meta.
   const isOfficial = path.startsWith("/integracoes/whatsapp-oficial")
-  res.headers.set("Content-Security-Policy", isSignup ? CSP_SIGNUP : isOfficial ? CSP_META : CSP_APP)
+  res.headers.set("Content-Security-Policy", isSignup ? CSP_SIGNUP : isOfficial ? CSP_META : path.startsWith("/inbox/voice/") ? CSP_VOICE : CSP_APP)
 
   // ── Cookie de dispositivo ───────────────────────────────
   // Emitido SÓ nas telas de autenticação (/auth/*), e só em navegação de
