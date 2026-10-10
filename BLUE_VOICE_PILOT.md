@@ -8,7 +8,6 @@ Defina estas variáveis somente no serviço `kora`, sem registrar os valores em 
 
 ```text
 BLUE_VOICE_ENABLED=true
-BLUE_VOICE_TENANT_ID=<tenant_id da Blue no Kora>
 BLUE_VOICE_INSTANCE_ID=<id do registro Blue em whatsapp_instances no Kora>
 BLUE_VOICE_USER_ID=<user_id do primeiro atendente do piloto>
 BLUE_VOICE_INSTANCE_NAME=kora-blue-digital-hub-1783030819675

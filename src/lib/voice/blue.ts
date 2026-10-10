@@ -3,19 +3,19 @@ import "server-only"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { supabaseAdmin } from "@/lib/supabase"
 
-type VoiceConfig = { tenantId: string; instanceId: string; userId: string; instanceName: string; url: URL; key: string }
+type VoiceConfig = { instanceId: string; userId: string; instanceName: string; url: URL; key: string }
 type VoiceStatus = { enabled: boolean; ready: boolean; call: { id: string; state: string } | null }
 
 export function blueVoiceConfig(): VoiceConfig | null {
   if (process.env.BLUE_VOICE_ENABLED !== "true") return null
-  const { BLUE_VOICE_TENANT_ID: tenantId, BLUE_VOICE_INSTANCE_ID: instanceId, BLUE_VOICE_USER_ID: userId,
+  const { BLUE_VOICE_INSTANCE_ID: instanceId, BLUE_VOICE_USER_ID: userId,
     BLUE_VOICE_INSTANCE_NAME: instanceName, BLUE_VOICE_URL: rawUrl, BLUE_VOICE_API_KEY: key } = process.env
-  if (!tenantId || !instanceId || !userId || !instanceName || !rawUrl || !key) return null
+  if (!instanceId || !userId || !instanceName || !rawUrl || !key) return null
   if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(instanceName)) return null
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") return null
-    return { tenantId, instanceId, userId, instanceName, url, key }
+    return { instanceId, userId, instanceName, url, key }
   } catch { return null }
 }
 
@@ -24,7 +24,7 @@ export async function blueVoiceTarget(conversationId: string) {
   const config = blueVoiceConfig()
   if (!config) throw new Error("Voz não configurada")
   const scope = await getViewerScope()
-  if (scope.tenantId !== config.tenantId || scope.userId !== config.userId) throw new Error("Conversa não encontrada")
+  if (scope.userId !== config.userId) throw new Error("Conversa não encontrada")
   const { data: conv, error } = await supabaseAdmin.from("chat_conversations")
     .select("id, instance_id, contact_id, channel, is_group, assigned_to, participants, department_id, chat_contacts(phone_number)")
     .eq("id", conversationId).eq("tenant_id", scope.tenantId).maybeSingle()
