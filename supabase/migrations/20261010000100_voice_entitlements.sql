@@ -1,6 +1,9 @@
--- Ligações WhatsApp: concessão da plataforma, permissão por atendente/número
--- e preferência de gravação do proprietário. Tudo nasce desligado.
+-- Mapeado contra o esquema de produção em 2026-10-10.
+-- Ligações WhatsApp: concessão da plataforma e permissão por atendente/número.
+-- O módulo filho de gravação reserva a concessão; captura e preferência do owner
+-- ainda não existem, portanto nenhuma coluna de gravação é criada nesta etapa.
 BEGIN;
+SET LOCAL lock_timeout = '5s';
 
 INSERT INTO public.module_catalog
   (slug, category, name, description, is_core, default_on, position, parent_slug)
@@ -32,8 +35,5 @@ DROP TRIGGER IF EXISTS trg_clear_voice_grants_on_role_change ON public.tenant_us
 CREATE TRIGGER trg_clear_voice_grants_on_role_change
   BEFORE UPDATE OF role ON public.tenant_users
   FOR EACH ROW EXECUTE FUNCTION public.clear_voice_grants_on_role_change();
-
-ALTER TABLE public.tenant_config
-  ADD COLUMN IF NOT EXISTS voice_recording_enabled boolean NOT NULL DEFAULT false;
 
 COMMIT;
