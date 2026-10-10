@@ -40,6 +40,9 @@ import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
 
 interface Props {
   blueVoiceInstanceId?: string | null
+  blueVoiceEnabled?: boolean
+  blueVoiceIsAdmin?: boolean
+  blueVoiceDisabledReason?: string
   currentUserId?: string
   onMessageEdited?: (patch: Pick<ChatMessage, "id" | "content"> & Partial<Pick<ChatMessage, "edited_at" | "deleted_at" | "content_type">>) => void
   pipelines?: Array<{ id: string; name: string }>
@@ -128,6 +131,9 @@ function MessageSkeleton() {
 
 export function ChatPanel({
   blueVoiceInstanceId = null,
+  blueVoiceEnabled = false,
+  blueVoiceIsAdmin = false,
+  blueVoiceDisabledReason = "Ligação indisponível",
   currentUserId = "", onMessageEdited,
   conversation, messages, quickReplies, agents, onStatusChange,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
@@ -517,12 +523,22 @@ export function ChatPanel({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
-          {blueVoiceInstanceId && conversation.instance_id === blueVoiceInstanceId && (conversation.channel ?? "whatsapp") === "whatsapp" && !conversation.is_group && (
-            <a href={`/inbox/voice/${conversation.id}`} target="_blank" rel="noopener noreferrer"
-              aria-label="Ligar pelo WhatsApp" title="Ligar pelo WhatsApp"
-              className="inline-flex size-8 items-center justify-center rounded-lg text-primary hover:bg-primary-50 focus-visible:ring-2 focus-visible:ring-primary">
-              <Phone className="size-4" />
-            </a>
+          {(conversation.channel ?? "whatsapp") === "whatsapp" && !conversation.is_group && (
+            blueVoiceEnabled && conversation.instance_id === blueVoiceInstanceId &&
+              (blueVoiceIsAdmin || conversation.assigned_to === currentUserId || (conversation.participants ?? []).includes(currentUserId)) ? (
+              <a href={`/inbox/voice/${conversation.id}`} target="_blank" rel="noopener noreferrer"
+                aria-label="Ligar pelo WhatsApp" title="Ligar pelo WhatsApp"
+                className="inline-flex size-8 items-center justify-center rounded-lg text-primary hover:bg-primary-50 focus-visible:ring-2 focus-visible:ring-primary">
+                <Phone className="size-4" />
+              </a>
+            ) : (
+              <button type="button" disabled aria-label="Ligar pelo WhatsApp indisponível"
+                title={conversation.instance_id !== blueVoiceInstanceId ? "Este número ainda não tem serviço de voz" :
+                  !blueVoiceEnabled ? blueVoiceDisabledReason : "Assuma ou participe do atendimento para ligar"}
+                className="inline-flex size-8 items-center justify-center rounded-lg text-slate-300 cursor-not-allowed">
+                <Phone className="size-4" />
+              </button>
+            )
           )}
           {onOpenContact && <button type="button" onClick={onOpenContact} aria-label="Abrir detalhes do contato" title="Detalhes do contato" className="inline-flex size-8 items-center justify-center rounded-lg text-slate-500 hover:bg-primary-50 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary"><Info className="size-4" /></button>}
           {/* Ação primária — Concluir (encerra) ou Reabrir se já resolvida.

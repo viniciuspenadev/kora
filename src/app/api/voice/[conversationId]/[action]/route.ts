@@ -63,7 +63,7 @@ async function handle(req: NextRequest, params: Params["params"]) {
     return result(upstream.status, upstream.status === 202 ? upstream.data : { error: "Não foi possível desligar" })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Voz indisponível"
-    const denied = ["Voz não configurada", "Conversa não encontrada", "Assuma ou participe do atendimento para ligar", "Contato sem telefone válido para ligação"].includes(message)
+    const denied = ["Voz não configurada", "Conversa não encontrada", "Ligação não habilitada para este atendente", "Assuma ou participe do atendimento para ligar", "Contato sem telefone válido para ligação"].includes(message)
     return result(denied ? 403 : 502, { error: denied ? message : "Voz indisponível" })
   }
 }

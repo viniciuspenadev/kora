@@ -71,6 +71,9 @@ interface DepartmentMini { id: string; name: string; color: string }
 
 interface Props {
   blueVoiceInstanceId?: string | null
+  blueVoiceEnabled?: boolean
+  blueVoiceIsAdmin?: boolean
+  blueVoiceDisabledReason?: string
   conversations:       ChatConversation[]
   messages:            Record<string, ChatMessage[]>
   contacts:            Record<string, ChatContact>
@@ -161,6 +164,9 @@ function matchesSecondaryFilters(conv: ChatConversation, f: ActiveFilters): bool
 
 export function InboxClient({
   blueVoiceInstanceId = null,
+  blueVoiceEnabled = false,
+  blueVoiceIsAdmin = false,
+  blueVoiceDisabledReason = "Ligação indisponível",
   conversations: initialConversations,
   contacts: initialContacts,
   quickReplies,
@@ -1357,6 +1363,9 @@ export function InboxClient({
                   onOpenTools={section => openGroupTools(activeConv.id, section)}
                 /> : <ChatPanel
                   blueVoiceInstanceId={blueVoiceInstanceId}
+                  blueVoiceEnabled={blueVoiceEnabled}
+                  blueVoiceIsAdmin={blueVoiceIsAdmin}
+                  blueVoiceDisabledReason={blueVoiceDisabledReason}
                   currentUserId={currentUserId}
                   onMessageEdited={patch => setActiveMessages(prev => prev.map(message => message.id === patch.id ? { ...message, ...patch } : message))}
                   conversation={activeConv}

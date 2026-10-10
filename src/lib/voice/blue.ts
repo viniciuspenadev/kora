@@ -2,21 +2,35 @@ import "server-only"
 
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import { supabaseAdmin } from "@/lib/supabase"
+import { hasModule } from "@/lib/modules"
+import type { ViewerScope } from "@/lib/visibility"
 
-type VoiceConfig = { instanceId: string; userId: string; instanceName: string; url: URL; key: string }
+type VoiceConfig = { instanceId: string; instanceName: string; url: URL; key: string }
 type VoiceStatus = { enabled: boolean; ready: boolean; call: { id: string; state: string } | null }
 
 export function blueVoiceConfig(): VoiceConfig | null {
   if (process.env.BLUE_VOICE_ENABLED !== "true") return null
-  const { BLUE_VOICE_INSTANCE_ID: instanceId, BLUE_VOICE_USER_ID: userId,
+  const { BLUE_VOICE_INSTANCE_ID: instanceId,
     BLUE_VOICE_INSTANCE_NAME: instanceName, BLUE_VOICE_URL: rawUrl, BLUE_VOICE_API_KEY: key } = process.env
-  if (!instanceId || !userId || !instanceName || !rawUrl || !key) return null
+  if (!instanceId || !instanceName || !rawUrl || !key) return null
   if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(instanceName)) return null
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") return null
-    return { instanceId, userId, instanceName, url, key }
+    return { instanceId, instanceName, url, key }
   } catch { return null }
+}
+
+/** A decisão no servidor espelha o botão: contrato da conta + papel + número do atendente. */
+export async function blueVoiceAllowed(scope: ViewerScope, instanceId: string): Promise<boolean> {
+  if (!(await hasModule(scope.tenantId, "voice_calls"))) return false
+  if (scope.isAdmin) return true
+  if (scope.instanceIds && !scope.instanceIds.includes(instanceId)) return false
+  const { data, error } = await supabaseAdmin.from("tenant_users")
+    .select("voice_instance_ids")
+    .eq("tenant_id", scope.tenantId).eq("user_id", scope.userId).eq("active", true).maybeSingle()
+  if (error || !data) return false
+  return Array.isArray(data.voice_instance_ids) && data.voice_instance_ids.includes(instanceId)
 }
 
 /** Only the selected Blue number can use the pilot. No browser-supplied URL, key or phone. */
@@ -24,7 +38,7 @@ export async function blueVoiceTarget(conversationId: string) {
   const config = blueVoiceConfig()
   if (!config) throw new Error("Voz não configurada")
   const scope = await getViewerScope()
-  if (scope.userId !== config.userId) throw new Error("Conversa não encontrada")
+  if (!(await blueVoiceAllowed(scope, config.instanceId))) throw new Error("Ligação não habilitada para este atendente")
   const { data: conv, error } = await supabaseAdmin.from("chat_conversations")
     .select("id, instance_id, contact_id, channel, is_group, assigned_to, participants, department_id, chat_contacts(phone_number)")
     .eq("id", conversationId).eq("tenant_id", scope.tenantId).maybeSingle()

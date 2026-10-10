@@ -12,7 +12,7 @@ export default async function MemberPage({ params }: { params: Promise<{ userId:
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
   const { userId } = await params
 
-  const [member, departments, numbers, units, hasInventory, hasCrm, hasContacts, hasMarketing, hasForms] = await Promise.all([
+  const [member, departments, numbers, units, hasInventory, hasCrm, hasContacts, hasMarketing, hasForms, hasVoiceCalls] = await Promise.all([
     getTeamMember(userId),
     listDepartments(),
     listTeamNumbers(),
@@ -22,6 +22,7 @@ export default async function MemberPage({ params }: { params: Promise<{ userId:
     hasModule(session.user.tenantId, "contacts"),
     hasModule(session.user.tenantId, "broadcasts"),
     hasModule(session.user.tenantId, "forms"),
+    hasModule(session.user.tenantId, "voice_calls"),
   ])
   if (!member) notFound()
 
@@ -39,6 +40,7 @@ export default async function MemberPage({ params }: { params: Promise<{ userId:
       hasMarketing={hasMarketing}
       hasForms={hasForms}
       hasCatalog={hasCrm || hasInventory}
+      hasVoiceCalls={hasVoiceCalls}
     />
   )
 }
