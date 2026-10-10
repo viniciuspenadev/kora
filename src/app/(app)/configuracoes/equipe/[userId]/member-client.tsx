@@ -93,7 +93,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
         if (result.error) { setFlash("error", result.error); return }
       }
       const validVoiceIds = role === "agent" ? voiceInstanceIds.filter((id) => instanceIds.length === 0 || instanceIds.includes(id)) : []
-      if (member.role === "agent" && role === "agent" && !sameSet(validVoiceIds, member.voice_instance_ids ?? [])) {
+      if (currentUserRole === "owner" && member.role === "agent" && role === "agent" && !sameSet(validVoiceIds, member.voice_instance_ids ?? [])) {
         const result = await setMemberVoiceNumbers(member.user_id, validVoiceIds)
         if (result.error) { setFlash("error", result.error); return }
       }
