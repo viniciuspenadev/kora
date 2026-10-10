@@ -91,6 +91,7 @@ export interface TeamMember {
   view_all:      boolean
   see_pool:      boolean
   instance_ids:  string[] | null   // números que atende (Fase D); null/[] = todos
+  voice_instance_ids: string[]     // números em que o owner autorizou ligações
   department_id: string | null
   supervises_departments: string[]  // supervisão escopada: setores que vê por inteiro; [] = nenhum
   inventory_access: InventoryAccessLevel   // capability granular: none | view | manage
@@ -206,7 +207,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
   const { data, error } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, forms_access, companion_access, unit_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, voice_instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, forms_access, companion_access, unit_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color ),
       tenant_units ( id, name, color )
@@ -230,6 +231,7 @@ export async function listTeamMembers(): Promise<TeamMember[]> {
       view_all:      row.view_all,
       see_pool:      row.see_pool ?? true,
       instance_ids:  (row.instance_ids as string[] | null) ?? null,
+      voice_instance_ids: (row.voice_instance_ids as string[] | null) ?? [],
       department_id: row.department_id,
       supervises_departments: (row.supervises_departments as string[] | null) ?? [],
       inventory_access: normInventoryLevel(row.inventory_access),
@@ -253,7 +255,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
   const { data } = await supabaseAdmin
     .from("tenant_users")
     .select(`
-      user_id, role, active, view_all, see_pool, instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, forms_access, companion_access, unit_id, joined_at,
+      user_id, role, active, view_all, see_pool, instance_ids, voice_instance_ids, department_id, supervises_departments, inventory_access, deals_access, contacts_access, marketing_access, catalog_access, forms_access, companion_access, unit_id, joined_at,
       profiles!tenant_users_user_id_fkey ( email, full_name ),
       tenant_departments ( id, name, color ),
       tenant_units ( id, name, color )
@@ -273,6 +275,7 @@ export async function getTeamMember(userId: string): Promise<TeamMember | null> 
     view_all:      row.view_all as boolean,
     see_pool:      (row.see_pool as boolean | null) ?? true,
     instance_ids:  (row.instance_ids as string[] | null) ?? null,
+    voice_instance_ids: (row.voice_instance_ids as string[] | null) ?? [],
     department_id: (row.department_id as string | null) ?? null,
     supervises_departments: (row.supervises_departments as string[] | null) ?? [],
     inventory_access: normInventoryLevel(row.inventory_access),
@@ -757,6 +760,44 @@ export async function listTeamNumbers(): Promise<{ id: string; label: string; pr
     const row = r as { id: string; display_name: string | null; phone_number: string | null; instance_name: string | null; provider: string | null }
     return { id: row.id, label: row.display_name || row.phone_number || row.instance_name || "Número", provider: row.provider }
   })
+}
+
+/** O proprietário escolhe explicitamente os números nos quais cada atendente pode ligar. */
+export async function setMemberVoiceNumbers(userId: string, instanceIds: string[]): Promise<{ error?: string }> {
+  const session = await requireTenantAdmin()
+  if (session.user.role !== "owner") return { error: "Apenas o proprietário pode liberar ligações para atendentes." }
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  if (!uuid.test(userId) || !Array.isArray(instanceIds) || instanceIds.length > 200 ||
+    !instanceIds.every((id) => typeof id === "string" && uuid.test(id))) {
+    return { error: "Seleção de números inválida." }
+  }
+  const ids = [...new Set(instanceIds)]
+  const { data: target, error: targetError } = await supabaseAdmin.from("tenant_users")
+    .select("role, instance_ids, voice_instance_ids")
+    .eq("tenant_id", session.user.tenantId).eq("user_id", userId).maybeSingle()
+  if (targetError || !target || target.role !== "agent") return { error: "Atendente não encontrado ou permissão indisponível." }
+  if (Array.isArray(target.instance_ids) && target.instance_ids.length > 0 &&
+    ids.some((id) => !target.instance_ids.includes(id))) {
+    return { error: "Só é possível liberar ligação em números atribuídos ao atendente." }
+  }
+  if (ids.length) {
+    const { data: numbers, error } = await supabaseAdmin.from("whatsapp_instances")
+      .select("id, provider").eq("tenant_id", session.user.tenantId).in("id", ids)
+    if (error || numbers?.length !== ids.length || numbers.some((n) => n.provider !== "baileys")) {
+      return { error: "Selecione apenas números WhatsApp Web desta conta." }
+    }
+  }
+  const { data, error } = await supabaseAdmin.from("tenant_users")
+    .update({ voice_instance_ids: ids })
+    .eq("tenant_id", session.user.tenantId).eq("user_id", userId).eq("role", "agent")
+    .select("user_id").maybeSingle()
+  if (error || !data) return { error: "Não foi possível salvar a permissão de ligação." }
+  await auditTeam(session, "voice_numbers.set", userId, {
+    before: target.voice_instance_ids ?? [], after: ids,
+  })
+  revalidatePath(`/configuracoes/equipe/${userId}`)
+  revalidatePath("/inbox")
+  return {}
 }
 
 export async function setMemberActive(userId: string, active: boolean): Promise<{ error?: string }> {

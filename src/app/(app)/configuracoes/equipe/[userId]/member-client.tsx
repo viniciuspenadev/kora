@@ -11,7 +11,7 @@ import { SimpleSelect } from "@/components/ui/select"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
 import {
   
-  setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberFormsAccess, setMemberCompanionAccess, setMemberUnit, updateMemberProfile,
+  setMemberActive, setMemberInventoryAccess, setMemberDealsAccess, setMemberContactsAccess, setMemberMarketingAccess, setMemberCatalogAccess, setMemberFormsAccess, setMemberCompanionAccess, setMemberUnit, setMemberVoiceNumbers, updateMemberProfile,
   type TeamMember, type Department, type UnitOption, type TenantRole,
 } from "@/lib/actions/team"
 import { UserDevices } from "@/components/app/user-devices"
@@ -29,9 +29,9 @@ const inputCls = "w-full h-10 px-3 text-sm border border-slate-200 rounded-lg bg
 
 type Tab = "perfil" | "acesso" | "modulos" | "agenda" | "conta"
 
-export function MemberProfileClient({ member, departments, numbers, units = [], currentUserId, currentUserRole, hasInventory = false, hasCrm = false, hasContacts = false, hasMarketing = false, hasForms = false, hasCatalog = false }: {
+export function MemberProfileClient({ member, departments, numbers, units = [], currentUserId, currentUserRole, hasInventory = false, hasCrm = false, hasContacts = false, hasMarketing = false, hasForms = false, hasCatalog = false, hasVoiceCalls = false }: {
   member: TeamMember; departments: Department[]; numbers: { id: string; label: string; provider: string | null }[]; units?: UnitOption[]
-  currentUserId: string; currentUserRole: string; hasInventory?: boolean; hasCrm?: boolean; hasContacts?: boolean; hasMarketing?: boolean; hasForms?: boolean; hasCatalog?: boolean
+  currentUserId: string; currentUserRole: string; hasInventory?: boolean; hasCrm?: boolean; hasContacts?: boolean; hasMarketing?: boolean; hasForms?: boolean; hasCatalog?: boolean; hasVoiceCalls?: boolean
 }) {
   const router = useRouter()
   const [tab, setTab] = useState<Tab>("perfil")
@@ -54,6 +54,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
   const [formsAccess, setFormsAccess] = useState<InventoryAccessLevel>(member.forms_access)
   const [companionAccess, setCompanionAccess] = useState<boolean>(member.companion_access)
   const [instanceIds, setInstanceIds] = useState<string[]>(member.instance_ids ?? [])
+  const [voiceInstanceIds, setVoiceInstanceIds] = useState<string[]>(member.voice_instance_ids ?? [])
 
   const [savePending, startSave]     = useTransition()
   const [statusPending, startStatus] = useTransition()
@@ -74,7 +75,7 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
     (departmentId || null) !== member.department_id || (unitId || null) !== member.unit_id || (supMode === "all") !== member.view_all ||
     seePool !== member.see_pool || invAccess !== member.inventory_access || dealsAccess !== member.deals_access || contactsAccess !== member.contacts_access || marketingAccess !== member.marketing_access || catalogAccess !== member.catalog_access || formsAccess !== member.forms_access || companionAccess !== member.companion_access ||
     !sameSet(supMode === "scoped" ? supDepts : [], member.supervises_departments) ||
-    !sameSet(instanceIds, member.instance_ids ?? [])
+    !sameSet(instanceIds, member.instance_ids ?? []) || !sameSet(voiceInstanceIds, member.voice_instance_ids ?? [])
 
   function handleSave() {
     startSave(async () => {
@@ -89,6 +90,11 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
       if (accessChanged) {
         const result = await saveMemberConversationAccess(member.user_id, { role, departmentId: departmentId || null,
           viewAll: supMode === "all", seePool, instanceIds, supervisesDepartments: supMode === "scoped" ? supDepts : [] })
+        if (result.error) { setFlash("error", result.error); return }
+      }
+      const validVoiceIds = role === "agent" ? voiceInstanceIds.filter((id) => instanceIds.length === 0 || instanceIds.includes(id)) : []
+      if (member.role === "agent" && role === "agent" && !sameSet(validVoiceIds, member.voice_instance_ids ?? [])) {
+        const result = await setMemberVoiceNumbers(member.user_id, validVoiceIds)
         if (result.error) { setFlash("error", result.error); return }
       }
       if ((unitId || null) !== member.unit_id) await run(setMemberUnit(member.user_id, unitId || null))
@@ -304,6 +310,22 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
                           </CheckRow>
                         ))}
                       </div>
+                    </div>
+                  )}
+                  {role === "agent" && numbers.some((n) => n.provider === "baileys") && (
+                    <div className="pt-3 border-t border-slate-100">
+                      <p className="text-sm font-semibold text-slate-800">Permitir ligações</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 mb-2">O proprietário escolhe em quais números este atendente pode ligar. Também é preciso ativar Ligações WhatsApp no God Mode.</p>
+                      <div className="space-y-1.5">
+                        {numbers.filter((n) => n.provider === "baileys").map((n) => (
+                          <CheckRow key={n.id} checked={voiceInstanceIds.includes(n.id)}
+                            disabled={currentUserRole !== "owner" || (instanceIds.length > 0 && !instanceIds.includes(n.id))}
+                            onChange={(checked) => setVoiceInstanceIds((prev) => checked ? [...prev, n.id] : prev.filter((id) => id !== n.id))}>
+                            <span className="text-sm text-slate-700">{n.label}</span>
+                          </CheckRow>
+                        ))}
+                      </div>
+                      {!hasVoiceCalls && <p className="text-[11px] text-amber-700 mt-2">A conta ainda não tem o módulo de ligações ativo.</p>}
                     </div>
                   )}
                 </div>

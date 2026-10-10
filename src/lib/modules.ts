@@ -31,6 +31,8 @@ export type ModuleSlug =
   // Commercial
   | "kanban" | "pipelines" | "quick_replies" | "agenda" | "agenda_reminders" | "agenda_owner_routing"
   | "crm"
+  // Voz: gravação é filha de ligações e nunca opera com o pai desligado.
+  | "voice_calls" | "voice_recording"
   // Lead gen
   | "widget_site" | "keyword_triggers" | "welcome_message" | "business_hours"
   // AI / Kora Studio

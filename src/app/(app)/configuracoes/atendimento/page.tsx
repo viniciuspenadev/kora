@@ -12,13 +12,15 @@ export default async function AtendimentoConfigPage() {
   if (!["owner", "admin"].includes(session.user.role)) redirect("/inbox")
 
   const tenantId = session.user.tenantId
-  const [{ data: cfg, error: configError }, studioAi] = await Promise.all([
+  const [{ data: cfg, error: configError }, studioAi, voiceCalls, voiceRecording] = await Promise.all([
     supabaseAdmin
       .from("tenant_config")
       .select("handoff_binding, inactivity_enabled, inactivity_hours, inactivity_action, sla_first_response_minutes")
       .eq("tenant_id", tenantId)
       .maybeSingle(),
     hasModule(tenantId, "ai_studio"),
+    hasModule(tenantId, "voice_calls"),
+    hasModule(tenantId, "voice_recording"),
   ])
 
   if (configError) throw new Error("Não foi possível carregar a configuração de atendimento. Tente novamente.")
@@ -40,6 +42,9 @@ export default async function AtendimentoConfigPage() {
     >
       <AtendimentoClient
         hasStudio={studioAi}
+        hasVoiceCalls={voiceCalls}
+        hasVoiceRecording={voiceRecording}
+        isOwner={session.user.role === "owner"}
         binding={binding}
         inactivityEnabled={!!cfg?.inactivity_enabled}
         inactivityHours={cfg?.inactivity_hours ?? 4}

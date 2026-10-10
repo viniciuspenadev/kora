@@ -13,10 +13,13 @@ import { updateAtendimentoPolicy } from "@/lib/actions/atendimento"
 
 type IAct = "notify"
 type Bind = "carteira" | "pool"
-type Tab  = "vinculo" | "inatividade" | "assinatura"
+type Tab  = "vinculo" | "inatividade" | "assinatura" | "ligacoes"
 
 interface Props {
   hasStudio:         boolean
+  hasVoiceCalls:     boolean
+  hasVoiceRecording: boolean
+  isOwner:           boolean
   binding:           Bind
   inactivityEnabled: boolean
   inactivityHours:   number
@@ -59,6 +62,7 @@ export function AtendimentoClient(props: Props) {
     { id: "vinculo",      label: "Vínculo" },
     { id: "inatividade",  label: "Inatividade" },
     { id: "assinatura", label: "Assinatura" },
+    { id: "ligacoes", label: "Ligações" },
   ]
 
   return (
@@ -74,6 +78,24 @@ export function AtendimentoClient(props: Props) {
       </div>
 
       {tab === "assinatura" && <AgentSignatureSettings />}
+      {tab === "ligacoes" && (
+        <SectionCard title="Ligações WhatsApp" description="A liberação da conta vem do God Mode; o proprietário define quais atendentes podem ligar em cada número.">
+          <div className="space-y-4 text-sm">
+            <p className={props.hasVoiceCalls ? "text-emerald-700" : "text-slate-500"}>
+              {props.hasVoiceCalls ? "Ligações habilitadas para esta conta." : "Ligações ainda não habilitadas para esta conta."}
+            </p>
+            <Link href="/configuracoes/equipe" className="text-primary font-semibold hover:underline">Configurar permissões da equipe →</Link>
+            {props.isOwner && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <Switch checked={false} onChange={() => {}} disabled label="Gravar ligações automaticamente"
+                  description={props.hasVoiceRecording
+                    ? "A gravação ainda não captura nem armazena áudio. Esta opção será liberada quando o serviço estiver pronto."
+                    : "O módulo de gravação ainda não foi concedido à conta no God Mode."} />
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      )}
       {/* ───────── Vínculo ───────── */}
       {tab === "vinculo" && (
         <SectionCard icon={UserCheck} title="Vínculo criado pelo atendimento" description="Defina se uma resposta do atendente cria um responsável para o cliente.">
@@ -144,7 +166,7 @@ export function AtendimentoClient(props: Props) {
       <p className="text-[11px] text-slate-400 px-1">Ao responder ou transferir uma conversa, a equipe assume o atendimento. O vínculo com o cliente é tratado separadamente.</p>
 
       {/* Save sticky */}
-      {tab !== "assinatura" && <div className="bg-white rounded-xl border border-slate-200 shadow-card p-4 flex items-center gap-3 sticky bottom-4">
+      {tab !== "assinatura" && tab !== "ligacoes" && <div className="bg-white rounded-xl border border-slate-200 shadow-card p-4 flex items-center gap-3 sticky bottom-4">
         <button type="button" onClick={save} disabled={pending}
           className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-semibold bg-primary hover:bg-primary-700 disabled:opacity-50 text-white rounded-lg transition-colors">
           {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />} Salvar
