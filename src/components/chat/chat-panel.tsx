@@ -39,6 +39,7 @@ import { sanitizeAdReply } from "@/lib/ad-reply"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
 
 interface Props {
+  blueVoiceInstanceId?: string | null
   currentUserId?: string
   onMessageEdited?: (patch: Pick<ChatMessage, "id" | "content"> & Partial<Pick<ChatMessage, "edited_at" | "deleted_at" | "content_type">>) => void
   pipelines?: Array<{ id: string; name: string }>
@@ -126,6 +127,7 @@ function MessageSkeleton() {
 }
 
 export function ChatPanel({
+  blueVoiceInstanceId = null,
   currentUserId = "", onMessageEdited,
   conversation, messages, quickReplies, agents, onStatusChange,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
@@ -515,6 +517,13 @@ export function ChatPanel({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          {blueVoiceInstanceId && conversation.instance_id === blueVoiceInstanceId && (conversation.channel ?? "whatsapp") === "whatsapp" && !conversation.is_group && (
+            <a href={`/inbox/voice/${conversation.id}`} target="_blank" rel="noopener noreferrer"
+              aria-label="Ligar pelo WhatsApp" title="Ligar pelo WhatsApp"
+              className="inline-flex size-8 items-center justify-center rounded-lg text-primary hover:bg-primary-50 focus-visible:ring-2 focus-visible:ring-primary">
+              <Phone className="size-4" />
+            </a>
+          )}
           {onOpenContact && <button type="button" onClick={onOpenContact} aria-label="Abrir detalhes do contato" title="Detalhes do contato" className="inline-flex size-8 items-center justify-center rounded-lg text-slate-500 hover:bg-primary-50 hover:text-primary focus-visible:ring-2 focus-visible:ring-primary"><Info className="size-4" /></button>}
           {/* Ação primária — Concluir (encerra) ou Reabrir se já resolvida.
               É o CTA que dispara o ciclo resolve→reopen→IA da Política de Atendimento. */}
