@@ -1,6 +1,6 @@
 # Banco de produção: permissões de ligação
 
-Mapeamento somente de leitura realizado em 2026-10-10 no projeto Supabase **WhatsApp**. Foram consultados `information_schema` e `pg_catalog`, além de contagens e do catálogo de módulos. Nenhuma migração foi executada nesta verificação. O escopo cobre as tabelas tocadas pela migração de voz e a tabela de números usada para validar as concessões; não é um inventário de todo o banco.
+Mapeamento somente de leitura realizado em 2026-10-10 no projeto Supabase **WhatsApp**. Foram consultados `information_schema` e `pg_catalog`, além de contagens e do catálogo de módulos. O escopo cobre as tabelas tocadas pela migração de voz e a tabela de números usada para validar as concessões; não é um inventário de todo o banco. A aplicação posterior da migração está registrada abaixo.
 
 ## Estrutura encontrada
 
@@ -24,9 +24,11 @@ A função `public.tenant_has_module(uuid, text)` retorna `false` para slugs aus
 
 Nenhuma linha de `tenant_modules`, `tenant_users` ou `whatsapp_instances` será alterada pela migração. Nenhuma tabela de mensagens ou sessão do WhatsApp é tocada. O `SET LOCAL lock_timeout = '5s'` impede que a alteração de tabela espere indefinidamente por um bloqueio de produção.
 
-## Ordem e verificação
+## Aplicação e verificação
 
-Aplicar a migração antes de publicar o código do PR: o código passa a ler `tenant_users.voice_instance_ids`. Após a migração, conferir em uma consulta de leitura:
+A migração foi aplicada em produção em **2026-10-10** por uma consulta transacional na Management API, após uma conferência que encontrou zero slugs de voz, zero colunas de concessão, zero gatilhos de voz e zero concessões. O código do PR ainda não havia sido publicado: ele passa a ler `tenant_users.voice_instance_ids` e deve ser implantado somente depois desta alteração. A execução direta da consulta não registra automaticamente esta versão no histórico do Supabase CLI; se o projeto passar a usar esse histórico, conciliar a versão antes de rodar todas as migrações do repositório.
+
+Após a aplicação, a consulta de leitura confirmou os dois slugs desligados por padrão, a coluna `uuid[] NOT NULL DEFAULT '{}'`, o gatilho novo e **zero** concessões em `tenant_modules`, **zero** atendentes com números de voz e **zero** tenants com `voice_calls` ou `voice_recording` efetivos. Para repetir a verificação:
 
 ```sql
 SELECT slug, parent_slug, default_on
