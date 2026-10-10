@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   Loader2, Check, Power, RotateCcw, CalendarDays, BadgeCheck, Smartphone, Puzzle,
-  User, Contact, ShieldCheck, LayoutGrid, Settings2, Building2, Boxes, Briefcase, Megaphone, Package, Landmark, FileText, AlertTriangle, Store, ClipboardList,
+  User, Contact, ShieldCheck, LayoutGrid, Settings2, Building2, Boxes, Briefcase, Megaphone, Package, Landmark, FileText, AlertTriangle, Store, ClipboardList, PhoneCall,
 } from "lucide-react"
 import { SimpleSelect } from "@/components/ui/select"
 import { DangerConfirm } from "@/components/ui/danger-confirm"
@@ -69,6 +69,20 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
   //    é o do servidor (nunca a UI); isto existe pra não oferecer um botão condenado.
   const canEditOther = currentUserRole === "owner" || member.role === "agent"
   const name = fullName.trim() || member.email
+  const baileysNumbers = numbers.filter((number) => number.provider === "baileys")
+  const permittedVoiceNumbers = baileysNumbers.filter((number) =>
+    voiceInstanceIds.includes(number.id) && (instanceIds.length === 0 || instanceIds.includes(number.id)))
+  const voiceStatus = !hasVoiceCalls
+    ? "Aguardando ativação da conta"
+    : permittedVoiceNumbers.length === 0
+      ? "Nenhum número autorizado"
+      : `Permissão em ${permittedVoiceNumbers.length} ${permittedVoiceNumbers.length === 1 ? "número" : "números"}`
+  const voiceStatusColor = !hasVoiceCalls
+    ? "bg-amber-100 text-amber-800"
+    : permittedVoiceNumbers.length === 0
+      ? "bg-slate-100 text-slate-700"
+      : "bg-emerald-100 text-emerald-800"
+  const voiceChangesPending = !sameSet(voiceInstanceIds, member.voice_instance_ids ?? [])
 
   const dirty =
     fullName.trim() !== (member.full_name ?? "") || role !== member.role ||
@@ -187,6 +201,17 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
               <span className={`size-1.5 rounded-full ${member.active ? "bg-emerald-500" : "bg-slate-400"}`} />{member.active ? "Ativo" : "Inativo"}
             </span>
           </div>
+          {role === "agent" && baileysNumbers.length > 0 && (
+            <button type="button" onClick={() => setTab("acesso")}
+              className="mt-4 w-full rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-left transition-colors hover:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              <span className="flex items-center gap-2 text-sm font-bold text-indigo-950">
+                <PhoneCall className="size-4 shrink-0" /> Ligações WhatsApp
+              </span>
+              <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${voiceStatusColor}`}>{voiceStatus}</span>
+              {voiceChangesPending && <span className="mt-1 block text-[11px] font-medium text-indigo-700">Alterações ainda não salvas</span>}
+              <span className="mt-1 block text-[11px] text-indigo-700">Ver permissões do atendente →</span>
+            </button>
+          )}
           <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col gap-2.5 text-[13px]">
             <Meta icon={Building2} k="Departamento" v={member.department?.name ?? "—"} />
             {member.unit && <Meta icon={Store} k="Unidade" v={member.unit.name} />}
@@ -243,6 +268,31 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
             {tab === "acesso" && (
               <Section title="Função e acesso" sub="O que ela pode fazer e quais conversas enxerga.">
                 <div className="max-w-lg space-y-5">
+                  {role === "agent" && baileysNumbers.length > 0 && (
+                    <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="flex items-center gap-2 text-sm font-bold text-indigo-950">
+                          <PhoneCall className="size-4 shrink-0" /> Ligações WhatsApp
+                        </span>
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${voiceStatusColor}`}>{voiceStatus}</span>
+                      </div>
+                      <p className="mt-2 text-xs leading-relaxed text-indigo-900">
+                        O proprietário escolhe em quais números este atendente pode ligar.
+                        {!hasVoiceCalls && " A conta também precisa ter Ligações WhatsApp ativado no God Mode."}
+                      </p>
+                      <div className="mt-3 space-y-1.5">
+                        {baileysNumbers.map((number) => (
+                          <CheckRow key={number.id} checked={voiceInstanceIds.includes(number.id)}
+                            disabled={currentUserRole !== "owner" || (instanceIds.length > 0 && !instanceIds.includes(number.id))}
+                            onChange={(checked) => setVoiceInstanceIds((previous) => checked ? [...previous, number.id] : previous.filter((id) => id !== number.id))}>
+                            <span className="text-sm text-slate-800">{number.label}</span>
+                          </CheckRow>
+                        ))}
+                      </div>
+                      {voiceChangesPending && <p className="mt-2 text-[11px] font-semibold text-indigo-800">Clique em Salvar alterações para aplicar esta permissão.</p>}
+                      {!hasVoiceCalls && <p className="mt-2 text-[11px] font-semibold text-amber-800">As ligações permanecem indisponíveis até a ativação da conta.</p>}
+                    </div>
+                  )}
                   <Field label="Função" hint={!canEditRole ? "Apenas o proprietário pode alterar funções." : undefined}>
                     <SimpleSelect value={role} onChange={(v) => setRole(v as TenantRole)} disabled={!canEditRole || isSelf} options={[
                       { value: "agent", label: "Atendente — atende conversas" },
@@ -310,22 +360,6 @@ export function MemberProfileClient({ member, departments, numbers, units = [], 
                           </CheckRow>
                         ))}
                       </div>
-                    </div>
-                  )}
-                  {role === "agent" && numbers.some((n) => n.provider === "baileys") && (
-                    <div className="pt-3 border-t border-slate-100">
-                      <p className="text-sm font-semibold text-slate-800">Permitir ligações</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5 mb-2">O proprietário escolhe em quais números este atendente pode ligar. Também é preciso ativar Ligações WhatsApp no God Mode.</p>
-                      <div className="space-y-1.5">
-                        {numbers.filter((n) => n.provider === "baileys").map((n) => (
-                          <CheckRow key={n.id} checked={voiceInstanceIds.includes(n.id)}
-                            disabled={currentUserRole !== "owner" || (instanceIds.length > 0 && !instanceIds.includes(n.id))}
-                            onChange={(checked) => setVoiceInstanceIds((prev) => checked ? [...prev, n.id] : prev.filter((id) => id !== n.id))}>
-                            <span className="text-sm text-slate-700">{n.label}</span>
-                          </CheckRow>
-                        ))}
-                      </div>
-                      {!hasVoiceCalls && <p className="text-[11px] text-amber-700 mt-2">A conta ainda não tem o módulo de ligações ativo.</p>}
                     </div>
                   )}
                 </div>
