@@ -1,7 +1,7 @@
 "use client"
 
 import { useRouter, useSearchParams, usePathname } from "next/navigation"
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Calendar } from "lucide-react"
 
 /**
@@ -34,7 +34,12 @@ function addDays(iso: string, n: number): string {
   return isoDate(d)
 }
 
-function rangeFromPreset(days: number): { from: string; to: string } {
+function rangeFromPreset(days: number, timeZone?: string): { from: string; to: string } {
+  if (timeZone) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).map(p => [p.type, p.value]))
+    const today = `${parts.year}-${parts.month}-${parts.day}`
+    return { from: addDays(today, 1 - days), to: addDays(today, 1) }
+  }
   const to   = new Date()
   to.setUTCHours(23, 59, 59, 999)
   const from = new Date(to)
@@ -43,7 +48,7 @@ function rangeFromPreset(days: number): { from: string; to: string } {
   return { from: isoDate(from), to: isoDate(new Date(to.getTime() + 1)) }
 }
 
-export function PeriodPicker() {
+export function PeriodPicker({ timeZone }: { timeZone?: string } = {}) {
   const router       = useRouter()
   const pathname     = usePathname()
   const searchParams = useSearchParams()
@@ -77,14 +82,14 @@ export function PeriodPicker() {
   const activePreset: string | null = (() => {
     if (!currentFrom || !currentTo) return "7d"
     for (const p of PRESETS) {
-      const r = rangeFromPreset(p.days)
+      const r = rangeFromPreset(p.days, timeZone)
       if (r.from === currentFrom && r.to === currentTo) return p.id
     }
     return null
   })()
 
   function applyPreset(preset: Preset) {
-    const r = rangeFromPreset(preset.days)
+    const r = rangeFromPreset(preset.days, timeZone)
     const params = new URLSearchParams(searchParams.toString())
     params.set("from", r.from)
     params.set("to",   r.to)

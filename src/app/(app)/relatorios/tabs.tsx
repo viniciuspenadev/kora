@@ -14,6 +14,7 @@ export function ReportsTabs({ hasKanban, hasAi }: Props) {
       tabs={[
         { href: "/relatorios",             label: "Geral" },
         { href: "/relatorios/atendimento", label: "Atendimento" },
+        { href: "/relatorios/ligacoes",    label: "Ligações" },
         // "Kanban" (dono, 29/09/2026): é o quadro do ATENDIMENTO — "Funil" agora é só vendas.
         { href: "/relatorios/funil",       label: "Kanban",   show: hasKanban },
         { href: "/relatorios/origem",      label: "Origem" },

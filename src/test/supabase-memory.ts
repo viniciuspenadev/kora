@@ -44,6 +44,7 @@ export class MemoryDb {
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return q },
       in: (k: string, values: unknown[]) => { filters.push(r => values.includes(val(r, k))); return q },
       lte: (k: string, v: any) => { filters.push(r => r[k] <= v); return q },
+      lt: (k: string, v: any) => { filters.push(r => r[k] < v); return q },
       gte: (k: string, v: any) => { filters.push(r => r[k] >= v); return q },
       gt: (k: string, v: any) => { filters.push(r => r[k] > v); return q },
       or: (_value: string) => q,
