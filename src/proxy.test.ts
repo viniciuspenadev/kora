@@ -9,6 +9,8 @@ let proxy: (req: NextRequest) => Promise<Response>
 beforeAll(async () => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://db.example"
   process.env.SUPABASE_SERVICE_ROLE_KEY = "chave-do-servidor"
+  process.env.BLUE_VOICE_ENABLED = "true"
+  process.env.BLUE_VOICE_URL = "https://voice.example"
   vi.stubGlobal("fetch", fetchMock)
   ;({ proxy } = await import("./proxy"))
 })
@@ -17,6 +19,17 @@ afterEach(() => fetchMock.mockReset())
 const csp = (r: Response) => r.headers.get("content-security-policy") ?? ""
 const ancestors = (r: Response) => csp(r).match(/frame-ancestors ([^;]*)/)?.[1] ?? ""
 const answer = (rows: unknown, ok = true) => fetchMock.mockResolvedValue({ ok, json: async () => rows })
+
+it("permite áudio na navegação do painel flutuante, mantendo o destino restrito", async () => {
+  for (const path of ["/inbox", "/contatos", "/configuracoes/equipe", "/integracoes/whatsapp-oficial"]) {
+    const r = await proxy(new NextRequest(`http://kora.test${path}`))
+    const connections = csp(r).match(/connect-src ([^;]*)/)?.[1] ?? ""
+    expect(connections).toContain("wss://voice.example")
+    expect(connections.split(/\s+/)).not.toContain("wss:")
+    expect(ancestors(r)).toBe("'self'")
+  }
+  expect(csp(await proxy(new NextRequest("http://kora.test/auth/signin")))).not.toContain("voice.example")
+})
 
 describe("formulário no site do cliente", () => {
   it("abre só nos sites autorizados, sem X-Frame-Options e fora do Google", async () => {
