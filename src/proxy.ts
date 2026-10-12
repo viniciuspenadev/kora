@@ -88,10 +88,12 @@ function buildCsp(opts: { turnstile?: boolean; meta?: boolean; voice?: boolean; 
   ].join("; ")
 }
 
-const CSP_APP    = buildCsp()
+// The authenticated layout owns the floating call across internal navigation.
+// Only the configured HTTPS voice origin is allowed, and only when voice is enabled.
+const CSP_APP    = buildCsp({ voice: true })
 const CSP_VOICE  = buildCsp({ voice: true })
 const CSP_SIGNUP = buildCsp({ turnstile: true })
-const CSP_META   = buildCsp({ meta: true })
+const CSP_META   = buildCsp({ meta: true, voice: true })
 
 // ── Formulário dentro do site do cliente (/embed/<public_id>) ─────
 // A moldura só abre nos sites que o dono autorizou na aba Publicar, e quem impõe é o
