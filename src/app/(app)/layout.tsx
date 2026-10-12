@@ -7,6 +7,7 @@ import { motivoDoPaywallForTenant } from "@/lib/lifecycle-shared"
 import { Sidebar } from "@/components/app/sidebar"
 import { MobileSidebar } from "@/components/app/mobile-sidebar"
 import { AppShellProvider } from "@/components/app/app-shell-context"
+import { VoiceProvider } from "@/components/voice/voice-provider"
 import { PushPrompt } from "@/components/app/push-prompt"
 import { FileDropGuard } from "@/components/app/file-drop-guard"
 import { Topbar } from "@/components/app/topbar"
@@ -282,6 +283,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <AppShellProvider>
+      <VoiceProvider key={`${session.user.tenantId}:${session.user.id}`}>
       <div className="flex h-dvh overflow-hidden bg-nav">
         <Sidebar {...navProps} initialCollapsed={initialCollapsed} />
         <MobileSidebar {...navProps} />
@@ -347,6 +349,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <Toaster position="top-right" richColors closeButton />
       <FileDropGuard />
       {entering && <BootSplash startedAt={entering.startedAt} initialIndex={entering.initialIndex} name={greetingName(session.user.name)} />}
+      </VoiceProvider>
     </AppShellProvider>
   )
 }

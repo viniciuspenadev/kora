@@ -25,9 +25,12 @@ No God Mode, habilite **Ligações WhatsApp** para a conta. O filho **Gravação
 ## Verificação após o deploy do Kora
 
 1. Acesse o Kora como usuário autorizado e abra uma conversa individual WhatsApp da Blue que esteja atribuída a ele, da qual participe, ou para a qual tenha papel de administrador. O ícone de telefone deve estar habilitado. Em conversas de outros números ou para usuários sem permissão, deve aparecer desabilitado.
-2. Abra o ícone, permita o microfone, clique **Ligar** e confirme no telefone de teste: toque, áudio nos dois sentidos e desligamento nos dois aparelhos.
-3. Confira o estado livre ao final. Se o WebSocket de mídia fechar, a Evolution encerra a chamada. Uma aba fechada também interrompe o áudio.
-4. Confirme uma mensagem de ida e volta pela Blue no Kora. O piloto de voz não troca o webhook nem o caminho de mensagens; a futura troca de mensagens para a Evolution nova exige validação própria.
+2. Abra o ícone: o painel flutuante aparece na mesma tela. Clique **Ligar**, permita o microfone e confirme no telefone de teste: toque e áudio nos dois sentidos. As duas ondas mostram a captura local e a reprodução do áudio remoto, sem gravá-los.
+3. Minimize, expanda e arraste o painel pela alça superior (as setas do teclado também movem a alça). Navegue entre conversas e outra seção pelo menu interno, mantendo o áudio. **X** minimiza uma chamada ativa; somente **Desligar** pede o encerramento. Teste silenciar/reativar o microfone e desligar nos dois sentidos.
+4. Confira o estado livre ao final e faça uma segunda chamada. Se o WebSocket de mídia fechar, a Evolution encerra a chamada. Fechar ou recarregar a aba interrompe o áudio (há aviso nativo durante a chamada); a persistência vale para a navegação interna do Kora na mesma aba.
+5. Confirme uma mensagem de ida e volta pela Blue no Kora. O piloto de voz não troca o webhook nem o caminho de mensagens; a futura troca de mensagens para a Evolution nova exige validação própria.
+
+O painel pertence ao layout autenticado, com identidade por conta e usuário. Abrir ou minimizar não solicita microfone nem inicia ligação. O microfone e o canal de mídia são liberados no encerramento, falha ou saída da aplicação. Links antigos `/inbox/voice/:id` abrem o painel no Inbox, sem discagem automática. Esta revisão não altera banco, permissões nem configuração da Evolution.
 
 A Evolution aceita apenas um canal de mídia ativo por instância; os demais atendentes veem a linha ocupada durante a ligação. Ainda falta registrar no Kora a posse e o histórico de cada chamada para auditoria e futura gravação.
 
