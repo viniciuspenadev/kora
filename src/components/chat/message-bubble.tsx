@@ -240,6 +240,31 @@ export function MessageBubble({ message, agentName, senderLabel, onReply, onReac
     )
   }
 
+  const voiceCall = message.metadata?.voice_call as import("@/lib/voice/timeline").VoiceTimelineEvent | undefined
+  if (voiceCall && isNote && isSystem) {
+    const labels = { dialing: "Chamando…", ringing: "Tocando…", connected: "Em ligação", ending: "Encerrando…",
+      ended: "Encerrada", failed: "Não iniciada", unconfirmed: "Resultado não confirmado" }
+    const completed = voiceCall.state === "ended"
+    const duration = typeof voiceCall.durationSeconds === "number" && Number.isFinite(voiceCall.durationSeconds)
+      ? `${Math.floor(voiceCall.durationSeconds / 60).toString().padStart(2, "0")}:${(voiceCall.durationSeconds % 60).toString().padStart(2, "0")}` : null
+    return <div className="flex justify-center px-4 py-2">
+      <div className="w-full max-w-sm rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="text-lg" aria-hidden="true">↗</span>
+          <span className="text-xs font-bold text-indigo-900">Ligação WhatsApp de saída</span>
+          <span className="ml-auto text-[10px] text-slate-500">{time}</span>
+        </div>
+        <div className="mt-2 flex items-center gap-2 text-xs">
+          <span className={`rounded-full px-2 py-0.5 font-semibold ${completed ? "bg-slate-200 text-slate-700" : voiceCall.state === "failed" || voiceCall.state === "unconfirmed" ? "bg-amber-100 text-amber-800" : "bg-indigo-100 text-indigo-800"}`}>{labels[voiceCall.state] ?? "Registro de ligação"}</span>
+          {duration && <span title="Duração aproximada a partir do estado observado no servidor" className="font-mono text-slate-600">≈ {duration}</span>}
+        </div>
+        <p className="mt-2 text-[11px] text-slate-600">Por {voiceCall.actor}</p>
+        {completed && !duration && <p className="mt-1 text-[10px] text-slate-500">Tempo em conversa não confirmado.</p>}
+        <p className="mt-1 flex items-center gap-1 text-[10px] text-slate-400"><Lock className="size-2.5" /> Registro interno</p>
+      </div>
+    </div>
+  }
+
   // ── Cartão de EVENTO do Negócio (Linha do Tempo) — interno, cliente nunca vê ──
   // Vem ANTES do system pill: a movimentação é postada como sender_type "system" + is_private_note,
   // então sem este early-return ela cairia na pílula cinza centralizada.

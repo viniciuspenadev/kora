@@ -3,6 +3,7 @@
 import { supabaseAdmin } from "@/lib/supabase"
 import { getViewerScope, canViewConversation } from "@/lib/visibility"
 import type { ChatMessage } from "@/types/chat"
+import { expireVoiceTimeline } from "@/lib/voice/timeline"
 
 /**
  * Listagem paginada de mensagens dentro de uma conversa.
@@ -61,6 +62,7 @@ export async function getMessages(opts: {
   limit?:         number
 }): Promise<MessagesPage> {
   const t = await assertCanView(opts.conversationId)
+  if (!opts.before) await expireVoiceTimeline(t, opts.conversationId).catch(() => {})
   const limit  = opts.limit ?? DEFAULT_LIMIT
   const before = opts.before ?? null
 
