@@ -6,6 +6,7 @@ Revisão do código em 2026-10-12. Este documento descreve o estado comprovado e
 
 - Kora resolve apenas uma linha por `BLUE_VOICE_INSTANCE_ID/NAME/URL/API_KEY`.
 - Evolution inicializa o motor apenas para `VOICE_CALLS_INSTANCE_NAME`. A elegibilidade é decidida no construtor; habilitação dinâmica ainda exige trabalho.
+- Há uma restrição explícita adicional em `voice/src/wasm-engine.mts`: `Only one VoIP engine is supported per process.` O motor usa callbacks globais e um proprietário global. Uma lista de nomes habilitados, sozinha, faria a inicialização do segundo motor falhar. Este é um limite da implementação atual, não uma conclusão sobre a capacidade do WhatsApp ou do Baileys.
 - Cada instância admite um canal de mídia e uma chamada por vez. O cliente de navegador limita uma chamada por aba, sem reserva global por atendente ou coordenação de várias abas.
 - As concessões `tenant_users.voice_instance_ids` já aceitam vários IDs, mas roteamento, motores e interface continuam no piloto de uma linha.
 - Mensagens seguem na Evolution atual; a Blue de voz é outro serviço pareado. O destino final é cada número usar mensagens e voz no mesmo socket Baileys da nossa Evolution, após migração validada.
@@ -24,6 +25,14 @@ Cada número é uma linha independente, com identidade estável do Kora, sessão
 Para discagem avulsa ou escolha de outra origem, selecionar apenas linhas autorizadas do tenant e relacionar o evento à conversa daquele número. Esse fluxo é posterior ao suporte às chamadas dentro da conversa.
 
 Política inicial: uma chamada por número e uma por atendente em todas as abas. Chamadas simultâneas em números diferentes são a meta da próxima prova com dois números; a capacidade do motor e da VPS ainda precisa ser medida.
+
+## Isolamento do motor
+
+O desenho recomendado mantém a Evolution como dona dos sockets e das credenciais Baileys, com um processo de voz isolado por linha. Uma ponte de sinalização e áudio conecta esse processo à sessão correta; o socket Baileys não deve ser copiado nem repareado só para isolar o WASM. Essa ponte precisa ser implementada: a interface atual do VoipClient recebe um WASocket diretamente, que não é transferível como objeto para outro processo.
+
+Para uma prova inicial, dois serviços piloto completos e isolados podem separar os motores, com sessões, banco/cache e roteamento explicitamente separados. Isso é uma alternativa de teste, com custo de recursos, não o modelo final de um contêiner manual por cliente. Não restaurar as mesmas instâncias/auth em dois serviços concorrentes compartilhando o armazenamento.
+
+Testar dois motores em processos separados prova o isolamento; integrar dois números na mesma Evolution com a ponte prova o produto. Nenhuma dessas duas provas está concluída nesta etapa.
 
 ## Estrutura proposta, ainda não aplicada ao banco
 
@@ -46,7 +55,8 @@ Antes de qualquer migração, mapear colunas, índices, FKs, RLS, gatilhos e dad
 | Browser/rede cai | Estado de término explícito; reconciliação. Reconectar mídia só com propriedade validada e sem rediscagem automática. Hoje fechar/recarregar a aba encerra o áudio. |
 | QR desconectado ou sessão substituída | Invalidar tickets e reservas da geração anterior; recusar chamadas até sessão e motor estarem prontos. |
 | Conta/atendente perde permissão | Política explícita para chamada já em andamento, com autoridade de encerramento preservada e novas chamadas negadas. |
-| Motor de uma linha trava | Isolar worker e limitar recursos; preservar mensagens e outras linhas. Validar se a biblioteca realmente isola duas sessões antes de ampliar. |
+| Segundo motor no mesmo processo | Hoje é recusado explicitamente. Isolar o motor por processo e implementar a ponte com o Baileys; apenas remover o bloqueio não resolve os callbacks globais. |
+| Motor de uma linha trava | Isolar o processo e limitar recursos; preservar mensagens e outras linhas. Validar recuperação sem repareamento ou perda de sessão. |
 | VPS sem capacidade | Medir memória/CPU por motor ocioso e ativo, concorrência de chamadas e impacto nas mensagens. Aquecimento sob demanda e limite de capacidade; não inicializar todos os motores sem medição. |
 | Eventos duplicados ou fora de ordem | ID idempotente, sequência e máquina de estados; não duplicar tentativa nem regredir connected para ringing. |
 | Reinício do Kora/Evolution | Recuperar eventos duráveis e reconciliar chamadas abertas; manter resultado desconhecido se não houver prova de término. |
@@ -57,7 +67,7 @@ Antes de qualquer migração, mapear colunas, índices, FKs, RLS, gatilhos e dad
 ## Ordem de execução
 
 1. Relatório com os fatos disponíveis e indicação de precisão — esta etapa.
-2. Reserva e identificação da linha no cartão, retirando o roteamento global fixo da Blue.
+2. Prova de isolamento de dois motores, desenho da ponte com o Baileys, reserva e identificação da linha no cartão. Retirar o roteamento global fixo da Blue.
 3. Eventos duráveis do motor e tabela de chamadas, com reconciliação e bolha vinculada ao mesmo ID.
-4. Prova com dois números e dois atendentes: chamadas simultâneas, disputa da mesma linha, duas abas, perda de rede, desconexão QR, reinício e falta de recursos. Confirmar também mensagens de ida e volta nas duas linhas.
+4. Integrar a ponte e fazer prova com dois números e dois atendentes: chamadas simultâneas, disputa da mesma linha, duas abas, perda de rede, desconexão QR, reinício e falta de recursos. Confirmar também mensagens de ida e volta nas duas linhas.
 5. Liberar um segundo número piloto; medir; ampliar gradualmente. Gravação, transferência, fila e discador vêm após estabilidade dessa base.
