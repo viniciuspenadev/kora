@@ -8,16 +8,17 @@ export type VoiceTimelineEvent = {
   state: "dialing" | "ringing" | "connected" | "ending" | "ended" | "failed" | "unconfirmed"
   actor: string; startedAt: string; connectedAt: string | null; endedAt: string | null
   durationSeconds: number | null; callId: string | null
+  instanceId?: string; destinationNumber?: string
 }
 type RecordContext = { id: string; tenantId: string; conversationId: string; event: VoiceTimelineEvent }
 const labels: Record<VoiceTimelineEvent["state"], string> = {
   dialing: "Chamada iniciada", ringing: "Chamando cliente", connected: "Em ligação",
   ending: "Encerrando ligação", ended: "Ligação encerrada", failed: "Ligação não iniciada", unconfirmed: "Resultado não confirmado",
 }
-export async function beginVoiceTimeline(tenantId: string, conversationId: string, userId: string): Promise<RecordContext> {
+export async function beginVoiceTimeline(tenantId: string, conversationId: string, userId: string, line?: { instanceId: string; destinationNumber: string }): Promise<RecordContext> {
   const { data: profile } = await supabaseAdmin.from("profiles").select("full_name").eq("id", userId).maybeSingle()
   const event: VoiceTimelineEvent = { state: "dialing", actor: profile?.full_name || "Atendente",
-    startedAt: new Date().toISOString(), connectedAt: null, endedAt: null, durationSeconds: null, callId: null }
+    startedAt: new Date().toISOString(), connectedAt: null, endedAt: null, durationSeconds: null, callId: null, ...line }
   const context = { id: randomUUID(), tenantId, conversationId, event }
   const { error } = await supabaseAdmin.from("chat_messages").insert({
     id: context.id, tenant_id: tenantId, conversation_id: conversationId, sender_id: userId,

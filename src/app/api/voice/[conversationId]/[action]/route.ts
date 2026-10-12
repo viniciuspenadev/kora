@@ -48,7 +48,7 @@ async function handle(req: NextRequest, params: Params["params"]) {
     }
     if (action === "dial") {
       if (!status.ready || status.call) return result(409, { error: "Linha ocupada ou voz indisponível" })
-      const record = await beginVoiceTimeline(scope.tenantId, conversationId, scope.userId)
+      const record = await beginVoiceTimeline(scope.tenantId, conversationId, scope.userId, { instanceId: config.instanceId, destinationNumber: number })
       try {
         const upstream = await fetch(new URL(`/voice/dial/${encodeURIComponent(config.instanceName)}`, config.url), {
           method: "POST", headers: { apikey: config.key, "content-type": "application/json" },
