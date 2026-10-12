@@ -32,7 +32,9 @@ No God Mode, habilite **Ligações WhatsApp** para a conta. O filho **Gravação
 
 O painel pertence ao layout autenticado, com identidade por conta e usuário. Abrir ou minimizar não solicita microfone nem inicia ligação. O microfone e o canal de mídia são liberados no encerramento, falha ou saída da aplicação. Links antigos `/inbox/voice/:id` abrem o painel no Inbox, sem discagem automática. Esta revisão não altera banco, permissões nem configuração da Evolution.
 
-A Evolution aceita apenas um canal de mídia ativo por instância; os demais atendentes veem a linha ocupada durante a ligação. Ainda falta registrar no Kora a posse e o histórico de cada chamada para auditoria e futura gravação.
+A Evolution aceita apenas um canal de mídia ativo por instância; os demais atendentes veem a linha ocupada durante a ligação. Cada tentativa de discagem pelo Kora gera uma bolha interna persistente em `chat_messages.metadata.voice_call`, com atendente, início e estado. O servidor observa a Evolution a cada dois segundos após a resposta, por até 16 minutos, e atualiza essa mesma bolha mesmo quando o navegador fecha. A duração é aproximada e só aparece quando o estado conectado foi observado; não se presume que uma chamada sem esse estado foi atendida ou não atendida. Falhas ambíguas e observações interrompidas aparecem como resultado não confirmado. Ao reabrir a conversa, registros ainda em andamento há mais de 20 minutos recebem essa classificação, sem inventar horário de término.
+
+Esta bolha usa as colunas existentes de mensagens e não exige migração. É uma nota interna de sistema, sem envio ao WhatsApp. Permissões da conversa continuam governando a leitura. O relatório agregado, a posse transacional da linha e os eventos duráveis com horários exatos da Evolution continuam como próximos passos; o registro por observação não é um CDR completo.
 
 ## Reversão
 

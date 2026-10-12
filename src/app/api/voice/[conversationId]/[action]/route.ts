@@ -1,5 +1,6 @@
-import { NextResponse, type NextRequest } from "next/server"
+import { after, NextResponse, type NextRequest } from "next/server"
 import { blueVoiceRequest, blueVoiceStatus, blueVoiceTarget } from "@/lib/voice/blue"
+import { beginVoiceTimeline, failVoiceTimeline, observeVoiceTimeline } from "@/lib/voice/timeline"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -27,7 +28,7 @@ async function handle(req: NextRequest, params: Params["params"]) {
     return result(403, { error: "Requisição não autorizada" })
   }
   try {
-    const { config, number } = await blueVoiceTarget(conversationId)
+    const { config, number, scope } = await blueVoiceTarget(conversationId)
     if (action === "status") {
       const status = await blueVoiceStatus(config)
       const presentedId = req.nextUrl.searchParams.get("callId")
@@ -47,13 +48,21 @@ async function handle(req: NextRequest, params: Params["params"]) {
     }
     if (action === "dial") {
       if (!status.ready || status.call) return result(409, { error: "Linha ocupada ou voz indisponível" })
-      const upstream = await fetch(new URL(`/voice/dial/${encodeURIComponent(config.instanceName)}`, config.url), {
-        method: "POST", headers: { apikey: config.key, "content-type": "application/json" },
-        body: JSON.stringify({ number }), cache: "no-store", signal: AbortSignal.timeout(45_000),
-      })
-      if (!upstream.ok) return result(upstream.status, { error: "Não foi possível iniciar a ligação" })
-      const data = await upstream.json()
-      return result(202, data)
+      const record = await beginVoiceTimeline(scope.tenantId, conversationId, scope.userId)
+      try {
+        const upstream = await fetch(new URL(`/voice/dial/${encodeURIComponent(config.instanceName)}`, config.url), {
+          method: "POST", headers: { apikey: config.key, "content-type": "application/json" },
+          body: JSON.stringify({ number }), cache: "no-store", signal: AbortSignal.timeout(45_000),
+        })
+        if (!upstream.ok) {
+          await failVoiceTimeline(record, [400, 401, 403, 409, 422].includes(upstream.status))
+          return result(upstream.status, { error: "Não foi possível iniciar a ligação" })
+        }
+        const data = await upstream.json()
+        if (typeof data.id !== "string" || !data.id) throw new Error("Ligação sem identificador")
+        after(() => observeVoiceTimeline(record, config, data.id))
+        return result(202, data)
+      } catch (error) { await failVoiceTimeline(record, false); throw error }
     }
     if (!status.call) return result(409, { error: "Nenhuma ligação ativa" })
     const body: unknown = await req.json().catch(() => null)
@@ -63,6 +72,7 @@ async function handle(req: NextRequest, params: Params["params"]) {
     return result(upstream.status, upstream.status === 202 ? upstream.data : { error: "Não foi possível desligar" })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Voz indisponível"
+    if (message === "Não foi possível registrar a tentativa de ligação") return result(503, { error: message })
     const denied = ["Voz não configurada", "Conversa não encontrada", "Ligação não habilitada para este atendente", "Assuma ou participe do atendimento para ligar", "Contato sem telefone válido para ligação"].includes(message)
     return result(denied ? 403 : 502, { error: denied ? message : "Voz indisponível" })
   }

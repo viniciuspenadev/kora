@@ -5,7 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase"
 import { hasModule } from "@/lib/modules"
 import type { ViewerScope } from "@/lib/visibility"
 
-type VoiceConfig = { instanceId: string; instanceName: string; url: URL; key: string }
+export type VoiceConfig = { instanceId: string; instanceName: string; url: URL; key: string }
 type VoiceStatus = { enabled: boolean; ready: boolean; call: { id: string; state: string } | null }
 
 export function blueVoiceConfig(): VoiceConfig | null {
@@ -53,7 +53,7 @@ export async function blueVoiceTarget(conversationId: string) {
   const contact = conv.chat_contacts as unknown as { phone_number?: string | null } | null
   const number = (contact?.phone_number ?? "").replace(/\D/g, "")
   if (!/^\d{8,15}$/.test(number)) throw new Error("Contato sem telefone válido para ligação")
-  return { config, number }
+  return { config, number, scope }
 }
 
 export async function blueVoiceRequest(config: VoiceConfig, action: string, method: "GET" | "POST") {
