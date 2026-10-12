@@ -2,6 +2,7 @@
 
 import { ConversationActionsButton, ConversationKanbanPosition, useConversationWorkflow, type WorkflowExtra } from "./conversation-workflow"
 import { ContactPic } from "@/components/chat/contact-pic"
+import { useVoice } from "@/components/voice/voice-provider"
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { MessageBubble } from "./message-bubble"
@@ -143,6 +144,7 @@ export function ChatPanel({
   onBack, onOpenContact, agendaEnabled = false, onFollowUpChange, pipelines = [], stages = [],
 }: Props) {
   const workflow = useConversationWorkflow()
+  const { openVoice } = useVoice()
   const isArchived = !!conversation.archived_at
   // Menu de contexto (clique direito numa mensagem): responder/copiar/reagir/agendar/disparar fluxo.
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; msg: ChatMessage | null } | null>(null)
@@ -526,11 +528,11 @@ export function ChatPanel({
           {(conversation.channel ?? "whatsapp") === "whatsapp" && !conversation.is_group && (
             blueVoiceEnabled && conversation.instance_id === blueVoiceInstanceId &&
               (blueVoiceIsAdmin || conversation.assigned_to === currentUserId || (conversation.participants ?? []).includes(currentUserId)) ? (
-              <a href={`/inbox/voice/${conversation.id}`} target="_blank" rel="noopener noreferrer"
+              <button type="button" onClick={() => openVoice({ conversationId: conversation.id, name, phone: contact?.phone_number ? formatPhoneDisplay(contact.phone_number) : undefined })}
                 aria-label="Ligar pelo WhatsApp" title="Ligar pelo WhatsApp"
                 className="inline-flex size-8 items-center justify-center rounded-lg text-primary hover:bg-primary-50 focus-visible:ring-2 focus-visible:ring-primary">
                 <Phone className="size-4" />
-              </a>
+              </button>
             ) : (
               <button type="button" disabled aria-label="Ligar pelo WhatsApp indisponível"
                 title={conversation.instance_id !== blueVoiceInstanceId ? "Este número ainda não tem serviço de voz" :
