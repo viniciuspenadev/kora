@@ -9,6 +9,7 @@ Revisão do código em 2026-10-12. Este documento descreve o estado comprovado e
 - Há uma restrição explícita adicional em `voice/src/wasm-engine.mts`: `Only one VoIP engine is supported per process.` O motor usa callbacks globais e um proprietário global. Uma lista de nomes habilitados, sozinha, faria a inicialização do segundo motor falhar. Este é um limite da implementação atual, não uma conclusão sobre a capacidade do WhatsApp ou do Baileys.
 - Cada instância admite um canal de mídia e uma chamada por vez. O cliente de navegador limita uma chamada por aba, sem reserva global por atendente ou coordenação de várias abas.
 - As concessões `tenant_users.voice_instance_ids` já aceitam vários IDs, mas roteamento, motores e interface continuam no piloto de uma linha.
+- A CSP do Kora permite o domínio WSS de `BLUE_VOICE_URL`; o gateway aceita uma lista explícita de origens. O cadastro de várias linhas deve manter um gateway público estável ou atualizar essas listas de forma restrita, sem liberar domínios arbitrários do navegador.
 - Mensagens seguem na Evolution atual; a Blue de voz é outro serviço pareado. O destino final é cada número usar mensagens e voz no mesmo socket Baileys da nossa Evolution, após migração validada.
 - Histórico atual observa o estado a cada dois segundos no servidor; não possui eventos duráveis do motor, motivo preciso de término ou gravação.
 
@@ -29,6 +30,8 @@ Política inicial: uma chamada por número e uma por atendente em todas as abas.
 ## Isolamento do motor
 
 O desenho recomendado mantém a Evolution como dona dos sockets e das credenciais Baileys, com um processo de voz isolado por linha. Uma ponte de sinalização e áudio conecta esse processo à sessão correta; o socket Baileys não deve ser copiado nem repareado só para isolar o WASM. Essa ponte precisa ser implementada: a interface atual do VoipClient recebe um WASocket diretamente, que não é transferível como objeto para outro processo.
+
+Preferir um único gateway público de áudio, que roteia por instância para os processos internos autorizados. Isso mantém a origem WSS estável, simplifica a CSP e evita expor uma porta pública para cada motor. O ticket continua de uso único e passa a ser vinculado à reserva, à linha e à sessão.
 
 Para uma prova inicial, dois serviços piloto completos e isolados podem separar os motores, com sessões, banco/cache e roteamento explicitamente separados. Isso é uma alternativa de teste, com custo de recursos, não o modelo final de um contêiner manual por cliente. Não restaurar as mesmas instâncias/auth em dois serviços concorrentes compartilhando o armazenamento.
 
@@ -61,6 +64,8 @@ Antes de qualquer migração, mapear colunas, índices, FKs, RLS, gatilhos e dad
 | Eventos duplicados ou fora de ordem | ID idempotente, sequência e máquina de estados; não duplicar tentativa nem regredir connected para ringing. |
 | Reinício do Kora/Evolution | Recuperar eventos duráveis e reconciliar chamadas abertas; manter resultado desconhecido se não houver prova de término. |
 | Chamada recebida durante saída | Política de ocupação/recusa compatível com o motor. Recepção permanece fora do piloto atual. |
+| Ligação iniciada no celular ou fora do Kora | O relatório atual não coleta essas chamadas. Só registrar ocupação, origem e resultado quando houver evento confiável do protocolo; não presumir que o estado local do motor cobre todos os aparelhos vinculados. |
+| Mudança de domínio/gateway | Conferir CSP, origem aceita, TLS e upgrade WebSocket. Habilitar somente origens cadastradas pela plataforma; preservar chaves no servidor. |
 | Transferência entre atendentes | Troca controlada da posse e da mídia, com auditoria; não confundir com transferir a conversa. Não disponível hoje. |
 | Gravação | Conta autoriza o recurso; owner configura a política; captura/armazenamento, acesso, retenção e falhas devem ser definidos antes de apresentar como disponível. |
 
