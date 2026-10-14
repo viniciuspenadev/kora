@@ -178,7 +178,13 @@ export class VoiceSession {
     this.canceled = true
     this.update({ phase: "ending" })
     // If dial is pending, start() will hang up the returned call ID.
-    if (!this.callId) { this.media.close(); if (!this.starting) this.finish(); return }
+    if (!this.callId) {
+      this.media.close()
+      // A pending permission prompt or lost reserve response must not defer cancellation.
+      if (this.owner) void this.releaseOwner()
+      if (!this.starting) this.finish()
+      return
+    }
     const id = this.callId
     try {
       await this.request(target.conversationId, "hangup", { callId: id, ...(this.owner ? { owner: this.owner } : {}) })

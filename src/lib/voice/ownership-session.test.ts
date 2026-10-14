@@ -75,3 +75,17 @@ it('an ambiguous reserve response cancels that exact attempt and never proceeds 
   expect(f.session.getSnapshot().phase).toBe('error')
   f.session.dispose()
 })
+
+it('cancel while microphone permission is pending releases the admitted owner before the prompt resolves', async () => {
+  const f=setup()
+  let resolve!: () => void
+  f.media.open.mockImplementation(() => new Promise<void>(done => { resolve=done }))
+  f.session.open(target); await vi.advanceTimersByTimeAsync(0)
+  const starting=f.session.start(); await vi.advanceTimersByTimeAsync(0)
+  f.release(); await f.session.hangup(); await vi.advanceTimersByTimeAsync(0)
+  expect(f.request.mock.calls.some(([,action]) => action==='release')).toBe(true)
+  expect(f.request.mock.calls.some(([,action]) => action==='dial')).toBe(false)
+  resolve(); await starting
+  expect(f.session.getSnapshot().phase).toBe('ended')
+  f.session.dispose()
+})

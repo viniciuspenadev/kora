@@ -28,6 +28,34 @@ export class BrowserVoiceMedia implements VoiceMedia {
   private previousSample = 0
   private nextPosition = 0
   private playbackAt = 0
+  private cancelMicrophone: (() => void) | null = null
+  private requestMicrophone(generation: number): Promise<MediaStream> {
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const clear = () => {
+        clearTimeout(timeout)
+        if (this.cancelMicrophone === cancel) this.cancelMicrophone = null
+      }
+      const fail = (message: string) => {
+        if (settled) return
+        settled = true; clear(); reject(new Error(message))
+      }
+      const cancel = () => fail('Preparação cancelada.')
+      const timeout = setTimeout(() => fail('A permissão do microfone demorou para responder. Tente novamente.'), 60_000)
+      this.cancelMicrophone = cancel
+      try {
+        navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+          .then(stream => {
+            if (settled || generation !== this.generation) {
+              stream.getTracks().forEach(track => track.stop())
+              if (!settled) cancel()
+              return
+            }
+            settled = true; clear(); resolve(stream)
+          }, () => fail('Permita o microfone no navegador para iniciar a ligação.'))
+      } catch { fail('Permita o microfone no navegador para iniciar a ligação.') }
+    })
+  }
   async prepare() {
     this.close()
     this.context = new AudioContext()
@@ -42,9 +70,8 @@ export class BrowserVoiceMedia implements VoiceMedia {
     const context = preparedContext ?? new AudioContext()
     this.context = context
     await context.resume()
-    let stream: MediaStream
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }) }
-    catch { throw new Error("Permita o microfone no navegador para iniciar a ligação.") }
+    if (generation !== this.generation) throw new Error('Preparação cancelada.')
+    const stream = await this.requestMicrophone(generation)
     if (generation !== this.generation) { stream.getTracks().forEach(track => track.stop()); throw new Error("Preparação cancelada.") }
     this.stream = stream
     stream.getAudioTracks().forEach(track => track.addEventListener("ended", () => {
@@ -108,6 +135,7 @@ export class BrowserVoiceMedia implements VoiceMedia {
   mute(muted: boolean) { this.stream?.getAudioTracks().forEach(track => { track.enabled = !muted }) }
   close() {
     this.generation++
+    this.cancelMicrophone?.(); this.cancelMicrophone = null
     const socket = this.socket; this.socket = null; socket?.close()
     if (this.processor) this.processor.onaudioprocess = null
     this.processor?.disconnect(); this.source?.disconnect(); this.silent?.disconnect(); this.local?.disconnect(); this.remote?.disconnect()
