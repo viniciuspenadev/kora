@@ -6,9 +6,10 @@ import { hasModule } from "@/lib/modules"
 import type { ViewerScope } from "@/lib/visibility"
 import { decryptSecret } from "@/lib/crypto/secrets"
 import { evolutionVoiceOrigin, voiceEvolutionOrigins } from "./origins"
+import { parseBackendOwnershipStatus, type BackendOwnershipStatus, type VoiceTerminalOutcome } from "./ownership-contract"
 
 export type VoiceConfig = { instanceId: string; instanceName: string; url: URL; key: string }
-type VoiceStatus = { enabled: boolean; ready: boolean; call: { id: string; state: string } | null }
+export type VoiceStatus = { enabled: boolean; ready: boolean; call: { id: string; state: string } | null; ownership?: BackendOwnershipStatus; outcome?: VoiceTerminalOutcome }
 
 function legacyPilotConfig(): VoiceConfig | null {
   if (process.env.BLUE_VOICE_ENABLED !== "true") return null
@@ -115,5 +116,6 @@ export async function voiceStatus(config: VoiceConfig): Promise<VoiceStatus> {
     (status.call !== null && (!status.call || typeof status.call.id !== "string" || typeof status.call.state !== "string"))) {
     throw new Error("Voz indisponível")
   }
-  return { enabled: status.enabled, ready: status.enabled && status.ready, call: status.call }
+  const ownership = parseBackendOwnershipStatus(status.ownership)
+  return { enabled: status.enabled, ready: status.enabled && status.ready, call: status.call, ...(ownership ? { ownership } : {}) }
 }

@@ -69,10 +69,11 @@ export async function observeVoiceTimeline(context: RecordContext, config: Voice
         failures = 0
         const call = status.call
         if (!call || call.id !== callId) {
-          context.event.state = "ended"
-          context.event.endedAt = new Date(dependencies.now()).toISOString()
+          const uncertain = status.outcome === 'interrupted' || status.outcome === 'unknown'
+          context.event.state = uncertain ? 'unconfirmed' : status.outcome === 'failed' ? 'failed' : "ended"
+          context.event.endedAt = uncertain ? null : new Date(dependencies.now()).toISOString()
           // Polling timestamps are observations, not precise engine timestamps.
-          context.event.durationSeconds = context.event.connectedAt
+          context.event.durationSeconds = !uncertain && context.event.connectedAt
             ? Math.max(0, Math.floor((dependencies.now() - Date.parse(context.event.connectedAt)) / 1000)) : null
           await save(context); return
         }

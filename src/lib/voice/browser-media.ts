@@ -1,4 +1,5 @@
 import type { VoiceMedia } from "./session"
+import { VoiceRequestError, type BrowserCallOwner } from './ownership-contract'
 
 export async function voiceRequest<T>(conversationId: string, action: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api/voice/${encodeURIComponent(conversationId)}/${action}`, {
@@ -8,7 +9,8 @@ export async function voiceRequest<T>(conversationId: string, action: string, bo
     signal: AbortSignal.timeout(action === "dial" ? 50_000 : 20_000),
   })
   const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.error ?? "A linha está indisponível. Tente novamente.")
+  if (!response.ok) throw new VoiceRequestError(data.error ?? "A linha está indisponível. Tente novamente.", response.status,
+    typeof data.code === 'string' ? data.code : undefined)
   return data as T
 }
 
@@ -26,12 +28,18 @@ export class BrowserVoiceMedia implements VoiceMedia {
   private previousSample = 0
   private nextPosition = 0
   private playbackAt = 0
-  async open(conversationId: string, onCall: Parameters<VoiceMedia["open"]>[1], onDisconnect: () => void) {
+  async prepare() {
     this.close()
+    this.context = new AudioContext()
+    await this.context.resume()
+  }
+  async open(conversationId: string, onCall: Parameters<VoiceMedia["open"]>[1], onDisconnect: () => void, owner?: BrowserCallOwner) {
+    const preparedContext = this.context
+    if (!preparedContext) this.close()
     const generation = this.generation
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("Este navegador não disponibiliza o microfone.")
     // Create/resume in the click gesture, before awaiting network or microphone permission.
-    const context = new AudioContext()
+    const context = preparedContext ?? new AudioContext()
     this.context = context
     await context.resume()
     let stream: MediaStream
@@ -63,7 +71,7 @@ export class BrowserVoiceMedia implements VoiceMedia {
       this.nextPosition -= input.length; this.previousSample = joined[joined.length - 1]
       if (output.length) this.socket.send(Float32Array.from(output).buffer)
     }
-    const { ticket, mediaUrl } = await voiceRequest<{ ticket: string; mediaUrl: string }>(conversationId, "media-ticket", {})
+    const { ticket, mediaUrl } = await voiceRequest<{ ticket: string; mediaUrl: string }>(conversationId, "media-ticket", owner ? { owner } : {})
     if (generation !== this.generation) throw new Error("Preparação cancelada.")
     const socket = new WebSocket(mediaUrl, ["voice", ticket]); socket.binaryType = "arraybuffer"; this.socket = socket
     socket.addEventListener("message", event => {
