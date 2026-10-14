@@ -2,7 +2,7 @@ import "server-only"
 import { randomUUID } from "node:crypto"
 import { setTimeout as delay } from "node:timers/promises"
 import { supabaseAdmin } from "@/lib/supabase"
-import { blueVoiceStatus, type VoiceConfig } from "./blue"
+import { voiceStatus, type VoiceConfig } from "./blue"
 
 export type VoiceTimelineEvent = {
   state: "dialing" | "ringing" | "connected" | "ending" | "ended" | "failed" | "unconfirmed"
@@ -57,7 +57,7 @@ export async function expireVoiceTimeline(tenantId: string, conversationId: stri
 
 /** Server observation continues when the browser closes. No client-authored outcome or duration. */
 export async function observeVoiceTimeline(context: RecordContext, config: VoiceConfig, callId: string,
-  dependencies = { status: blueVoiceStatus, wait: () => delay(2000), now: () => Date.now() }) {
+  dependencies = { status: voiceStatus, wait: () => delay(2000), now: () => Date.now() }) {
   context.event.callId = callId
   const deadline = dependencies.now() + 16 * 60_000
   let failures = 0

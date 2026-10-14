@@ -1,5 +1,5 @@
 import { after, NextResponse, type NextRequest } from "next/server"
-import { blueVoiceRequest, blueVoiceStatus, blueVoiceTarget } from "@/lib/voice/blue"
+import { voiceRequest, voiceStatus, voiceTarget } from "@/lib/voice/blue"
 import { beginVoiceTimeline, failVoiceTimeline, observeVoiceTimeline } from "@/lib/voice/timeline"
 
 export const runtime = "nodejs"
@@ -28,17 +28,17 @@ async function handle(req: NextRequest, params: Params["params"]) {
     return result(403, { error: "Requisição não autorizada" })
   }
   try {
-    const { config, number, scope } = await blueVoiceTarget(conversationId)
+    const { config, number, scope } = await voiceTarget(conversationId)
     if (action === "status") {
-      const status = await blueVoiceStatus(config)
+      const status = await voiceStatus(config)
       const presentedId = req.nextUrl.searchParams.get("callId")
       return result(200, { enabled: status.enabled, ready: status.ready,
         call: status.call ? (presentedId === status.call.id ? status.call : { id: "", state: "busy" }) : null })
     }
-    const status = await blueVoiceStatus(config)
+    const status = await voiceStatus(config)
     if (action === "media-ticket") {
       if (!status.ready || status.call) return result(409, { error: "Linha ocupada ou voz indisponível" })
-      const upstream = await blueVoiceRequest(config, action, "POST")
+      const upstream = await voiceRequest(config, action, "POST")
       if (upstream.status !== 200) return result(upstream.status, { error: "Não foi possível abrir o áudio" })
       const ticket = (upstream.data as { ticket?: unknown }).ticket
       if (typeof ticket !== "string") return result(502, { error: "Ticket inválido" })
@@ -52,7 +52,7 @@ async function handle(req: NextRequest, params: Params["params"]) {
       try {
         const upstream = await fetch(new URL(`/voice/dial/${encodeURIComponent(config.instanceName)}`, config.url), {
           method: "POST", headers: { apikey: config.key, "content-type": "application/json" },
-          body: JSON.stringify({ number }), cache: "no-store", signal: AbortSignal.timeout(45_000),
+          body: JSON.stringify({ number }), cache: "no-store", redirect: "error", signal: AbortSignal.timeout(45_000),
         })
         if (!upstream.ok) {
           await failVoiceTimeline(record, [400, 401, 403, 409, 422].includes(upstream.status))
@@ -68,12 +68,12 @@ async function handle(req: NextRequest, params: Params["params"]) {
     const body: unknown = await req.json().catch(() => null)
     const callId = body && typeof body === "object" && "callId" in body ? (body as { callId: unknown }).callId : null
     if (typeof callId !== "string" || callId !== status.call.id) return result(409, { error: "Identificador da ligação inválido" })
-    const upstream = await blueVoiceRequest(config, "hangup", "POST")
+    const upstream = await voiceRequest(config, "hangup", "POST")
     return result(upstream.status, upstream.status === 202 ? upstream.data : { error: "Não foi possível desligar" })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Voz indisponível"
     if (message === "Não foi possível registrar a tentativa de ligação") return result(503, { error: message })
-    const denied = ["Voz não configurada", "Conversa não encontrada", "Ligação não habilitada para este atendente", "Assuma ou participe do atendimento para ligar", "Contato sem telefone válido para ligação"].includes(message)
+    const denied = ["Voz não configurada para este número", "Conversa não encontrada", "Ligação não habilitada para este atendente", "Assuma ou participe do atendimento para ligar", "Contato sem telefone válido para ligação"].includes(message)
     return result(denied ? 403 : 502, { error: denied ? message : "Voz indisponível" })
   }
 }

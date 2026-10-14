@@ -4,7 +4,7 @@ import type { VoiceConfig } from "./blue"
 vi.mock("server-only", () => ({}))
 const db = new MemoryDb()
 vi.mock("@/lib/supabase", () => ({ supabaseAdmin: db }))
-vi.mock("./blue", () => ({ blueVoiceStatus: vi.fn() }))
+vi.mock("./blue", () => ({ voiceStatus: vi.fn() }))
 const { beginVoiceTimeline, failVoiceTimeline, observeVoiceTimeline, expireVoiceTimeline } = await import("./timeline")
 const config = {} as VoiceConfig
 beforeEach(() => db.reset({ profiles: [{ id: "actor", full_name: "Atendente teste" }], chat_messages: [] }))

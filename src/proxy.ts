@@ -25,6 +25,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { randomBytes } from "crypto"
 import { frameAncestors, normalizeAllowedDomains } from "@/lib/forms/embed"
 import { isPublicId } from "@/lib/forms/identity"
+import { voiceEvolutionOrigins } from "@/lib/voice/origins"
 
 // ── Cookie de dispositivo (device trust — F1) ─────────────────────
 // Doc: docs/auth-device-trust-design.md §2. Identidade PERSISTENTE do navegador,
@@ -50,13 +51,7 @@ const TURNSTILE = "https://challenges.cloudflare.com"
 const META_SCRIPT = "https://connect.facebook.net"
 const META_FRAME  = "https://www.facebook.com"
 
-const BLUE_VOICE_WS = (() => {
-  try {
-    if (process.env.BLUE_VOICE_ENABLED !== "true") return ""
-    const url = new URL(process.env.BLUE_VOICE_URL ?? "")
-    return url.protocol === "https:" ? ` wss://${url.host}` : ""
-  } catch { return "" }
-})()
+const VOICE_WS = voiceEvolutionOrigins().map(origin => ` wss://${new URL(origin).host}`).join("")
 
 function buildCsp(opts: { turnstile?: boolean; meta?: boolean; voice?: boolean; ancestors?: string } = {}): string {
   const cf = opts.turnstile ? ` ${TURNSTILE}` : ""
@@ -74,7 +69,7 @@ function buildCsp(opts: { turnstile?: boolean; meta?: boolean; voice?: boolean; 
     // Áudio/vídeo do Supabase Storage (signed URLs) — sem media-src cai em default-src e bloqueia
     `media-src 'self' blob: ${SUPABASE_HTTPS}`.trim(),
     // Supabase REST + Realtime + Storage; OpenAI direto não chamamos do client
-    `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}${mC}${opts.voice ? BLUE_VOICE_WS : ""}`.trim(),
+    `connect-src 'self' ${SUPABASE_HTTPS} ${SUPABASE_WS}${mC}${opts.voice ? VOICE_WS : ""}`.trim(),
     // iframe do widget Turnstile (/signup) ou do FB SDK (integração oficial); 'self' p/
     // preview de email no admin; blob: p/ a prévia do PDF da cotação (compositor).
     `frame-src 'self' blob:${cf}${mF}`,

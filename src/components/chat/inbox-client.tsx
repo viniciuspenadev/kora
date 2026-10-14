@@ -70,10 +70,10 @@ interface TagMini        { id: string; name: string; color: string }
 interface DepartmentMini { id: string; name: string; color: string }
 
 interface Props {
-  blueVoiceInstanceId?: string | null
-  blueVoiceEnabled?: boolean
-  blueVoiceIsAdmin?: boolean
-  blueVoiceDisabledReason?: string
+  voiceInstanceIds?: string[]
+  voiceEnabled?: boolean
+  voiceIsAdmin?: boolean
+  voiceDisabledReason?: string
   conversations:       ChatConversation[]
   messages:            Record<string, ChatMessage[]>
   contacts:            Record<string, ChatContact>
@@ -163,10 +163,10 @@ function matchesSecondaryFilters(conv: ChatConversation, f: ActiveFilters): bool
 }
 
 export function InboxClient({
-  blueVoiceInstanceId = null,
-  blueVoiceEnabled = false,
-  blueVoiceIsAdmin = false,
-  blueVoiceDisabledReason = "Ligação indisponível",
+  voiceInstanceIds = [],
+  voiceEnabled = false,
+  voiceIsAdmin = false,
+  voiceDisabledReason = "Ligação indisponível",
   conversations: initialConversations,
   contacts: initialContacts,
   quickReplies,
@@ -1362,10 +1362,10 @@ export function InboxClient({
                   onBack={() => { setActiveId(null); setActiveMessages([]) }}
                   onOpenTools={section => openGroupTools(activeConv.id, section)}
                 /> : <ChatPanel
-                  blueVoiceInstanceId={blueVoiceInstanceId}
-                  blueVoiceEnabled={blueVoiceEnabled}
-                  blueVoiceIsAdmin={blueVoiceIsAdmin}
-                  blueVoiceDisabledReason={blueVoiceDisabledReason}
+                  voiceInstanceIds={voiceInstanceIds}
+                  voiceEnabled={voiceEnabled}
+                  voiceIsAdmin={voiceIsAdmin}
+                  voiceDisabledReason={voiceDisabledReason}
                   currentUserId={currentUserId}
                   onMessageEdited={patch => setActiveMessages(prev => prev.map(message => message.id === patch.id ? { ...message, ...patch } : message))}
                   conversation={activeConv}
