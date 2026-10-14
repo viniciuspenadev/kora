@@ -11,6 +11,8 @@ beforeAll(async () => {
   process.env.SUPABASE_SERVICE_ROLE_KEY = "chave-do-servidor"
   process.env.BLUE_VOICE_ENABLED = "true"
   process.env.BLUE_VOICE_URL = "https://voice.example"
+  process.env.EVOLUTION_API_URL = "https://evolution.example"
+  process.env.VOICE_EVOLUTION_ALLOWED_ORIGINS = "https://second.example,http://invalid.example,https://user:pass@secret.example"
   vi.stubGlobal("fetch", fetchMock)
   ;({ proxy } = await import("./proxy"))
 })
@@ -25,6 +27,10 @@ it("permite áudio na navegação do painel flutuante, mantendo o destino restri
     const r = await proxy(new NextRequest(`http://kora.test${path}`))
     const connections = csp(r).match(/connect-src ([^;]*)/)?.[1] ?? ""
     expect(connections).toContain("wss://voice.example")
+    expect(connections).toContain("wss://evolution.example")
+    expect(connections).toContain("wss://second.example")
+    expect(connections).not.toContain("invalid.example")
+    expect(connections).not.toContain("secret.example")
     expect(connections.split(/\s+/)).not.toContain("wss:")
     expect(ancestors(r)).toBe("'self'")
   }

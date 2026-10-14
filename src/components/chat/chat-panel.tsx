@@ -40,10 +40,10 @@ import { sanitizeAdReply } from "@/lib/ad-reply"
 import { PlatformIcon, getPlatformMeta } from "@/components/ui/platform-icon"
 
 interface Props {
-  blueVoiceInstanceId?: string | null
-  blueVoiceEnabled?: boolean
-  blueVoiceIsAdmin?: boolean
-  blueVoiceDisabledReason?: string
+  voiceInstanceIds?: string[]
+  voiceEnabled?: boolean
+  voiceIsAdmin?: boolean
+  voiceDisabledReason?: string
   currentUserId?: string
   onMessageEdited?: (patch: Pick<ChatMessage, "id" | "content"> & Partial<Pick<ChatMessage, "edited_at" | "deleted_at" | "content_type">>) => void
   pipelines?: Array<{ id: string; name: string }>
@@ -131,10 +131,10 @@ function MessageSkeleton() {
 }
 
 export function ChatPanel({
-  blueVoiceInstanceId = null,
-  blueVoiceEnabled = false,
-  blueVoiceIsAdmin = false,
-  blueVoiceDisabledReason = "Ligação indisponível",
+  voiceInstanceIds = [],
+  voiceEnabled = false,
+  voiceIsAdmin = false,
+  voiceDisabledReason = "Ligação indisponível",
   currentUserId = "", onMessageEdited,
   conversation, messages, quickReplies, agents, onStatusChange,
   hasMoreOlder = false, loadingOlder = false, onLoadOlder,
@@ -526,8 +526,8 @@ export function ChatPanel({
 
         <div className="flex items-center gap-1.5 shrink-0">
           {(conversation.channel ?? "whatsapp") === "whatsapp" && !conversation.is_group && (
-            blueVoiceEnabled && conversation.instance_id === blueVoiceInstanceId &&
-              (blueVoiceIsAdmin || conversation.assigned_to === currentUserId || (conversation.participants ?? []).includes(currentUserId)) ? (
+            voiceEnabled && voiceInstanceIds.includes(conversation.instance_id ?? "") &&
+              (voiceIsAdmin || conversation.assigned_to === currentUserId || (conversation.participants ?? []).includes(currentUserId)) ? (
               <button type="button" onClick={() => openVoice({ conversationId: conversation.id, name, phone: contact?.phone_number ? formatPhoneDisplay(contact.phone_number) : undefined })}
                 aria-label="Ligar pelo WhatsApp" title="Ligar pelo WhatsApp"
                 className="inline-flex size-8 items-center justify-center rounded-lg text-primary hover:bg-primary-50 focus-visible:ring-2 focus-visible:ring-primary">
@@ -535,8 +535,8 @@ export function ChatPanel({
               </button>
             ) : (
               <button type="button" disabled aria-label="Ligar pelo WhatsApp indisponível"
-                title={conversation.instance_id !== blueVoiceInstanceId ? "Este número ainda não tem serviço de voz" :
-                  !blueVoiceEnabled ? blueVoiceDisabledReason : "Assuma ou participe do atendimento para ligar"}
+                title={!voiceInstanceIds.includes(conversation.instance_id ?? "") ? "Este número ainda não tem serviço de voz" :
+                  !voiceEnabled ? voiceDisabledReason : "Assuma ou participe do atendimento para ligar"}
                 className="inline-flex size-8 items-center justify-center rounded-lg text-slate-300 cursor-not-allowed">
                 <Phone className="size-4" />
               </button>

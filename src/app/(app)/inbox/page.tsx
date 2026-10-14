@@ -4,7 +4,7 @@ import { InboxClient } from "@/components/chat/inbox-client"
 import { getConversations, getConversationViewCounts } from "@/lib/actions/conversations"
 import { hasModule } from "@/lib/modules"
 import { getViewerScope } from "@/lib/visibility"
-import { blueVoiceAllowed, blueVoiceConfig } from "@/lib/voice/blue"
+import { voiceInstanceIdsForViewer } from "@/lib/voice/blue"
 import type { ChatMessage, ChatContact, ChatQuickReply } from "@/types/chat"
 
 const INITIAL_LIMIT       = 25
@@ -16,7 +16,6 @@ export default async function InboxPage() {
   if (!session) return null
 
   const tenantId = session.user.tenantId
-  const blueVoice = blueVoiceConfig()
   const viewer = await getViewerScope()
   const voiceModuleOn = await hasModule(tenantId, "voice_calls")
   const kanbanEnabled = await hasModule(tenantId, "kanban")
@@ -27,15 +26,14 @@ export default async function InboxPage() {
   // createManualConversation), usada pra saber o canal de uma conversa nova.
   const { data: instances } = await supabaseAdmin
     .from("whatsapp_instances")
-    .select("id, status, provider")
+    .select("id, status, provider, instance_name, evolution_url, evolution_key")
     .eq("tenant_id", tenantId)
     .order("created_at", { ascending: true })
 
   const instanceList = instances ?? []
-  const blueVoiceInstanceId = blueVoice && instanceList.some((instance) => instance.id === blueVoice.instanceId)
-    ? blueVoice.instanceId : null
-  const blueVoiceEnabled = !!blueVoiceInstanceId && await blueVoiceAllowed(viewer, blueVoiceInstanceId)
-  const blueVoiceDisabledReason = !voiceModuleOn
+  const voiceInstanceIds = await voiceInstanceIdsForViewer(viewer, instanceList)
+  const voiceEnabled = voiceModuleOn
+  const voiceDisabledReason = !voiceModuleOn
     ? "Ligações não habilitadas nesta conta"
     : "O proprietário ainda não liberou ligações para você neste número"
   const hasUsableInstance = instanceList.some((i) => i.status !== "disconnected")
@@ -49,10 +47,10 @@ export default async function InboxPage() {
     return (
       <div className="h-[calc(100dvh-3.5rem)]">
         <InboxClient kanbanEnabled={kanbanEnabled}
-          blueVoiceInstanceId={blueVoiceInstanceId}
-          blueVoiceEnabled={blueVoiceEnabled}
-          blueVoiceIsAdmin={viewer.isAdmin}
-          blueVoiceDisabledReason={blueVoiceDisabledReason}
+          voiceInstanceIds={voiceInstanceIds}
+          voiceEnabled={voiceEnabled}
+          voiceIsAdmin={viewer.isAdmin}
+          voiceDisabledReason={voiceDisabledReason}
           conversations={[]}
           messages={{}}
           contacts={{}}
@@ -162,10 +160,10 @@ export default async function InboxPage() {
   return (
     <div className="h-[calc(100dvh-3.5rem)]">
       <InboxClient kanbanEnabled={kanbanEnabled}
-        blueVoiceInstanceId={blueVoiceInstanceId}
-        blueVoiceEnabled={blueVoiceEnabled}
-        blueVoiceIsAdmin={viewer.isAdmin}
-        blueVoiceDisabledReason={blueVoiceDisabledReason}
+        voiceInstanceIds={voiceInstanceIds}
+        voiceEnabled={voiceEnabled}
+        voiceIsAdmin={viewer.isAdmin}
+        voiceDisabledReason={voiceDisabledReason}
         conversations={conversations}
         messages={messagesByConv}
         contacts={contactsMap}
