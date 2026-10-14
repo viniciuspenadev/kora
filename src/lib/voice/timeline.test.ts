@@ -40,3 +40,13 @@ it("recupera observação antiga após reinício sem tocar outras contas ou hor�
   expect(db.tables.chat_messages.find(r => r.id === record.id)?.metadata.voice_call).toMatchObject({ state: "unconfirmed", endedAt: null, durationSeconds: null })
   expect(db.tables.chat_messages.find(r => r.id === "other")?.metadata.voice_call.state).toBe("dialing")
 })
+
+it("uma interrupção após conexão observada não inventa término normal ou duração precisa", async () => {
+  const record = await beginVoiceTimeline("tenant", "conversation", "actor")
+  const states = [
+    { enabled: true, ready: true, call: { id: "call", state: "connected" } },
+    { enabled: true, ready: true, call: null, outcome: "interrupted" as const },
+  ]
+  await observeVoiceTimeline(record, config, "call", { status: async () => states.shift()!, wait: async () => {}, now: () => 100_000 })
+  expect(db.tables.chat_messages[0].metadata.voice_call).toMatchObject({ state: "unconfirmed", endedAt: null, durationSeconds: null })
+})
